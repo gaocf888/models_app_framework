@@ -1,0 +1,26 @@
+<annotation>
+	<folder>jpg</folder>
+	<filename>01553.jpg</filename>
+	<path>C:\Users\hp\Desktop\bb\jushou2\jpg\01553.jpg</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>400</width>
+		<height>600</height>
+		<depth>1</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>handsup</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>61</xmin>
+			<ymin>186</ymin>
+			<xmax>294</xmax>
+			<ymax>592</ymax>
+		</bndbox>
+	</object>
+</annotation>

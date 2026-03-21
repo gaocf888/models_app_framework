@@ -1,0 +1,16 @@
+# 小模型应用：小模型推理、通道等
+#
+# 说明：
+# - 本文件聚焦「小模型在线推理 + 通道管理」相关依赖；
+# - 训练脚本与离线训练依赖放在 `requirements-小模型训练.txt`。
+
+# === 通用数值与图像处理 ===
+numpy>=1.26.0              # 数值计算基础库，常用于预处理与后处理
+opencv-python>=4.9.0.80    # 小模型通道解码/视频流读取（rtsp/http/file）等场景需要的 OpenCV 绑定
+
+# === 监控与可观测性（与大模型应用共用指标） ===
+prometheus-client>=0.20.0  # 暴露小模型相关指标，如 small_model_frames_processed_total
+
+# === 可选工具（按需启用） ===
+Pillow>=10.0.0             # 如需对图像做格式转换/简易绘制，可按需使用
+pyyaml>=6.0.0              # 读取 dataset.yaml（如 app/train/yolo/video_rtsp_yolo_queue_test.py 中类别名 names）

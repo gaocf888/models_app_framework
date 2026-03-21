@@ -1,0 +1,33 @@
+# Ultralytics 数据集配置示例（Detection）。
+#
+# 你需要做的最小修改：
+# 1) 修改 `path` 为你的数据集根目录
+# 2) 修改 train/val 指向图片与标注目录（相对 path）
+# 3) 修改 names 为你的类别定义
+#
+# 建议目录结构（示例）：
+# datasets/helmet/
+#   images/
+#     train/
+#       0001.jpg
+#     val/
+#       0002.jpg
+#   labels/
+#     train/
+#       0001.txt   # YOLO 格式标注（class x_center y_center width height）
+#     val/
+#       0002.txt
+#
+# 说明：
+# - Ultralytics 会按 data.yaml 的 train/val 加载图像与标签
+# - 如果你的数据集采用其他目录结构，请相应调整 train/val 路径
+
+path: "app/train/yolo/datasets/processed/handup_yolo_dataset"
+train: "images/train"
+val: "images/val"
+
+# test: "images/test"  # 可选
+
+names:
+  0: "helmet"
+

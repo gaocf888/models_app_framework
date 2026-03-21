@@ -1,0 +1,71 @@
+# YOLOv8 训练配置示例（Ultralytics）
+#
+# 你需要做的最小修改：
+# 1) 修改 `pretrained_model` 为你的预训练权重路径（例如 yolov8n.pt 或 best.pt）
+# 2) 修改 `data_yaml` 为你的数据集 data.yaml 路径
+# 3) 按需修改 epochs/batch/imgsz/device 等训练参数
+
+#
+# pretrained_model 支持三种写法：
+# 1) 本地文件：如 "weights/yolov8n.pt"（脚本会检查文件是否存在）
+# 2) Ultralytics 内置模型名：如 "yolov8n.pt"（在线自动下载）
+# 3) URL：如 "https://.../yolov8n.pt"（在线下载后训练）
+#
+pretrained_model: "yolov8n.pt"
+# data.yaml 的标准内容见本目录下的 data.yaml.example（data_yaml 必须是本地可存在文件）
+data_yaml: "datasets/processed/dajia/dataset.yaml"
+
+# 输出目录（runs 组织方式由 Ultralytics 决定）
+project: "runs/yolo"
+name: "helmet_exp"
+exist_ok: false
+
+# 训练核心参数（覆盖常见 detection 训练所需项）
+epochs: 100
+imgsz: 640
+batch: 16
+device: "0"
+workers: 8
+
+# 优化器与学习率
+optimizer: "SGD"
+lr0: 0.01
+lrf: 0.01
+momentum: 0.937
+weight_decay: 0.0005
+warmup_epochs: 3.0
+
+# 训练策略
+patience: 50
+cos_lr: false
+amp: true
+deterministic: false
+seed: 0
+cache: false
+
+# 数据增强（基础一套，够用且易理解；更多高级参数可放入 train_args）
+mosaic: 1.0
+mixup: 0.0
+close_mosaic: 10
+degrees: 0.0
+translate: 0.1
+scale: 0.5
+shear: 0.0
+perspective: 0.0
+flipud: 0.0
+fliplr: 0.5
+hsv_h: 0.015
+hsv_s: 0.7
+hsv_v: 0.4
+
+# 保存策略
+save: true
+save_period: -1
+
+# 是否断点续训（默认 false；启用后依赖 Ultralytics runs 目录的 last/ckpt 规则）
+resume: false
+
+# 高级扩展：你可以把 Ultralytics `model.train()` 的其它参数直接填到这里
+# 例如：`batch`、`imgsz` 之外的增强参数、验证频率等
+train_args: {}
+

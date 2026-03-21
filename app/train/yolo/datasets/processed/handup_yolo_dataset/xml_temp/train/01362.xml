@@ -1,0 +1,26 @@
+<annotation>
+	<folder>jpg</folder>
+	<filename>01362.jpg</filename>
+	<path>C:\Users\hp\Desktop\bb\jushou2\jpg\01362.jpg</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>600</width>
+		<height>397</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>other</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>51</xmin>
+			<ymin>11</ymin>
+			<xmax>270</xmax>
+			<ymax>390</ymax>
+		</bndbox>
+	</object>
+</annotation>

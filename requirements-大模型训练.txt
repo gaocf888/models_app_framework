@@ -1,0 +1,14 @@
+# 大模型训练：LLaMA-Factory、微调等
+#
+# 说明：
+# - 本文件聚焦「大模型训练/微调」相关依赖；
+# - 在线推理与业务 API 依赖放在 `requirements-大模型应用.txt`。
+
+# === HuggingFace & LoRA 微调示例所需依赖 ===
+transformers>=4.39.0   # 大模型加载与前向/训练（AutoModelForCausalLM、AutoTokenizer 等）
+datasets>=2.18.0       # 训练数据集加载与预处理（_run_lora_training 示例中使用）
+peft>=0.10.0           # Parameter-Efficient Fine-Tuning（LoRA 等）实现
+accelerate>=0.28.0     # 分布式/多 GPU 训练加速与训练循环封装
+
+# === 训练过程日志与可视化（按需启用） ===
+tensorboard>=2.16.0    # 训练指标可视化（loss、lr、eval 指标等），与日志目录配合使用

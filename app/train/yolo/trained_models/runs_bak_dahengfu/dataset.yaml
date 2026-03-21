@@ -1,0 +1,9 @@
+# 数据集配置文件
+path: app/train/yolo/datasets/processed/dahengfu  # 数据集根目录
+train: images/train  # 训练图片目录
+val: images/val  # 验证图片目录
+
+# 类别名称
+names:
+  0: banner
+  1: banner

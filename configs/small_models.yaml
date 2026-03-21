@@ -1,0 +1,22 @@
+# 小模型算法配置示例
+# 说明：
+# - 本文件用于集中管理所有小模型（视觉识别）算法的配置；
+# - 生产环境中可根据实际情况增删算法条目，并替换为真实权重路径。
+
+models:
+  helmet_detector:
+    name: helmet_detector                # 算法标识，需与 API 中的 model_name 对应
+    description: 安全帽佩戴检测示例
+    weights_path: models/small/helmet/best.pt   # 示例权重路径，请替换为真实模型
+    task_type: helmet
+    threshold: 0.5
+    max_limit: 10
+
+  phone_call_detector:
+    name: phone_call_detector
+    description: 打电话行为检测示例
+    weights_path: models/small/phone_call/best.pt
+    task_type: phone_call
+    threshold: 0.5
+    max_limit: 5
+

@@ -1,0 +1,9 @@
+path: app/train/yolo/datasets/processed/xiadun_zhanli_jlyd  # 数据集根目录
+train: images/train  # 训练图片目录
+val: images/val  # 验证图片目录
+
+names:
+  0: fall
+  1: sit
+  2: stand
+

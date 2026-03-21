@@ -1,0 +1,33 @@
+# 大模型应用：RAG、Chatbot、综合分析、NL2SQL 等
+#
+# 说明：
+# - 本文件聚焦「大模型在线推理 + 企业应用」相关依赖；
+# - 训练/微调相关依赖放在 `requirements-大模型训练.txt`；
+# - 小模型通道/推理依赖放在 `requirements-小模型应用.txt`。
+
+# === 基础 Web 框架与运行环境 ===
+fastapi>=0.110.0          # Web API 框架，用于暴露 /llm/infer、/chatbot/chat、/analysis/run、/nl2sql/query 等接口
+uvicorn[standard]>=0.27.0 # ASGI 服务器，开发/部署时运行 FastAPI 应用
+pydantic>=2.6.0           # 数据模型与请求/响应校验（ChatRequest、AnalysisInput、NL2SQL 请求等）
+python-dotenv>=1.0.0      # 从 .env 文件加载配置，便于本地/测试环境管理环境变量
+
+# === 缓存、会话与后端服务访问 ===
+redis>=5.0.0              # 会话与上下文存储（ConversationManager、会话摘要等）
+httpx>=0.27.0             # HTTP 客户端，封装 vLLM/OpenAI 兼容接口等后端调用
+
+# === 数据库与 NL2SQL 相关 ===
+sqlalchemy>=2.0.0         # ORM/SQL 构建与执行，NL2SQL 的 SQLExecutor 使用
+aiomysql>=0.2.0           # 异步 MySQL 驱动，用于 NL2SQL Demo 数据库访问（可按实际数据库替换）
+
+# === RAG / GraphRAG / 嵌入模型 ===
+sentence-transformers>=2.2.0  # 嵌入服务（EmbeddingService）主依赖，支持中文 BGE 等模型
+faiss-cpu>=1.7.4              # 向量检索后端，当前默认使用本地 FAISS 文件索引
+neo4j>=5.0.0                  # GraphRAG 使用的 Neo4j Python 驱动（配合 langchain graph）
+langchain-community>=0.2.0    # LangChain 社区模块，包含 Neo4jGraph 等 GraphRAG/RAG 相关组件
+
+# === LangChain / LLM 调用与编排（按需启用） ===
+langchain>=0.2.0          # 通用 RAG/NL2SQL/Agentic Workflow 编排能力（Chains/Tools 等）
+langchain-openai>=0.1.0   # 如需直接调用 OpenAI / Azure OpenAI，可通过本包集成到 LangChain
+
+# === 监控与可观测性 ===
+prometheus-client>=0.20.0 # 暴露 /metrics 指标（RAG 查询次数、LLM 调用耗时、小模型帧数等）
