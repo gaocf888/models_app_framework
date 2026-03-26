@@ -65,7 +65,7 @@ class HybridRAGService:
         """
         if not self._graph_cfg.enabled or self._graph_query is None:
             # GraphRAG 未启用，退化为纯向量 RAG，与当前行为保持一致
-            return self._rag_service.retrieve_context(query, top_k=top_k)
+            return self._rag_service.retrieve_context(query, top_k=top_k, namespace=namespace)
 
         strategy = self._graph_cfg.strategy
         mode = (strategy.mode or "vector").lower()
@@ -75,7 +75,7 @@ class HybridRAGService:
         if mode == "hybrid":
             return self._retrieve_hybrid(query, top_k, namespace)
         # 默认或未知值时，回退到纯向量
-        return self._rag_service.retrieve_context(query, top_k=top_k)
+        return self._rag_service.retrieve_context(query, top_k=top_k, namespace=namespace)
 
     # Internal helpers -------------------------------------------------------
 
@@ -95,7 +95,7 @@ class HybridRAGService:
         - 再用问题在图中查询相关事实；
         - 按 vector_weight / graph_weight 比例拼接，并截断到 max_context_items。
         """
-        vec_ctx = self._rag_service.retrieve_context(query, top_k=top_k)
+        vec_ctx = self._rag_service.retrieve_context(query, top_k=top_k, namespace=namespace)
         facts = self._graph_query.query_relevant_facts(  # type: ignore[union-attr]
             question=query,
             namespace=namespace,

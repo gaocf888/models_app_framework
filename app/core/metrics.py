@@ -39,6 +39,27 @@ RAG_QUERY_COUNT = Counter(
     "Total RAG retrieval queries",
 )
 
+RAG_SEMANTIC_RECALL_COUNT = Counter(
+    "rag_semantic_recall_total",
+    "Total RAG semantic recall calls",
+)
+
+RAG_KEYWORD_RECALL_COUNT = Counter(
+    "rag_keyword_recall_total",
+    "Total RAG keyword recall calls",
+)
+
+RAG_RERANK_COUNT = Counter(
+    "rag_rerank_total",
+    "Total RAG rerank calls",
+)
+
+RAG_DOC_DELETE_COUNT = Counter(
+    "rag_doc_delete_total",
+    "Total RAG document deletions",
+    ["namespace"],
+)
+
 # 小模型通道指标：按小模型名称统计已处理帧数量
 SMALL_MODEL_FRAMES_PROCESSED = Counter(
     "small_model_frames_processed_total",

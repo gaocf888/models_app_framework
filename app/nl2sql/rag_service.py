@@ -46,7 +46,12 @@ class NL2SQLRAGService:
         results: List[str] = []
 
         for ns in (self.NS_SCHEMA, self.NS_BIZ, self.NS_QA):
-            ctx = self._rag.retrieve_context(question, top_k=top, namespace=ns)
+            ctx = self._rag.retrieve_context(
+                question,
+                top_k=top,
+                namespace=ns,
+                scene="nl2sql",
+            )
             results.extend(ctx)
 
         # 简单去重

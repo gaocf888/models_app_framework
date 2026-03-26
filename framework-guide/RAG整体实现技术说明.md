@@ -1,6 +1,6 @@
 # RAG 整体实现技术说明
 
-> 本文描述**当前仓库已实现**的 RAG（检索增强生成）与**可选 GraphRAG** 技术方案：以**传统向量 RAG** 为默认与主路径，支持**向量化 + 持久化向量库**，并在配置开启时并行走向**知识图谱化（Neo4j）**与**混合检索**骨架。  
+> 本文描述**当前仓库已实现**的 RAG（检索增强生成）与**可选 GraphRAG** 技术方案：以**传统 RAG（向量+全文）**为主路径，支持 ES/EasySearch（EasySearch 兼容 ES API）与 FAISS 的配置化切换，并在配置开启时并行走向**知识图谱化（Neo4j）**。  
 > 配套文档：`docs/大小模型应用技术架构与实现方案.md`（4.5 节）、`framework-guide/数据持久化与容器部署说明.md`（FAISS 挂载）。
 
 ---
@@ -82,7 +82,7 @@
 
 | 能力 | 说明 |
 |------|------|
-| **传统向量 RAG** | 文本 → 嵌入 → 向量库相似度检索 → 片段作为上下文供 LLM；**默认启用**；生产默认向量库为 **FAISS 文件版**（`faiss.index` + `faiss_meta.json`，可持久化）。 |
+| **传统 RAG（向量+全文）** | 文本分片摄入时同时保存向量与全文；检索阶段并行执行语义召回 + 关键词召回，并通过 RRF 融合 + CrossEncoder 重排输出 Top-N 上下文。 |
 | **知识摄入（向量化）** | `RAGIngestionService`：批量嵌入并写入向量库；支持 `namespace` 与数据集登记。 |
 | **知识摄入（可选图谱化）** | 配置 `GRAPH_RAG_ENABLED=true` 时，摄入后**额外**调用 `GraphIngestionService` 写 Neo4j；失败**不阻断**向量写入。 |
 | **检索（向量）** | `RAGService`：纯向量 Top-K；上层多经 `AgenticRAGService` 统一入口。 |
@@ -166,7 +166,7 @@ sequenceDiagram
 |------|------|------|
 | 配置 | `app/core/config.py` | `RAGConfig`（top_k、向量库类型、FAISS 目录、嵌入模型）；`RAGConfig.graph`（`GraphRAGConfig`：Neo4j、混合策略等）。 |
 | 嵌入 | `app/rag/embedding_service.py` | sentence-transformers；离线路径优先，否则在线模型名；失败抛异常。 |
-| 向量库 | `app/rag/vector_store.py` | `VectorStore` 抽象；`FaissVectorStore`（`faiss.index` + `faiss_meta.json`）；`InMemoryVectorStore`；`VectorStoreProvider` 按 `RAG_VECTOR_STORE_TYPE` 选择。 |
+| 向量库 | `app/rag/vector_store.py` | `VectorStore` 抽象；`FaissVectorStore`、`ElasticsearchVectorStore`（兼容 EasySearch）、`InMemoryVectorStore`；`VectorStoreProvider` 按 `RAG_VECTOR_STORE_TYPE` 选择。 |
 | 向量检索 | `app/rag/rag_service.py` | `index_texts` / `retrieve_context`；指标 `RAG_QUERY_COUNT`。 |
 | 摄入 | `app/rag/ingestion.py` | `RAGIngestionService`；数据集元数据内存登记；可选 Graph 摄入。 |
 | Agentic 基座 | `app/rag/agentic.py` | `AgenticRAGService`、`RAGMode`、`RAGContext`、`RAGResult`。 |
@@ -253,8 +253,25 @@ sequenceDiagram
 |------|------|------|
 | `RAG_ENABLE_BY_DEFAULT` | 业务层是否默认开 RAG | `true` |
 | `RAG_TOP_K` | 检索条数 | `5` |
-| `RAG_VECTOR_STORE_TYPE` | `faiss` / `memory` | `faiss` |
+| `RAG_VECTOR_STORE_TYPE` | `faiss` / `es` / `easysearch` / `memory` | `faiss` |
 | `RAG_FAISS_INDEX_DIR` | FAISS 持久化目录 | `./data/faiss` |
+| `RAG_ES_HOSTS` | ES/EasySearch 地址（逗号分隔） | `http://localhost:9200` |
+| `RAG_ES_USERNAME` / `RAG_ES_PASSWORD` | ES BasicAuth（可选） | 空 |
+| `RAG_ES_API_KEY` | ES API Key（可选） | 空 |
+| `RAG_ES_INDEX_NAME` | RAG 索引名 | `rag_knowledge_base` |
+| `RAG_ES_INDEX_ALIAS` | 线上查询/写入别名 | `rag_knowledge_base` |
+| `RAG_ES_INDEX_VERSION` | 物理索引版本号（用于 migration） | `1` |
+| `RAG_ES_AUTO_MIGRATE_ON_START` | 启动时是否自动执行 alias 迁移 | `true` |
+| `RAG_HYBRID_ENABLED` | 是否启用混合检索（语义+关键词） | `true` |
+| `RAG_HYBRID_SEMANTIC_TOP_K` / `RAG_HYBRID_KEYWORD_TOP_K` | 双路召回候选数 | `24` / `24` |
+| `RAG_HYBRID_RRF_K` | RRF 融合参数 | `60` |
+| `RAG_HYBRID_RERANK_TOP_N` | 重排候选数量 | `12` |
+| `RAG_RERANKER_MODEL_NAME` | CrossEncoder 重排模型 | `BAAI/bge-reranker-large` |
+| `RAG_RERANKER_MODEL_PATH` | 本地重排模型目录（离线优先） | 空 |
+| `RAG_SCENE_LLM_*` | 通用推理场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
+| `RAG_SCENE_CHATBOT_*` | 智能客服场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
+| `RAG_SCENE_ANALYSIS_*` | 综合分析场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
+| `RAG_SCENE_NL2SQL_*` | NL2SQL 场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
 | `EMBEDDING_MODEL_PATH` | 本地嵌入模型目录 | 空 |
 | `EMBEDDING_MODEL_NAME` | HuggingFace 模型名 | `BAAI/bge-small-zh-v1.5` |
 
@@ -274,13 +291,46 @@ sequenceDiagram
 
 ---
 
+## 4.3 ES / EasySearch 索引 migration 说明（详细）
+
+为保证生产环境中 mapping 调整可平滑升级，当前采用“**版本化物理索引 + 逻辑 alias**”策略：
+
+1. **物理索引命名**  
+   - 按版本命名：`{RAG_ES_INDEX_NAME}_v{RAG_ES_INDEX_VERSION}`；  
+   - 例如：`rag_knowledge_base_v1`、`rag_knowledge_base_v2`。
+
+2. **业务读写入口统一走 alias**  
+   - `RAG_ES_INDEX_ALIAS` 作为统一入口（例如 `rag_knowledge_base`）；  
+   - 应用层检索与删除都通过 alias 访问，避免业务代码感知底层索引切换。
+
+3. **自动 migration 行为**（`RAG_ES_AUTO_MIGRATE_ON_START=true`）  
+   - 若当前版本物理索引不存在，应用会按当前 mapping 创建；  
+   - 若 alias 尚未指向当前版本索引，则执行 alias 切换到当前版本；  
+   - **不会自动删除旧版本索引**，避免误删历史数据。
+
+4. **数据回灌约定**  
+   - 轻量 migration 仅负责“建新索引 + 切 alias”；  
+   - 若新版本索引为空，需要通过摄入任务（或离线 reindex）回灌数据。
+
+> 该策略是生产可用的最小 migration 方案：先保证“可升级不爆炸”，再按业务规模引入更复杂的灰度切流与双写机制。
+
+---
+
 ## 5. HTTP API（RAG 管理）
 
 对外暴露的知识库写入与数据集查询入口；摄入行为与 **§3.4**、**§3.6.2** 一致。
 
 - **`POST /rag/ingest/texts`**
-  Body：`dataset_id`、`texts[]`、可选 `description`、`namespace`。  
-  行为：嵌入 + 写向量库；Graph 开关见上文。
+  Body：`dataset_id`、`texts[]`、可选 `description`、`namespace`、`doc_name`、`replace_if_exists`。  
+  行为：嵌入 + 写向量库；当 `replace_if_exists=true` 时按 `doc_name` 先删后灌，解决同名更新问题。
+
+- **`POST /rag/ingest/documents`**
+  Body：`documents[]`（每个文档含 `dataset_id/texts/namespace/doc_name/replace_if_exists`）。  
+  行为：批量摄入多文档，适合离线任务与管理后台批处理。
+
+- **`POST /rag/documents/delete`**
+  Body：`doc_name`、可选 `namespace`。  
+  行为：按文档名删除已摄入知识（向量+全文）。
 
 - **`GET /rag/datasets`**  
   返回当前进程内已登记数据集元数据列表。
@@ -327,7 +377,7 @@ flowchart LR
 pip install -r requirements-大模型应用.txt
 ```
 
-包含但不限于：`sentence-transformers`、`faiss-cpu`、`neo4j`、`langchain-community`（GraphRAG 可选）。
+包含但不限于：`sentence-transformers`、`faiss-cpu`、`elasticsearch`、`neo4j`、`langchain-community`（GraphRAG 可选）。
 
 ---
 
@@ -338,6 +388,49 @@ pip install -r requirements-大模型应用.txt
 3. **Hybrid 接入**：在 Chatbot / Analysis / LLM Infer 等链路中按需注入 `HybridRAGService`。  
 4. **Agentic 多步**：在 `AgenticRAGService` 的 AGENTIC 分支实现多轮检索与工具调用。  
 5. **数据集元数据**：将 `RAGDatasetMeta` 持久化到 Redis/DB，支持多实例一致视图。
+
+---
+
+## 10. 上线前检查清单（生产）
+
+> 本清单用于 RAG 能力上线前的最终核对。建议按“必须项 → 建议项”顺序逐项勾选。  
+> 状态标记说明：  
+> - `已完成`：当前代码已具备；  
+> - `待补充`：当前仓库尚未形成完整上线闭环，需要在目标环境补齐。
+
+### 10.1 必须项（Blocking）
+
+| 项目 | 说明 | 当前状态 |
+|------|------|----------|
+| 摄入与检索主链路可用 | `ingest/query/update/delete` 全链路可执行，且结果正确 | 已完成 |
+| 向量+全文双存储 | ES/EasySearch（兼容 ES API）中同时保存 `dense_vector + text` | 已完成 |
+| 同名文档更新策略 | `doc_name + replace_if_exists=true` 先删后灌 | 已完成 |
+| 混合检索与重排 | 语义召回 + 关键词召回 + RRF + CrossEncoder 重排 | 已完成 |
+| 配置化能力 | 存储类型、ES 连接、重排模型、场景参数均可配置 | 已完成 |
+| ES 索引版本迁移机制 | 版本化物理索引 + alias 切换，避免直接改线上索引 | 已完成 |
+| 关键错误可观测 | API 层异常日志明确，返回可读错误信息 | 已完成 |
+| 基础自动化验证 | 单元测试 + E2E API 脚本可运行 | 已完成 |
+| 管理接口鉴权 | `/rag/*` 管理面鉴权、权限控制、审计 | 待补充 |
+| 目标环境压测通过 | 关键链路 QPS/P95/P99、错误率达到上线阈值 | 待补充 |
+| 上线回滚预案 | alias 回切、索引回退、数据重建方案验证通过 | 待补充 |
+
+### 10.2 建议项（Strongly Recommended）
+
+| 项目 | 说明 | 当前状态 |
+|------|------|----------|
+| Grafana/Loki 告警 | RAG 召回/重排/删除指标看板与告警阈值 | 待补充 |
+| 索引生命周期治理 | 旧版本索引清理策略、容量预警、冷热分层 | 待补充 |
+| 多环境参数基线 | dev/staging/prod 三套参数模板与变更流程 | 待补充 |
+| 批处理摄入任务化 | 大规模文档摄入分批、重试、失败重跑机制 | 待补充 |
+| 数据质量巡检 | 文档切分质量、召回命中率、重排收益定期评估 | 待补充 |
+
+### 10.3 上线执行顺序（建议）
+
+1. 在 staging 按 E2E 脚本完成全链路验证（含 update/delete）；  
+2. 执行 ES 版本索引迁移并验证 alias 指向；  
+3. 进行压测并确认阈值（QPS、P95/P99、错误率）；  
+4. 配置监控告警与回滚预案；  
+5. 在生产灰度上线，观察指标后全量切换。
 
 ---
 

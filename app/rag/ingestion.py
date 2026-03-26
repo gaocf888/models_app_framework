@@ -19,6 +19,7 @@ from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.graph.ingestion import GraphIngestionService
 from app.rag.embedding_service import EmbeddingService
+from app.rag.rag_service import RAGService
 from app.rag.vector_store import VectorStoreProvider
 
 logger = get_logger(__name__)
@@ -30,6 +31,7 @@ class RAGDatasetMeta:
     description: str | None = None
     num_items: int = 0
     namespace: Optional[str] = None
+    doc_name: Optional[str] = None
 
 
 class RAGIngestionService:
@@ -41,6 +43,7 @@ class RAGIngestionService:
     ) -> None:
         self._embedding_service = embedding_service or EmbeddingService()
         self._store_provider = store_provider or VectorStoreProvider()
+        self._rag_service = RAGService(embedding_service=self._embedding_service, store_provider=self._store_provider)
         self._datasets: Dict[str, RAGDatasetMeta] = {}
 
         # 按配置决定是否启用 GraphRAG 摄入
@@ -55,13 +58,33 @@ class RAGIngestionService:
                 logger.warning("failed to initialize GraphIngestionService: %s", e, exc_info=True)
                 self._graph_ingestion = None
 
-    def ingest_texts(self, dataset_id: str, texts: List[str], description: str | None = None, namespace: str | None = None) -> None:
+    def ingest_texts(
+        self,
+        dataset_id: str,
+        texts: List[str],
+        description: str | None = None,
+        namespace: str | None = None,
+        doc_name: str | None = None,
+        replace_if_exists: bool = True,
+    ) -> None:
         """
         将一批文本摄入 RAG 向量库，并登记为指定数据集。
         """
         store = self._store_provider.get_default_store()
+        effective_doc_name = doc_name or dataset_id
+
+        if replace_if_exists:
+            deleted = store.delete_by_doc_name(doc_name=effective_doc_name, namespace=namespace)
+            if deleted > 0:
+                logger.info(
+                    "deleted %s existing chunks before re-ingest, doc_name=%s namespace=%s",
+                    deleted,
+                    effective_doc_name,
+                    namespace,
+                )
+
         embs = self._embedding_service.embed_texts(texts)
-        store.add_texts(texts, embeddings=embs, namespace=namespace)
+        store.add_texts(texts, embeddings=embs, namespace=namespace, doc_name=effective_doc_name)
 
         # 可选：写入图数据库（GraphRAG 摄入）
         if getattr(self, "_graph_ingestion", None) is not None:
@@ -79,15 +102,38 @@ class RAGIngestionService:
                     e,
                     exc_info=True,
                 )
-        meta = self._datasets.get(dataset_id) or RAGDatasetMeta(dataset_id=dataset_id, description=description, namespace=namespace)
-        meta.num_items += len(texts)
+        meta = self._datasets.get(dataset_id) or RAGDatasetMeta(
+            dataset_id=dataset_id,
+            description=description,
+            namespace=namespace,
+            doc_name=effective_doc_name,
+        )
+        meta.num_items = len(texts)
         if description:
             meta.description = description
         if namespace:
             meta.namespace = namespace
+        meta.doc_name = effective_doc_name
         self._datasets[dataset_id] = meta
-        logger.info("ingested %s texts into RAG dataset=%s namespace=%s", len(texts), dataset_id, namespace)
+        logger.info(
+            "ingested %s texts into RAG dataset=%s namespace=%s doc_name=%s",
+            len(texts),
+            dataset_id,
+            namespace,
+            effective_doc_name,
+        )
 
     def list_datasets(self) -> List[RAGDatasetMeta]:
         return list(self._datasets.values())
+
+    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None) -> int:
+        return self._rag_service.delete_by_doc_name(doc_name=doc_name, namespace=namespace)
+
+    def query(self, query: str, top_k: int | None = None, namespace: str | None = None, scene: str = "llm_inference") -> List[str]:
+        return self._rag_service.retrieve_context(
+            query=query,
+            top_k=top_k,
+            namespace=namespace,
+            scene=scene,
+        )
 

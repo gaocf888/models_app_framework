@@ -455,3 +455,97 @@
 
 
 
+## 2026-03-26 传统 RAG 企业级改造（ES/EasySearch + 同名更新 + 混合检索重排）
+
+- 配置升级（`app/core/config.py`）：
+  - `RAGConfig` 新增 `es`（ElasticsearchConfig）与 `hybrid`（HybridRetrievalConfig）配置，支持 `RAG_VECTOR_STORE_TYPE=es|easysearch|faiss|memory`。
+  - 新增环境变量：`RAG_ES_*`（地址/认证/索引）、`RAG_HYBRID_*`（双路召回、RRF 参数、Top-N）、`RAG_RERANKER_MODEL_*`（CrossEncoder 模型名/本地路径）。
+- 存储升级（`app/rag/vector_store.py`）：
+  - `VectorStore` 抽象扩展为：`add_texts`（含 `doc_name/metadata`）、`keyword_search`、`delete_by_doc_name`。
+  - 新增 `ElasticsearchVectorStore`，用于 ES/EasySearch 的“向量+全文”统一存储与检索。
+  - `FaissVectorStore` 增加关键词检索回退与按 `doc_name` 删除；修复删除后 internal_id 对齐问题（改为稳定 id 映射持久化）。
+- 摄入升级（`app/rag/ingestion.py` + `app/api/rag_admin.py`）：
+  - 摄入接口新增 `doc_name`、`replace_if_exists`；默认按“同名文档先删后灌”处理更新问题。
+  - 数据集元数据新增 `doc_name` 字段，便于运维查询与审计。
+- 检索升级（`app/rag/rag_service.py`）：
+  - `retrieve_context` 支持 `namespace` 与混合检索开关；
+  - 实现“语义召回 + 关键词召回”并行、多路融合（RRF）与 CrossEncoder 重排（默认 `BAAI/bge-reranker-large`）。
+  - 新增 `delete_by_doc_name` 管理接口，供摄入更新流程复用。
+- 管理面与稳态增强：
+  - `app/api/rag_admin.py` 新增批量摄入接口 `/rag/ingest/documents` 与按文档删除接口 `/rag/documents/delete`；
+  - `app/rag/vector_store.py` 的 ES/EasySearch 操作加入基础重试机制（固定重试 3 次）；
+  - 新增 RAG 可观测指标：语义召回次数、关键词召回次数、重排次数、文档删除计数（见 `app/core/metrics.py`）。
+- 自动化回归：
+  - 新增 `tests/test_rag_core.py`，覆盖 RRF 融合与 InMemory 文档删除两个核心回归点；
+  - 通过 `python -m unittest discover -s tests -p "test_*.py"` 验证通过。
+
+## 2026-03-26 场景化检索策略配置接入（LLM/Chatbot/Analysis/NL2SQL）
+
+- 配置升级（`app/core/config.py`）：
+  - 新增 `RAGSceneProfile` / `RAGSceneProfilesConfig`，支持按场景配置 `top_k/semantic_top_k/keyword_top_k/rerank_top_n`；
+  - 新增环境变量前缀：`RAG_SCENE_LLM_*`、`RAG_SCENE_CHATBOT_*`、`RAG_SCENE_ANALYSIS_*`、`RAG_SCENE_NL2SQL_*`。
+- 检索核心（`app/rag/rag_service.py`）：
+  - `retrieve_context` 增加 `scene` 参数，可按场景读取检索参数；
+  - 在不指定场景时保持全局配置默认行为，确保兼容历史调用。
+- 调用链接入：
+  - `app/rag/agentic.py`：检索时透传 `ctx.scene` 与 `namespace`；
+  - `app/nl2sql/rag_service.py`：检索调用显式指定 `scene="nl2sql"`；
+  - 通用推理/客服/分析链路通过 `RAGContext.scene` 自动生效。
+
+## 2026-03-26 RAG API 端到端脚本 + ES migration 版本化方案
+
+- 新增脚本目录与文件：
+  - `app/test_scripts/rag/README.md`
+  - `app/test_scripts/rag/rag_api_e2e.py`
+- 脚本覆盖链路：
+  - ingest（首次摄入）→ query（检索验证）→ update（同名文档重灌）→ delete（按文档删除）
+- API 增强（`app/api/rag_admin.py`）：
+  - 新增 `POST /rag/query`，便于管理面与自动化脚本直接验证检索结果；
+  - `ingest/query/delete` 增加明确异常日志与 HTTP 500 错误返回（轻量失败补偿策略）。
+- ES migration（`app/rag/vector_store.py`）：
+  - 新增“版本化物理索引 + alias 访问”策略；
+  - 通过 `RAG_ES_INDEX_NAME` + `RAG_ES_INDEX_VERSION` 构造物理索引，业务访问统一走 `RAG_ES_INDEX_ALIAS`；
+  - 启用 `RAG_ES_AUTO_MIGRATE_ON_START=true` 时自动执行 alias 切换；
+  - 默认不删旧索引，避免误删，数据回灌由摄入任务或离线 reindex 处理。
+
+## 2026-03-26 RAG 上线门禁记录模板（与 framework-guide 清单对齐）
+
+> 用途：每次 RAG 版本上线前，按本模板记录“是否满足上线门禁”。  
+> 填写建议：将“通过/不通过”与证据（压测报告、监控截图、日志链接）一起记录，便于审计与回溯。
+
+### A. 必须项（Blocking）
+
+| 检查项 | 结果（通过/不通过） | 证据与备注 |
+|------|------|------|
+| ingest/query/update/delete 全链路验证通过 |  |  |
+| 向量+全文双存储可用（ES/EasySearch） |  |  |
+| 同名文档更新（先删后灌）验证通过 |  |  |
+| 混合检索 + 重排效果验证通过 |  |  |
+| 配置化参数在目标环境生效 |  |  |
+| ES 版本索引 + alias 迁移验证通过 |  |  |
+| API 异常日志与错误返回验证通过 |  |  |
+| 自动化测试（单测 + E2E）执行通过 |  |  |
+| `/rag/*` 管理接口鉴权与审计就绪 |  |  |
+| 压测达标（QPS/P95/P99/错误率） |  |  |
+| 回滚预案演练通过（alias 回切） |  |  |
+
+### B. 建议项（Strongly Recommended）
+
+| 检查项 | 结果（通过/不通过） | 证据与备注 |
+|------|------|------|
+| Grafana/Loki 告警策略已配置 |  |  |
+| 旧索引生命周期治理策略已配置 |  |  |
+| 多环境参数基线（dev/staging/prod）已固化 |  |  |
+| 批处理摄入重试/重跑机制可用 |  |  |
+| 数据质量巡检机制（命中率/重排收益）可用 |  |  |
+
+### C. 上线结论
+
+- 上线版本：  
+- 上线环境：  
+- 结论（允许上线/延期）：  
+- 责任人：  
+- 时间：
+- 依赖升级：
+  - `requirements-大模型应用.txt` 新增 `elasticsearch` 依赖，用于 ES/EasySearch 客户端。
+

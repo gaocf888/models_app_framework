@@ -110,6 +110,56 @@ class GraphRAGConfig:
 
 
 @dataclass
+class ElasticsearchConfig:
+    """
+    Elasticsearch / EasySearch 存储配置（EasySearch 兼容 ES API）。
+    """
+
+    hosts: list[str] = field(default_factory=lambda: ["http://localhost:9200"])
+    username: str | None = None
+    password: str | None = None
+    api_key: str | None = None
+    verify_certs: bool = False
+    request_timeout: int = 30
+    index_name: str = "rag_knowledge_base"
+    index_alias: str = "rag_knowledge_base"
+    index_version: int = 1
+    auto_migrate_on_start: bool = True
+    vector_field: str = "embedding"
+
+
+@dataclass
+class HybridRetrievalConfig:
+    """
+    混合检索配置：语义召回 + 关键词召回 + RRF 融合 + CrossEncoder 重排。
+    """
+
+    enabled: bool = True
+    semantic_top_k: int = 24
+    keyword_top_k: int = 24
+    rrf_k: int = 60
+    rerank_top_n: int = 12
+    reranker_model_path: str | None = None
+    reranker_model_name: str = "BAAI/bge-reranker-large"
+
+
+@dataclass
+class RAGSceneProfile:
+    top_k: int = 5
+    semantic_top_k: int = 24
+    keyword_top_k: int = 24
+    rerank_top_n: int = 12
+
+
+@dataclass
+class RAGSceneProfilesConfig:
+    llm_inference: RAGSceneProfile = field(default_factory=lambda: RAGSceneProfile(top_k=5, semantic_top_k=24, keyword_top_k=24, rerank_top_n=12))
+    chatbot: RAGSceneProfile = field(default_factory=lambda: RAGSceneProfile(top_k=6, semantic_top_k=28, keyword_top_k=28, rerank_top_n=14))
+    analysis: RAGSceneProfile = field(default_factory=lambda: RAGSceneProfile(top_k=8, semantic_top_k=32, keyword_top_k=32, rerank_top_n=16))
+    nl2sql: RAGSceneProfile = field(default_factory=lambda: RAGSceneProfile(top_k=5, semantic_top_k=20, keyword_top_k=20, rerank_top_n=12))
+
+
+@dataclass
 class RAGConfig:
     """
     RAG 与上下文相关配置。
@@ -120,6 +170,9 @@ class RAGConfig:
     top_k: int = 5
     vector_store_type: str = "faiss"
     faiss_index_dir: str = "./data/faiss"
+    es: ElasticsearchConfig = field(default_factory=ElasticsearchConfig)
+    hybrid: HybridRetrievalConfig = field(default_factory=HybridRetrievalConfig)
+    scene_profiles: RAGSceneProfilesConfig = field(default_factory=RAGSceneProfilesConfig)
 
     # 嵌入模型配置（离线优先、在线回退，环境变量 EMBEDDING_MODEL_PATH / EMBEDDING_MODEL_NAME）
     embedding_model_path: str | None = None
@@ -252,6 +305,56 @@ def _load_from_env() -> AppConfig:
         max_graph_items=int(os.getenv("GRAPH_RAG_MAX_GRAPH_ITEMS", "20")),
         use_intent_routing=os.getenv("GRAPH_RAG_USE_INTENT_ROUTING", "false").lower() == "true",
     )
+    es_hosts_raw = os.getenv("RAG_ES_HOSTS", "http://localhost:9200")
+    es_hosts = [h.strip() for h in es_hosts_raw.split(",") if h.strip()]
+    es_cfg = ElasticsearchConfig(
+        hosts=es_hosts or ["http://localhost:9200"],
+        username=os.getenv("RAG_ES_USERNAME") or None,
+        password=os.getenv("RAG_ES_PASSWORD") or None,
+        api_key=os.getenv("RAG_ES_API_KEY") or None,
+        verify_certs=os.getenv("RAG_ES_VERIFY_CERTS", "false").lower() == "true",
+        request_timeout=int(os.getenv("RAG_ES_REQUEST_TIMEOUT", "30")),
+        index_name=os.getenv("RAG_ES_INDEX_NAME", "rag_knowledge_base"),
+        index_alias=os.getenv("RAG_ES_INDEX_ALIAS", "rag_knowledge_base"),
+        index_version=int(os.getenv("RAG_ES_INDEX_VERSION", "1")),
+        auto_migrate_on_start=os.getenv("RAG_ES_AUTO_MIGRATE_ON_START", "true").lower() == "true",
+        vector_field=os.getenv("RAG_ES_VECTOR_FIELD", "embedding"),
+    )
+    hybrid_cfg = HybridRetrievalConfig(
+        enabled=os.getenv("RAG_HYBRID_ENABLED", "true").lower() == "true",
+        semantic_top_k=int(os.getenv("RAG_HYBRID_SEMANTIC_TOP_K", "24")),
+        keyword_top_k=int(os.getenv("RAG_HYBRID_KEYWORD_TOP_K", "24")),
+        rrf_k=int(os.getenv("RAG_HYBRID_RRF_K", "60")),
+        rerank_top_n=int(os.getenv("RAG_HYBRID_RERANK_TOP_N", "12")),
+        reranker_model_path=os.getenv("RAG_RERANKER_MODEL_PATH") or None,
+        reranker_model_name=os.getenv("RAG_RERANKER_MODEL_NAME", "BAAI/bge-reranker-large"),
+    )
+    scene_profiles_cfg = RAGSceneProfilesConfig(
+        llm_inference=RAGSceneProfile(
+            top_k=int(os.getenv("RAG_SCENE_LLM_TOP_K", "5")),
+            semantic_top_k=int(os.getenv("RAG_SCENE_LLM_SEMANTIC_TOP_K", "24")),
+            keyword_top_k=int(os.getenv("RAG_SCENE_LLM_KEYWORD_TOP_K", "24")),
+            rerank_top_n=int(os.getenv("RAG_SCENE_LLM_RERANK_TOP_N", "12")),
+        ),
+        chatbot=RAGSceneProfile(
+            top_k=int(os.getenv("RAG_SCENE_CHATBOT_TOP_K", "6")),
+            semantic_top_k=int(os.getenv("RAG_SCENE_CHATBOT_SEMANTIC_TOP_K", "28")),
+            keyword_top_k=int(os.getenv("RAG_SCENE_CHATBOT_KEYWORD_TOP_K", "28")),
+            rerank_top_n=int(os.getenv("RAG_SCENE_CHATBOT_RERANK_TOP_N", "14")),
+        ),
+        analysis=RAGSceneProfile(
+            top_k=int(os.getenv("RAG_SCENE_ANALYSIS_TOP_K", "8")),
+            semantic_top_k=int(os.getenv("RAG_SCENE_ANALYSIS_SEMANTIC_TOP_K", "32")),
+            keyword_top_k=int(os.getenv("RAG_SCENE_ANALYSIS_KEYWORD_TOP_K", "32")),
+            rerank_top_n=int(os.getenv("RAG_SCENE_ANALYSIS_RERANK_TOP_N", "16")),
+        ),
+        nl2sql=RAGSceneProfile(
+            top_k=int(os.getenv("RAG_SCENE_NL2SQL_TOP_K", "5")),
+            semantic_top_k=int(os.getenv("RAG_SCENE_NL2SQL_SEMANTIC_TOP_K", "20")),
+            keyword_top_k=int(os.getenv("RAG_SCENE_NL2SQL_KEYWORD_TOP_K", "20")),
+            rerank_top_n=int(os.getenv("RAG_SCENE_NL2SQL_RERANK_TOP_N", "12")),
+        ),
+    )
     graph_cfg = GraphRAGConfig(
         enabled=os.getenv("GRAPH_RAG_ENABLED", "false").lower() == "true",
         uri=os.getenv("NEO4J_URI"),
@@ -268,6 +371,9 @@ def _load_from_env() -> AppConfig:
         top_k=int(os.getenv("RAG_TOP_K", "5")),
         vector_store_type=os.getenv("RAG_VECTOR_STORE_TYPE", "faiss"),
         faiss_index_dir=os.getenv("RAG_FAISS_INDEX_DIR", "./data/faiss"),
+        es=es_cfg,
+        hybrid=hybrid_cfg,
+        scene_profiles=scene_profiles_cfg,
         embedding_model_path=os.getenv("EMBEDDING_MODEL_PATH") or None,
         embedding_model_name=os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-small-zh-v1.5"),
         graph=graph_cfg,

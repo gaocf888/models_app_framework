@@ -75,6 +75,7 @@ class AgenticRAGService:
         ctx: Optional[RAGContext] = None,
         mode: Optional[RAGMode] = None,
         top_k: Optional[int] = None,
+        namespace: Optional[str] = None,
     ) -> RAGResult:
         """
         统一的 RAG 检索入口。
@@ -88,7 +89,12 @@ class AgenticRAGService:
         effective_mode = mode or self._default_mode
 
         if effective_mode == RAGMode.BASIC:
-            snippets = self._rag.retrieve_context(query, top_k=top_k)
+            snippets = self._rag.retrieve_context(
+                query,
+                top_k=top_k,
+                namespace=namespace,
+                scene=(ctx.scene if ctx else None),
+            )
             return RAGResult(query=query, context_snippets=snippets, used_agentic=False)
 
         # Agentic 模式骨架：当前先复用 BASIC 实现，
@@ -100,6 +106,11 @@ class AgenticRAGService:
             ctx.user_id if ctx else None,
             ctx.session_id if ctx else None,
         )
-        snippets = self._rag.retrieve_context(query, top_k=top_k)
+        snippets = self._rag.retrieve_context(
+            query,
+            top_k=top_k,
+            namespace=namespace,
+            scene=(ctx.scene if ctx else None),
+        )
         return RAGResult(query=query, context_snippets=snippets, used_agentic=True)
 
