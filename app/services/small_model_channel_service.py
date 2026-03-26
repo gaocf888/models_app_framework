@@ -15,15 +15,34 @@ class SmallModelChannelService:
         self._manager = manager or ChannelManager()
 
     def start(self, cfg: SmallModelChannelConfig) -> None:
+        extra_params = dict(cfg.extra_params or {})
+        if cfg.algor_type:
+            extra_params["algor_type"] = cfg.algor_type
+        if cfg.weights_path:
+            extra_params["weights_path"] = cfg.weights_path
+        if cfg.callback_url:
+            extra_params["callback_url"] = cfg.callback_url
+        if cfg.evidence_dir:
+            extra_params["evidence_dir"] = cfg.evidence_dir
+        if cfg.device:
+            extra_params["device"] = cfg.device
+        if cfg.imgsz is not None:
+            extra_params["imgsz"] = cfg.imgsz
+        if cfg.conf is not None:
+            extra_params["conf"] = cfg.conf
+        if cfg.iou is not None:
+            extra_params["iou"] = cfg.iou
+        if cfg.cooldown_seconds is not None:
+            extra_params["cooldown_seconds"] = cfg.cooldown_seconds
+        if cfg.clip_seconds is not None:
+            extra_params["clip_seconds"] = cfg.clip_seconds
         self._manager.start_channel(
             cfg.channel_id,
             ChannelConfig(
                 model_name=cfg.model_name,
                 queue_size=cfg.queue_size,
-                 # algor_type 作为额外参数传递给算法层，便于按类型选择不同后处理逻辑
-                 extra_params={"algor_type": cfg.algor_type} if cfg.algor_type else {},
                 video_source=cfg.video_source,
-                extra_params=(cfg.extra_params or {}),
+                extra_params=extra_params,
             ),
         )
 
@@ -31,14 +50,34 @@ class SmallModelChannelService:
         self._manager.stop_channel(channel_id)
 
     def update(self, cfg: SmallModelChannelConfig) -> None:
+        extra_params = dict(cfg.extra_params or {})
+        if cfg.algor_type:
+            extra_params["algor_type"] = cfg.algor_type
+        if cfg.weights_path:
+            extra_params["weights_path"] = cfg.weights_path
+        if cfg.callback_url:
+            extra_params["callback_url"] = cfg.callback_url
+        if cfg.evidence_dir:
+            extra_params["evidence_dir"] = cfg.evidence_dir
+        if cfg.device:
+            extra_params["device"] = cfg.device
+        if cfg.imgsz is not None:
+            extra_params["imgsz"] = cfg.imgsz
+        if cfg.conf is not None:
+            extra_params["conf"] = cfg.conf
+        if cfg.iou is not None:
+            extra_params["iou"] = cfg.iou
+        if cfg.cooldown_seconds is not None:
+            extra_params["cooldown_seconds"] = cfg.cooldown_seconds
+        if cfg.clip_seconds is not None:
+            extra_params["clip_seconds"] = cfg.clip_seconds
         self._manager.update_channel(
             cfg.channel_id,
             ChannelConfig(
                 model_name=cfg.model_name,
                 queue_size=cfg.queue_size,
-                extra_params={"algor_type": cfg.algor_type} if cfg.algor_type else {},
                 video_source=cfg.video_source,
-                extra_params=(cfg.extra_params or {}),
+                extra_params=extra_params,
             ),
         )
 

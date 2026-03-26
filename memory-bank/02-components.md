@@ -128,7 +128,7 @@
   - 职责：
     - 从 `message_queue` 中取出帧；
     - 按通道算法配置执行小模型推理；
-    - 将结果写回外部（事件总线、Redis、数据库或回调）。
+    - 触发时保存证据（帧图片/视频片段）并将结果回调到业务 Web 服务（可配置）。
   - 注意：
     - 对通道上下文的可变部分在 `channel_lock` 下读写或基于快照。
 
@@ -138,8 +138,19 @@
   - 职责：维护所有小模型算法配置（YOLO/Seg/Cls 等）。
 
 - **`SmallModelInferenceEngine`**
-  - 职责：加载小模型权重，执行前向推理；
-  - 可以按通道或按进程维度共享。
+  - 职责：
+    - 按 `algor_type` 选择策略执行推理（`app/small_models/strategy/*`）；
+    - 合并配置优先级：API 参数 > 本地配置（`configs/small_model_algorithms.yaml`）；
+    - 触发时保存证据并回调。
+
+- **`SmallModelAlgorithmRegistry`**
+  - 职责：加载本地算法类型配置 `configs/small_model_algorithms.yaml`，提供 `algor_type -> AlgorithmConfig` 映射（供引擎按类型选择策略、权重、阈值、回调等）。
+
+- **`EvidenceStore` / `ClipRecorder`**
+  - 职责：证据保存封装（帧图片/视频片段）。
+
+- **`CallbackClient`**
+  - 职责：将检测结果（含证据路径、检测框等）回调到业务 Web 服务。
 
 - **`SmallModelTrainingService`**
   - 职责：管理小模型训练任务（代码方式）；

@@ -135,6 +135,22 @@
 
 > 至此，TODO-9（小模型多算法配置与训练封装骨架）已完成，为后续接入实际 YOLO/Seg/Cls 模型与 TensorBoard 监控提供了结构基础。
 
+## 2026-03-26 小模型通道推理：按 algor_type 分发策略 + 证据保存 + 回调（Calling 40417）
+
+- 将小模型通道推理从“占位版”升级为“可运行版”：
+  - 新增 `configs/small_model_algorithms.yaml`：以 `algor_type` 为键的算法配置（策略类、默认权重、阈值、证据保存目录、回调地址等）。
+  - 新增 `app/small_models/algorithm_registry.py`：加载算法配置并支持“API 覆盖本地配置”的合并逻辑。
+  - 新增/改造 `app/small_models/strategy/*`：按算法类型封装策略实现；实现 `CallingStrategy`（algor_type=40417）并使用 `app/small_models/pretrained/call.pt` 权重（Ultralytics YOLO）。
+  - 新增 `app/small_models/evidence.py`：保存证据帧图片（jpg）与触发后视频片段（mp4，post-roll 简化版）。
+  - 新增 `app/small_models/callback_client.py`：将检测结果 + 证据路径回调到业务 Web 服务（若配置了 `callback_url`）。
+  - 更新 `app/models/small_model.py`：补充 `weights_path/callback_url/evidence_dir/device/imgsz/conf/iou/cooldown_seconds/clip_seconds` 等可选字段，用于 API 覆盖配置。
+  - 更新 `app/services/small_model_channel_service.py`：修复 `algor_type` 被覆盖丢失的问题，并把上述可选字段透传到通道 `extra_params`。
+  - 更新 `app/small_models/workers.py`：
+    - decoder 入队改为 `put(timeout=...)` 背压，去除 `full()+sleep` 忙等；
+    - inference 调用升级为 `SmallModelInferenceEngine.infer(channel_id, model_name, frame_item, api_overrides=...)`。
+
+> 备注：当前视频片段保存为简化实现（触发后录制 N 秒），后续可按业务需要增加 pre-roll（触发前 N 秒）缓存与更完整的帧率/时间戳对齐。
+
 ---
 
 > 后续所有与架构、组件、流程相关的重要变更，请在这里追加记录，并同步更新相关文档。

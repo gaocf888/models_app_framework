@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from queue import Empty
+from queue import Empty, Full
 
 from app.core.logging import get_logger
 from app.small_models.channel_manager import ChannelContext
@@ -38,29 +38,41 @@ def _decoder_loop(ctx: ChannelContext) -> None:
             logger.warning("cv2 not available or error opening source %s: %s, fallback to dummy frames", src, exc)
             use_dummy = True
 
-    while not ctx.stop_event.is_set():
+    try:
+        while not ctx.stop_event.is_set():
+            try:
+                frame_payload = {
+                    "video_source": src,
+                    "algor_type": (ctx.config.extra_params or {}).get("algor_type"),
+                }
+
+                if not use_dummy and cap is not None:
+                    ret, frame = cap.read()
+                    if not ret:
+                        logger.warning("end of stream or read error for source %s, fallback to dummy frames", src)
+                        use_dummy = True
+                    else:
+                        frame_payload["frame"] = frame
+                if use_dummy:
+                    frame_payload["frame"] = f"dummy_frame_{time.time()}"
+
+                # 方案 A：有界队列满时使用阻塞 put + timeout 形成背压，避免 full()+sleep 忙等。
+                while not ctx.stop_event.is_set():
+                    try:
+                        ctx.message_queue.put(frame_payload, timeout=0.1)
+                        break
+                    except Full:
+                        continue
+            except Exception as exc:
+                logger.exception("decoder error on channel %s: %s", ctx.channel_id, exc)
+                break
+            time.sleep(0.02)
+    finally:
         try:
-            if ctx.message_queue.full():
-                time.sleep(0.01)
-                continue
-
-            frame_payload = {"video_source": src, "algor_type": (ctx.config.extra_params or {}).get("algor_type")}
-
-            if not use_dummy and cap is not None:
-                ret, frame = cap.read()
-                if not ret:
-                    logger.warning("end of stream or read error for source %s, fallback to dummy frames", src)
-                    use_dummy = True
-                else:
-                    frame_payload["frame"] = frame
-            if use_dummy:
-                frame_payload["frame"] = f"dummy_frame_{time.time()}"
-
-            ctx.message_queue.put_nowait(frame_payload)
-        except Exception as exc:
-            logger.exception("decoder error on channel %s: %s", ctx.channel_id, exc)
-            break
-        time.sleep(0.02)
+            if cap is not None:
+                cap.release()
+        except Exception:  # noqa: BLE001
+            pass
     logger.info("decoder stopped for channel %s", ctx.channel_id)
 
 
@@ -77,7 +89,19 @@ def _inference_loop(ctx: ChannelContext, engine: SmallModelInferenceEngine) -> N
         except Empty:
             continue
         try:
-            engine.infer(ctx.config.model_name, item)
+            api_overrides = {
+                "algor_type": (ctx.config.extra_params or {}).get("algor_type"),
+                "weights_path": (ctx.config.extra_params or {}).get("weights_path"),
+                "callback_url": (ctx.config.extra_params or {}).get("callback_url"),
+                "evidence_dir": (ctx.config.extra_params or {}).get("evidence_dir"),
+                "device": (ctx.config.extra_params or {}).get("device"),
+                "imgsz": (ctx.config.extra_params or {}).get("imgsz"),
+                "conf": (ctx.config.extra_params or {}).get("conf"),
+                "iou": (ctx.config.extra_params or {}).get("iou"),
+                "cooldown_seconds": (ctx.config.extra_params or {}).get("cooldown_seconds"),
+                "clip_seconds": (ctx.config.extra_params or {}).get("clip_seconds"),
+            }
+            engine.infer(ctx.channel_id, ctx.config.model_name, item, api_overrides=api_overrides)
             SMALL_MODEL_FRAMES_PROCESSED.labels(model_name=ctx.config.model_name).inc()
         except Exception as exc:
             logger.exception("inference error on channel %s: %s", ctx.channel_id, exc)
