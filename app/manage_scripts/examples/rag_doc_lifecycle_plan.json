@@ -1,0 +1,35 @@
+{
+  "actions": [
+    {
+      "operation": "upsert",
+      "dataset_id": "ops_dataset_demo",
+      "doc_name": "ops_doc_demo",
+      "doc_version": "v1",
+      "tenant_id": "ops_tenant",
+      "namespace": "ops_ns_demo",
+      "content": "这是运维脚本示例文档 v1。",
+      "replace_if_exists": true,
+      "metadata": {
+        "owner": "ops"
+      }
+    },
+    {
+      "operation": "upsert",
+      "dataset_id": "ops_dataset_demo",
+      "doc_name": "ops_doc_demo",
+      "doc_version": "v2",
+      "tenant_id": "ops_tenant",
+      "namespace": "ops_ns_demo",
+      "content": "这是运维脚本示例文档 v2。",
+      "replace_if_exists": true,
+      "metadata": {
+        "owner": "ops"
+      }
+    },
+    {
+      "operation": "delete",
+      "doc_name": "ops_doc_demo",
+      "namespace": "ops_ns_demo"
+    }
+  ]
+}

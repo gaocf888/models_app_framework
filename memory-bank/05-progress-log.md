@@ -546,6 +546,446 @@
 - 结论（允许上线/延期）：  
 - 责任人：  
 - 时间：
+
+## 2026-03-26 标准文档摄入链路补齐（服务端清洗+切块）
+
+- 新增 `app/rag/document_pipeline.py`：
+  - 提供 `DocumentPipeline`（normalize + chunk）；
+  - 支持 `chunk_size/chunk_overlap/min_chunk_size` 参数化切块。
+- `app/api/rag_admin.py` 新增原始文档摄入接口：
+  - `POST /rag/ingest/raw_document`
+  - `POST /rag/ingest/raw_documents`
+- 保留原有接口定位：
+  - `/rag/ingest/texts` 与 `/rag/ingest/documents` 继续面向“已分块输入”；
+  - raw 接口面向“原始文档输入”，由服务端完成清洗与切块后再入库。
+
+## 2026-03-27 企业级摄入主链路第一阶段落地（按设计稿）
+
+- 新增 `app/rag/models.py`：
+  - 定义 `DocumentSource`、`ChunkRecord`、`IngestionJob`、`IngestionJobStatus`。
+- 文档处理升级为模块化包 `app/rag/document_pipeline/`：
+  - `parsers.py`、`cleaners.py`、`splitters.py`、`enrichers.py`、`pipeline.py`；
+  - 实现 parser + cleaner + structure/semantic/window splitter + chunk metadata/hash。
+- 新增编排器 `app/rag/ingestion_orchestrator.py`：
+  - 实现异步任务提交、状态机、步骤推进、失败/部分失败、任务重试；
+  - 任务状态持久化到 `./data/rag_jobs/jobs.json`。
+- 新增 migration 模块 `app/rag/migrations/index_migrator.py`：
+  - 提供索引版本切换与 alias 回滚能力。
+- 管理 API 扩展（`app/api/rag_admin.py`）：
+  - 新增 `POST /rag/jobs/ingest`、`GET /rag/jobs/{job_id}`、`POST /rag/jobs/{job_id}/retry`；
+  - 新增 `POST /rag/documents/upsert` 同步快速通道。
+
+## 2026-03-27 企业级摄入主链路第二阶段（docs/jobs 索引与运维字段）
+
+- 新增结构化仓库：
+  - `app/rag/job_repository.py`：任务元数据写入 jobs 索引（ES）或文件回退；
+  - `app/rag/document_repository.py`：文档级元数据写入 docs 索引（ES）或文件回退。
+- 编排器增强（`app/rag/ingestion_orchestrator.py`）：
+  - 任务过程中同步写入 job/doc 记录；
+  - 增加 step 耗时统计（`metrics.step_durations_ms`）；
+  - 增加 doc 级错误码记录（如 `E_CHUNK_EMPTY`）。
+- 测试补充：
+  - 新增 `tests/test_ingestion_orchestrator.py`，覆盖 SUCCESS 与 PARTIAL 两类状态流转。
+
+## 2026-03-27 企业级摄入主链路第三阶段（运维 API 与迁移管理）
+
+- `app/api/rag_admin.py`：
+  - 增加 job 响应模型标准化（`IngestionJobInfo` 等），统一任务查询返回结构；
+  - 新增 `GET /rag/jobs` 分页接口（`limit/offset`）；
+  - 新增迁移管理接口：
+    - `POST /rag/migrations/chunks/run`
+    - `POST /rag/migrations/chunks/rollback`
+- `app/rag/ingestion_orchestrator.py`：
+  - 新增 `count_jobs()` 供分页总数统计；
+  - 保持列表按创建时间倒序输出。
+- 测试增强：
+  - `tests/test_ingestion_orchestrator.py` 新增 list/count 覆盖用例。
 - 依赖升级：
   - `requirements-大模型应用.txt` 新增 `elasticsearch` 依赖，用于 ES/EasySearch 客户端。
+
+## 2026-03-27 企业级摄入主链路第四阶段（索引查询 API 与 E2E 迁移验证）
+
+- 元数据仓库查询能力增强：
+  - `app/rag/job_repository.py` 新增 `list(limit, offset)`；
+  - `app/rag/document_repository.py` 新增 `get(doc_key)`、`list(limit, offset, namespace)`；
+  - ES/EasySearch 与本地 JSON 回退模式均可用，统一按时间倒序分页。
+- 管理 API 扩展（`app/api/rag_admin.py`）：
+  - 新增 `GET /rag/jobs/{job_id}/documents`：按任务查看关联文档列表；
+  - 新增 `GET /rag/documents/meta`：分页查询文档级元数据（chunk 数、状态、错误、更新时间）。
+- E2E 脚本升级（`app/test_scripts/rag/rag_api_e2e.py`）：
+  - 增加可选 migration 验证：`--test-migration --migration-dim`；
+  - 覆盖 `POST /rag/migrations/chunks/run` 与 `POST /rag/migrations/chunks/rollback`，
+    并在 rollback 验证后恢复 alias 到新索引，降低对环境的干扰。
+- 文档同步：
+  - `app/test_scripts/rag/README.md` 增补 migration 测试参数说明；
+  - `framework-guide/RAG整体实现技术说明.md` 增补第四阶段新增 API 说明。
+
+## 2026-03-27 企业级摄入主链路第五阶段（管理 API 测试补齐与初始化治理）
+
+- 新增管理 API 单元测试：
+  - `tests/test_rag_admin_api.py`，覆盖：
+    - `GET /rag/jobs/{job_id}/documents` 成功与 404 路径；
+    - `GET /rag/documents/meta` 分页与 namespace 过滤参数透传。
+- `app/api/rag_admin.py` 依赖初始化方式升级为懒加载：
+  - 新增 `_get_service()`、`_get_orchestrator()`、`_get_job_repo()`、`_get_doc_repo()`（`lru_cache`）；
+  - 避免模块导入阶段即加载 embedding 模型，降低冷启动与测试环境耦合风险；
+  - 保持接口行为不变。
+- 测试执行结果：
+  - `python -m unittest tests.test_rag_admin_api tests.test_ingestion_orchestrator tests.test_rag_core`
+  - 结果 `OK`（8 tests）。
+
+## 2026-03-27 企业级摄入主链路第六阶段（migration 回归测试与运维排障）
+
+- migration 单测补齐：
+  - 新增 `tests/test_index_migrator.py`，覆盖
+    - `ensure_index_and_alias()` 的 alias 切换动作；
+    - `rollback_alias()` 的回滚动作；
+  - 使用 fake ES client 验证 remove/add action 语义，避免依赖真实 ES 环境。
+- 迁移器可测试性增强：
+  - `app/rag/migrations/index_migrator.py` 支持注入可选 client（生产默认仍使用官方 ES 客户端）。
+- 运维文档增强：
+  - `framework-guide/RAG整体实现技术说明.md` 增补“运维排障与回滚手册”，包含错误码解释、标准排查路径、迁移回滚路径。
+
+## 2026-03-27 企业级摄入主链路第七阶段（migration 一致性自动回归）
+
+- 新增 E2E 回归脚本：
+  - `app/test_scripts/rag/rag_migration_consistency_e2e.py`
+  - 覆盖：基线摄入/查询 → migration run → 迁移后查询一致性校验 →（可选）rollback 后一致性校验 → 恢复 alias。
+- 一致性验收口径：
+  - 对固定 query 集合，比较迁移前后 `top_k` 结果文本 overlap ratio；
+  - 默认阈值 `0.6`，可通过参数 `--consistency-threshold` 调整。
+- 文档同步：
+  - `app/test_scripts/rag/README.md` 增加脚本说明与执行命令；
+  - `framework-guide/RAG整体实现技术说明.md` 增加一致性回归脚本与验收口径说明。
+
+## 2026-03-27 企业级摄入主链路第八阶段（基线样本配置化）
+
+- 一致性回归脚本配置化升级：
+  - `app/test_scripts/rag/rag_migration_consistency_e2e.py` 新增 `--cases-file`；
+  - 默认读取 `app/test_scripts/rag/migration_consistency_cases.json`；
+  - 支持按环境维护独立样本集（namespace/dataset/documents/queries）。
+- 新增样本文件：
+  - `app/test_scripts/rag/migration_consistency_cases.json`。
+- 文档同步：
+  - `app/test_scripts/rag/README.md` 增加样本文件驱动说明；
+  - `framework-guide/RAG整体实现技术说明.md` 增补 `--cases-file` 使用约定。
+
+## 2026-03-27 企业级摄入主链路第九阶段（多场景评测与 CI 报告）
+
+- `rag_migration_consistency_e2e.py` 升级：
+  - query case 支持对象结构：`query + scene + top_k`；
+  - 支持 `--report-out` 输出 JSON 评测报告（包含 phase/ratio/passed）。
+- 默认样本扩展：
+  - `migration_consistency_cases.json` 增加多场景 query（`llm_inference/analysis/chatbot`）。
+- 文档同步：
+  - `app/test_scripts/rag/README.md` 增加多场景与报告输出说明；
+  - `framework-guide/RAG整体实现技术说明.md` 增加 `--report-out` 用途说明（CI 门禁）。
+
+## 2026-03-27 企业级摄入主链路第十阶段（Markdown 汇总报告）
+
+- `rag_migration_consistency_e2e.py` 增加 `--report-md-out`：
+  - 在 JSON 结构化报告之外，输出 Markdown 汇总；
+  - 包含阈值、总检查数、失败数、按 phase/scene/query 的结果表格。
+- 文档同步：
+  - `app/test_scripts/rag/README.md` 增加 Markdown 报告示例命令；
+  - `framework-guide/RAG整体实现技术说明.md` 增加 `--report-md-out` 说明。
+
+## 2026-03-27 企业级摄入主链路第十一阶段（失败时报告与退出码联动）
+
+- `rag_migration_consistency_e2e.py`：
+  - `try/except/finally`：失败时仍写入 JSON/Markdown（当指定输出路径时）；
+  - 报告字段：`status`（success/failed）、`failed_phase`、`error`、`error_type`、`traceback`；
+  - 成功迁移后写入 `migration`（`old_indices` / `new_index`）便于对照；
+  - 进程仍以非零退出码结束（便于 CI 判失败）。
+- 文档同步：`app/test_scripts/rag/README.md`、`framework-guide/RAG整体实现技术说明.md`。
+
+## 2026-03-27 设计稿对齐（摄入配置 / RetrievedChunk / job_type）
+
+- `app/core/config.py`：新增 `RAGIngestionConfig`，挂载到 `RAGConfig.ingestion`，环境变量与设计稿 §4 对齐（`RAG_INGEST_*`、`RAG_PIPELINE_VERSION`、`RAG_CHUNK_*`、`RAG_CLEANING_PROFILE` 等）。
+- `app/rag/models.py`：`IngestionJobType`、`RetrievedChunk`；`IngestionJob` 增加 `job_type`（默认 `upsert`）。
+- `app/rag/rag_service.py`：`retrieve_chunks()` 返回标准 `RetrievedChunk`；`retrieve_context()` 委托前者。
+- `app/rag/agentic.py`：`RAGResult.chunks`；检索走 `retrieve_chunks`。
+- `app/rag/ingestion_orchestrator.py`：线程池并发与默认 `ChunkingConfig`、文档侧 `pipeline_version` 取自 `RAGIngestionConfig`；任务 JSON 增加 `job_type`。
+- `app/api/rag_admin.py`：`IngestionJobInfo` 增加 `job_type`。
+- `enterprise-level_transformation_docs/企业级 RAG 文档摄入与检索一体化改造设计稿-20260327.md`：附录 A 实现对照。
+- `framework-guide/RAG整体实现技术说明.md`：§4 增补摄入平台环境变量表与 `RetrievedChunk` 说明。
+
+## 2026-03-27 设计稿对齐推进（GraphRAG 从骨架到可运行闭环）
+
+- `app/graph/ingestion.py`：
+  - 实现规则实体抽取（中英混合）；
+  - 写入 `DocumentChunk` / `Entity` 节点；
+  - 写入 `MENTION` 与 `CO_OCCUR` 关系（含权重累加）。
+- `app/graph/query_service.py`：
+  - 实现 query 实体抽取；
+  - 支持按 namespace 查询实体相关文档片段；
+  - 当 `max_hops>=2` 时补充共现关系事实召回；
+  - 输出可直接拼接到 RAG 上下文的事实文本列表。
+- 兼容性：
+  - 兼容不同 Neo4jGraph 版本的 `query/run` 调用方式；
+  - 现有 HybridRAGService 无需改接口即可消费图事实。
+
+## 2026-03-27 设计稿对齐推进（幂等键与版本治理）
+
+- 领域模型扩展：
+  - `DocumentSource` 增加 `doc_version`（默认 `v1`）与 `tenant_id`；
+  - `IngestionJob` 增加 `idempotency_key`。
+- 编排器增强（`app/rag/ingestion_orchestrator.py`）：
+  - 新增幂等键参数 `idempotency_key`（显式提供时启用复用，避免重复运行中的任务）；
+  - 默认自动生成幂等摘要并随 job 持久化，支持审计；
+  - docs 元数据键升级为 `tenant::namespace::doc_name::doc_version`；
+  - 持久化 payload 写入 `doc_version/tenant_id`；
+  - 调用摄入服务时透传 `doc_version/tenant_id`，并保留对旧 mock 签名兼容。
+- 摄入服务增强（`app/rag/ingestion.py`）：
+  - `ingest_texts` 增加 `doc_version/tenant_id` 入参；
+  - chunk metadata 写入 `doc_version/tenant_id`。
+- 管理 API 增强（`app/api/rag_admin.py`）：
+  - jobs ingest 请求新增 `idempotency_key`；
+  - job/doc 响应补充 `idempotency_key`、`doc_version`、`tenant_id` 字段。
+
+## 2026-03-27 设计稿对齐推进（文档处理层企业级增强）
+
+- `app/rag/document_pipeline/parsers.py`：
+  - `pdf/docx` 增加本地文件路径解析能力（`file://` 或绝对路径）；
+  - 保留旧兼容：若非文件路径则按“已提取文本”处理。
+- `app/rag/document_pipeline/cleaners.py`：
+  - 清洗档位化：`strict/normal/light`；
+  - 增加目录/页码噪音行清理与严格档位符号行压缩。
+- `app/rag/document_pipeline/pipeline.py`：
+  - 接入 `RAGIngestionConfig` 默认参数；
+  - 支持 `RAG_DEFAULT_CHUNK_STRATEGY`（`structure/semantic/window`）与 `RAG_CLEANING_PROFILE`。
+- 依赖与文档：
+  - `requirements-大模型应用.txt` 新增 `pypdf`、`python-docx`；
+  - `framework-guide/RAG整体实现技术说明.md` 同步新增文档处理实现说明。
+
+## 2026-03-27 设计稿对齐推进（NL2SQL 标准 chunk 结构）
+
+- `app/nl2sql/rag_service.py`：
+  - 新增 `retrieve_chunks()`，返回标准 `RetrievedChunk`；
+  - 兼容 `retrieve()` 仍返回 `List[str]`，但改为由结构化 chunk 渲染，保留来源线索（namespace/doc/section）。
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 补充 NL2SQL 已支持标准 `RetrievedChunk` 的说明。
+
+## 2026-03-27 设计稿对齐推进（AgenticRAG 多步计划检索）
+
+- `app/rag/agentic.py`：
+  - AGENTIC 模式从“占位回退”升级为多步策略：
+    - 子问题规划（主问题 + 连接词拆分 + 场景强化查询）；
+    - 子问题并行检索（线程池）；
+    - 融合策略（score + rank bonus + step weight）；
+    - 去重与预算裁剪（按 chunk_id/text）。
+  - `RAGResult` 增加 `plan_steps`，支持链路 trace。
+- 验证：
+  - 现有回归测试通过（`test_rag_core` / `test_rag_admin_api` / `test_ingestion_orchestrator` / `test_index_migrator`）。
+
+## 2026-03-27 设计稿对齐推进（Agentic 策略配置化与注释完善）
+
+- `app/core/config.py`：
+  - 新增 `RAGAgenticConfig`，参数外置并接入环境变量（`RAG_AGENTIC_*`）。
+- `app/rag/agentic.py`：
+  - 读取 `RAGAgenticConfig`，将子问题数、并发、预算与融合权重改为可配置；
+  - 增加关键注释（开关回退、主问题优先、场景增强可开关、并发预算语义）。
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 补充 Agentic 多步策略参数表，方便运维调参。
+
+## 2026-03-27 设计稿对齐推进（GraphRAG 策略配置化）
+
+- `app/core/config.py`：
+  - 扩展 `GraphRAGConfig`，新增实体抽取阈值、每 chunk 实体上限、共现事实最小权重、事实模板等参数；
+  - `_load_from_env` 新增 `GRAPH_ENTITY_*`、`GRAPH_MAX_ENTITIES_PER_CHUNK`、`GRAPH_MIN_COOCCUR_WEIGHT`、`GRAPH_FACT_TEMPLATE_*` 的环境变量解析。
+- `app/graph/ingestion.py`：
+  - `_extract_entities` 改为读取配置驱动的中英文长度阈值与实体上限，降低硬编码。
+- `app/graph/query_service.py`：
+  - 图事实输出改为模板驱动；
+  - 共现事实增加最小权重阈值过滤；
+  - 查询词抽取与摄入侧统一长度阈值口径。
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 将 GraphRAG 从“骨架说明”更新为“轻量可用实现 + 参数化策略”，并补充新增环境变量说明。
+
+## 2026-03-27 设计稿对齐推进（Graph 与 Hybrid 深度融合）
+
+- `app/rag/hybrid_rag_service.py`：
+  - 新增轻量意图路由 `_route_strategy`（受 `GRAPH_RAG_USE_INTENT_ROUTING` 控制）；
+  - 对关系/依赖类问题自动提升图侧权重并提高 `graph_hops`，对定义类问题回调向量侧权重；
+  - `hybrid` 融合从“顺序拼接”升级为“权重配额 + 交织合并”，减少单通道上下文挤占；
+  - `graph`/`hybrid` 执行链路统一接收路由后的 `graph_hops/max_graph_items/weights`，保持参数语义一致。
+- `tests/test_hybrid_rag_service.py`：
+  - 新增 HybridRAGService 单测，覆盖权重交织与意图路由触发行为。
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 补充 HybridRAGService 的意图路由与交织融合行为说明。
+
+## 2026-03-27 设计稿对齐推进（Hybrid 意图路由完全配置化）
+
+- `app/core/config.py`：
+  - 扩展 `GraphHybridStrategyConfig`，新增意图关键词（中英）与路由后权重/hops/max_graph_items 参数；
+  - `_load_from_env` 新增 `GRAPH_RAG_RELATION_KEYWORDS*`、`GRAPH_RAG_DEFINITION_KEYWORDS*`、
+    `GRAPH_RAG_ROUTED_RELATION_*`、`GRAPH_RAG_ROUTED_DEFINITION_*` 的环境变量解析。
+- `app/rag/hybrid_rag_service.py`：
+  - `_route_strategy` 移除硬编码关键词与阈值，改为完全读取配置；
+  - 新增 `_contains_keywords` 统一关键词命中判断，提升可维护性。
+- `tests/test_hybrid_rag_service.py`：
+  - 新增“自定义关键词触发路由”单测，验证路由规则已可配置。
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 补充新增 Graph/Hybrid 路由参数的环境变量说明。
+
+## 2026-03-27 设计稿对齐推进（统一 RetrievalPolicy 策略层）
+
+- `app/rag/retrieval_policy.py`（新增）：
+  - 新增 `RetrievalPolicy` 与 `RetrievalDecision`，统一承载 query 到检索参数的路由决策（mode/weights/hops/max_graph_items）。
+- `app/rag/hybrid_rag_service.py`：
+  - 移除内联 `_route_strategy`，改为调用 `RetrievalPolicy.decide()`，减少策略重复。
+- `app/services/chatbot_service.py` 与 `app/services/analysis_service.py`：
+  - 在非 LangChain 回退链路改为走 `HybridRAGService.retrieve()`，确保业务入口也复用统一策略层。
+- `tests/test_retrieval_policy.py`（新增）：
+  - 覆盖“关系类触发图增强路由”与“定义类回调向量权重”场景。
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 补充 `RetrievalPolicy` 组件职责与接入说明。
+
+## 2026-03-27 设计稿对齐推进（LLMInference 统一入口兼容接入）
+
+- `app/services/llm_inference_service.py`：
+  - 新增 `HybridRAGService` 注入，`rag_mode=basic` 下改走统一策略入口（Hybrid -> RetrievalPolicy）；
+  - `rag_mode=agentic` 仍保留原有 `AgenticRAGService` 多步策略链路，不做降级替换。
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 更新 `/llm/infer` 调用路径说明，明确 basic 与 agentic 的分流行为。
+
+## 2026-03-27 设计稿对齐推进（Graph 生命周期一致性收口）
+
+- `app/rag/ingestion.py`：
+  - 新增 `post_index_hook`，承接图侧写入，形成“索引完成后统一后置扩展点”；
+  - `ingest_texts` 新增 `run_post_hook` 开关，支持由 orchestrator 统一调度 hook；
+  - `delete_by_doc_name` 增加图侧同步删除调用（向量删与图删一致）。
+- `app/rag/ingestion_orchestrator.py`：
+  - 索引完成后显式调用 `post_index_hook`；
+  - 对旧 mock 保持兼容（无 `run_post_hook` / 无 `post_index_hook` 不报错）。
+- `app/graph/ingestion.py`：
+  - `ingest_from_chunks` 增加 `doc_name/doc_version/replace_if_exists`；
+  - 图侧同名同版本重灌前先清理旧文档图节点；
+  - `DocumentChunk` 增加 `doc_name/doc_version/doc_key`，并提供 `delete_document` 清理与孤立实体回收。
+- `tests/test_ingestion_service_hooks.py`（新增）：
+  - 覆盖 post_index_hook 触发图写入与 delete 同步图清理。
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 补充 Graph 摄入后置 hook 与 doc_version 一致性、删除一致性说明。
+
+## 2026-03-27 设计稿对齐推进（NL2SQL 接入统一策略层）
+
+- `app/nl2sql/rag_service.py`：
+  - 接入 `RetrievalPolicy` 决策检索模式；
+  - 在保持 `RetrievedChunk` 契约不变的前提下，支持按策略补充图事实 chunk；
+  - 保持 schema/biz/qa 三命名空间联合检索与去重逻辑。
+- `tests/test_nl2sql_rag_service.py`（新增）：
+  - 覆盖 vector 模式与 graph 模式下的 NL2SQL 检索行为。
+- 文档：
+  - `framework-guide/RAG整体实现技术说明.md` 与 `framework-guide/NL2SQL整体实现技术说明.md` 同步更新为“NL2SQL 已接入统一策略层”。
+
+## 2026-03-27 设计稿对齐推进（文档生命周期 E2E 脚本）
+
+- `app/test_scripts/rag/rag_doc_lifecycle_e2e.py`（新增）：
+  - 覆盖“同文档名多版本异步 upsert（v1->v2）→ 检索替换验证 → 元数据验证 → 删除验证”全链路；
+  - 重点验证 replace_if_exists 生效后旧版本内容不可检索；
+  - 删除后通过查询为空验证向量/图侧同步清理链路。
+- `app/test_scripts/rag/README.md`：
+  - 补充新脚本用途与运行示例。
+
+## 2026-03-27 设计稿对齐推进（管理脚本与 CI 报告增强）
+
+- `app/manage_scripts/rag_doc_lifecycle_admin.py`（新增）：
+  - 新增文档生命周期管理脚本（与测试脚本分离）；
+  - 支持按 JSON 计划执行 `upsert/delete`、`dry-run`、`fail-fast`、任务轮询与执行报告输出。
+- `app/manage_scripts/README.md`、`app/manage_scripts/examples/rag_doc_lifecycle_plan.json`（新增）：
+  - 提供管理脚本说明与可直接复用的计划样例。
+- `app/test_scripts/rag/rag_doc_lifecycle_e2e.py`：
+  - 增加与 migration 一致的 JSON/Markdown 报告输出能力；
+  - 失败时保留 `failed_phase/error/error_type/traceback`，可直接接 CI 门禁。
+- `app/test_scripts/rag/README.md`：
+  - 同步补充生命周期脚本的 `--report-out/--report-md-out` 用法。
+
+## 2026-03-27 设计稿对齐推进（企业级清洗能力补齐）
+
+- `app/rag/document_pipeline/cleaners.py`：
+  - 在原 `strict/normal/light` 基础上补齐企业级清洗能力：
+    - 跨页重复页眉/页脚识别与清理（基于分页首尾行重复统计）；
+    - 重复段落合并；
+    - 常见编码噪音修复（mojibake 片段与坏字符清理）；
+    - 目录噪音规则增强（点线目录行等）。
+- `app/core/config.py`：
+  - `RAGIngestionConfig` 新增清洗策略开关与阈值参数：
+    `RAG_CLEAN_REMOVE_HEADER_FOOTER`、
+    `RAG_CLEAN_MERGE_DUPLICATE_PARAGRAPHS`、
+    `RAG_CLEAN_FIX_ENCODING_NOISE`、
+    `RAG_CLEAN_MIN_REPEATED_LINE_PAGES`。
+- `app/rag/document_pipeline/pipeline.py`：
+  - `DocumentPipeline` 将上述清洗参数统一注入 `TextCleaner`，实现配置化运行。
+- `tests/test_text_cleaner.py`（新增）：
+  - 覆盖页眉页脚清理、重复段合并、编码噪音修复三类核心能力。
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 补充新增清洗环境变量与企业级清洗能力说明。
+
+## 2026-03-27 设计稿对齐推进（Orchestrator 8 步显式状态机）
+
+- `app/rag/ingestion_orchestrator.py`：
+  - 将原 `parse_clean_chunk -> index -> finalize` 升级为 8 步显式状态机：
+    `validate_input -> parse -> clean -> chunk -> enrich -> index -> quality_check -> finalize_alias_version`；
+  - 新增 `_validate_document` 与 `_quality_check`，将质量门禁纳入显式治理步骤；
+  - 新增 step 级耗时写入（`step_durations_ms`）与统一 step 状态更新函数。
+- `app/rag/document_pipeline/pipeline.py`：
+  - 新增 `process_document_staged()`，输出分阶段产物与阶段耗时，供 orchestrator 做 step 级治理。
+- `app/rag/ingestion.py`：
+  - 新增 `finalize_alias_version()` 扩展点（当前 no-op），对齐设计稿 finalize(alias/version) 阶段语义。
+- `tests/test_ingestion_orchestrator.py`：
+  - 增加对新 step 耗时记录（`parse` / `quality_check`）的断言。
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 同步更新 `/rag/jobs/ingest` 的 8 步执行说明。
+
+## 2026-03-27 设计稿对齐推进（Metadata Recall 通道）
+
+- `app/rag/vector_store.py`：
+  - 为 `VectorStore` 抽象新增 `metadata_search()`；
+  - InMemory/Faiss/Elasticsearch 三种实现同步支持 metadata 召回（基于 `doc_name/doc_version/tenant_id` 等元信息）。
+- `app/rag/rag_service.py`：
+  - 在 hybrid 检索中新增 metadata 第三通道（semantic + keyword + metadata）；
+  - RRF 融合纳入 metadata hits，补充 `RAG_METADATA_RECALL_COUNT` 指标。
+- `app/core/config.py`：
+  - `HybridRetrievalConfig` 新增 `metadata_top_k` 与 `metadata_recall_enabled`，并接入环境变量。
+- `tests/test_metadata_recall.py`（新增）：
+  - 覆盖 metadata 通道可独立返回检索结果。
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 增加 `RAG_HYBRID_METADATA_TOP_K` / `RAG_HYBRID_METADATA_RECALL_ENABLED` 说明。
+
+## 2026-03-27 设计稿对齐推进（问题修复回合）
+
+- 修复 `FaissVectorStore` 分支潜在缺陷：
+  - `keyword_search/delete_by_doc_name` 从错误的 `enumerate(self._items)` 改为按 `self._items.items()` 遍历；
+  - 避免 dict key/value 混淆导致的异常与误删风险。
+
+## 2026-03-27 文档同步（EasySearch 部署包接入）
+
+- 新增 `rag_db-deploy/` 部署包（Docker Compose + 配置模板 + 初始化脚本 + 项目 env 模板）后，同步更新文档口径：
+  - `framework-guide/数据持久化与容器部署说明.md`：
+    - 从“FAISS 为主”调整为“ES/EasySearch 为主，FAISS 可选”；
+    - 新增 `rag_db-deploy/README.md` 作为容器部署入口；
+    - 补充默认 ES 连接参数与持久化建议。
+  - `framework-guide/RAG整体实现技术说明.md`：
+    - 顶部“配套文档”增加 `rag_db-deploy/README.md` 引用。
+  - `docs/大小模型应用技术架构与实现方案.md`：
+    - 将容器化部署说明同步为“默认 ES/EasySearch，兼容 FAISS”，并补充部署包引用。
+- 删除能力增强：
+  - `delete_by_doc_name` 全链路新增可选 `doc_version` 参数（API -> Service -> Store -> Graph delete）；
+  - `POST /rag/documents/delete` 支持按版本精确删除。
+- metadata recall 可用性增强：
+  - metadata 通道分词从“仅空格 split”升级为中英混合 token 提取（适配中文查询词）。
+- 测试补充：
+  - `tests/test_rag_core.py` 增加按 `doc_version` 删除单测；
+  - `tests/test_metadata_recall.py` 增加中文 metadata 查询命中单测。
+
+## 2026-03-27 文档同步（RAG 快速阐述章节）
+
+- `framework-guide/RAG整体实现技术说明.md`：
+  - 在文档最上方新增“§0 快速阐述版（给开发者/客户）”，包含：
+    - 一句话方案概括；
+    - 策略分层图（摄入治理/检索策略/路由策略/编排策略）；
+    - 客户可讲述要点；
+  - 同步修正过时描述（如默认 FAISS、Agentic 等同 BASIC、Graph 骨架/待实现等）。
+- 全局检查：
+  - `framework-guide` 其余相关文档已核对，无与当前实现冲突的明显旧口径。
 

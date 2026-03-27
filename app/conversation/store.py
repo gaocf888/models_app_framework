@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from app.core.logging import get_logger
@@ -19,19 +20,40 @@ class ConversationStore:
     def __init__(self) -> None:
         # 简单内存存储: {(user_id, session_id): [messages]}
         self._data: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
+        # 会话最近更新时间与过期/裁剪策略
+        self._last_updated: Dict[tuple[str, str], float] = {}
+        # 会话 TTL（秒），0 或负数表示不过期
+        ttl_minutes = int(os.getenv("CONV_SESSION_TTL_MINUTES", "60"))
+        self._ttl_seconds = max(0, ttl_minutes * 60)
+        # 单会话最大保留消息条数
+        self._max_history = max(1, int(os.getenv("CONV_MAX_HISTORY_MESSAGES", "50")))
 
     def append_message(self, user_id: str, session_id: str, role: str, content: str) -> None:
         key = (user_id, session_id)
-        self._data.setdefault(key, []).append({"role": role, "content": content})
+        messages = self._data.setdefault(key, [])
+        now = time.time()
+        messages.append({"role": role, "content": content, "ts": now})
+        self._last_updated[key] = now
+        # 历史裁剪：只保留最近 _max_history 条
+        if len(messages) > self._max_history:
+            self._data[key] = messages[-self._max_history :]
 
     def get_recent_history(self, user_id: str, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         key = (user_id, session_id)
+        # 会话过期检查
+        if self._ttl_seconds > 0:
+            last = self._last_updated.get(key)
+            if last is not None and (time.time() - last) > self._ttl_seconds:
+                # 会话已过期，清理并返回空历史
+                self.clear(user_id, session_id)
+                return []
         messages = self._data.get(key, [])
         return messages[-limit:]
 
     def clear(self, user_id: str, session_id: str) -> None:
         key = (user_id, session_id)
         self._data.pop(key, None)
+        self._last_updated.pop(key, None)
 
 
 class RedisConversationStore(ConversationStore):
@@ -54,12 +76,18 @@ class RedisConversationStore(ConversationStore):
 
         self._redis = aioredis.from_url(redis_url, encoding="utf-8", decode_responses=True)
         self._key_prefix = "conv:"
+        ttl_minutes = int(os.getenv("CONV_SESSION_TTL_MINUTES", "60"))
+        self._ttl_seconds = max(0, ttl_minutes * 60)
+        self._max_history = max(1, int(os.getenv("CONV_MAX_HISTORY_MESSAGES", "50")))
 
     async def _append_message_async(self, user_id: str, session_id: str, role: str, content: str) -> None:
         if self._redis is None:
             return super().append_message(user_id, session_id, role, content)
         key = f"{self._key_prefix}{user_id}:{session_id}"
-        await self._redis.rpush(key, {"role": role, "content": content})
+        await self._redis.rpush(key, {"role": role, "content": content, "ts": time.time()})
+        # 设置 TTL，让 Redis 自动过期清理
+        if self._ttl_seconds > 0:
+            await self._redis.expire(key, self._ttl_seconds)
 
     def append_message(self, user_id: str, session_id: str, role: str, content: str) -> None:  # type: ignore[override]
         """
@@ -76,8 +104,9 @@ class RedisConversationStore(ConversationStore):
         if self._redis is None:
             return super().get_recent_history(user_id, session_id, limit)
         key = f"{self._key_prefix}{user_id}:{session_id}"
-        # 取最近 limit 条记录
-        raw = await self._redis.lrange(key, -limit, -1)
+        # 取最近 limit 条记录，并限制最大条数
+        real_limit = min(limit, self._max_history)
+        raw = await self._redis.lrange(key, -real_limit, -1)
         return list(raw or [])
 
     def get_recent_history(self, user_id: str, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:  # type: ignore[override]

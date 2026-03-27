@@ -1,0 +1,10 @@
+cluster.name: ${EASYSEARCH_CLUSTER_NAME}
+node.name: ${EASYSEARCH_NODE_NAME}
+network.host: 0.0.0.0
+http.port: 9200
+
+# Single-node mode for app-level RAG deployment.
+discovery.type: single-node
+
+# Keep defaults simple; resource tuning should be done by env vars and host sizing.
+action.destructive_requires_name: true

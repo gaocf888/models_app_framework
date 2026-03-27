@@ -72,7 +72,7 @@
 | 能力 | 说明 |
 |------|------|
 | **Schema 元数据管理** | `SchemaMetadataService` 内存维护 `TableSchema` 映射，可从真实 DB 反射刷新，也内置一套 Demo Schema 便于本地调试。 |
-| **NL2SQL 专用 RAG** | `NL2SQLRAGService` 使用 `RAGService` 在命名空间 `nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples` 上做多通道检索，并合并去重结果。 |
+| **NL2SQL 专用 RAG** | `NL2SQLRAGService` 使用 `RetrievalPolicy` 统一路由，在命名空间 `nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples` 上做向量+图事实联合检索，并合并去重结果。 |
 | **Prompt 编排** | `PromptBuilder` 按 NL2SQL 设计文档，将 Schema 片段、业务知识与示例拼装成结构化 Prompt，结合 `PromptTemplateRegistry` 中 scene=`nl2sql` 的模板。 |
 | **SQL 生成链路** | `NL2SQLChain` 将问题 →（可选）规划 `_plan` → RAG 检索 → Prompt 构建 → LLM 生成 SQL → 安全校验与自我修正。 |
 | **SQL 校验与执行** | `SQLValidator` 确保仅包含安全 SELECT 语句；`SQLExecutor` 基于 SQLAlchemy AsyncEngine 执行只读 SQL 并返回行列表。 |
@@ -270,7 +270,7 @@ index_qa_examples(snippets: List[str])
      - 将 summary 写入日志，便于调试与后续评估。
   2. **NL2SQL 专用 RAG 检索**  
      - 若有规划结果，则将 `plan_summary` 与原问题组合为 `rag_query`；  
-     - 调用 `NL2SQLRAGService.retrieve(rag_query)`，从 schema/biz/qa 三个命名空间联合检索上下文片段。
+     - 调用 `NL2SQLRAGService.retrieve(rag_query)`，由统一策略层决策后从 schema/biz/qa 三个命名空间联合检索上下文片段。
   3. **Prompt 构建**  
      - 通过 `PromptTemplateRegistry` 取 scene=`nl2sql` 模板；  
      - 调用 `PromptBuilder.build(question, schema_snippets, system_prefix)` 生成最终 Prompt。
@@ -363,11 +363,11 @@ flowchart LR
 
 ## 7. 与通用 RAG / GraphRAG 的关系
 
-- NL2SQLRAGService 复用 **通用 RAG 基座**（`RAGService` + `VectorStoreProvider`）：  
+- NL2SQLRAGService 复用 **通用 RAG 基座**（`RetrievalPolicy` + `RAGService` + `VectorStoreProvider` + 可选 `GraphQueryService`）：
   - 通过 `namespace` 将 NL2SQL 的 Schema / 业务知识 / Q&A 与其他 RAG 场景隔离；  
   - 在未来切换为 HybridRAGService 时，可通过配置替换底层 `RAGService` 实例，而不影响 NL2SQL 代码。
-- 当前 GraphRAG 骨架主要服务于文档 RAG 与通用知识检索；  
-  - 在后续演进中，可以考虑将 NL2SQL 的 Schema 元数据（表/字段/关系）也同步到图数据库，构建“Schema GraphRAG”，但这属于下一阶段工作，不在当前实现范围内。
+- 当前 NL2SQLRAGService 已可按统一策略层决策接入图事实召回（可选）；  
+  - 进一步演进方向是将 Schema 元数据结构化图谱化（Schema GraphRAG），用于更强的跨表关系推理。
 
 ---
 

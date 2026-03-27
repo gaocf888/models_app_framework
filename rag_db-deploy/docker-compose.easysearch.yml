@@ -1,0 +1,44 @@
+services:
+  easysearch:
+    image: ${EASYSEARCH_IMAGE}
+    container_name: ${EASYSEARCH_CONTAINER_NAME}
+    environment:
+      - cluster.name=${EASYSEARCH_CLUSTER_NAME}
+      - node.name=${EASYSEARCH_NODE_NAME}
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - ES_JAVA_OPTS=${EASYSEARCH_JAVA_OPTS}
+      - xpack.security.enabled=true
+      - ELASTIC_USERNAME=${EASYSEARCH_USERNAME}
+      - ELASTIC_PASSWORD=${EASYSEARCH_PASSWORD}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - ${EASYSEARCH_DATA_VOLUME}:/usr/share/elasticsearch/data
+      - ./easysearch/config/easysearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+      - ./easysearch/init:/opt/easysearch/init:ro
+    ports:
+      - "${EASYSEARCH_PORT}:9200"
+    networks:
+      - ${EASYSEARCH_NETWORK}
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s -u ${EASYSEARCH_USERNAME}:${EASYSEARCH_PASSWORD} http://127.0.0.1:9200/_cluster/health >/dev/null || exit 1" ]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  rag_easysearch_data:
+    name: ${EASYSEARCH_DATA_VOLUME}
+
+networks:
+  ai-stack:
+    name: ${EASYSEARCH_NETWORK}
+    driver: bridge

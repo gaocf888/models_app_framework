@@ -75,6 +75,7 @@ class NL2SQLChain:
         rag_query = question
         if plan_summary:
             rag_query = f"【NL2SQL 规划】{plan_summary}\n【用户问题】{question}"
+        # 优先使用结构化 chunk，再渲染为 prompt 文本（保留来源线索）
         schema_snippets = self._rag.retrieve(rag_query)
 
         # NL2SQL 专用 Prompt 前缀（scene=nl2sql）

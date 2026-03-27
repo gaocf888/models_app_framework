@@ -49,6 +49,11 @@ RAG_KEYWORD_RECALL_COUNT = Counter(
     "Total RAG keyword recall calls",
 )
 
+RAG_METADATA_RECALL_COUNT = Counter(
+    "rag_metadata_recall_total",
+    "Total RAG metadata recall calls",
+)
+
 RAG_RERANK_COUNT = Counter(
     "rag_rerank_total",
     "Total RAG rerank calls",

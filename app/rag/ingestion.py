@@ -5,10 +5,11 @@ RAG 知识摄入服务（RAGIngestionService）。
 
 对应《下一阶段工作清单》中 TODO-P6：
 - 负责文档/Schema/业务知识/问答样例等的摄入与索引构建；
-- 与 EmbeddingService、VectorStoreProvider 以及 SchemaMetadataService 协同工作。
+- 与 EmbeddingService、VectorStoreProvider 协同工作，并支持可选 GraphRAG 摄入。
 
 当前实现：
 - 提供内存级别的“数据集”登记与文本摄入能力；
+- 支持按文档名更新（同名先删后灌）；
 - 实际项目中可扩展为将数据集元信息持久化到数据库/配置中心。
 """
 
@@ -66,9 +67,12 @@ class RAGIngestionService:
         namespace: str | None = None,
         doc_name: str | None = None,
         replace_if_exists: bool = True,
+        doc_version: str = "v1",
+        tenant_id: str | None = None,
+        run_post_hook: bool = True,
     ) -> None:
         """
-        将一批文本摄入 RAG 向量库，并登记为指定数据集。
+        将一批文本摄入 RAG 知识库（向量+全文），并登记为指定数据集。
         """
         store = self._store_provider.get_default_store()
         effective_doc_name = doc_name or dataset_id
@@ -84,24 +88,24 @@ class RAGIngestionService:
                 )
 
         embs = self._embedding_service.embed_texts(texts)
-        store.add_texts(texts, embeddings=embs, namespace=namespace, doc_name=effective_doc_name)
+        metas = [{"doc_version": doc_version, "tenant_id": tenant_id} for _ in texts]
+        store.add_texts(
+            texts,
+            embeddings=embs,
+            namespace=namespace,
+            doc_name=effective_doc_name,
+            metadatas=metas,
+        )
 
-        # 可选：写入图数据库（GraphRAG 摄入）
-        if getattr(self, "_graph_ingestion", None) is not None:
-            try:
-                self._graph_ingestion.ingest_from_chunks(  # type: ignore[call-arg]
-                    dataset_id=dataset_id,
-                    texts=texts,
-                    namespace=namespace,
-                )
-            except Exception as e:
-                # 为避免影响主 RAG 流程，此处仅记录告警，不抛出
-                logger.warning(
-                    "GraphIngestionService.ingest_from_chunks failed for dataset=%s: %s",
-                    dataset_id,
-                    e,
-                    exc_info=True,
-                )
+        if run_post_hook:
+            self.post_index_hook(
+                dataset_id=dataset_id,
+                texts=texts,
+                namespace=namespace,
+                doc_name=effective_doc_name,
+                doc_version=doc_version,
+                replace_if_exists=replace_if_exists,
+            )
         meta = self._datasets.get(dataset_id) or RAGDatasetMeta(
             dataset_id=dataset_id,
             description=description,
@@ -126,8 +130,64 @@ class RAGIngestionService:
     def list_datasets(self) -> List[RAGDatasetMeta]:
         return list(self._datasets.values())
 
-    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None) -> int:
-        return self._rag_service.delete_by_doc_name(doc_name=doc_name, namespace=namespace)
+    def delete_by_doc_name(
+        self, doc_name: str, namespace: str | None = None, doc_version: str | None = None
+    ) -> int:
+        deleted = self._rag_service.delete_by_doc_name(doc_name=doc_name, namespace=namespace, doc_version=doc_version)
+        if getattr(self, "_graph_ingestion", None) is not None:
+            try:
+                self._graph_ingestion.delete_document(  # type: ignore[call-arg]
+                    doc_name=doc_name, namespace=namespace, doc_version=doc_version
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "GraphIngestionService.delete_document failed for doc_name=%s namespace=%s doc_version=%s: %s",
+                    doc_name,
+                    namespace,
+                    doc_version,
+                    e,
+                    exc_info=True,
+                )
+        return deleted
+
+    def post_index_hook(
+        self,
+        dataset_id: str,
+        texts: List[str],
+        namespace: str | None,
+        doc_name: str,
+        doc_version: str,
+        replace_if_exists: bool,
+    ) -> None:
+        """
+        摄入后钩子：用于承接图侧写入、后续审计/通知等扩展能力。
+        """
+        if getattr(self, "_graph_ingestion", None) is not None:
+            try:
+                self._graph_ingestion.ingest_from_chunks(  # type: ignore[call-arg]
+                    dataset_id=dataset_id,
+                    texts=texts,
+                    namespace=namespace,
+                    doc_name=doc_name,
+                    doc_version=doc_version,
+                    replace_if_exists=replace_if_exists,
+                )
+            except Exception as e:
+                # 为避免影响主 RAG 流程，此处仅记录告警，不抛出
+                logger.warning(
+                    "GraphIngestionService.ingest_from_chunks failed for dataset=%s doc=%s: %s",
+                    dataset_id,
+                    doc_name,
+                    e,
+                    exc_info=True,
+                )
+
+    def finalize_alias_version(self, namespace: str | None = None, doc_version: str | None = None) -> None:
+        """
+        finalize 阶段扩展点：用于后续接入 alias/version 切换、回写审计等治理动作。
+        当前版本默认 no-op，保留企业级阶段语义。
+        """
+        logger.debug("finalize_alias_version noop: namespace=%s doc_version=%s", namespace, doc_version)
 
     def query(self, query: str, top_k: int | None = None, namespace: str | None = None, scene: str = "llm_inference") -> List[str]:
         return self._rag_service.retrieve_context(

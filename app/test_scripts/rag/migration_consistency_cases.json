@@ -1,0 +1,39 @@
+{
+  "namespace": "test_rag_migration_consistency",
+  "dataset_id": "migration_consistency_ds",
+  "documents": [
+    {
+      "doc_name": "migration_doc_apple",
+      "texts": [
+        "苹果公司在 2007 年发布了第一代 iPhone。",
+        "iPhone 是苹果公司的智能手机产品线。"
+      ],
+      "replace_if_exists": true
+    },
+    {
+      "doc_name": "migration_doc_rag",
+      "texts": [
+        "RAG 通常包含文档清洗、切块、向量化与索引写入。",
+        "混合检索会并行语义召回与关键词召回，再进行融合和重排。"
+      ],
+      "replace_if_exists": true
+    }
+  ],
+  "queries": [
+    {
+      "query": "谁在 2007 年发布了第一代 iPhone？",
+      "scene": "llm_inference",
+      "top_k": 4
+    },
+    {
+      "query": "混合检索通常会并行哪些召回方式？",
+      "scene": "analysis",
+      "top_k": 4
+    },
+    {
+      "query": "iPhone 是什么产品线？",
+      "scene": "chatbot",
+      "top_k": 3
+    }
+  ]
+}

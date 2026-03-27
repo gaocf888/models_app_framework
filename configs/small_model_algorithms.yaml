@@ -1,0 +1,25 @@
+# 小模型算法类型（algor_type）配置
+#
+# 说明：
+# - 用于将“算法类型编码”映射到：策略实现、默认模型/权重、阈值、证据保存、回调等；
+# - 运行时优先级：API 参数 > 本地配置；
+# - weights_path 建议使用项目内相对路径（会在运行时 resolve 为绝对路径）。
+#
+# 示例：接打电话（algor_type=40417）
+
+algorithms:
+  "40417":
+    name: calling
+    description: 接打电话检测
+    strategy: CallingStrategy
+    model_name: calling_yolo
+    weights_path: app/small_models/pretrained/call.pt
+    device: "cpu"
+    imgsz: 640
+    conf: 0.25
+    iou: 0.7
+    cooldown_seconds: 300
+    evidence_dir: data/small_model_evidence
+    clip_seconds: 10
+    callback_url: null
+

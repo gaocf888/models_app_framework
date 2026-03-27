@@ -1,0 +1,31 @@
+# vLLM 服务核心配置
+server:
+  host: "0.0.0.0"
+  port: 8000
+  served_model_name: ""  # 留空则使用模型默认名称
+
+model:
+  path: ""  # 留空，由模型预设填充(models.yaml)
+  dtype: "float16"  # float16, bfloat16, float32
+  trust_remote_code: true
+  max_model_len: 32768  # Qwen2.5 系列支持 32K 上下文
+
+hardware:
+  device: "auto"  # auto, cuda, npu, mlu, gcu, xpu, cpu 国产加速卡配置： 晟腾--npu  寒武纪--mlu  沐曦-- gcu  燧原--gcu
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.85
+  block_size: 32
+
+performance:
+  max_num_seqs: 32
+  max_num_batched_tokens: 32768
+  enable_prefix_caching: true
+  max_paddings: 256
+
+multimodal:
+  enabled: false
+  limit_images: 4
+  limit_videos: 1
+  media_paths:
+    - "./images"
+    - "./videos"

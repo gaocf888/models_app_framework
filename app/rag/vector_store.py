@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -12,6 +13,21 @@ from app.core.config import ElasticsearchConfig, get_app_config
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _query_tokens(query: str) -> list[str]:
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    raw_tokens = [t for t in re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fff]{1,16}", q) if t]
+    expanded: list[str] = []
+    for tk in raw_tokens:
+        expanded.append(tk)
+        # 中文长词切分为 2-gram，提升 metadata 命中鲁棒性（如“查询设备台账” -> “设备”“台账”）。
+        if re.fullmatch(r"[\u4e00-\u9fff]{3,16}", tk):
+            for i in range(len(tk) - 1):
+                expanded.append(tk[i : i + 2])
+    return list(dict.fromkeys(expanded))
 
 
 class VectorStore(ABC):
@@ -59,9 +75,21 @@ class VectorStore(ABC):
         ...
 
     @abstractmethod
-    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None) -> int:
+    def metadata_search(
+        self,
+        query: str,
+        k: int = 5,
+        namespace: str | None = None,
+    ) -> List[dict[str, Any]]:
         """
-        按文档名称删除已有知识，返回删除条数。
+        元数据召回（doc_name/doc_version/tenant_id 等），返回命中列表。
+        """
+        ...
+
+    @abstractmethod
+    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None, doc_version: str | None = None) -> int:
+        """
+        按文档名称（可选版本）删除已有知识，返回删除条数。
         """
         ...
 
@@ -149,7 +177,7 @@ class InMemoryVectorStore(VectorStore):
         k: int = 5,
         namespace: str | None = None,
     ) -> List[dict[str, Any]]:
-        tokens = [t for t in query.lower().split() if t]
+        tokens = _query_tokens(query)
         if not tokens:
             return []
 
@@ -177,14 +205,54 @@ class InMemoryVectorStore(VectorStore):
             for i, s in top
         ]
 
-    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None) -> int:
+    def metadata_search(
+        self,
+        query: str,
+        k: int = 5,
+        namespace: str | None = None,
+    ) -> List[dict[str, Any]]:
+        tokens = _query_tokens(query)
+        if not tokens:
+            return []
+        scored: list[tuple[int, float]] = []
+        for idx, item in enumerate(self._items):
+            if namespace is not None and item.get("namespace") != namespace:
+                continue
+            doc_name = str(item.get("doc_name") or "").lower()
+            meta = item.get("metadata") or {}
+            meta_blob = " ".join(str(v).lower() for v in meta.values())
+            score = 0.0
+            for tk in tokens:
+                if tk and tk in doc_name:
+                    score += 2.0
+                if tk and tk in meta_blob:
+                    score += 1.0
+            if score > 0:
+                scored.append((idx, score))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        top = scored[:k]
+        return [
+            {
+                "text": self._items[i]["text"],
+                "score": float(s),
+                "ext_id": self._items[i]["ext_id"],
+                "namespace": self._items[i].get("namespace"),
+                "doc_name": self._items[i].get("doc_name"),
+                "metadata": self._items[i].get("metadata") or {},
+            }
+            for i, s in top
+        ]
+
+    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None, doc_version: str | None = None) -> int:
         keep_items: list[dict[str, Any]] = []
         keep_embs: list[list[float]] = []
         deleted = 0
         for idx, item in enumerate(self._items):
             same_name = item.get("doc_name") == doc_name
             same_ns = namespace is None or item.get("namespace") == namespace
-            if same_name and same_ns:
+            meta = item.get("metadata") or {}
+            same_ver = doc_version is None or str(meta.get("doc_version") or "") == str(doc_version)
+            if same_name and same_ns and same_ver:
                 deleted += 1
                 continue
             keep_items.append(item)
@@ -211,7 +279,7 @@ class FaissVectorStore(VectorStore):
 
         self._dim: int | None = None
         self._index = None
-        self._items: list[dict] = []
+        self._items: dict[int, dict] = {}
 
         self._load_if_exists()
 
@@ -410,11 +478,11 @@ class FaissVectorStore(VectorStore):
         namespace: str | None = None,
     ) -> List[dict[str, Any]]:
         # 本地 FAISS 模式下退化为内存关键词匹配（生产建议用 ES/EasySearch）
-        tokens = [t for t in query.lower().split() if t]
+        tokens = _query_tokens(query)
         if not tokens:
             return []
         scored: list[tuple[int, float]] = []
-        for idx, item in enumerate(self._items):
+        for internal_id, item in self._items.items():
             if namespace is not None and item.get("namespace") != namespace:
                 continue
             text = (item.get("text") or "").lower()
@@ -422,7 +490,7 @@ class FaissVectorStore(VectorStore):
             for tk in tokens:
                 score += float(text.count(tk))
             if score > 0:
-                scored.append((idx, score))
+                scored.append((int(internal_id), score))
         scored.sort(key=lambda x: x[1], reverse=True)
         top = scored[:k]
         return [
@@ -437,17 +505,58 @@ class FaissVectorStore(VectorStore):
             for i, s in top
         ]
 
-    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None) -> int:
+    def metadata_search(
+        self,
+        query: str,
+        k: int = 5,
+        namespace: str | None = None,
+    ) -> List[dict[str, Any]]:
+        tokens = _query_tokens(query)
+        if not tokens:
+            return []
+        scored: list[tuple[int, float]] = []
+        for internal_id, item in self._items.items():
+            if namespace is not None and item.get("namespace") != namespace:
+                continue
+            doc_name = str(item.get("doc_name") or "").lower()
+            meta = item.get("metadata") or {}
+            meta_blob = " ".join(str(v).lower() for v in meta.values())
+            score = 0.0
+            for tk in tokens:
+                if tk and tk in doc_name:
+                    score += 2.0
+                if tk and tk in meta_blob:
+                    score += 1.0
+            if score > 0:
+                scored.append((int(internal_id), score))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        top = scored[:k]
+        return [
+            {
+                "text": self._items[i]["text"],
+                "score": float(s),
+                "ext_id": self._items[i].get("ext_id"),
+                "namespace": self._items[i].get("namespace"),
+                "doc_name": self._items[i].get("doc_name"),
+                "metadata": self._items[i].get("metadata") or {},
+            }
+            for i, s in top
+            if i in self._items
+        ]
+
+    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None, doc_version: str | None = None) -> int:
         if self._index is None or not self._items:
             return 0
         import numpy as np
 
         delete_ids: list[int] = []
-        for idx, item in enumerate(self._items):
+        for internal_id, item in self._items.items():
             same_name = item.get("doc_name") == doc_name
             same_ns = namespace is None or item.get("namespace") == namespace
-            if same_name and same_ns:
-                delete_ids.append(idx)
+            meta = item.get("metadata") or {}
+            same_ver = doc_version is None or str(meta.get("doc_version") or "") == str(doc_version)
+            if same_name and same_ns and same_ver:
+                delete_ids.append(int(internal_id))
 
         if not delete_ids:
             return 0
@@ -641,12 +750,36 @@ class ElasticsearchVectorStore(VectorStore):
         resp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
         return [self._hit_to_result(hit) for hit in resp.get("hits", {}).get("hits", [])]
 
-    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None) -> int:
+    def metadata_search(
+        self,
+        query: str,
+        k: int = 5,
+        namespace: str | None = None,
+    ) -> List[dict[str, Any]]:
+        if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
+            return []
+        bool_query: dict[str, Any] = {
+            "should": [
+                {"match": {"doc_name": query}},
+                {"match": {"metadata.doc_version": query}},
+                {"match": {"metadata.tenant_id": query}},
+            ],
+            "minimum_should_match": 1,
+        }
+        if namespace is not None:
+            bool_query["filter"] = [{"term": {"namespace": namespace}}]
+        body = {"size": k, "query": {"bool": bool_query}}
+        resp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
+        return [self._hit_to_result(hit) for hit in resp.get("hits", {}).get("hits", [])]
+
+    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None, doc_version: str | None = None) -> int:
         if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
             return 0
         must: list[dict[str, Any]] = [{"term": {"doc_name": doc_name}}]
         if namespace is not None:
             must.append({"term": {"namespace": namespace}})
+        if doc_version is not None:
+            must.append({"term": {"metadata.doc_version": str(doc_version)}})
         body = {"query": {"bool": {"must": must}}}
         resp = self._with_retry(
             lambda: self._client.delete_by_query(

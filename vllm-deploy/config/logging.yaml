@@ -1,0 +1,16 @@
+# 日志配置
+log_dir: "./logs"
+level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+max_size_mb: 100
+backup_count: 10
+
+# 日志格式
+format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+date_format: "%Y-%m-%d %H:%M:%S"
+
+# 健康检查配置
+health_check:
+  enabled: true
+  interval: 30
+  timeout: 10
+  retries: 3

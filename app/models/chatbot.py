@@ -12,6 +12,7 @@ class ChatRequest(BaseModel):
     user_id: str = Field(..., description="用户唯一标识")
     session_id: str = Field(..., description="会话唯一标识（由前端或调用方管理）")
     query: str = Field(..., description="用户本轮输入内容")
+    image_urls: list[str] = Field(default_factory=list, description="本轮关联的图片 URL 列表（可选）")
     enable_rag: bool = Field(True, description="是否启用 RAG 检索")
     enable_context: bool = Field(True, description="是否启用会话上下文")
 

@@ -10,7 +10,8 @@ GraphQueryService
 - 查询策略（根据问题抽取实体、构造 Cypher 等）留作后续扩展。
 """
 
-from typing import List, Optional
+import re
+from typing import Any, List, Optional
 
 from app.core.config import GraphRAGConfig, get_app_config
 from app.core.logging import get_logger
@@ -69,20 +70,98 @@ class GraphQueryService:
         """
         查询与问题相关的图事实，返回适合拼接到 RAG 上下文中的文本列表。
 
-        当前实现仅返回空列表，预留后续扩展：
-        - 基于 LLM/NLP 从 question 中抽取候选实体；
-        - 结合 GraphSchemaConfig 构造 Cypher 查询，取邻域子图；
-        - 将节点/关系转为自然语言事实句子。
+        企业可用轻量实现：
+        - 规则抽取 query 实体；
+        - 查询 Entity 与 DocumentChunk / CO_OCCUR 邻域；
+        - 返回可拼接到 RAG 上下文的事实文本。
         """
         if not self._cfg.enabled or self._graph is None:
             return []
+        ns = namespace or "__default__"
+        hops = max_hops or self._cfg.strategy.graph_hops
+        limit = max_items or self._cfg.strategy.max_graph_items
+        terms = self._extract_terms(question)
+        if not terms:
+            return []
 
-        # TODO: 实现 question → entities → Cypher → facts 的完整链路。
-        logger.debug(
-            "GraphQueryService.query_relevant_facts called (namespace=%s, max_hops=%s, max_items=%s)",
-            namespace,
-            max_hops,
-            max_items,
+        facts: List[str] = []
+        rows = self._cypher_rows(
+            """
+            MATCH (e:Entity {namespace: $namespace})<-[:MENTION]-(d:DocumentChunk {namespace: $namespace})
+            WHERE e.entity_id IN $terms OR toLower(e.name) IN $terms
+            RETURN e.name AS entity, d.text AS text
+            LIMIT $limit
+            """,
+            {"namespace": ns, "terms": terms, "limit": limit},
         )
+        for r in rows:
+            entity = r.get("entity")
+            text = r.get("text")
+            if entity and text:
+                facts.append(
+                    self._cfg.fact_template_entity.format(
+                        entity=entity,
+                        text=text,
+                    )
+                )
+
+        if hops >= 2 and len(facts) < limit:
+            co_rows = self._cypher_rows(
+                """
+                MATCH (a:Entity {namespace: $namespace})-[r:CO_OCCUR]->(b:Entity {namespace: $namespace})
+                WHERE a.entity_id IN $terms OR toLower(a.name) IN $terms
+                RETURN a.name AS a_name, b.name AS b_name, r.weight AS weight
+                ORDER BY weight DESC
+                LIMIT $limit
+                """,
+                {"namespace": ns, "terms": terms, "limit": limit},
+            )
+            for r in co_rows:
+                a_name = r.get("a_name")
+                b_name = r.get("b_name")
+                w = r.get("weight")
+                if a_name and b_name:
+                    weight = int(w or 0)
+                    if weight < max(1, self._cfg.min_cooccur_weight):
+                        continue
+                    facts.append(
+                        self._cfg.fact_template_cooccur.format(
+                            a=a_name,
+                            b=b_name,
+                            weight=weight,
+                        )
+                    )
+
+        seen = set()
+        unique: List[str] = []
+        for f in facts:
+            if f in seen:
+                continue
+            seen.add(f)
+            unique.append(f)
+            if len(unique) >= limit:
+                break
+        return unique
+
+    @staticmethod
+    def _extract_terms(question: str) -> List[str]:
+        cfg = get_app_config().rag.graph
+        min_len = max(1, cfg.entity_min_len)
+        max_len = max(min_len, cfg.entity_max_len)
+        zh_max = max(min_len, min(max_len, cfg.zh_entity_max_len))
+        en_min = max(1, cfg.en_entity_min_len)
+        en_max = max(en_min, min(max_len, cfg.en_entity_max_len))
+        zh_terms = re.findall(rf"[\u4e00-\u9fff]{{{min_len},{zh_max}}}", question or "")
+        en_terms = re.findall(rf"\b[A-Z][a-zA-Z0-9]{{{en_min - 1},{en_max}}}\b", question or "")
+        vals = [t.strip().lower() for t in (zh_terms + en_terms) if t.strip()]
+        return list(dict.fromkeys(vals))
+
+    def _cypher_rows(self, query: str, params: dict[str, Any]) -> List[dict[str, Any]]:
+        if hasattr(self._graph, "query"):
+            rows = self._graph.query(query, params=params)  # type: ignore[union-attr]
+        else:
+            rows = self._graph.run(query, params)  # type: ignore[union-attr]
+        if isinstance(rows, list):
+            return [r for r in rows if isinstance(r, dict)]
         return []
 

@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+"""
+训练管理接口（内部使用）。
+
+服务配置前置条件（运维/开发）：
+1) 训练运行环境可用：
+   - GPU/CUDA（如启用）与依赖环境（PyTorch、训练框架）需可用。
+2) 训练数据与输出目录可访问：
+   - 请求中的 dataset_path / output_dir 需为服务进程可读写路径。
+3) factory 模式：
+   - 若 mode=factory，需确保 LLaMA-Factory 及其运行依赖已正确部署。
+4) code 模式：
+   - 若 mode=code，需确保内部训练代码依赖可用，且断点路径（如传入）存在。
+"""
+
 from fastapi import APIRouter
 
 from app.core.logging import get_logger
@@ -18,10 +32,10 @@ async def start_llm_training(req: LLMTrainJobRequest) -> LLMTrainJobStatus:
     """
     启动大模型训练/微调任务。
 
-    说明：
-    - mode="factory"：通过 LLaMA-Factory 适配器提交任务；
-    - mode="code"：通过内部 LLMTrainingService 启动代码训练任务；
-    - 该接口仅面向内部/运维使用，不建议对业务侧直接开放。
+    参数说明（见 LLMTrainJobRequest）：
+    - 必传：mode、base_model、dataset_path、output_dir
+    - 可选：job_id、extra_args、resume_from_checkpoint
+    - 默认行为：job_id 不传时由后端生成；resume_from_checkpoint 仅 code 模式生效
     """
     job_id = req.job_id or f"llm-{req.mode}-{id(req)}"
 
@@ -68,8 +82,8 @@ async def get_llm_training_status(job_id: str | None = None) -> dict:
     """
     查询大模型训练任务状态。
 
-    - 若提供 job_id，则返回该任务的详细状态；
-    - 若未提供，则返回所有任务的简要列表。
+    参数说明：
+    - 可选：job_id（不传则返回全部任务；传入则返回单任务）
     """
     if job_id:
         job = orchestrator.get_job(job_id)

@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  vllm:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: vllm-service
+    restart: unless-stopped
+    ports:
+      - "${VLLM_PORT:-8000}:8000"
+    volumes:
+      - ${MODEL_PATH:-/path/to/models}:/workspace/models:ro
+      - ../config:/workspace/config:ro
+      - ../logs:/workspace/logs
+      - ${MEDIA_PATH:-./media}:/workspace/media:ro
+    environment:
+      - MODEL_PRESET=${MODEL_PRESET:-qwen2.5-7b}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
+      - WORKSPACE=/workspace
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - vllm-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - vllm-network
+    profiles:
+      - monitoring
+
+networks:
+  vllm-network:
+    driver: bridge
+
+volumes:
+  prometheus-data:

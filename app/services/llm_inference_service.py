@@ -9,6 +9,7 @@ from app.llm.config_registry import LLMConfigRegistry
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.llm.langsmith_tracker import LangSmithTracker
 from app.models.llm import ChatMessage, LLMInferenceRequest, LLMInferenceResponse
+from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
 from app.rag.agentic import AgenticRAGService, RAGContext, RAGMode
 
@@ -34,7 +35,10 @@ class LLMInferenceService:
     ) -> None:
         base_rag = rag_service or RAGService()
         self._rag = base_rag
+        # 统一策略入口：基础检索默认走 HybridRAGService（内部按配置决定 vector/graph/hybrid）。
+        self._hybrid_rag = HybridRAGService(rag_service=base_rag)
         # 为通用推理服务接入 Agentic RAG 基座，当前仍以 BASIC 行为为主，仅通过 rag_mode 预留扩展能力。
+        # 该能力继续保留：当 rag_mode=agentic 时，仍由 AgenticRAGService 执行多步计划检索。
         self._agentic_rag = AgenticRAGService(rag_service=base_rag, default_mode=RAGMode.BASIC)
         self._conv = conv_manager or ConversationManager()
         self._prompts = prompt_registry or PromptTemplateRegistry()
@@ -82,19 +86,23 @@ class LLMInferenceService:
         used_rag = False
 
         if req.enable_rag:
-            # rag_mode 仅作为扩展能力：当前 basic/agentic 在实现上等价，但会在 Agentic 场景中多做一层抽象，便于后续插入多步逻辑。
             mode = RAGMode.AGENTIC if (req.rag_mode or "").lower() == "agentic" else RAGMode.BASIC
-            rag_ctx = RAGContext(user_id=req.user_id, session_id=req.session_id, scene="llm_inference")
             rag_query = user_content
             if planner_summary:
                 rag_query = f"【问题诊断】{planner_summary}\n【用户问题】{user_content}"
-            rag_result = await self._agentic_rag.retrieve(
-                query=rag_query,
-                ctx=rag_ctx,
-                mode=mode,
-                top_k=None,
-            )
-            context_snippets = rag_result.context_snippets
+            if mode == RAGMode.AGENTIC:
+                # 保持原有 AgenticRAGService + RAGService 多步检索策略。
+                rag_ctx = RAGContext(user_id=req.user_id, session_id=req.session_id, scene="llm_inference")
+                rag_result = await self._agentic_rag.retrieve(
+                    query=rag_query,
+                    ctx=rag_ctx,
+                    mode=mode,
+                    top_k=None,
+                )
+                context_snippets = rag_result.context_snippets
+            else:
+                # BASIC 模式切到统一策略入口（HybridRAGService -> RetrievalPolicy）。
+                context_snippets = self._hybrid_rag.retrieve(rag_query, top_k=None, namespace=None)
             used_rag = len(context_snippets) > 0
 
         history_messages: List[ChatMessage] = []

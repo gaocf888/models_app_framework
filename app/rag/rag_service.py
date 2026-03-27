@@ -8,11 +8,13 @@ from app.core.logging import get_logger
 from app.core.metrics import (
     RAG_DOC_DELETE_COUNT,
     RAG_KEYWORD_RECALL_COUNT,
+    RAG_METADATA_RECALL_COUNT,
     RAG_QUERY_COUNT,
     RAG_RERANK_COUNT,
     RAG_SEMANTIC_RECALL_COUNT,
 )
 from app.rag.embedding_service import EmbeddingService
+from app.rag.models import RetrievedChunk
 from app.rag.vector_store import VectorStoreProvider
 
 logger = get_logger(__name__)
@@ -24,8 +26,9 @@ class RAGService:
 
     当前版本：
     - 使用 EmbeddingService 生成嵌入；
-    - 使用 VectorStoreProvider 提供的向量库做余弦相似度检索；
-    - RAG 策略参数（如 top_k）从 AppConfig.rag 中读取。
+    - 使用 VectorStoreProvider 提供的存储后端执行语义检索与关键词检索；
+    - 默认启用“语义召回 + 关键词召回 + RRF 融合 + CrossEncoder 重排”；
+    - 支持按业务场景读取差异化检索参数（top_k/召回规模/重排规模）。
     """
 
     def __init__(self, embedding_service: EmbeddingService | None = None, store_provider: VectorStoreProvider | None = None) -> None:
@@ -73,6 +76,92 @@ class RAGService:
             metadatas=metadatas,
         )
 
+    @staticmethod
+    def _hit_to_chunk(hit: dict, pipeline_version: str | None) -> RetrievedChunk:
+        meta = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+        score = None
+        if hit.get("_rerank_score") is not None:
+            score = float(hit["_rerank_score"])
+        elif hit.get("_fused_score") is not None:
+            score = float(hit["_fused_score"])
+        elif hit.get("score") is not None:
+            score = float(hit["score"])
+        section = meta.get("section_path") or meta.get("section")
+        dver = meta.get("doc_version")
+        return RetrievedChunk(
+            text=str(hit.get("text", "")),
+            doc_name=hit.get("doc_name"),
+            namespace=hit.get("namespace"),
+            chunk_id=str(hit.get("ext_id")) if hit.get("ext_id") is not None else None,
+            score=score,
+            section_path=str(section) if section is not None else None,
+            doc_version=str(dver) if dver is not None else None,
+            pipeline_version=pipeline_version,
+            metadata=meta,
+        )
+
+    def retrieve_chunks(
+        self,
+        query: str,
+        top_k: int | None = None,
+        namespace: str | None = None,
+        use_hybrid: bool | None = None,
+        scene: str | None = None,
+    ) -> List[RetrievedChunk]:
+        """
+        执行检索并返回标准 RetrievedChunk 列表（设计稿 §E 统一检索输出）。
+        """
+        RAG_QUERY_COUNT.inc()
+        profile = self._get_scene_profile(scene)
+        k = top_k or (profile.top_k if profile is not None else self._cfg.top_k)
+        pv = self._cfg.ingestion.pipeline_version
+        store = self._store_provider.get_default_store()
+        q_emb = self._embedding_service.embed_text(query)
+        hybrid_enabled = self._cfg.hybrid.enabled if use_hybrid is None else use_hybrid
+        hits: list[dict]
+        if not hybrid_enabled:
+            RAG_SEMANTIC_RECALL_COUNT.inc()
+            hits = store.similarity_search_by_vector(q_emb, k=k, namespace=namespace)
+        else:
+            sem_top = profile.semantic_top_k if profile is not None else self._cfg.hybrid.semantic_top_k
+            kw_top = profile.keyword_top_k if profile is not None else self._cfg.hybrid.keyword_top_k
+            md_top = self._cfg.hybrid.metadata_top_k
+            sem_k = max(sem_top, k)
+            kw_k = max(kw_top, k)
+            md_k = max(md_top, k)
+            metadata_enabled = bool(self._cfg.hybrid.metadata_recall_enabled)
+            worker_num = 3 if metadata_enabled else 2
+            with ThreadPoolExecutor(max_workers=worker_num) as pool:
+                f_sem = pool.submit(store.similarity_search_by_vector, q_emb, sem_k, namespace)
+                f_kw = pool.submit(store.keyword_search, query, kw_k, namespace)
+                f_md = pool.submit(store.metadata_search, query, md_k, namespace) if metadata_enabled else None
+                semantic_hits = f_sem.result()
+                keyword_hits = f_kw.result()
+                metadata_hits = f_md.result() if f_md is not None else []
+            RAG_SEMANTIC_RECALL_COUNT.inc()
+            RAG_KEYWORD_RECALL_COUNT.inc()
+            if metadata_enabled:
+                RAG_METADATA_RECALL_COUNT.inc()
+            fused = self._rrf_fuse(
+                semantic_hits=semantic_hits,
+                keyword_hits=keyword_hits,
+                metadata_hits=metadata_hits,
+                rrf_k=self._cfg.hybrid.rrf_k,
+            )
+            rerank_base = profile.rerank_top_n if profile is not None else self._cfg.hybrid.rerank_top_n
+            rerank_top_n = max(rerank_base, k)
+            candidates = fused[:rerank_top_n]
+            hits = self._rerank(query=query, hits=candidates)[:k]
+
+        out: List[RetrievedChunk] = []
+        for h in hits:
+            if not h.get("text"):
+                continue
+            out.append(self._hit_to_chunk(h, pv))
+            if len(out) >= k:
+                break
+        return out
+
     def retrieve_context(
         self,
         query: str,
@@ -82,45 +171,27 @@ class RAGService:
         scene: str | None = None,
     ) -> List[str]:
         """
-        执行相似度检索，返回候选上下文文本列表。
+        执行检索并返回候选上下文文本列表。
+
+        当 hybrid 启用时：
+        - 并行执行语义召回与关键词召回；
+        - 使用 RRF 融合候选；
+        - 使用 CrossEncoder 重排并返回 Top-K。
+
+        实现上委托 `retrieve_chunks`，保持与标准 RetrievedChunk 一致。
         """
-        RAG_QUERY_COUNT.inc()
-        profile = self._get_scene_profile(scene)
-        k = top_k or (profile.top_k if profile is not None else self._cfg.top_k)
-        store = self._store_provider.get_default_store()
-        q_emb = self._embedding_service.embed_text(query)
-        hybrid_enabled = self._cfg.hybrid.enabled if use_hybrid is None else use_hybrid
-        if not hybrid_enabled:
-            RAG_SEMANTIC_RECALL_COUNT.inc()
-            results = store.similarity_search_by_vector(q_emb, k=k, namespace=namespace)
-            return [r.get("text", "") for r in results if r.get("text")]
-
-        sem_top = profile.semantic_top_k if profile is not None else self._cfg.hybrid.semantic_top_k
-        kw_top = profile.keyword_top_k if profile is not None else self._cfg.hybrid.keyword_top_k
-        sem_k = max(sem_top, k)
-        kw_k = max(kw_top, k)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_sem = pool.submit(store.similarity_search_by_vector, q_emb, sem_k, namespace)
-            f_kw = pool.submit(store.keyword_search, query, kw_k, namespace)
-            semantic_hits = f_sem.result()
-            keyword_hits = f_kw.result()
-        RAG_SEMANTIC_RECALL_COUNT.inc()
-        RAG_KEYWORD_RECALL_COUNT.inc()
-
-        fused = self._rrf_fuse(
-            semantic_hits=semantic_hits,
-            keyword_hits=keyword_hits,
-            rrf_k=self._cfg.hybrid.rrf_k,
+        chunks = self.retrieve_chunks(
+            query=query,
+            top_k=top_k,
+            namespace=namespace,
+            use_hybrid=use_hybrid,
+            scene=scene,
         )
-        rerank_base = profile.rerank_top_n if profile is not None else self._cfg.hybrid.rerank_top_n
-        rerank_top_n = max(rerank_base, k)
-        candidates = fused[:rerank_top_n]
-        reranked = self._rerank(query=query, hits=candidates)
-        return [h.get("text", "") for h in reranked[:k] if h.get("text")]
+        return [c.text for c in chunks if c.text]
 
-    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None) -> int:
+    def delete_by_doc_name(self, doc_name: str, namespace: str | None = None, doc_version: str | None = None) -> int:
         store = self._store_provider.get_default_store()
-        deleted = store.delete_by_doc_name(doc_name=doc_name, namespace=namespace)
+        deleted = store.delete_by_doc_name(doc_name=doc_name, namespace=namespace, doc_version=doc_version)
         ns = namespace or "__all__"
         if deleted > 0:
             RAG_DOC_DELETE_COUNT.labels(namespace=ns).inc(deleted)
@@ -131,6 +202,7 @@ class RAGService:
         semantic_hits: list[dict],
         keyword_hits: list[dict],
         rrf_k: int,
+        metadata_hits: list[dict] | None = None,
     ) -> list[dict]:
         scored: dict[str, dict] = {}
 
@@ -157,6 +229,8 @@ class RAGService:
             upsert(hit, idx, "semantic")
         for idx, hit in enumerate(keyword_hits):
             upsert(hit, idx, "keyword")
+        for idx, hit in enumerate(metadata_hits or []):
+            upsert(hit, idx, "metadata")
         items = list(scored.values())
         items.sort(key=lambda x: float(x.get("_fused_score", 0.0)), reverse=True)
         return items
