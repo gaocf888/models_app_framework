@@ -1,3 +1,5 @@
+# cursor持久化记忆实现
+
 ## 1. 安装 uv 包管理器
 uv 是快速 Python 包管理工具，Basic Memory 官方推荐使用。
 
