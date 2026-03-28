@@ -1,0 +1,15 @@
+{
+    "mcpServers": {
+      "basic-memory": {
+        "command": "C:\\Users\\gao_c\\.local\\bin\\uvx.exe",
+        "args": [
+          "basic-memory", 
+          "mcp",
+          "--project",
+          "models_app_framework",
+          "--data-dir",
+          "${workspaceFolder}/.basic-memory"
+        ]
+      }
+    }
+  }
