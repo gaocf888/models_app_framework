@@ -410,8 +410,8 @@ def _load_from_env() -> AppConfig:
     es_hosts = [h.strip() for h in es_hosts_raw.split(",") if h.strip()]
     es_cfg = ElasticsearchConfig(
         hosts=es_hosts or ["http://localhost:9200"],
-        username=os.getenv("RAG_ES_USERNAME") or None,
-        password=os.getenv("RAG_ES_PASSWORD") or None,
+        username=os.getenv("RAG_ES_USERNAME", "admin") or None,
+        password=os.getenv("RAG_ES_PASSWORD", "wQ=5c-^PRiG0#FN6PJAn^WaR") or None,
         api_key=os.getenv("RAG_ES_API_KEY") or None,
         verify_certs=os.getenv("RAG_ES_VERIFY_CERTS", "false").lower() == "true",
         request_timeout=int(os.getenv("RAG_ES_REQUEST_TIMEOUT", "30")),
