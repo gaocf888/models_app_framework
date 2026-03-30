@@ -41,10 +41,12 @@ docker-compose --env-file ".env" -f "docker-compose.easysearch.yml" up -d
 ### 3.3 验证可用性
 
 ```powershell
-curl -u elastic:changeme "http://127.0.0.1:9200/_cluster/health?pretty"
+curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
 ```
 
 若返回 `status`（yellow/green）且接口可访问，表示启动成功。
+
+> 若返回 401，可在容器内执行 `reset_admin_password.sh` 重新生成 admin 密码后再测试。
 
 ### 3.4 执行初始化（可选）
 
@@ -60,11 +62,11 @@ docker exec rag-easysearch sh /opt/easysearch/init/01-init-rag-indexes.sh
 将 `project-env/rag-es.env.example` 内容合并到应用 `.env`（或容器环境变量）：
 
 - `RAG_VECTOR_STORE_TYPE=es`（默认，推荐）
-- `RAG_ES_HOSTS=http://rag-easysearch:9200`（容器间访问）
+- `RAG_ES_HOSTS=https://rag-easysearch:9200`（容器间访问）
 - `RAG_ES_USERNAME` / `RAG_ES_PASSWORD`
 - `RAG_ES_INDEX_*`、`RAG_ES_DOCS_INDEX_*`、`RAG_ES_JOBS_INDEX_*`
 
-> 注意：如果应用和 EasySearch 在同一 Docker 网络中，`RAG_ES_HOSTS` 建议填容器名；本机调试可填 `http://127.0.0.1:9200`。
+> 注意：如果应用和 EasySearch 在同一 Docker 网络中，`RAG_ES_HOSTS` 建议填容器名；本机调试可填 `https://127.0.0.1:9200`。
 
 ## 5. Docker 化部署建议（与 vLLM / 应用并行部署）
 
@@ -72,7 +74,7 @@ docker exec rag-easysearch sh /opt/easysearch/init/01-init-rag-indexes.sh
 - 应用只通过环境变量访问 EasySearch，不在代码中写死地址。
 - 生产环境建议启用：
   - 持久化卷（已在 compose 中提供）；
-  - 认证与 TLS（至少认证必须开启）；
+  - 认证与 TLS（建议开启并统一使用 HTTPS）；
   - 监控告警（磁盘、JVM、索引写入失败率）。
 
 ## 6. 常见问题
