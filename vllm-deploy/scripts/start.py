@@ -36,6 +36,7 @@ class VLLMService:
         "max_num_seqs": ("performance", "max_num_seqs"),
         "max_num_batched_tokens": ("performance", "max_num_batched_tokens"),
         "enable_prefix_caching": ("performance", "enable_prefix_caching"),
+        "enforce_eager": ("hardware", "enforce_eager"),
     }
 
     def __init__(self, config_dir: str = None):
@@ -280,6 +281,8 @@ class VLLMService:
             cmd.extend(["--tensor-parallel-size", str(tp_size)])
         cmd.extend(["--gpu-memory-utilization", str(hardware.get("gpu_memory_utilization", 0.85))])
         cmd.extend(["--block-size", str(hardware.get("block_size", 32))])
+        if hardware.get("enforce_eager"):
+            cmd.append("--enforce-eager")
 
         # 性能配置
         perf = self.vllm_config.get("performance", {})
@@ -370,7 +373,21 @@ class VLLMService:
                 self.logger.info(f"API 地址: http://{host}:{port}/v1")
                 self.logger.info(f"健康检查: http://{host}:{port}/health")
                 self.logger.info("=" * 50)
-                return True
+
+                # 方案二：前台阻塞，直到子进程退出（适合 Docker 主进程）
+                self.logger.info("vLLM 服务已就绪，前台等待子进程退出（Ctrl+C 或 docker stop 结束容器）")
+                try:
+                    self.process.wait()
+                    exit_code = self.process.returncode
+                    if exit_code == 0:
+                        self.logger.info("vLLM 子进程正常退出")
+                    else:
+                        self.logger.error(f"vLLM 子进程异常退出，退出码: {exit_code}")
+                    return exit_code == 0
+                except KeyboardInterrupt:
+                    self.logger.info("收到中断信号，准备停止 vLLM 服务...")
+                    self.stop()
+                    return False
             else:
                 self.logger.error("服务启动超时")
                 self.stop()
@@ -381,9 +398,9 @@ class VLLMService:
             return False
 
     def _wait_ready(self, timeout: Optional[int] = None) -> bool:
-        """等待 /health 返回 200。超时默认可通过环境变量 VLLM_STARTUP_TIMEOUT（秒）调整；多模态/大模型加载常需十余分钟。"""
+        """等待 /health 返回 200。超时由环境变量 STARTUP_WAIT_TIMEOUT（秒）控制；勿用 VLLM_* 前缀，以免被 vLLM 当作自身配置并告警。"""
         if timeout is None:
-            raw = os.getenv("VLLM_STARTUP_TIMEOUT", "1200")
+            raw = os.getenv("STARTUP_WAIT_TIMEOUT", "1200")
             try:
                 timeout = max(60, int(raw))
             except ValueError:

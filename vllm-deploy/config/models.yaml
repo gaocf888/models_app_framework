@@ -46,16 +46,17 @@ presets:
 
   # ==================== 通义千问 2.5 视觉语言模型 ====================
 
-  # Qwen2.5-VL 7B 多模态模型
+  # Qwen2.5-VL 7B 多模态模型（VL 权重 + 视觉侧占显存大，单卡 16GB 级往往无法同时 32K 上下文，默认 8K；更大显存可调高 max_model_len）
   qwen2.5-vl-7b:
     path: "./models/Qwen2.5-VL-7B-Instruct"
     served_model_name: "qwen2.5-vl-7b-instruct"
     dtype: "float16"
-    max_model_len: 32768
+    max_model_len: 8192
+    enforce_eager: true
     tensor_parallel_size: 1
-    gpu_memory_utilization: 0.85
-    max_num_seqs: 16
-    max_num_batched_tokens: 16384
+    gpu_memory_utilization: 0.92
+    max_num_seqs: 8
+    max_num_batched_tokens: 8192
     enable_prefix_caching: true
     multimodal:
       enabled: true
@@ -71,11 +72,12 @@ presets:
     path: "./models/Qwen2.5-VL-32B-Instruct"
     served_model_name: "qwen2.5-vl-32b-instruct"
     dtype: "bfloat16"
-    max_model_len: 32768
+    max_model_len: 8192
+    enforce_eager: true
     tensor_parallel_size: 2
-    gpu_memory_utilization: 0.85
-    max_num_seqs: 12
-    max_num_batched_tokens: 12288
+    gpu_memory_utilization: 0.92
+    max_num_seqs: 8
+    max_num_batched_tokens: 8192
     enable_prefix_caching: true
     multimodal:
       enabled: true
@@ -93,11 +95,12 @@ presets:
     path: "./models/Qwen3-VL-32B-Instruct"
     served_model_name: "qwen3-vl-32b-instruct"
     dtype: "bfloat16"
-    max_model_len: 32768
+    max_model_len: 8192
+    enforce_eager: true
     tensor_parallel_size: 2
-    gpu_memory_utilization: 0.85
-    max_num_seqs: 12
-    max_num_batched_tokens: 12288
+    gpu_memory_utilization: 0.92
+    max_num_seqs: 8
+    max_num_batched_tokens: 8192
     enable_prefix_caching: true
     multimodal:
       enabled: true
