@@ -5,6 +5,7 @@ vLLM 企业级启动脚本
 支持英伟达和国产加速卡（昇腾、寒武纪、沐曦、燧原）
 """
 
+import json
 import os
 import sys
 import signal
@@ -294,13 +295,14 @@ class VLLMService:
         if not isinstance(mm, dict):
             mm = {}
         if mm.get("enabled"):
-            limit_parts = []
-            if mm.get("limit_images"):
-                limit_parts.append(f"image={mm['limit_images']}")
-            if mm.get("limit_videos"):
-                limit_parts.append(f"video={mm['limit_videos']}")
-            if limit_parts:
-                cmd.extend(["--limit-mm-per-prompt", ",".join(limit_parts)])
+            # vLLM CLI 对该参数使用 json.loads，须为 JSON 对象，而非 image=4,video=1
+            limits = {}
+            if mm.get("limit_images") is not None:
+                limits["image"] = mm["limit_images"]
+            if mm.get("limit_videos") is not None:
+                limits["video"] = mm["limit_videos"]
+            if limits:
+                cmd.extend(["--limit-mm-per-prompt", json.dumps(limits, separators=(",", ":"))])
 
             for media_path in mm.get("media_paths", []):
                 if media_path and Path(media_path).exists():
