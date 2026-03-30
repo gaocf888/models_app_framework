@@ -380,12 +380,20 @@ class VLLMService:
             self.logger.error(f"启动失败: {e}")
             return False
 
-    def _wait_ready(self, timeout: int = 300) -> bool:
-        """等待服务就绪"""
+    def _wait_ready(self, timeout: Optional[int] = None) -> bool:
+        """等待 /health 返回 200。超时默认可通过环境变量 VLLM_STARTUP_TIMEOUT（秒）调整；多模态/大模型加载常需十余分钟。"""
+        if timeout is None:
+            raw = os.getenv("VLLM_STARTUP_TIMEOUT", "1200")
+            try:
+                timeout = max(60, int(raw))
+            except ValueError:
+                timeout = 1200
+
         host = self.vllm_config.get("server", {}).get("host", "0.0.0.0")
         port = self.vllm_config.get("server", {}).get("port", 8000)
         url = f"http://{host}:{port}/health"
 
+        self.logger.info(f"等待服务就绪（最长 {timeout} 秒），大模型/多模态首次加载可能较慢")
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:

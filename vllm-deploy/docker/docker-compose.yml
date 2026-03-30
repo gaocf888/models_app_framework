@@ -20,6 +20,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
+      - VLLM_STARTUP_TIMEOUT=${VLLM_STARTUP_TIMEOUT:-1200}
       - WORKSPACE=/workspace
     deploy:
       resources:
