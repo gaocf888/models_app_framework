@@ -22,6 +22,21 @@ from datetime import datetime
 class VLLMService:
     """vLLM 服务管理器 - 支持任意位置部署"""
 
+    # models.yaml 预设里的扁平字段与 vllm.yaml 嵌套结构对应关系
+    _PRESET_FLAT_FIELDS = {
+        "path": ("model", "path"),
+        "dtype": ("model", "dtype"),
+        "max_model_len": ("model", "max_model_len"),
+        "trust_remote_code": ("model", "trust_remote_code"),
+        "served_model_name": ("server", "served_model_name"),
+        "tensor_parallel_size": ("hardware", "tensor_parallel_size"),
+        "gpu_memory_utilization": ("hardware", "gpu_memory_utilization"),
+        "block_size": ("hardware", "block_size"),
+        "max_num_seqs": ("performance", "max_num_seqs"),
+        "max_num_batched_tokens": ("performance", "max_num_batched_tokens"),
+        "enable_prefix_caching": ("performance", "enable_prefix_caching"),
+    }
+
     def __init__(self, config_dir: str = None):
         # 获取脚本所在目录，自动定位项目根目录
         self.script_dir = Path(__file__).parent.resolve()
@@ -101,9 +116,10 @@ class VLLMService:
             if model_path and not Path(model_path).is_absolute():
                 self.vllm_config["model"]["path"] = str(self.workspace / model_path)
 
-        # 处理多模态媒体路径
-        if "multimodal" in self.vllm_config:
-            media_paths = self.vllm_config["multimodal"].get("media_paths", [])
+        # 处理多模态媒体路径（multimodal 可能来自预设中的 false，需为 dict 才解析）
+        mm = self.vllm_config.get("multimodal")
+        if isinstance(mm, dict):
+            media_paths = mm.get("media_paths", [])
             resolved_paths = []
             for path in media_paths:
                 if path and not Path(path).is_absolute():
@@ -126,11 +142,24 @@ class VLLMService:
             preset_config = self.models_config["presets"][preset]
 
             for key, value in preset_config.items():
-                if key == "multimodal" and isinstance(value, dict):
-                    if "multimodal" not in self.vllm_config:
-                        self.vllm_config["multimodal"] = {}
-                    self.vllm_config["multimodal"].update(value)
-                elif key in ["server", "model", "hardware", "performance"]:
+                if key == "multimodal":
+                    if isinstance(value, dict):
+                        if "multimodal" not in self.vllm_config:
+                            self.vllm_config["multimodal"] = {}
+                        self.vllm_config["multimodal"].update(value)
+                    else:
+                        # presets 中 multimodal: false 仅表示关闭多模态，需保持 dict 结构
+                        if "multimodal" not in self.vllm_config:
+                            self.vllm_config["multimodal"] = {}
+                        self.vllm_config["multimodal"]["enabled"] = bool(value)
+                elif key == "description":
+                    continue
+                elif key in self._PRESET_FLAT_FIELDS:
+                    section, subkey = self._PRESET_FLAT_FIELDS[key]
+                    if section not in self.vllm_config:
+                        self.vllm_config[section] = {}
+                    self.vllm_config[section][subkey] = value
+                elif key in ("server", "model", "hardware", "performance") and isinstance(value, dict):
                     if key not in self.vllm_config:
                         self.vllm_config[key] = {}
                     self.vllm_config[key].update(value)
@@ -262,6 +291,8 @@ class VLLMService:
 
         # 多模态配置
         mm = self.vllm_config.get("multimodal", {})
+        if not isinstance(mm, dict):
+            mm = {}
         if mm.get("enabled"):
             limit_parts = []
             if mm.get("limit_images"):

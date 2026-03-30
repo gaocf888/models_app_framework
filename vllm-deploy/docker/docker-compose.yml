@@ -16,7 +16,7 @@ services:
       - ../logs:/workspace/logs
       - ${MEDIA_PATH:-./media}:/workspace/media:ro
     environment:
-      - MODEL_PRESET=${MODEL_PRESET:-qwen2.5-7b}
+      - MODEL_PRESET=${MODEL_PRESET:-qwen2.5-vl-7b}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
