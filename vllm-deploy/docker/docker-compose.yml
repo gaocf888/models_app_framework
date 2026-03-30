@@ -12,6 +12,7 @@ services:
     volumes:
       - ${MODEL_PATH:-/path/to/models}:/workspace/models:ro
       - ../config:/workspace/config:ro
+      - ../scripts:/workspace/scripts:ro
       - ../logs:/workspace/logs
       - ${MEDIA_PATH:-./media}:/workspace/media:ro
     environment:

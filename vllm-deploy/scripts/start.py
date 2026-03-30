@@ -60,6 +60,9 @@ class VLLMService:
         # 初始化日志
         self._setup_logging()
 
+        if self._applied_model_preset:
+            self.logger.info(f"应用模型预设: {self._applied_model_preset}")
+
         # 进程管理
         self.process: Optional[subprocess.Popen] = None
         self.pid_file = Path("/tmp/vllm.pid")
@@ -115,7 +118,8 @@ class VLLMService:
             self.logging_config["log_dir"] = str(self.workspace / log_dir)
 
     def _apply_model_preset(self):
-        """应用模型预设配置"""
+        """应用模型预设配置（在 _setup_logging 之前调用，不可使用 self.logger）"""
+        self._applied_model_preset = None
         preset = os.getenv("MODEL_PRESET", self.models_config.get("active", ""))
 
         if preset and preset in self.models_config.get("presets", {}):
@@ -133,7 +137,7 @@ class VLLMService:
                 else:
                     self.vllm_config[key] = value
 
-            self.logger.info(f"应用模型预设: {preset}")
+            self._applied_model_preset = preset
 
     def _apply_env_overrides(self):
         """应用环境变量覆盖"""

@@ -23,7 +23,7 @@ COPY scripts/ ${WORKSPACE}/scripts/
 COPY requirements.txt ${WORKSPACE}/
 
 # 安装依赖
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
 
 # 设置脚本权限
 RUN chmod +x ${WORKSPACE}/scripts/*.py
