@@ -35,7 +35,7 @@ Copy-Item ".env.example" ".env"
 ### 3.2 启动数据库
 
 ```powershell
-docker compose --env-file ".env" -f "docker-compose.easysearch.yml" up -d
+docker-compose --env-file ".env" -f "docker-compose.easysearch.yml" up -d
 ```
 
 ### 3.3 验证可用性

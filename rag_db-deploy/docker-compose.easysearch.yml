@@ -5,10 +5,11 @@ services:
     environment:
       - cluster.name=${EASYSEARCH_CLUSTER_NAME}
       - node.name=${EASYSEARCH_NODE_NAME}
-      - discovery.type=single-node
+      # - discovery.type=single-node
       - bootstrap.memory_lock=true
       - ES_JAVA_OPTS=${EASYSEARCH_JAVA_OPTS}
-      - xpack.security.enabled=true
+      # - xpack.security.enabled=true
+      # - security.enabled=true
       - ELASTIC_USERNAME=${EASYSEARCH_USERNAME}
       - ELASTIC_PASSWORD=${EASYSEARCH_PASSWORD}
     ulimits:
@@ -19,15 +20,15 @@ services:
         soft: 65536
         hard: 65536
     volumes:
-      - ${EASYSEARCH_DATA_VOLUME}:/usr/share/elasticsearch/data
-      - ./easysearch/config/easysearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+      - ${EASYSEARCH_DATA_VOLUME}:/app/easysearch/data
+      - ./easysearch/config/easysearch.yml:/app/easysearch/config/easysearch.yml:ro
       - ./easysearch/init:/opt/easysearch/init:ro
     ports:
       - "${EASYSEARCH_PORT}:9200"
     networks:
       - ${EASYSEARCH_NETWORK}
     healthcheck:
-      test: [ "CMD-SHELL", "curl -s -u ${EASYSEARCH_USERNAME}:${EASYSEARCH_PASSWORD} http://127.0.0.1:9200/_cluster/health >/dev/null || exit 1" ]
+      test: [ "CMD-SHELL", "curl -s -k -u ${EASYSEARCH_USERNAME}:${EASYSEARCH_PASSWORD} https://127.0.0.1:9200/_cluster/health >/dev/null || exit 1" ]
       interval: 20s
       timeout: 10s
       retries: 10
