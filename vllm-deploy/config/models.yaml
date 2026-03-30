@@ -4,7 +4,7 @@ presets:
 
   # Qwen2.5 7B 基础模型
   qwen2.5-7b:
-    path: "../models/Qwen2.5-7B-Instruct"
+    path: "./models/Qwen2.5-7B-Instruct"
     served_model_name: "qwen2.5-7b-instruct"
     dtype: "float16"
     max_model_len: 32768
@@ -18,7 +18,7 @@ presets:
 
   # Qwen2.5 14B 模型
   qwen2.5-14b:
-    path: "../models/Qwen2.5-14B-Instruct"
+    path: "./models/Qwen2.5-14B-Instruct"
     served_model_name: "qwen2.5-14b-instruct"
     dtype: "bfloat16"
     max_model_len: 32768
@@ -32,7 +32,7 @@ presets:
 
   # Qwen2.5 72B 模型
   qwen2.5-72b:
-    path: "../models/Qwen2.5-72B-Instruct"
+    path: "./models/Qwen2.5-72B-Instruct"
     served_model_name: "qwen2.5-72b-instruct"
     dtype: "bfloat16"
     max_model_len: 32768
@@ -48,7 +48,7 @@ presets:
 
   # Qwen2.5-VL 7B 多模态模型
   qwen2.5-vl-7b:
-    path: "../models/Qwen2.5-VL-7B-Instruct"
+    path: "./models/Qwen2.5-VL-7B-Instruct"
     served_model_name: "qwen2.5-vl-7b-instruct"
     dtype: "float16"
     max_model_len: 32768
@@ -68,7 +68,7 @@ presets:
 
   # Qwen2.5-VL 32B 多模态模型
   qwen2.5-vl-32b:
-    path: "../models/Qwen2.5-VL-32B-Instruct"
+    path: "./models/Qwen2.5-VL-32B-Instruct"
     served_model_name: "qwen2.5-vl-32b-instruct"
     dtype: "bfloat16"
     max_model_len: 32768
@@ -90,7 +90,7 @@ presets:
 
   # Qwen3-VL 32B 多模态模型
   qwen3-vl-32b:
-    path: "../models/Qwen3-VL-32B-Instruct"
+    path: "./models/Qwen3-VL-32B-Instruct"
     served_model_name: "qwen3-vl-32b-instruct"
     dtype: "bfloat16"
     max_model_len: 32768
@@ -112,7 +112,7 @@ presets:
 
   # Llama 3 8B
   llama3-8b:
-    path: "../models/Meta-Llama-3-8B-Instruct"
+    path: "./models/Meta-Llama-3-8B-Instruct"
     served_model_name: "llama3-8b-instruct"
     dtype: "bfloat16"
     max_model_len: 8192
@@ -126,7 +126,7 @@ presets:
 
   # Llama 3 70B
   llama3-70b:
-    path: "../models/Meta-Llama-3-70B-Instruct"
+    path: "./models/Meta-Llama-3-70B-Instruct"
     served_model_name: "llama3-70b-instruct"
     dtype: "bfloat16"
     max_model_len: 8192
@@ -140,7 +140,7 @@ presets:
 
   # DeepSeek V2 Lite
   deepseek-v2-lite:
-    path: "../models/DeepSeek-V2-Lite-Chat"
+    path: "./models/DeepSeek-V2-Lite-Chat"
     served_model_name: "deepseek-v2-lite-chat"
     dtype: "bfloat16"
     max_model_len: 16384
