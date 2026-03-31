@@ -121,6 +121,60 @@ LOG_FILE_COMPRESS=true
 - 轮转触发后会生成 `app.log.1.gz`、`app.log.2.gz` ...（当 `LOG_FILE_COMPRESS=true`）。  
 - compose 已挂载 `/workspace/logs` 到命名卷 `app-logs`，容器重建后日志仍可保留。
 
+### 2.8 嵌入模型离线使用（bge-small-zh-v1.5 示例）
+
+若部署环境**无法访问 Hugging Face Hub**，或希望避免在线下载，推荐将嵌入模型预先下载到仓库根目录的统一离线目录，并通过挂载暴露给应用：
+
+1. **在项目根目录准备离线模型目录**
+
+   约定目录结构如下（你当前已按此方式完成）：
+
+   ```text
+   models-files/
+     embeddings/
+       bge-small-zh-v1.5/   # BAAI/bge-small-zh-v1.5 的完整模型文件
+   ```
+
+2. **在 compose 中挂载到应用容器**
+
+   在 `app/app-deploy/docker-compose.yml` 中，为应用容器增加只读挂载（示例）：
+
+   ```yaml
+   services:
+     models-app:
+       # ...
+       volumes:
+         - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+
+     models-app-gpu:
+       # ...
+       volumes:
+         - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+   ```
+
+3. **在 `.env` 中指定嵌入模型路径**
+
+   在 `app/app-deploy/.env` 中确认或新增：
+
+   ```env
+   EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5
+   ```
+
+   应用启动后，`EmbeddingService` 会**直接从该本地路径加载模型**，不再尝试访问 Hugging Face。
+
+4. **启动/重启应用栈**
+
+   ```bash
+   cd app/app-deploy
+   docker compose up -d --build
+   ```
+
+如果未来更换嵌入模型，只需：
+
+- 在根目录 `models-files/embeddings/` 下新增对应子目录并放入新模型文件；  
+- 调整 `docker-compose.yml` 对应挂载路径；  
+- 将 `.env` 中的 `EMBEDDING_MODEL_PATH` 改为新的容器内路径。
+
 ---
 
 ## 3. 启动命令（生产/测试环境）

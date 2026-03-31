@@ -12,6 +12,9 @@ services:
       # - security.enabled=true
       - ELASTIC_USERNAME=${EASYSEARCH_USERNAME}
       - ELASTIC_PASSWORD=${EASYSEARCH_PASSWORD}
+      # init 脚本使用的连接参数（避免默认 elastic/changeme 反复认证失败日志）
+      - ES_USER=${EASYSEARCH_USERNAME}
+      - ES_PASS=${EASYSEARCH_PASSWORD}
       # 首次初始化可显式指定管理员密码（仅首次生效）
       # - EASYSEARCH_INITIAL_ADMIN_PASSWORD=${EASYSEARCH_INITIAL_ADMIN_PASSWORD}
     ulimits:

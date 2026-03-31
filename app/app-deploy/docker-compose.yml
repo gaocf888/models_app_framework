@@ -75,11 +75,13 @@ services:
       app-internal: {}
       vllm-external: {}
       rag-external: {}
-      graph-external: {}
+      # 暂未部署Neo4j，对应网络注释掉
+      # graph-external: {}
     volumes:
       - huggingface-cache:/root/.cache/huggingface
       # 应用内部文件日志目录（配合 LOG_FILE=/workspace/logs/app.log）
       - app-logs:/workspace/logs
+      - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
 
   # ---------------------------------------------------------------------------
   # models-app-gpu：仅当 docker compose --profile small-model-gpu 时启动
@@ -111,8 +113,12 @@ services:
       app-internal: {}
       vllm-external: {}
       rag-external: {}
-      graph-external: {}
-    gpus: all
+      # 暂未部署Neo4j，对应网络注释掉
+      # graph-external: {}
+    # 说明：原本使用 compose 的 `gpus: all` 字段声明 GPU 需求，
+    # 但你的 Docker Compose 版本暂不支持该字段，因此这里改为仅通过
+    # NVIDIA_VISIBLE_DEVICES 控制可见 GPU。需要在宿主机上正确安装
+    # NVIDIA Container Toolkit，并将 Docker 默认 runtime 配置为 nvidia。
     environment:
       NVIDIA_VISIBLE_DEVICES: ${SMALL_MODEL_NVIDIA_VISIBLE_DEVICES:-all}
     volumes:
@@ -137,9 +143,10 @@ networks:
     name: ${RAG_DOCKER_NETWORK:-ai-stack}
     external: true
   # 与 Neo4j（GraphRAG）互通（可选；启用 GRAPH_RAG_ENABLED 时建议加入）
-  graph-external:
-    name: ${GRAPH_DOCKER_NETWORK:-graph-stack}
-    external: true
+  # 暂未部署Neo4j，对应网络注释掉
+#  graph-external:
+#    name: ${GRAPH_DOCKER_NETWORK:-graph-stack}
+#    external: true
 
 volumes:
   redis-data: {}

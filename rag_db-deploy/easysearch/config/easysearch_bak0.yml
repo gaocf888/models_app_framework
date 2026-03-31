@@ -1,0 +1,15 @@
+cluster.name: rag-es-cluster
+node.name: node-1
+network.host: 0.0.0.0
+http.port: 9200
+transport.port: 9300
+
+bootstrap.memory_lock: true
+bootstrap.system_call_filter: false
+cluster.initial_master_nodes: ["node-1"]
+http.compression: true
+
+# 使用内置安全插件的默认证书/初始化逻辑，避免硬编码不存在的 PEM 文件路径。
+# 若后续要使用自定义证书，再显式配置 security.ssl.transport/http.* 的 cert/key/ca_file。
+security.enabled: true
+security.audit.type: noop

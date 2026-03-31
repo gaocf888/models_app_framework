@@ -16,7 +16,7 @@
 - [在线业务与离线训练（概念说明）](#在线业务与离线训练概念说明)
 - [网络与 DNS](#网络与-dns)
 - [小模型权重与 YAML 路径约定](#小模型权重与-yaml-路径约定)
-- [嵌入与 Hugging Face 缓存](#嵌入与-hugging-face-缓存)
+- [嵌入与 Hugging Face 缓存（含离线模型目录约定）](#嵌入与-hugging-face-缓存含离线模型目录约定)
 - [故障排查](#故障排查)
 - [运维检查清单（表格）](#运维检查清单表格)
 - [与框架文档的对应](#与框架文档的对应)
@@ -207,12 +207,13 @@ docker compose --profile small-model-gpu up -d --build
 
 ## 卷与持久化策略
 
-| 卷名 | 挂载到 | 用途 |
-|------|--------|------|
+| 卷名 / 挂载源 | 挂载到 | 用途 |
+|---------------|--------|------|
 | `redis-data` | Redis 容器 `/data` | 会话/AOF 持久化（Redis 自身） |
 | `huggingface-cache` | 应用容器 `/root/.cache/huggingface` | 嵌入/下载模型缓存，减少重复拉取 |
 | `small-model-data` | **仅 models-app-gpu** `/workspace/data/small_model_evidence` | 小模型证据片段等可写数据 |
 | `SMALL_MODEL_WEIGHTS_HOST_PATH` → `/workspace/models/small:ro` | **仅 models-app-gpu** | 只读权重；未设置时用占位卷 **`small-model-weights-dummy`**（空卷，仅开发联调 compose） |
+| `../../../models-files/embeddings/bge-small-zh-v1.5`（宿主机目录） → `/workspace/models/embeddings/bge-small-zh-v1.5:ro` | `models-app` / `models-app-gpu` | **离线嵌入模型权重目录**；配合 `EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5` 使用，实现完全离线加载 |
 
 ---
 
@@ -276,9 +277,72 @@ docker compose --profile small-model-gpu down
 
 ---
 
-## 嵌入与 Hugging Face 缓存
+## 嵌入与 Hugging Face 缓存（含离线模型目录约定）
 
-首次使用 **sentence-transformers** 等可能下载模型。命名卷 **`huggingface-cache`** 已挂到 **`/root/.cache/huggingface`**。纯离线环境请使用 **`EMBEDDING_MODEL_PATH`** / **`RAG_RERANKER_MODEL_PATH`** 指向镜像内或挂载目录。
+首次使用 **sentence-transformers** 等可能下载模型。命名卷 **`huggingface-cache`** 已挂到 **`/root/.cache/huggingface`**。
+
+### 在线/默认策略
+
+- 未显式指定 `EMBEDDING_MODEL_PATH` 时：  
+  - 应用会尝试通过 Hugging Face Hub 在线下载嵌入模型，并缓存到上述目录。  
+  - 适合有稳定公网出口的开发环境。
+
+### 离线优先策略（推荐生产做法）
+
+在生产或无公网环境中，推荐**显式指定本地嵌入模型路径**，并用宿主机目录挂载到容器，避免任何在线下载：
+
+1. **项目根目录离线模型目录约定**
+
+   建议在仓库根路径维护统一的离线模型目录，例如：
+
+   ```text
+   models-files/
+     embeddings/
+       bge-small-zh-v1.5/   # 存放 BAAI/bge-small-zh-v1.5 的所有文件
+   ```
+
+   你当前已经将 `bge-small-zh-v1.5` 下载到：
+
+   - `models-files/embeddings/bge-small-zh-v1.5/`
+
+2. **在 compose 中挂载到应用容器**
+
+   在 `app/app-deploy/docker-compose.yml` 中，为应用服务增加一个只读挂载（示例）：
+
+   ```yaml
+   services:
+     models-app:
+       # ...
+       volumes:
+         - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+
+     models-app-gpu:
+       # ...
+       volumes:
+         - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+   ```
+
+3. **在 `.env` 中指定嵌入模型路径**
+
+   编辑 `app/app-deploy/.env`：
+
+   ```env
+   EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5
+   ```
+
+   这样 `EmbeddingService` 会优先直接从该路径加载模型权重，完全不依赖 Hugging Face 在线下载。
+
+4. **启动/重启应用栈**
+
+   ```bash
+   cd app/app-deploy
+   docker compose up -d --build
+   ```
+
+更换嵌入模型时，只需：
+
+- 在项目根 `models-files/embeddings/` 下新增对应子目录并放入新模型；  
+- 更新 compose 中的挂载路径，以及 `.env` 中的 `EMBEDDING_MODEL_PATH` 即可。
 
 ---
 
