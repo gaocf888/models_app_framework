@@ -272,6 +272,10 @@ class LoggingConfig:
     level: str = "INFO"
     json_format: bool = False
     log_file: str | None = None
+    file_enabled: bool = False
+    file_max_bytes: int = 100 * 1024 * 1024
+    file_backup_count: int = 10
+    file_compress: bool = True
 
 
 @dataclass
@@ -363,6 +367,10 @@ def _load_from_env() -> AppConfig:
         level=os.getenv("LOG_LEVEL", "INFO"),
         json_format=os.getenv("LOG_JSON", "false").lower() == "true",
         log_file=os.getenv("LOG_FILE"),
+        file_enabled=os.getenv("LOG_FILE_ENABLED", "false").lower() == "true",
+        file_max_bytes=max(1024 * 1024, int(os.getenv("LOG_FILE_MAX_BYTES", str(100 * 1024 * 1024)))),
+        file_backup_count=max(1, int(os.getenv("LOG_FILE_BACKUP_COUNT", "10"))),
+        file_compress=os.getenv("LOG_FILE_COMPRESS", "true").lower() == "true",
     )
 
     # 数据库配置：支持环境变量覆盖，默认使用用户提供的 MySQL 连接信息。

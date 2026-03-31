@@ -101,6 +101,26 @@ GRAPH_DOCKER_NETWORK=graph-stack     # 启用 GraphRAG 时
 - 三个网络名需与对应子项目的 `.env` / compose 一致（可用 `docker network ls` 核对）。  
 - 默认已满足典型部署，只有在自定义 project name 或网络时才需要调整。
 
+### 2.7 应用日志策略（stdout + 文件轮转）
+
+应用默认会将日志输出到 stdout（可通过 `docker logs` 查看）。  
+从当前版本开始，应用支持**额外**写入容器内文件，并按大小轮转/归档压缩：
+
+```env
+LOG_FILE_ENABLED=true
+LOG_FILE=/workspace/logs/app.log
+LOG_FILE_MAX_BYTES=104857600
+LOG_FILE_BACKUP_COUNT=10
+LOG_FILE_COMPRESS=true
+```
+
+说明：
+
+- `LOG_FILE_ENABLED=false` 时，仅 stdout。  
+- `LOG_FILE_ENABLED=true` 时，stdout + 文件双写。  
+- 轮转触发后会生成 `app.log.1.gz`、`app.log.2.gz` ...（当 `LOG_FILE_COMPRESS=true`）。  
+- compose 已挂载 `/workspace/logs` 到命名卷 `app-logs`，容器重建后日志仍可保留。
+
 ---
 
 ## 3. 启动命令（生产/测试环境）

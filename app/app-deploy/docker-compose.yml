@@ -78,6 +78,8 @@ services:
       graph-external: {}
     volumes:
       - huggingface-cache:/root/.cache/huggingface
+      # 应用内部文件日志目录（配合 LOG_FILE=/workspace/logs/app.log）
+      - app-logs:/workspace/logs
 
   # ---------------------------------------------------------------------------
   # models-app-gpu：仅当 docker compose --profile small-model-gpu 时启动
@@ -115,6 +117,7 @@ services:
       NVIDIA_VISIBLE_DEVICES: ${SMALL_MODEL_NVIDIA_VISIBLE_DEVICES:-all}
     volumes:
       - huggingface-cache:/root/.cache/huggingface
+      - app-logs:/workspace/logs
       # 小模型证据输出（与 configs 中 evidence_dir 为 workspace 相对路径时一致）
       - small-model-data:/workspace/data/small_model_evidence
       # 权重：宿主机目录 -> 容器内 /workspace/models/small（只读）
@@ -141,6 +144,7 @@ networks:
 volumes:
   redis-data: {}
   huggingface-cache: {}
+  app-logs: {}
   small-model-data: {}
   # 占位卷：未配置 SMALL_MODEL_WEIGHTS_HOST_PATH 时避免 compose 报错；无真实权重，生产请务必配置宿主机路径
   small-model-weights-dummy:
