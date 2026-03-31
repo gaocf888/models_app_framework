@@ -81,7 +81,7 @@ services:
       - huggingface-cache:/root/.cache/huggingface
       # 应用内部文件日志目录（配合 LOG_FILE=/workspace/logs/app.log）
       - app-logs:/workspace/logs
-      - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+      - ../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
 
   # ---------------------------------------------------------------------------
   # models-app-gpu：仅当 docker compose --profile small-model-gpu 时启动
