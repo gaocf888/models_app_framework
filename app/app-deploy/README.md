@@ -108,11 +108,11 @@ docker compose up -d --build
 ### 步骤 4：验证
 
 ```bash
-curl -s "http://127.0.0.1:8080/health/"
-curl -s "http://127.0.0.1:8080/metrics" | head
+curl -s "http://127.0.0.1:8083/health/"
+curl -s "http://127.0.0.1:8083/metrics" | head
 ```
 
-（若修改了 `APP_PORT`，把 `8080` 换成对应宿主机端口。）
+（若修改了 `APP_PORT`，把 `8083` 换成对应宿主机端口。）
 
 ---
 
@@ -160,7 +160,7 @@ docker compose --profile small-model-gpu up -d --build
 此命令会：
 
 - 照常启动 **Redis**（无 profile 限制）  
-- 若未停过，仍会运行默认 **models-app**（`8080`）  
+- 若未停过，仍会运行默认 **models-app**（`8083`）  
 - **额外**启动 **models-app-gpu**（**`8081`**，由 `APP_PORT_GPU` 指定）
 
 ### 步骤 F：验证 GPU 容器
@@ -174,34 +174,34 @@ docker exec models-app-gpu python -c "import torch; print('cuda:', torch.cuda.is
 
 ### 仅保留一个对外 API（全功能单机）
 
-若希望**只对外暴露一个端口**（例如统一 `8080`）且该实例带 GPU：
+若希望**只对外暴露一个端口**（例如统一 `8083`）且该实例带 GPU：
 
 ```bash
 docker compose stop models-app
 ```
 
-在 `.env` 中设置 **`APP_PORT_GPU=8080`**，再执行：
+在 `.env` 中设置 **`APP_PORT_GPU=8083`**，再执行：
 
 ```bash
 docker compose --profile small-model-gpu up -d --build
 ```
 
-此时仅 **`models-app-gpu`** 监听宿主 `8080`（勿再启动 `models-app`，避免端口冲突）。
+此时仅 **`models-app-gpu`** 监听宿主 `8083`（勿再启动 `models-app`，避免端口冲突）。
 
 ---
 
 ## 端口与多实例策略
 
-| 变量（Compose 插值） | 默认值 | 作用 |
-|----------------------|--------|------|
-| `APP_PORT` | `8080` | **models-app** 宿主机 → 容器 `8080` |
-| `APP_PORT_GPU` | `8081` | **models-app-gpu** 宿主机 → 容器 `8080` |
+| 变量（Compose 插值） | 默认值    | 作用                                 |
+|----------------------|--------|------------------------------------|
+| `APP_PORT` | `8083` | **models-app** 宿主机 → 容器 `8083`     |
+| `APP_PORT_GPU` | `8081` | **models-app-gpu** 宿主机 → 容器 `8083` |
 
-| 策略 | 做法 |
-|------|------|
-| **默认 API + 可选 GPU API 并存** | 不停止 `models-app`；GPU 使用 **`8081`** 访问 `models-app-gpu`。 |
-| **只要一个 GPU 全功能实例** | `stop models-app`，**`APP_PORT_GPU=8080`**，只起 `small-model-gpu` profile。 |
-| **只要轻量 API、不要 GPU 栈** | 不使用 `--profile small-model-gpu`，或不启动 `models-app-gpu`。 |
+| 策略 | 做法                                                                      |
+|------|-------------------------------------------------------------------------|
+| **默认 API + 可选 GPU API 并存** | 不停止 `models-app`；GPU 使用 **`8081`** 访问 `models-app-gpu`。                 |
+| **只要一个 GPU 全功能实例** | `stop models-app`，**`APP_PORT_GPU=8083`**，只起 `small-model-gpu` profile。 |
+| **只要轻量 API、不要 GPU 栈** | 不使用 `--profile small-model-gpu`，或不启动 `models-app-gpu`。                  |
 
 ---
 

@@ -65,9 +65,9 @@ services:
     command:
       - sh
       - -c
-      - exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers $${UVICORN_WORKERS:-1}
+      - exec uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
     ports:
-      - "${APP_PORT:-8080}:8080"
+      - "${APP_PORT:-8083}:8083"
     # Linux 上访问宿主机 MySQL 等：使用主机名 host.docker.internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -104,9 +104,9 @@ services:
     command:
       - sh
       - -c
-      - exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers $${UVICORN_WORKERS:-1}
+      - exec uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
     ports:
-      - "${APP_PORT_GPU:-8081}:8080"
+      - "${APP_PORT_GPU:-8081}:8083"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

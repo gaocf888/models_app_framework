@@ -92,7 +92,7 @@ GRAPH_RAG_ENABLED=false
 ### 2.6 Compose 专用变量（端口与网络）
 
 ```env
-APP_PORT=8080                        # 应用对外端口
+APP_PORT=8083                        # 应用对外端口
 VLLM_DOCKER_NETWORK=docker_vllm-network
 RAG_DOCKER_NETWORK=ai-stack
 GRAPH_DOCKER_NETWORK=graph-stack     # 启用 GraphRAG 时
@@ -226,7 +226,7 @@ docker compose --profile small-model-gpu up -d --build
 
 ```bash
 # 应用
-curl -s "http://127.0.0.1:${APP_PORT:-8080}/health/"
+curl -s "http://127.0.0.1:${APP_PORT:-8083}/health/"
 
 # vLLM
 curl -s "http://127.0.0.1:8000/health"
@@ -238,7 +238,7 @@ curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
 ### 4.2 `/chatbot/chat` 测试
 
 ```bash
-curl -s -X POST "http://127.0.0.1:${APP_PORT:-8080}/chatbot/chat" \
+curl -s -X POST "http://127.0.0.1:${APP_PORT:-8083}/chatbot/chat" \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "demo-user",
@@ -259,7 +259,7 @@ curl -s -X POST "http://127.0.0.1:${APP_PORT:-8080}/chatbot/chat" \
 ### 4.3 `/chatbot/chat/stream` 测试（流式）
 
 ```bash
-curl -N -X POST "http://127.0.0.1:${APP_PORT:-8080}/chatbot/chat/stream" \
+curl -N -X POST "http://127.0.0.1:${APP_PORT:-8083}/chatbot/chat/stream" \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "demo-user",

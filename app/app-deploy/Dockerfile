@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir -r /workspace/requirements-app.txt
 COPY app /workspace/app
 COPY configs /workspace/configs
 
-EXPOSE 8080
+EXPOSE 8083
 
 # 生产 worker 数由 compose command 传入；此仅为镜像默认入口
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8083"]
