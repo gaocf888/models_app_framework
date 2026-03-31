@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import time
+import threading
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from app.core.logging import get_logger
@@ -66,12 +68,18 @@ class RedisConversationStore(ConversationStore):
     """
 
     def __init__(self, redis_url: str) -> None:
+        """
+        生产可用实现：在独立事件循环线程中执行所有 Redis IO，
+        避免在已有事件循环上调用 run_until_complete 带来的风险。
+        """
         super().__init__()
         try:
             from redis import asyncio as aioredis  # type: ignore[import-not-found]
         except Exception as exc:  # noqa: BLE001
             logger.error("redis.asyncio not available, fallback to in-memory store: %s", exc)
             self._redis = None
+            self._loop = None
+            self._thread = None
             return
 
         self._redis = aioredis.from_url(redis_url, encoding="utf-8", decode_responses=True)
@@ -80,11 +88,19 @@ class RedisConversationStore(ConversationStore):
         self._ttl_seconds = max(0, ttl_minutes * 60)
         self._max_history = max(1, int(os.getenv("CONV_MAX_HISTORY_MESSAGES", "50")))
 
+        # 为 Redis IO 创建独立事件循环线程，避免与 FastAPI 事件循环互相干扰。
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
+
     async def _append_message_async(self, user_id: str, session_id: str, role: str, content: str) -> None:
         if self._redis is None:
             return super().append_message(user_id, session_id, role, content)
         key = f"{self._key_prefix}{user_id}:{session_id}"
-        await self._redis.rpush(key, {"role": role, "content": content, "ts": time.time()})
+        await self._redis.rpush(
+            key,
+            {"role": role, "content": content, "ts": time.time()},
+        )
         # 设置 TTL，让 Redis 自动过期清理
         if self._ttl_seconds > 0:
             await self._redis.expire(key, self._ttl_seconds)
@@ -94,11 +110,21 @@ class RedisConversationStore(ConversationStore):
         为了兼容当前同步接口，这里在有 Redis 时使用 fire-and-forget 的方式调度异步写入；
         若没有 Redis 或导入失败，则退回到内存实现。
         """
-        if self._redis is None:
+        if self._redis is None or self._loop is None:
             return super().append_message(user_id, session_id, role, content)
-        import asyncio
+        # 将异步写入调度到专用事件循环线程，fire-and-forget
+        fut = asyncio.run_coroutine_threadsafe(
+            self._append_message_async(user_id, session_id, role, content),
+            self._loop,
+        )
+        # 可选：在后台捕获异常，防止静默失败
+        def _log_result(f: asyncio.Future) -> None:
+            try:
+                f.result()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("RedisConversationStore append_message failed: %s", exc)
 
-        asyncio.create_task(self._append_message_async(user_id, session_id, role, content))
+        fut.add_done_callback(_log_result)
 
     async def _get_recent_history_async(self, user_id: str, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         if self._redis is None:
@@ -110,13 +136,18 @@ class RedisConversationStore(ConversationStore):
         return list(raw or [])
 
     def get_recent_history(self, user_id: str, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:  # type: ignore[override]
-        if self._redis is None:
+        if self._redis is None or self._loop is None:
             return super().get_recent_history(user_id, session_id, limit)
-        import asyncio
-
-        return asyncio.get_event_loop().run_until_complete(
-            self._get_recent_history_async(user_id, session_id, limit)
+        # 在独立事件循环线程上同步执行异步查询，避免在当前事件循环上阻塞
+        fut = asyncio.run_coroutine_threadsafe(
+            self._get_recent_history_async(user_id, session_id, limit),
+            self._loop,
         )
+        try:
+            return fut.result(timeout=5.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RedisConversationStore get_recent_history failed, fallback to in-memory: %s", exc)
+            return super().get_recent_history(user_id, session_id, limit)
 
 
 def get_default_store() -> ConversationStore:

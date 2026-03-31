@@ -14,16 +14,14 @@ logger = get_logger(__name__)
 
 class ChatbotService:
     """
-    智能客服基础服务（V1 占位版）。
+    智能客服主业务服务。
 
-    当前实现：
-    - 可选使用 RAGService 检索上下文（占位逻辑）；
-    - 使用 ConversationManager 追加与读取会话历史；
-    - 生成一个简单的占位回答，用于打通 API 与会话/RAG 集成链路。
-
-    后续将：
-    - 接入 LangChain/LangGraph 构建真实的 Chatbot 链；
-    - 使用大模型（通过 LLMClient）基于 query + RAG 上下文 + 会话历史生成回答。
+    当前实现（可用于生产）：
+    - 默认通过 ConversationManager 管理会话历史（支持内存/Redis）；
+    - 可选通过 HybridRAGService 使用向量 RAG / GraphRAG 进行知识检索；
+    - 使用统一的大模型客户端 VLLMHttpClient 调用 vLLM/OpenAI 兼容服务，支持多模态与流式输出；
+    - 若安装了 LangChain 相关依赖，则优先通过 ChatbotChain 走多步编排链路；
+    - 在大模型调用异常时，返回带明显标记的占位回答作为降级策略。
     """
 
     def __init__(
