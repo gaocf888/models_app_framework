@@ -1,0 +1,45 @@
+# =============================================================================
+# 小模型 GPU 在线应用镜像：大模型依赖 + 小模型依赖 + CUDA PyTorch + Ultralytics
+# =============================================================================
+# 构建上下文：仓库根目录 models_app_framework
+#
+# 前置：宿主机 NVIDIA 驱动 + NVIDIA Container Toolkit；compose 中 gpus: all
+#
+# 策略：
+#   1) 先安装 PyTorch cu121 官方轮子，再 pip install 业务 requirements，
+#      降低 sentence-transformers 等把 torch 换成 CPU 版本的概率。
+#   2) 系统库：OpenCV/视频解码常用依赖 + ffmpeg（通道解码场景）。
+#
+# 若驱动与 cu121 不兼容：可改用 cu118/cu124 的 PyTorch 索引 URL，并在此 Dockerfile 中统一修改。
+# =============================================================================
+
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/workspace
+
+WORKDIR /workspace
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libglib2.0-0 libsm6 libxext6 libgl1 \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    torch torchvision \
+    --index-url https://download.pytorch.org/whl/cu121
+
+COPY requirements-大模型应用.txt /workspace/requirements-llm.txt
+COPY requirements-小模型应用.txt /workspace/requirements-sm.txt
+RUN pip install --no-cache-dir -r /workspace/requirements-llm.txt -r /workspace/requirements-sm.txt \
+    && pip install --no-cache-dir ultralytics
+
+COPY app /workspace/app
+COPY configs /workspace/configs
+
+EXPOSE 8080
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

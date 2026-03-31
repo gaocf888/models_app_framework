@@ -1,0 +1,147 @@
+# =============================================================================
+# 应用层在线服务栈：Redis + FastAPI（models-app [+ 可选 models-app-gpu]）
+# =============================================================================
+#
+# 【外部依赖 · 须先于本文件启动】
+#   1) EasySearch：rag_db-deploy/docker-compose.easysearch.yml
+#      - 默认容器名：rag-easysearch
+#      - 默认外部网络名：ai-stack（与 rag_db-deploy/.env 中 EASYSEARCH_NETWORK 一致）
+#   2) vLLM：vllm-deploy/docker/docker-compose.yml
+#      - 默认容器名：vllm-service
+#      - 默认外部网络名：多为 docker_vllm-network（与 vllm 所在 compose 项目名有关）
+#
+# 【本文件使用的 .env 变量 · 由 Docker Compose 在宿主机解析】
+#   APP_PORT              → models-app 宿主机端口（默认 8080）
+#   APP_PORT_GPU          → models-app-gpu 宿主机端口（默认 8081）
+#   VLLM_DOCKER_NETWORK   → external 网络名，须已存在
+#   RAG_DOCKER_NETWORK    → external 网络名，须已存在
+#   GRAPH_DOCKER_NETWORK  → external 网络名，用于连接 Neo4j（GraphRAG）
+#   SMALL_MODEL_WEIGHTS_HOST_PATH
+#                         → 宿主机权重目录；未设置时使用下方占位卷 small-model-weights-dummy
+#   SMALL_MODEL_NVIDIA_VISIBLE_DEVICES
+#                         → 注入 models-app-gpu 容器 NVIDIA_VISIBLE_DEVICES（默认 all）
+#
+# 【配置策略】
+#   - 业务相关变量（LLM/RAG/DB/REDIS 等）在 .env 中配置，经 env_file 注入容器，由 app/core/config.py 读取。
+#   - 不要将密钥提交到 Git；生产可用密钥管理替换 env_file。
+#
+# 【启动顺序建议】
+#   rag_db-deploy → vllm-deploy/docker → 本目录 docker compose
+#
+# =============================================================================
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: models-app-redis
+    restart: unless-stopped
+    networks:
+      - app-internal
+    volumes:
+      - redis-data:/data
+    # AOF：容器重建后会话数据可恢复（仍建议生产使用独立高可用 Redis）
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # models-app：默认在线 API（大模型 + RAG + NL2SQL + 会话等，无 CUDA PyTorch）
+  # ---------------------------------------------------------------------------
+  models-app:
+    build:
+      context: ../..
+      dockerfile: app/app-deploy/Dockerfile
+    container_name: models-app
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    # 多 worker：UVICORN_WORKERS 来自 .env，由 shell 在容器内展开（$$ 为 compose 转义）
+    command:
+      - sh
+      - -c
+      - exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers $${UVICORN_WORKERS:-1}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    # Linux 上访问宿主机 MySQL 等：使用主机名 host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      app-internal: {}
+      vllm-external: {}
+      rag-external: {}
+      graph-external: {}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+
+  # ---------------------------------------------------------------------------
+  # models-app-gpu：仅当 docker compose --profile small-model-gpu 时启动
+  # - 镜像含 cu121 PyTorch、ultralytics、小模型依赖；需宿主机 GPU + NVIDIA Container Toolkit
+  # - 默认宿主机端口 APP_PORT_GPU=8081，避免与 models-app 的 APP_PORT 冲突
+  # - 仅要一个对外实例时：stop models-app，并将 APP_PORT_GPU 设为 8080
+  # ---------------------------------------------------------------------------
+  models-app-gpu:
+    profiles: ["small-model-gpu"]
+    build:
+      context: ../..
+      dockerfile: app/app-deploy/Dockerfile.small-model-gpu
+    container_name: models-app-gpu
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    command:
+      - sh
+      - -c
+      - exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers $${UVICORN_WORKERS:-1}
+    ports:
+      - "${APP_PORT_GPU:-8081}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      app-internal: {}
+      vllm-external: {}
+      rag-external: {}
+      graph-external: {}
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${SMALL_MODEL_NVIDIA_VISIBLE_DEVICES:-all}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+      # 小模型证据输出（与 configs 中 evidence_dir 为 workspace 相对路径时一致）
+      - small-model-data:/workspace/data/small_model_evidence
+      # 权重：宿主机目录 -> 容器内 /workspace/models/small（只读）
+      # 未设置 SMALL_MODEL_WEIGHTS_HOST_PATH 时使用命名卷占位，见文件末尾 volumes
+      - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro
+
+networks:
+  # 本栈内部：Redis ↔ 应用
+  app-internal:
+    driver: bridge
+  # 与 vllm-service 互通（须已存在，external: true）
+  vllm-external:
+    name: ${VLLM_DOCKER_NETWORK:-docker_vllm-network}
+    external: true
+  # 与 rag-easysearch 互通（须已存在）
+  rag-external:
+    name: ${RAG_DOCKER_NETWORK:-ai-stack}
+    external: true
+  # 与 Neo4j（GraphRAG）互通（可选；启用 GRAPH_RAG_ENABLED 时建议加入）
+  graph-external:
+    name: ${GRAPH_DOCKER_NETWORK:-graph-stack}
+    external: true
+
+volumes:
+  redis-data: {}
+  huggingface-cache: {}
+  small-model-data: {}
+  # 占位卷：未配置 SMALL_MODEL_WEIGHTS_HOST_PATH 时避免 compose 报错；无真实权重，生产请务必配置宿主机路径
+  small-model-weights-dummy:
+    driver: local
