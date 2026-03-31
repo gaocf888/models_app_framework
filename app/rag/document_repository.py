@@ -29,6 +29,7 @@ class DocumentRepository:
 
     def _init_es(self) -> None:
         try:
+            import elasticsearch as es_module  # type: ignore[import-untyped]
             from elasticsearch import Elasticsearch  # type: ignore[import-untyped]
         except Exception as e:  # noqa: BLE001
             logger.warning("document repository fallback to file: elasticsearch missing err=%s", e)
@@ -37,13 +38,21 @@ class DocumentRepository:
         auth = None
         if self._es_cfg.username and self._es_cfg.password:
             auth = (self._es_cfg.username, self._es_cfg.password)
-        self._client = Elasticsearch(
+        # 兼容 elasticsearch 7.x / 8.x：优先使用 basic_auth，不支持时回退到 http_auth
+        kwargs = dict(
             hosts=self._es_cfg.hosts,
-            basic_auth=auth,
             api_key=self._es_cfg.api_key,
             verify_certs=self._es_cfg.verify_certs,
             request_timeout=self._es_cfg.request_timeout,
         )
+        version = getattr(es_module, "__version__", (0, 0, 0))
+        major = int(version[0]) if isinstance(version, (tuple, list)) and version else 0
+        if auth is not None:
+            if major >= 8:
+                kwargs["basic_auth"] = auth  # type: ignore[assignment]
+            else:
+                kwargs["http_auth"] = auth  # type: ignore[assignment]
+        self._client = Elasticsearch(**kwargs)
         self._ensure_index_and_alias()
 
     def _ensure_index_and_alias(self) -> None:

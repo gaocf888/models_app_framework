@@ -588,6 +588,7 @@ class ElasticsearchVectorStore(VectorStore):
     @staticmethod
     def _create_client(cfg: ElasticsearchConfig):
         try:
+            import elasticsearch as es_module  # type: ignore[import-untyped]
             from elasticsearch import Elasticsearch  # type: ignore[import-untyped]
         except Exception as e:  # noqa: BLE001
             raise ImportError(
@@ -597,13 +598,21 @@ class ElasticsearchVectorStore(VectorStore):
         auth = None
         if cfg.username and cfg.password:
             auth = (cfg.username, cfg.password)
-        return Elasticsearch(
+        # 兼容 elasticsearch 7.x / 8.x：优先 basic_auth，不支持时使用 http_auth
+        kwargs = dict(
             hosts=cfg.hosts,
-            basic_auth=auth,
             api_key=cfg.api_key,
             verify_certs=cfg.verify_certs,
             request_timeout=cfg.request_timeout,
         )
+        version = getattr(es_module, "__version__", (0, 0, 0))
+        major = int(version[0]) if isinstance(version, (tuple, list)) and version else 0
+        if auth is not None:
+            if major >= 8:
+                kwargs["basic_auth"] = auth  # type: ignore[assignment]
+            else:
+                kwargs["http_auth"] = auth  # type: ignore[assignment]
+        return Elasticsearch(**kwargs)
 
     def _ensure_index(self, dim: int) -> None:
         if self._with_retry(lambda: self._client.indices.exists(index=self._index)):

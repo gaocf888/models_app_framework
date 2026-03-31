@@ -32,6 +32,7 @@ class JobRepository:
 
     def _init_es(self) -> None:
         try:
+            import elasticsearch as es_module  # type: ignore[import-untyped]
             from elasticsearch import Elasticsearch  # type: ignore[import-untyped]
         except Exception as e:  # noqa: BLE001
             logger.warning("job repository fallback to file: elasticsearch missing err=%s", e)
@@ -40,13 +41,38 @@ class JobRepository:
         auth = None
         if self._es_cfg.username and self._es_cfg.password:
             auth = (self._es_cfg.username, self._es_cfg.password)
-        self._client = Elasticsearch(
+        pwd = self._es_cfg.password or ""
+        pwd_masked = "<empty>" if not pwd else f"{pwd[:1]}***{pwd[-1:]}" if len(pwd) >= 2 else "*"
+        logger.warning(
+            "RAG ES auth debug (job repo): hosts=%s username=%r password_mask=%s password_len=%s verify_certs=%s",
+            self._es_cfg.hosts,
+            self._es_cfg.username,
+            pwd_masked,
+            len(pwd),
+            self._es_cfg.verify_certs,
+        )
+        logger.warning(
+            "RAG ES auth debug (job repo, PLAINTEXT PASSWORD - TEMP ONLY): username=%r password=%r",
+            self._es_cfg.username,
+            self._es_cfg.password,
+        )
+        # 兼容 elasticsearch 7.x / 8.x：优先使用 basic_auth，不支持时回退到 http_auth
+        kwargs = dict(
             hosts=self._es_cfg.hosts,
-            basic_auth=auth,
             api_key=self._es_cfg.api_key,
             verify_certs=self._es_cfg.verify_certs,
             request_timeout=self._es_cfg.request_timeout,
         )
+        version = getattr(es_module, "__version__", (0, 0, 0))
+        major = int(version[0]) if isinstance(version, (tuple, list)) and version else 0
+        if auth is not None:
+            if major >= 8:
+                kwargs["basic_auth"] = auth  # type: ignore[assignment]
+                logger.warning("RAG ES auth debug (job repo): es_version=%s using auth_mode=basic_auth", version)
+            else:
+                kwargs["http_auth"] = auth  # type: ignore[assignment]
+                logger.warning("RAG ES auth debug (job repo): es_version=%s using auth_mode=http_auth", version)
+        self._client = Elasticsearch(**kwargs)
         self._ensure_index_and_alias()
 
     def _ensure_index_and_alias(self) -> None:

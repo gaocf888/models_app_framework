@@ -27,19 +27,28 @@ class IndexMigrator:
             self._client = client
             return
         try:
+            import elasticsearch as es_module  # type: ignore[import-untyped]
             from elasticsearch import Elasticsearch  # type: ignore[import-untyped]
         except Exception as e:  # noqa: BLE001
             raise ImportError("elasticsearch client is required for index migration") from e
         auth = None
         if es_cfg.username and es_cfg.password:
             auth = (es_cfg.username, es_cfg.password)
-        self._client = Elasticsearch(
+        # 兼容 elasticsearch 7.x / 8.x：优先 basic_auth，失败时使用 http_auth
+        kwargs = dict(
             hosts=es_cfg.hosts,
-            basic_auth=auth,
             api_key=es_cfg.api_key,
             verify_certs=es_cfg.verify_certs,
             request_timeout=es_cfg.request_timeout,
         )
+        version = getattr(es_module, "__version__", (0, 0, 0))
+        major = int(version[0]) if isinstance(version, (tuple, list)) and version else 0
+        if auth is not None:
+            if major >= 8:
+                kwargs["basic_auth"] = auth  # type: ignore[assignment]
+            else:
+                kwargs["http_auth"] = auth  # type: ignore[assignment]
+        self._client = Elasticsearch(**kwargs)
 
     def ensure_index_and_alias(self, mapping: Dict[str, Any]) -> MigrationResult:
         index_name = f"{self._cfg.index_name}_v{self._cfg.index_version}"
