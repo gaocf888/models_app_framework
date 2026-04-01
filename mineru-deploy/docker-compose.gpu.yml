@@ -1,14 +1,41 @@
-# =============================================================================
-# MinerU GPU 叠加文件（勿单独使用）
-#   docker compose --env-file .env -f docker-compose.yml -f docker-compose.gpu.yml up -d
-# 前置：NVIDIA 驱动 + nvidia-container-toolkit；.env 中 MINERU_DEVICE_MODE=gpu
-#
-# 说明：gpus: all 与 NVIDIA_VISIBLE_DEVICES 组合时，后者用于限定可见 GPU 子集。
-# =============================================================================
-
 services:
   mineru-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+      args:
+        MINERU_PIP_SPEC: ${MINERU_GPU_PIP_SPEC:-mineru[core]}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        INSTALL_CUDA_TORCH: ${INSTALL_CUDA_TORCH:-1}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
+    image: ${MINERU_GPU_IMAGE:-mineru-gpu:cu124}
+    container_name: ${MINERU_CONTAINER_NAME:-mineru-api}
+    restart: unless-stopped
+    ports:
+      - "${MINERU_PORT:-8009}:8000"
     environment:
       - MINERU_DEVICE_MODE=gpu
       - NVIDIA_VISIBLE_DEVICES=${MINERU_NVIDIA_VISIBLE_DEVICES:-0}
+      - MINERU_MODEL_SOURCE=${MINERU_MODEL_SOURCE:-huggingface}
+      - MINERU_API_OUTPUT_ROOT=/io/mineru-output
+      - HF_HOME=/io/.hf_cache
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
+    volumes:
+      - ${MINERU_MODELS_HOST_PATH}:/models:ro
+      - ${MINERU_IO_HOST_PATH}:/io
+    command: ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mineru-net
     gpus: all
+    mem_limit: ${MINERU_MEM_LIMIT:-16g}
+
+networks:
+  mineru-net:
+    name: ${MINERU_NETWORK_NAME:-mineru-stack}
+    driver: bridge

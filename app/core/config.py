@@ -333,6 +333,8 @@ class MinerUConfig:
     redis_semaphore_key_prefix: str = "mineru:ingest"
     # API 路径（一般无需改）
     file_parse_path: str = "/file_parse"
+    # 与 mineru-api 的 MINERU_API_OUTPUT_ROOT 最后一级目录名一致（共享 IO 卷上的相对路径）
+    disk_fallback_subdir: str = "mineru-output"
 
 
 @dataclass
@@ -575,6 +577,7 @@ def _load_from_env() -> AppConfig:
         pdf_scanned_max_avg_chars=float(os.getenv("MINERU_PDF_SCANNED_MAX_AVG_CHARS", "40")),
         redis_semaphore_key_prefix=os.getenv("MINERU_REDIS_SEM_KEY_PREFIX", "mineru:ingest"),
         file_parse_path=os.getenv("MINERU_FILE_PARSE_PATH", "/file_parse"),
+        disk_fallback_subdir=os.getenv("MINERU_DISK_FALLBACK_SUBDIR", "mineru-output"),
     )
 
     cfg = AppConfig(env=env, llm=llm_cfg, logging=logging_cfg, rag=rag_cfg, mineru=mineru_cfg)

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import io
 import json
 import time
-import uuid
-import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -13,71 +10,16 @@ import httpx
 from app.core.config import MinerUConfig
 from app.core.logging import get_logger
 from app.rag.mineru_errors import MinerUParseError
+from app.rag.mineru_response_parse import (
+    extract_markdown_from_json,
+    markdown_from_zip_bytes,
+    read_markdown_from_disk,
+)
 
 logger = get_logger(__name__)
 
-
-# 仅从这些键取字符串，避免把 FastAPI 的 detail / error 长文本误当 Markdown
-_MD_JSON_KEYS = frozenset({"markdown", "md", "result_md", "text", "content", "result", "body"})
-
-
-def _extract_markdown_from_json(obj: Any) -> str | None:
-    if obj is None:
-        return None
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k in _MD_JSON_KEYS and isinstance(v, str) and v.strip():
-                return v.strip()
-        for k, v in obj.items():
-            if k in _MD_JSON_KEYS and isinstance(v, (dict, list)):
-                found = _extract_markdown_from_json(v)
-                if found:
-                    return found
-        for _k, v in obj.items():
-            if isinstance(v, (dict, list)):
-                found = _extract_markdown_from_json(v)
-                if found:
-                    return found
-    if isinstance(obj, list):
-        for item in obj:
-            found = _extract_markdown_from_json(item)
-            if found:
-                return found
-    return None
-
-
-def _markdown_from_zip_bytes(data: bytes) -> str | None:
-    if not data.startswith(b"PK\x03\x04"):
-        return None
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            names = [n for n in zf.namelist() if n.lower().endswith(".md")]
-            names.sort()
-            for name in names:
-                raw = zf.read(name)
-                try:
-                    return raw.decode("utf-8")
-                except UnicodeDecodeError:
-                    return raw.decode("utf-8", errors="replace")
-    except zipfile.BadZipFile:
-        return None
-    return None
-
-
-def _read_markdown_from_disk(io_base: Path, job_id: str) -> str | None:
-    root = io_base / "mineru_jobs" / job_id
-    if not root.exists():
-        return None
-    md_files = sorted(root.rglob("*.md"))
-    if not md_files:
-        return None
-    parts: list[str] = []
-    for p in md_files:
-        try:
-            parts.append(p.read_text(encoding="utf-8"))
-        except OSError as e:
-            logger.warning("mineru read md file failed: %s %s", p, e)
-    return "\n\n".join(parts).strip() if parts else None
+# mineru-api 同步响应头（与 MinerU FILE_PARSE_TASK_ID_HEADER 一致）
+_MINERU_TASK_ID_HEADER = "x-mineru-task-id"
 
 
 class MinerUClient:
@@ -90,11 +32,8 @@ class MinerUClient:
         """
         上传本地 PDF，返回 (markdown, meta)。
 
-        meta 含 job_id、http_status、elapsed 等，供 metrics。
+        meta 含 mineru_job_id（响应头 X-MinerU-Task-Id）、http_status、elapsed 等。
         """
-        job_id = str(uuid.uuid4())
-        # MinerU 容器内挂载 /io；与 models-app 的 io_path 共享同一宿主目录
-        output_dir_container = f"/io/mineru_jobs/{job_id}"
         url = f"{self._cfg.base_url.rstrip('/')}{self._cfg.file_parse_path}"
         timeout = httpx.Timeout(
             connect=120.0,
@@ -107,6 +46,7 @@ class MinerUClient:
         if not pdf_path.is_file():
             raise MinerUParseError(f"PDF not found: {pdf_path}")
 
+        # 官方 parse_request_form：无 output_dir；任务目录由服务端 task_id 决定（见 X-MinerU-Task-Id）
         data = {
             "return_md": "true",
             "return_middle_json": "false",
@@ -115,16 +55,15 @@ class MinerUClient:
             "lang_list": self._cfg.language,
             "formula_enable": "true",
             "table_enable": "true",
-            "output_dir": output_dir_container,
         }
 
         logger.info(
-            "MinerU file_parse start doc_name=%s url=%s output_dir=%s backend=%s parse_method=%s",
+            "MinerU file_parse start doc_name=%s url=%s backend=%s parse_method=%s lang=%s",
             doc_name,
             url,
-            output_dir_container,
             self._cfg.backend,
             self._cfg.parse_method,
+            self._cfg.language,
         )
 
         t0 = time.perf_counter()
@@ -162,17 +101,15 @@ class MinerUClient:
 
         if resp.status_code >= 400:
             logger.error(
-                "MinerU HTTP error doc_name=%s status=%s body[:4000]=%s output_dir=%s",
+                "MinerU HTTP error doc_name=%s status=%s body[:4000]=%s",
                 doc_name,
                 resp.status_code,
                 snippet,
-                output_dir_container,
             )
             raise MinerUParseError(
                 f"MinerU HTTP {resp.status_code} for doc={doc_name}",
                 status_code=resp.status_code,
                 response_snippet=snippet,
-                output_dir_hint=output_dir_container,
             )
 
         md: str | None = None
@@ -183,36 +120,43 @@ class MinerUClient:
             except json.JSONDecodeError:
                 payload = None
             if payload is not None:
-                md = _extract_markdown_from_json(payload)
+                md = extract_markdown_from_json(payload)
 
         if not md:
-            md = _markdown_from_zip_bytes(body)
+            md = markdown_from_zip_bytes(body)
 
+        task_id = (resp.headers.get(_MINERU_TASK_ID_HEADER) or "").strip()
         io_base = Path(self._cfg.io_path).expanduser()
         if not md:
-            md = _read_markdown_from_disk(io_base, job_id)
+            md = read_markdown_from_disk(
+                io_base,
+                task_id,
+                output_subdir=self._cfg.disk_fallback_subdir,
+            )
 
         if not md or not md.strip():
+            disk_hint = io_base / self._cfg.disk_fallback_subdir / task_id if task_id else None
             logger.error(
-                "MinerU empty markdown doc_name=%s status=%s ct=%s snippet=%s disk_tried=%s",
+                "MinerU empty markdown doc_name=%s status=%s ct=%s snippet=%s task_id=%s disk_tried=%s",
                 doc_name,
                 resp.status_code,
                 ct,
                 snippet,
-                io_base / "mineru_jobs" / job_id,
+                task_id or "(no header)",
+                disk_hint,
             )
             raise MinerUParseError(
                 "MinerU returned no markdown content",
                 status_code=resp.status_code,
                 response_snippet=snippet,
-                output_dir_hint=output_dir_container,
+                output_dir_hint=str(disk_hint) if disk_hint else None,
             )
 
         meta = {
-            "mineru_job_id": job_id,
+            "mineru_job_id": task_id or None,
             "mineru_http_status": resp.status_code,
             "mineru_parse_wall_s": round(elapsed, 3),
-            "mineru_output_dir_container": output_dir_container,
+            "mineru_disk_fallback_subdir": self._cfg.disk_fallback_subdir,
         }
         logger.info(
             "MinerU file_parse ok doc_name=%s chars=%s wall_s=%s",

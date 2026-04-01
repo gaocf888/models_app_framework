@@ -1,7 +1,0 @@
-{
-  "models-dir": {
-    "pipeline": "/models/pipeline",
-    "layout": "/models/layout",
-    "formula": "/models/formula"
-  }
-}
