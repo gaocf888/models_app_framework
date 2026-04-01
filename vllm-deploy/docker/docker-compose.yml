@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   vllm:
+    image: ${VLLM_IMAGE:-vllm-service:latest}
     build:
       context: ..
       dockerfile: docker/Dockerfile

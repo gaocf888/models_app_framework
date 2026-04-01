@@ -1,7 +1,8 @@
 FROM python:3.11-slim
 
 ARG MINERU_PIP_SPEC=mineru[core]
-ARG PIP_INDEX_URL=
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -11,11 +12,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl tini \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
+RUN python -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 --index-url "${PIP_INDEX_URL}" \
+    || python -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 --index-url "https://pypi.org/simple"
 RUN if [ -n "${PIP_INDEX_URL}" ]; then \
-      python -m pip install --index-url "${PIP_INDEX_URL}" "${MINERU_PIP_SPEC}" -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn --default-timeout=600 --retries=20; \
+      python -m pip install --index-url "${PIP_INDEX_URL}" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20 \
+      || python -m pip install --index-url "https://pypi.org/simple" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20; \
     else \
-      python -m pip install "${MINERU_PIP_SPEC}" -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn --default-timeout=600 --retries=20; \
+      python -m pip install --index-url "https://pypi.org/simple" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20; \
     fi
 
 COPY docker/entrypoint.sh /entrypoint.sh

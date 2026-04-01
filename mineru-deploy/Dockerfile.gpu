@@ -1,7 +1,7 @@
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ARG MINERU_PIP_SPEC=mineru[core]
-ARG PIP_INDEX_URL=
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG INSTALL_CUDA_TORCH=1
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
 
@@ -16,14 +16,16 @@ RUN apt-get update \
        curl tini \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --upgrade pip setuptools wheel
+RUN python3 -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 --index-url "${PIP_INDEX_URL}" \
+    || python3 -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 --index-url "https://pypi.org/simple"
 RUN if [ "${INSTALL_CUDA_TORCH}" = "1" ]; then \
-      python3 -m pip install --index-url "${TORCH_INDEX_URL}" torch torchvision; \
+      python3 -m pip install --index-url "${TORCH_INDEX_URL}" torch torchvision --default-timeout=600 --retries=20; \
     fi
 RUN if [ -n "${PIP_INDEX_URL}" ]; then \
-      python3 -m pip install --index-url "${PIP_INDEX_URL}" "${MINERU_PIP_SPEC}"; \
+      python3 -m pip install --index-url "${PIP_INDEX_URL}" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20 \
+      || python3 -m pip install --index-url "https://pypi.org/simple" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20; \
     else \
-      python3 -m pip install "${MINERU_PIP_SPEC}"; \
+      python3 -m pip install --index-url "https://pypi.org/simple" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20; \
     fi
 
 COPY docker/entrypoint.sh /entrypoint.sh

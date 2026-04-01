@@ -2,6 +2,7 @@
 
 > 本文是 `README.md` 的**精简版**，重点面向「应用配置 + 生产/测试环境部署」，不讨论代码开发细节。  
 > 若需要完整说明（包括治理策略、GPU profile 细节、运维检查清单），请阅读同目录 `README.md`。
+> 若为局域网/离线环境部署外挂服务（vLLM、EasySearch、MinerU），请阅读：`README-external-services-lan-deploy.md`。
 
 ---
 
@@ -13,11 +14,12 @@
 |------|------|------|
 | 大模型推理（vLLM） | `vllm-deploy/` | 提供 OpenAI 兼容 `/v1/chat/completions` |
 | RAG 向量 + 全文库 | `rag_db-deploy/` | EasySearch，存储知识库文档 |
+| PDF 扫描解析（可选） | `mineru-deploy/` | 提供 `mineru-api`（扫描件 PDF 转 Markdown） |
 | 图数据库（可选 GraphRAG） | `graphrag_db-deploy/` | Neo4j，当前聊天默认仍以向量 RAG 为主 |
 | 应用 API | `app/app-deploy/` | FastAPI 服务，暴露 `/chatbot/*`、`/llm/*`、`/analysis/*` 等 |
 | 会话存储 | `app/app-deploy/` 内置 Redis | 存储会话历史，可通过 `REDIS_URL` 切换到外部 Redis |
 
-部署顺序推荐：**EasySearch → vLLM →（可选 Neo4j）→ 应用栈**。
+部署顺序推荐：**EasySearch → vLLM →（可选）MinerU →（可选 Neo4j）→ 应用栈**。
 
 ---
 
@@ -95,13 +97,33 @@ GRAPH_RAG_ENABLED=false
 APP_PORT=8083                        # 应用对外端口
 VLLM_DOCKER_NETWORK=docker_vllm-network
 RAG_DOCKER_NETWORK=ai-stack
+MINERU_DOCKER_NETWORK=mineru-stack   # 启用 MinerU 时必须存在
 GRAPH_DOCKER_NETWORK=graph-stack     # 启用 GraphRAG 时
 ```
 
-- 三个网络名需与对应子项目的 `.env` / compose 一致（可用 `docker network ls` 核对）。  
+- 四个网络名需与对应子项目的 `.env` / compose 一致（可用 `docker network ls` 核对）。  
 - 默认已满足典型部署，只有在自定义 project name 或网络时才需要调整。
 
-### 2.7 应用日志策略（stdout + 文件轮转）
+### 2.7 MinerU（可选，扫描件 PDF 建议开启）
+
+当你已部署 `mineru-deploy`，并希望对扫描件 PDF 使用 OCR 解析时，建议在 `.env` 配置：
+
+```env
+MINERU_ENABLED=true
+MINERU_BASE_URL=http://mineru-api:8000
+MINERU_MAX_CONCURRENT=1
+MINERU_IO_CONTAINER_PATH=/workspace/mineru-io
+MINERU_FORMULA_ENABLE=true
+MINERU_TABLE_ENABLE=true
+MINERU_PAGE_BATCH_SIZE=50
+```
+
+说明：
+- `MINERU_BASE_URL` 必须是容器间地址 `http://mineru-api:8000`，不要写宿主机映射端口（如 8009）。  
+- `MINERU_IO_CONTAINER_PATH` 需与 compose 挂载 `/workspace/mineru-io` 对齐，并与 `mineru-deploy` 使用同一宿主机 `MINERU_IO_HOST_PATH`。  
+- 若暂不使用 MinerU，可保留 `MINERU_ENABLED=false`。
+
+### 2.8 应用日志策略（stdout + 文件轮转）
 
 应用默认会将日志输出到 stdout（可通过 `docker logs` 查看）。  
 从当前版本开始，应用支持**额外**写入容器内文件，并按大小轮转/归档压缩：
@@ -121,7 +143,7 @@ LOG_FILE_COMPRESS=true
 - 轮转触发后会生成 `app.log.1.gz`、`app.log.2.gz` ...（当 `LOG_FILE_COMPRESS=true`）。  
 - compose 已挂载 `/workspace/logs` 到命名卷 `app-logs`，容器重建后日志仍可保留。
 
-### 2.8 嵌入模型离线使用（bge-small-zh-v1.5 示例）
+### 2.9 嵌入模型离线使用（bge-small-zh-v1.5 示例）
 
 若部署环境**无法访问 Hugging Face Hub**，或希望避免在线下载，推荐将嵌入模型预先下载到仓库根目录的统一离线目录，并通过挂载暴露给应用：
 
@@ -190,6 +212,13 @@ docker compose -f docker-compose.easysearch.yml --env-file .env up -d
 # vLLM
 cd ../vllm-deploy/docker
 docker compose up -d
+
+# 可选：MinerU（扫描件 PDF 解析）
+cd ../../mineru-deploy
+cp .env.example .env          # 首次
+# 如 app 使用 external 网络 mineru-stack，但该网络尚不存在，可先手动创建一次
+docker network create mineru-stack || true
+docker compose --env-file .env -f docker-compose.cpu.yml up -d
 
 # 可选：Neo4j / GraphRAG
 cd ../../graphrag_db-deploy

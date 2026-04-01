@@ -2,6 +2,8 @@
 
 本目录提供 **FastAPI 应用层** 的容器化部署，与仓库内 **`vllm-deploy/`**、**`rag_db-deploy/`** 对接。本文档说明**如何配置、如何启动、两种运行形态（默认 / 小模型 GPU）的差异与排错**。
 
+> 局域网/离线部署外挂服务（vLLM、EasySearch、MinerU）请配合阅读：`README-external-services-lan-deploy.md`。
+
 **目录**
 
 - [能力对照与组件](#能力对照与组件)
@@ -30,6 +32,7 @@
 |------|----------|------|
 | 大模型推理（vLLM） | `vllm-deploy/` | OpenAI 兼容 HTTP；应用通过 `LLM_DEFAULT_ENDPOINT` 访问 |
 | 向量 + 全文检索 | `rag_db-deploy/`（EasySearch） | 应用通过 `RAG_ES_*` 连接 |
+| 扫描 PDF 解析（可选） | `mineru-deploy/` | 提供 `mineru-api`，用于扫描件 PDF 转 Markdown |
 | 会话与上下文 | 本 compose 的 **Redis** | `REDIS_URL` 必须指向本栈中的 `redis` 服务名 |
 | 应用 HTTP API | **models-app**（默认）或 **models-app-gpu**（profile） | 见下文端口与 profile 说明 |
 
@@ -43,8 +46,8 @@
 
 | 层级 | 作用 | 典型变量 |
 |------|------|----------|
-| **Docker Compose 在宿主机解析** | 用于 `docker-compose.yml` 里的**插值**（镜像、端口、网络名、数据卷源路径）。只在执行 `docker compose` 的 shell 环境 + **本目录 `.env`** 中取值（Compose 会自动加载同目录 `.env`）。 | `APP_PORT`、`APP_PORT_GPU`、`VLLM_DOCKER_NETWORK`、`RAG_DOCKER_NETWORK`、`SMALL_MODEL_WEIGHTS_HOST_PATH`、`SMALL_MODEL_NVIDIA_VISIBLE_DEVICES` |
-| **注入应用容器的环境变量** | **`env_file: .env`** 把整个 `.env` 打进 **`models-app` / `models-app-gpu` 进程**，由 **`app/core/config.py`** 的 `os.getenv` 读取。应用**不会**自己 `load_dotenv` 读磁盘上的 `.env`。 | `LLM_*`、`RAG_*`、`REDIS_URL`、`DB_*`、`GRAPH_*`、`EMBEDDING_*` 等 |
+| **Docker Compose 在宿主机解析** | 用于 `docker-compose.yml` 里的**插值**（镜像、端口、网络名、数据卷源路径）。只在执行 `docker compose` 的 shell 环境 + **本目录 `.env`** 中取值（Compose 会自动加载同目录 `.env`）。 | `APP_PORT`、`APP_PORT_GPU`、`VLLM_DOCKER_NETWORK`、`RAG_DOCKER_NETWORK`、`MINERU_DOCKER_NETWORK`、`SMALL_MODEL_WEIGHTS_HOST_PATH`、`SMALL_MODEL_NVIDIA_VISIBLE_DEVICES` |
+| **注入应用容器的环境变量** | **`env_file: .env`** 把整个 `.env` 打进 **`models-app` / `models-app-gpu` 进程**，由 **`app/core/config.py`** 的 `os.getenv` 读取。应用**不会**自己 `load_dotenv` 读磁盘上的 `.env`。 | `LLM_*`、`RAG_*`、`REDIS_URL`、`DB_*`、`GRAPH_*`、`MINERU_*`、`EMBEDDING_*` 等 |
 
 **配置策略建议**
 
@@ -61,7 +64,8 @@
 2. **外部依赖已启动且网络已存在**：  
    - EasySearch：`rag_db-deploy`，默认容器 **`rag-easysearch`**，默认外部网络 **`ai-stack`**。  
    - vLLM：`vllm-deploy/docker`，默认容器 **`vllm-service`**；Compose 项目目录名为 `docker` 时，外部网络常为 **`docker_vllm-network`**。  
-3. 在宿主机执行 **`docker network ls`**，若名称与上表不一致，在 `.env` 中修改 **`VLLM_DOCKER_NETWORK`**、**`RAG_DOCKER_NETWORK`**。  
+   - MinerU（可选）：`mineru-deploy`，默认容器 **`mineru-api`**，默认外部网络 **`mineru-stack`**。  
+3. 在宿主机执行 **`docker network ls`**，若名称与上表不一致，在 `.env` 中修改 **`VLLM_DOCKER_NETWORK`**、**`RAG_DOCKER_NETWORK`**、**`MINERU_DOCKER_NETWORK`**。  
 4. **Linux**：EasySearch 若报 `vm.max_map_count`，按 `rag_db-deploy/README.md` 在宿主机调内核参数。  
 5. **小模型 GPU**：宿主机安装 **NVIDIA 驱动**；Docker 使用 **NVIDIA Container Toolkit**；Windows 下 **Docker Desktop（WSL2）** 需在设置中启用 **GPU**，否则 `gpus: all` 无效。
 
@@ -86,6 +90,14 @@ cp .env.example .env
 
 `REDIS_URL=redis://redis:6379/0` 一般**保持默认**（`redis` 为本 compose 服务名）。
 
+若启用扫描件 PDF 解析，建议同时确认以下变量：
+
+- `MINERU_ENABLED=true`
+- `MINERU_BASE_URL=http://mineru-api:8000`（容器间地址，不是宿主机映射端口）
+- `MINERU_IO_CONTAINER_PATH=/workspace/mineru-io`（需与 compose 挂载一致）
+- `MINERU_MAX_CONCURRENT=1`（生产建议先从 1 开始）
+- `MINERU_FORMULA_ENABLE`、`MINERU_TABLE_ENABLE`、`MINERU_PAGE_BATCH_SIZE`（用于 CPU 压力控制）
+
 ### 步骤 2：按顺序启动外部依赖
 
 ```bash
@@ -96,6 +108,12 @@ docker compose -f docker-compose.easysearch.yml --env-file .env up -d
 # 2.2 vLLM
 cd ../vllm-deploy/docker
 docker compose up -d
+
+# 2.3 MinerU（可选）
+cd ../../mineru-deploy
+cp .env.example .env                           # 首次
+docker network create mineru-stack || true     # external 网络不存在时先创建一次
+docker compose --env-file .env -f docker-compose.cpu.yml up -d
 ```
 
 ### 步骤 3：启动本栈（Redis + models-app）
@@ -261,9 +279,9 @@ docker compose --profile small-model-gpu down
 
 ## 网络与 DNS
 
-- **models-app** 与 **models-app-gpu** 均加入：**`app-internal`** + 外部 **`vllm-external`**（默认 `docker_vllm-network`）+ **`rag-external`**（默认 `ai-stack`）。  
-- 因此容器内可使用：**`http://vllm-service:8000`**、**`https://rag-easysearch:9200`**、**`redis://redis:6379`**。  
-- 若自定义容器名或网络名，同步修改 `.env` 中的 **`LLM_DEFAULT_ENDPOINT`**、**`RAG_ES_HOSTS`**、**`VLLM_DOCKER_NETWORK`**、**`RAG_DOCKER_NETWORK`**。
+- **models-app** 与 **models-app-gpu** 均加入：**`app-internal`** + 外部 **`vllm-external`**（默认 `docker_vllm-network`）+ **`rag-external`**（默认 `ai-stack`）+ **`mineru-external`**（默认 `mineru-stack`）。  
+- 因此容器内可使用：**`http://vllm-service:8000`**、**`https://rag-easysearch:9200`**、**`http://mineru-api:8000`**、**`redis://redis:6379`**。  
+- 若自定义容器名或网络名，同步修改 `.env` 中的 **`LLM_DEFAULT_ENDPOINT`**、**`RAG_ES_HOSTS`**、**`MINERU_BASE_URL`**、**`VLLM_DOCKER_NETWORK`**、**`RAG_DOCKER_NETWORK`**、**`MINERU_DOCKER_NETWORK`**。
 
 ---
 
@@ -351,11 +369,12 @@ docker compose --profile small-model-gpu down
 | 现象 | 检查项 |
 |------|--------|
 | 应用连不上 vLLM / EasySearch | `docker network ls` 与 `.env` 中 `*_DOCKER_NETWORK` 是否一致；对端容器是否在同一网络。 |
+| 应用连不上 MinerU | `MINERU_ENABLED` 是否开启；`MINERU_BASE_URL` 是否为 `http://mineru-api:8000`；`MINERU_DOCKER_NETWORK` 是否存在并与 mineru-deploy 一致。 |
 | `Connection refused` 使用 `127.0.0.1` 访问对端服务 | 在容器内 `127.0.0.1` 是自身，应改用 **`vllm-service` / `rag-easysearch`**。 |
 | EasySearch TLS / 401 | HTTPS + `RAG_ES_VERIFY_CERTS`；用户名密码与库一致。 |
 | GPU 容器 `cuda: False` | 宿主机 Toolkit / Docker GPU 设置；`nvidia-smi` 在宿主机是否正常。 |
 | YOLO 找不到权重 | **`SMALL_MODEL_WEIGHTS_HOST_PATH`** 是否设置；宿主机路径与 YAML 是否对齐。 |
-| `docker compose` 报外部网络不存在 | 先启动 `rag_db-deploy` 与 `vllm-deploy/docker`，再启动本目录。 |
+| `docker compose` 报外部网络不存在 | 先启动 `rag_db-deploy`、`vllm-deploy/docker`、（可选）`mineru-deploy`，或先执行 `docker network create <network-name>`。 |
 
 更全的应用侧环境变量以 **`app/core/config.py`** 的 **`_load_from_env()`** 为准；**.env.example** 按块注释说明了常用项。
 
@@ -380,7 +399,8 @@ docker compose --profile small-model-gpu down
 |:----:|--------|------------------|:----:|
 | B1 | EasySearch 已运行 | `docker ps` 见 `rag-easysearch`（或实际容器名）；健康检查通过 | ☐ |
 | B2 | vLLM 已运行 | `docker ps` 见 `vllm-service`；宿主机或同网络可访问推理端口 | ☐ |
-| B3 | 业务 MySQL（若用 NL2SQL 等） | 宿主机或网络内可连；账号与 `DB_URL` / `DB_*` 一致 | ☐ |
+| B3 | MinerU（可选）已运行 | `docker ps` 见 `mineru-api`；`/health` 可访问；网络 `mineru-stack` 可见 | ☐ |
+| B4 | 业务 MySQL（若用 NL2SQL 等） | 宿主机或网络内可连；账号与 `DB_URL` / `DB_*` 一致 | ☐ |
 
 ### C. `app/app-deploy` 配置（`.env`）
 
@@ -393,8 +413,9 @@ docker compose --profile small-model-gpu down
 | C5 | `RAG_ES_PASSWORD` 等 | 与 EasySearch `admin` 实际密码一致 | ☐ |
 | C6 | `REDIS_URL` | 指向本 compose 内 `redis`（如 `redis://redis:6379/0`） | ☐ |
 | C7 | `DB_URL` 或 `DB_*` | 密码特殊字符已 URL 编码或按 `config.py` 规则配置；库可达 | ☐ |
-| C8 | `VLLM_DOCKER_NETWORK` / `RAG_DOCKER_NETWORK` | 与 `docker network ls` 中外部网络名一致 | ☐ |
-| C9 | `APP_PORT`（及 `APP_PORT_GPU` 若启用） | 与宿主机防火墙、上游反代、无端口冲突 | ☐ |
+| C8 | `MINERU_*`（可选） | 启用 MinerU 时，`MINERU_BASE_URL`、`MINERU_IO_CONTAINER_PATH`、`MINERU_MAX_CONCURRENT` 已按部署设定 | ☐ |
+| C9 | `VLLM_DOCKER_NETWORK` / `RAG_DOCKER_NETWORK` / `MINERU_DOCKER_NETWORK` | 与 `docker network ls` 中外部网络名一致 | ☐ |
+| C10 | `APP_PORT`（及 `APP_PORT_GPU` 若启用） | 与宿主机防火墙、上游反代、无端口冲突 | ☐ |
 
 ### D. 可选：小模型 GPU profile（`--profile small-model-gpu`）
 
@@ -410,7 +431,7 @@ docker compose --profile small-model-gpu down
 
 | 序号 | 检查项 | 说明 / 通过标准 | 结果 |
 |:----:|--------|------------------|:----:|
-| E1 | 启动顺序已遵守 | `rag_db-deploy` → `vllm-deploy` → `app/app-deploy` | ☐ |
+| E1 | 启动顺序已遵守 | `rag_db-deploy` → `vllm-deploy` → （可选）`mineru-deploy` → `app/app-deploy` | ☐ |
 | E2 | 容器均为 Up | `docker compose ps`（本目录）无反复重启 | ☐ |
 | E3 | 健康检查 | `curl` 访问 `/health/` 返回 `ok`（端口按 `APP_PORT` / `APP_PORT_GPU`） | ☐ |
 | E4 | 指标 | `GET /metrics` 可访问（Prometheus 文本） | ☐ |
