@@ -80,6 +80,28 @@ docker-compose down
 docker-compose --profile monitoring up -d
 ```
 
+### docker 部署后快速测试
+
+```bash
+# 1) 健康检查
+curl -s http://127.0.0.1:8000/health
+
+# 2) OpenAI 兼容接口：查看模型列表
+curl -s http://127.0.0.1:8000/v1/models
+
+# 3) OpenAI 兼容接口：最小聊天请求
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "你好，做个自我介绍"}],
+    "max_tokens": 64,
+    "temperature": 0.2
+  }'
+```
+
+> 若你的 `served_model_name` 不是 `default`，请将请求中的 `model` 改为实际名称。
+
 ### Langchain调用示例
 
 ```python

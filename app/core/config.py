@@ -327,6 +327,10 @@ class MinerUConfig:
     backend: str = "pipeline"
     parse_method: str = "ocr"
     language: str = "ch"
+    formula_enable: bool = True
+    table_enable: bool = True
+    # 按页分段调用 /file_parse（0 表示不分段，整份 PDF 一次解析）
+    page_batch_size: int = 0
     # 抽样页平均可提取字符数低于该阈值则视为「图片/扫描 PDF」，走 MinerU
     pdf_scanned_max_avg_chars: float = 40.0
     # 多 worker 时 Redis 信号量键前缀（与 REDIS_URL 联用）
@@ -574,6 +578,9 @@ def _load_from_env() -> AppConfig:
         backend=os.getenv("MINERU_BACKEND", "pipeline"),
         parse_method=os.getenv("MINERU_PARSE_METHOD", "ocr"),
         language=os.getenv("MINERU_LANGUAGE", "ch"),
+        formula_enable=os.getenv("MINERU_FORMULA_ENABLE", "true").lower() == "true",
+        table_enable=os.getenv("MINERU_TABLE_ENABLE", "true").lower() == "true",
+        page_batch_size=max(0, int(os.getenv("MINERU_PAGE_BATCH_SIZE", "0"))),
         pdf_scanned_max_avg_chars=float(os.getenv("MINERU_PDF_SCANNED_MAX_AVG_CHARS", "40")),
         redis_semaphore_key_prefix=os.getenv("MINERU_REDIS_SEM_KEY_PREFIX", "mineru:ingest"),
         file_parse_path=os.getenv("MINERU_FILE_PARSE_PATH", "/file_parse"),
