@@ -23,7 +23,8 @@ COPY scripts/ ${WORKSPACE}/scripts/
 COPY requirements.txt ${WORKSPACE}/
 
 # 安装依赖
-RUN pip3 install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
+# RUN pip3 install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
+RUN pip3 install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn --default-timeout=600 --retries=20
 
 # 设置脚本权限
 RUN chmod +x ${WORKSPACE}/scripts/*.py

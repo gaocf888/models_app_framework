@@ -11,11 +11,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl tini \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m pip install --upgrade pip setuptools wheel
+RUN python -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
 RUN if [ -n "${PIP_INDEX_URL}" ]; then \
-      python -m pip install --index-url "${PIP_INDEX_URL}" "${MINERU_PIP_SPEC}"; \
+      python -m pip install --index-url "${PIP_INDEX_URL}" "${MINERU_PIP_SPEC}" -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn --default-timeout=600 --retries=20; \
     else \
-      python -m pip install "${MINERU_PIP_SPEC}"; \
+      python -m pip install "${MINERU_PIP_SPEC}" -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn --default-timeout=600 --retries=20; \
     fi
 
 COPY docker/entrypoint.sh /entrypoint.sh
