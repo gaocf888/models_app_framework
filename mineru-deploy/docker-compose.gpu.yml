@@ -1,0 +1,14 @@
+# =============================================================================
+# MinerU GPU 叠加文件（勿单独使用）
+#   docker compose --env-file .env -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# 前置：NVIDIA 驱动 + nvidia-container-toolkit；.env 中 MINERU_DEVICE_MODE=gpu
+#
+# 说明：gpus: all 与 NVIDIA_VISIBLE_DEVICES 组合时，后者用于限定可见 GPU 子集。
+# =============================================================================
+
+services:
+  mineru-api:
+    environment:
+      - MINERU_DEVICE_MODE=gpu
+      - NVIDIA_VISIBLE_DEVICES=${MINERU_NVIDIA_VISIBLE_DEVICES:-0}
+    gpus: all

@@ -1,0 +1,43 @@
+# =============================================================================
+# MinerU 独立栈 — CPU 默认（无外挂 GPU）
+# 启动：在 mineru-deploy 目录执行
+#   docker compose --env-file .env up -d
+# GPU 模式见 README：叠加 docker-compose.gpu.yml
+#
+# 说明：未使用 Swarm 时，Docker Compose 通常忽略顶层 deploy.resources；
+# 本文件使用 cpus / mem_limit，以便 docker compose up 生效。
+# =============================================================================
+
+services:
+  mineru-api:
+    image: ${MINERU_IMAGE}
+    container_name: ${MINERU_CONTAINER_NAME:-mineru-api}
+    restart: unless-stopped
+    ports:
+      - "${MINERU_PORT:-8009}:8000"
+    environment:
+      - MINERU_DEVICE_MODE=${MINERU_DEVICE_MODE:-cpu}
+      - MINERU_MODEL_SOURCE=${MINERU_MODEL_SOURCE:-local}
+      - MINERU_TOOLS_CONFIG_JSON=/config/mineru-tools.json
+      - HF_HOME=/io/.hf_cache
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
+    volumes:
+      - ${MINERU_MODELS_HOST_PATH}:/models:ro
+      - ${MINERU_IO_HOST_PATH}:/io
+      - ${MINERU_TOOLS_CONFIG_HOST_PATH:-./config/mineru-tools.json}:/config/mineru-tools.json:ro
+    command:
+      - mineru-api
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+    networks:
+      - mineru-net
+    cpus: ${MINERU_CPU_LIMIT:-4.0}
+    mem_limit: ${MINERU_MEM_LIMIT:-16g}
+
+networks:
+  mineru-net:
+    name: ${MINERU_NETWORK_NAME:-mineru-stack}
+    driver: bridge

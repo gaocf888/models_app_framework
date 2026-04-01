@@ -310,6 +310,32 @@ class PromptConfig:
 
 
 @dataclass
+class MinerUConfig:
+    """
+    MinerU 独立容器解析（PDF→Markdown）相关配置。
+
+    io_path 为容器内与 mineru-deploy 共享卷挂载点，须与 docker-compose 中
+    MINERU_IO_HOST_PATH → /workspace/mineru-io 一致；MinerU 容器内对应路径通常为 /io。
+    """
+
+    enabled: bool = False
+    base_url: str = "http://mineru-api:8000"
+    timeout_s: float = 1200.0
+    max_concurrent: int = 1
+    io_path: str = "/workspace/mineru-io"
+    # 与 mineru-api /file_parse 表单字段对齐（扫描件建议 parse_method=ocr）
+    backend: str = "pipeline"
+    parse_method: str = "ocr"
+    language: str = "ch"
+    # 抽样页平均可提取字符数低于该阈值则视为「图片/扫描 PDF」，走 MinerU
+    pdf_scanned_max_avg_chars: float = 40.0
+    # 多 worker 时 Redis 信号量键前缀（与 REDIS_URL 联用）
+    redis_semaphore_key_prefix: str = "mineru:ingest"
+    # API 路径（一般无需改）
+    file_parse_path: str = "/file_parse"
+
+
+@dataclass
 class AppConfig:
     """
     应用全局配置。
@@ -320,6 +346,7 @@ class AppConfig:
     rag: RAGConfig = field(default_factory=RAGConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     prompt: PromptConfig = field(default_factory=PromptConfig)
+    mineru: MinerUConfig = field(default_factory=MinerUConfig)
 
 
 @dataclass
@@ -536,7 +563,21 @@ def _load_from_env() -> AppConfig:
         agentic=agentic_cfg,
     )
 
-    cfg = AppConfig(env=env, llm=llm_cfg, logging=logging_cfg, rag=rag_cfg)
+    mineru_cfg = MinerUConfig(
+        enabled=os.getenv("MINERU_ENABLED", "false").lower() == "true",
+        base_url=os.getenv("MINERU_BASE_URL", "http://mineru-api:8000").rstrip("/"),
+        timeout_s=float(os.getenv("MINERU_TIMEOUT_S", "1200")),
+        max_concurrent=max(1, int(os.getenv("MINERU_MAX_CONCURRENT", "1"))),
+        io_path=os.getenv("MINERU_IO_CONTAINER_PATH", "/workspace/mineru-io"),
+        backend=os.getenv("MINERU_BACKEND", "pipeline"),
+        parse_method=os.getenv("MINERU_PARSE_METHOD", "ocr"),
+        language=os.getenv("MINERU_LANGUAGE", "ch"),
+        pdf_scanned_max_avg_chars=float(os.getenv("MINERU_PDF_SCANNED_MAX_AVG_CHARS", "40")),
+        redis_semaphore_key_prefix=os.getenv("MINERU_REDIS_SEM_KEY_PREFIX", "mineru:ingest"),
+        file_parse_path=os.getenv("MINERU_FILE_PARSE_PATH", "/file_parse"),
+    )
+
+    cfg = AppConfig(env=env, llm=llm_cfg, logging=logging_cfg, rag=rag_cfg, mineru=mineru_cfg)
     # 动态附加 db 字段，避免破坏现有 AppConfig 初始化调用点
     setattr(cfg, "db", db_cfg)
     return cfg

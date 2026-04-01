@@ -14,6 +14,8 @@ from app.rag.document_repository import DocumentRepository
 from app.rag.document_pipeline import ChunkingConfig, DocumentPipeline
 from app.rag.ingestion import RAGIngestionService
 from app.rag.job_repository import JobRepository
+from app.rag.mineru_errors import MinerUParseError
+from app.rag.mineru_ingest import prepare_pdf_document_for_pipeline
 from app.rag.models import DocumentSource, IngestionJob, IngestionJobStatus, IngestionJobType, utcnow_iso
 
 logger = get_logger(__name__)
@@ -129,6 +131,13 @@ class IngestionOrchestrator:
                 self._set_job_step(job, "validate_input")
                 self._validate_document(doc)
 
+                if (doc.source_type or "").lower() == "pdf":
+                    self._set_job_step(job, "mineru_route")
+                doc, mineru_wall_s = prepare_pdf_document_for_pipeline(doc)
+                if mineru_wall_s is not None:
+                    self._set_job_step(job, "mineru_parse")
+                    self._record_step_ms(job, doc.doc_name, "mineru_parse", int(mineru_wall_s * 1000))
+
                 staged = pipeline.process_document_staged(doc)
                 chunks = staged["chunks"]
                 stats = staged["stats"]
@@ -205,11 +214,27 @@ class IngestionOrchestrator:
                 self._save_doc_record(doc, job=job, chunk_count=len(chunks), status="SUCCESS")
             except Exception as e:  # noqa: BLE001
                 failed += 1
-                logger.exception("ingestion job failed for doc=%s job=%s", doc.doc_name, job_id)
+                if isinstance(e, MinerUParseError):
+                    logger.error(
+                        "ingestion MinerU parse failed doc=%s job=%s status=%s output_dir=%s err=%s snippet=%s",
+                        doc.doc_name,
+                        job_id,
+                        e.status_code,
+                        e.output_dir_hint,
+                        str(e),
+                        (e.response_snippet or "")[:8000],
+                        exc_info=True,
+                    )
+                else:
+                    logger.exception("ingestion job failed for doc=%s job=%s", doc.doc_name, job_id)
                 err = str(e)
                 err_code = "E_INGEST_UNKNOWN"
                 if err.startswith("E_CHUNK_EMPTY"):
                     err_code = "E_CHUNK_EMPTY"
+                elif err.startswith("E_MINERU_REQUIRED") or "E_MINERU_REQUIRED" in err:
+                    err_code = "E_MINERU_REQUIRED"
+                elif isinstance(e, MinerUParseError):
+                    err_code = "E_MINERU_PARSE"
                 with self._lock:
                     job.metrics["documents_failed"] += 1
                     job.metrics[f"doc_error:{doc.doc_name}"] = err

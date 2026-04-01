@@ -33,7 +33,7 @@ class DocumentParser:
         return content
 
     @staticmethod
-    def _resolve_local_path(content: str) -> Path | None:
+    def resolve_local_path(content: str) -> Path | None:
         raw = (content or "").strip()
         if not raw:
             return None
@@ -65,7 +65,7 @@ class DocumentParser:
 
     @staticmethod
     def _parse_pdf(content: str) -> str:
-        p = DocumentParser._resolve_local_path(content)
+        p = DocumentParser.resolve_local_path(content)
         if p is None:
             # 兼容旧行为：上游已传提取后的纯文本
             return content
@@ -83,7 +83,7 @@ class DocumentParser:
 
     @staticmethod
     def _parse_docx(content: str) -> str:
-        p = DocumentParser._resolve_local_path(content)
+        p = DocumentParser.resolve_local_path(content)
         if p is None:
             # 兼容旧行为：上游已传提取后的纯文本
             return content

@@ -9,24 +9,30 @@
 #   2) vLLM：vllm-deploy/docker/docker-compose.yml
 #      - 默认容器名：vllm-service
 #      - 默认外部网络名：多为 docker_vllm-network（与 vllm 所在 compose 项目名有关）
+#   3) MinerU：mineru-deploy/docker-compose.yml（独立栈，与 rag/vllm 同级）
+#      - 默认容器名：mineru-api（见 mineru-deploy/.env）
+#      - 默认外部网络名：mineru-stack（与 mineru-deploy/.env 中 MINERU_NETWORK_NAME 一致）
 #
 # 【本文件使用的 .env 变量 · 由 Docker Compose 在宿主机解析】
 #   APP_PORT              → models-app 宿主机端口（默认 8080）
 #   APP_PORT_GPU          → models-app-gpu 宿主机端口（默认 8081）
 #   VLLM_DOCKER_NETWORK   → external 网络名，须已存在
 #   RAG_DOCKER_NETWORK    → external 网络名，须已存在
+#   MINERU_DOCKER_NETWORK → external 网络名，须已存在（连接 mineru-api）
 #   GRAPH_DOCKER_NETWORK  → external 网络名，用于连接 Neo4j（GraphRAG）
 #   SMALL_MODEL_WEIGHTS_HOST_PATH
 #                         → 宿主机权重目录；未设置时使用下方占位卷 small-model-weights-dummy
 #   SMALL_MODEL_NVIDIA_VISIBLE_DEVICES
 #                         → 注入 models-app-gpu 容器 NVIDIA_VISIBLE_DEVICES（默认 all）
+#   MINERU_IO_HOST_PATH   → 与 mineru-deploy 的 MINERU_IO_HOST_PATH 使用同一宿主机目录；
+#                         → 挂载到应用容器 /workspace/mineru-io；未设置时用占位卷 mineru-io-dummy
 #
 # 【配置策略】
 #   - 业务相关变量（LLM/RAG/DB/REDIS 等）在 .env 中配置，经 env_file 注入容器，由 app/core/config.py 读取。
 #   - 不要将密钥提交到 Git；生产可用密钥管理替换 env_file。
 #
 # 【启动顺序建议】
-#   rag_db-deploy → vllm-deploy/docker → 本目录 docker compose
+#   rag_db-deploy → vllm-deploy/docker → mineru-deploy（若启用）→ 本目录 docker compose
 #
 # =============================================================================
 
@@ -75,6 +81,7 @@ services:
       app-internal: {}
       vllm-external: {}
       rag-external: {}
+      mineru-external: {}
       # 暂未部署Neo4j，对应网络注释掉
       # graph-external: {}
     volumes:
@@ -82,6 +89,8 @@ services:
       # 应用内部文件日志目录（配合 LOG_FILE=/workspace/logs/app.log）
       - app-logs:/workspace/logs
       - ../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+      # MinerU 与 models-app 共享 IO（须与 mineru-deploy 中 MINERU_IO_HOST_PATH 指向同一宿主目录）
+      - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
 
   # ---------------------------------------------------------------------------
   # models-app-gpu：仅当 docker compose --profile small-model-gpu 时启动
@@ -113,6 +122,7 @@ services:
       app-internal: {}
       vllm-external: {}
       rag-external: {}
+      mineru-external: {}
       # 暂未部署Neo4j，对应网络注释掉
       # graph-external: {}
     # 说明：原本使用 compose 的 `gpus: all` 字段声明 GPU 需求，
@@ -129,6 +139,7 @@ services:
       # 权重：宿主机目录 -> 容器内 /workspace/models/small（只读）
       # 未设置 SMALL_MODEL_WEIGHTS_HOST_PATH 时使用命名卷占位，见文件末尾 volumes
       - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro
+      - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
 
 networks:
   # 本栈内部：Redis ↔ 应用
@@ -141,6 +152,10 @@ networks:
   # 与 rag-easysearch 互通（须已存在）
   rag-external:
     name: ${RAG_DOCKER_NETWORK:-ai-stack}
+    external: true
+  # 与 mineru-api 互通（须已存在；由 mineru-deploy 创建）
+  mineru-external:
+    name: ${MINERU_DOCKER_NETWORK:-mineru-stack}
     external: true
   # 与 Neo4j（GraphRAG）互通（可选；启用 GRAPH_RAG_ENABLED 时建议加入）
   # 暂未部署Neo4j，对应网络注释掉
@@ -155,4 +170,7 @@ volumes:
   small-model-data: {}
   # 占位卷：未配置 SMALL_MODEL_WEIGHTS_HOST_PATH 时避免 compose 报错；无真实权重，生产请务必配置宿主机路径
   small-model-weights-dummy:
+    driver: local
+  # 未配置 MINERU_IO_HOST_PATH 时的占位卷；生产与 MinerU 联调请改为同一宿主目录 bind mount
+  mineru-io-dummy:
     driver: local
