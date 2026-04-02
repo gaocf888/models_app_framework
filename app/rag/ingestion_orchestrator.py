@@ -14,6 +14,7 @@ from app.rag.document_repository import DocumentRepository
 from app.rag.document_pipeline import ChunkingConfig, DocumentPipeline
 from app.rag.ingestion import RAGIngestionService
 from app.rag.job_repository import JobRepository
+from app.rag.content_url_fetch import ContentFetchError, materialize_document_content_from_url
 from app.rag.mineru_errors import MinerUParseError
 from app.rag.mineru_ingest import prepare_pdf_document_for_pipeline
 from app.rag.models import DocumentSource, IngestionJob, IngestionJobStatus, IngestionJobType, utcnow_iso
@@ -127,8 +128,13 @@ class IngestionOrchestrator:
 
         failed = 0
         for doc in job.documents:
+            tmp_fetched: Path | None = None
             try:
                 self._set_job_step(job, "validate_input")
+                self._validate_document(doc)
+
+                self._set_job_step(job, "content_fetch")
+                doc, tmp_fetched = materialize_document_content_from_url(doc)
                 self._validate_document(doc)
 
                 if (doc.source_type or "").lower() == "pdf":
@@ -214,7 +220,9 @@ class IngestionOrchestrator:
                 self._save_doc_record(doc, job=job, chunk_count=len(chunks), status="SUCCESS")
             except Exception as e:  # noqa: BLE001
                 failed += 1
-                if isinstance(e, MinerUParseError):
+                if isinstance(e, ContentFetchError):
+                    logger.warning("ingestion content URL fetch failed doc=%s job=%s err=%s", doc.doc_name, job_id, e)
+                elif isinstance(e, MinerUParseError):
                     logger.error(
                         "ingestion MinerU parse failed doc=%s job=%s status=%s output_dir=%s err=%s snippet=%s",
                         doc.doc_name,
@@ -229,7 +237,9 @@ class IngestionOrchestrator:
                     logger.exception("ingestion job failed for doc=%s job=%s", doc.doc_name, job_id)
                 err = str(e)
                 err_code = "E_INGEST_UNKNOWN"
-                if err.startswith("E_CHUNK_EMPTY"):
+                if isinstance(e, ContentFetchError):
+                    err_code = "E_CONTENT_FETCH"
+                elif err.startswith("E_CHUNK_EMPTY"):
                     err_code = "E_CHUNK_EMPTY"
                 elif err.startswith("E_MINERU_REQUIRED") or "E_MINERU_REQUIRED" in err:
                     err_code = "E_MINERU_REQUIRED"
@@ -243,6 +253,9 @@ class IngestionOrchestrator:
                     self._save_state()
                     self._save_job_record(job)
                 self._save_doc_record(doc, job=job, chunk_count=0, status="FAILED", error=err)
+            finally:
+                if tmp_fetched is not None:
+                    tmp_fetched.unlink(missing_ok=True)
 
         with self._lock:
             job.step = "finalize"

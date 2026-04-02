@@ -25,7 +25,7 @@ RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
 from functools import lru_cache
 from typing import Annotated, Any, List
 
-from fastapi import APIRouter, Body, HTTPException, Path, Query
+from fastapi import APIRouter, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import get_app_config
@@ -35,6 +35,8 @@ from app.rag.document_pipeline import ChunkingConfig, DocumentPipeline
 from app.rag.ingestion_orchestrator import IngestionOrchestrator
 from app.rag.job_repository import JobRepository
 from app.rag.migrations import IndexMigrator
+from app.rag.content_url_fetch import materialize_document_content_from_url
+from app.rag.mineru_ingest import prepare_pdf_document_for_pipeline
 from app.rag.models import DocumentSource
 from app.core.logging import get_logger
 
@@ -246,39 +248,62 @@ async def ingest_raw_documents(req: IngestRawDocumentsRequest) -> dict:
 '''
 
 class IngestionJobDocumentRequest(BaseModel):
-    """异步任务中的单篇待摄入文档（documents[] 的元素类型）。"""
+    """异步任务中单篇文档（`documents[]` 元素）。`content` 可为内联正文或 pdf/docx 的服务端本地路径，见 `content` 字段说明。"""
 
-    dataset_id: str = Field(..., description="【必传】数据集标识，用于分类与检索过滤")
-    doc_name: str = Field(..., description="【必传】文档名称；同名+同命名空间下配合 replace_if_exists 可实现更新")
+    dataset_id: str = Field(
+        ...,
+        description="必填。数据集 ID：知识/业务域划分，写入索引并用于检索、管理台按数据集过滤。",
+    )
+    doc_name: str = Field(
+        ...,
+        description="必填。文档逻辑名（更新主键之一）。与 `namespace`、`doc_version` 等共同标识一篇知识；同名同域下可配合 `replace_if_exists` 先删后灌。",
+    )
     content: str = Field(
         ...,
         min_length=1,
-        description="【必传】原始正文；后端将按任务级 chunk_* 做清洗、切块后写入向量+全文索引",
+        description=(
+            "必填。语义由 `source_type` 决定："
+            "① `text`/`markdown`/`html`：内联正文，或（在 `RAG_CONTENT_FETCH_ENABLED=true` 时）`http(s)://` 文件 URL，服务端拉取为文本；"
+            "② `pdf`/`docx`：内联已抽取文本，或本地绝对路径/`file://...`，或（同上开关开启时）`http(s)://` 下载到临时文件再解析。"
+            "URL 拉取受 `RAG_CONTENT_FETCH_ALLOW_HOSTS`、私网解析拦截等约束（防 SSRF）；`source_uri` 仍不用于下载。"
+        ),
     )
     doc_version: str = Field(
         "v1",
-        description="【可选，默认 v1】文档版本号，用于版本化治理与按版本删除",
+        description="可选，默认 v1。文档版本号，用于版本治理与按版本删除；与 `doc_name` 等一起区分不同版内容。",
     )
-    tenant_id: str | None = Field(None, description="【可选】租户 ID，多租户隔离时使用")
-    namespace: str | None = Field(None, description="【可选】命名空间，与检索 namespace 过滤一致")
+    tenant_id: str | None = Field(
+        None,
+        description="可选。租户 ID：多租户隔离与过滤用，会写入 chunk/文档元数据；单租户场景可省略。",
+    )
+    namespace: str | None = Field(
+        None,
+        description="可选。命名空间：逻辑分区（部门/场景等），与 `GET /rag/query` 等接口的 namespace 过滤一致；用于缩小「同名」与检索范围。",
+    )
     source_type: str = Field(
         "text",
-        description="【可选，默认 text】源类型：text / markdown / html / pdf / docx（影响解析分支）",
+        description="可选，默认 text。格式/解析方式：text、markdown、html、pdf、docx；pdf 扫描件需 MinerU（见配置）。",
     )
-    source_uri: str | None = Field(None, description="【可选】来源 URI 或路径，仅元数据落库")
-    description: str | None = Field(None, description="【可选】文档业务描述")
+    source_uri: str | None = Field(
+        None,
+        description="可选。业务侧「来源地址」字符串（如 https 链接、对象存储 URI），仅写入元数据供溯源/展示；不用于拉取正文，也不参与向量解析。",
+    )
+    description: str | None = Field(
+        None,
+        description="可选。给人看的文档摘要或说明，写入元数据。",
+    )
     replace_if_exists: bool = Field(
         True,
-        description="【可选，默认 true】为 true 时同名文档会先删后灌（按 store 语义删除旧 chunk）",
+        description="可选，默认 true。为 true 时在写入前删除同 doc 名下已有 chunk（先删后灌）；false 时行为以实现为准，一般用于禁止覆盖场景。",
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
-        description="【可选】自定义扩展字段，随 chunk 元数据写入索引（OpenAPI 中类型为 object）",
+        description="可选。自定义键值，并入索引 metadata（如部门、标签）；默认 {}。",
     )
 
 
 class IngestionJobRequest(BaseModel):
-    """提交异步摄入：后台执行解析/清洗/切块、写入 ES 向量+全文通道。"""
+    """提交异步摄入请求体。Swagger 中 Schema 与各 Field description 为权威说明；下方 example 为内联正文示例，pdf/docx 时 `content` 可改为服务端路径字符串。"""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -287,14 +312,19 @@ class IngestionJobRequest(BaseModel):
                     {
                         "dataset_id": "company_kb",
                         "doc_name": "employee_handbook_2024",
+                        "doc_version": "v1",
+                        "tenant_id": "t1",
+                        "namespace": "hr",
                         "content": "第一章 总则……\n第二章 考勤……",
                         "source_type": "text",
-                        "namespace": "hr",
+                        "source_uri": "https://intranet/docs/handbook.md",
+                        "description": "员工手册",
                         "replace_if_exists": True,
+                        "metadata": {"dept": "HR"},
                     }
                 ],
                 "operator": "admin",
-                "idempotency_key": "batch-20260402-001",
+                "idempotency_key": "ingest-20260402-001",
                 "chunk_size": 500,
                 "chunk_overlap": 80,
                 "min_chunk_size": 40,
@@ -305,16 +335,29 @@ class IngestionJobRequest(BaseModel):
     documents: List[IngestionJobDocumentRequest] = Field(
         ...,
         min_length=1,
-        description="【必传】待摄入文档列表，至少 1 篇；每篇字段见 IngestionJobDocumentRequest",
+        description="必填。至少 1 篇；结构见 `IngestionJobDocumentRequest`（每篇字段说明以 Schema 为准）。",
     )
-    operator: str | None = Field(None, description="【可选】操作人，写入任务记录便于审计")
+    operator: str | None = Field(
+        None,
+        description="可选。操作人标识（账号/姓名等），写入任务记录供审计；不影响检索与切块逻辑。",
+    )
     idempotency_key: str | None = Field(
         None,
-        description="【可选】幂等键；相同键且任务仍在运行时可能复用同一 job，避免重复提交",
+        description=(
+            "可选。调用方自定义幂等键。"
+            "仅当本字段非空时：若已存在相同键且任务状态为 PENDING 或 RUNNING，将返回已有 `job_id`、不新建任务；"
+            "不传则每次调用都会新建任务（已完成/失败的历史任务不会因同键自动合并）。"
+        ),
     )
-    chunk_size: int = Field(500, ge=1, le=8192, description="【可选，默认 500】切块目标长度（字符级，依 pipeline 实现）")
-    chunk_overlap: int = Field(80, ge=0, le=2048, description="【可选，默认 80】相邻块重叠长度，减少截断语义损失")
-    min_chunk_size: int = Field(40, ge=1, le=2048, description="【可选，默认 40】过短片段过滤阈值")
+    chunk_size: int = Field(
+        500, ge=1, le=8192, description="可选，默认 500。切块目标长度（字符），作用于本任务内全部文档。"
+    )
+    chunk_overlap: int = Field(
+        80, ge=0, le=2048, description="可选，默认 80。相邻块重叠字符数，减轻边界截断。"
+    )
+    min_chunk_size: int = Field(
+        40, ge=1, le=2048, description="可选，默认 40。过短片段的合并/丢弃阈值（字符）。"
+    )
 
 
 class IngestionJobInfo(BaseModel):
@@ -335,14 +378,14 @@ class IngestionJobInfo(BaseModel):
 
 
 class IngestionJobSubmitResponse(BaseModel):
-    """提交异步摄入任务后的响应。"""
+    """提交异步摄入任务后的响应体。"""
 
     model_config = ConfigDict(
         json_schema_extra={"example": {"ok": True, "job_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}}
     )
 
-    ok: bool = Field(True, description="是否受理成功（已写入任务队列/索引）")
-    job_id: str = Field(..., description="新建任务 ID，用于 GET /rag/jobs/{job_id} 轮询直至终态")
+    ok: bool = Field(True, description="是否受理成功")
+    job_id: str = Field(..., description="新建任务 ID，用于轮询 GET /rag/jobs/{job_id}")
 
 
 class IngestionJobGetResponse(BaseModel):
@@ -442,60 +485,42 @@ class ChunksMigrationRollbackResponse(BaseModel):
     "/jobs/ingest",
     summary="提交异步摄入任务",
     response_model=IngestionJobSubmitResponse,
-    response_description="返回新任务 job_id，请用 GET /rag/jobs/{job_id} 轮询直至 success/failed。",
+    response_description="受理成功后返回 job_id；请 GET /rag/jobs/{job_id} 轮询至终态。",
     description=(
-        "**本接口无 Query / Path 参数**，所有字段均在 **Request body** 的 JSON 内。"
-        "Swagger 中「Parameters」为空属正常现象；请展开下方 **Request body** 查看 Schema 与 Example。"
+        "无 Path/Query。字段以 Schema 为准。"
+        "`content`：内联正文、本地/`file://` 路径，或在 `RAG_CONTENT_FETCH_ENABLED=true` 时的 http(s) 文件 URL；"
+        "`source_uri` 仅溯源。"
     ),
 )
-async def submit_ingestion_job(
-    req: Annotated[
-        IngestionJobRequest,
-        Body(
-            openapi_examples={
-                "minimal": {
-                    "summary": "最小请求（单文档）",
-                    "description": "仅必传字段：documents[0].dataset_id / doc_name / content",
-                    "value": {
-                        "documents": [
-                            {
-                                "dataset_id": "demo_kb",
-                                "doc_name": "hello",
-                                "content": "这是要入库的正文。",
-                            }
-                        ]
-                    },
-                },
-                "full": {
-                    "summary": "完整示例（含可选与切块参数）",
-                    "value": {
-                        "documents": [
-                            {
-                                "dataset_id": "company_kb",
-                                "doc_name": "policy",
-                                "doc_version": "v1",
-                                "tenant_id": "t1",
-                                "namespace": "legal",
-                                "content": "制度正文……",
-                                "source_type": "markdown",
-                                "source_uri": "https://intranet/docs/policy.md",
-                                "description": "员工制度",
-                                "replace_if_exists": True,
-                                "metadata": {"dept": "HR"},
-                            }
-                        ],
-                        "operator": "admin",
-                        "idempotency_key": "ingest-001",
-                        "chunk_size": 500,
-                        "chunk_overlap": 80,
-                        "min_chunk_size": 40,
-                    },
-                },
-            },
-        ),
-    ],
-) -> IngestionJobSubmitResponse:
-    """企业运维推荐入口：异步摄入，避免大文档阻塞 HTTP。"""
+async def submit_ingestion_job(req: IngestionJobRequest) -> IngestionJobSubmitResponse:
+    """
+    异步提交知识摄入任务（推荐生产入口）。**各字段释义与必填以 OpenAPI Schema（本函数对应请求体模型）为准**，以下为速查。
+
+    **路径/Query**：无。
+
+    **`documents[]` 每篇文档（模型 `IngestionJobDocumentRequest`）**
+    - `content`：**必填**。内联正文、本地/`file://` 路径；若开启 `RAG_CONTENT_FETCH_ENABLED`，可为 `http(s)://` 文件 URL（按类型下载为文本或临时文件）。不会用 `source_uri` 下载正文。
+    - `dataset_id`：必填，数据集划分与过滤。[可作为知识库一级分区]
+    - `doc_name`：必填，文档逻辑名（更新主键之一）。
+    - `doc_version`：可选默认 v1，版本治理与按版本删除。
+    - `tenant_id`：可选，多租户 ID，写入元数据供隔离/过滤。
+    - `namespace`：可选，逻辑分区，与检索 namespace 一致。[可作为知识库二级分区]
+    - `source_type`：可选默认 text，决定如何解析 `content`。
+    - `source_uri`：可选，**仅元数据**（链接/URI 字符串），溯源展示；**不用于抓取正文**。
+    - `description`：可选，人读摘要。
+    - `replace_if_exists`：可选默认 true，同名先删后灌。
+    - `metadata`：可选，自定义扩展字段写入索引。[可作为知识库三级级及以下分区]
+
+    **任务级（模型 `IngestionJobRequest` 根字段）**
+    - `operator`：可选，操作者标识，仅审计。
+    - `idempotency_key`：可选；**仅传入时**若已有同键且任务仍为 PENDING/RUNNING 则返回原 `job_id`，否则每次新建任务。
+    - `chunk_size` / `chunk_overlap` / `min_chunk_size`：可选，默认 500 / 80 / 40，作用于本任务全部文档。
+
+    **响应体 `IngestionJobSubmitResponse`（200）**
+    - `ok`、`job_id`（新任务或幂等命中时的已有任务）。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
+    """
     try:
         docs = [
             DocumentSource(
@@ -540,10 +565,14 @@ async def get_ingestion_job(
     job_id: Annotated[str, Path(description="任务 ID，由 POST /rag/jobs/ingest 返回")],
 ) -> IngestionJobGetResponse:
     """
-    查询任务状态与步骤信息。
+    查询单条摄入任务当前状态。
 
-    参数说明：
-    - 必传：job_id（路径参数）
+    **路径参数**
+    - `job_id`：必填。提交任务时返回的 ID。
+
+    **响应体 `IngestionJobGetResponse`（200）**
+    - `ok`：请求解析成功。
+    - `job`：`IngestionJobInfo`，含 `status`、`step`、`error_*`、`metrics`、`created_at` 等；未找到任务时 404。
     """
     try:
         job = _get_orchestrator().get_job(job_id)
@@ -583,10 +612,15 @@ async def retry_ingestion_job(
     job_id: Annotated[str, Path(description="待重试的失败或中断任务 ID")],
 ) -> RetryJobResponse:
     """
-    重试指定任务。
+    对失败/可重试任务发起新一次执行（新 job_id）。
 
-    参数说明：
-    - 必传：job_id（路径参数）
+    **路径参数**
+    - `job_id`：必填。原任务 ID。
+
+    **响应体 `RetryJobResponse`（200）**
+    - `ok`：是否受理。
+    - `job_id`：新任务 ID。
+    - `retry_of`：原任务 ID。
     """
     try:
         new_job_id = _get_orchestrator().retry_job(job_id)
@@ -607,10 +641,14 @@ async def list_ingestion_jobs(
     offset: Annotated[int, Query(description="跳过条数（分页偏移）", ge=0)] = 0,
 ) -> IngestionJobListResponse:
     """
-    分页查询任务列表。
+    分页列出摄入任务。
 
-    参数说明：
-    - 可选：limit、offset（默认 20/0）
+    **Query**
+    - `limit`：可选，默认 20，每页条数（1～500）。
+    - `offset`：可选，默认 0，跳过条数。
+
+    **响应体 `IngestionJobListResponse`（200）**
+    - `ok`、`total`、`limit`、`offset`、`jobs`（`IngestionJobInfo` 数组）。
     """
     try:
         jobs = _get_orchestrator().list_jobs(limit=limit, offset=offset)
@@ -653,10 +691,13 @@ async def get_job_documents(
     job_id: Annotated[str, Path(description="任务 ID")],
 ) -> JobDocumentsResponse:
     """
-    查询任务关联文档。
+    返回任务提交时记录的文档快照（非实时扫 ES）。
 
-    参数说明：
-    - 必传：job_id（路径参数）
+    **路径参数**
+    - `job_id`：必填。
+
+    **响应体 `JobDocumentsResponse`（200）**
+    - `ok`、`job_id`、`documents`（`JobDocumentItem` 列表：dataset_id、doc_name、doc_version 等）。
     """
     try:
         rec = _get_job_repo().get(job_id)
@@ -687,19 +728,55 @@ async def get_job_documents(
 
 
 class UpsertDocumentRequest(BaseModel):
-    """同步写入单文档：请求内完成 pipeline 与索引，适合小文本快速修订。"""
+    """同步写入单文档。`content` 含义与 `POST /rag/jobs/ingest` 中单篇文档相同（内联正文或 pdf/docx 路径）。"""
 
-    dataset_id: str = Field(..., description="数据集标识")
-    doc_name: str = Field(..., description="文档名称")
-    namespace: str | None = Field(None, description="命名空间")
-    content: str = Field(..., description="原始文档内容")
-    source_type: str = Field("text", description="文档类型")
-    source_uri: str | None = Field(None, description="源地址")
-    description: str | None = Field(None, description="文档描述")
-    chunk_size: int = Field(500, description="切块长度")
-    chunk_overlap: int = Field(80, description="切块重叠")
-    min_chunk_size: int = Field(40, description="最小切块长度")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="扩展元数据")
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "dataset_id": "company_kb",
+                "doc_name": "readme",
+                "namespace": "docs",
+                "content": "正文……",
+                "source_type": "text",
+                "source_uri": "https://example.com/readme.md",
+                "description": "说明",
+                "chunk_size": 500,
+                "chunk_overlap": 80,
+                "min_chunk_size": 40,
+                "metadata": {"dept": "IT"},
+            }
+        }
+    )
+
+    dataset_id: str = Field(..., description="必填。数据集 ID，写入索引并用于检索过滤（同异步任务）。")
+    doc_name: str = Field(..., description="必填。文档逻辑名；同步接口固定 `replace_if_exists=true`（先删后灌）。")
+    namespace: str | None = Field(
+        None,
+        description="可选。命名空间，与检索 namespace 过滤一致；用于逻辑分区。",
+    )
+    content: str = Field(
+        ...,
+        description=(
+            "必填。内联正文、本地路径或 `file://...`；`RAG_CONTENT_FETCH_ENABLED=true` 时可为 `http(s)://` 文件 URL。"
+            "不根据 `source_uri` 拉取；扫描 PDF 需 MinerU。"
+        ),
+    )
+    source_type: str = Field(
+        "text",
+        description="可选，默认 text。解析方式：text、markdown、html、pdf、docx。",
+    )
+    source_uri: str | None = Field(
+        None,
+        description="可选。业务来源 URI 字符串，仅写入元数据溯源；不用于下载正文。",
+    )
+    description: str | None = Field(None, description="可选。文档简介，写入元数据。")
+    chunk_size: int = Field(500, description="可选，默认 500。切块目标长度（字符）。")
+    chunk_overlap: int = Field(80, description="可选，默认 80。块重叠（字符）。")
+    min_chunk_size: int = Field(40, description="可选，默认 40。最短块阈值（字符）。")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="可选。自定义键值并入索引 metadata；默认 {}。",
+    )
 
 
 @router.post(
@@ -707,15 +784,25 @@ class UpsertDocumentRequest(BaseModel):
     summary="同步 upsert 文档（自动清洗切块后立即入库）",
     response_model=UpsertDocumentResponse,
     response_description="立即写入向量+全文索引；大文档建议改用 POST /rag/jobs/ingest。",
+    description="无 Path/Query。`content` 可内联、本地路径，或（开启 `RAG_CONTENT_FETCH_ENABLED`）http(s) URL。详见 Schema。",
 )
 async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
     """
-    同步 upsert 文档（小批量快速修订入口）。
+    同步 upsert 单文档（字段释义以 Schema 为准）。**无** `tenant_id` / `doc_version` / `idempotency_key` / `replace_if_exists`（同步路径固定覆盖同名）。
 
-    参数说明：
-    - 必传：dataset_id、doc_name、content
-    - 可选：namespace、source_type、source_uri、description、metadata
-    - 切块参数可选：chunk_size/chunk_overlap/min_chunk_size（默认 500/80/40）
+    **路径/Query**：无。
+
+    **请求体 `UpsertDocumentRequest`**
+    - `dataset_id`、`doc_name`：必填。
+    - `content`：必填。内联、路径/`file://`，或开启 URL 拉取时的 `http(s)://`（与 jobs/ingest 一致）。
+    - `namespace`、`source_type`、`source_uri`、`description`、`metadata`：可选；`source_uri` 仅元数据，不拉文件。
+    - `chunk_size`、`chunk_overlap`、`min_chunk_size`：可选切块参数。
+    - 扫描 PDF：需 `MINERU_ENABLED` 与 mineru-api，与异步任务一致。
+
+    **响应体 `UpsertDocumentResponse`（200）**
+    - `ok`、`doc_name`、`chunk_count`、`stats`。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
     """
     try:
         cfg = ChunkingConfig(
@@ -735,7 +822,14 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
             replace_if_exists=True,
             metadata=req.metadata,
         )
-        chunks, stats = pipeline.process_document(doc)
+        tmp_fetched = None
+        try:
+            doc, tmp_fetched = materialize_document_content_from_url(doc)
+            doc, _ = prepare_pdf_document_for_pipeline(doc)
+            chunks, stats = pipeline.process_document(doc)
+        finally:
+            if tmp_fetched is not None:
+                tmp_fetched.unlink(missing_ok=True)
         if not chunks:
             raise ValueError("no chunks generated after processing")
         _get_service().ingest_texts(
@@ -755,11 +849,25 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
 
 
 class DeleteDocumentRequest(BaseModel):
-    """按 doc_name（及可选 namespace/version）删除向量库中的 chunk。"""
+    """按 doc_name（及可选 namespace/version）删除向量库中的 chunk。字段见各 Field description。"""
 
-    doc_name: str = Field(..., description="文档名称")
-    namespace: str | None = Field(None, description="命名空间；为空则跨命名空间删除")
-    doc_version: str | None = Field(None, description="可选文档版本；传入时按版本精确删除")
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "doc_name": "readme",
+                "namespace": "docs",
+                "doc_version": "v1",
+            }
+        }
+    )
+
+    doc_name: str = Field(..., description="必填。文档名称。")
+    namespace: str | None = Field(
+        None, description="可选。命名空间；不传则跨命名空间删除。"
+    )
+    doc_version: str | None = Field(
+        None, description="可选。文档版本；传入时按版本精确删除。"
+    )
 
 
 @router.post(
@@ -770,11 +878,18 @@ class DeleteDocumentRequest(BaseModel):
 )
 async def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
     """
-    按文档删除知识（支持按版本精确删除）。
+    按文档删除已摄入的 chunk（可选缩小 namespace / doc_version 范围）。
 
-    参数说明：
-    - 必传：doc_name
-    - 可选：namespace、doc_version（传入则按版本删除）
+    **路径/Query**：无。
+
+    **请求体 `DeleteDocumentRequest`**
+    - 必填：`doc_name`。
+    - 可选：`namespace`、`doc_version`（传入则仅删匹配版本）。
+
+    **响应体 `DeleteDocumentResponse`（200）**
+    - `ok`、`deleted`（底层 store 删除条数，无匹配时可为 0）。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
     """
     try:
         deleted = _get_service().delete_by_doc_name(
@@ -787,17 +902,30 @@ async def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
 
 
 class QueryRequest(BaseModel):
-    """RAG 检索调试请求（走 RAGService 混合检索 + 场景 profile，非对话 Graph 路由）。"""
+    """RAG 检索调试请求（走 RAGService 混合检索 + 场景 profile，非对话 Graph 路由）。字段见各 Field description。"""
 
-    query: str = Field(..., description="检索问句或关键词")
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "query": "如何配置 RAG？",
+                "top_k": 5,
+                "namespace": "docs",
+                "scene": "llm_inference",
+            }
+        }
+    )
+
+    query: str = Field(..., description="必填。检索问句或关键词。")
     top_k: int | None = Field(
         None,
-        description="返回片段条数上限；不传则使用对应 scene 的默认 top_k（见 RAG_SCENE_* 配置）",
+        description="可选。返回片段条数上限；不传则用该 scene 的默认 top_k（见 RAG_SCENE_* 配置）。",
     )
-    namespace: str | None = Field(None, description="仅检索该命名空间下的 chunk；不传则不限定")
+    namespace: str | None = Field(
+        None, description="可选。仅检索该命名空间；不传则不限定。"
+    )
     scene: str = Field(
         "llm_inference",
-        description="场景键：llm_inference / chatbot / analysis / nl2sql，影响召回宽度与重排参数",
+        description="可选，默认 llm_inference。场景键：llm_inference / chatbot / analysis / nl2sql。",
     )
 
 
@@ -809,11 +937,18 @@ class QueryRequest(BaseModel):
 )
 async def query_rag(req: QueryRequest) -> QueryRagResponse:
     """
-    查询 RAG 知识库并返回上下文片段。
+    查询 RAG 知识库并返回上下文文本片段（调试/冒烟；与 GraphRAG 对话链路不完全一致）。
 
-    参数说明：
-    - 必传：query
-    - 可选：top_k、namespace、scene（默认 llm_inference）
+    **路径/Query**：无。
+
+    **请求体 `QueryRequest`**
+    - 必填：`query`。
+    - 可选：`top_k`、`namespace`、`scene`（默认 llm_inference）。
+
+    **响应体 `QueryRagResponse`（200）**
+    - `ok`、`query`、`count`、`snippets`（文本片段列表）。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
     """
     try:
         snippets = _get_service().query(
@@ -851,7 +986,16 @@ class DatasetMetaResponse(BaseModel):
     ),
 )
 async def list_datasets() -> List[DatasetMetaResponse]:
-    """兼容保留；新集成请使用文档元数据接口。"""
+    """
+    **已废弃**：列出进程内登记的数据集（重启丢失，非 ES 权威）。
+
+    **路径/Query**：无。
+
+    **响应（200）**
+    - `DatasetMetaResponse` 数组：`dataset_id`、`description`、`num_items`、`namespace`、`doc_name`。
+
+    新集成请使用 `GET /rag/documents/meta` 或 `GET /rag/documents/overview`。
+    """
     metas: List[RAGDatasetMeta] = _get_service().list_datasets()
     return [
         DatasetMetaResponse(
@@ -912,10 +1056,17 @@ async def list_document_meta(
     doc_name: Annotated[str | None, Query(description="按文档名模糊或精确过滤（依仓库实现）")] = None,
 ) -> DocumentMetaListResponse:
     """
-    分页查询文档元数据（管理面清单接口）。
+    分页查询文档元数据（管理面清单；数据来自文档索引，非 chunk 正文）。
 
-    参数说明：
-    - 可选：limit、offset、namespace、tenant_id、dataset_id、doc_name
+    **Query**
+    - `limit`：可选，默认 20，每页条数（1～500）。
+    - `offset`：可选，默认 0。
+    - `namespace`、`tenant_id`、`dataset_id`、`doc_name`：可选过滤条件。
+
+    **响应体 `DocumentMetaListResponse`（200）**
+    - `ok`、`limit`、`offset`、`namespace`（请求使用的过滤）、`documents`（`DocumentMetaItem` 列表）。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
     """
     try:
         repo = _get_doc_repo()
@@ -1010,10 +1161,18 @@ async def get_documents_overview(
     doc_name: Annotated[str | None, Query(description="过滤文档名")] = None,
 ) -> KnowledgeOverviewResponse:
     """
-    查询知识库总览（聚合统计 + 分页明细）。
+    知识库总览：当前过滤条件下的聚合统计 + 文档明细分页。
 
-    参数说明：
-    - 可选：limit、offset、namespace、tenant_id、dataset_id、doc_name
+    **Query**
+    - `limit`：可选，默认 20，明细每页条数（1～500）。
+    - `offset`：可选，默认 0。
+    - `namespace`、`tenant_id`、`dataset_id`、`doc_name`：可选过滤条件。
+
+    **响应体 `KnowledgeOverviewResponse`（200）**
+    - `ok`、回显过滤字段、`total_documents`、`total_doc_names`、
+      `by_namespace` / `by_tenant` / `by_status`（分桶）、`documents`（`DocumentMetaItem` 分页列表）。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
     """
     try:
         repo = _get_doc_repo()
@@ -1082,15 +1241,21 @@ async def get_knowledge_trends(
     days: Annotated[int, Query(description="统计窗口天数，最大 180", ge=1, le=180)] = 30,
 ) -> KnowledgeTrendsResponse:
     """
-    用于知识库运营看板的趋势数据。
+    知识库运营趋势（基于任务索引的成功/失败统计）。
 
-    参数说明：
-    - 可选：granularity=day|week（默认 day）、days（默认 30，上限 180）
+    **Query**
+    - `granularity`：可选，默认 day；`day` 或 `week`。
+    - `days`：可选，默认 30，统计窗口天数（1～180）。
 
-    统计口径：
-    - created_success：FULL 成功数量（视为“新增”）；
-    - updated_success：UPSERT 成功数量（视为“更新”）；
-    - failed：FAILED 数量（任意 job_type）。
+    **响应体 `KnowledgeTrendsResponse`（200）**
+    - `ok`、`granularity`、`days`、`points`（`KnowledgeTrendPoint`：`bucket`、`created_success`、`updated_success`、`failed`）。
+
+    **统计口径（`points` 内字段）**
+    - `created_success`：FULL 成功数量（视为新增）。
+    - `updated_success`：UPSERT 成功数量（视为更新）。
+    - `failed`：FAILED 数量（任意 job_type）。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
     """
     try:
         repo = _get_job_repo()
@@ -1109,11 +1274,25 @@ async def get_knowledge_trends(
 
 
 class RunChunksMigrationRequest(BaseModel):
-    embedding_dim: int = Field(..., description="向量维度，如 768/1024")
+    """执行 chunks 索引迁移请求体。"""
+
+    model_config = ConfigDict(json_schema_extra={"example": {"embedding_dim": 1024}})
+
+    embedding_dim: int = Field(
+        ..., description="必填。向量维度（如 768/1024），须与嵌入模型一致。"
+    )
 
 
 class RollbackChunksMigrationRequest(BaseModel):
-    previous_index: str = Field(..., description="回滚目标物理索引名，例如 rag_knowledge_base_v1")
+    """chunks alias 回滚请求体。"""
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"previous_index": "rag_knowledge_base_v1"}}
+    )
+
+    previous_index: str = Field(
+        ..., description="必填。回滚目标物理索引名，例如 rag_knowledge_base_v1。"
+    )
 
 
 @router.post(
@@ -1124,10 +1303,17 @@ class RollbackChunksMigrationRequest(BaseModel):
 )
 async def run_chunks_migration(req: RunChunksMigrationRequest) -> ChunksMigrationRunResponse:
     """
-    执行 chunks 索引迁移并切换 alias。
+    创建新 chunks 物理索引并切换 alias（运维/升级向量维度时使用）。
 
-    参数说明：
-    - 必传：embedding_dim（向量维度，需与嵌入模型维度一致）
+    **路径/Query**：无。
+
+    **请求体 `RunChunksMigrationRequest`**
+    - 必填：`embedding_dim`（与嵌入模型维度一致）。
+
+    **响应体 `ChunksMigrationRunResponse`（200）**
+    - `ok`、`alias`、`new_index`、`old_indices`（被替换下的旧物理索引名列表）。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
     """
     try:
         cfg = get_app_config().rag.es
@@ -1170,10 +1356,17 @@ async def run_chunks_migration(req: RunChunksMigrationRequest) -> ChunksMigratio
 )
 async def rollback_chunks_migration(req: RollbackChunksMigrationRequest) -> ChunksMigrationRollbackResponse:
     """
-    回滚 chunks 索引 alias。
+    将 chunks 逻辑 alias 指回指定物理索引。
 
-    参数说明：
-    - 必传：previous_index（回滚目标物理索引名）
+    **路径/Query**：无。
+
+    **请求体 `RollbackChunksMigrationRequest`**
+    - 必填：`previous_index`（目标物理索引名）。
+
+    **响应体 `ChunksMigrationRollbackResponse`（200）**
+    - `ok`、`rolled_back_to`、`alias`。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
     """
     try:
         cfg = get_app_config().rag.es

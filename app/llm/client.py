@@ -14,6 +14,20 @@ from app.core.metrics import LLM_REQUEST_COUNT, LLM_REQUEST_LATENCY
 logger = get_logger(__name__)
 
 
+def openai_chat_completions_url(endpoint: str) -> str:
+    """
+    将配置的 LLM 根地址解析为 OpenAI 兼容的 chat completions URL。
+
+    支持两种常见写法（与 `LLM_DEFAULT_ENDPOINT` 文档一致）：
+    - `http://host:8000` → `http://host:8000/v1/chat/completions`
+    - `http://host:8000/v1`（或 `/v1/`）→ `http://host:8000/v1/chat/completions`，避免拼成 `/v1/v1/...`
+    """
+    base = (endpoint or "").rstrip("/")
+    if base.lower().endswith("/v1"):
+        return f"{base}/chat/completions"
+    return f"{base}/v1/chat/completions"
+
+
 class LLMClient(ABC):
     """
     大模型客户端抽象。
@@ -64,8 +78,8 @@ class VLLMHttpClient(LLMClient):
     """
     面向 vLLM 的 HTTP 客户端占位实现。
 
-    假定 vLLM 暴露 OpenAI 兼容接口（/v1/chat/completions 或 /v1/completions），
-    实际路径和参数可以通过 LLMModelConfig.extras 中的配置进行调整。
+    假定 vLLM 暴露 OpenAI 兼容接口（`/v1/chat/completions`）。
+    `LLMModelConfig.endpoint` 可为服务根地址或已带 `/v1` 的 base（见 `openai_chat_completions_url`）。
     """
 
     def __init__(self, timeout: float = 30.0) -> None:
@@ -89,7 +103,7 @@ class VLLMHttpClient(LLMClient):
 
     async def chat(self, model: str, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         cfg = self._get_model_cfg(model)
-        url = cfg.endpoint.rstrip("/") + "/v1/chat/completions"
+        url = openai_chat_completions_url(cfg.endpoint)
 
         payload: Dict[str, Any] = {
             "model": cfg.model_id,
@@ -149,7 +163,7 @@ class VLLMHttpClient(LLMClient):
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         cfg = self._get_model_cfg(model)
-        url = cfg.endpoint.rstrip("/") + "/v1/chat/completions"
+        url = openai_chat_completions_url(cfg.endpoint)
         payload: Dict[str, Any] = {
             "model": cfg.model_id,
             "messages": messages,

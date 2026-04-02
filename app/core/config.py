@@ -194,6 +194,25 @@ class RAGSceneProfilesConfig:
 
 
 @dataclass
+class RAGContentFetchConfig:
+    """
+    `content` 为 http(s) 文件 URL 时的拉取行为（需显式开启；建议配合主机白名单）。
+
+    - 开启后：`source_type` 为 pdf/docx/doc 时下载到临时文件再解析；text/markdown/html 时下载为 UTF-8 文本。
+    - 默认拒绝解析到私网/回环等地址，降低 SSRF 风险；生产建议设置 `allow_hosts`。
+    """
+
+    enabled: bool = False
+    max_bytes: int = 52428800
+    timeout_s: float = 120.0
+    allow_hosts: list[str] = field(default_factory=list)
+    block_private_ips: bool = True
+    bearer_token: str | None = None
+    header_name: str | None = None
+    header_value: str | None = None
+
+
+@dataclass
 class RAGIngestionConfig:
     """
     知识摄入平台相关配置（对齐《企业级 RAG 文档摄入与检索一体化改造设计稿》§4）。
@@ -260,6 +279,7 @@ class RAGConfig:
     graph: GraphRAGConfig = field(default_factory=GraphRAGConfig)
 
     ingestion: RAGIngestionConfig = field(default_factory=RAGIngestionConfig)
+    content_fetch: RAGContentFetchConfig = field(default_factory=RAGContentFetchConfig)
     agentic: RAGAgenticConfig = field(default_factory=RAGAgenticConfig)
 
 
@@ -553,6 +573,18 @@ def _load_from_env() -> AppConfig:
         enable_scene_boost=os.getenv("RAG_AGENTIC_ENABLE_SCENE_BOOST", "true").lower() == "true",
     )
 
+    content_fetch_allow = _split_csv_env("RAG_CONTENT_FETCH_ALLOW_HOSTS", "")
+    content_fetch_cfg = RAGContentFetchConfig(
+        enabled=os.getenv("RAG_CONTENT_FETCH_ENABLED", "false").lower() == "true",
+        max_bytes=max(1024 * 1024, int(os.getenv("RAG_CONTENT_FETCH_MAX_BYTES", str(50 * 1024 * 1024)))),
+        timeout_s=float(os.getenv("RAG_CONTENT_FETCH_TIMEOUT_S", "120")),
+        allow_hosts=content_fetch_allow,
+        block_private_ips=os.getenv("RAG_CONTENT_FETCH_BLOCK_PRIVATE", "true").lower() == "true",
+        bearer_token=os.getenv("RAG_CONTENT_FETCH_BEARER_TOKEN") or None,
+        header_name=os.getenv("RAG_CONTENT_FETCH_HEADER_NAME") or None,
+        header_value=os.getenv("RAG_CONTENT_FETCH_HEADER_VALUE") or None,
+    )
+
     rag_cfg = RAGConfig(
         enable_rag_by_default=os.getenv("RAG_ENABLE_BY_DEFAULT", "true").lower() == "true",
         enable_context_by_default=os.getenv("RAG_ENABLE_CONTEXT_BY_DEFAULT", "true").lower() == "true",
@@ -566,6 +598,7 @@ def _load_from_env() -> AppConfig:
         embedding_model_name=os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-small-zh-v1.5"),
         graph=graph_cfg,
         ingestion=ingestion_cfg,
+        content_fetch=content_fetch_cfg,
         agentic=agentic_cfg,
     )
 

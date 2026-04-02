@@ -23,7 +23,7 @@ router = APIRouter()
 service = ChatbotService()
 
 
-@router.post("/chat", response_model=ChatResponse, summary="智能客服对话（基础版）")
+@router.post("/chat", response_model=ChatResponse, summary="智能客服对话（基础版）", deprecated=True, include_in_schema=False)
 async def chat(req: ChatRequest) -> ChatResponse:
     """
     智能客服对话接口。
