@@ -317,8 +317,13 @@ class IngestionOrchestrator:
                     err_code = "E_MINERU_PARSE"
                 with self._lock:
                     job.metrics["documents_failed"] += 1
-                    job.metrics[f"doc_error:{doc.doc_name}"] = err
-                    job.metrics[f"doc_error_code:{doc.doc_name}"] = err_code
+                    # 避免将 doc_name 拼进 metrics 的动态字段名（会导致 ES/EasySearch mapping 冲突，
+                    # 例如此前某次写入把某个键推断成 object，后续再写 string 会触发 mapper_parsing_exception）。
+                    doc_errors = job.metrics.get("doc_errors")
+                    if not isinstance(doc_errors, list):
+                        doc_errors = []
+                    doc_errors.append({"doc_name": doc.doc_name, "error": err, "code": err_code})
+                    job.metrics["doc_errors"] = doc_errors
                     job.updated_at = utcnow_iso()
                     self._save_state()
                     self._save_job_record(job)
