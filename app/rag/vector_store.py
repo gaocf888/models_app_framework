@@ -584,9 +584,11 @@ class ElasticsearchVectorStore(VectorStore):
         self._vector_field = cfg.vector_field
         self._dim: int | None = None
         self._max_retries: int = 3
-        # 默认使用 ES 的 dense_vector；若后端不支持该字段类型（例如某些 EasySearch/兼容实现），
-        # 则降级为可写入的数值类型，避免摄入因为 mapping 失败整体中断。
-        self._vector_field_kind: str = "dense_vector"
+        # 兼容不同后端向量字段类型：
+        # - EasySearch：knn_dense_float_vector + knn_nearest_neighbors
+        # - Elasticsearch：dense_vector + script_score/cosineSimilarity
+        # - 均不支持时降级为可写入数值类型（embedding 会写入 float），并禁用语义向量检索。
+        self._vector_field_kind: str = "unknown"
 
     @staticmethod
     def _create_client(cfg: ElasticsearchConfig):
@@ -619,8 +621,8 @@ class ElasticsearchVectorStore(VectorStore):
 
     def _ensure_index(self, dim: int) -> None:
         if self._with_retry(lambda: self._client.indices.exists(index=self._index)):
-            # 索引已存在时，也要根据 mapping 判断向量字段是否真的支持 dense_vector，
-            # 否则后续 script_score 会因字段类型不匹配而触发 "compile error"。
+            # 索引已存在时，也要根据 mapping 判断向量字段类型，
+            # 否则后续 script_score/knn_nearest_neighbors 会因字段类型不匹配而触发异常。
             try:
                 mapping = self._with_retry(lambda: self._client.indices.get_mapping(index=self._index))
                 # mapping: { "<index>": { "mappings": { "properties": {...}}}}
@@ -631,7 +633,9 @@ class ElasticsearchVectorStore(VectorStore):
                 )
                 vf = props.get(self._vector_field, {}) or {}
                 vf_type = vf.get("type")
-                if vf_type == "dense_vector":
+                if vf_type == "knn_dense_float_vector":
+                    self._vector_field_kind = "knn_dense_float_vector"
+                elif vf_type == "dense_vector":
                     self._vector_field_kind = "dense_vector"
                 else:
                     # 例如 fallback: float（语义向量检索不可用）
@@ -645,6 +649,31 @@ class ElasticsearchVectorStore(VectorStore):
             if self._cfg.auto_migrate_on_start:
                 self._ensure_alias_points_to_current_index()
             return
+        knn_mapping = {
+            "settings": {"analysis": {"analyzer": {"default": {"type": "standard"}}}},
+            "mappings": {
+                "properties": {
+                    "text": {"type": "text"},
+                    "namespace": {"type": "keyword"},
+                    "doc_name": {"type": "keyword"},
+                    "ext_id": {"type": "keyword"},
+                    "metadata": {"type": "object", "enabled": True},
+                    self._vector_field: {
+                        "type": "knn_dense_float_vector",
+                        "knn": {
+                            "dims": dim,
+                            "model": "lsh",
+                            "similarity": "cosine",
+                            # EasySearch 示例推荐的参数范围（dev 默认值）。
+                            # 若召回质量不足，可调大 L / candidates。
+                            "L": 99,
+                            "k": 1,
+                        },
+                    },
+                }
+            },
+        }
+
         dense_mapping = {
             "settings": {"analysis": {"analyzer": {"default": {"type": "standard"}}}},
             "mappings": {
@@ -665,35 +694,42 @@ class ElasticsearchVectorStore(VectorStore):
         }
 
         try:
-            # dense_vector 优先：用于语义向量检索
-            self._client.indices.create(index=self._index, body=dense_mapping)
-            self._vector_field_kind = "dense_vector"
-        except Exception as e:  # noqa: BLE001
-            # 如果后端不支持 dense_vector（No handler for type [dense_vector]），降级以确保摄入不失败。
-            if "No handler for type [dense_vector]" not in str(e):
-                raise
-
-            logger.warning(
-                "backend does not support dense_vector on field=%s. Fallback vector field mapping to numeric array. err=%s",
-                self._vector_field,
-                e,
-            )
-            fallback_mapping = {
-                "settings": {"analysis": {"analyzer": {"default": {"type": "standard"}}}},
-                "mappings": {
-                    "properties": {
-                        "text": {"type": "text"},
-                        "namespace": {"type": "keyword"},
-                        "doc_name": {"type": "keyword"},
-                        "ext_id": {"type": "keyword"},
-                        "metadata": {"type": "object", "enabled": True},
-                        # embedding 会被写入为 float 数组；语义向量检索将自动跳过。
-                        self._vector_field: {"type": "float"},
-                    }
-                },
-            }
-            self._client.indices.create(index=self._index, body=fallback_mapping)
-            self._vector_field_kind = "float"
+            # knn_dense_float_vector 优先：用于 EasySearch 语义向量检索
+            self._client.indices.create(index=self._index, body=knn_mapping)
+            self._vector_field_kind = "knn_dense_float_vector"
+        except Exception as e1:  # noqa: BLE001
+            # 如果后端不支持 knn_dense_float_vector，尝试 Elasticsearch dense_vector。
+            err1 = str(e1)
+            if "No handler for type [knn_dense_float_vector]" not in err1 and "unknown field" not in err1:
+                # 不是常见“类型不支持”错误，直接抛出
+                # （避免掩盖真正的参数/权限错误）
+                pass
+            try:
+                self._client.indices.create(index=self._index, body=dense_mapping)
+                self._vector_field_kind = "dense_vector"
+            except Exception as e2:  # noqa: BLE001
+                logger.warning(
+                    "backend does not support vector types on field=%s. Fallback to float. err1=%s err2=%s",
+                    self._vector_field,
+                    e1,
+                    e2,
+                )
+                fallback_mapping = {
+                    "settings": {"analysis": {"analyzer": {"default": {"type": "standard"}}}},
+                    "mappings": {
+                        "properties": {
+                            "text": {"type": "text"},
+                            "namespace": {"type": "keyword"},
+                            "doc_name": {"type": "keyword"},
+                            "ext_id": {"type": "keyword"},
+                            "metadata": {"type": "object", "enabled": True},
+                            # embedding 会被写入为 float 数组；语义向量检索将自动跳过。
+                            self._vector_field: {"type": "float"},
+                        }
+                    },
+                }
+                self._client.indices.create(index=self._index, body=fallback_mapping)
+                self._vector_field_kind = "float"
 
         self._dim = dim
         if self._cfg.auto_migrate_on_start:
@@ -784,34 +820,63 @@ class ElasticsearchVectorStore(VectorStore):
             self._ensure_index(len(vector))
         except Exception:  # noqa: BLE001
             return []
-        # 若后端不支持 dense_vector，则语义向量检索无法工作，直接返回空结果，避免脚本错误导致检索链路中断。
-        if self._vector_field_kind != "dense_vector":
-            return []
         if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
             return []
-        filters: list[dict[str, Any]] = []
-        if namespace is not None:
-            filters.append({"term": {"namespace": namespace}})
-        body = {
-            "size": k,
-            "query": {
-                "script_score": {
-                    "query": {"bool": {"filter": filters}} if filters else {"match_all": {}},
-                    "script": {
-                        "source": f"cosineSimilarity(params.qv, '{self._vector_field}') + 1.0",
-                        "params": {"qv": list(vector)},
+
+        try:
+            # EasySearch：knn_nearest_neighbors
+            if self._vector_field_kind == "knn_dense_float_vector":
+                filters: list[dict[str, Any]] = []
+                if namespace is not None:
+                    filters.append({"term": {"namespace": namespace}})
+
+                # 为了更稳定的召回，candidates 略大于最终 top-k
+                candidates = max(50, int(k) * 5)
+                must_clause = [
+                    {
+                        "knn_nearest_neighbors": {
+                            "field": self._vector_field,
+                            "vec": {"values": list(vector)},
+                            "model": "lsh",
+                            "similarity": "cosine",
+                            "candidates": candidates,
+                        }
+                    }
+                ]
+                if filters:
+                    body = {"size": k, "query": {"bool": {"filter": filters, "must": must_clause}}}
+                else:
+                    body = {"size": k, "query": {"bool": {"must": must_clause}}}
+
+                resp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
+                return [self._hit_to_result(hit) for hit in resp.get("hits", {}).get("hits", [])]
+
+            # Elasticsearch：dense_vector + script_score
+            if self._vector_field_kind == "dense_vector":
+                filters: list[dict[str, Any]] = []
+                if namespace is not None:
+                    filters.append({"term": {"namespace": namespace}})
+                body = {
+                    "size": k,
+                    "query": {
+                        "script_score": {
+                            "query": {"bool": {"filter": filters}} if filters else {"match_all": {}},
+                            "script": {
+                                "source": f"cosineSimilarity(params.qv, '{self._vector_field}') + 1.0",
+                                "params": {"qv": list(vector)},
+                            },
+                        }
                     },
                 }
-            },
-        }
-        try:
-            resp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
+                resp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
+                return [self._hit_to_result(hit) for hit in resp.get("hits", {}).get("hits", [])]
         except Exception as e:  # noqa: BLE001
-            # 易与后端脚本能力/字段类型不匹配相关：直接禁用语义检索，避免影响整个流式接口。
             logger.warning("similarity_search_by_vector failed; disable semantic vector search. err=%s", e)
             self._vector_field_kind = "float"
             return []
-        return [self._hit_to_result(hit) for hit in resp.get("hits", {}).get("hits", [])]
+
+        # float/unknown：语义向量检索不可用
+        return []
 
     def keyword_search(
         self,
