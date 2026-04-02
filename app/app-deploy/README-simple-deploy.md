@@ -145,16 +145,24 @@ LOG_FILE_COMPRESS=true
 
 ### 2.9 嵌入模型离线使用（bge-small-zh-v1.5 示例）
 
-若部署环境**无法访问 Hugging Face Hub**，或希望避免在线下载，推荐将嵌入模型预先下载到仓库根目录的统一离线目录，并通过挂载暴露给应用：
+若部署环境**无法访问 Hugging Face Hub**，或希望避免在线下载，推荐将嵌入模型和重排序模型预先下载到仓库根目录的统一离线目录，并通过挂载暴露给应用：
 
 1. **在项目根目录准备离线模型目录**
 
-   约定目录结构如下（你当前已按此方式完成）：
+   约定目录结构如下 -- 当前项目/models-files（你当前已按此方式完成）：
+   两个模型文件下载方法：魔塔社区中搜索模型名称，然后使用 git lfs下载到本地，上传服务器
 
+   下面是嵌入模型路径
    ```text
    models-files/
      embeddings/
        bge-small-zh-v1.5/   # BAAI/bge-small-zh-v1.5 的完整模型文件
+   ```
+   
+   下面是重排序模型路径
+   ```text
+   models-files/
+     bge-reranker-large/    # BAAI/bge-reranker-large 的完整模型文件
    ```
 
 2. **在 compose 中挂载到应用容器**
@@ -167,11 +175,17 @@ LOG_FILE_COMPRESS=true
        # ...
        volumes:
          - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ../../models-files/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+       environment:
+         - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
 
      models-app-gpu:
        # ...
        volumes:
          - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ../../models-files/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+       environment:
+         - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
    ```
 
 3. **在 `.env` 中指定嵌入模型路径**

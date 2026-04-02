@@ -136,6 +136,7 @@ services:
     # NVIDIA Container Toolkit，并将 Docker 默认 runtime 配置为 nvidia。
     environment:
       NVIDIA_VISIBLE_DEVICES: ${SMALL_MODEL_NVIDIA_VISIBLE_DEVICES:-all}
+      RAG_RERANKER_MODEL_PATH: /models/rerank/bge-reranker-large
     volumes:
       - huggingface-cache:/root/.cache/huggingface
       - app-logs:/workspace/logs
@@ -145,6 +146,8 @@ services:
       # 未设置 SMALL_MODEL_WEIGHTS_HOST_PATH 时使用命名卷占位，见文件末尾 volumes
       - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
+      # 重排模型离线挂载
+      - ../../models-files/bge-reranker-large:/models/rerank/bge-reranker-large:ro
 
 networks:
   # 本栈内部：Redis ↔ 应用
