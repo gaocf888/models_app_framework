@@ -143,10 +143,11 @@ class ChatbotService:
             if content:
                 messages.append({"role": role, "content": content})
 
-        if req.image_urls:
-            # 多模态输入：将文本与多图一起放入 user content 列表。
+        # 模型层已过滤空串；此处再防御，避免任意路径带入空 URL 触发 vLLM「empty image」400
+        image_urls = [u for u in req.image_urls if isinstance(u, str) and u.strip()]
+        if image_urls:
             content_blocks: list[Dict[str, Any]] = [{"type": "text", "text": req.query}]
-            for u in req.image_urls:
+            for u in image_urls:
                 content_blocks.append({"type": "image_url", "image_url": {"url": u}})
             messages.append({"role": "user", "content": content_blocks})
         else:

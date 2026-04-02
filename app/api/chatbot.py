@@ -42,8 +42,7 @@ async def chat_stream(req: ChatRequest, request: Request):
     智能客服流式对话接口（SSE）。
 
     - 请求体与 `/chatbot/chat` 一致（支持 image_urls）；
-    - 响应为 text/event-stream，每个 chunk 形如：`data: {"delta": "..."}\\n\\n`（token 级）；
-    - 结束时发送：`data: {"finished": true}\\n\\n`。
+    - 响应为 `text/event-stream; charset=utf-8`，每行 `data: {...}` 后以空行分隔；JSON 使用 `ensure_ascii=false`，中文不转义为 `\\uXXXX`。
     """
 
     async def event_generator():
@@ -51,11 +50,16 @@ async def chat_stream(req: ChatRequest, request: Request):
             async for delta in service.stream_chat(req):
                 if await request.is_disconnected():
                     return
-                # token 级增量输出
-                yield f"data: {json.dumps({'delta': delta, 'finished': False})}\\n\\n"
-            yield f"data: {json.dumps({'finished': True})}\\n\\n"
+                # ensure_ascii=False：delta 含中文时不转成 \uXXXX，便于前端与 Swagger 直接阅读
+                payload = json.dumps({"delta": delta, "finished": False}, ensure_ascii=False)
+                yield f"data: {payload}\n\n"
+            yield f"data: {json.dumps({'finished': True}, ensure_ascii=False)}\n\n"
         except Exception as exc:  # noqa: BLE001
-            yield f"data: {json.dumps({'error': str(exc), 'finished': True})}\\n\\n"
+            err = json.dumps({"error": str(exc), "finished": True}, ensure_ascii=False)
+            yield f"data: {err}\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream; charset=utf-8",
+    )
 

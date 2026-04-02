@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChatMessage(BaseModel):
@@ -12,7 +14,10 @@ class ChatRequest(BaseModel):
     user_id: str = Field(..., description="用户唯一标识")
     session_id: str = Field(..., description="会话唯一标识（由前端或调用方管理）")
     query: str = Field(..., description="用户本轮输入内容")
-    image_urls: list[str] = Field(default_factory=list, description="本轮关联的图片 URL 列表（可选）")
+    image_urls: list[str] = Field(
+        default_factory=list,
+        description="本轮关联的图片 URL 列表（可选）。空字符串、仅空白、null 项会被丢弃；全空时等价于不传图，走纯文本。",
+    )
     enable_rag: bool = Field(
         True,
         description=(
@@ -21,6 +26,23 @@ class ChatRequest(BaseModel):
         ),
     )
     enable_context: bool = Field(True, description="是否启用会话上下文（Redis 历史）")
+
+    @field_validator("image_urls", mode="before")
+    @classmethod
+    def normalize_image_urls(cls, v: Any) -> list[str]:
+        """允许客户端传 [\"\"]、[null] 等；过滤后为空则不走 vLLM 多模态，避免 empty image 400。"""
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return []
+        out: list[str] = []
+        for item in v:
+            if item is None:
+                continue
+            s = str(item).strip()
+            if s:
+                out.append(s)
+        return out
 
 
 class ChatResponse(BaseModel):
