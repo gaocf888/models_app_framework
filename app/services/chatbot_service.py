@@ -49,8 +49,9 @@ class ChatbotService:
             logger.warning("ChatbotService: LangChain not available, fallback to simple implementation.")
 
     async def chat(self, req: ChatRequest) -> ChatResponse:
-        # 记录用户消息
-        self._conv.append_user_message(req.user_id, req.session_id, req.query)
+        # 不在此处提前 append_user：须先取历史再组 messages，否则当前句已进 history，
+        # _build_llm_messages / ChatbotChain 再追加本轮 query，会造成「双份当前用户句」且易干扰多轮理解。
+        # 本轮 user/assistant 在得到 answer 后统一写入（见文末）。
 
         # 优先使用 LangChain ChatbotChain（若可用）
         if self._chain is not None:
@@ -88,7 +89,7 @@ class ChatbotService:
                     base += f"（已检索到 {len(context_snippets)} 条上下文片段用于参考）"
                 answer = base
 
-        # 记录助手消息
+        self._conv.append_user_message(req.user_id, req.session_id, req.query)
         self._conv.append_assistant_message(req.user_id, req.session_id, answer)
 
         return ChatResponse(answer=answer, used_rag=used_rag, context_snippets=context_snippets)
@@ -96,14 +97,15 @@ class ChatbotService:
     async def stream_chat(self, req: ChatRequest) -> AsyncIterator[str]:
         """
         token 级流式输出（基于 vLLM OpenAI 兼容 stream）。
-        """
-        self._conv.append_user_message(req.user_id, req.session_id, req.query)
 
+        会话写入顺序：先按「不含本轮」的历史组 messages，流式结束后再 append 本轮 user + assistant，
+        与 `chat()` 非流式路径一致，避免历史里先插入当前用户句导致重复与上下文错乱。
+        """
         context_snippets: list[str] = []
         if req.enable_rag:
             context_snippets = self._hybrid_rag.retrieve(req.query)
 
-        history = []
+        history: list[dict] = []
         if req.enable_context:
             history = self._conv.get_recent_history(req.user_id, req.session_id)
 
@@ -114,8 +116,8 @@ class ChatbotService:
             parts.append(delta)
             yield delta
 
-        # 流式完成后统一回写完整助手消息，保障会话持久化一致性。
         answer = "".join(parts).strip()
+        self._conv.append_user_message(req.user_id, req.session_id, req.query)
         if answer:
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
 

@@ -86,7 +86,7 @@ class ChatbotChain:
         - Step2: 按意图选择是否启用 RAG 并检索上下文；
         - Step3: 结合上下文与规划结果调用 LLM 生成回答。
         """
-        from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore[import-not-found]
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage  # type: ignore[import-not-found]
 
         # 1. 获取系统提示词模板（带 A/B 分流）
         tpl = self._prompts.get_template(scene="chatbot", user_id=user_id, version=prompt_version)
@@ -122,7 +122,8 @@ class ChatbotChain:
                 if role == "user":
                     messages.append(HumanMessage(content=content))
                 else:
-                    messages.append(SystemMessage(content=f"[历史助手回复]{content}"))
+                    # 助手轮次用 AIMessage，避免塞进 System 导致模型不按「多轮对话」理解事实（如用户自称姓名）
+                    messages.append(AIMessage(content=content))
 
         # 3. 可选使用 RAG 检索相关上下文（通过 AgenticRAGService 统一入口）
         if enable_rag:

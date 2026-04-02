@@ -25,7 +25,13 @@ class ChatRequest(BaseModel):
             "场景参数见 RAG_SCENE_CHATBOT_*）；为 false 则不调向量库"
         ),
     )
-    enable_context: bool = Field(True, description="是否启用会话上下文（Redis 历史）")
+    enable_context: bool = Field(
+        True,
+        description=(
+            "是否把历史对话拼进大模型请求。关闭则每轮独立、无法记住上文。"
+            "多实例部署须配置 REDIS_URL，否则仅进程内内存、且多 worker 互不共享。"
+        ),
+    )
 
     @field_validator("image_urls", mode="before")
     @classmethod
