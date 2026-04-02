@@ -108,7 +108,8 @@ class JobRepository:
 
     def upsert(self, job_id: str, payload: Dict[str, Any]) -> None:
         if self._use_es and self._client is not None:
-            self._client.index(index=self._alias, id=job_id, document=payload, refresh=True)
+            # elasticsearch-py 7.x 使用 body=；8.x 才支持 document=（本项目 requirements 固定 7.13.4）
+            self._client.index(index=self._alias, id=job_id, body=payload, refresh=True)
             return
         state = self._load_file_state()
         state[job_id] = payload

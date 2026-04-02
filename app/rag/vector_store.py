@@ -584,6 +584,9 @@ class ElasticsearchVectorStore(VectorStore):
         self._vector_field = cfg.vector_field
         self._dim: int | None = None
         self._max_retries: int = 3
+        # 默认使用 ES 的 dense_vector；若后端不支持该字段类型（例如某些 EasySearch/兼容实现），
+        # 则降级为可写入的数值类型，避免摄入因为 mapping 失败整体中断。
+        self._vector_field_kind: str = "dense_vector"
 
     @staticmethod
     def _create_client(cfg: ElasticsearchConfig):
@@ -621,7 +624,7 @@ class ElasticsearchVectorStore(VectorStore):
             if self._cfg.auto_migrate_on_start:
                 self._ensure_alias_points_to_current_index()
             return
-        mapping = {
+        dense_mapping = {
             "settings": {"analysis": {"analyzer": {"default": {"type": "standard"}}}},
             "mappings": {
                 "properties": {
@@ -639,7 +642,38 @@ class ElasticsearchVectorStore(VectorStore):
                 }
             },
         }
-        self._with_retry(lambda: self._client.indices.create(index=self._index, body=mapping))
+
+        try:
+            # dense_vector 优先：用于语义向量检索
+            self._client.indices.create(index=self._index, body=dense_mapping)
+            self._vector_field_kind = "dense_vector"
+        except Exception as e:  # noqa: BLE001
+            # 如果后端不支持 dense_vector（No handler for type [dense_vector]），降级以确保摄入不失败。
+            if "No handler for type [dense_vector]" not in str(e):
+                raise
+
+            logger.warning(
+                "backend does not support dense_vector on field=%s. Fallback vector field mapping to numeric array. err=%s",
+                self._vector_field,
+                e,
+            )
+            fallback_mapping = {
+                "settings": {"analysis": {"analyzer": {"default": {"type": "standard"}}}},
+                "mappings": {
+                    "properties": {
+                        "text": {"type": "text"},
+                        "namespace": {"type": "keyword"},
+                        "doc_name": {"type": "keyword"},
+                        "ext_id": {"type": "keyword"},
+                        "metadata": {"type": "object", "enabled": True},
+                        # embedding 会被写入为 float 数组；语义向量检索将自动跳过。
+                        self._vector_field: {"type": "float"},
+                    }
+                },
+            }
+            self._client.indices.create(index=self._index, body=fallback_mapping)
+            self._vector_field_kind = "float"
+
         self._dim = dim
         if self._cfg.auto_migrate_on_start:
             self._ensure_alias_points_to_current_index()
@@ -724,6 +758,9 @@ class ElasticsearchVectorStore(VectorStore):
         k: int = 5,
         namespace: str | None = None,
     ) -> List[dict[str, Any]]:
+        # 若后端不支持 dense_vector，则语义向量检索无法工作，直接返回空结果，避免脚本错误导致检索链路中断。
+        if self._vector_field_kind != "dense_vector":
+            return []
         if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
             return []
         filters: list[dict[str, Any]] = []

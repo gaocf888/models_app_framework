@@ -92,7 +92,8 @@ class DocumentRepository:
 
     def upsert(self, doc_key: str, payload: Dict[str, Any]) -> None:
         if self._use_es and self._client is not None:
-            self._client.index(index=self._alias, id=doc_key, document=payload, refresh=True)
+            # elasticsearch-py 7.x 使用 body=；8.x 才支持 document=
+            self._client.index(index=self._alias, id=doc_key, body=payload, refresh=True)
             return
         state = self._load_file_state()
         state[doc_key] = payload

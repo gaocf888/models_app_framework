@@ -90,12 +90,51 @@ class IngestionOrchestrator:
         with self._lock:
             self._jobs[job_id] = job
             self._save_state()
-        self._executor.submit(self._run_job, job_id, chunk_cfg)
+        self._executor.submit(self._guarded_run_job, job_id, chunk_cfg)
         return job_id
 
     def get_job(self, job_id: str) -> Optional[IngestionJob]:
+        """
+        返回任务状态。优先与 JobRepository（ES / jobs_index.json）对齐：
+        多 worker / 多副本时，执行线程只在受理 POST 的进程内；其它进程的内存会停在 RUNNING，
+        若不合并持久化视图，轮询会一直看到 RUNNING 且无本进程日志。
+        """
+        persisted: dict | None = None
+        try:
+            persisted = self._job_repo.get(job_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("job_repo.get failed job_id=%s", job_id, exc_info=True)
+
         with self._lock:
-            return self._jobs.get(job_id)
+            mem = self._jobs.get(job_id)
+
+        if not persisted and not mem:
+            return None
+
+        use_persisted = False
+        if persisted and not mem:
+            use_persisted = True
+        elif persisted and mem:
+            p_u = persisted.get("updated_at") or ""
+            m_u = mem.updated_at or ""
+            if p_u > m_u:
+                use_persisted = True
+            elif persisted.get("finished_at") and not mem.finished_at:
+                use_persisted = True
+            elif persisted.get("finished_at") and persisted.get("status") != mem.status.value:
+                use_persisted = True
+
+        if use_persisted and persisted:
+            try:
+                job = self._dict_to_job(persisted)
+                with self._lock:
+                    self._jobs[job_id] = job
+                return job
+            except Exception:  # noqa: BLE001
+                logger.warning("failed to refresh job from persistence job_id=%s", job_id, exc_info=True)
+                return mem
+
+        return mem
 
     def retry_job(self, job_id: str, chunk_cfg: ChunkingConfig | None = None) -> str:
         with self._lock:
@@ -115,6 +154,37 @@ class IngestionOrchestrator:
     def count_jobs(self) -> int:
         with self._lock:
             return len(self._jobs)
+
+    def _guarded_run_job(self, job_id: str, chunk_cfg: ChunkingConfig | None) -> None:
+        """线程入口：未捕获异常时落 FAILED，避免进程内永远 RUNNING 且无 ES 文档。"""
+        try:
+            self._run_job(job_id, chunk_cfg)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("ingestion job thread crashed job_id=%s", job_id)
+            with self._lock:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    return
+                if job.status in (
+                    IngestionJobStatus.SUCCESS,
+                    IngestionJobStatus.FAILED,
+                    IngestionJobStatus.PARTIAL,
+                ):
+                    return
+                job.status = IngestionJobStatus.FAILED
+                job.error_code = "E_JOB_UNHANDLED"
+                job.error_message = (str(e) or type(e).__name__)[:2000]
+                job.step = "error"
+                job.finished_at = utcnow_iso()
+                job.updated_at = utcnow_iso()
+                try:
+                    self._save_state()
+                except Exception:  # noqa: BLE001
+                    logger.exception("save_state after job crash failed job_id=%s", job_id)
+                try:
+                    self._save_job_record(job)
+                except Exception:  # noqa: BLE001
+                    logger.exception("save_job_record after job crash failed job_id=%s", job_id)
 
     def _run_job(self, job_id: str, chunk_cfg: ChunkingConfig | None) -> None:
         pipeline = DocumentPipeline(cfg=chunk_cfg or self._default_chunk_cfg)
