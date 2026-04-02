@@ -49,9 +49,15 @@ class RAGService:
                 "CrossEncoder reranker requires sentence-transformers. "
                 "Install with: pip install -r requirements-大模型应用.txt"
             ) from e
-        self._reranker = CrossEncoder(model_name)
-        logger.info("RAGService loaded CrossEncoder reranker: %s", model_name)
-        return self._reranker
+        try:
+            self._reranker = CrossEncoder(model_name)
+            logger.info("RAGService loaded CrossEncoder reranker: %s", model_name)
+            return self._reranker
+        except Exception as e:  # noqa: BLE001
+            # Reranker 不是摄入/检索链路的强依赖：模型缺失/无网时允许跳过重排。
+            logger.warning("RAGService failed to load reranker model=%s; skip rerank. err=%s", model_name, e)
+            self._reranker = None
+            return None
 
     def index_texts(
         self,
@@ -238,8 +244,11 @@ class RAGService:
     def _rerank(self, query: str, hits: list[dict]) -> list[dict]:
         if not hits:
             return []
-        pairs = [[query, h.get("text", "")] for h in hits]
         reranker = self._get_reranker()
+        if reranker is None:
+            # 跳过重排：保持融合顺序，避免流式/推理接口因 reranker 加载失败直接中断。
+            return hits
+        pairs = [[query, h.get("text", "")] for h in hits]
         scores = reranker.predict(pairs)
         RAG_RERANK_COUNT.inc()
         for idx, hit in enumerate(hits):

@@ -619,6 +619,27 @@ class ElasticsearchVectorStore(VectorStore):
 
     def _ensure_index(self, dim: int) -> None:
         if self._with_retry(lambda: self._client.indices.exists(index=self._index)):
+            # 索引已存在时，也要根据 mapping 判断向量字段是否真的支持 dense_vector，
+            # 否则后续 script_score 会因字段类型不匹配而触发 "compile error"。
+            try:
+                mapping = self._with_retry(lambda: self._client.indices.get_mapping(index=self._index))
+                # mapping: { "<index>": { "mappings": { "properties": {...}}}}
+                props = (
+                    mapping.get(self._index, {})
+                    .get("mappings", {})
+                    .get("properties", {})
+                )
+                vf = props.get(self._vector_field, {}) or {}
+                vf_type = vf.get("type")
+                if vf_type == "dense_vector":
+                    self._vector_field_kind = "dense_vector"
+                else:
+                    # 例如 fallback: float（语义向量检索不可用）
+                    self._vector_field_kind = "float"
+            except Exception:  # noqa: BLE001
+                # 读取 mapping 失败不影响功能；保持当前 kind。
+                pass
+
             if self._dim is None:
                 self._dim = dim
             if self._cfg.auto_migrate_on_start:
@@ -758,6 +779,11 @@ class ElasticsearchVectorStore(VectorStore):
         k: int = 5,
         namespace: str | None = None,
     ) -> List[dict[str, Any]]:
+        # 每次语义向量检索前检测字段类型，避免 "dense_vector" 脚本因后端不支持而直接异常。
+        try:
+            self._ensure_index(len(vector))
+        except Exception:  # noqa: BLE001
+            return []
         # 若后端不支持 dense_vector，则语义向量检索无法工作，直接返回空结果，避免脚本错误导致检索链路中断。
         if self._vector_field_kind != "dense_vector":
             return []
@@ -778,7 +804,13 @@ class ElasticsearchVectorStore(VectorStore):
                 }
             },
         }
-        resp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
+        try:
+            resp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
+        except Exception as e:  # noqa: BLE001
+            # 易与后端脚本能力/字段类型不匹配相关：直接禁用语义检索，避免影响整个流式接口。
+            logger.warning("similarity_search_by_vector failed; disable semantic vector search. err=%s", e)
+            self._vector_field_kind = "float"
+            return []
         return [self._hit_to_result(hit) for hit in resp.get("hits", {}).get("hits", [])]
 
     def keyword_search(
