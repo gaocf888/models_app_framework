@@ -26,13 +26,13 @@ def create_app() -> FastAPI:
                 "返回 JSON 如 `{\"status\": \"ok\"}`，供负载均衡与编排使用。"
             ),
         },
-        {
-            "name": "llm",
-            "description": (
-                "大模型推理 HTTP API（OpenAI 兼容调用形态）。"
-                "需配置 `LLM_DEFAULT_ENDPOINT` / `LLM_DEFAULT_MODEL` 等；与 vLLM 等推理服务对接。"
-            ),
-        },
+        # {
+        #     "name": "llm",
+        #     "description": (
+        #         "大模型推理 HTTP API（OpenAI 兼容调用形态）。"
+        #         "需配置 `LLM_DEFAULT_ENDPOINT` / `LLM_DEFAULT_MODEL` 等；与 vLLM 等推理服务对接。"
+        #     ),
+        # },
         {
             "name": "chatbot",
             "description": (
@@ -40,24 +40,24 @@ def create_app() -> FastAPI:
                 "与可选多模态 `image_urls`。业务侧主要通过 `enable_rag` / `enable_context` 控制行为。"
             ),
         },
-        {
-            "name": "analysis",
-            "description": (
-                "分析类对话/任务接口，可选挂载 RAG 上下文，参数与场景 profile 由 `RAG_SCENE_ANALYSIS_*` 等环境变量控制。"
-            ),
-        },
-        {
-            "name": "small-model",
-            "description": (
-                "小模型（如 YOLO）GPU 推理相关路由；依赖独立镜像与权重挂载，与 RAG 知识库无直接耦合。"
-            ),
-        },
-        {
-            "name": "nl2sql",
-            "description": (
-                "自然语言转 SQL 等能力；可选结合 RAG 增强时需配置向量库与嵌入模型（`RAG_ES_*`、`EMBEDDING_MODEL_*`）。"
-            ),
-        },
+        # {
+        #     "name": "analysis",
+        #     "description": (
+        #         "分析类对话/任务接口，可选挂载 RAG 上下文，参数与场景 profile 由 `RAG_SCENE_ANALYSIS_*` 等环境变量控制。"
+        #     ),
+        # },
+        # {
+        #     "name": "small-model",
+        #     "description": (
+        #         "小模型（如 YOLO）GPU 推理相关路由；依赖独立镜像与权重挂载，与 RAG 知识库无直接耦合。"
+        #     ),
+        # },
+        # {
+        #     "name": "nl2sql",
+        #     "description": (
+        #         "自然语言转 SQL 等能力；可选结合 RAG 增强时需配置向量库与嵌入模型（`RAG_ES_*`、`EMBEDDING_MODEL_*`）。"
+        #     ),
+        # },
         {
             "name": "rag-admin",
             "description": """
@@ -103,6 +103,19 @@ def create_app() -> FastAPI:
 
     # 注册路由
     app.include_router(healthcheck.router, prefix="/health", tags=["health"])
+
+    @app.get(
+        "/api/health",
+        tags=["health"],
+        summary="健康检查（/api 前缀兼容）",
+    )
+    async def health_api_prefix() -> dict:
+        """
+        与 `GET /health/` 等价。部分负载均衡、网关或外部探针固定访问 `/api/health`，
+        避免 404 刷屏；应用主路由未使用全局 `/api` 前缀时仍需单独挂载此路径。
+        """
+        return {"status": "ok"}
+
     from app.api import analysis, chatbot, llm_inference, nl2sql, rag_admin, small_model, train_admin
 
     # app.include_router(llm_inference.router, prefix="/llm", tags=["llm"])  # 阶段暂时屏蔽，随开发计划开放

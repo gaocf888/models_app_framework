@@ -138,7 +138,8 @@ class ChatbotService:
             messages.append({"role": "system", "content": f"以下是与用户问题相关的知识片段，请优先参考：\n{ctx}"})
         for h in history:
             role = h.get("role", "user")
-            content = h.get("content", "")
+            raw_c = h.get("content", "")
+            content = raw_c if isinstance(raw_c, str) else (str(raw_c) if raw_c is not None else "")
             if content:
                 messages.append({"role": role, "content": content})
 

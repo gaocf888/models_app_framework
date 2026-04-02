@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import os
-import time
-import threading
 import asyncio
+import json
+import os
+import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from app.core.logging import get_logger
@@ -97,10 +98,12 @@ class RedisConversationStore(ConversationStore):
         if self._redis is None:
             return super().append_message(user_id, session_id, role, content)
         key = f"{self._key_prefix}{user_id}:{session_id}"
-        await self._redis.rpush(
-            key,
+        # rpush 只接受 str/bytes 等标量；dict 会触发 redis 报错「Invalid input of type: 'dict'」
+        payload = json.dumps(
             {"role": role, "content": content, "ts": time.time()},
+            ensure_ascii=False,
         )
+        await self._redis.rpush(key, payload)
         # 设置 TTL，让 Redis 自动过期清理
         if self._ttl_seconds > 0:
             await self._redis.expire(key, self._ttl_seconds)
@@ -133,7 +136,26 @@ class RedisConversationStore(ConversationStore):
         # 取最近 limit 条记录，并限制最大条数
         real_limit = min(limit, self._max_history)
         raw = await self._redis.lrange(key, -real_limit, -1)
-        return list(raw or [])
+        out: List[Dict[str, Any]] = []
+        for item in raw or []:
+            if not isinstance(item, str):
+                continue
+            try:
+                obj = json.loads(item)
+            except json.JSONDecodeError:
+                logger.warning("skip malformed conv history item key=%s snippet=%s", key, item[:200])
+                continue
+            if isinstance(obj, dict) and obj.get("role") is not None:
+                c = obj.get("content", "")
+                if c is not None and str(c).strip():
+                    out.append(
+                        {
+                            "role": str(obj["role"]),
+                            "content": c if isinstance(c, str) else str(c),
+                            "ts": obj.get("ts"),
+                        }
+                    )
+        return out
 
     def get_recent_history(self, user_id: str, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:  # type: ignore[override]
         if self._redis is None or self._loop is None:

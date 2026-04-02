@@ -486,15 +486,15 @@ class ChunksMigrationRollbackResponse(BaseModel):
     summary="提交异步摄入任务",
     response_model=IngestionJobSubmitResponse,
     response_description="受理成功后返回 job_id；请 GET /rag/jobs/{job_id} 轮询至终态。",
-    description=(
-        "无 Path/Query。字段以 Schema 为准。"
-        "`content`：内联正文、本地/`file://` 路径，或在 `RAG_CONTENT_FETCH_ENABLED=true` 时的 http(s) 文件 URL；"
-        "`source_uri` 仅溯源。"
-    ),
+    # 勿在此写 description=：FastAPI 会用它覆盖函数 docstring，导致下方长说明不出现在 OpenAPI/Swagger。
 )
 async def submit_ingestion_job(req: IngestionJobRequest) -> IngestionJobSubmitResponse:
     """
-    异步提交知识摄入任务（推荐生产入口）。**各字段释义与必填以 OpenAPI Schema（本函数对应请求体模型）为准**，以下为速查。
+    异步提交知识摄入任务（推荐生产入口）。无 Path/Query；字段以 Request body Schema 与各 `Field(description=…)` 为准。
+
+    **要点**：`content` 可为内联正文、本地/`file://` 路径，或在 `RAG_CONTENT_FETCH_ENABLED=true` 时的 http(s) 文件 URL；`source_uri` 仅溯源、不拉取正文。
+
+    **各字段释义与必填以 OpenAPI Schema 为准**，以下为速查。
 
     **路径/Query**：无。
 
@@ -784,11 +784,13 @@ class UpsertDocumentRequest(BaseModel):
     summary="同步 upsert 文档（自动清洗切块后立即入库）",
     response_model=UpsertDocumentResponse,
     response_description="立即写入向量+全文索引；大文档建议改用 POST /rag/jobs/ingest。",
-    description="无 Path/Query。`content` 可内联、本地路径，或（开启 `RAG_CONTENT_FETCH_ENABLED`）http(s) URL。详见 Schema。",
+    # 勿写 description=，以免覆盖 docstring，OpenAPI 中不显示下方说明。
 )
 async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
     """
-    同步 upsert 单文档（字段释义以 Schema 为准）。**无** `tenant_id` / `doc_version` / `idempotency_key` / `replace_if_exists`（同步路径固定覆盖同名）。
+    同步 upsert 单文档。无 Path/Query；`content` 可内联、本地路径，或（开启 `RAG_CONTENT_FETCH_ENABLED`）http(s) URL，详见 Schema。
+
+    **无** `tenant_id` / `doc_version` / `idempotency_key` / `replace_if_exists`（同步路径固定覆盖同名）。
 
     **路径/Query**：无。
 

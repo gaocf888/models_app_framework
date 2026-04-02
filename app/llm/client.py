@@ -125,6 +125,13 @@ class VLLMHttpClient(LLMClient):
 
         LLM_REQUEST_COUNT.labels(model=cfg.model_id).inc()
         LLM_REQUEST_LATENCY.labels(model=cfg.model_id).observe(duration)
+        if resp.status_code >= 400:
+            logger.error(
+                "vLLM chat HTTP %s url=%s body=%s",
+                resp.status_code,
+                url,
+                (resp.text or "")[:4000],
+            )
         resp.raise_for_status()
         data = resp.json()
 
@@ -181,6 +188,9 @@ class VLLMHttpClient(LLMClient):
 
         start = time.perf_counter()
         async with self._client.stream("POST", url, json=payload, headers=headers) as resp:
+            if resp.status_code >= 400:
+                err_body = (await resp.aread()).decode("utf-8", errors="replace")[:4000]
+                logger.error("vLLM stream_chat HTTP %s url=%s body=%s", resp.status_code, url, err_body)
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data:"):
