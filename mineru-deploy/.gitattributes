@@ -1,0 +1,2 @@
+# Shell scripts must use LF so Linux containers do not see shebang as "sh\r"
+docker/*.sh text eol=lf
