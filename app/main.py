@@ -118,7 +118,7 @@ def create_app() -> FastAPI:
 
     from app.api import analysis, chatbot, llm_inference, nl2sql, rag_admin, small_model, train_admin
 
-    # app.include_router(llm_inference.router, prefix="/llm", tags=["llm"])  # 阶段暂时屏蔽，随开发计划开放
+    app.include_router(llm_inference.router, prefix="/llm", tags=["llm"])  # 阶段暂时屏蔽，随开发计划开放
     app.include_router(chatbot.router, prefix="/chatbot", tags=["chatbot"])
     # app.include_router(analysis.router, prefix="/analysis", tags=["analysis"])  # 阶段暂时屏蔽，随开发计划开放
     # app.include_router(small_model.router, prefix="/small-model", tags=["small-model"])  # 阶段暂时屏蔽，随开发计划开放
