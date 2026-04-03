@@ -922,7 +922,19 @@ class ElasticsearchVectorStore(VectorStore):
         if namespace is not None:
             must.append({"term": {"namespace": namespace}})
         if doc_version is not None:
-            must.append({"term": {"metadata.doc_version": str(doc_version)}})
+            dv = str(doc_version)
+            # metadata 为 dynamic object 时，字符串子字段可能是 text+.keyword；双路 term 提高命中率。
+            must.append(
+                {
+                    "bool": {
+                        "should": [
+                            {"term": {"metadata.doc_version": dv}},
+                            {"term": {"metadata.doc_version.keyword": dv}},
+                        ],
+                        "minimum_should_match": 1,
+                    }
+                }
+            )
         body = {"query": {"bool": {"must": must}}}
         resp = self._with_retry(
             lambda: self._client.delete_by_query(

@@ -453,6 +453,10 @@ class DeleteDocumentResponse(BaseModel):
 
     ok: bool = Field(True, description="是否执行成功（无匹配时 deleted 可能为 0）")
     deleted: int = Field(..., description="删除的向量/chunk 条数（底层 store 语义）")
+    doc_records_deleted: int = Field(
+        0,
+        description="删除的文档元数据条数（docs 索引）；与 deleted 独立，overview 依赖此项被清理。",
+    )
 
 
 class QueryRagResponse(BaseModel):
@@ -876,7 +880,7 @@ class DeleteDocumentRequest(BaseModel):
     "/documents/delete",
     summary="按文档名删除已摄入知识",
     response_model=DeleteDocumentResponse,
-    response_description="deleted 为底层 store 删除的条数；可选按 namespace/doc_version 缩小范围。",
+    response_description="deleted 为 chunk 删除条数；doc_records_deleted 为 docs 元数据删除条数（overview 数据源）。",
 )
 async def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
     """
@@ -889,7 +893,8 @@ async def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
     - 可选：`namespace`、`doc_version`（传入则仅删匹配版本）。
 
     **响应体 `DeleteDocumentResponse`（200）**
-    - `ok`、`deleted`（底层 store 删除条数，无匹配时可为 0）。
+    - `ok`、`deleted`（向量 chunk 删除条数，无匹配时可为 0）。
+    - `doc_records_deleted`（docs 索引中的文档元数据删除条数；管理面 overview 依赖此项）。
 
     失败时 HTTP 5xx，`detail` 为错误信息。
     """
@@ -897,7 +902,12 @@ async def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
         deleted = _get_service().delete_by_doc_name(
             doc_name=req.doc_name, namespace=req.namespace, doc_version=req.doc_version
         )
-        return DeleteDocumentResponse(ok=True, deleted=deleted)
+        doc_records_deleted = _get_doc_repo().delete_by_doc_name(
+            doc_name=req.doc_name, namespace=req.namespace, doc_version=req.doc_version
+        )
+        return DeleteDocumentResponse(
+            ok=True, deleted=deleted, doc_records_deleted=doc_records_deleted
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception("rag delete_document failed: doc_name=%s namespace=%s", req.doc_name, req.namespace)
         raise HTTPException(status_code=500, detail=f"RAG delete_document failed: {e}") from e

@@ -152,6 +152,50 @@ class DocumentRepository:
         end = start + max(limit, 1)
         return values[start:end]
 
+    def delete_by_doc_name(
+        self,
+        doc_name: str,
+        namespace: str | None = None,
+        doc_version: str | None = None,
+    ) -> int:
+        """
+        按 doc_name（及可选 namespace / doc_version）删除 docs 索引中的文档级记录。
+        与向量库 chunk 删除配合使用，否则 overview/meta 仍会认为文档存在。
+        """
+        if self._use_es and self._client is not None:
+            filters: list[Dict[str, Any]] = [{"term": {"doc_name": doc_name}}]
+            if namespace is not None:
+                filters.append({"term": {"namespace": namespace}})
+            if doc_version is not None:
+                filters.append({"term": {"doc_version": doc_version}})
+            body = {"query": {"bool": {"filter": filters}}}
+            resp = self._client.delete_by_query(
+                index=self._alias,
+                body=body,
+                refresh=True,
+                conflicts="proceed",
+            )
+            return int(resp.get("deleted", 0))
+
+        state = self._load_file_state()
+        keys_to_del: list[str] = []
+        for key, payload in state.items():
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("doc_name") != doc_name:
+                continue
+            if namespace is not None and payload.get("namespace") != namespace:
+                continue
+            pv = payload.get("doc_version") or "v1"
+            if doc_version is not None and str(pv) != str(doc_version):
+                continue
+            keys_to_del.append(key)
+        for k in keys_to_del:
+            del state[k]
+        if keys_to_del:
+            self._save_file_state(state)
+        return len(keys_to_del)
+
     def overview(
         self,
         namespace: str | None = None,
