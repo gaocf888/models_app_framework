@@ -6,8 +6,12 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-nvidia/cuda:12.3.0-runtime-ubuntu22.04}
+        VLLM_REQUIREMENTS_PROFILE: ${VLLM_REQUIREMENTS_PROFILE:-full}
     container_name: vllm-service
     restart: unless-stopped
+    command: ["python3", "/workspace/scripts/start.py", "start"]
     ports:
       - "${VLLM_PORT:-8000}:8000"
     volumes:
@@ -23,6 +27,12 @@ services:
       - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
       - STARTUP_WAIT_TIMEOUT=${STARTUP_WAIT_TIMEOUT:-1200}
       - WORKSPACE=/workspace
+    healthcheck:
+      test: ["CMD", "python3", "/workspace/scripts/health.py"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     deploy:
       resources:
         reservations:

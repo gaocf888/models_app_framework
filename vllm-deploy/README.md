@@ -1,95 +1,135 @@
+# vLLM 部署说明（Docker Compose）
 
-## 部署说明
+本目录仅维护 **一种** 推荐部署方式：在 `docker/` 下使用 **Docker Compose** 构建镜像并运行服务。配置、启动脚本与模型通过 **卷挂载** 注入；镜像内仅包含基础环境、系统依赖与按构建参数选择的 Python 依赖。
 
-### 下载模型权重
+## 适用场景
 
-```text  方式一
-# 安装 git-lfs
-sudo yum install git-lfs
+- **英伟达 GPU 服务器**：默认 `BASE_IMAGE` 为 `nvidia/cuda:12.3.0-runtime-ubuntu22.04`，`VLLM_REQUIREMENTS_PROFILE=full`，在镜像构建阶段通过 pip 安装 `vllm` 及配套依赖。
+- **国产算力 / 厂商软件栈**：将 `BASE_IMAGE` 指向厂商提供的已适配镜像（已含 vLLM、PyTorch 等），并设置 `VLLM_REQUIREMENTS_PROFILE=extras`，仅安装 `pyyaml` / `requests` / `psutil`，**避免**用 PyPI 覆盖厂商预装推理栈。
 
-# 初始化git-lfs
-git lfs install
+## 前置条件
 
-# 进入models路径
-cd vllm-deploy/models
+- 已安装 **Docker** 与 **Docker Compose**（`docker compose` 或 `docker-compose`）。
+- **英伟达环境**：宿主机安装 **NVIDIA 驱动** 与 **NVIDIA Container Toolkit**，以便 Compose 中 `deploy.resources.reservations.devices` 生效。
+- **国产环境**：按厂商文档使用其容器运行时，并**按需修改** `docker/docker-compose.yml` 中与 GPU、设备、特权或 `deploy` 相关的段落（本仓库无法覆盖所有厂商差异）。
 
-# 克隆模型仓库（使用ModelScope 或者huggingface都行，ModelScope 国内快一些）--局域网服务器可以下载后上传
-git clone https://www.modelscope.cn/Qwen/Qwen2.5-VL-7B-Instruct.git
-cd Qwen2.5-VL-7B-Instruct
-git lfs pull
+基础镜像需允许在构建阶段执行 `apt-get` 与 `pip`（见 Dockerfile）。若厂商镜像已预装 `python3`，重复安装通常无害或快速跳过，具体以镜像说明为准。
+
+## 构建参数（`.env` 或 `docker compose build --build-arg`）
+
+| 变量 | 含义 | 默认 |
+|------|------|------|
+| `BASE_IMAGE` | 构建阶段 `FROM` 的基础镜像 | `nvidia/cuda:12.3.0-runtime-ubuntu22.04` |
+| `VLLM_REQUIREMENTS_PROFILE` | `full`：安装 `requirements.txt`（含 vLLM）；`extras`：仅 `requirements-extras.txt` | `full` |
+| `VLLM_IMAGE` | 构建产出的镜像名 | `vllm-service:latest` |
+
+在 `vllm-deploy/` 下复制并编辑环境变量：
+
+```bash
+cp .env.example .env
+# 编辑 .env：国产场景示例
+# BASE_IMAGE=your-registry/vendor-vllm:tag
+# VLLM_REQUIREMENTS_PROFILE=extras
 ```
 
-```text   方式二 modelscope(国内更快)
-pip install modelscope
+## 模型权重准备
 
+```text
+# 方式一：git-lfs
+sudo yum install git-lfs   # 或 apt install git-lfs
+git lfs install
+cd vllm-deploy/models
+git clone https://www.modelscope.cn/Qwen/Qwen2.5-VL-7B-Instruct.git
+cd Qwen2.5-VL-7B-Instruct && git lfs pull
+```
+
+```text
+# 方式二：ModelScope（国内常用）
+pip install modelscope
 python -c "from modelscope import snapshot_download; snapshot_download('qwen/Qwen2.5-VL-7B-Instruct', cache_dir='./models/Qwen2.5-VL-7B-Instruct')"
 ```
 
-```text   方式三 huggingface
+```text
+# 方式三：Hugging Face（可配合镜像站）
 pip install huggingface-hub
-
-python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen2.5-VL-7B-Instruct', local_dir='./models/Qwen2.5-VL-7B-Instruct', endpoint='https://hf-mirror.
-
+python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen2.5-VL-7B-Instruct', local_dir='./models/Qwen2.5-VL-7B-Instruct', endpoint='https://hf-mirror.com')"
 ```
 
+在 `config/vllm.yaml` / `config/models.yaml` 中确认模型路径与预设一致；若使用 `MODEL_PATH` 环境变量挂载自定义目录，请与配置中的路径对应。
 
-### 本地部署
+## 构建与启动（完整步骤）
+
+`.env` 建议放在 **`vllm-deploy/` 根目录**（与 `.env.example` 同级）。在 `docker/` 下执行 Compose 时，需显式指定 `--env-file ../.env`，否则 `${BASE_IMAGE}`、`VLLM_REQUIREMENTS_PROFILE` 等构建变量不会从根目录 `.env` 读取。
+
+1. **准备配置与环境变量**
+   - 在 `vllm-deploy/` 下复制环境变量模板并按需修改：
+
+     ```bash
+     cd vllm-deploy
+     cp .env.example .env
+     vi .env
+     ```
+
+2. **准备模型权重**
+   - 按「模型权重准备」一节任意一种方式将模型下载到当前vllm-deploy的 `models/` 下，并在 `config/vllm.yaml` / `config/models.yaml` 中确认路径与预设一致。
+
+3. **构建并启动服务**
+   - 推荐使用一键脚本（自动带上 `--env-file ../.env`）：
+
+     ```bash
+     cd vllm-deploy
+     chmod +x deploy.sh
+     ./deploy.sh
+     ```
+
+   - 或手动执行（在 `docker/` 下）：
+
+     ```bash
+     cd vllm-deploy/docker
+     docker compose --env-file ../.env up -d --build
+     # 旧版：docker-compose --env-file ../.env up -d --build
+     ```
+
+4. **（可选）使用 docker 目录下的 .env**
+   - 若将 `.env` 放在 `docker/.env`，可直接：
+
+     ```bash
+     cd vllm-deploy/docker
+     docker compose up -d --build
+     ```
+
+   - 此时不再读取上一级 `.env`。
+
+- **启动命令**在 `docker-compose.yml` 的 `command` 中：`python3 /workspace/scripts/start.py start`（脚本来自仓库挂载，非镜像内 COPY）。
+- **健康检查**在 `docker-compose.yml` 的 `healthcheck` 中：执行挂载的 `scripts/health.py`。
+
+查看日志：
 
 ```bash
-
-# 1. 克隆或上传项目
-git clone <repository> vllm-deploy
-cd vllm-deploy
-
-# 2. 配置模型路径
-vi config/vllm.yaml
-# 设置 model.path，例如: /data/models/Qwen2.5-7B-Instruct
-
-# 3. 一键部署
-chmod +x deploy.sh
-./deploy.sh
-
-# 4. 查看状态
-python3 scripts/start.py status
-
-# 5. 停止服务
-python3 scripts/start.py stop
-
-# 6. 重启服务
-python3 scripts/start.py restart
-```
-
-### docker 部署
-
-```bash
-# 1. 配置环境变量
-cp .env.example .env
-vi .env
-
-# 2. 启动服务
 cd docker
-docker-compose up -d
-
-# 3. 查看日志
-docker-compose logs -f
-
-# 4. 停止服务
-docker-compose down
-
-# 5. 带监控启动
-docker-compose --profile monitoring up -d
+docker compose logs -f
 ```
 
-### docker 部署后快速测试
+停止：
 
 ```bash
-# 1) 健康检查
+docker compose down
+```
+
+## 监控（可选）
+
+```bash
+cd docker
+docker compose --profile monitoring up -d
+```
+
+Prometheus 监听 `9090`，配置见 `docker/prometheus.yml`。
+
+## 部署后快速验证
+
+```bash
 curl -s http://127.0.0.1:8000/health
-
-# 2) OpenAI 兼容接口：查看模型列表
 curl -s http://127.0.0.1:8000/v1/models
-
-# 3) OpenAI 兼容接口：最小聊天请求
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
@@ -100,21 +140,28 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
   }'
 ```
 
-> 若你的 `served_model_name` 不是 `default`，请将请求中的 `model` 改为实际名称。
+若 `served_model_name` 不是 `default`，请将请求中的 `model` 改为实际名称。
 
-### Langchain调用示例
+## 切换模型（改环境变量后重建容器）
+
+在 `vllm-deploy/.env` 中修改 `MODEL_PRESET`、`CUDA_VISIBLE_DEVICES`、`TENSOR_PARALLEL_SIZE` 等，然后：
+
+```bash
+cd docker
+docker compose up -d
+```
+
+## LangChain 调用示例
 
 ```python
 from langchain_openai import ChatOpenAI
 import yaml
 from pathlib import Path
 
-# 加载配置
-config_path = Path(__file__).parent / "config" / "vllm.yaml"
+config_path = Path("config/vllm.yaml")  # 宿主机上 vllm-deploy 目录
 with open(config_path) as f:
     config = yaml.safe_load(f)
 
-# 创建客户端
 llm = ChatOpenAI(
     model=config["server"].get("served_model_name", "default"),
     openai_api_key="EMPTY",
@@ -122,96 +169,24 @@ llm = ChatOpenAI(
     temperature=0.7,
     max_tokens=512,
 )
-
-# 调用
-response = llm.invoke("你好，请介绍一下自己")
-print(response.content)
+print(llm.invoke("你好，请介绍一下自己").content)
 ```
 
+## 硬件与性能调优（摘录）
 
-
-## 各模型配置详解
-
-
-## 硬件配置建议
+在 `config/vllm.yaml` 中按显存与并发调整，例如：
 
 ```yaml
-# 根据不同模型调整硬件配置
-
-# Qwen2.5-7B (单卡 16GB 即可)
+# Qwen2.5-VL-7B（单卡 24GB 量级）
 hardware:
   tensor_parallel_size: 1
-  gpu_memory_utilization: 0.85
-
-# Qwen2.5-14B (建议 2 卡 16GB 或单卡 32GB)
-hardware:
-  tensor_parallel_size: 2
-  gpu_memory_utilization: 0.85
-
-# Qwen2.5-72B (建议 4 卡 24GB+)
-hardware:
-  tensor_parallel_size: 4
-  gpu_memory_utilization: 0.85
-
-# Qwen2.5-VL-7B (多模态，单卡 24GB 推荐)
-hardware:
-  tensor_parallel_size: 1
-  gpu_memory_utilization: 0.8  # 多模态预留更多显存
-
-# Qwen2.5-VL-32B / Qwen3-VL-32B (多模态，建议 2 卡 40GB+)
-hardware:
-  tensor_parallel_size: 2
   gpu_memory_utilization: 0.8
-```
 
-
-## 模型切换（重启）
-
-### 本地部署-切换模型
-
-```shell
-export MODEL_PRESET=qwen2.5-vl-7b
-python3 scripts/start.py start
-```
-
-
-### docker部署--切换模型
-
-```shell
-# docker-compose 中切换
-cat > .env << EOF
-MODEL_PRESET=qwen2.5-vl-7b
-CUDA_VISIBLE_DEVICES=0
-TENSOR_PARALLEL_SIZE=1
-EOF
-
-docker-compose up -d
-```
-
-
-## 性能优化建议
-
-```yaml
-# 针对不同场景的性能配置
-
-# 高并发场景（QPS 优先）
+# 高并发
 performance:
   max_num_seqs: 64
   max_num_batched_tokens: 65536
   enable_prefix_caching: true
-
-# 长文本场景（长上下文优先）
-performance:
-  max_num_seqs: 8
-  max_num_batched_tokens: 8192
-  enable_prefix_caching: true
-  max_model_len: 131072  # 支持 128K 上下文
-
-# 显存受限场景
-hardware:
-  gpu_memory_utilization: 0.7  # 降低显存占用
-  tensor_parallel_size: 1
-performance:
-  max_num_seqs: 8
-  max_num_batched_tokens: 8192
 ```
+
+更多预设见 `config/models.yaml`。

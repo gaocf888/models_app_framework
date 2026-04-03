@@ -1,5 +1,7 @@
-# 勿单独升级 torch，需与 vllm 版本匹配，否则易出现 torch.compile / FakeTensorMode 等错误
+# 完整依赖：用于 BASE_IMAGE 为 CUDA 运行时等「未预装 vLLM」的场景（默认构建）。
+# 勿单独升级 torch，需与 vllm 版本匹配，否则易出现 torch.compile / FakeTensorMode 等错误。
 # 安装指引: https://docs.vllm.ai/en/latest/getting_started/installation.html
+# 厂商已适配镜像请改用 requirements-extras.txt（VLLM_REQUIREMENTS_PROFILE=extras）。
 vllm>=0.6.0
 pyyaml>=6.0
 requests>=2.31.0

@@ -1,0 +1,5 @@
+# 用于厂商已预装 vLLM + PyTorch（及国产算力适配栈）的基础镜像。
+# 构建时设置 VLLM_REQUIREMENTS_PROFILE=extras，勿在本文件中重复安装 vllm/torch。
+pyyaml>=6.0
+requests>=2.31.0
+psutil>=5.9.0
