@@ -47,6 +47,8 @@ cp .env.example .env
 
 ### 3.2 启动 Neo4j
 
+> 针对离线的环境(无法访问互联网)，可以提前在有外网的服务器中Neo4j镜像，然后导入到离线服务器中即可
+
 ```bash
 cd graphrag_db-deploy
 docker compose -f docker-compose.neo4j.yml --env-file .env up -d

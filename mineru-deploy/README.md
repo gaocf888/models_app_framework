@@ -129,21 +129,60 @@ docker compose --env-file .env -f docker-compose.gpu.yml logs -f mineru-api
 ## 7. 离线服务器部署
 
 ### 7.1 CPU 离线
+> 仅针对 **CPU 版本**，GPU 版本请忽略本小节（可按需参考 7.2）。
 
-有网机器：
+推荐的最简单离线方案：在一台 **有外网的服务器** 上构建好镜像并导出，然后在 **无外网的目标服务器** 上导入并直接运行。
 
-```bash
-docker compose --env-file .env -f docker-compose.cpu.yml build
-docker save -o mineru-cpu.tar ${MINERU_CPU_IMAGE}
-```
+**步骤 1：有网机器上构建并导出镜像**
 
-离线机器：
+1. 复制或进入 `mineru-deploy/` 目录：
 
-```bash
-docker load -i mineru-cpu.tar
-cp .env.example .env
-mkdir -p <MINERU_MODELS_HOST_PATH> <MINERU_IO_HOST_PATH>
-```
+   ```bash
+   cd mineru-deploy
+   ```
+
+2. 使用 `Dockerfile.cpu` 构建 CPU 镜像（示例镜像名 `mineru-cpu:py311`，可自行调整）：
+
+   ```bash
+   docker build -f Dockerfile.cpu -t mineru-cpu:py311 .
+   ```
+
+3. 导出镜像为离线文件：
+
+   ```bash
+   docker save -o mineru-cpu-py311.tar mineru-cpu:py311
+   ```
+
+4. 将 `mineru-cpu-py311.tar` 拷贝到离线服务器（U 盘 / 内网文件服务器等）。
+
+**步骤 2：离线机器上导入镜像并启动**
+
+1. 在离线服务器导入镜像：
+
+   ```bash
+   docker load -i mineru-cpu-py311.tar
+   ```
+
+2. 在离线服务器上准备配置与挂载目录：
+
+   ```bash
+   cd mineru-deploy
+   cp .env.example .env
+   mkdir -p <MINERU_MODELS_HOST_PATH> <MINERU_IO_HOST_PATH>
+   ```
+
+3. 在 `.env` 中设置 CPU 镜像名（与上面构建时一致）：
+
+   ```env
+   MINERU_CPU_IMAGE=mineru-cpu:py311
+   ```
+
+4. 启动 CPU 版本（离线无需再构建，只需 `up`）：
+
+   ```bash
+   docker compose --env-file .env -f docker-compose.cpu.yml up -d
+   docker compose --env-file .env -f docker-compose.cpu.yml logs -f mineru-api
+   ```
 
 ### 7.2 GPU 离线
 

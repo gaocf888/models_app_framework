@@ -34,6 +34,8 @@ Copy-Item ".env.example" ".env"
 
 ### 3.2 启动数据库
 
+> 针对离线的环境(无法访问互联网)，可以提前在有外网的服务器中easysearch镜像，然后导入到离线服务器中即可
+
 ```powershell
 docker-compose --env-file ".env" -f "docker-compose.easysearch.yml" up -d
 ```
