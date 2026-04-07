@@ -80,6 +80,14 @@ async def chat_stream(req: ChatRequest, request: Request):
                     finished (bool): 固定为 false。
                 2) 正常结束（最后一则成功事件，仅一次）:
                     finished (bool): 固定为 true。
+                    meta (dict): 结束元信息，当前包含：
+                        - used_rag (bool): 本轮是否实际命中过检索片段。
+                        - intent_label (str): 图路由出的意图标签（如 kb_qa/clarify）。
+                        - retrieval_attempts (int): 检索尝试次数（含 C-RAG 重试）。
+                        - rag_engine (str|None): 实际检索引擎（agentic/hybrid）。
+                        - status (str|None): 最终状态（answered/clarifying/failed/aborted）。
+                        - duration_ms (int): 本轮处理耗时（毫秒）。
+                        - terminate_reason (str|None): 终止原因（如 client_disconnect）。
                     （不含 delta；不含 error。）
                 3) 异常结束（生成过程中抛错时，至多一次）:
                     error (str): 异常信息字符串。
@@ -92,13 +100,15 @@ async def chat_stream(req: ChatRequest, request: Request):
 
     async def event_generator():
         try:
-            async for delta in service.stream_chat(req):
+            async for ev in service.stream_chat_events(req):
                 if await request.is_disconnected():
                     return
-                # ensure_ascii=False：delta 含中文时不转成 \uXXXX，便于前端与 Swagger 直接阅读
-                payload = json.dumps({"delta": delta, "finished": False}, ensure_ascii=False)
-                yield f"data: {payload}\n\n"
-            yield f"data: {json.dumps({'finished': True}, ensure_ascii=False)}\n\n"
+                if ev.get("type") == "delta":
+                    payload = json.dumps({"delta": ev.get("delta", ""), "finished": False}, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+                elif ev.get("type") == "finished":
+                    payload = json.dumps({"finished": True, "meta": ev.get("meta", {})}, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
         except Exception as exc:  # noqa: BLE001
             err = json.dumps({"error": str(exc), "finished": True}, ensure_ascii=False)
             yield f"data: {err}\n\n"

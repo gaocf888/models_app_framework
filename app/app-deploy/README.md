@@ -2,7 +2,8 @@
 
 本目录提供 **FastAPI 应用层** 的容器化部署，与仓库内 **`vllm-deploy/`**、**`rag_db-deploy/`** 对接。本文档说明**如何配置、如何启动、两种运行形态（默认 / 小模型 GPU）的差异与排错**。
 
-> 局域网/离线部署外挂服务（vLLM、EasySearch、MinerU）请配合阅读：`README-external-services-lan-deploy.md`。
+> 局域网/离线部署外挂服务（vLLM、EasySearch、MinerU）请配合阅读：`README-external-services-lan-deploy.md`。  
+> 值班排障请配合阅读：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
 
 **目录**
 
@@ -26,6 +27,19 @@
 
 ---
 
+## 文档分工（先看这个）
+
+为减少重复维护，建议按目标阅读：
+
+| 目标 | 优先文档 |
+|------|----------|
+| 快速上线（最少步骤） | `README-simple-deploy.md` |
+| 完整部署与参数说明（本文件） | `README.md` |
+| 局域网/离线外挂服务（vLLM/EasySearch/MinerU） | `README-external-services-lan-deploy.md` |
+| 值班排障（当前先覆盖智能客服） | `deploy-docs/online-services-oncall-runbook.md` |
+
+---
+
 ## 能力对照与组件
 
 | 能力 | 部署位置 | 说明 |
@@ -46,7 +60,7 @@
 
 | 层级 | 作用 | 典型变量 |
 |------|------|----------|
-| **Docker Compose 在宿主机解析** | 用于 `docker-compose.yml` 里的**插值**（镜像、端口、网络名、数据卷源路径）。只在执行 `docker compose` 的 shell 环境 + **本目录 `.env`** 中取值（Compose 会自动加载同目录 `.env`）。 | `APP_PORT`、`APP_PORT_GPU`、`VLLM_DOCKER_NETWORK`、`RAG_DOCKER_NETWORK`、`MINERU_DOCKER_NETWORK`、`SMALL_MODEL_WEIGHTS_HOST_PATH`、`SMALL_MODEL_NVIDIA_VISIBLE_DEVICES` |
+| **Docker Compose 在宿主机解析** | 用于 `docker-compose.yml` 里的**插值**（镜像、端口、网络名、数据卷源路径）。只在执行 `docker compose` 的 shell 环境 + **本目录 `.env`** 中取值（Compose 会自动加载同目录 `.env`）。 | `APP_PORT`、`APP_PORT_GPU`、`VLLM_DOCKER_NETWORK`、`RAG_DOCKER_NETWORK`、`MINERU_DOCKER_NETWORK`、`EMBEDDING_MODELS_HOST_PATH`、`RERANKER_MODELS_HOST_PATH`、`SMALL_MODEL_WEIGHTS_HOST_PATH`、`SMALL_MODEL_NVIDIA_VISIBLE_DEVICES` |
 | **注入应用容器的环境变量** | **`env_file: .env`** 把整个 `.env` 打进 **`models-app` / `models-app-gpu` 进程**，由 **`app/core/config.py`** 的 `os.getenv` 读取。应用**不会**自己 `load_dotenv` 读磁盘上的 `.env`。 | `LLM_*`、`RAG_*`、`REDIS_URL`、`DB_*`、`GRAPH_*`、`MINERU_*`、`EMBEDDING_*` 等 |
 
 **配置策略建议**
@@ -63,7 +77,7 @@
 1. **Docker**、**Docker Compose V2**。  
 2. **外部依赖已启动且网络已存在**：  
    - EasySearch：`rag_db-deploy`，默认容器 **`rag-easysearch`**，默认外部网络 **`ai-stack`**。  
-   - vLLM：`vllm-deploy/docker`，默认容器 **`vllm-service`**；Compose 项目目录名为 `docker` 时，外部网络常为 **`docker_vllm-network`**。  
+   - vLLM：`vllm-deploy`（推荐 `deploy.sh` 启动），默认容器 **`vllm-service`**；外部网络常为 **`docker_vllm-network`**（以实际 `docker network ls` 为准）。  
    - MinerU（可选）：`mineru-deploy`，默认容器 **`mineru-api`**，默认外部网络 **`mineru-stack`**。  
 3. 在宿主机执行 **`docker network ls`**，若名称与上表不一致，在 `.env` 中修改 **`VLLM_DOCKER_NETWORK`**、**`RAG_DOCKER_NETWORK`**、**`MINERU_DOCKER_NETWORK`**。  
 4. **Linux**：EasySearch 若报 `vm.max_map_count`，按 `rag_db-deploy/README.md` 在宿主机调内核参数。  
@@ -90,6 +104,26 @@ cp .env.example .env
 
 `REDIS_URL=redis://redis:6379/0` 一般**保持默认**（`redis` 为本 compose 服务名）。
 
+建议同时在 `.env` 显式补充智能客服 LangGraph 参数（即便有默认值）：
+
+- `CHATBOT_GRAPH_ENABLED=true`
+- `CHATBOT_INTENT_ENABLED=true`
+- `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify`
+- `CHATBOT_CRAG_ENABLED=true`
+- `CHATBOT_CRAG_MAX_ATTEMPTS=2`
+- `CHATBOT_CRAG_MIN_SCORE=0.55`
+- `CHATBOT_RAG_ENGINE_MODE=agentic`
+- `CHATBOT_RAG_ENGINE_FALLBACK=hybrid`
+- `CHATBOT_HISTORY_LIMIT=20`
+- `CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT=true`
+- `CHATBOT_FALLBACK_LEGACY_ON_ERROR=true`
+- `MAX_REWRITE_QUERY_LENGTH=256`
+- `MAX_GRAPH_LATENCY_MS=60000`
+- `CHATBOT_CHECKPOINT_BACKEND=none`
+- `CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph`
+
+说明：`CHATBOT_HISTORY_LIMIT` 控制“单轮读取历史条数”，`CONV_MAX_HISTORY_MESSAGES` 控制“会话总保留上限”；建议两者同时配置。
+
 若启用扫描件 PDF 解析，建议同时确认以下变量：
 
 - `MINERU_ENABLED=true`
@@ -106,8 +140,9 @@ cd rag_db-deploy
 docker compose -f docker-compose.easysearch.yml --env-file .env up -d
 
 # 2.2 vLLM
-cd ../vllm-deploy/docker
-docker compose up -d
+cd ../vllm-deploy
+chmod +x deploy.sh
+./deploy.sh
 
 # 2.3 MinerU（可选）
 cd ../../mineru-deploy
@@ -231,15 +266,34 @@ docker compose --profile small-model-gpu up -d --build
 | `huggingface-cache` | 应用容器 `/root/.cache/huggingface` | 嵌入/下载模型缓存，减少重复拉取 |
 | `small-model-data` | **仅 models-app-gpu** `/workspace/data/small_model_evidence` | 小模型证据片段等可写数据 |
 | `SMALL_MODEL_WEIGHTS_HOST_PATH` → `/workspace/models/small:ro` | **仅 models-app-gpu** | 只读权重；未设置时用占位卷 **`small-model-weights-dummy`**（空卷，仅开发联调 compose） |
-| `../../../models-files/embeddings/bge-small-zh-v1.5`（宿主机目录） → `/workspace/models/embeddings/bge-small-zh-v1.5:ro` | `models-app` / `models-app-gpu` | **离线嵌入模型权重目录**；配合 `EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5` 使用，实现完全离线加载 |
+| `${EMBEDDING_MODELS_HOST_PATH}/bge-small-zh-v1.5`（默认 `/opt/models/embeddings/...`） → `/workspace/models/embeddings/bge-small-zh-v1.5:ro` | `models-app` / `models-app-gpu` | **离线嵌入模型权重目录**；配合 `EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5` 使用，实现完全离线加载 |
+| `${RERANKER_MODELS_HOST_PATH}/bge-reranker-large`（默认 `/opt/models/reranker/...`） → `/models/rerank/bge-reranker-large:ro` | `models-app` / `models-app-gpu` | **离线重排模型目录**；`RAG_RERANKER_MODEL_PATH` 指向该容器路径 |
 
 ---
 
 ## 验证与健康检查
 
-- **存活**：`GET /health/`（JSON `status: ok`）。  
-- **指标**：`GET /metrics`（Prometheus 文本）。  
-- **vLLM**：在应用容器内应能解析 `LLM_DEFAULT_ENDPOINT`（网络与 DNS 正确）。
+建议先按 `deploy-docs/online-services-oncall-runbook.md` 执行 5 分钟检查，再按本节做部署态验证。
+
+```bash
+# 应用存活
+curl -s "http://127.0.0.1:${APP_PORT:-8083}/health/"
+
+# 应用指标
+curl -s "http://127.0.0.1:${APP_PORT:-8083}/metrics" | head
+
+# vLLM
+curl -s "http://127.0.0.1:8000/health"
+
+# EasySearch（自签名证书场景）
+curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
+```
+
+最小通过标准：
+
+- `/health/` 返回 `status: ok`
+- `/metrics` 可返回 Prometheus 文本
+- vLLM 与 EasySearch 健康检查可通过
 
 ---
 
@@ -307,21 +361,24 @@ docker compose --profile small-model-gpu down
 
 ### 离线优先策略（推荐生产做法）
 
-在生产或无公网环境中，推荐**显式指定本地嵌入模型路径**，并用宿主机目录挂载到容器，避免任何在线下载：
+在生产或无公网环境中，推荐**显式指定本地嵌入/重排模型路径**，并用宿主机目录挂载到容器，避免任何在线下载：
 
 1. **项目根目录离线模型目录约定**
 
-   建议在仓库根路径维护统一的离线模型目录，例如：
+   建议在宿主机统一使用以下目录约定：
 
    ```text
-   models-files/
+   /opt/models/
      embeddings/
        bge-small-zh-v1.5/   # 存放 BAAI/bge-small-zh-v1.5 的所有文件
+     reranker/
+       bge-reranker-large/  # 存放 BAAI/bge-reranker-large 的所有文件
    ```
 
-   你当前已经将 `bge-small-zh-v1.5` 下载到：
+   并在 `app/app-deploy/.env` 中配置：
 
-   - `models-files/embeddings/bge-small-zh-v1.5/`
+   - `EMBEDDING_MODELS_HOST_PATH=/opt/models/embeddings`
+   - `RERANKER_MODELS_HOST_PATH=/opt/models/reranker`
 
 2. **在 compose 中挂载到应用容器**
 
@@ -332,12 +389,14 @@ docker compose --profile small-model-gpu down
      models-app:
        # ...
        volumes:
-         - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
 
      models-app-gpu:
        # ...
        volumes:
-         - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
    ```
 
 3. **在 `.env` 中指定嵌入模型路径**
@@ -357,10 +416,10 @@ docker compose --profile small-model-gpu down
    docker compose up -d --build
    ```
 
-更换嵌入模型时，只需：
+更换嵌入或重排模型时，只需：
 
-- 在项目根 `models-files/embeddings/` 下新增对应子目录并放入新模型；  
-- 更新 compose 中的挂载路径，以及 `.env` 中的 `EMBEDDING_MODEL_PATH` 即可。
+- 在 `${EMBEDDING_MODELS_HOST_PATH}` / `${RERANKER_MODELS_HOST_PATH}` 下新增对应子目录并放入新模型；  
+- 如变更容器内目标路径，再同步调整 `.env` 中 `EMBEDDING_MODEL_PATH` / `RAG_RERANKER_MODEL_PATH`。
 
 ---
 
@@ -374,7 +433,7 @@ docker compose --profile small-model-gpu down
 | EasySearch TLS / 401 | HTTPS + `RAG_ES_VERIFY_CERTS`；用户名密码与库一致。 |
 | GPU 容器 `cuda: False` | 宿主机 Toolkit / Docker GPU 设置；`nvidia-smi` 在宿主机是否正常。 |
 | YOLO 找不到权重 | **`SMALL_MODEL_WEIGHTS_HOST_PATH`** 是否设置；宿主机路径与 YAML 是否对齐。 |
-| `docker compose` 报外部网络不存在 | 先启动 `rag_db-deploy`、`vllm-deploy/docker`、（可选）`mineru-deploy`，或先执行 `docker network create <network-name>`。 |
+| `docker compose` 报外部网络不存在 | 先启动 `rag_db-deploy`、`vllm-deploy`（`deploy.sh`）、（可选）`mineru-deploy`，或先执行 `docker network create <network-name>`。 |
 
 更全的应用侧环境变量以 **`app/core/config.py`** 的 **`_load_from_env()`** 为准；**.env.example** 按块注释说明了常用项。
 

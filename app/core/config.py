@@ -362,6 +362,36 @@ class MinerUConfig:
 
 
 @dataclass
+class ChatbotConfig:
+    """
+    智能客服（LangGraph 编排）配置。
+
+    说明：
+    - 该配置用于统一管理 `CHATBOT_*` 环境变量，避免业务代码散落读取 env。
+    - 当前实现以流式接口为主，非流式接口仍保留兼容路径（deprecated）。
+    """
+
+    graph_enabled: bool = True
+    intent_enabled: bool = True
+    intent_output_labels: list[str] = field(default_factory=lambda: ["kb_qa", "clarify"])
+    crag_enabled: bool = True
+    fallback_legacy_on_error: bool = True
+    persist_partial_on_disconnect: bool = True
+    # 图执行总时长预算（毫秒），用于硬超时保护。
+    max_graph_latency_ms: int = 60000
+    history_limit: int = 20
+    crag_max_attempts: int = 2
+    crag_min_score: float = 0.55
+    rag_engine_mode: str = "agentic"
+    rag_engine_fallback: str = "hybrid"
+    max_rewrite_query_length: int = 256
+    # checkpoint backend：none | memory | redis（redis 依赖可选，未安装会自动降级）
+    checkpoint_backend: str = "none"
+    checkpoint_redis_url: str | None = None
+    checkpoint_namespace: str = "chatbot_graph"
+
+
+@dataclass
 class AppConfig:
     """
     应用全局配置。
@@ -373,6 +403,7 @@ class AppConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     prompt: PromptConfig = field(default_factory=PromptConfig)
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
+    chatbot: ChatbotConfig = field(default_factory=ChatbotConfig)
 
 
 @dataclass
@@ -620,7 +651,33 @@ def _load_from_env() -> AppConfig:
         disk_fallback_subdir=os.getenv("MINERU_DISK_FALLBACK_SUBDIR", "mineru-output"),
     )
 
-    cfg = AppConfig(env=env, llm=llm_cfg, logging=logging_cfg, rag=rag_cfg, mineru=mineru_cfg)
+    chatbot_cfg = ChatbotConfig(
+        graph_enabled=os.getenv("CHATBOT_GRAPH_ENABLED", "true").lower() == "true",
+        intent_enabled=os.getenv("CHATBOT_INTENT_ENABLED", "true").lower() == "true",
+        intent_output_labels=_split_csv_env("CHATBOT_INTENT_OUTPUT_LABELS", "kb_qa,clarify"),
+        crag_enabled=os.getenv("CHATBOT_CRAG_ENABLED", "true").lower() == "true",
+        fallback_legacy_on_error=os.getenv("CHATBOT_FALLBACK_LEGACY_ON_ERROR", "true").lower() == "true",
+        persist_partial_on_disconnect=os.getenv("CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT", "true").lower() == "true",
+        max_graph_latency_ms=max(1000, int(os.getenv("MAX_GRAPH_LATENCY_MS", "60000"))),
+        history_limit=max(1, int(os.getenv("CHATBOT_HISTORY_LIMIT", "20"))),
+        crag_max_attempts=max(1, int(os.getenv("CHATBOT_CRAG_MAX_ATTEMPTS", "2"))),
+        crag_min_score=max(0.0, min(1.0, float(os.getenv("CHATBOT_CRAG_MIN_SCORE", "0.55")))),
+        rag_engine_mode=(os.getenv("CHATBOT_RAG_ENGINE_MODE", "agentic") or "agentic").lower(),
+        rag_engine_fallback=(os.getenv("CHATBOT_RAG_ENGINE_FALLBACK", "hybrid") or "hybrid").lower(),
+        max_rewrite_query_length=max(20, int(os.getenv("MAX_REWRITE_QUERY_LENGTH", "256"))),
+        checkpoint_backend=(os.getenv("CHATBOT_CHECKPOINT_BACKEND", "none") or "none").lower(),
+        checkpoint_redis_url=os.getenv("CHATBOT_CHECKPOINT_REDIS_URL") or None,
+        checkpoint_namespace=(os.getenv("CHATBOT_CHECKPOINT_NAMESPACE", "chatbot_graph") or "chatbot_graph"),
+    )
+
+    cfg = AppConfig(
+        env=env,
+        llm=llm_cfg,
+        logging=logging_cfg,
+        rag=rag_cfg,
+        mineru=mineru_cfg,
+        chatbot=chatbot_cfg,
+    )
     # 动态附加 db 字段，避免破坏现有 AppConfig 初始化调用点
     setattr(cfg, "db", db_cfg)
     return cfg

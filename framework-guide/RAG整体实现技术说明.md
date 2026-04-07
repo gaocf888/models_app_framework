@@ -233,8 +233,8 @@ GRAPH_RAG_USE_INTENT_ROUTING=true
      - **领域本体配置**（预留）：可通过 `RAGConfig.graph.schema`（及后续 `GRAPH_SCHEMA_CONFIG_PATH`）定义节点/关系类型，未配置时走 schema-less 宽松策略。
 
 2. **知识检索：在对话/分析等场景中使用知识库**  
-   - **默认（纯向量检索）**：  
-     - 上层链路（`ChatbotChain` / `AnalysisChain` / `LLMInferenceService` / `NL2SQLRAGService` 等）在需要 RAG 时：  
+  - **默认（纯向量检索）**：  
+    - 上层链路（`ChatbotLangGraphRunner` / `AnalysisChain` / `LLMInferenceService` / `NL2SQLRAGService` 等）在需要 RAG 时：  
        1. 调用 `AgenticRAGService.retrieve(...)`（或直接调用 `RAGService.retrieve_context(...)`）发起检索；  
        2. `RAGService` 使用 `EmbeddingService` 对问题做嵌入，并在向量库中执行 `similarity_search_by_vector`；  
        3. 返回 Top-K 文本片段，由上层链路拼入 Prompt。  
@@ -250,8 +250,8 @@ GRAPH_RAG_USE_INTENT_ROUTING=true
      - **关键配置**：  
        - `GRAPH_RAG_MODE=vector|graph|hybrid`；  
        - `GRAPH_RAG_VECTOR_WEIGHT` / `GRAPH_RAG_GRAPH_WEIGHT` / `GRAPH_RAG_MAX_CONTEXT_ITEMS` 等。  
-     - **调用链路示例**（以 Chatbot 为例）：  
-       `ChatbotChain` → `AgenticRAGService`（内部持有 `HybridRAGService`）→ `HybridRAGService` → `RAGService` + `GraphQueryService`。
+    - **调用链路示例**（以 Chatbot 为例）：  
+      `ChatbotLangGraphRunner` → `AgenticRAGService`（内部持有 `HybridRAGService`）→ `HybridRAGService` → `RAGService` + `GraphQueryService`。
 
 **小结**：  
 - 不配置 GraphRAG 时，**摄入仅写向量库，检索仅走向量 RAG 链路**；  
@@ -264,8 +264,9 @@ GRAPH_RAG_USE_INTENT_ROUTING=true
 >   `POST /llm/infer` → `LLMInferenceService.infer`：
 >   - `rag_mode=basic`：走 `HybridRAGService`（统一策略入口）；
 >   - `rag_mode=agentic`：走 `AgenticRAGService`（保留多步计划检索）。
-> - **智能客服 /chatbot/chat**：  
->   `POST /chatbot/chat` → `ChatbotService`（优先 `ChatbotChain.run`）→ `AgenticRAGService` → RAG 检索 → LLM。  
+> - **智能客服 /chatbot/chat 与 /chatbot/chat/stream**：  
+>   `POST /chatbot/chat/stream`（主用）或 `POST /chatbot/chat`（兼容）  
+>   → `ChatbotService.stream_chat_events` → `ChatbotLangGraphRunner` → `AgenticRAGService/HybridRAGService` → RAG 检索 → LLM。  
 > - **综合分析 /analysis/run**：  
 >   `POST /analysis/run` → `AnalysisService.run_analysis` → `AnalysisChain.run` → `AgenticRAGService` → RAG 检索 → LLM。  
 > - **NL2SQL /nl2sql/query 中的 RAG**：  
@@ -300,7 +301,7 @@ flowchart TB
     HRS["HybridRAGService（可选）"]
     ARS["AgenticRAGService"]
 
-    Chatbot["ChatbotChain"]
+    Chatbot["ChatbotLangGraphRunner"]
     Analysis["AnalysisChain"]
     LLMInf["LLMInferenceService"]
     NL2SQL["NL2SQLRAGService"]
@@ -684,7 +685,7 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     subgraph Chains
-        CC[ChatbotChain]
+        CC[ChatbotLangGraphRunner]
         AC[AnalysisChain]
         LIC[LLMInferenceService]
     end

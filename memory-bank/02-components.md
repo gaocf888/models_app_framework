@@ -28,7 +28,7 @@
     - 接口：`POST /llm/infer` 等。
     - 调用 `LLMInferenceService`。
   - `ChatbotRouter`
-    - 接口：`POST /chatbot/stream`、`WS /chatbot/ws`。
+    - 接口：`POST /chatbot/chat`（兼容保留）、`POST /chatbot/chat/stream`（SSE 主用）。
     - 调用 `ChatbotService`。
   - `AnalysisRouter`
     - 接口：`POST /analysis/run`。
@@ -69,7 +69,7 @@
     - `RAGService`（可选）
     - `ConversationManager`（可选）
 
-### 3.2 LangChain 链与 Agent
+### 3.2 LangChain / LangGraph 编排与 Agent
 
 - **`ChainFactory`**
   - 职责：基于配置创建 LangChain 链/Agent：
@@ -91,6 +91,14 @@
 - **`LangSmithTracker`（可选）**
   - 职责：将链路执行信息上报到 LangSmith，用于调试与评估。
   - 依赖：LangSmith SDK。
+
+- **`ChatbotLangGraphRunner`**
+  - 职责：智能客服图编排（意图分类、RAG 引擎路由、C-RAG 重试、统一 finalize 与 SSE meta）。
+  - 依赖：
+    - `PromptTemplateRegistry`（模板与 A/B）
+    - `ConversationManager`（历史读取与落库）
+    - `HybridRAGService` / `AgenticRAGService`
+    - `VLLMHttpClient`（底层流式调用）
 
 ---
 

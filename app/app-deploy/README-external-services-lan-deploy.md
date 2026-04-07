@@ -7,6 +7,7 @@
 - `mineru-deploy`
 
 目标：结构简单、步骤明确，支持“有网服务器构建 -> 局域网服务器导入启动”。
+在线业务值班排障请参考：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
 
 ---
 
@@ -84,14 +85,16 @@ docker load -i easysearch.tar
 
 ```bash
 # vLLM 模型目录（示例）
-mkdir -p /data/vllm/models
+mkdir -p /opt/models/llm
+
+# app RAG 离线模型目录（示例）
+mkdir -p /opt/models/embeddings/bge-small-zh-v1.5
+mkdir -p /opt/models/reranker/bge-reranker-large
 
 # MinerU 模型与 IO 目录（示例）
 mkdir -p /data/mineru/models
 mkdir -p /data/mineru/io
 
-# app 嵌入模型目录（示例）
-mkdir -p /opt/workspace/models_app_framework/models-files/embeddings/bge-small-zh-v1.5
 ```
 
 ### 4.3 准备 external 网络（建议先建）
@@ -143,6 +146,14 @@ TRANSFORMERS_OFFLINE=1
 LLM_DEFAULT_ENDPOINT=http://vllm-service:8000/v1
 LLM_DEFAULT_MODEL=<与 vllm served_model_name 一致>
 VLLM_DOCKER_NETWORK=<与 vllm 实际网络名一致>
+EMBEDDING_MODELS_HOST_PATH=/opt/models/embeddings
+RERANKER_MODELS_HOST_PATH=/opt/models/reranker
+```
+
+`vllm-deploy/.env`：
+
+```env
+MODEL_PATH=/opt/models/llm
 ```
 
 ---

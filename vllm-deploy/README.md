@@ -34,11 +34,14 @@ cp .env.example .env
 
 ## 模型权重准备
 
+默认离线路径约定：宿主机 `MODEL_PATH=/opt/models/llm`，并通过 Compose 挂载到容器 `/workspace/models`。
+
 ```text
 # 方式一：git-lfs
 sudo yum install git-lfs   # 或 apt install git-lfs
 git lfs install
-cd vllm-deploy/models
+mkdir -p /opt/models/llm
+cd /opt/models/llm
 git clone https://www.modelscope.cn/Qwen/Qwen2.5-VL-7B-Instruct.git
 cd Qwen2.5-VL-7B-Instruct && git lfs pull
 ```
@@ -46,16 +49,16 @@ cd Qwen2.5-VL-7B-Instruct && git lfs pull
 ```text
 # 方式二：ModelScope（国内常用）
 pip install modelscope
-python -c "from modelscope import snapshot_download; snapshot_download('qwen/Qwen2.5-VL-7B-Instruct', cache_dir='./models/Qwen2.5-VL-7B-Instruct')"
+python -c "from modelscope import snapshot_download; snapshot_download('qwen/Qwen2.5-VL-7B-Instruct', cache_dir='/opt/models/llm/Qwen2.5-VL-7B-Instruct')"
 ```
 
 ```text
 # 方式三：Hugging Face（可配合镜像站）
 pip install huggingface-hub
-python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen2.5-VL-7B-Instruct', local_dir='./models/Qwen2.5-VL-7B-Instruct', endpoint='https://hf-mirror.com')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen2.5-VL-7B-Instruct', local_dir='/opt/models/llm/Qwen2.5-VL-7B-Instruct', endpoint='https://hf-mirror.com')"
 ```
 
-在 `config/vllm.yaml` / `config/models.yaml` 中确认模型路径与预设一致；若使用 `MODEL_PATH` 环境变量挂载自定义目录，请与配置中的路径对应。
+在 `config/vllm.yaml` / `config/models.yaml` 中确认模型路径与预设一致；若使用 `MODEL_PATH` 环境变量（默认 `/opt/models/llm`）挂载自定义目录，请与配置中的路径对应。
 
 ## 构建与启动（完整步骤）
 
@@ -71,7 +74,7 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwe
      ```
 
 2. **准备模型权重**
-   - 按「模型权重准备」一节任意一种方式将模型下载到当前vllm-deploy的 `models/` 下，并在 `config/vllm.yaml` / `config/models.yaml` 中确认路径与预设一致。
+   - 按「模型权重准备」一节任意一种方式将模型下载到宿主机 `MODEL_PATH`（默认 `/opt/models/llm`）下，并在 `config/vllm.yaml` / `config/models.yaml` 中确认路径与预设一致。
 
 3. **构建并启动服务**
    - 推荐使用一键脚本（自动带上 `--env-file ../.env`）：

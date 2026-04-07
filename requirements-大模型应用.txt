@@ -31,6 +31,8 @@ langchain-community>=0.2.0    # LangChain 社区模块，包含 Neo4jGraph 等 G
 # === LangChain / LLM 调用与编排（按需启用） ===
 langchain>=0.2.0          # 通用 RAG/NL2SQL/Agentic Workflow 编排能力（Chains/Tools 等）
 langchain-openai>=0.1.0   # 如需直接调用 OpenAI / Azure OpenAI，可通过本包集成到 LangChain
+langgraph>=0.2.0          # 企业级状态图编排（Chatbot LangGraph 工作流）
+langsmith>=0.1.0          # LangSmith 追踪 SDK（通过 LangSmithTracker 接入）
 pypdf>=4.3.0              # PDF 文档解析（DocumentPipeline 支持 file path 输入）
 python-docx>=1.1.2        # DOCX 文档解析（DocumentPipeline 支持 file path 输入）
 

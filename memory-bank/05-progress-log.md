@@ -989,3 +989,20 @@
 - 全局检查：
   - `framework-guide` 其余相关文档已核对，无与当前实现冲突的明显旧口径。
 
+## 2026-04-07 文档同步（智能客服 LangGraph 改造）
+
+- `framework-guide/框架架构与调用链路总览.md`：
+  - 将 Chatbot 场景从 `ChatbotChain` 口径更新为 `ChatbotLangGraphRunner` 主链路；
+  - 同步补充 `/chatbot/chat/stream`（SSE 主用）与 legacy 回退策略说明；
+  - 更新“快速定位链路”小抄为 LangGraph 入口。
+- `memory-bank/02-components.md`：
+  - 修正 Chatbot 路由为 `/chatbot/chat` + `/chatbot/chat/stream`；
+  - 在编排组件中补充 `ChatbotLangGraphRunner` 职责与依赖关系。
+- `docs/性能与稳定性评估.md`：
+  - 增加 `/chatbot/chat/stream` 作为主压测对象建议，保留 `/chatbot/chat` 兼容口径。
+- `docs/Agentic-Workflow-设计蓝图.md`：
+  - Chatbot 章节统一改为 LangGraph 口径，标注当前代码已落地图编排。
+- 部署文档同步：
+  - `deploy-docs/chatbot-deploy.md`：vLLM 启动改为 `vllm-deploy/deploy.sh`，并补充手动 compose 命令；
+  - `app/app-deploy/README.md`、`app/app-deploy/README-simple-deploy.md`：vLLM 启动步骤与当前部署脚本对齐。
+

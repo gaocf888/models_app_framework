@@ -69,6 +69,12 @@
 15. `persist_conversation`：会话持久化（先 user 后 assistant）。
 16. `finalize`：统一收敛与错误归档。
 
+实现状态（当前代码）：
+
+- 上述占位节点已落地到图编排与代码实现；
+- 通过 `CHATBOT_INTENT_OUTPUT_LABELS` 白名单控制标签输出，默认仅放开 `kb_qa,clarify`；
+- 未放量标签会降级到 `kb_qa`，并在 `intent_reason` 记录 `label_not_enabled:*`。
+
 ### 4.3 路由策略
 
 本期生效路由：
@@ -121,6 +127,11 @@
   - 新增 `CHATBOT_RAG_ENGINE_MODE=agentic|hybrid`；
   - 默认 `agentic`，失败自动回退 `hybrid`（避免能力回退或全链路失败）。
 
+实现状态（当前代码）：
+
+- 已支持 `select_rag_engine` 节点动态选择 `agentic/hybrid`；
+- 已实现检索异常回退到 `CHATBOT_RAG_ENGINE_FALLBACK`。
+
 ### 6.3 会话管理兼容
 
 - 保留 `ConversationManager` 作为业务历史真源。
@@ -145,6 +156,12 @@
   1. 正常结束：落库 user + assistant（完整 answer）。
   2. 模型异常：落库 user，不落库 assistant，`status=failed`。
   3. 客户端断开：落库 user + assistant_partial（默认启用），并标记 `terminate_reason=client_disconnect`。
+
+实现状态（当前代码）：
+
+- API 层 SSE 已输出结束帧 `meta`；
+- graph 路径与 legacy 回退路径均输出 `finished + meta`；
+- 已实现断连 partial 落库开关 `CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT`。
 
 ## 7. LangSmith 实现方案
 
@@ -172,9 +189,17 @@
 
 本期建议：
 
-- 先启用 Redis/Postgres checkpoint（不要用内存做生产）。
+- 生产建议启用 Redis/Postgres checkpoint（不要用 memory 做生产）。
 - 多轮人工审核节点先占位，不在默认路由触发。
 - 恢复后禁止重复推送已发送 token（通过 cursor/offset 状态控制）。
+
+实现状态（当前代码）：
+
+- 已落地 checkpoint backend 配置：
+  - `CHATBOT_CHECKPOINT_BACKEND=none|memory|redis`
+  - `CHATBOT_CHECKPOINT_REDIS_URL`
+  - `CHATBOT_CHECKPOINT_NAMESPACE`
+- backend=none 为默认；backend=memory 用于开发测试；backend=redis 依赖可选包，缺失时自动降级为 none。
 
 ## 9. 配置与开关建议
 
@@ -188,11 +213,16 @@
 - `CHATBOT_CRAG_ENABLED=true`
 - `CHATBOT_CRAG_MAX_ATTEMPTS=2`
 - `CHATBOT_CRAG_MIN_SCORE=0.55`
+- `MAX_GRAPH_LATENCY_MS=60000`
 - `CHATBOT_FALLBACK_LEGACY_ON_ERROR=true`
 - `CHATBOT_HISTORY_LIMIT=20`
 - `CONV_SESSION_TTL_MINUTES=60`
 - `CONV_MAX_HISTORY_MESSAGES=50`
 - `CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT=true`
+- `MAX_REWRITE_QUERY_LENGTH=256`
+- `CHATBOT_CHECKPOINT_BACKEND=none|memory|redis`
+- `CHATBOT_CHECKPOINT_REDIS_URL=...`（redis backend 时）
+- `CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph`
 
 说明：通过开关支持灰度与回滚，不需要改 API。
 
@@ -214,7 +244,8 @@
 
 回滚策略：
 
-- 仅切配置：`CHATBOT_GRAPH_ENABLED=false`，立即回退原服务路径。
+- 仅切配置：`CHATBOT_GRAPH_ENABLED=false`，立即回退 legacy 流式路径。
+- 当 `CHATBOT_GRAPH_ENABLED=true` 且图运行异常时，若 `CHATBOT_FALLBACK_LEGACY_ON_ERROR=true`，自动回退 legacy 流式路径。
 
 非流式接口下线节奏（企业级默认）：
 

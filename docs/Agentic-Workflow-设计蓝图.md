@@ -106,14 +106,17 @@
 
 ---
 
-## 3. Chatbot（ChatbotChain / ChatbotService）
+## 3. Chatbot（LangGraph / ChatbotService）
 
 ### 3.1 目标
 
 - 在智能客服场景下实现「意图识别 → 策略路由 → 按需多轮检索 → 回答生成」的 Agent Workflow。
 - 为后续跨业务路由（如从 Chatbot 跳转到 NL2SQL 查询）预留接口。
 
-### 3.2 多步 Workflow 骨架（建议主要在 `ChatbotChain` 中实现）
+### 3.2 多步 Workflow 骨架（建议主要在 `ChatbotLangGraphRunner` 中实现）
+
+> 当前代码已落地 `ChatbotLangGraphRunner`，并默认由 `/chatbot/chat/stream` 进入图编排；
+> 下述骨架用于持续演进（新增业务意图、工具调用、跨服务路由等）。
 
 1. **Step 0：基础上下文构建**
    - 通过 `ConversationManager` 获取最近若干轮会话；
@@ -224,7 +227,7 @@
 - **架构 / 代码层**：
   - 已具备清晰分层与抽象：
     - RAG 基座：`AgenticRAGService` + `RAGMode` + `RAGContext`，统一处理多场景 RAG 调用；
-    - 业务多步链路：`LLMInferenceService` / `AnalysisChain` / `ChatbotChain` / `NL2SQLChain` 各自实现轻量多步 Agent Workflow（Planner / Intent / RAG / Refine）；
+    - 业务多步链路：`LLMInferenceService` / `AnalysisChain` / `ChatbotLangGraphRunner` / `NL2SQLChain` 各自实现轻量多步 Agent Workflow（Planner / Intent / RAG / Refine）；
     - 降级策略：LangChain 不可用时自动回退到单步逻辑。
   - 可以视为**“企业级 Agentic RAG 的工程基座 + 多步骨架实现”**，后续增强可以在此基础上增量演进，而无需推翻现有设计。
 

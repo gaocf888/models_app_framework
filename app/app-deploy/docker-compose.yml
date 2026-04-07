@@ -6,7 +6,7 @@
 #   1) EasySearch：rag_db-deploy/docker-compose.easysearch.yml
 #      - 默认容器名：rag-easysearch
 #      - 默认外部网络名：ai-stack（与 rag_db-deploy/.env 中 EASYSEARCH_NETWORK 一致）
-#   2) vLLM：vllm-deploy/docker/docker-compose.yml
+#   2) vLLM：vllm-deploy/docker/docker-compose.yml（推荐从 vllm-deploy 根目录执行 deploy.sh）
 #      - 默认容器名：vllm-service
 #      - 默认外部网络名：多为 docker_vllm-network（与 vllm 所在 compose 项目名有关）
 #   3) MinerU：mineru-deploy/docker-compose.yml（独立栈，与 rag/vllm 同级）
@@ -14,12 +14,16 @@
 #      - 默认外部网络名：mineru-stack（与 mineru-deploy/.env 中 MINERU_NETWORK_NAME 一致）
 #
 # 【本文件使用的 .env 变量 · 由 Docker Compose 在宿主机解析】
-#   APP_PORT              → models-app 宿主机端口（默认 8080）
+#   APP_PORT              → models-app 宿主机端口（默认 8083）
 #   APP_PORT_GPU          → models-app-gpu 宿主机端口（默认 8081）
 #   VLLM_DOCKER_NETWORK   → external 网络名，须已存在
 #   RAG_DOCKER_NETWORK    → external 网络名，须已存在
 #   MINERU_DOCKER_NETWORK → external 网络名，须已存在（连接 mineru-api）
 #   GRAPH_DOCKER_NETWORK  → external 网络名，用于连接 Neo4j（GraphRAG）
+#   EMBEDDING_MODELS_HOST_PATH
+#                         → 宿主机嵌入模型根目录（默认 /opt/models/embeddings）
+#   RERANKER_MODELS_HOST_PATH
+#                         → 宿主机重排模型根目录（默认 /opt/models/reranker）
 #   SMALL_MODEL_WEIGHTS_HOST_PATH
 #                         → 宿主机权重目录；未设置时使用下方占位卷 small-model-weights-dummy
 #   SMALL_MODEL_NVIDIA_VISIBLE_DEVICES
@@ -32,7 +36,7 @@
 #   - 不要将密钥提交到 Git；生产可用密钥管理替换 env_file。
 #
 # 【启动顺序建议】
-#   rag_db-deploy → vllm-deploy/docker → mineru-deploy（若启用）→ 本目录 docker compose
+#   rag_db-deploy → vllm-deploy（deploy.sh）→ mineru-deploy（若启用）→ 本目录 docker compose
 #
 # =============================================================================
 
@@ -89,9 +93,9 @@ services:
       # 应用内部文件日志目录（配合 LOG_FILE=/workspace/logs/app.log）
       - app-logs:/workspace/logs
       # 嵌入模型离线挂载
-      - ../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+      - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 重排模型离线挂载
-      - ../../models-files/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+      - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
       # MinerU 与 models-app 共享 IO（须与 mineru-deploy 中 MINERU_IO_HOST_PATH 指向同一宿主目录）
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
     environment:
@@ -140,6 +144,8 @@ services:
     volumes:
       - huggingface-cache:/root/.cache/huggingface
       - app-logs:/workspace/logs
+      # 嵌入模型离线挂载
+      - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 小模型证据输出（与 configs 中 evidence_dir 为 workspace 相对路径时一致）
       - small-model-data:/workspace/data/small_model_evidence
       # 权重：宿主机目录 -> 容器内 /workspace/models/small（只读）
@@ -147,7 +153,7 @@ services:
       - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
       # 重排模型离线挂载
-      - ../../models-files/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+      - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
 
 networks:
   # 本栈内部：Redis ↔ 应用

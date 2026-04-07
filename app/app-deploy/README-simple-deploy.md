@@ -3,6 +3,12 @@
 > 本文是 `README.md` 的**精简版**，重点面向「应用配置 + 生产/测试环境部署」，不讨论代码开发细节。  
 > 若需要完整说明（包括治理策略、GPU profile 细节、运维检查清单），请阅读同目录 `README.md`。
 > 若为局域网/离线环境部署外挂服务（vLLM、EasySearch、MinerU），请阅读：`README-external-services-lan-deploy.md`。
+> 值班排障请阅读：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
+
+> 文档分工建议：  
+> - 以本文件作为“上线执行主线”；  
+> - 遇到高级参数、GPU profile 细节、运维表格清单时再跳转 `README.md`；  
+> - 不在本文件重复维护离线外挂服务与值班排障长文，分别以对应文档为准。
 
 ---
 
@@ -69,6 +75,28 @@ CONV_MAX_HISTORY_MESSAGES=50
 
 默认使用本栈内置 Redis 容器 `models-app-redis`；若要用外部 Redis，只需改成对应连接串。
 
+### 2.3.1 智能客服 LangGraph（建议显式配置）
+
+```env
+CHATBOT_GRAPH_ENABLED=true
+CHATBOT_INTENT_ENABLED=true
+CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify
+CHATBOT_CRAG_ENABLED=true
+CHATBOT_CRAG_MAX_ATTEMPTS=2
+CHATBOT_CRAG_MIN_SCORE=0.55
+CHATBOT_RAG_ENGINE_MODE=agentic
+CHATBOT_RAG_ENGINE_FALLBACK=hybrid
+CHATBOT_HISTORY_LIMIT=20
+CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT=true
+CHATBOT_FALLBACK_LEGACY_ON_ERROR=true
+MAX_REWRITE_QUERY_LENGTH=256
+MAX_GRAPH_LATENCY_MS=60000
+CHATBOT_CHECKPOINT_BACKEND=none
+CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph
+```
+
+说明：`CHATBOT_HISTORY_LIMIT` 用于“每轮读取历史窗口”，`CONV_MAX_HISTORY_MESSAGES` 用于“会话总保留上限”。
+
 ### 2.4 业务数据库（NL2SQL，可选）
 
 ```env
@@ -99,10 +127,12 @@ VLLM_DOCKER_NETWORK=docker_vllm-network
 RAG_DOCKER_NETWORK=ai-stack
 MINERU_DOCKER_NETWORK=mineru-stack   # 启用 MinerU 时必须存在
 GRAPH_DOCKER_NETWORK=graph-stack     # 启用 GraphRAG 时
+EMBEDDING_MODELS_HOST_PATH=/opt/models/embeddings
+RERANKER_MODELS_HOST_PATH=/opt/models/reranker
 ```
 
-- 四个网络名需与对应子项目的 `.env` / compose 一致（可用 `docker network ls` 核对）。  
-- 默认已满足典型部署，只有在自定义 project name 或网络时才需要调整。
+- 网络名需与对应子项目的 `.env` / compose 一致（可用 `docker network ls` 核对）。  
+- 两个模型路径变量分别作为嵌入/重排模型根目录，compose 会自动拼接子目录 `bge-small-zh-v1.5` 与 `bge-reranker-large`。
 
 ### 2.7 MinerU（可选，扫描件 PDF 建议开启）
 
@@ -145,24 +175,25 @@ LOG_FILE_COMPRESS=true
 
 ### 2.9 嵌入模型离线使用（bge-small-zh-v1.5 示例）
 
-若部署环境**无法访问 Hugging Face Hub**，或希望避免在线下载，推荐将嵌入模型和重排序模型预先下载到仓库根目录的统一离线目录，并通过挂载暴露给应用：
+若部署环境**无法访问 Hugging Face Hub**，或希望避免在线下载，推荐将嵌入模型和重排序模型预先下载到宿主机统一离线路径，并通过挂载暴露给应用：
+> 嵌入模型和重排序模型离线下载方法：魔塔社区中搜索模型名称，然后使用git lfs下载到下述路径中
 
 1. **在项目根目录准备离线模型目录**
 
-   约定目录结构如下 -- 当前项目/models-files（你当前已按此方式完成）：
-   两个模型文件下载方法：魔塔社区中搜索模型名称，然后使用 git lfs下载到本地，上传服务器
+   建议目录结构如下（宿主机）：
 
    下面是嵌入模型路径
    ```text
-   models-files/
+   /opt/models/
      embeddings/
        bge-small-zh-v1.5/   # BAAI/bge-small-zh-v1.5 的完整模型文件
    ```
    
    下面是重排序模型路径
    ```text
-   models-files/
-     bge-reranker-large/    # BAAI/bge-reranker-large 的完整模型文件
+   /opt/models/
+     reranker/
+       bge-reranker-large/  # BAAI/bge-reranker-large 的完整模型文件
    ```
 
 2. **在 compose 中挂载到应用容器**
@@ -174,16 +205,16 @@ LOG_FILE_COMPRESS=true
      models-app:
        # ...
        volumes:
-         - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ../../models-files/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+         - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
        environment:
          - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
 
      models-app-gpu:
        # ...
        volumes:
-         - ../../../models-files/embeddings/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ../../models-files/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+         - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
        environment:
          - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
    ```
@@ -205,11 +236,11 @@ LOG_FILE_COMPRESS=true
    docker compose up -d --build
    ```
 
-如果未来更换嵌入模型，只需：
+如果未来更换嵌入模型或重排序模型，只需：
 
-- 在根目录 `models-files/embeddings/` 下新增对应子目录并放入新模型文件；  
-- 调整 `docker-compose.yml` 对应挂载路径；  
-- 将 `.env` 中的 `EMBEDDING_MODEL_PATH` 改为新的容器内路径。
+- 在宿主机 `${EMBEDDING_MODELS_HOST_PATH}` / `${RERANKER_MODELS_HOST_PATH}` 下新增对应子目录并放入新模型文件；  
+- 必要时调整 `docker-compose.yml` 对应挂载路径；  
+- 将 `.env` 中的 `EMBEDDING_MODEL_PATH` / `RAG_RERANKER_MODEL_PATH` 改为新的容器内路径。
 
 ---
 
@@ -224,8 +255,9 @@ cp .env.example .env          # 首次
 docker compose -f docker-compose.easysearch.yml --env-file .env up -d
 
 # vLLM
-cd ../vllm-deploy/docker
-docker compose up -d
+cd ../vllm-deploy
+chmod +x deploy.sh
+./deploy.sh
 
 # 可选：MinerU（扫描件 PDF 解析）
 cd ../../mineru-deploy
@@ -265,11 +297,16 @@ docker compose --profile small-model-gpu up -d --build
 
 ## 4. 联通性验证（智能客服）
 
+建议先按 `deploy-docs/online-services-oncall-runbook.md` 执行“5 分钟快速检查”，本节用于部署后补充验证。
+
 ### 4.1 基本健康检查
 
 ```bash
 # 应用
 curl -s "http://127.0.0.1:${APP_PORT:-8083}/health/"
+
+# 指标
+curl -s "http://127.0.0.1:${APP_PORT:-8083}/metrics" | head
 
 # vLLM
 curl -s "http://127.0.0.1:8000/health"
@@ -278,7 +315,7 @@ curl -s "http://127.0.0.1:8000/health"
 curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
 ```
 
-### 4.2 `/chatbot/chat` 测试
+### 4.2 `/chatbot/chat` 测试（兼容接口）
 
 ```bash
 curl -s -X POST "http://127.0.0.1:${APP_PORT:-8083}/chatbot/chat" \
@@ -299,7 +336,7 @@ curl -s -X POST "http://127.0.0.1:${APP_PORT:-8083}/chatbot/chat" \
 
 如需测试带 RAG 的对话，请先按 `rag_db-deploy/README.md` 完成知识摄入，再将 `enable_rag` 设为 `true`。
 
-### 4.3 `/chatbot/chat/stream` 测试（流式）
+### 4.3 `/chatbot/chat/stream` 测试（流式主用）
 
 ```bash
 curl -N -X POST "http://127.0.0.1:${APP_PORT:-8083}/chatbot/chat/stream" \
@@ -318,7 +355,7 @@ curl -N -X POST "http://127.0.0.1:${APP_PORT:-8083}/chatbot/chat/stream" \
 ```text
 data: {"delta":"...","finished":false}
 ...
-data: {"finished":true}
+data: {"finished":true,"meta":{"status":"answered","intent_label":"kb_qa","retrieval_attempts":1}}
 ```
 
 ---

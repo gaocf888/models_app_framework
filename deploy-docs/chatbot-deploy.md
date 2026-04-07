@@ -1,7 +1,64 @@
 # 智能客服部署与配置指南（端到端）
 
 > 面向：负责在测试/生产环境落地本项目「智能客服」能力的开发 & 运维同学。  
-> 目标：按本文完成后，能够通过 HTTP 调用 `/chatbot/chat` / `/chatbot/chat/stream`，并正确联通大模型、RAG 知识库与会话存储。
+> 目标：按本文完成后，能够通过 HTTP 调用 `/chatbot/chat` / `/chatbot/chat/stream`，并正确联通大模型、RAG 知识库与会话存储。  
+> 当前推荐主链路为 **LangGraph + SSE 流式接口**，`/chatbot/chat` 保留为兼容接口。
+> 值班排障建议配合：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
+
+---
+
+## 0. 最短上线路径（推荐先执行）
+
+适用于“先打通，再细调”的测试/生产首发场景。
+
+```bash
+# 1) EasySearch
+cd rag_db-deploy
+cp .env.example .env
+docker compose -f docker-compose.easysearch.yml --env-file .env up -d
+
+# 2) vLLM
+cd ../vllm-deploy
+cp .env.example .env
+chmod +x deploy.sh
+./deploy.sh
+
+# 3) app（FastAPI + Redis）
+cd ../app/app-deploy
+cp .env.example .env
+docker compose up -d --build
+```
+
+最小可用验证：
+
+```bash
+curl -s "http://127.0.0.1:8000/health"      # vLLM
+curl -s "http://127.0.0.1:8083/health/"      # app
+curl -N -X POST "http://127.0.0.1:8083/chatbot/chat/stream" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"u1","session_id":"s1","query":"你好","enable_rag":false,"enable_context":false}'
+```
+
+---
+
+## 0.1 上线前/后检查清单（运维视角）
+
+上线前（必须）：
+
+- [ ] `LLM_DEFAULT_ENDPOINT` 使用容器可解析地址（如 `http://vllm-service:8000/v1`），不是容器内 `127.0.0.1`
+- [ ] `LLM_DEFAULT_MODEL` 与 `vllm-deploy/config/models.yaml` 的 `served_model_name` 一致
+- [ ] `RAG_ES_HOSTS` / `RAG_ES_USERNAME` / `RAG_ES_PASSWORD` 与 `rag_db-deploy/.env` 完全一致
+- [ ] `REDIS_URL=redis://redis:6379/0`（或已切换为可用外部 Redis）
+- [ ] `CHATBOT_GRAPH_ENABLED=true` 且 `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify`
+- [ ] `CHATBOT_FALLBACK_LEGACY_ON_ERROR=true`（建议灰度阶段保留兜底）
+
+上线后（5 分钟内）：
+
+- [ ] `GET /health/` 返回 `ok`，并且容器日志无持续报错
+- [ ] `/chatbot/chat/stream` 首帧可返回 `delta`，尾帧 `finished=true`
+- [ ] 尾帧 `meta` 含 `status`、`intent_label`、`retrieval_attempts`、`duration_ms`
+- [ ] 在同一 `user_id + session_id` 下连续两轮对话，确认上下文生效
+- [ ] 若启用 RAG：`enable_rag=true` 时回答内容能体现知识库片段
 
 ---
 
@@ -26,7 +83,7 @@
    - 可选调用 `HybridRAGService` 从 EasySearch 检索上下文；  
    - 构建多模态 `messages`，调用 `VLLMHttpClient` → vLLM；  
    - 同步或流式返回结果，并写回助手消息。  
-4. 可选：若安装 LangChain，则优先使用 `ChatbotChain`（多步编排 + Agentic RAG）。
+4. `ChatbotService` 默认走 LangGraph 编排（意图 + C-RAG + 统一 finalize），必要时按配置回退 legacy 顺序链路。
 
 ---
 
@@ -100,11 +157,15 @@ curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
 ### 4.2 启动 vLLM
 
 ```bash
-cd vllm-deploy/docker
-docker compose up -d
+cd vllm-deploy
+chmod +x deploy.sh
+./deploy.sh
 ```
 
 一般会暴露为宿主机 `127.0.0.1:8000`，容器名默认为 `vllm-service`。
+
+> 如需手动启动 compose，请使用：  
+> `cd vllm-deploy/docker && docker compose --env-file ../.env up -d --build`
 
 检查：
 
@@ -212,7 +273,34 @@ CONV_MAX_HISTORY_MESSAGES=50
 
 应用的 `ConversationManager` 将优先尝试使用 Redis，会话数据可在多实例间共享。
 
-#### 6.1.4 业务数据库（NL2SQL，可选）
+#### 6.1.4 智能客服 LangGraph（建议显式配置）
+
+```env
+CHATBOT_GRAPH_ENABLED=true
+CHATBOT_INTENT_ENABLED=true
+CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify
+CHATBOT_CRAG_ENABLED=true
+CHATBOT_CRAG_MAX_ATTEMPTS=2
+CHATBOT_CRAG_MIN_SCORE=0.55
+CHATBOT_RAG_ENGINE_MODE=agentic
+CHATBOT_RAG_ENGINE_FALLBACK=hybrid
+CHATBOT_HISTORY_LIMIT=20
+CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT=true
+CHATBOT_FALLBACK_LEGACY_ON_ERROR=true
+MAX_REWRITE_QUERY_LENGTH=120
+MAX_GRAPH_LATENCY_MS=20000
+CHATBOT_CHECKPOINT_BACKEND=none
+CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph
+# CHATBOT_CHECKPOINT_REDIS_URL=redis://redis:6379/1
+```
+
+说明：
+
+- `CHATBOT_HISTORY_LIMIT` 控制“单轮读取历史窗口”，`CONV_MAX_HISTORY_MESSAGES` 控制“会话总保留上限”；
+- `CHATBOT_INTENT_OUTPUT_LABELS` 默认建议仅放量 `kb_qa,clarify`；
+- 生产场景建议先保持 `CHATBOT_FALLBACK_LEGACY_ON_ERROR=true`，用于图异常兜底。
+
+#### 6.1.5 业务数据库（NL2SQL，可选）
 
 若智能客服暂不依赖 NL2SQL，可先维持默认；如需联通数据库：
 
@@ -220,7 +308,7 @@ CONV_MAX_HISTORY_MESSAGES=50
 DB_URL=mysql+aiomysql://root:your_mysql_password@host.docker.internal:3306/aishare
 ```
 
-#### 6.1.5 GraphRAG（可选）
+#### 6.1.6 GraphRAG（可选）
 
 如第 5 节所述：
 
@@ -311,7 +399,7 @@ curl -s -X POST "http://127.0.0.1:8080/chatbot/chat" \
 - `used_rag` 为 true；  
 - `context_snippets` 中有若干条与问题相关的片段。
 
-### 7.4 流式接口（SSE）
+### 7.4 流式接口（SSE，推荐主用）
 
 ```bash
 curl -N -X POST "http://127.0.0.1:8080/chatbot/chat/stream" \
@@ -325,7 +413,15 @@ curl -N -X POST "http://127.0.0.1:8080/chatbot/chat/stream" \
   }'
 ```
 
-响应应为 `text/event-stream`，每行 `data: {...}`，最后一条包含 `"finished": true`。
+响应应为 `text/event-stream`，每行 `data: {...}`。典型序列：
+
+```text
+data: {"delta":"...","finished":false}
+...
+data: {"finished":true,"meta":{"status":"answered","intent_label":"kb_qa","retrieval_attempts":1}}
+```
+
+其中最后一条 `finished=true` 事件会携带 `meta`，用于观测本轮是否命中 RAG、意图路由与终止原因等。
 
 ---
 

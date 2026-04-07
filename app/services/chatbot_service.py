@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from app.conversation.manager import ConversationManager
+from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.models.chatbot import ChatRequest, ChatResponse
 from app.llm.client import VLLMHttpClient
+from app.llm.graphs import ChatbotLangGraphRunner
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
@@ -37,6 +39,13 @@ class ChatbotService:
         self._conv = conv_manager or ConversationManager()
         self._llm = llm_client or VLLMHttpClient()
         self._prompts = prompt_registry or PromptTemplateRegistry()
+        self._chatbot_cfg = get_app_config().chatbot
+        self._graph_runner = ChatbotLangGraphRunner(
+            rag_service=self._rag,
+            conv_manager=self._conv,
+            llm_client=self._llm,
+            prompt_registry=self._prompts,
+        )
         self._chain = None
 
         # 如果安装了 LangChain 相关依赖，则启用 ChatbotChain 作为编排层
@@ -101,25 +110,77 @@ class ChatbotService:
         会话写入顺序：先按「不含本轮」的历史组 messages，流式结束后再 append 本轮 user + assistant，
         与 `chat()` 非流式路径一致，避免历史里先插入当前用户句导致重复与上下文错乱。
         """
+        async for ev in self.stream_chat_events(req):
+            if ev.get("type") == "delta":
+                yield str(ev.get("delta") or "")
+
+    async def stream_chat_events(self, req: ChatRequest) -> AsyncIterator[Dict[str, Any]]:
+        """
+        结构化流式事件输出（供 API 层组装 SSE payload 使用）。
+
+        事件类型：
+        - delta: {"type": "delta", "delta": "..."}
+        - finished: {"type": "finished", "meta": {...}}
+        """
+        # 显式关闭 graph：走 legacy 流式实现，确保开关语义符合部署预期。
+        if not self._chatbot_cfg.graph_enabled:
+            async for ev in self._stream_chat_legacy_events(req):
+                yield ev
+            return
+
+        try:
+            async for ev in self._graph_runner.run_stream_events(req):
+                yield ev
+            return
+        except Exception:
+            if not self._chatbot_cfg.fallback_legacy_on_error:
+                raise
+            logger.exception("ChatbotService.stream_chat_events graph failed, fallback to legacy path.")
+            async for ev in self._stream_chat_legacy_events(req):
+                yield ev
+
+    async def _stream_chat_legacy_events(self, req: ChatRequest) -> AsyncIterator[Dict[str, Any]]:
+        """
+        旧版流式路径（兜底/回退专用）。
+
+        说明：
+        - 仅在 graph 关闭或 graph 运行异常且允许回退时启用；
+        - 保持与历史行为一致：检索 -> 历史 -> 组 messages -> vLLM stream -> 会话写入。
+        """
         context_snippets: list[str] = []
         if req.enable_rag:
             context_snippets = self._hybrid_rag.retrieve(req.query)
 
         history: list[dict] = []
         if req.enable_context:
-            history = self._conv.get_recent_history(req.user_id, req.session_id)
+            history = self._conv.get_recent_history(
+                req.user_id,
+                req.session_id,
+                limit=max(1, int(self._chatbot_cfg.history_limit)),
+            )
 
         messages = self._build_llm_messages(req=req, history=history, context_snippets=context_snippets)
-
         parts: list[str] = []
         async for delta in self._llm.stream_chat(model=None, messages=messages):  # type: ignore[arg-type]
             parts.append(delta)
-            yield delta
+            yield {"type": "delta", "delta": delta}
 
         answer = "".join(parts).strip()
         self._conv.append_user_message(req.user_id, req.session_id, req.query)
         if answer:
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+        yield {
+            "type": "finished",
+            "meta": {
+                "used_rag": bool(context_snippets),
+                "intent_label": "kb_qa",
+                "retrieval_attempts": 1 if req.enable_rag else 0,
+                "rag_engine": "hybrid" if req.enable_rag else None,
+                "status": "answered",
+                "duration_ms": None,
+                "terminate_reason": None,
+            },
+        }
 
     def _build_llm_messages(
         self,
