@@ -136,7 +136,7 @@ curl -s http://127.0.0.1:8000/v1/models
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "default",
+    "model": "qwen2.5-vl-7b-instruct",
     "messages": [{"role": "user", "content": "你好，做个自我介绍"}],
     "max_tokens": 64,
     "temperature": 0.2

@@ -26,7 +26,7 @@
 - GPU 模式需：
   - NVIDIA 驱动
   - `nvidia-container-toolkit`
-  - `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi` 可正常输出
+  - `docker run --rm --gpus all nvidia/cuda:12.3.0-base-ubuntu22.04 nvidia-smi` 可正常输出
 
 > 下方3、4、5、6、7是完整的部署流程
 
@@ -60,7 +60,7 @@ TRANSFORMERS_OFFLINE=0
 
 说明：
 - 运行时允许在线拉取模型
-- 模型缓存写入 `/io/.hf_cache`（宿主机对应 `${MINERU_IO_HOST_PATH}/.hf_cache`）
+- 模型缓存写入 `/io/.hf_cache`（宿主机对应 `${MINERU_IO_HOST_PATH}/.hf_cachecd `）
 - 适合可联网环境
 
 > 国内网络可选：`MINERU_MODEL_SOURCE=modelscope`
@@ -76,6 +76,14 @@ TRANSFORMERS_OFFLINE=1
 说明：
 - 运行时不再联网拉取模型
 - 需要你提前把模型文件放入 `${MINERU_MODELS_HOST_PATH}`（容器内 `/models`）
+  > 下载方法：
+  - 在魔塔社区中搜索 OpenDataLab/PDF-Extract-Kit-1.0
+  - 使用git lfs下载到 ${MINERU_MODELS_HOST_PATH} 路径下
+  > 为保证下载后路径一致，建议先在有网环境部署，然后使用docker cp从容器中复制下载后的模型到本地，然后拷贝到离线服务器的${MINERU_MODELS_HOST_PATH}路径中
+    （docker cp mineru-api:/root/.cache/modelscope/hub/models/OpenDataLab /data/mineru/models/OpenDataLab）
+       下载后路径要确保下面的路径：
+         宿主：${MINERU_MODELS_HOST_PATH}/OpenDataLab/PDF-Extract-Kit-1.0/...
+         容器：/models/OpenDataLab/PDF-Extract-Kit-1.0/...
 - 适合离线/内网环境
 
 ## 5. CPU 模式（独立实现）
@@ -101,6 +109,8 @@ docker compose --env-file .env up -d
 
 - `http://<host>:<MINERU_PORT>/docs`
 - `http://<host>:<MINERU_PORT>/health`
+
+curl -l http://127.0.0.1:8009/health
 
 ## 6. GPU 模式（独立实现）
 

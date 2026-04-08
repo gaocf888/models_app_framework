@@ -173,7 +173,11 @@ LOG_FILE_COMPRESS=true
 - 轮转触发后会生成 `app.log.1.gz`、`app.log.2.gz` ...（当 `LOG_FILE_COMPRESS=true`）。  
 - compose 已挂载 `/workspace/logs` 到命名卷 `app-logs`，容器重建后日志仍可保留。
 
-### 2.9 嵌入模型离线使用（bge-small-zh-v1.5 示例）
+### 2.9 模型离线使用
+> 整个项目中包括 嵌入模型、重排序模型、mineru模型
+> 嵌入模型：RAG知识文档切块后转向量(本地离线路径下/opt/models/embeddings/中存在离线模型文件时，自动走离线，否则自动走在线下载)
+> 重排序模型：RAG混合检索多路召回后，进行重排序(默认走在线下载，若走离线：首先需要修改.env中的RAG_RERANKER_MODEL_PATH（放开注释），然后离线下载模型到宿主机/opt/models/reranker/路径中，注意：如果配置离线了，离线路径中没有有效模型文件，会报错，不会自动切换在线下载)
+> mineru模型：使用mineru进行扫描图片格式PDF文件解析
 
 若部署环境**无法访问 Hugging Face Hub**，或希望避免在线下载，推荐将嵌入模型和重排序模型预先下载到宿主机统一离线路径，并通过挂载暴露给应用：
 > 嵌入模型和重排序模型离线下载方法：魔塔社区中搜索模型名称，然后使用git lfs下载到下述路径中
@@ -195,6 +199,27 @@ LOG_FILE_COMPRESS=true
      reranker/
        bge-reranker-large/  # BAAI/bge-reranker-large 的完整模型文件
    ```
+   
+   下面是mineru模型下载路径
+   ```text
+   /data/mineru/models
+   ```
+   
+   mineru模型下载说明
+   ```text
+   mineru使用在线模式时，魔塔社区(modelscope)下载的模型默认存放路径: ~/.cache/modelscope/hub/models
+   若使用离线模式，具体步骤如下：
+   1. .env 中修改配置项  MINERU_MODEL_SOURCE=local
+                        HF_HUB_OFFLINE=1
+                        TRANSFORMERS_OFFLINE=1
+   2. 在魔塔社区中搜索OpenDataLab/PDF-Extract-Kit-1.0并使用 git lfs下载到 /data/mineru/models路径下
+        为保证下载后路径一致，建议先在有网环境部署，然后使用docker cp从容器中复制下载后的模型到本地，然后拷贝到离线服务器的${MINERU_MODELS_HOST_PATH}路径中（docker cp mineru-api:/root/.cache/modelscope/hub/models/OpenDataLab /data/mineru/models/OpenDataLab）
+       下载后路径要确保下面的路径：
+         宿主：${MINERU_MODELS_HOST_PATH}/OpenDataLab/PDF-Extract-Kit-1.0/...
+         容器：/models/OpenDataLab/PDF-Extract-Kit-1.0/...
+   3. docker-compose中已经配置了这些模型文件的挂载(挂载到容器中的 /models路径下)，mineru在上述 MINERU_MODEL_SOURCE=local 配置下，会自动去 /models路径下寻找模型文件
+   ```
+   
 
 2. **在 compose 中挂载到应用容器**
 

@@ -95,7 +95,7 @@ services:
       # 嵌入模型离线挂载
       - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 重排模型离线挂载
-      - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+      - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/workspace/models/rerank/bge-reranker-large:ro
       # MinerU 与 models-app 共享 IO（须与 mineru-deploy 中 MINERU_IO_HOST_PATH 指向同一宿主目录）
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
     environment:

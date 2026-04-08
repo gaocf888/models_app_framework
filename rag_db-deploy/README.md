@@ -34,11 +34,30 @@ Copy-Item ".env.example" ".env"
 
 ### 3.2 启动数据库
 
+- 启动数据库
 > 针对离线的环境(无法访问互联网)，可以提前在有外网的服务器中easysearch镜像，然后导入到离线服务器中即可
-
 ```powershell
 docker-compose --env-file ".env" -f "docker-compose.easysearch.yml" up -d
 ```
+
+- 启动easysearch的容器后，进入容器，初始化设置固定密码
+```powershell
+# 1. 进入容器
+docker exec -it rag-easysearch bash
+
+# 2. 执行curl请求，设置密码
+curl -X PUT \
+  --cert /app/easysearch/config/admin.crt \
+  --key /app/easysearch/config/admin.key \
+  -H 'Content-Type: application/json' \
+  -k \
+  -d '{
+    "password": "ChangeMe_123!", 
+    "external_roles": ["admin"]
+  }' \
+  https://localhost:9200/_security/user/admin
+```
+
 
 ### 3.3 验证可用性
 
@@ -89,3 +108,29 @@ docker exec rag-easysearch sh /opt/easysearch/init/01-init-rag-indexes.sh
 
 - **Q：如何切回 FAISS？**  
   A：将项目环境变量改为 `RAG_VECTOR_STORE_TYPE=faiss` 并配置 `RAG_FAISS_INDEX_DIR`，无需改数据库部署。
+
+- **Q: 启动时报错：1.启动时报错：[1]: max virtual memory areas vm.max_map_count [65530] is too low, increase to at least [262144] ?**
+  A: 这是因为默认vm.max_map_count = 65530，es需要262144，下面是修复方法：
+    1.编辑/etc/sysctl.conf（或 /etc/sysctl.d/99-easysearch.conf）追加一行：vm.max_map_count=262144
+    2.让配置生效：sudo sysctl -p 
+    3.确认：sysctl vm.max_map_count
+
+- **Q: 若启动时报错（配置文件的问题easysearch.yml中配置项与默认项目不匹配）?**
+  ```text
+  # 第一步：停止服务，清除卷数据，重启
+  cd rag_db-deploy
+  docker compose -f docker-compose.easysearch.yml --env-file .env down -v
+  docker volume rm rag_easysearch_data
+  
+  # 第二步：
+  docker-compose配置文件中，把下面的一行配置注释掉（使用easysearch默认配置）
+  - ./easysearch/config/easysearch.yml:/app/easysearch/config/easysearch.yml:ro
+  
+  # 第三步：重新启动
+  docker compose -f docker-compose.easysearch.yml --env-file .env up -d
+  
+  # 第三步：
+  按照第一种方法正常启动后，使用下面命令复制容器中默认配置文件
+  docker cp rag-easysearch:/app/easysearch/config/easysearch.yml ./easysearch/config/easysearch.exported.yml
+  然后修改文件名和里面的个性配置（比如集群名称），然后再把上述docker-compose中的注释掉的放开注释
+  ```

@@ -18,7 +18,8 @@ FROM python:3.11-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/workspace
+    PYTHONPATH=/workspace \
+    PIP_DEFAULT_TIMEOUT=300
 
 WORKDIR /workspace
 
@@ -28,14 +29,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir --timeout=300 --retries=15 \
     torch torchvision \
     --index-url https://download.pytorch.org/whl/cu121
 
 COPY requirements-大模型应用.txt /workspace/requirements-llm.txt
 COPY requirements-小模型应用.txt /workspace/requirements-sm.txt
-RUN pip install --no-cache-dir -r /workspace/requirements-llm.txt -r /workspace/requirements-sm.txt \
-    && pip install --no-cache-dir ultralytics
+RUN pip install --no-cache-dir --timeout=300 --retries=15 \
+        ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
+        ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
+        -r /workspace/requirements-llm.txt -r /workspace/requirements-sm.txt \
+    && pip install --no-cache-dir --timeout=300 --retries=15 \
+        ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
+        ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
+        ultralytics
 
 COPY app /workspace/app
 COPY configs /workspace/configs

@@ -17,7 +17,8 @@ FROM python:3.11-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/workspace
+    PYTHONPATH=/workspace \
+    PIP_DEFAULT_TIMEOUT=300
 
 WORKDIR /workspace
 
@@ -25,8 +26,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# 构建阶段若出现 json.decoder.JSONDecodeError（解析 PyPI 索引 JSON 失败），多为响应被截断/超时；
+# 已加大 pip 超时与重试。仍不稳定时可指定镜像，例如：
+#   docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+#     --build-arg PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+
 COPY requirements-大模型应用.txt /workspace/requirements-app.txt
-RUN pip install --no-cache-dir -r /workspace/requirements-app.txt
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir --timeout=300 --retries=15 \
+        ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
+        ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
+        -r /workspace/requirements-app.txt
 
 COPY app /workspace/app
 COPY configs /workspace/configs
