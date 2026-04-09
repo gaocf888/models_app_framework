@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.conversation.ids import validate_session_id, validate_user_id
 
 
 class AnalysisInput(BaseModel):
@@ -12,7 +14,7 @@ class AnalysisInput(BaseModel):
     目前以占位形式支持文本描述和多模态数据的引用 ID，后续可扩展为实际上传/存储方案。
     """
 
-    user_id: str = Field(..., description="用户唯一标识")
+    user_id: str = Field(..., description="用户唯一标识（由调用方后台传入）")
     session_id: str = Field(..., description="会话唯一标识")
     query: str = Field(..., description="分析需求的自然语言描述")
     image_ids: List[str] = Field(default_factory=list, description="相关图像数据的标识符")
@@ -21,6 +23,16 @@ class AnalysisInput(BaseModel):
     sensor_data_ids: List[str] = Field(default_factory=list, description="相关传感器数据的标识符")
     enable_rag: bool = Field(True, description="是否启用 RAG 检索")
     enable_context: bool = Field(True, description="是否启用会话上下文")
+
+    @field_validator("user_id")
+    @classmethod
+    def _v_uid(cls, v: str) -> str:
+        return validate_user_id(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def _v_sid(cls, v: str) -> str:
+        return validate_session_id(v)
 
 
 class AnalysisResult(BaseModel):

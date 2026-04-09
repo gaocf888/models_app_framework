@@ -44,6 +44,8 @@ class AnalysisService:
             logger.warning("AnalysisService: LangChain not available, fallback to simple implementation.")
 
     async def run_analysis(self, data: AnalysisInput) -> AnalysisResult:
+        if not data.user_id:
+            raise ValueError("user_id is required (must be provided by the caller).")
         # 记录用户请求到会话
         self._conv.append_user_message(data.user_id, data.session_id, data.query)
 

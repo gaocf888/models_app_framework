@@ -33,8 +33,8 @@ RUN set -eux; \
       REQ="${WORKSPACE}/requirements.txt"; \
     fi; \
     pip3 install --no-cache-dir -r "${REQ}" \
-      -i https://pypi.tuna.tsinghua.edu.cn/simple \
-      --trusted-host pypi.tuna.tsinghua.edu.cn \
+      -i https://mirrors.aliyun.com/pypi/simple/ \
+      --trusted-host mirrors.aliyun.com \
       --default-timeout=600 --retries=20
 
 EXPOSE 8000

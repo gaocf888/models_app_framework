@@ -97,6 +97,36 @@ CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph
 
 说明：`CHATBOT_HISTORY_LIMIT` 用于“每轮读取历史窗口”，`CONV_MAX_HISTORY_MESSAGES` 用于“会话总保留上限”。
 
+### 2.3.2 Service API Key（调用应用业务 HTTP 接口）
+
+对方后台访问 **`/chatbot`、`/llm`、`/analysis`、`/nl2sql`、`/rag`、`/dajia`** 等路由时，请求头必须带：
+
+`Authorization: Bearer <密钥>`
+
+在 `.env` 中配置其一即可：
+
+```env
+# 推荐：可多钥并存（英文逗号），轮换时新旧一起配，再逐步下线旧钥
+SERVICE_API_KEYS=your_first_random_secret,your_second_random_secret
+# 或仅单钥：
+# SERVICE_API_KEY=your_single_random_secret
+```
+
+**生成密钥**：应用不提供在线发钥接口。在**仓库根目录**执行（需将仓库根加入 `PYTHONPATH`，以便 `import app`）：
+
+```bash
+# Linux / macOS
+PYTHONPATH=. python -c "from app.auth.keygen import generate_service_api_key; print(generate_service_api_key())"
+```
+
+```powershell
+# Windows PowerShell
+$env:PYTHONPATH = (Get-Location).Path
+python -c "from app.auth.keygen import generate_service_api_key; print(generate_service_api_key())"
+```
+
+将打印出的字符串写入 `SERVICE_API_KEYS`（或密钥平台注入同名环境变量），**勿提交真实密钥到 Git**。实现与更多说明见源码 **`app/auth/keygen.py`**；与 vLLM 的 `LLM_DEFAULT_API_KEY` 无关。认证模型、HTTP 状态与安全运维见 **`docs/Service-API-Key-认证与安全说明.md`**。
+
 ### 2.4 业务数据库（NL2SQL，可选）
 
 ```env

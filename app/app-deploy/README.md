@@ -9,6 +9,7 @@
 
 - [能力对照与组件](#能力对照与组件)
 - [配置分层：谁在读哪些变量](#配置分层谁在读哪些变量)
+- [Service API Key（业务 HTTP 鉴权）](#service-api-key业务-http-鉴权)
 - [前置条件](#前置条件)
 - [第一次部署（默认：仅大模型 + RAG + 会话）](#第一次部署默认仅大模型--rag--会话)
 - [启用小模型 GPU profile（完整步骤）](#启用小模型-gpu-profile完整步骤)
@@ -61,7 +62,7 @@
 | 层级 | 作用 | 典型变量 |
 |------|------|----------|
 | **Docker Compose 在宿主机解析** | 用于 `docker-compose.yml` 里的**插值**（镜像、端口、网络名、数据卷源路径）。只在执行 `docker compose` 的 shell 环境 + **本目录 `.env`** 中取值（Compose 会自动加载同目录 `.env`）。 | `APP_PORT`、`APP_PORT_GPU`、`VLLM_DOCKER_NETWORK`、`RAG_DOCKER_NETWORK`、`MINERU_DOCKER_NETWORK`、`EMBEDDING_MODELS_HOST_PATH`、`RERANKER_MODELS_HOST_PATH`、`SMALL_MODEL_WEIGHTS_HOST_PATH`、`SMALL_MODEL_NVIDIA_VISIBLE_DEVICES` |
-| **注入应用容器的环境变量** | **`env_file: .env`** 把整个 `.env` 打进 **`models-app` / `models-app-gpu` 进程**，由 **`app/core/config.py`** 的 `os.getenv` 读取。应用**不会**自己 `load_dotenv` 读磁盘上的 `.env`。 | `LLM_*`、`RAG_*`、`REDIS_URL`、`DB_*`、`GRAPH_*`、`MINERU_*`、`EMBEDDING_*` 等 |
+| **注入应用容器的环境变量** | **`env_file: .env`** 把整个 `.env` 打进 **`models-app` / `models-app-gpu` 进程**，由 **`app/core/config.py`** 的 `os.getenv` 读取。应用**不会**自己 `load_dotenv` 读磁盘上的 `.env`。 | `SERVICE_API_KEYS` / `SERVICE_API_KEY`、`LLM_*`、`RAG_*`、`REDIS_URL`、`DB_*`、`GRAPH_*`、`MINERU_*`、`EMBEDDING_*` 等 |
 
 **配置策略建议**
 
@@ -69,6 +70,19 @@
 2. **与 EasySearch 账号一致**：`RAG_ES_USERNAME` / `RAG_ES_PASSWORD` 须与 EasySearch 实际 `admin` 密码一致（见 `rag_db-deploy` 说明、容器内 `reset_admin_password.sh`）。  
 3. **与 vLLM 模型名一致**：`LLM_DEFAULT_MODEL` 与 vLLM `--served-model-name` 一致。  
 4. **容器内访问别用 `127.0.0.1` 指其它容器**：应使用 **`vllm-service`、`rag-easysearch`、`redis`** 等服务名（前提是本栈已加入对应外部网络，见 `docker-compose.yml`）。
+
+---
+
+## Service API Key（业务 HTTP 鉴权）
+
+对方后台调用 **`/chatbot/*`、`/llm/*`、`/analysis/*`、`/nl2sql/*`、`/rag/*`、`/dajia/*`** 等受保护路由时，须在请求头携带：
+
+`Authorization: Bearer <密钥>`
+
+- **配置**：环境变量 **`SERVICE_API_KEYS`**（英文逗号分隔多个密钥，轮换时新旧并存）或单个 **`SERVICE_API_KEY`**。与 `LLM_DEFAULT_API_KEY`（访问 vLLM）无关，勿混用。
+- **生成**：不在应用内提供 HTTP 签发接口。在**仓库根目录**用 `app/auth/keygen.py` 中的 **`generate_service_api_key()`**（基于 `secrets.token_urlsafe`）生成本地随机串，写入本目录 `.env` 或 CI/Secret。具体命令见 **`keygen.py` 模块顶部文档字符串**；简明步骤亦见 **`README-simple-deploy.md`** 对应小节。
+- **校验**：`app/auth/dependencies.py` 将 Bearer 与配置密钥做常量时间比对；未配置任何密钥时业务路由返回 **503**。
+- **安全与行为总述**：`docs/Service-API-Key-认证与安全说明.md`（仓库根目录下 `docs`）。
 
 ---
 

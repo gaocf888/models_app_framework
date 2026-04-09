@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.conversation.ids import validate_session_id, validate_user_id
 
 
 class ChatMessage(BaseModel):
@@ -23,8 +25,21 @@ class LLMInferenceRequest(BaseModel):
     - messages：多轮对话格式（兼容 ChatCompletion）。
     """
 
-    user_id: str = Field(..., description="用户 ID，用于会话与 A/B 分流")
+    user_id: str = Field(
+        ...,
+        description="用户 ID（由调用方后台传入，用于会话与上下文）",
+    )
     session_id: str = Field(..., description="会话 ID，用于上下文管理")
+
+    @field_validator("user_id")
+    @classmethod
+    def _v_uid(cls, v: str) -> str:
+        return validate_user_id(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def _v_sid(cls, v: str) -> str:
+        return validate_session_id(v)
 
     prompt: Optional[str] = Field(
         None,

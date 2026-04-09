@@ -66,6 +66,8 @@ class LLMInferenceService:
         """
         执行一次大模型推理。
         """
+        if not req.user_id:
+            raise ValueError("user_id is required (must be provided by the caller).")
         model_name = req.model or self._cfg_registry.default_model
 
         # 记录用户消息（用于会话上下文）

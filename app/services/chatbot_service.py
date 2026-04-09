@@ -58,6 +58,8 @@ class ChatbotService:
             logger.warning("ChatbotService: LangChain not available, fallback to simple implementation.")
 
     async def chat(self, req: ChatRequest) -> ChatResponse:
+        if not req.user_id:
+            raise ValueError("user_id is required (must be provided by the caller).")
         # 不在此处提前 append_user：须先取历史再组 messages，否则当前句已进 history，
         # _build_llm_messages / ChatbotChain 再追加本轮 query，会造成「双份当前用户句」且易干扰多轮理解。
         # 本轮 user/assistant 在得到 answer 后统一写入（见文末）。
@@ -104,6 +106,8 @@ class ChatbotService:
         return ChatResponse(answer=answer, used_rag=used_rag, context_snippets=context_snippets)
 
     async def stream_chat(self, req: ChatRequest) -> AsyncIterator[str]:
+        if not req.user_id:
+            raise ValueError("user_id is required (must be provided by the caller).")
         """
         token 级流式输出（基于 vLLM OpenAI 兼容 stream）。
 
@@ -115,6 +119,8 @@ class ChatbotService:
                 yield str(ev.get("delta") or "")
 
     async def stream_chat_events(self, req: ChatRequest) -> AsyncIterator[Dict[str, Any]]:
+        if not req.user_id:
+            raise ValueError("user_id is required (must be provided by the caller).")
         """
         结构化流式事件输出（供 API 层组装 SSE payload 使用）。
 

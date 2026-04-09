@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 """
-综合分析接口。
+综合分析 HTTP 接口（`/analysis/run`）。
 
-服务配置前置条件（运维/开发）：
-1) LLM 服务可用：
-   - 需正确配置模型调用参数（模型名称/服务地址/鉴权）。
-2) 可选 RAG：
-   - 若请求启用 RAG，需完成 RAG 存储与嵌入模型配置（RAG_ES_* / EMBEDDING_MODEL_*）。
-3) 可选会话上下文：
-   - 若请求启用上下文，需配置会话存储（如 REDIS_URL）。
+职责：
+    - 接收自然语言分析需求及可选多模态引用 ID，经 `AnalysisService` 编排：
+      优先 LangChain `AnalysisChain`（若依赖可用），否则 RAG + 会话历史 + 统一 LLM 客户端回退。
+
+鉴权与身份：
+    - 请求头须携带 `Authorization: Bearer <SERVICE_API_KEY>`（密钥生成与配置见 `app/auth/keygen.py` 与
+      `app/app-deploy/README-simple-deploy.md`「Service API Key」）；
+    - `user_id`、`session_id` 由调用方在请求体传入，用于会话记录与 Prompt 分流。
 """
 
 from fastapi import APIRouter
@@ -24,12 +25,18 @@ service = AnalysisService()
 @router.post("/run", response_model=AnalysisResult, summary="综合分析执行（基础版）")
 async def run_analysis(data: AnalysisInput) -> AnalysisResult:
     """
-    综合分析执行接口。
+    触发一次综合分析任务并返回结构化结果。
 
-    参数说明（见 AnalysisInput）：
-    - 必传：user_id、session_id、query
-    - 可选：image_ids、video_clip_ids、gps_ids、sensor_data_ids、enable_rag、enable_context
-    - 默认行为：enable_rag / enable_context 默认均为 true
+    Args:
+        data (AnalysisInput): 必填 `user_id`、`session_id`、`query`；
+            可选 `image_ids`、`video_clip_ids`、`gps_ids`、`sensor_data_ids`（占位引用）；
+            `enable_rag`、`enable_context` 控制检索与历史拼接。
+
+    Returns:
+        AnalysisResult: `summary` 为主结论，`details` 可选展开，`used_rag` 与 `context_snippets` 反映检索情况。
+
+    Raises:
+        HTTPException: 路由层不直接抛出；校验失败 422。
+        ValueError: 服务层在 `user_id` 为空时可能抛出。
     """
     return await service.run_analysis(data)
-

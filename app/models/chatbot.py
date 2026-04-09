@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.conversation.ids import validate_session_id, validate_user_id
+
 
 class ChatMessage(BaseModel):
     role: str = Field(..., description="消息角色，例如 user/assistant/system")
@@ -11,7 +13,10 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    user_id: str = Field(..., description="用户唯一标识")
+    user_id: str = Field(
+        ...,
+        description="用户唯一标识（由调用方后台管理，与 Service API Key 配合使用）",
+    )
     session_id: str = Field(..., description="会话唯一标识（由前端或调用方管理）")
     query: str = Field(..., description="用户本轮输入内容")
     image_urls: list[str] = Field(
@@ -33,6 +38,16 @@ class ChatRequest(BaseModel):
         ),
     )
 
+    @field_validator("user_id")
+    @classmethod
+    def _validate_user_id(cls, v: str) -> str:
+        return validate_user_id(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_session_id(cls, v: str) -> str:
+        return validate_session_id(v)
+
     @field_validator("image_urls", mode="before")
     @classmethod
     def normalize_image_urls(cls, v: Any) -> list[str]:
@@ -49,6 +64,47 @@ class ChatRequest(BaseModel):
             if s:
                 out.append(s)
         return out
+
+
+class SessionMessageItem(BaseModel):
+    """会话单条消息（与 Redis/内存存储字段一致）。"""
+
+    role: str = Field(..., description="user / assistant / system")
+    content: str = Field(..., description="消息正文")
+    ts: float | None = Field(None, description="写入时时间戳（秒，可能为空）")
+
+
+class SessionMessagesResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    user_id: str = Field(..., description="用户 ID")
+    session_id: str = Field(..., description="会话 ID")
+    count: int = Field(..., description="返回条数")
+    messages: list[SessionMessageItem] = Field(default_factory=list, description="按时间顺序的消息列表")
+
+
+class SessionDeleteResponse(BaseModel):
+    ok: bool = Field(True, description="是否执行成功")
+    user_id: str = Field(..., description="用户 ID")
+    session_id: str = Field(..., description="会话 ID")
+
+
+class SessionListItem(BaseModel):
+    """会话列表单行（方案 B：索引 + 元数据）。"""
+
+    session_id: str = Field(..., description="会话 ID")
+    title: str = Field(..., description="展示用标题")
+    title_source: str = Field(..., description="truncated | off；后续可扩展 llm")
+    last_activity_at: int = Field(..., description="最近活跃时间（毫秒，与 Redis ZSET score 一致）")
+    message_count: int = Field(0, description="会话内消息条数")
+
+
+class SessionListResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    user_id: str = Field(..., description="用户 ID")
+    total: int = Field(..., description="总会话数（过滤幽灵键后，用于分页）")
+    limit: int = Field(..., description="本页 limit")
+    offset: int = Field(..., description="本页 offset")
+    items: list[SessionListItem] = Field(default_factory=list, description="本会话列表")
 
 
 class ChatResponse(BaseModel):

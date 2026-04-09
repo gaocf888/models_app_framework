@@ -132,5 +132,7 @@ docker exec rag-easysearch sh /opt/easysearch/init/01-init-rag-indexes.sh
   # 第三步：
   按照第一种方法正常启动后，使用下面命令复制容器中默认配置文件
   docker cp rag-easysearch:/app/easysearch/config/easysearch.yml ./easysearch/config/easysearch.exported.yml
+  然后easysearch.exported.yml重命名为 easysearch.yml  （原来的该文件删除），并赋予文件权限：chmod 777 easysearch.yml
   然后修改文件名和里面的个性配置（比如集群名称），然后再把上述docker-compose中的注释掉的放开注释
+  然后重启docker-compose（使用上述 第一步方式）
   ```

@@ -30,8 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 已加大 pip 超时与重试。仍不稳定时可指定镜像，例如：
 #   docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
 #     --build-arg PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
-ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
 
 COPY requirements-大模型应用.txt /workspace/requirements-app.txt
 RUN pip install --upgrade pip setuptools wheel \

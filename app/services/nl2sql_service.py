@@ -27,6 +27,8 @@ class NL2SQLService:
         self._conv = conv_manager or ConversationManager()
 
     async def query(self, req: NL2SQLQueryRequest) -> NL2SQLQueryResponse:
+        if not req.user_id:
+            raise ValueError("user_id is required (must be provided by the caller).")
         # 记录用户问题
         self._conv.append_user_message(req.user_id, req.session_id, req.question)
 
