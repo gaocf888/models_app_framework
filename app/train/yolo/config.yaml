@@ -11,7 +11,11 @@
 # 2) Ultralytics 内置模型名：如 "yolov8n.pt"（在线自动下载）
 # 3) URL：如 "https://.../yolov8n.pt"（在线下载后训练）
 #
-pretrained_model: "yolov8s.pt"
+
+# 在线下载
+# pretrained_model: "yolov8s.pt"  
+# 使用预下载好的权重
+pretrained_model: "weights/pretrained/yolov8s.pt"  
 # data.yaml 的标准内容见本目录下的 data.yaml.example（data_yaml 必须是本地可存在文件）
 data_yaml: "datasets/processed/dajia/dataset.yaml"
 
