@@ -31,6 +31,131 @@
 
 ## 4. 图设计（状态、节点、路由）
 
+### 4.0 业务逻辑流程图
+
+#### 业务视角（文字流程）
+
+从**用户与业务**角度，一轮智能客服（流式）可理解为下列主线（不含类名与文件名，便于与产品/运营对齐）：
+
+```text
+                    【用户发起一轮咨询】
+                              │
+                              ▼
+              ┌───────────────────────────────┐
+              │ 接入请求：识别用户与会话        │
+              │ 并确认：是否带多轮记忆、        │
+              │ 是否启用知识库检索              │
+              └───────────────┬───────────────┘
+                              ▼
+              ┌───────────────────────────────┐
+              │ 准备对话前提                    │
+              │ · 加载本场景话术/策略（含分流） │
+              │ · 若需要记忆：读取近期历史      │
+              └───────────────┬───────────────┘
+                              ▼
+                     ┌────────────────┐
+                     │ 用户表述是否    │
+                     │ 过短或过于模糊？ │
+                     └───────┬────────┘
+                         是  │  否
+            ┌────────────────┘  └────────────────┐
+            ▼                                    ▼
+┌───────────────────────┐            ┌───────────────────────┐
+│【分支 A：意图澄清】    │            │【分支 B：知识问答主线】 │
+│返回引导话术，请用户补充 │            │若已开启知识库：        │
+│业务对象、现象、期望等   │            │ 选检索方式 → 召回片段   │
+│（避免在信息不足时硬答） │            │评估证据是否够用：      │
+└───────────┬───────────┘            │ · 不够：在限次内改写   │
+            │                        │   问题后再检索（C-RAG）│
+            │                        │ · 仍不够：走澄清策略，  │
+            │                        │   优先不编造           │
+            │                        │若未开启知识库：        │
+            │                        │ 跳过检索，仅用历史+   │
+            │                        │ 当前问题              │
+            │                        └───────────┬───────────┘
+            │                                    ▼
+            │                        ┌───────────────────────┐
+            │                        │ 拼成「给大模型的完整   │
+            │                        │ 输入」（角色+知识+     │
+            │                        │ 历史+当前问+附图等）    │
+            │                        └───────────┬───────────┘
+            │                                    ▼
+            │                        ┌───────────────────────┐
+            │                        │ 大模型流式生成回复     │
+            │                        │（用户侧逐段看到内容） │
+            │                        └───────────┬───────────┘
+            │                                    │
+            └────────────────┬───────────────────┘
+                             ▼
+              ┌───────────────────────────────┐
+              │【结束本轮】                    │
+              │ 保存用户话与助手回复；         │
+              │ 附带检索是否使用、意图类型等   │
+              │ 摘要供前端/运维观测（SSE 结束）│
+              └───────────────────────────────┘
+```
+
+补充说明（业务口径）：
+
+- **关闭「新版编排」或异常回退旧链路时**：整体仍是「按需检索 → 组上下文 → 大模型流式回答 → 记会话」，但不走意图分支与 C-RAG，细节见第 6 节兼容说明。
+- **安全拒答、转人工、纯闲聊**：设计上预留分支，**本期默认不放量**，主流量只在「澄清」与「知识问答」之间分流。
+
+---
+
+#### 实现视角（代码级流程图）
+
+下图对齐**当前实现**（`app/services/chatbot_service.py` → `app/llm/graphs/chatbot_graph_runner.py`）：先经过 API 与「图开关 / 异常回退」，再进入 LangGraph 状态机；**模型流式调用与会话落库**在图执行结束后的 **Runner 层**完成（对应设计文档中的 `llm_stream_generate`、`persist_conversation` 职责，未注册为独立图节点）。
+
+```mermaid
+flowchart TB
+  subgraph Entry["① 入口与开关"]
+    C[客户端] --> API["/chatbot/chat/stream"]
+    API --> SVC[ChatbotService.stream_chat_events]
+    SVC --> G0{CHATBOT_GRAPH_ENABLED}
+    G0 -->|false| LEG[Legacy 路径\nHybridRAG.retrieve → 组 messages\n→ VLLMHttpClient.stream_chat → 落库]
+    G0 -->|true| RUN[ChatbotLangGraphRunner.run_stream_events]
+    RUN -->|图异常且允许回退| LEG
+  end
+
+  subgraph Graph["② LangGraph（StateGraph.compile）"]
+    RUN --> RG[_run_graph / ainvoke]
+    RG --> N1[load_prompt_template\nPromptTemplateRegistry]
+    N1 --> N2[load_history\nConversationManager 只读]
+    N2 --> N3[intent_classify\n规则分类 / 可关]
+    N3 --> R1{条件边 _route_by_intent}
+    R1 -->|clarify| NC[clarify_build_response]
+    R1 -->|默认 kb_qa| N4[select_rag_engine\nagentic / hybrid]
+    N4 --> N5[kb_retrieve\nAgenticRAGService 或 HybridRAGService\n失败可回退引擎]
+    N5 --> N6[kb_quality_check]
+    N6 --> R2{条件边 _route_after_quality_check\nC-RAG}
+    R2 -->|retry 且未超次| N7[kb_rewrite_query]
+    N7 --> N5
+    R2 -->|build| N8[kb_build_messages]
+    R2 -->|clarify\n低分且用尽重试| NC
+    R1 -.->|unsafe 等\n占位，当前路由不命中| NP[unsafe_guard / handoff_human / smalltalk_generate]
+    NP -.-> NF[finalize]
+    NC --> NF
+    N8 --> NF
+    NF --> ENDN([END])
+  end
+
+  subgraph Post["③ Runner 层（图外）"]
+    ENDN --> R3{intent_label == clarify ?}
+    R3 -->|是| OUT1[输出 answer_text 为 delta\nConversationManager 落库]
+    R3 -->|否| STM[VLLMHttpClient.stream_chat\nllm_messages]
+    STM --> OUT2[流式 delta\n结束后落库 user + assistant]
+    OUT1 --> SSE[SSE finished + meta]
+    OUT2 --> SSE
+    LEG --> SSE
+  end
+```
+
+说明（与代码一致）：
+
+- **`_route_by_intent` 现状**：除 `clarify` 外一律走 `kb_qa` 边，故 **unsafe / handoff_human / smalltalk** 虽在图中注册，默认流量**不会**进入（与第 4.2 节占位描述一致；虚线表示预留拓扑）。
+- **`enable_rag=false`** 时，`kb_retrieve` 不检索，质量路由直接 **`build`**，不进入 C-RAG 重试。
+- **检索质量触发的澄清**：图中经 `clarify_build_response` 写入 `answer_text`，但 `intent_label` 可能仍为 `kb_qa`；Runner 当前以 **`intent_label == clarify`** 分支输出固定澄清话术。**若业务依赖「仅由检索触发的澄清」**，需与 `run_stream_events` 中是否增加 `answer_text` / `terminate_reason` 判定保持同步（以仓库最新代码为准）。
+
 ### 4.1 状态模型（GraphState）
 
 建议最小字段如下（按职责分组）：
