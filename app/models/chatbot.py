@@ -37,6 +37,14 @@ class ChatRequest(BaseModel):
             "多实例部署须配置 REDIS_URL，否则仅进程内内存、且多 worker 互不共享。"
         ),
     )
+    enable_fault_vision: bool | None = Field(
+        None,
+        description=(
+            "是否允许在「故障域判定」中使用本轮图片（需 CHATBOT_SIMILAR_CASE_ENABLED 等总开关）。"
+            "None：跟随服务端 CHATBOT_FAULT_VISION_ENABLED；False：本轮即使有 image_urls 也不送图判定；"
+            "True：有图则多模态判定。"
+        ),
+    )
 
     @field_validator("user_id")
     @classmethod

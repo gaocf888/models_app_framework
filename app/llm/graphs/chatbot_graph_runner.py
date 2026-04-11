@@ -16,6 +16,12 @@ from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
 
 from .chatbot_graph_state import ChatbotGraphState
+from .chatbot_similar_cases import (
+    FaultCaseGateInput,
+    format_similar_cases_block,
+    retrieve_similar_case_snippets,
+    run_fault_case_gate_decision,
+)
 
 logger = get_logger(__name__)
 
@@ -65,6 +71,13 @@ class ChatbotLangGraphRunner:
         self._checkpoint_backend = (cfg.checkpoint_backend or "none").lower()
         self._checkpoint_redis_url = cfg.checkpoint_redis_url
         self._checkpoint_namespace = cfg.checkpoint_namespace or "chatbot_graph"
+        self._similar_case_enabled = bool(cfg.similar_case_enabled)
+        self._similar_case_namespace = (cfg.similar_case_namespace or "事故案例").strip() or "事故案例"
+        self._similar_case_top_k = max(1, int(cfg.similar_case_top_k))
+        self._fault_detect_enabled = bool(cfg.fault_detect_enabled)
+        self._fault_vision_enabled = bool(cfg.fault_vision_enabled)
+        self._fault_detect_mode = (cfg.fault_detect_mode or "hybrid").lower()
+        self._fault_min_confidence = max(0.0, min(1.0, float(cfg.fault_min_confidence)))
 
         self._graph = None
         if self._graph_enabled:
@@ -85,6 +98,7 @@ class ChatbotLangGraphRunner:
         graph.add_node("load_prompt_template", self._node_load_prompt_template)
         graph.add_node("load_history", self._node_load_history)
         graph.add_node("intent_classify", self._node_intent_classify)
+        graph.add_node("fault_case_gate", self._node_fault_case_gate)
         # 预留分支：先放节点，默认不放量（由 intent 输出标签控制）。
         graph.add_node("unsafe_guard", self._node_unsafe_guard)
         graph.add_node("handoff_human", self._node_handoff_human)
@@ -103,11 +117,12 @@ class ChatbotLangGraphRunner:
         graph.set_entry_point("load_prompt_template")
         graph.add_edge("load_prompt_template", "load_history")
         graph.add_edge("load_history", "intent_classify")
-        # 意图路由：
+        graph.add_edge("intent_classify", "fault_case_gate")
+        # 意图路由（在故障域/相似案例门控之后，状态已含 need_similar_cases 等）：
         # - 首版仅放开 kb_qa/clarify；
         # - 其它标签（unsafe/handoff/smalltalk）先占位，不在本版本放量。
         graph.add_conditional_edges(
-            "intent_classify",
+            "fault_case_gate",
             self._route_by_intent,
             {
                 "kb_qa": "select_rag_engine",
@@ -217,16 +232,24 @@ class ChatbotLangGraphRunner:
         try:
             state = await self._run_graph(state)
             self._ensure_within_latency(start_ts)
-            if state.get("intent_label") == "clarify":
-                answer = state.get("answer_text", "").strip()
-                self._persist_success(state, req, answer, is_partial=False, terminate_reason=None)
+
+            pre_answer = (state.get("answer_text") or "").strip()
+            llm_messages = state.get("llm_messages") or []
+            # 意图澄清、或仅有固定话术而无 llm_messages（如检索触发的澄清/占位分支）
+            no_stream_path = state.get("intent_label") == "clarify" or (bool(pre_answer) and not llm_messages)
+            if no_stream_path:
+                answer = pre_answer
+                extra = self._maybe_similar_cases_extra(state)
+                state["similar_cases_appended"] = bool(extra)
+                full = (answer + extra).strip()
+                self._persist_success(state, req, full, is_partial=False, terminate_reason=None)
                 if answer:
                     yield {"type": "delta", "delta": answer}
+                if extra:
+                    yield {"type": "delta", "delta": extra}
                 yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts)}
                 return
 
-            # clarify 路径不会进入模型生成；会直接输出澄清文案并 finished。
-            llm_messages = state.get("llm_messages") or []
             parts: List[str] = []
             async for delta in self._llm.stream_chat(model=None, messages=llm_messages):  # type: ignore[arg-type]
                 self._ensure_within_latency(start_ts)
@@ -235,7 +258,11 @@ class ChatbotLangGraphRunner:
                 yield {"type": "delta", "delta": delta}
 
             answer = "".join(parts).strip()
-            self._persist_success(state, req, answer, is_partial=False, terminate_reason=None)
+            extra = self._maybe_similar_cases_extra(state)
+            state["similar_cases_appended"] = bool(extra)
+            if extra:
+                yield {"type": "delta", "delta": extra}
+            self._persist_success(state, req, (answer + extra).strip(), is_partial=False, terminate_reason=None)
             yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts)}
         except GeneratorExit:
             # 客户端主动断开：
@@ -292,7 +319,40 @@ class ChatbotLangGraphRunner:
             "error": None,
             "answer_parts": [],
             "answer_text": "",
+            "need_similar_cases": False,
+            "case_rag_query": "",
+            "fault_detect_sources": [],
+            "fault_detect_confidence": 0.0,
+            "enable_fault_vision": req.enable_fault_vision,
+            "similar_cases_appended": False,
         }
+
+    @staticmethod
+    def _merge_graph_state(base: ChatbotGraphState, patch: ChatbotGraphState) -> ChatbotGraphState:
+        merged = dict(base)
+        merged.update(patch)
+        return merged  # type: ignore[return-value]
+
+    def _should_append_similar_cases(self, state: ChatbotGraphState) -> bool:
+        if not state.get("need_similar_cases"):
+            return False
+        if state.get("intent_label") == "clarify":
+            return False
+        if state.get("terminate_reason") == "need_clarify":
+            return False
+        return True
+
+    def _maybe_similar_cases_extra(self, state: ChatbotGraphState) -> str:
+        if not self._similar_case_enabled or not self._should_append_similar_cases(state):
+            return ""
+        q = (state.get("case_rag_query") or state.get("query") or "").strip()
+        snippets = retrieve_similar_case_snippets(
+            self._hybrid_rag,
+            query=q,
+            namespace=self._similar_case_namespace,
+            top_k=self._similar_case_top_k,
+        )
+        return format_similar_cases_block(snippets)
 
     def _ensure_within_latency(self, start_ts: float) -> None:
         elapsed_ms = int((time.perf_counter() - start_ts) * 1000)
@@ -306,25 +366,28 @@ class ChatbotLangGraphRunner:
             # langgraph 不可用时退化为顺序执行：
             # - 目标是“可用性优先”，不能因依赖缺失直接中断主业务；
             # - 顺序分支必须与图语义一致，避免线上行为双轨分叉。
-            state = await self._node_load_prompt_template(state)
-            state = await self._node_load_history(state)
-            state = await self._node_intent_classify(state)
+            # - 节点返回值均为增量字段，须合并进完整 state（与 LangGraph ainvoke 合并语义一致）。
+            m = self._merge_graph_state
+            state = m(state, await self._node_load_prompt_template(state))
+            state = m(state, await self._node_load_history(state))
+            state = m(state, await self._node_intent_classify(state))
+            state = m(state, await self._node_fault_case_gate(state))
             if self._route_by_intent(state) == "clarify":
-                state = await self._node_clarify_build_response(state)
-                return await self._node_finalize(state)
-            state = await self._node_select_rag_engine(state)
+                state = m(state, await self._node_clarify_build_response(state))
+                return m(state, await self._node_finalize(state))
+            state = m(state, await self._node_select_rag_engine(state))
             while True:
-                state = await self._node_kb_retrieve(state)
-                state = await self._node_kb_quality_check(state)
+                state = m(state, await self._node_kb_retrieve(state))
+                state = m(state, await self._node_kb_quality_check(state))
                 route = self._route_after_quality_check(state)
                 if route == "retry":
-                    state = await self._node_kb_rewrite_query(state)
+                    state = m(state, await self._node_kb_rewrite_query(state))
                     continue
                 if route == "clarify":
-                    state = await self._node_clarify_build_response(state)
+                    state = m(state, await self._node_clarify_build_response(state))
                 else:
-                    state = await self._node_kb_build_messages(state)
-                return await self._node_finalize(state)
+                    state = m(state, await self._node_kb_build_messages(state))
+                return m(state, await self._node_finalize(state))
         return await self._graph.ainvoke(state)
 
     async def _node_load_prompt_template(self, state: ChatbotGraphState) -> ChatbotGraphState:
@@ -386,6 +449,27 @@ class ChatbotLangGraphRunner:
             label = "kb_qa"
             conf = min(conf, 0.6)
         return {"intent_label": label, "intent_reason": reason, "intent_confidence": conf, "status": "intented"}
+
+    async def _node_fault_case_gate(self, state: ChatbotGraphState) -> ChatbotGraphState:
+        """锅炉/管材故障域判定 + 是否在本轮末尾追加相似案例（检索在 Runner 层执行）。"""
+        inp = FaultCaseGateInput(
+            similar_case_enabled=self._similar_case_enabled,
+            fault_detect_enabled=self._fault_detect_enabled,
+            fault_vision_enabled=self._fault_vision_enabled,
+            fault_detect_mode=self._fault_detect_mode,
+            fault_min_confidence=self._fault_min_confidence,
+            intent_label=str(state.get("intent_label") or "kb_qa"),
+            query=str(state.get("query") or ""),
+            image_urls=[u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
+            enable_fault_vision=state.get("enable_fault_vision"),
+        )
+        res = await run_fault_case_gate_decision(self._llm, inp)
+        return {
+            "need_similar_cases": res.need_similar_cases,
+            "case_rag_query": res.case_rag_query if res.need_similar_cases else "",
+            "fault_detect_sources": res.fault_detect_sources,
+            "fault_detect_confidence": res.fault_detect_confidence,
+        }
 
     async def _node_unsafe_guard(self, state: ChatbotGraphState) -> ChatbotGraphState:
         return {
@@ -576,4 +660,9 @@ class ChatbotLangGraphRunner:
             "status": state.get("status"),
             "duration_ms": int((time.perf_counter() - start_ts) * 1000),
             "terminate_reason": state.get("terminate_reason"),
+            "similar_cases_appended": bool(state.get("similar_cases_appended")),
+            "similar_case_namespace": self._similar_case_namespace if state.get("similar_cases_appended") else None,
+            "fault_detect_sources": list(state.get("fault_detect_sources") or []),
+            "fault_detect_confidence": float(state.get("fault_detect_confidence") or 0.0),
+            "need_similar_cases": bool(state.get("need_similar_cases")),
         }

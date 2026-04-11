@@ -116,6 +116,7 @@
 ### 3.2 多步 Workflow 骨架（建议主要在 `ChatbotLangGraphRunner` 中实现）
 
 > 当前代码已落地 `ChatbotLangGraphRunner`，并默认由 `/chatbot/chat/stream` 进入图编排；
+> 已实现 **`fault_case_gate`**（可选）：故障域判定 + 主回答后 **限定 namespace** 相似案例 RAG（`CHATBOT_SIMILAR_CASE_*`，默认关）；Runner 层流式与落库。
 > 下述骨架用于持续演进（新增业务意图、工具调用、跨服务路由等）。
 
 1. **Step 0：基础上下文构建**

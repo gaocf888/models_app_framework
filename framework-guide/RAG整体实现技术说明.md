@@ -264,9 +264,10 @@ GRAPH_RAG_USE_INTENT_ROUTING=true
 >   `POST /llm/infer` → `LLMInferenceService.infer`：
 >   - `rag_mode=basic`：走 `HybridRAGService`（统一策略入口）；
 >   - `rag_mode=agentic`：走 `AgenticRAGService`（保留多步计划检索）。
-> - **智能客服 /chatbot/chat 与 /chatbot/chat/stream**：  
->   `POST /chatbot/chat/stream`（主用）或 `POST /chatbot/chat`（兼容）  
->   → `ChatbotService.stream_chat_events` → `ChatbotLangGraphRunner` → `AgenticRAGService/HybridRAGService` → RAG 检索 → LLM。  
+> - **智能客服 /chatbot/chat 与 /chatbot/chat/stream**：
+>   `POST /chatbot/chat/stream`（主用）或 `POST /chatbot/chat`（兼容）
+>   → `ChatbotService.stream_chat_events` → `ChatbotLangGraphRunner` → `AgenticRAGService/HybridRAGService` → RAG 检索 → LLM；
+>   若启用 `CHATBOT_SIMILAR_CASE_ENABLED`，主回答后由 Runner 再调 `HybridRAGService.retrieve(..., namespace=CHATBOT_SIMILAR_CASE_NAMESPACE)` 追加相似案例块（与主检索 namespace 解耦）。
 > - **综合分析 /analysis/run**：  
 >   `POST /analysis/run` → `AnalysisService.run_analysis` → `AnalysisChain.run` → `AgenticRAGService` → RAG 检索 → LLM。  
 > - **NL2SQL /nl2sql/query 中的 RAG**：  

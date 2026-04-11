@@ -55,6 +55,14 @@ class ChatbotGraphState(TypedDict, total=False):
     answer_parts: List[str]
     is_partial: bool
 
+    # ===== 相似案例 / 故障域（namespace 可配置）=====
+    need_similar_cases: bool
+    case_rag_query: str
+    fault_detect_sources: List[str]
+    fault_detect_confidence: float
+    enable_fault_vision: Optional[bool]
+    similar_cases_appended: bool
+
     # ===== 控制与可观测域 =====
     used_rag: bool
     # 状态机建议值：started/intented/retrieved/clarifying/answered/aborted/failed

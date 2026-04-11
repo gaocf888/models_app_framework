@@ -93,7 +93,7 @@
   - 依赖：LangSmith SDK。
 
 - **`ChatbotLangGraphRunner`**
-  - 职责：智能客服图编排（意图分类、RAG 引擎路由、C-RAG 重试、统一 finalize 与 SSE meta）。
+  - 职责：智能客服图编排（`fault_case_gate` 相似案例门控、意图分类、RAG 引擎路由、C-RAG、finalize；Runner 层流式、可选相似案例二次 RAG 与 SSE `meta`）。
   - 依赖：
     - `PromptTemplateRegistry`（模板与 A/B）
     - `ConversationManager`（历史读取与落库）

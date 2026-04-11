@@ -389,6 +389,14 @@ class ChatbotConfig:
     checkpoint_backend: str = "none"
     checkpoint_redis_url: str | None = None
     checkpoint_namespace: str = "chatbot_graph"
+    # 锅炉/管材故障域 + 限定 namespace 相似案例（见 enterprise 文档 §14）
+    similar_case_enabled: bool = False
+    similar_case_namespace: str = "事故案例"
+    similar_case_top_k: int = 5
+    fault_detect_enabled: bool = True
+    fault_vision_enabled: bool = True
+    fault_detect_mode: str = "hybrid"
+    fault_min_confidence: float = 0.5
 
 
 @dataclass
@@ -668,6 +676,13 @@ def _load_from_env() -> AppConfig:
         checkpoint_backend=(os.getenv("CHATBOT_CHECKPOINT_BACKEND", "none") or "none").lower(),
         checkpoint_redis_url=os.getenv("CHATBOT_CHECKPOINT_REDIS_URL") or None,
         checkpoint_namespace=(os.getenv("CHATBOT_CHECKPOINT_NAMESPACE", "chatbot_graph") or "chatbot_graph"),
+        similar_case_enabled=os.getenv("CHATBOT_SIMILAR_CASE_ENABLED", "false").lower() == "true",
+        similar_case_namespace=(os.getenv("CHATBOT_SIMILAR_CASE_NAMESPACE", "事故案例") or "事故案例"),
+        similar_case_top_k=max(1, int(os.getenv("CHATBOT_SIMILAR_CASE_TOP_K", "5"))),
+        fault_detect_enabled=os.getenv("CHATBOT_FAULT_DETECT_ENABLED", "true").lower() == "true",
+        fault_vision_enabled=os.getenv("CHATBOT_FAULT_VISION_ENABLED", "true").lower() == "true",
+        fault_detect_mode=(os.getenv("CHATBOT_FAULT_DETECT_MODE", "hybrid") or "hybrid").lower(),
+        fault_min_confidence=max(0.0, min(1.0, float(os.getenv("CHATBOT_FAULT_MIN_CONFIDENCE", "0.5")))),
     )
 
     cfg = AppConfig(

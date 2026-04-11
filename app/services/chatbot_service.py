@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import time
+
 from app.conversation.manager import ConversationManager
 from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.models.chatbot import ChatRequest, ChatResponse
 from app.llm.client import VLLMHttpClient
 from app.llm.graphs import ChatbotLangGraphRunner
+from app.llm.graphs.chatbot_similar_cases import (
+    FaultCaseGateInput,
+    format_similar_cases_block,
+    retrieve_similar_case_snippets,
+    run_fault_case_gate_decision,
+)
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
@@ -151,8 +159,10 @@ class ChatbotService:
 
         说明：
         - 仅在 graph 关闭或 graph 运行异常且允许回退时启用；
-        - 保持与历史行为一致：检索 -> 历史 -> 组 messages -> vLLM stream -> 会话写入。
+        - 保持与历史行为一致：检索 -> 历史 -> 组 messages -> vLLM stream -> 会话写入；
+        - 若启用相似案例扩展，与 LangGraph 路径一致：主回答流结束后追加限定 namespace 检索块。
         """
+        start_ts = time.perf_counter()
         context_snippets: list[str] = []
         if req.enable_rag:
             context_snippets = self._hybrid_rag.retrieve(req.query)
@@ -172,9 +182,48 @@ class ChatbotService:
             yield {"type": "delta", "delta": delta}
 
         answer = "".join(parts).strip()
+        extra = ""
+        similar_appended = False
+        gate_sources: list[str] = []
+        gate_conf = 0.0
+        need_cases = False
+        if self._chatbot_cfg.similar_case_enabled:
+            legacy_intent = "clarify" if len((req.query or "").strip()) <= 4 else "kb_qa"
+            gate = await run_fault_case_gate_decision(
+                self._llm,
+                FaultCaseGateInput(
+                    similar_case_enabled=self._chatbot_cfg.similar_case_enabled,
+                    fault_detect_enabled=self._chatbot_cfg.fault_detect_enabled,
+                    fault_vision_enabled=self._chatbot_cfg.fault_vision_enabled,
+                    fault_detect_mode=self._chatbot_cfg.fault_detect_mode,
+                    fault_min_confidence=self._chatbot_cfg.fault_min_confidence,
+                    intent_label=legacy_intent,
+                    query=req.query,
+                    image_urls=[u for u in req.image_urls if isinstance(u, str) and u.strip()],
+                    enable_fault_vision=req.enable_fault_vision,
+                ),
+            )
+            gate_sources = list(gate.fault_detect_sources)
+            gate_conf = float(gate.fault_detect_confidence)
+            need_cases = gate.need_similar_cases
+            if gate.need_similar_cases and legacy_intent != "clarify":
+                snippets = retrieve_similar_case_snippets(
+                    self._hybrid_rag,
+                    query=gate.case_rag_query or req.query,
+                    namespace=self._chatbot_cfg.similar_case_namespace,
+                    top_k=self._chatbot_cfg.similar_case_top_k,
+                )
+                extra = format_similar_cases_block(snippets)
+                similar_appended = bool(extra.strip())
+
+        if extra:
+            yield {"type": "delta", "delta": extra}
+
+        full = (answer + extra).strip()
         self._conv.append_user_message(req.user_id, req.session_id, req.query)
-        if answer:
-            self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+        if full:
+            self._conv.append_assistant_message(req.user_id, req.session_id, full)
+        duration_ms = int((time.perf_counter() - start_ts) * 1000)
         yield {
             "type": "finished",
             "meta": {
@@ -183,8 +232,13 @@ class ChatbotService:
                 "retrieval_attempts": 1 if req.enable_rag else 0,
                 "rag_engine": "hybrid" if req.enable_rag else None,
                 "status": "answered",
-                "duration_ms": None,
+                "duration_ms": duration_ms,
                 "terminate_reason": None,
+                "similar_cases_appended": similar_appended,
+                "similar_case_namespace": self._chatbot_cfg.similar_case_namespace if similar_appended else None,
+                "fault_detect_sources": gate_sources,
+                "fault_detect_confidence": gate_conf,
+                "need_similar_cases": need_cases,
             },
         }
 

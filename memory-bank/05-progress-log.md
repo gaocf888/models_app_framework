@@ -1006,3 +1006,13 @@
   - `deploy-docs/chatbot-deploy.md`：vLLM 启动改为 `vllm-deploy/deploy.sh`，并补充手动 compose 命令；
   - `app/app-deploy/README.md`、`app/app-deploy/README-simple-deploy.md`：vLLM 启动步骤与当前部署脚本对齐。
 
+## 2026-04-10 文档同步（智能客服相似案例 + 4.0 流程图）
+
+- **代码（此前已落地）**：`fault_case_gate`、`chatbot_similar_cases.py`、`ChatRequest.enable_fault_vision`、`CHATBOT_SIMILAR_CASE_*` / `CHATBOT_FAULT_*`（`app/core/config.py`、`app/app-deploy/.env.example`）。
+- **`enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md`**：
+  - 更新 **§4.0** 业务文字流程（故障域门控、主答后相似案例）、**Mermaid**（`fault_case_gate`、Runner 澄清/流式/二次 RAG 分支、Legacy 说明）、**§4.1 状态**与 **§4.2 节点清单**（含 `fault_case_gate` 与相似案例域字段）；**§1 范围**补充相似案例扩展。
+- **`framework-guide/智能客服整体实现技术说明.md`**：主链路步骤、`fault_case_gate`、Runner 相似案例、配置表与文件映射表同步。
+- **`framework-guide/RAG整体实现技术说明.md`**：智能客服小节补充限定 namespace 二次检索说明。
+- **`docs/工程完成度总览.md`**、**`docs/大小模型应用技术架构与实现方案.md`**（§4.3）、**`docs/Agentic-Workflow-设计蓝图.md`**（§3.2 头注）：与 LangGraph + 相似案例口径对齐。
+- **`memory-bank/02-components.md`**：`ChatbotLangGraphRunner` 职责描述更新。
+
