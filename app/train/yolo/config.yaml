@@ -42,7 +42,8 @@ warmup_epochs: 3.0
 # 训练策略
 patience: 50
 cos_lr: false
-amp: true
+# 是否自动混合精度计算（寒武纪中为了保证兼容，配置为false，英伟达配置为true）
+amp: false
 deterministic: false
 seed: 0
 cache: false
