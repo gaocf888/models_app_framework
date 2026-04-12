@@ -140,7 +140,7 @@
 - 将小模型通道推理从“占位版”升级为“可运行版”：
   - 新增 `configs/small_model_algorithms.yaml`：以 `algor_type` 为键的算法配置（策略类、默认权重、阈值、证据保存目录、回调地址等）。
   - 新增 `app/small_models/algorithm_registry.py`：加载算法配置并支持“API 覆盖本地配置”的合并逻辑。
-  - 新增/改造 `app/small_models/strategy/*`：按算法类型封装策略实现；实现 `CallingStrategy`（algor_type=40417）并使用 `app/small_models/pretrained/call.pt` 权重（Ultralytics YOLO）。
+  - 新增/改造 `app/small_models/strategy/*`：按算法类型封装策略实现；接打电话（algor_type=40417）使用 `RegularBehaviorDetectionStrategy` 与 `app/small_models/pretrained/call.pt`（Ultralytics YOLO）。
   - 新增 `app/small_models/evidence.py`：保存证据帧图片（jpg）与触发后视频片段（mp4，post-roll 简化版）。
   - 新增 `app/small_models/callback_client.py`：将检测结果 + 证据路径回调到业务 Web 服务（若配置了 `callback_url`）。
   - 更新 `app/models/small_model.py`：补充 `weights_path/callback_url/evidence_dir/device/imgsz/conf/iou/cooldown_seconds/clip_seconds` 等可选字段，用于 API 覆盖配置。

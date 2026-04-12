@@ -30,7 +30,9 @@ class EvidenceStore:
         out_dir = self._ensure_dir(channel_id, algor_type)
         ts = time.strftime("%Y%m%d_%H%M%S")
         out_path = out_dir / f"{ts}_{int(time.time() * 1000)}.jpg"
-        cv2.imwrite(str(out_path), frame_bgr)
+        ok = cv2.imwrite(str(out_path), frame_bgr)
+        if not ok:
+            raise OSError(f"cv2.imwrite failed: {out_path}")
         return str(out_path)
 
 
@@ -63,6 +65,11 @@ class ClipRecorder:
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         w, h = frame_size
         self._writer = cv2.VideoWriter(video_path, fourcc, float(self._fps), (w, h))
+        if not self._writer.isOpened():
+            self._writer = None
+            self._remaining_frames = 0
+            self._video_path = None
+            raise OSError(f"VideoWriter failed to open: {video_path}")
 
     def write(self, frame_bgr: Any) -> None:
         if not self.active:

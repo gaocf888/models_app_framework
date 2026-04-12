@@ -17,7 +17,14 @@ class CallbackClient:
         try:
             import httpx
 
-            httpx.post(url, json=payload, timeout=self._timeout)
+            resp = httpx.post(url, json=payload, timeout=self._timeout)
+            if resp.status_code >= 400:
+                logger.warning(
+                    "callback non-success: url=%s status=%s body=%s",
+                    url,
+                    resp.status_code,
+                    (resp.text or "")[:500],
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("callback failed: url=%s err=%s", url, exc)
 

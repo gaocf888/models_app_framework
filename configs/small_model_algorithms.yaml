@@ -1,25 +1,231 @@
-# 小模型算法类型（algor_type）配置
+# =============================================================================
+# 小模型算法表：algor_type → 策略 + 权重 + 阈值
+# =============================================================================
+# 调用链：InferenceEngine → app/small_models/strategy/*.py → _yolo_utils.py → Ultralytics YOLOv8
 #
-# 说明：
-# - 用于将“算法类型编码”映射到：策略实现、默认模型/权重、阈值、证据保存、回调等；
-# - 运行时优先级：API 参数 > 本地配置；
-# - weights_path 建议使用项目内相对路径（会在运行时 resolve 为绝对路径）。
+# 【策略类】三选一（YAML 中 strategy 字段）：
+#   - ObjectDetectionStrategy           — L1 常规目标（框 + class_filter + roi）
+#   - RegularBehaviorDetectionStrategy  — L2 常规行为（多为自训检测头）
+#   - ComplexBehaviorDetectionStrategy  — L3 复杂时空（complex_mode: dwell / line_cross / zone_intrusion）
 #
-# 示例：接打电话（algor_type=40417）
+# 【权重 weights_path】
+#   - 相对路径以项目根目录为基准（与 algorithm_registry.resolve_path 一致）。
+#   - 默认示例指向 app/small_models/pretrained/ 下文件，便于离线部署。
+#   - 凡标注「占位」的条目：可先放官方 yolov8s.pt（或 yolov8n.pt）保证服务能启动；要在生产检出对应类别，
+#     请用自有数据集训练后，将 weights_path 改为 best.pt / ppe.pt 等（class_filter 需与 data.yaml 中 names 一致）。
+#   - 官方另有 yolov8s-seg.pt（分割）、yolov8s-pose.pt（姿态）；当前推理仅消费检测框，掩码/关键点未接入策略，
+#     详见 app/small_models/pretrained/README.md；可选算法 40115 / 40116。
+#   - 权重下载与选型说明见：app/small_models/pretrained/README.md
+#
+# 【编号规则】（可自行增删，勿与现有业务 ID 冲突即可）
+#   40xxx — L1 常规目标
+#   41xxx — L2 常规行为
+#   42xxx — L3 复杂时空
+#   40417 — 历史示例 ID（接打电话），保留兼容
+#
+# 旧配置若写 CallingStrategy，引擎内映射为 RegularBehaviorDetectionStrategy（与 L2 同一单例）。
+# =============================================================================
 
-algorithms:
-  "40417":
-    name: calling
-    description: 接打电话检测
-    strategy: CallingStrategy
-    model_name: calling_yolo
-    weights_path: app/small_models/pretrained/call.pt
+_meta:
+  yolo_infer: &yolo_infer
     device: "cpu"
     imgsz: 640
     conf: 0.25
     iou: 0.7
+  behavior_evidence: &behavior_evidence
     cooldown_seconds: 300
     evidence_dir: data/small_model_evidence
     clip_seconds: 10
     callback_url: null
 
+algorithms:
+  # ----- L1 常规目标（40xxx）-----
+
+  # 40101–40103：工业/安常见算法；COCO 预训练不含这些细类，默认权重为占位，务必换自训 .pt
+  "40101":
+    name: 安全帽佩戴
+    description: |
+      默认 weights_path 为 COCO 预训练 yolov8s.pt（占位，无法可靠检出安全帽）。
+      请基于数据集训练后将 weights_path 改为 helmet.pt 等，并设置 class_filter 与训练 names 一致。
+    strategy: ObjectDetectionStrategy
+    model_name: helmet_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: *yolo_infer
+
+  "40102":
+    name: 灭火器识别
+    description: |
+      COCO 无灭火器类；占位 yolov8s.pt。训练后换 extinguisher.pt，或若 ppe.pt 含该类则指向 ppe.pt 并 class_filter。
+    strategy: ObjectDetectionStrategy
+    model_name: extinguisher_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: *yolo_infer
+
+  "40103":
+    name: 反光衣/工作服
+    description: |
+      占位 yolov8s.pt；生产请换自训 vest.pt 或与 40101 共用 ppe.pt 并按类别名过滤。
+    strategy: ObjectDetectionStrategy
+    model_name: vest_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: *yolo_infer
+
+  "40104":
+    name: 通用目标检测_COCO80类
+    description: |
+      使用官方 COCO 预训练 yolov8s.pt，不做类别过滤。可按业务在 API 覆盖中增加 class_filter。
+    strategy: ObjectDetectionStrategy
+    model_name: coco80_yolov8s
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: *yolo_infer
+
+  "40111":
+    name: 行人检测
+    description: |
+      COCO person。可换更大模型（yolov8s.pt 等）或自训行人权重；更换后仍可保留 class_ids: [0] 若类别映射不变。
+    strategy: ObjectDetectionStrategy
+    model_name: person_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: *yolo_infer
+    class_filter:
+      class_ids: [0]
+
+  "40112":
+    name: 机动车检测
+    description: |
+      COCO：car, motorcycle, bus, truck。可换自训车牌/车型专用权重并调整 class_filter。
+    strategy: ObjectDetectionStrategy
+    model_name: vehicle_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: *yolo_infer
+    class_filter:
+      class_ids: [2, 3, 5, 7]
+
+  "40113":
+    name: 非机动车检测
+    description: |
+      COCO：bicycle, motorcycle。可换自训权重。
+    strategy: ObjectDetectionStrategy
+    model_name: bike_moto_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: *yolo_infer
+    class_filter:
+      class_ids: [1, 3]
+
+  # 40115–40116：Ultralytics 官方多任务预训练；与 yolov8s.pt 同为 COCO，但算力更高。当前代码只用 boxes，见 README §3。
+  "40115":
+    name: 实例分割_COCO80_仅用检测框
+    description: |
+      官方 yolov8s-seg.pt。框架未解析 mask，行为与「检测版」相近但通常更慢；一般不替代 40104。
+      若需像素级越界/占比，请扩展策略后再作为默认。
+    strategy: ObjectDetectionStrategy
+    model_name: coco80_yolov8s_seg
+    weights_path: app/small_models/pretrained/yolov8s-seg.pt
+    <<: *yolo_infer
+
+  "40116":
+    name: 行人检测_姿态预训练_仅用检测框
+    description: |
+      官方 yolov8s-pose.pt。当前仅用 person 框，关键点未用；跌倒/姿态需扩展策略后再设为默认。
+      无姿态需求时继续用 40111 + yolov8s.pt 即可。
+    strategy: ObjectDetectionStrategy
+    model_name: person_yolov8s_pose
+    weights_path: app/small_models/pretrained/yolov8s-pose.pt
+    <<: *yolo_infer
+    class_filter:
+      class_ids: [0]
+
+  # ----- L2 常规行为（41xxx）-----
+
+  "40417":
+    name: calling
+    description: 接打电话检测（历史 ID）；自训权重 call.pt。可按数据集重训后仅替换 weights_path。
+    strategy: RegularBehaviorDetectionStrategy
+    model_name: calling_yolo
+    weights_path: app/small_models/pretrained/call.pt
+    <<: [*yolo_infer, *behavior_evidence]
+
+  "41101":
+    name: 接打电话检测
+    description: |
+      与 40417 同能力、不同编号，便于新业务统一 41xxx。自训 call 类；重训后替换 weights_path。
+    strategy: RegularBehaviorDetectionStrategy
+    model_name: calling_yolo_v2
+    weights_path: app/small_models/pretrained/call.pt
+    <<: [*yolo_infer, *behavior_evidence]
+
+  "41102":
+    name: 口罩佩戴
+    description: |
+      占位 yolov8s.pt（COCO 无口罩）。请换自训 mask.pt 并配置 class_filter。
+    strategy: RegularBehaviorDetectionStrategy
+    model_name: mask_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: [*yolo_infer, *behavior_evidence]
+
+  "41103":
+    name: 吸烟检测
+    description: 占位 yolov8s.pt；请换自训 smoke.pt。
+    strategy: RegularBehaviorDetectionStrategy
+    model_name: smoke_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: [*yolo_infer, *behavior_evidence]
+
+  "41104":
+    name: 打架/异常聚集姿态
+    description: 占位 yolov8s.pt；请换自训 fight / pose 专用权重。
+    strategy: RegularBehaviorDetectionStrategy
+    model_name: fight_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: [*yolo_infer, *behavior_evidence]
+
+  "41105":
+    name: 睡岗/离岗辅助检测
+    description: |
+      占位 yolov8s.pt；睡岗/离岗多为自训分类或专用检测，请训练后替换 weights_path；亦可结合 42xxx 时长与区域规则。
+    strategy: RegularBehaviorDetectionStrategy
+    model_name: sleep_offduty_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: [*yolo_infer, *behavior_evidence]
+
+  # ----- L3 复杂时空（42xxx）；多边形/线段坐标请按实际分辨率修改 -----
+
+  "42101":
+    name: 人员滞留
+    description: |
+      默认 yolov8s.pt + person。可在训练后替换为场景专用行人权重；dwell_polygon 请按画面修改。
+    strategy: ComplexBehaviorDetectionStrategy
+    model_name: dwell_person_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: *yolo_infer
+    complex_mode: dwell
+    dwell_seconds: 10
+    dwell_polygon: [[100, 100], [900, 100], [900, 500], [100, 500]]
+    class_filter:
+      class_ids: [0]
+
+  "42102":
+    name: 绊线跨越
+    description: |
+      默认 yolov8s.pt + person；替换权重后保持 class_filter 与 names 一致；line_cross_line 为线段两端点像素坐标。
+    strategy: ComplexBehaviorDetectionStrategy
+    model_name: linecross_person_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: *yolo_infer
+    complex_mode: line_cross
+    line_cross_line: [[200, 400], [800, 400]]
+    class_filter:
+      class_ids: [0]
+
+  "42103":
+    name: 禁区入侵
+    description: |
+      默认 yolov8s.pt + person；zone_intrusion_polygon 为封闭多边形顶点；权重可换自训。
+    strategy: ComplexBehaviorDetectionStrategy
+    model_name: zone_intrusion_yolo
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: *yolo_infer
+    complex_mode: zone_intrusion
+    zone_intrusion_polygon: [[0, 0], [300, 0], [300, 300], [0, 300]]
+    class_filter:
+      class_ids: [0]

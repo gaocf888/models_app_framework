@@ -11,6 +11,9 @@ opencv-python>=4.9.0.80    # 小模型通道解码/视频流读取（rtsp/http/f
 # === 监控与可观测性（与大模型应用共用指标） ===
 prometheus-client>=0.20.0  # 暴露小模型相关指标，如 small_model_frames_processed_total
 
+# === 在线推理（YOLOv8）===
+ultralytics>=8.0.0         # 小模型策略 _yolo_utils / InferenceEngine 加载 .pt 并推理（与训练侧版本建议一致）
+
 # === 可选工具（按需启用） ===
 Pillow>=10.0.0             # 如需对图像做格式转换/简易绘制，可按需使用
 pyyaml>=6.0.0              # 读取 dataset.yaml（如 app/train/yolo/video_rtsp_yolo_queue_test.py 中类别名 names）

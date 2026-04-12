@@ -147,7 +147,7 @@
 
 - **`SmallModelInferenceEngine`**
   - 职责：
-    - 按 `algor_type` 选择策略执行推理（`app/small_models/strategy/*`）；
+    - 按 `algor_type` 选择策略执行推理（`ObjectDetectionStrategy` / `RegularBehaviorDetectionStrategy` / `ComplexBehaviorDetectionStrategy`；旧名 `CallingStrategy` 映射为 `RegularBehaviorDetectionStrategy`）；
     - 合并配置优先级：API 参数 > 本地配置（`configs/small_model_algorithms.yaml`）；
     - 触发时保存证据并回调。
 
