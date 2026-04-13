@@ -22,6 +22,7 @@
 1. **接入层（API & UI 层，基于 FastAPI 实现）**
    - 使用 `FastAPI` 作为统一接入框架，提供 HTTP/REST 或 WebSocket 接口，对接 Web 前端、BI 工具或内部系统。
    - 负责用户认证、请求路由、会话管理以及结果展示，可按路由划分查询、Schema 管理、运维监控等接口分组。
+   - **在本基座中的落地**：NL2SQL 与 RAG 同属 **AI 应用基础能力**；NL2SQL **既** 可通过 **`POST /nl2sql/query`** 被 BI、脚本等 **直接调用**，**又** 可被智能客服等场景 **内嵌复用**（结构化问数意图），详见 `docs/大小模型应用技术架构与实现方案.md` §1、§4.6 与 `enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`。
 
 2. **NL2SQL 智能层（核心逻辑，Python 实现）**
    - **Schema 管理与向量检索子系统（RAG）**：维护数据库模式的语义索引，并在查询时检索最相关的表与字段。

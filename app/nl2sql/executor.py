@@ -27,12 +27,24 @@ class SQLExecutor:
             self._engine = create_async_engine(db_cfg.url, pool_pre_ping=True)
 
     async def execute(self, sql: str) -> List[dict[str, Any]]:
+        s = (sql or "").strip()
+        preview = s[:240] + ("..." if len(s) > 240 else "")
+        logger.info("SQLExecutor.execute start sql_len=%d preview=%r", len(s), preview)
         rows: List[dict[str, Any]] = []
-        async with self._engine.begin() as conn:
-            logger.debug("executing SQL: %s", sql)
-            result = await conn.execute(text(sql))
-            cols = result.keys()
-            for r in result.fetchall():
-                rows.append({col: value for col, value in zip(cols, r)})
+        try:
+            async with self._engine.begin() as conn:
+                result = await conn.execute(text(sql))
+                cols = result.keys()
+                for r in result.fetchall():
+                    rows.append({col: value for col, value in zip(cols, r)})
+        except Exception:
+            logger.warning(
+                "SQLExecutor.execute failed sql_len=%d preview=%r",
+                len(s),
+                preview,
+                exc_info=True,
+            )
+            raise
+        logger.info("SQLExecutor.execute done row_count=%d", len(rows))
         return rows
 

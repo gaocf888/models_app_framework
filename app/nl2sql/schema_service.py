@@ -89,6 +89,10 @@ class SchemaMetadataService:
         if not self._engine:
             self._engine = create_async_engine(db_cfg.url, pool_pre_ping=True)
 
+        logger.info(
+            "SchemaMetadataService.refresh_from_db starting database=%s",
+            getattr(db_cfg, "database", None),
+        )
         try:
             async with self._engine.begin() as conn:
                 captured: dict[str, MetaData] = {}
@@ -149,7 +153,14 @@ class SchemaMetadataService:
                         )
                     )
 
-            logger.info("schema metadata refreshed from database, tables=%s", list(self._tables.keys()))
+            names = sorted(self._tables.keys())
+            fk_total = sum(len(t.foreign_keys) for t in self._tables.values())
+            logger.info(
+                "schema metadata refreshed from database table_count=%d fk_edges=%d sample_tables=%s",
+                len(names),
+                fk_total,
+                names[:12],
+            )
         except Exception:
             logger.exception("SchemaMetadataService.refresh_from_db failed, url database=%s", db_cfg.database)
             raise

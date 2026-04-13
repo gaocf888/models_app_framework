@@ -230,42 +230,41 @@
 
 ## 6. NL2SQL 组件
 
-基于《NL2SQL系统概要设计》进行封装：
+**定位**：与 **RAG** 并列，为基座提供的 **基础能力**（共享向量检索、大模型配置、Prompt 注册、日志指标）。**差异**：NL2SQL 额外暴露 **`POST /nl2sql/query`** 供外部直接集成；`ChatbotLangGraphRunner` / `ChatbotService` 在 **`data_query`** 意图下内嵌调用同一 `NL2SQLService`（常 `record_conversation=False`）。
+
+基于《NL2SQL系统概要设计》与当前实现：
 
 - **`SchemaMetadataService`**
   - 职责：
-    - 从业务数据库拉取并维护表结构、字段、注释、主外键关系等；
-    - 与 RAG 知识库同步。
+    - `refresh_from_db()` 反射真实库表/列；内存 `TableSchema` 含 **外键列表**，用于 Prompt 中 **FK 提示**；
+    - 与 RAG 文档互补（RAG 侧重中文说明与业务映射，反射侧重权威标识符）。
 
 - **`NL2SQLRAGService`**
   - 职责：
-    - 针对 Schema、业务规则、样例问答构建特定命名空间；
-    - 提供问题 → 上下文的 RAG 检索能力。
+    - 命名空间 `nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples`；
+    - `scene="nl2sql"` 检索 + 可选图事实；结构化日志便于排障。
 
 - **`PromptBuilder`（NL2SQL 专用）**
   - 职责：
-    - 按 NL2SQL 约定的 Prompt 结构（System/Schema/Biz Knowledge/Examples/User）生成最终 Prompt。
+    - 拼装 Database schema 片段、可选 **Schema catalog**、User 问题；配合模板占位符 **`{{NL2SQL_SCHEMA_CATALOG}}`**。
 
-- **`NL2SQLChain` / `NL2SQLAgent`**
+- **`NL2SQLChain`**
   - 职责：
-    - 调用 LLM （通过 `LLMClient`）生成候选 SQL；
-    - 控制一轮或多轮自我修正流程。
+    - 反射 →（可选）规划 → RAG → Prompt → LLM → **`normalize_sql`** → 校验 →（可选）`_refine_sql`；
+    - 真实库成功时默认 **跳过规划**（可配置），避免虚构表名污染检索。
 
 - **`SQLValidator`**
   - 职责：
-    - 对生成 SQL 做语法与安全校验；
-    - 控制只读、限制高危操作与资源消耗。
+    - 只读与安全关键字校验；标识符白名单；**引号外空白折叠**为单行输出。
 
 - **`SQLExecutor`**
   - 职责：
-    - 多数据源适配与实际 SQL 执行；
-    - 返回结果并进行格式化。
+    - Async SQLAlchemy 执行只读 SQL；日志含预览与行数。
 
 - **`NL2SQLService`**
   - 职责：
-    - 将上述组件聚合为对外服务接口；
-    - 与会话管理、RAG、监控集成；
-    - 提供管理能力接口（如 Schema 刷新、测试查询、评估用例执行等）。
+    - 聚合 Chain + Executor + 会话 + Prometheus 指标；
+    - 对外 API 与 Chatbot 内嵌共用入口。
 
 ---
 
@@ -298,7 +297,8 @@
 - RAG/会话：
   - 所有需要上下文/检索的服务通过 `RAGService` 与 `ConversationManager` 复用统一实现。
 - NL2SQL：
-  - `NL2SQLRouter` → `NL2SQLService` → `NL2SQLRAGService` + `PromptBuilder` + `NL2SQLChain` + `SQLValidator` + `SQLExecutor`。
+  - **直连**：`NL2SQLRouter` → `NL2SQLService` → …（同上）。  
+  - **内嵌**：`ChatbotService` / `ChatbotLangGraphRunner`（`data_query`）→ `NL2SQLService.query(..., record_conversation=False)` → 结果再由 LLM 自然语言化。
 - 运维：
   - 所有组件通过 `LoggingManager` 写日志；
   - 关键路径打点到 `MetricsCollector` 暴露给 Prometheus。

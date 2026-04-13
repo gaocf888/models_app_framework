@@ -4,10 +4,13 @@ import os
 from typing import List
 
 from app.core.config import get_app_config
+from app.core.logging import get_logger
 from app.graph.query_service import GraphQueryService
 from app.rag.models import RetrievedChunk
 from app.rag.retrieval_policy import RetrievalPolicy
 from app.rag.rag_service import RAGService
+
+logger = get_logger(__name__)
 
 
 class NL2SQLRAGService:
@@ -66,6 +69,11 @@ class NL2SQLRAGService:
             if t not in seen:
                 seen.add(t)
                 unique_results.append(t)
+        logger.info(
+            "NL2SQLRAG.retrieve string_snippets=%d (from %d chunks)",
+            len(unique_results),
+            len(chunks),
+        )
         return unique_results
 
     def retrieve_chunks(self, question: str, top_k: int | None = None) -> List[RetrievedChunk]:
@@ -77,6 +85,8 @@ class NL2SQLRAGService:
         schema_ns_top = int(os.getenv("NL2SQL_SCHEMA_NAMESPACE_TOP_K", str(max(top + 6, 12))))
         results: List[RetrievedChunk] = []
         decision = self._policy.decide(question)
+        per_ns_vector: dict[str, int] = {}
+        per_ns_graph: dict[str, int] = {}
 
         for ns in (self.NS_SCHEMA, self.NS_BIZ, self.NS_QA):
             # 向量侧标准结构优先保留（含 doc/section 元信息）。
@@ -88,6 +98,7 @@ class NL2SQLRAGService:
                     namespace=ns,
                     scene="nl2sql",
                 )
+                per_ns_vector[ns] = per_ns_vector.get(ns, 0) + len(chunks)
                 results.extend(chunks)
             # 图侧事实按统一策略层决策补充。
             if decision.mode != "vector" and self._graph_query is not None:
@@ -98,7 +109,9 @@ class NL2SQLRAGService:
                     max_items=decision.max_graph_items,
                 )
                 ns_top = schema_ns_top if ns == self.NS_SCHEMA else top
-                for idx, fact in enumerate(graph_facts[:ns_top]):
+                gf = graph_facts[:ns_top]
+                per_ns_graph[ns] = per_ns_graph.get(ns, 0) + len(gf)
+                for idx, fact in enumerate(gf):
                     results.append(
                         RetrievedChunk(
                             text=fact,
@@ -119,6 +132,19 @@ class NL2SQLRAGService:
                 continue
             seen.add(key)
             unique_results.append(c)
+        logger.info(
+            "NL2SQLRAG.retrieve_chunks mode=%s top_k=%s schema_ns_top=%s graph_enabled=%s "
+            "raw_total=%d unique=%d per_ns_vector=%s per_ns_graph=%s query_len=%d",
+            decision.mode,
+            top,
+            schema_ns_top,
+            self._graph_query is not None,
+            len(results),
+            len(unique_results),
+            per_ns_vector,
+            per_ns_graph,
+            len(question or ""),
+        )
         return unique_results
 
     @staticmethod

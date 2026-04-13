@@ -23,6 +23,14 @@ logger = get_logger(__name__)
 NL2SQL_SCHEMA_CATALOG_PLACEHOLDER = "{{NL2SQL_SCHEMA_CATALOG}}"
 
 
+def _text_preview(text: str | None, max_len: int = 200) -> str:
+    s = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    s = " ".join(s.split())
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 3] + "..."
+
+
 class NL2SQLChain:
     """
     NL2SQL 链路（支持 LangChain 的企业级骨架）。
@@ -74,19 +82,39 @@ class NL2SQLChain:
             logger.warning("NL2SQLChain: LangChain not available, fallback to VLLMHttpClient.")
 
     async def generate_sql(self, question: str, user_id: str | None = None) -> str:
+        logger.info(
+            "NL2SQLChain.generate_sql start user_id=%s question_len=%d preview=%r",
+            user_id,
+            len(question or ""),
+            _text_preview(question, 160),
+        )
         await self._ensure_schema_refreshed_once()
         schema_from_db = self._db_schema_available()
+        table_names = [t.name for t in self._schema.list_tables() if t.name]
+        logger.info(
+            "NL2SQLChain schema_after_refresh table_count=%d schema_from_db=%s sample=%s",
+            len(table_names),
+            schema_from_db,
+            sorted({n.lower() for n in table_names})[:8],
+        )
 
         # Step 1: 规划（DB 反射成功时默认跳过，避免虚构表名污染 RAG 查询）
         plan_summary: str | None = None
+        planner_skipped = True
         if self._lc_chat_model is not None:
             disable_plan = os.getenv("NL2SQL_DISABLE_PLANNER_WHEN_DB_SCHEMA", "true").lower() == "true"
             if not (disable_plan and schema_from_db):
+                planner_skipped = False
                 try:
                     plan_summary = await self._plan(question=question)
                 except Exception:
                     logger.exception("NL2SQLChain: planning step failed, fallback to simple flow.")
                     plan_summary = None
+        logger.info(
+            "NL2SQLChain planner planner_skipped=%s plan_summary_len=%s",
+            planner_skipped,
+            len(plan_summary or ""),
+        )
 
         # Step 2: 基于规划结果从 NL2SQL 专用 RAG 检索 Schema/业务知识/样例 Q&A 片段
         rag_query = question
@@ -101,6 +129,14 @@ class NL2SQLChain:
                 schema_from_db,
                 schema_ok,
             )
+        logger.info(
+            "NL2SQLChain after RAG snippets=%d rag_hint_tables=%d whitelist_tables=%d whitelist_columns=%d schema_ok=%s",
+            len(schema_snippets),
+            len(rag_hints),
+            len(allowed_tables),
+            len(allowed_columns),
+            schema_ok,
+        )
 
         full_catalog = self._format_enriched_schema_catalog(self._schema.list_tables(), rag_hints)
 
@@ -114,19 +150,25 @@ class NL2SQLChain:
         )
         raw_prefix = (tpl.content if tpl else None) or ""
         catalog_in_template = NL2SQL_SCHEMA_CATALOG_PLACEHOLDER in raw_prefix
+        replacement_len = 0
         if catalog_in_template:
             if schema_from_db:
                 replacement = full_catalog
+                catalog_source = "db_full_catalog"
             elif rag_hints:
                 replacement = self._format_rag_hints_catalog(rag_hints)
+                catalog_source = "rag_hints_only"
             else:
                 replacement = (
                     "（当前未能从数据库加载完整表结构，且未从 RAG 解析到表结构片段；"
                     "请严格依据下方【Database schema】中的真实表名与字段名生成 SQL。）"
                 )
+                catalog_source = "placeholder_warning"
+            replacement_len = len(replacement.strip())
             system_prefix = raw_prefix.replace(NL2SQL_SCHEMA_CATALOG_PLACEHOLDER, replacement.strip())
         else:
             system_prefix = raw_prefix or None
+            catalog_source = "no_placeholder_in_template"
 
         prompt_catalog: str | None
         if catalog_in_template:
@@ -144,12 +186,30 @@ class NL2SQLChain:
             system_prefix=system_prefix,
             schema_catalog=prompt_catalog,
         )
+        logger.info(
+            "NL2SQLChain prompt built version=%s catalog_in_template=%s catalog_source=%s "
+            "replacement_chars=%d prompt_catalog_chars=%s prompt_total_chars=%d",
+            prompt_default_version,
+            catalog_in_template,
+            catalog_source,
+            replacement_len,
+            len(prompt_catalog or "") if prompt_catalog is not None else None,
+            len(prompt),
+        )
 
         if self._lc_chat_model is not None:
             sql = await self._generate_via_langchain(prompt)
         else:
             sql = await self._llm.generate(model=None, prompt=prompt)  # type: ignore[arg-type]
+        raw_out_len = len(sql or "")
         sql = self._validator.normalize_sql(sql)
+        logger.info(
+            "NL2SQLChain LLM sql raw_len=%d normalized_len=%d preview=%r llm_backend=%s",
+            raw_out_len,
+            len(sql or ""),
+            _text_preview(sql, 240),
+            "langchain" if self._lc_chat_model is not None else "vllm_http",
+        )
 
         valid, validation_error = self._validate_sql(
             sql,
@@ -158,10 +218,16 @@ class NL2SQLChain:
             enforce_column_whitelist=schema_ok,
         )
         if not valid:
-            logger.warning("generated SQL did not pass validation, question=%s, sql=%s", question, sql)
+            logger.warning(
+                "NL2SQLChain validation failed preview_question=%r sql_preview=%r reason=%s",
+                _text_preview(question, 80),
+                _text_preview(sql, 200),
+                validation_error,
+            )
             # 可选 Step 4: 在 LangChain 可用时尝试自检与修正
             if self._lc_chat_model is not None:
                 try:
+                    logger.info("NL2SQLChain refine_sql start reason=%s", validation_error)
                     sql = await self._refine_sql(
                         question=question,
                         original_sql=sql,
@@ -176,16 +242,21 @@ class NL2SQLChain:
                     )
                     if not valid:
                         logger.warning(
-                            "refined SQL still did not pass validation, question=%s, sql=%s, reason=%s",
-                            question,
-                            sql,
+                            "NL2SQLChain refine_sql still invalid sql_preview=%r reason=%s",
+                            _text_preview(sql, 200),
                             validation_error,
                         )
                         return ""
+                    logger.info(
+                        "NL2SQLChain refine_sql ok sql_len=%d preview=%r",
+                        len(sql or ""),
+                        _text_preview(sql, 200),
+                    )
                 except Exception:
                     logger.exception("NL2SQLChain: refine_sql failed, return empty SQL.")
                     return ""
             else:
+                logger.warning("NL2SQLChain validation failed and no LangChain; return empty SQL")
                 return ""
 
         # LangSmith trace（若启用）
@@ -200,6 +271,11 @@ class NL2SQLChain:
             metadata={"scene": "nl2sql"},
         )
 
+        logger.info(
+            "NL2SQLChain.generate_sql success sql_len=%d preview=%r",
+            len(sql or ""),
+            _text_preview(sql, 200),
+        )
         return sql
 
     async def _plan(self, question: str) -> str:
@@ -256,7 +332,9 @@ class NL2SQLChain:
         ]
         resp = await self._lc_chat_model.ainvoke(messages)  # type: ignore[union-attr]
         content = resp.content if hasattr(resp, "content") else str(resp)
-        return content.strip()
+        out = content.strip()
+        logger.debug("NL2SQLChain._refine_sql output_len=%d preview=%r", len(out), _text_preview(out, 160))
+        return out
 
     async def _ensure_schema_refreshed_once(self) -> None:
         if self._schema_refreshed:
