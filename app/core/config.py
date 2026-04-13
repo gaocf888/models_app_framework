@@ -476,7 +476,7 @@ def _load_from_env() -> AppConfig:
     db_user = os.getenv("DB_USER", "root")
     db_password = os.getenv("DB_PASSWORD", "1qaz@4321")
     db_host = os.getenv("DB_HOST", "124.222.37.179")
-    db_name = os.getenv("DB_NAME", "aishare")
+    db_name = os.getenv("DB_NAME", "boiler")
     db_url = os.getenv("DB_URL", f"mysql+aiomysql://{db_user}:{db_password}@{db_host}/{db_name}")
 
     db_cfg = DatabaseConfig(

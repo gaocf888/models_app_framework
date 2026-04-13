@@ -1133,15 +1133,34 @@ async def move_document_namespace(
     background_tasks: BackgroundTasks,
 ) -> MoveDocumentNamespaceResponse:
     """
-    **流程**：1) 向量索引 `update_by_query`（或内存/FAISS 等价更新）改写匹配 chunk 的 `namespace`；
-    2) 文档索引中删除旧 `doc_key`、写入新 `doc_key`（与 `make_document_storage_key` 规则一致）。
-    3) 若 `repair_graph_async=true` 且 `GRAPH_RAG_ENABLED`，且文档登记含 `dataset_id`：在**响应返回后**异步执行
-       旧 namespace 图数据删除 + 从新 namespace 向量拉取 chunk 文本并重灌图（失败仅记日志，可重试迁移或手工补偿）。
+    将单篇文档从源 namespace 迁到目标 namespace：同步更新向量 chunk 的 namespace 与文档登记索引；可选在响应返回后异步修复 GraphRAG。
 
-    **匹配**：`from_namespace` 省略/空 表示仅匹配「默认分区」文档（`namespace` 未设置）；否则按具体 namespace 匹配。
-    可配合 `tenant_id` / `doc_version` / `dataset_id` 保证唯一；0 条 → 404，多条 → 400。
+    **执行概要**：1) 向量侧改写匹配 chunk 的 ``namespace``；2) 文档索引删除旧 ``doc_key``、写入新 ``doc_key``；
+    3) 若 ``repair_graph_async=true`` 且开启 GraphRAG 且登记含 ``dataset_id``，则在返回后异步删旧图数据并重灌新 namespace。
 
-    **冲突**：若目标位置已存在同一 tenant/doc_name/version 的登记记录 → 409。
+    Args:
+        req (MoveDocumentNamespaceRequest): JSON 请求体。
+            - ``doc_name`` (str): 必填，待迁移的文档名。
+            - ``from_namespace`` (str | None): 可选；当前所在 namespace，省略或空字符串表示默认分区（与摄入时未传 namespace 一致）。
+            - ``to_namespace`` (str): 必填；目标 namespace，空字符串表示迁回默认分区。
+            - ``tenant_id`` (str | None): 可选，缩小匹配到指定租户。
+            - ``doc_version`` (str | None): 可选，文档版本。
+            - ``dataset_id`` (str | None): 可选，数据集 ID；异步 Graph 修复依赖登记中的 ``dataset_id``。
+            - ``repair_graph_async`` (bool): 默认 true；为 true 且 GraphRAG 开启且满足条件时，在**响应返回后**排队图修复（失败仅记日志）。
+        background_tasks (BackgroundTasks): FastAPI 后台任务，用于挂载上述异步图修复。
+
+    Returns:
+        MoveDocumentNamespaceResponse: 200 时返回。
+            - ``ok`` (bool): 是否成功完成同步步骤。
+            - ``chunks_updated`` (int): 向量库中更新的 chunk 条数。
+            - ``document`` (DocumentMetaItem): 迁移后的文档元数据视图。
+            - ``graph_repair_scheduled`` (bool): 是否已排队 GraphRAG 异步修复。
+
+    Raises:
+        HTTPException: ``400`` — 源与目标解析为同一分区、或多条匹配等业务校验失败；
+            ``404`` — 未找到唯一匹配的文档登记；
+            ``409`` — 目标 namespace 已存在相同 tenant/doc_name/version 的登记；
+            ``500`` — 向量或文档索引更新异常。请求体验证失败时由框架返回 ``422``。
     """
     from_ns = _rag_ns_bucket(req.from_namespace)
     to_ns = _rag_ns_bucket(req.to_namespace)

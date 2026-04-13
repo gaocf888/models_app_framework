@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from typing import Iterable
+
 from app.core.logging import get_logger
 from app.llm.client import VLLMHttpClient
 from app.llm.prompt_registry import PromptTemplateRegistry
@@ -39,6 +42,7 @@ class NL2SQLChain:
         self._validator = validator or SQLValidator()
         self._prompts = prompt_registry or PromptTemplateRegistry()
         self._ls_tracker = LangSmithTracker()
+        self._schema_refreshed = False
 
         # 可选的 LangChain LLM
         self._lc_chat_model = None
@@ -77,19 +81,28 @@ class NL2SQLChain:
             rag_query = f"【NL2SQL 规划】{plan_summary}\n【用户问题】{question}"
         # 优先使用结构化 chunk，再渲染为 prompt 文本（保留来源线索）
         schema_snippets = self._rag.retrieve(rag_query)
+        allowed_tables, allowed_columns = await self._build_identifier_whitelist(schema_snippets)
+        schema_catalog = self._build_schema_catalog_hint(schema_snippets, allowed_tables=allowed_tables)
 
         # NL2SQL 专用 Prompt 前缀（scene=nl2sql）
         tpl = self._prompts.get_template(scene="nl2sql", user_id=user_id, version=None)
         system_prefix = tpl.content if tpl else None
 
-        prompt = self._prompt_builder.build(question, schema_snippets, system_prefix=system_prefix)
+        prompt = self._prompt_builder.build(
+            question,
+            schema_snippets,
+            system_prefix=system_prefix,
+            schema_catalog=schema_catalog,
+        )
 
         if self._lc_chat_model is not None:
             sql = await self._generate_via_langchain(prompt)
         else:
             sql = await self._llm.generate(model=None, prompt=prompt)  # type: ignore[arg-type]
+        sql = self._validator.normalize_sql(sql)
 
-        if not self._validator.validate(sql):
+        valid, validation_error = self._validate_sql(sql, allowed_tables=allowed_tables, allowed_columns=allowed_columns)
+        if not valid:
             logger.warning("generated SQL did not pass validation, question=%s, sql=%s", question, sql)
             # 可选 Step 4: 在 LangChain 可用时尝试自检与修正
             if self._lc_chat_model is not None:
@@ -97,12 +110,18 @@ class NL2SQLChain:
                     sql = await self._refine_sql(
                         question=question,
                         original_sql=sql,
+                        validation_error=validation_error,
                     )
-                    if not self._validator.validate(sql):
+                    sql = self._validator.normalize_sql(sql)
+                    valid, validation_error = self._validate_sql(
+                        sql, allowed_tables=allowed_tables, allowed_columns=allowed_columns
+                    )
+                    if not valid:
                         logger.warning(
-                            "refined SQL still did not pass validation, question=%s, sql=%s",
+                            "refined SQL still did not pass validation, question=%s, sql=%s, reason=%s",
                             question,
                             sql,
+                            validation_error,
                         )
                         return ""
                 except Exception:
@@ -149,7 +168,7 @@ class NL2SQLChain:
         logger.info("NL2SQLChain planner summary: %s", summary)
         return summary
 
-    async def _refine_sql(self, question: str, original_sql: str) -> str:
+    async def _refine_sql(self, question: str, original_sql: str, validation_error: str | None = None) -> str:
         """
         当初始 SQL 未通过 SQLValidator 校验时的自检与修正步骤。
 
@@ -170,6 +189,7 @@ class NL2SQLChain:
                 content=(
                     f"用户问题: {question}\n"
                     f"初稿 SQL: {original_sql}\n"
+                    f"校验失败原因: {validation_error or 'unknown'}\n"
                     "请在保证语义合理的前提下，输出一条安全的仅 SELECT 语句。"
                 )
             ),
@@ -177,6 +197,75 @@ class NL2SQLChain:
         resp = await self._lc_chat_model.ainvoke(messages)  # type: ignore[union-attr]
         content = resp.content if hasattr(resp, "content") else str(resp)
         return content.strip()
+
+    async def _build_identifier_whitelist(self, schema_snippets: Iterable[str]) -> tuple[set[str], set[str]]:
+        """
+        优先从真实 DB Schema 构建白名单；失败时回退到 RAG 片段抽取。
+        """
+        db_tables: set[str] = set()
+        db_columns: set[str] = set()
+        if not self._schema_refreshed:
+            try:
+                await self._schema.refresh_from_db()
+            except Exception:
+                logger.warning("NL2SQLChain: refresh schema from DB failed, fallback to snippet-based whitelist.")
+            self._schema_refreshed = True
+
+        for t in self._schema.list_tables():
+            if t.name:
+                db_tables.add(t.name.lower())
+            for c in t.columns:
+                if c.name:
+                    db_columns.add(c.name.lower())
+
+        # 内置 demo schema 仅有 orders，且与业务无关时不强制使用。
+        if db_tables and not (db_tables == {"orders"}):
+            return db_tables, db_columns
+
+        return self._validator.extract_identifiers_from_snippets(schema_snippets)
+
+    def _validate_sql(
+        self,
+        sql: str,
+        *,
+        allowed_tables: set[str],
+        allowed_columns: set[str],
+    ) -> tuple[bool, str | None]:
+        if not self._validator.validate(sql):
+            return False, "sql safety validation failed"
+        ok, reason = self._validator.validate_identifiers(
+            sql,
+            allowed_tables=allowed_tables or None,
+            allowed_columns=allowed_columns or None,
+        )
+        return ok, reason
+
+    def _build_schema_catalog_hint(self, schema_snippets: Iterable[str], *, allowed_tables: set[str]) -> str:
+        """
+        构建结构化 schema catalog，显式告诉模型可用表和字段。
+        """
+        tables = self._schema.list_tables()
+        if not tables:
+            return ""
+
+        snippet_text = "\n".join(schema_snippets).lower()
+        candidate_names: set[str] = set()
+        for m in re.finditer(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b", snippet_text):
+            candidate_names.add(m.group(0).lower())
+
+        selected = [t for t in tables if t.name and t.name.lower() in allowed_tables and t.name.lower() in candidate_names]
+        if not selected:
+            selected = [t for t in tables if t.name and t.name.lower() in allowed_tables]
+        if not selected:
+            selected = tables
+
+        lines: list[str] = []
+        for t in selected[:12]:
+            cols = [c.name for c in t.columns if c.name][:16]
+            if not cols:
+                continue
+            lines.append(f"- {t.name}({', '.join(cols)})")
+        return "\n".join(lines)
 
     async def _generate_via_langchain(self, prompt: str) -> str:
         from langchain_core.messages import HumanMessage  # type: ignore[import-not-found]

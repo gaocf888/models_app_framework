@@ -13,9 +13,16 @@ class PromptBuilder:
     DEFAULT_SYSTEM_PREFIX = (
         "你是一个资深 SQL 助手，需要根据给定的数据库 Schema 信息和业务背景，为用户生成只读查询 SQL。"
         " 严格只生成 SELECT 语句，不要生成 UPDATE/DELETE/INSERT/DDL。"
+        " 只能使用输入中出现过的真实表名和字段名，不允许臆造表名/字段名。"
     )
 
-    def build(self, question: str, schema_snippets: List[str], system_prefix: Optional[str] = None) -> str:
+    def build(
+        self,
+        question: str,
+        schema_snippets: List[str],
+        system_prefix: Optional[str] = None,
+        schema_catalog: Optional[str] = None,
+    ) -> str:
         """
         根据自然语言问题和 Schema 片段构建提示词。
 
@@ -28,9 +35,14 @@ class PromptBuilder:
             prefix,
             "\n【Database schema】",
             schema_block,
+            "\n【Schema catalog (authoritative identifiers)】",
+            (schema_catalog or "(not available)").strip(),
             "\n【User question】",
             question,
-            "\n请只输出一条 SQL 语句，不要添加多余解释。",
+            "\n【Output rules】",
+            "1) 只输出一条可执行 SQL，禁止输出 markdown 代码块（不要包含 ```）。",
+            "2) 表名/字段名以 Schema catalog 为准；若 catalog 缺失，再参考 Database schema 片段。",
+            "3) 查询语句必须是只读 SELECT（可包含 WITH），禁止任何写操作。",
         ]
         return "\n".join(parts)
 
