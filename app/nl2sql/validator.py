@@ -63,7 +63,75 @@ class SQLValidator:
         if s.lower().startswith("sql\n"):
             s = s[4:].strip()
 
+        s = cls._collapse_whitespace_preserve_quoted(s)
         return s.rstrip(";").strip()
+
+    @classmethod
+    def _collapse_whitespace_preserve_quoted(cls, sql: str) -> str:
+        """
+        将 SQL 中「引号外」的连续空白（含换行、制表符）压成单个空格，得到紧凑单行语句；
+        字符串字面量与引号包裹的标识符内部原样保留（含单引号 ''、双引号 ""、反引号 `` 转义）。
+        """
+        out: list[str] = []
+        i = 0
+        n = len(sql)
+        quote: str | None = None
+
+        while i < n:
+            ch = sql[i]
+
+            if quote == "'":
+                out.append(ch)
+                if ch == "'":
+                    if i + 1 < n and sql[i + 1] == "'":
+                        out.append("'")
+                        i += 2
+                        continue
+                    quote = None
+                i += 1
+                continue
+
+            if quote == '"':
+                out.append(ch)
+                if ch == '"':
+                    if i + 1 < n and sql[i + 1] == '"':
+                        out.append('"')
+                        i += 2
+                        continue
+                    quote = None
+                i += 1
+                continue
+
+            if quote == "`":
+                out.append(ch)
+                if ch == "`":
+                    if i + 1 < n and sql[i + 1] == "`":
+                        out.append("`")
+                        i += 2
+                        continue
+                    quote = None
+                i += 1
+                continue
+
+            if ch in ("'", '"', "`"):
+                quote = ch
+                out.append(ch)
+                i += 1
+                continue
+
+            if ch.isspace():
+                j = i
+                while j < n and sql[j].isspace():
+                    j += 1
+                if out and out[-1] != " ":
+                    out.append(" ")
+                i = j
+                continue
+
+            out.append(ch)
+            i += 1
+
+        return "".join(out).strip()
 
     def validate(self, sql: str) -> bool:
         s = self.normalize_sql(sql)

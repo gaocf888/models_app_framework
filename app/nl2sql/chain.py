@@ -240,6 +240,8 @@ class NL2SQLChain:
             "你是一个 NL2SQL SQL 修正助手。"
             "给定用户问题与一条可能存在安全风险或不符合只读要求的 SQL，"
             "请输出一条仅包含安全 SELECT 查询的 SQL，不要包含 DROP/DELETE/UPDATE/INSERT 等写操作。"
+            " 输出为单行可执行 SQL：除字符串字面量内部外不要换行或多余缩进。"
+            " 若问题涉及锅炉/设备名称与明细记录等多实体，应通过 JOIN 关联台账表与事实表，禁止用 boiler_id='1' 等臆造数字代替「一号锅炉」类名称条件。"
         )
         messages: list[object] = [
             SystemMessage(content=system),
@@ -248,7 +250,7 @@ class NL2SQLChain:
                     f"用户问题: {question}\n"
                     f"初稿 SQL: {original_sql}\n"
                     f"校验失败原因: {validation_error or 'unknown'}\n"
-                    "请在保证语义合理的前提下，输出一条安全的仅 SELECT 语句。"
+                    "请在保证语义合理的前提下，输出一条安全的仅 SELECT 语句（单行，无 markdown）。"
                 )
             ),
         ]
@@ -304,7 +306,11 @@ class NL2SQLChain:
         for t in sorted_tables[:max_tables]:
             cols = [c.name for c in t.columns if c.name][:max_cols]
             h = rag_hints.get(t.name.lower()) if t.name else None
-            lines.append(format_enriched_catalog_line(t.name, cols, h, max_cols=max_cols))
+            lines.append(
+                format_enriched_catalog_line(
+                    t.name, cols, h, max_cols=max_cols, foreign_keys=t.foreign_keys or None
+                )
+            )
         if len(sorted_tables) > max_tables:
             lines.append(
                 f"... 其余 {len(sorted_tables) - max_tables} 张表已省略（可调 NL2SQL_SCHEMA_CATALOG_MAX_TABLES）"
@@ -373,7 +379,11 @@ class NL2SQLChain:
             if not cols:
                 continue
             h = rag_hints.get(t.name.lower()) if t.name else None
-            lines.append(format_enriched_catalog_line(t.name, cols, h, max_cols=16))
+            lines.append(
+                format_enriched_catalog_line(
+                    t.name, cols, h, max_cols=16, foreign_keys=t.foreign_keys or None
+                )
+            )
         return "\n".join(lines)
 
     async def _generate_via_langchain(self, prompt: str) -> str:

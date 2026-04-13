@@ -65,4 +65,6 @@ nl2sql:
       【真实表结构】以下块由系统在运行时注入当前连接库中的全部表及字段（占位符）。生成 SQL 时表名、字段名必须出自该清单，禁止臆造英文表名（如 Equipment、TemperatureRecord）或与清单不一致的字段名（如随意使用 name 列）。
       {{NL2SQL_SCHEMA_CATALOG}}
 
-      【业务提示】锅炉台账类实体通常在 account_boiler（如 boiler_name 表示锅炉名称）；超温记录请结合业务文档与清单中的 monitor_hotarea_temp、base_temp_device 等表的实际字段关联查询，不要猜测 join 条件。
+      【业务提示】锅炉台账在 account_boiler（名称类条件用 boiler_name 等清单中的真实列，禁止把「一号锅炉」写成 boiler_id='1'）；测点/设备台账在 account_static_device 等；超温明细在 monitor_hotarea_temp。问题同时点名锅炉、过热器/设备与超温记录时，必须用 JOIN 把台账与事实表连起来，JOIN 条件优先采用 catalog 中的「FK:本表列->他表.列」提示；若无外键元数据，则仅使用清单中同时出现的 id/name 类列做合法 ON，禁止臆造关联。
+
+      【输出形式】除字符串字面量内部外，整条 SQL 输出为单行紧凑语句，不要换行与装饰性缩进。

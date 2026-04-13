@@ -44,3 +44,15 @@ def test_format_enriched_catalog_line() -> None:
     assert "account_boiler" in line
     assert "锅炉" in line
     assert "boiler_name(锅炉名称)" in line
+
+
+def test_format_enriched_catalog_line_includes_foreign_keys() -> None:
+    line = format_enriched_catalog_line(
+        "monitor_hotarea_temp",
+        ["id", "boiler_id"],
+        None,
+        max_cols=10,
+        foreign_keys=[("boiler_id", "account_boiler", "boiler_id")],
+    )
+    assert "FK:" in line
+    assert "boiler_id->account_boiler.boiler_id" in line

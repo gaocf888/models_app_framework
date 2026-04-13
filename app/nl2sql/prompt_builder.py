@@ -51,6 +51,10 @@ class PromptBuilder:
                 "1) 只输出一条可执行 SQL，禁止输出 markdown 代码块（不要包含 ```）。",
                 "2) 表名/字段名以 Schema catalog（若有）为准；否则严格依据 Database schema 片段，禁止臆造。",
                 "3) 查询语句必须是只读 SELECT（可包含 WITH），禁止任何写操作。",
+                "4) 除字符串字面量内部外，整条 SQL 应为紧凑单行（无换行、无仅用于美观的缩进）。",
+                "5) 当问题同时涉及台账/设备/锅炉名称与业务明细（如超温记录）时，必须通过多表 JOIN 关联；"
+                "名称类条件应使用 catalog 中的名称字段（如 boiler_name 等），禁止用 boiler_id='1' 等猜测数字对应「一号」「#1」等表述。",
+                "6) Schema catalog 中若列出 FK: 本地列->引用表.引用列，应优先据此书写 ON 条件。",
             ]
         )
         return "\n".join(parts)

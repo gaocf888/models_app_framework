@@ -210,9 +210,10 @@ def format_enriched_catalog_line(
     hints: TableRAGHints | None,
     *,
     max_cols: int,
+    foreign_keys: list[tuple[str, str, str]] | None = None,
+    max_fks: int = 12,
 ) -> str:
     """生成单行 enriched 目录项（多列折叠为一条，便于占位符注入）。"""
-    parts: list[str] = []
     zh = hints.zh_label if hints else None
     cat = hints.category if hints else None
     prefix = f"- {table_name}"
@@ -230,4 +231,7 @@ def format_enriched_catalog_line(
             col_parts.append(c)
     if col_parts:
         prefix += ": " + ", ".join(col_parts)
+    if foreign_keys:
+        fk_s = "; ".join(f"{a}->{b}.{c}" for a, b, c in foreign_keys[:max_fks])
+        prefix += f" | FK:{fk_s}"
     return prefix

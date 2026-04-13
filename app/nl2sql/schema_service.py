@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple
 
 from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -24,6 +24,8 @@ class TableSchema:
     name: str
     columns: List[TableColumn]
     comment: str | None = None
+    # (本地列名, 引用表短名, 引用列名)，用于 NL2SQL catalog 提示 JOIN
+    foreign_keys: List[Tuple[str, str, str]] = field(default_factory=list)
 
 
 class SchemaMetadataService:
@@ -70,6 +72,7 @@ class SchemaMetadataService:
                 TableColumn(name="amount", type="DECIMAL(10,2)", comment="订单金额"),
                 TableColumn(name="created_at", type="DATETIME", comment="创建时间"),
             ],
+            foreign_keys=[],
         )
         self.add_table(orders)
 
@@ -117,6 +120,7 @@ class SchemaMetadataService:
                     # MySQL 等可能返回 `dbname.table` 作为 key，生成 SQL 时用短表名。
                     physical_name = table_key.split(".")[-1] if "." in table_key else table_key
                     cols: List[TableColumn] = []
+                    fk_set: set[tuple[str, str, str]] = set()
                     for col in table.columns:
                         cols.append(
                             TableColumn(
@@ -125,7 +129,25 @@ class SchemaMetadataService:
                                 comment=None,  # SQLAlchemy 对列注释的支持依驱动而定，此处先置空
                             )
                         )
-                    self.add_table(TableSchema(name=physical_name, columns=cols, comment=None))
+                        for fk in col.foreign_keys:
+                            try:
+                                rcol = fk.column
+                                if rcol is None:
+                                    continue
+                                ref_key = rcol.table.key
+                                ref_short = ref_key.split(".")[-1] if "." in ref_key else ref_key
+                                fk_set.add((col.name, ref_short, rcol.name))
+                            except Exception:  # noqa: BLE001
+                                continue
+                    fk_list = sorted(fk_set, key=lambda x: (x[1], x[0]))
+                    self.add_table(
+                        TableSchema(
+                            name=physical_name,
+                            columns=cols,
+                            comment=None,
+                            foreign_keys=fk_list,
+                        )
+                    )
 
             logger.info("schema metadata refreshed from database, tables=%s", list(self._tables.keys()))
         except Exception:
