@@ -249,7 +249,7 @@ async def ingest_raw_documents(req: IngestRawDocumentsRequest) -> dict:
 '''
 
 class IngestionJobDocumentRequest(BaseModel):
-    """异步任务中单篇文档（`documents[]` 元素）。`content` 可为内联正文或 pdf/docx 的服务端本地路径，见 `content` 字段说明。"""
+    """异步任务中单篇文档（`documents[]` 元素）。`content` 可为内联正文或 pdf/docx/xlsx 等服务端本地路径，见 `content` 字段说明。"""
 
     dataset_id: str = Field(
         ...,
@@ -265,7 +265,7 @@ class IngestionJobDocumentRequest(BaseModel):
         description=(
             "必填。语义由 `source_type` 决定："
             "① `text`/`markdown`/`html`：内联正文，或（在 `RAG_CONTENT_FETCH_ENABLED=true` 时）`http(s)://` 文件 URL，服务端拉取为文本；"
-            "② `pdf`/`docx`：内联已抽取文本，或本地绝对路径/`file://...`，或（同上开关开启时）`http(s)://` 下载到临时文件再解析。"
+            "② `pdf`/`docx`/`xlsx`/`xlsm`：内联已抽取文本，或本地绝对路径/`file://...`，或（同上开关开启时）`http(s)://` 下载到临时文件再解析。"
             "URL 拉取受 `RAG_CONTENT_FETCH_ALLOW_HOSTS`、私网解析拦截等约束（防 SSRF）；`source_uri` 仍不用于下载。"
         ),
     )
@@ -283,7 +283,7 @@ class IngestionJobDocumentRequest(BaseModel):
     )
     source_type: str = Field(
         "text",
-        description="可选，默认 text。格式/解析方式：text、markdown、html、pdf、docx；pdf 扫描件需 MinerU（见配置）。",
+        description="可选，默认 text。格式/解析方式：text、markdown、html、pdf、docx、xlsx/xlsm；pdf 扫描件需 MinerU（见配置）。",
     )
     source_uri: str | None = Field(
         None,
@@ -304,7 +304,7 @@ class IngestionJobDocumentRequest(BaseModel):
 
 
 class IngestionJobRequest(BaseModel):
-    """提交异步摄入请求体。Swagger 中 Schema 与各 Field description 为权威说明；下方 example 为内联正文示例，pdf/docx 时 `content` 可改为服务端路径字符串。"""
+    """提交异步摄入请求体。Swagger 中 Schema 与各 Field description 为权威说明；下方 example 为内联正文示例，pdf/docx/xlsx 时 `content` 可改为服务端路径字符串。"""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -414,7 +414,7 @@ class JobDocumentItem(BaseModel):
     doc_version: str = Field("v1", description="文档版本")
     tenant_id: str | None = Field(None, description="租户 ID")
     namespace: str | None = Field(None, description="命名空间")
-    source_type: str = Field("text", description="源类型：text/markdown/html/pdf/docx 等")
+    source_type: str = Field("text", description="源类型：text/markdown/html/pdf/docx/xlsx/xlsm 等")
     source_uri: str | None = Field(None, description="原始来源 URI")
     description: str | None = Field(None, description="文档描述")
     replace_if_exists: bool = Field(True, description="是否允许同名先删后灌")
@@ -733,7 +733,7 @@ async def get_job_documents(
 
 
 class UpsertDocumentRequest(BaseModel):
-    """同步写入单文档。`content` 含义与 `POST /rag/jobs/ingest` 中单篇文档相同（内联正文或 pdf/docx 路径）。"""
+    """同步写入单文档。`content` 含义与 `POST /rag/jobs/ingest` 中单篇文档相同（内联正文或 pdf/docx/xlsx 路径）。"""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -768,7 +768,7 @@ class UpsertDocumentRequest(BaseModel):
     )
     source_type: str = Field(
         "text",
-        description="可选，默认 text。解析方式：text、markdown、html、pdf、docx。",
+        description="可选，默认 text。解析方式：text、markdown、html、pdf、docx、xlsx/xlsm。",
     )
     source_uri: str | None = Field(
         None,

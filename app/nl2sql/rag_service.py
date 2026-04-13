@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import List
 
 from app.core.config import get_app_config
@@ -71,16 +72,19 @@ class NL2SQLRAGService:
         """
         标准检索接口：返回 RetrievedChunk（含 doc/namespace/section 等元信息）。
         """
-        top = top_k or 5
+        profile = get_app_config().rag.scene_profiles.nl2sql
+        top = top_k if top_k is not None else profile.top_k
+        schema_ns_top = int(os.getenv("NL2SQL_SCHEMA_NAMESPACE_TOP_K", str(max(top + 6, 12))))
         results: List[RetrievedChunk] = []
         decision = self._policy.decide(question)
 
         for ns in (self.NS_SCHEMA, self.NS_BIZ, self.NS_QA):
             # 向量侧标准结构优先保留（含 doc/section 元信息）。
             if decision.mode != "graph":
+                ns_top = schema_ns_top if ns == self.NS_SCHEMA else top
                 chunks = self._rag.retrieve_chunks(
                     query=question,
-                    top_k=top,
+                    top_k=ns_top,
                     namespace=ns,
                     scene="nl2sql",
                 )
@@ -93,7 +97,8 @@ class NL2SQLRAGService:
                     max_hops=decision.graph_hops,
                     max_items=decision.max_graph_items,
                 )
-                for idx, fact in enumerate(graph_facts[:top]):
+                ns_top = schema_ns_top if ns == self.NS_SCHEMA else top
+                for idx, fact in enumerate(graph_facts[:ns_top]):
                     results.append(
                         RetrievedChunk(
                             text=fact,

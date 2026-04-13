@@ -31,18 +31,27 @@ class PromptBuilder:
         """
         prefix = (system_prefix or self.DEFAULT_SYSTEM_PREFIX).strip()
         schema_block = "\n".join(f"- {s}" for s in schema_snippets)
-        parts = [
+        parts: list[str] = [
             prefix,
             "\n【Database schema】",
             schema_block,
-            "\n【Schema catalog (authoritative identifiers)】",
-            (schema_catalog or "(not available)").strip(),
-            "\n【User question】",
-            question,
-            "\n【Output rules】",
-            "1) 只输出一条可执行 SQL，禁止输出 markdown 代码块（不要包含 ```）。",
-            "2) 表名/字段名以 Schema catalog 为准；若 catalog 缺失，再参考 Database schema 片段。",
-            "3) 查询语句必须是只读 SELECT（可包含 WITH），禁止任何写操作。",
         ]
+        if schema_catalog is not None:
+            parts.extend(
+                [
+                    "\n【Schema catalog (authoritative identifiers)】",
+                    schema_catalog.strip() or "(not available)",
+                ]
+            )
+        parts.extend(
+            [
+                "\n【User question】",
+                question,
+                "\n【Output rules】",
+                "1) 只输出一条可执行 SQL，禁止输出 markdown 代码块（不要包含 ```）。",
+                "2) 表名/字段名以 Schema catalog（若有）为准；否则严格依据 Database schema 片段，禁止臆造。",
+                "3) 查询语句必须是只读 SELECT（可包含 WITH），禁止任何写操作。",
+            ]
+        )
         return "\n".join(parts)
 

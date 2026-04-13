@@ -26,7 +26,7 @@ def looks_like_http_url(content: str) -> bool:
 
 def _guess_suffix_from_url(url: str, content_type: str | None) -> str:
     path = urlparse(url).path.lower()
-    for ext in (".pdf", ".docx", ".doc"):
+    for ext in (".pdf", ".docx", ".doc", ".xlsx", ".xlsm"):
         if path.endswith(ext):
             return ext
     ct = (content_type or "").split(";")[0].strip().lower()
@@ -34,6 +34,8 @@ def _guess_suffix_from_url(url: str, content_type: str | None) -> str:
         return ".pdf"
     if "wordprocessingml" in ct or "msword" in ct:
         return ".docx"
+    if "spreadsheetml" in ct:
+        return ".xlsx"
     return ".bin"
 
 
@@ -151,13 +153,13 @@ def fetch_url_bytes(url: str, cfg: RAGContentFetchConfig) -> tuple[bytes, str | 
 
 def _should_fetch_as_file(source_type: str) -> bool:
     st = (source_type or "text").lower()
-    return st in {"pdf", "docx", "doc"}
+    return st in {"pdf", "docx", "doc", "xlsx", "xlsm"}
 
 
 def materialize_document_content_from_url(doc: DocumentSource) -> tuple[DocumentSource, Path | None]:
     """
     若 `RAG_CONTENT_FETCH_ENABLED` 且 `content` 为 http(s) URL，则拉取并落地：
-    - pdf/doc/docx：写入临时文件，将 `content` 替换为本地路径（供 MinerU / pypdf / docx 使用）；
+    - pdf/doc/docx/xlsx：写入临时文件，将 `content` 替换为本地路径（供 MinerU / pypdf / docx / openpyxl 使用）；
     - 其它 source_type：将响应体按 UTF-8（失败则 latin-1）解码为字符串写入 `content`。
 
     返回 (新 DocumentSource, 临时文件路径或 None)。调用方须在 `finally` 中 `unlink` 临时文件。

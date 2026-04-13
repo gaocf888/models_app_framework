@@ -53,7 +53,7 @@ class DocumentSource:
     content: str
     doc_version: str = "v1"
     tenant_id: Optional[str] = None
-    source_type: str = "text"  # text/markdown/html/pdf/docx
+    source_type: str = "text"  # text/markdown/html/pdf/docx/xlsx
     source_uri: Optional[str] = None
     description: Optional[str] = None
     replace_if_exists: bool = True

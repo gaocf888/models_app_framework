@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List
 
-from sqlalchemy import MetaData, inspect
+from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.config import get_app_config
@@ -86,26 +86,49 @@ class SchemaMetadataService:
         if not self._engine:
             self._engine = create_async_engine(db_cfg.url, pool_pre_ping=True)
 
-        async with self._engine.begin() as conn:
-            metadata = MetaData()
+        try:
+            async with self._engine.begin() as conn:
+                captured: dict[str, MetaData] = {}
 
-            def _reflect(sync_conn):
-                metadata.reflect(bind=sync_conn)
+                def _reflect(sync_conn) -> None:
+                    md = MetaData()
+                    dialect = sync_conn.dialect.name
+                    # MySQL：显式 schema（数据库名）可提高反射成功率；失败则回退默认库。
+                    if dialect == "mysql" and getattr(db_cfg, "database", None):
+                        try:
+                            md.reflect(bind=sync_conn, schema=db_cfg.database)
+                        except Exception:
+                            logger.warning(
+                                "metadata.reflect(schema=%s) failed, retry without explicit schema",
+                                db_cfg.database,
+                                exc_info=True,
+                            )
+                            md = MetaData()
+                            md.reflect(bind=sync_conn)
+                    else:
+                        md.reflect(bind=sync_conn)
+                    captured["metadata"] = md
 
-            await conn.run_sync(_reflect)
+                await conn.run_sync(_reflect)
+                metadata = captured["metadata"]
 
-            self._tables.clear()
-            for table_name, table in metadata.tables.items():
-                cols: List[TableColumn] = []
-                for col in table.columns:
-                    cols.append(
-                        TableColumn(
-                            name=col.name,
-                            type=str(col.type),
-                            comment=None,  # SQLAlchemy 对列注释的支持依驱动而定，此处先置空
+                self._tables.clear()
+                for table_key, table in metadata.tables.items():
+                    # MySQL 等可能返回 `dbname.table` 作为 key，生成 SQL 时用短表名。
+                    physical_name = table_key.split(".")[-1] if "." in table_key else table_key
+                    cols: List[TableColumn] = []
+                    for col in table.columns:
+                        cols.append(
+                            TableColumn(
+                                name=col.name,
+                                type=str(col.type),
+                                comment=None,  # SQLAlchemy 对列注释的支持依驱动而定，此处先置空
+                            )
                         )
-                    )
-                self.add_table(TableSchema(name=table_name, columns=cols, comment=None))
+                    self.add_table(TableSchema(name=physical_name, columns=cols, comment=None))
 
-        logger.info("schema metadata refreshed from database, tables=%s", list(self._tables.keys()))
+            logger.info("schema metadata refreshed from database, tables=%s", list(self._tables.keys()))
+        except Exception:
+            logger.exception("SchemaMetadataService.refresh_from_db failed, url database=%s", db_cfg.database)
+            raise
 

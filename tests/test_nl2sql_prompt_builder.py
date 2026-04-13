@@ -10,5 +10,15 @@ def test_prompt_builder_includes_schema_catalog() -> None:
     )
     assert "Schema catalog (authoritative identifiers)" in prompt
     assert "account_boiler(boiler_id, boiler_name)" in prompt
-    assert "表名/字段名以 Schema catalog 为准" in prompt
+    assert "表名/字段名以 Schema catalog（若有）为准" in prompt
+
+
+def test_prompt_builder_omits_catalog_section_when_none() -> None:
+    builder = PromptBuilder()
+    prompt = builder.build(
+        question="test",
+        schema_snippets=["snippet"],
+        schema_catalog=None,
+    )
+    assert "Schema catalog (authoritative identifiers)" not in prompt
 
