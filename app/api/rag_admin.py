@@ -4,7 +4,7 @@ from __future__ import annotations
 RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
 
 说明：
-- 提供文本摄入、批量摄入、按文档删除、检索查询、数据集列表查询等管理能力；
+- 提供文本摄入、批量摄入、按文档删除、单篇文档 namespace 迁移、检索查询、数据集列表查询等管理能力；
 - 摄入支持 doc_name + replace_if_exists，实现同名文档更新（先删后灌）；
 - 同时支持“原始文档内容”摄入（自动执行清洗与切块）；
 - 异常路径统一记录错误日志并返回明确 HTTP 错误信息。
@@ -25,7 +25,7 @@ RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
 from functools import lru_cache
 from typing import Annotated, Any, List
 
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import get_app_config
@@ -38,6 +38,7 @@ from app.rag.migrations import IndexMigrator
 from app.rag.content_url_fetch import materialize_document_content_from_url
 from app.rag.mineru_ingest import prepare_pdf_document_for_pipeline
 from app.rag.models import DocumentSource
+from app.rag.graph_namespace_resync import run_graph_resync_after_namespace_move
 from app.core.logging import get_logger
 
 router = APIRouter()
@@ -1031,6 +1032,7 @@ class DocumentMetaItem(BaseModel):
     namespace: str | None = Field(None, description="命名空间")
     source_type: str = Field("text", description="源类型")
     source_uri: str | None = Field(None, description="来源 URI")
+    description: str | None = Field(None, description="文档简介（人读说明）")
     chunk_count: int = Field(0, description="关联 chunk 数量（若已统计）")
     pipeline_version: str | None = Field(None, description="摄入流水线版本")
     status: str | None = Field(None, description="文档状态：如 ready / failed 等")
@@ -1041,6 +1043,164 @@ class DocumentMetaItem(BaseModel):
     last_job_status: str | None = Field(None, description="最近任务状态")
     metadata: dict[str, Any] = Field(default_factory=dict, description="扩展元数据")
     error: str | None = Field(None, description="失败时的错误摘要")
+
+
+def _rag_ns_bucket(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    return value
+
+
+def _document_meta_item_from_payload(d: dict[str, Any]) -> DocumentMetaItem:
+    return DocumentMetaItem(
+        doc_name=d.get("doc_name", ""),
+        doc_version=d.get("doc_version", "v1"),
+        tenant_id=d.get("tenant_id"),
+        dataset_id=d.get("dataset_id", ""),
+        namespace=d.get("namespace"),
+        source_type=d.get("source_type", "text"),
+        source_uri=d.get("source_uri"),
+        description=d.get("description"),
+        chunk_count=int(d.get("chunk_count", 0)),
+        pipeline_version=d.get("pipeline_version"),
+        status=d.get("status"),
+        created_at=d.get("created_at"),
+        updated_at=d.get("updated_at"),
+        last_job_id=d.get("last_job_id"),
+        last_job_type=d.get("last_job_type"),
+        last_job_status=d.get("last_job_status"),
+        metadata=d.get("metadata") or {},
+        error=d.get("error"),
+    )
+
+
+class MoveDocumentNamespaceRequest(BaseModel):
+    """将单篇文档从当前 namespace 迁到目标 namespace（同步更新向量 chunk + docs 索引）。"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "doc_name": "readme",
+                "from_namespace": "docs",
+                "to_namespace": "public",
+                "tenant_id": "t1",
+                "doc_version": "v1",
+                "dataset_id": "company_kb",
+                "repair_graph_async": True,
+            }
+        }
+    )
+
+    doc_name: str = Field(..., description="必填。文档名。")
+    from_namespace: str | None = Field(
+        None,
+        description="可选。当前所在 namespace；省略或空字符串表示「默认分区」（与摄入时未传 namespace 一致）。",
+    )
+    to_namespace: str = Field(
+        ...,
+        description="必填。目标 namespace；空字符串表示迁回默认分区（存储为 null）。",
+    )
+    tenant_id: str | None = Field(None, description="可选。缩小匹配到指定租户。")
+    doc_version: str | None = Field(None, description="可选。文档版本。")
+    dataset_id: str | None = Field(None, description="可选。数据集 ID。")
+    repair_graph_async: bool = Field(
+        True,
+        description=(
+            "为 true 且开启 GraphRAG 时，在响应返回后异步删除旧 namespace 图数据并在新 namespace 重灌；"
+            "需文档登记中含 `dataset_id`。"
+        ),
+    )
+
+
+class MoveDocumentNamespaceResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    chunks_updated: int = Field(..., description="向量库中更新的 chunk 条数")
+    document: DocumentMetaItem = Field(..., description="迁移后的文档元数据视图")
+    graph_repair_scheduled: bool = Field(
+        False,
+        description="是否已排队 GraphRAG 异步修复（仅当 GraphRAG 开启且满足 dataset_id 等条件时为 true）",
+    )
+
+
+@router.post(
+    "/documents/namespace/move",
+    summary="迁移单篇文档到新 namespace（向量 + docs 索引）",
+    response_model=MoveDocumentNamespaceResponse,
+    response_description="先更新 chunk 与 docs 登记；GraphRAG 在响应后异步修复（可关 `repair_graph_async`）。",
+)
+async def move_document_namespace(
+    req: MoveDocumentNamespaceRequest,
+    background_tasks: BackgroundTasks,
+) -> MoveDocumentNamespaceResponse:
+    """
+    **流程**：1) 向量索引 `update_by_query`（或内存/FAISS 等价更新）改写匹配 chunk 的 `namespace`；
+    2) 文档索引中删除旧 `doc_key`、写入新 `doc_key`（与 `make_document_storage_key` 规则一致）。
+    3) 若 `repair_graph_async=true` 且 `GRAPH_RAG_ENABLED`，且文档登记含 `dataset_id`：在**响应返回后**异步执行
+       旧 namespace 图数据删除 + 从新 namespace 向量拉取 chunk 文本并重灌图（失败仅记日志，可重试迁移或手工补偿）。
+
+    **匹配**：`from_namespace` 省略/空 表示仅匹配「默认分区」文档（`namespace` 未设置）；否则按具体 namespace 匹配。
+    可配合 `tenant_id` / `doc_version` / `dataset_id` 保证唯一；0 条 → 404，多条 → 400。
+
+    **冲突**：若目标位置已存在同一 tenant/doc_name/version 的登记记录 → 409。
+    """
+    from_ns = _rag_ns_bucket(req.from_namespace)
+    to_ns = _rag_ns_bucket(req.to_namespace)
+    if from_ns == to_ns:
+        raise HTTPException(
+            status_code=400,
+            detail="from_namespace and to_namespace resolve to the same partition",
+        )
+    try:
+        chunks_updated = _get_service().reassign_namespace_for_doc(
+            doc_name=req.doc_name,
+            from_namespace=from_ns,
+            to_namespace=to_ns,
+            doc_version=req.doc_version,
+        )
+        payload = _get_doc_repo().move_document_to_namespace(
+            req.doc_name,
+            from_namespace=from_ns,
+            to_namespace=to_ns,
+            tenant_id=req.tenant_id,
+            doc_version=req.doc_version,
+            dataset_id=req.dataset_id,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        msg = str(e)
+        if "target namespace already" in msg:
+            raise HTTPException(status_code=409, detail=msg) from e
+        raise HTTPException(status_code=400, detail=msg) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("rag move_document_namespace failed: doc_name=%s", req.doc_name)
+        raise HTTPException(status_code=500, detail=f"RAG move_document_namespace failed: {e}") from e
+
+    graph_repair_scheduled = False
+    if req.repair_graph_async and get_app_config().rag.graph.enabled:
+        ds = str(payload.get("dataset_id") or "").strip()
+        if ds:
+            background_tasks.add_task(
+                run_graph_resync_after_namespace_move,
+                doc_name=req.doc_name,
+                from_namespace=from_ns,
+                to_namespace=to_ns,
+                doc_version=req.doc_version,
+                dataset_id=ds,
+            )
+            graph_repair_scheduled = True
+        else:
+            logger.warning(
+                "graph async repair skipped: doc record has no dataset_id doc_name=%s",
+                req.doc_name,
+            )
+
+    return MoveDocumentNamespaceResponse(
+        ok=True,
+        chunks_updated=chunks_updated,
+        document=_document_meta_item_from_payload(payload),
+        graph_repair_scheduled=graph_repair_scheduled,
+    )
 
 
 class DocumentMetaListResponse(BaseModel):
@@ -1103,6 +1263,7 @@ async def list_document_meta(
                 namespace=d.get("namespace"),
                 source_type=d.get("source_type", "text"),
                 source_uri=d.get("source_uri"),
+                description=d.get("description"),
                 chunk_count=int(d.get("chunk_count", 0)),
                 pipeline_version=d.get("pipeline_version"),
                 status=d.get("status"),
@@ -1212,6 +1373,7 @@ async def get_documents_overview(
                 namespace=d.get("namespace"),
                 source_type=d.get("source_type", "text"),
                 source_uri=d.get("source_uri"),
+                description=d.get("description"),
                 chunk_count=int(d.get("chunk_count", 0)),
                 pipeline_version=d.get("pipeline_version"),
                 status=d.get("status"),

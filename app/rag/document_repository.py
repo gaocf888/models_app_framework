@@ -6,8 +6,27 @@ from typing import Any, Dict
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
+from app.rag.models import utcnow_iso
 
 logger = get_logger(__name__)
+
+
+def make_document_storage_key(
+    doc_name: str,
+    *,
+    namespace: str | None,
+    tenant_id: str | None,
+    doc_version: str | None,
+    tenant_id_fallback: str,
+) -> str:
+    """
+    与 IngestionOrchestrator._save_doc_record 中 doc_key 规则一致：
+    {tenant}::{namespace or __default__}::{doc_name}::{doc_version or v1}
+    """
+    td = tenant_id if tenant_id is not None else tenant_id_fallback
+    ns = namespace if namespace is not None else "__default__"
+    ver = doc_version if doc_version is not None else "v1"
+    return f"{td}::{ns}::{doc_name}::{ver}"
 
 
 class DocumentRepository:
@@ -68,6 +87,7 @@ class DocumentRepository:
                         "namespace": {"type": "keyword"},
                         "source_type": {"type": "keyword"},
                         "source_uri": {"type": "keyword"},
+                        "description": {"type": "text"},
                         "chunk_count": {"type": "integer"},
                         "pipeline_version": {"type": "keyword"},
                         "status": {"type": "keyword"},
@@ -117,6 +137,7 @@ class DocumentRepository:
         tenant_id: str | None = None,
         dataset_id: str | None = None,
         doc_name: str | None = None,
+        doc_version: str | None = None,
     ) -> list[Dict[str, Any]]:
         if self._use_es and self._client is not None:
             filters: list[Dict[str, Any]] = []
@@ -128,6 +149,8 @@ class DocumentRepository:
                 filters.append({"term": {"dataset_id": dataset_id}})
             if doc_name is not None:
                 filters.append({"term": {"doc_name": doc_name}})
+            if doc_version is not None:
+                filters.append({"term": {"doc_version": doc_version}})
             query: Dict[str, Any] = {"match_all": {}} if not filters else {"bool": {"filter": filters}}
             body = {
                 "from": max(offset, 0),
@@ -147,6 +170,8 @@ class DocumentRepository:
             values = [v for v in values if v.get("dataset_id") == dataset_id]
         if doc_name is not None:
             values = [v for v in values if v.get("doc_name") == doc_name]
+        if doc_version is not None:
+            values = [v for v in values if str(v.get("doc_version") or "v1") == str(doc_version)]
         values.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
         start = max(offset, 0)
         end = start + max(limit, 1)
@@ -195,6 +220,152 @@ class DocumentRepository:
         if keys_to_del:
             self._save_file_state(state)
         return len(keys_to_del)
+
+    @staticmethod
+    def _meta_matches_move_filters(
+        row: Dict[str, Any],
+        doc_name: str,
+        from_namespace: str | None,
+        tenant_id: str | None,
+        doc_version: str | None,
+        dataset_id: str | None,
+    ) -> bool:
+        if row.get("doc_name") != doc_name:
+            return False
+        stored_ns = row.get("namespace")
+        if from_namespace is None:
+            if stored_ns is not None and stored_ns != "":
+                return False
+        else:
+            if stored_ns != from_namespace:
+                return False
+        if tenant_id is not None and row.get("tenant_id") != tenant_id:
+            return False
+        if dataset_id is not None and row.get("dataset_id") != dataset_id:
+            return False
+        pv = row.get("doc_version") or "v1"
+        if doc_version is not None and str(pv) != str(doc_version):
+            return False
+        return True
+
+    def _move_meta_filters_es(
+        self,
+        doc_name: str,
+        from_namespace: str | None,
+        tenant_id: str | None,
+        doc_version: str | None,
+        dataset_id: str | None,
+    ) -> list[Dict[str, Any]]:
+        filters: list[Dict[str, Any]] = [{"term": {"doc_name": doc_name}}]
+        if from_namespace is None:
+            filters.append(
+                {
+                    "bool": {
+                        "should": [
+                            {"bool": {"must_not": [{"exists": {"field": "namespace"}}]}},
+                            {"term": {"namespace": ""}},
+                        ],
+                        "minimum_should_match": 1,
+                    }
+                }
+            )
+        else:
+            filters.append({"term": {"namespace": from_namespace}})
+        if tenant_id is not None:
+            filters.append({"term": {"tenant_id": tenant_id}})
+        if dataset_id is not None:
+            filters.append({"term": {"dataset_id": dataset_id}})
+        if doc_version is not None:
+            filters.append({"term": {"doc_version": doc_version}})
+        return filters
+
+    def move_document_to_namespace(
+        self,
+        doc_name: str,
+        *,
+        from_namespace: str | None,
+        to_namespace: str | None,
+        tenant_id: str | None = None,
+        doc_version: str | None = None,
+        dataset_id: str | None = None,
+    ) -> Dict[str, Any]:
+        """
+        将 docs 索引中唯一匹配的文档记录迁到新 namespace（变更存储主键）。
+        调用方需已同步更新向量库 chunk 的 namespace。
+        """
+        cfg = get_app_config().rag.ingestion
+        tenant_fb = cfg.tenant_id_default or "__tenant__"
+
+        if self._use_es and self._client is not None:
+            filters = self._move_meta_filters_es(
+                doc_name, from_namespace, tenant_id, doc_version, dataset_id
+            )
+            body = {
+                "size": 2,
+                "query": {"bool": {"filter": filters}},
+                "sort": [{"updated_at": {"order": "desc"}}],
+            }
+            res = self._client.search(index=self._alias, body=body)
+            raw_hits = res.get("hits", {}).get("hits", [])
+            if not raw_hits:
+                raise LookupError("document not found for given filters")
+            if len(raw_hits) > 1:
+                raise ValueError(
+                    "ambiguous document match: multiple records; narrow tenant_id, doc_version or dataset_id"
+                )
+            old_id = str(raw_hits[0].get("_id", ""))
+            src = raw_hits[0].get("_source") or {}
+        else:
+            state = self._load_file_state()
+            matches: list[tuple[str, Dict[str, Any]]] = []
+            for key, payload in state.items():
+                if not isinstance(payload, dict):
+                    continue
+                if self._meta_matches_move_filters(
+                    payload, doc_name, from_namespace, tenant_id, doc_version, dataset_id
+                ):
+                    matches.append((str(key), payload))
+            if not matches:
+                raise LookupError("document not found for given filters")
+            if len(matches) > 1:
+                raise ValueError(
+                    "ambiguous document match: multiple records; narrow tenant_id, doc_version or dataset_id"
+                )
+            old_id, src = matches[0]
+
+        new_key = make_document_storage_key(
+            doc_name,
+            namespace=to_namespace,
+            tenant_id=src.get("tenant_id"),
+            doc_version=src.get("doc_version"),
+            tenant_id_fallback=tenant_fb,
+        )
+        if old_id != new_key:
+            existing = self.get(new_key)
+            if existing is not None:
+                raise ValueError(
+                    "target namespace already has a document record for this doc_name/version/tenant"
+                )
+
+        payload = dict(src)
+        payload["namespace"] = to_namespace
+        payload["updated_at"] = utcnow_iso()
+        self.upsert(new_key, payload)
+
+        if old_id != new_key:
+            if self._use_es and self._client is not None:
+                try:
+                    self._client.delete(index=self._alias, id=old_id, refresh=True)
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to delete old doc meta id=%s after namespace move", old_id)
+                    raise
+            else:
+                state = self._load_file_state()
+                if old_id in state:
+                    del state[old_id]
+                    self._save_file_state(state)
+
+        return payload
 
     def overview(
         self,

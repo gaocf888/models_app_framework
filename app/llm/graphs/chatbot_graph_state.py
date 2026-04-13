@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 
-IntentLabel = Literal["kb_qa", "clarify", "unsafe", "handoff_human", "smalltalk"]
+IntentLabel = Literal["kb_qa", "clarify", "data_query", "unsafe", "handoff_human", "smalltalk"]
 
 
 class ChatbotGraphState(TypedDict, total=False):
@@ -28,6 +28,8 @@ class ChatbotGraphState(TypedDict, total=False):
     image_urls: List[str]
     enable_rag: bool
     enable_context: bool
+    enable_nl2sql_route: bool
+    client_prompt_version: Optional[str]
     # 单轮读取历史窗口（每次最多读多少条）；与 CONV_MAX_HISTORY_MESSAGES（总保留上限）不是同一个概念。
     history_limit: int
 
@@ -62,6 +64,13 @@ class ChatbotGraphState(TypedDict, total=False):
     fault_detect_confidence: float
     enable_fault_vision: Optional[bool]
     similar_cases_appended: bool
+
+    # ===== NL2SQL 分支 =====
+    used_nl2sql: bool
+    nl2sql_sql: str
+
+    # ===== 关联问题推荐 =====
+    suggested_questions: List[str]
 
     # ===== 控制与可观测域 =====
     used_rag: bool

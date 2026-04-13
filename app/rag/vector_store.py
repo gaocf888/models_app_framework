@@ -15,6 +15,28 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _chunk_matches_doc_namespace_version(
+    item: dict[str, Any],
+    doc_name: str,
+    from_namespace: str | None,
+    doc_version: str | None,
+) -> bool:
+    if item.get("doc_name") != doc_name:
+        return False
+    ns = item.get("namespace")
+    if from_namespace is None:
+        if ns is not None and ns != "":
+            return False
+    else:
+        if ns != from_namespace:
+            return False
+    meta = item.get("metadata") or {}
+    if doc_version is not None:
+        if str(meta.get("doc_version") or "") != str(doc_version):
+            return False
+    return True
+
+
 def _query_tokens(query: str) -> list[str]:
     q = (query or "").strip().lower()
     if not q:
@@ -92,6 +114,46 @@ class VectorStore(ABC):
         按文档名称（可选版本）删除已有知识，返回删除条数。
         """
         ...
+
+    @abstractmethod
+    def reassign_namespace_for_doc(
+        self,
+        doc_name: str,
+        from_namespace: str | None,
+        to_namespace: str | None,
+        doc_version: str | None = None,
+    ) -> int:
+        """
+        将属于某文档的所有 chunk 的 namespace 从 from_namespace 迁到 to_namespace。
+        from_namespace / to_namespace 为 None 或空字符串均表示「默认分区」（与摄入时未传 namespace 一致）。
+        返回更新的 chunk 条数。
+        """
+        ...
+
+    @abstractmethod
+    def list_chunk_texts_for_document(
+        self,
+        doc_name: str,
+        namespace: str | None,
+        doc_version: str | None = None,
+        limit: int = 50000,
+    ) -> list[str]:
+        """
+        列出向量库中某文档全部 chunk 的正文，顺序按 metadata.chunk_index（若有）再按 ext_id 稳定排序。
+        namespace 为 None 时匹配「默认分区」（与 delete_by_doc_name 一致）。
+        """
+        ...
+
+
+def _chunk_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+    meta = item.get("metadata") or {}
+    raw = meta.get("chunk_index")
+    try:
+        idx = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        idx = 10**9
+    ext = str(item.get("ext_id") or "")
+    return (idx, ext)
 
 
 class InMemoryVectorStore(VectorStore):
@@ -260,6 +322,37 @@ class InMemoryVectorStore(VectorStore):
         self._items = keep_items
         self._embs = keep_embs
         return deleted
+
+    def reassign_namespace_for_doc(
+        self,
+        doc_name: str,
+        from_namespace: str | None,
+        to_namespace: str | None,
+        doc_version: str | None = None,
+    ) -> int:
+        updated = 0
+        for item in self._items:
+            if not _chunk_matches_doc_namespace_version(item, doc_name, from_namespace, doc_version):
+                continue
+            item["namespace"] = to_namespace
+            updated += 1
+        return updated
+
+    def list_chunk_texts_for_document(
+        self,
+        doc_name: str,
+        namespace: str | None,
+        doc_version: str | None = None,
+        limit: int = 50000,
+    ) -> list[str]:
+        rows = [
+            it
+            for it in self._items
+            if _chunk_matches_doc_namespace_version(it, doc_name, namespace, doc_version)
+        ]
+        rows.sort(key=_chunk_sort_key)
+        out = [str(it.get("text") or "") for it in rows[: max(0, limit)]]
+        return [t for t in out if t]
 
 
 class FaissVectorStore(VectorStore):
@@ -569,6 +662,41 @@ class FaissVectorStore(VectorStore):
             self._items.pop(int(internal_id), None)
         self._persist()
         return len(delete_ids)
+
+    def reassign_namespace_for_doc(
+        self,
+        doc_name: str,
+        from_namespace: str | None,
+        to_namespace: str | None,
+        doc_version: str | None = None,
+    ) -> int:
+        if not self._items:
+            return 0
+        updated = 0
+        for item in self._items.values():
+            if not _chunk_matches_doc_namespace_version(item, doc_name, from_namespace, doc_version):
+                continue
+            item["namespace"] = to_namespace
+            updated += 1
+        if updated:
+            self._persist()
+        return updated
+
+    def list_chunk_texts_for_document(
+        self,
+        doc_name: str,
+        namespace: str | None,
+        doc_version: str | None = None,
+        limit: int = 50000,
+    ) -> list[str]:
+        rows = [
+            it
+            for it in self._items.values()
+            if _chunk_matches_doc_namespace_version(it, doc_name, namespace, doc_version)
+        ]
+        rows.sort(key=_chunk_sort_key)
+        out = [str(it.get("text") or "") for it in rows[: max(0, limit)]]
+        return [t for t in out if t]
 
 
 class ElasticsearchVectorStore(VectorStore):
@@ -946,6 +1074,134 @@ class ElasticsearchVectorStore(VectorStore):
             )
         )
         return int(resp.get("deleted", 0))
+
+    def reassign_namespace_for_doc(
+        self,
+        doc_name: str,
+        from_namespace: str | None,
+        to_namespace: str | None,
+        doc_version: str | None = None,
+    ) -> int:
+        if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
+            return 0
+        must: list[dict[str, Any]] = [{"term": {"doc_name": doc_name}}]
+        if from_namespace is None:
+            must.append(
+                {
+                    "bool": {
+                        "should": [
+                            {"bool": {"must_not": [{"exists": {"field": "namespace"}}]}},
+                            {"term": {"namespace": ""}},
+                        ],
+                        "minimum_should_match": 1,
+                    }
+                }
+            )
+        else:
+            must.append({"term": {"namespace": from_namespace}})
+        if doc_version is not None:
+            dv = str(doc_version)
+            must.append(
+                {
+                    "bool": {
+                        "should": [
+                            {"term": {"metadata.doc_version": dv}},
+                            {"term": {"metadata.doc_version.keyword": dv}},
+                        ],
+                        "minimum_should_match": 1,
+                    }
+                }
+            )
+        # 与写入一致：keyword 字段显式写入 null 时使用 painless 赋值
+        script_src = "ctx._source.namespace = params.ns;"
+        body: dict[str, Any] = {
+            "script": {
+                "source": script_src,
+                "lang": "painless",
+                "params": {"ns": to_namespace},
+            },
+            "query": {"bool": {"must": must}},
+        }
+        resp = self._with_retry(
+            lambda: self._client.update_by_query(
+                index=self._alias,
+                body=body,
+                refresh=True,
+                conflicts="proceed",
+            )
+        )
+        return int(resp.get("updated", 0))
+
+    def list_chunk_texts_for_document(
+        self,
+        doc_name: str,
+        namespace: str | None,
+        doc_version: str | None = None,
+        limit: int = 50000,
+    ) -> list[str]:
+        if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
+            return []
+        must: list[dict[str, Any]] = [{"term": {"doc_name": doc_name}}]
+        if namespace is None:
+            must.append(
+                {
+                    "bool": {
+                        "should": [
+                            {"bool": {"must_not": [{"exists": {"field": "namespace"}}]}},
+                            {"term": {"namespace": ""}},
+                        ],
+                        "minimum_should_match": 1,
+                    }
+                }
+            )
+        else:
+            must.append({"term": {"namespace": namespace}})
+        if doc_version is not None:
+            dv = str(doc_version)
+            must.append(
+                {
+                    "bool": {
+                        "should": [
+                            {"term": {"metadata.doc_version": dv}},
+                            {"term": {"metadata.doc_version.keyword": dv}},
+                        ],
+                        "minimum_should_match": 1,
+                    }
+                }
+            )
+        size = min(max(1, limit), 10000)
+        body: dict[str, Any] = {
+            "size": size,
+            "query": {"bool": {"must": must}},
+            "sort": [{"ext_id": {"order": "asc"}}],
+            "_source": ["text", "ext_id", "metadata"],
+        }
+        resp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
+        hits = resp.get("hits", {}).get("hits", [])
+        total = resp.get("hits", {}).get("total", 0)
+        if isinstance(total, dict):
+            total_val = int(total.get("value", 0))
+        else:
+            total_val = int(total or 0)
+        if total_val > size:
+            logger.warning(
+                "list_chunk_texts_for_document truncated: doc_name=%s total=%s returned=%s",
+                doc_name,
+                total_val,
+                size,
+            )
+        rows: list[dict[str, Any]] = []
+        for h in hits:
+            src = h.get("_source") or {}
+            rows.append(
+                {
+                    "text": src.get("text", ""),
+                    "ext_id": src.get("ext_id") or h.get("_id"),
+                    "metadata": src.get("metadata") or {},
+                }
+            )
+        rows.sort(key=_chunk_sort_key)
+        return [str(x.get("text") or "") for x in rows if str(x.get("text") or "")]
 
     def _with_retry(self, fn):
         last_err = None

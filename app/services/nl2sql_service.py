@@ -26,11 +26,11 @@ class NL2SQLService:
         self._executor = executor or SQLExecutor()
         self._conv = conv_manager or ConversationManager()
 
-    async def query(self, req: NL2SQLQueryRequest) -> NL2SQLQueryResponse:
+    async def query(self, req: NL2SQLQueryRequest, *, record_conversation: bool = True) -> NL2SQLQueryResponse:
         if not req.user_id:
             raise ValueError("user_id is required (must be provided by the caller).")
-        # 记录用户问题
-        self._conv.append_user_message(req.user_id, req.session_id, req.question)
+        if record_conversation:
+            self._conv.append_user_message(req.user_id, req.session_id, req.question)
 
         NL2SQL_QUERY_COUNT.inc()
 
@@ -41,11 +41,13 @@ class NL2SQLService:
                 rows = await self._executor.execute(sql)
             except Exception as exc:  # noqa: BLE001
                 NL2SQL_QUERY_ERROR_COUNT.inc()
-                # 将错误信息简要记录在会话中，便于后续分析
-                self._conv.append_assistant_message(req.user_id, req.session_id, f"SQL execution error: {exc}")
+                if record_conversation:
+                    self._conv.append_assistant_message(
+                        req.user_id, req.session_id, f"SQL execution error: {exc}"
+                    )
 
-        # 记录生成的 SQL 摘要
-        self._conv.append_assistant_message(req.user_id, req.session_id, f"SQL: {sql}")
+        if record_conversation:
+            self._conv.append_assistant_message(req.user_id, req.session_id, f"SQL: {sql}")
 
         return NL2SQLQueryResponse(sql=sql, rows=rows)
 

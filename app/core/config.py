@@ -373,7 +373,7 @@ class ChatbotConfig:
 
     graph_enabled: bool = True
     intent_enabled: bool = True
-    intent_output_labels: list[str] = field(default_factory=lambda: ["kb_qa", "clarify"])
+    intent_output_labels: list[str] = field(default_factory=lambda: ["kb_qa", "clarify", "data_query"])
     crag_enabled: bool = True
     fallback_legacy_on_error: bool = True
     persist_partial_on_disconnect: bool = True
@@ -397,6 +397,13 @@ class ChatbotConfig:
     fault_vision_enabled: bool = True
     fault_detect_mode: str = "hybrid"
     fault_min_confidence: float = 0.5
+    # 结构化问数走 NL2SQL（意图 data_query），与文档 RAG（kb_qa）分流
+    nl2sql_route_enabled: bool = True
+    # 未传 prompt_version 时使用的客服模板版本（与 configs/prompts.yaml 中 chatbot.version 对齐）
+    default_prompt_version: str = "boiler_v1"
+    # 回答结束后关联问题推荐（规则 + 片段 + LLM）
+    suggested_questions_enabled: bool = True
+    suggested_questions_max: int = 5
 
 
 @dataclass
@@ -662,7 +669,7 @@ def _load_from_env() -> AppConfig:
     chatbot_cfg = ChatbotConfig(
         graph_enabled=os.getenv("CHATBOT_GRAPH_ENABLED", "true").lower() == "true",
         intent_enabled=os.getenv("CHATBOT_INTENT_ENABLED", "true").lower() == "true",
-        intent_output_labels=_split_csv_env("CHATBOT_INTENT_OUTPUT_LABELS", "kb_qa,clarify"),
+        intent_output_labels=_split_csv_env("CHATBOT_INTENT_OUTPUT_LABELS", "kb_qa,clarify,data_query"),
         crag_enabled=os.getenv("CHATBOT_CRAG_ENABLED", "true").lower() == "true",
         fallback_legacy_on_error=os.getenv("CHATBOT_FALLBACK_LEGACY_ON_ERROR", "true").lower() == "true",
         persist_partial_on_disconnect=os.getenv("CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT", "true").lower() == "true",
@@ -683,6 +690,10 @@ def _load_from_env() -> AppConfig:
         fault_vision_enabled=os.getenv("CHATBOT_FAULT_VISION_ENABLED", "true").lower() == "true",
         fault_detect_mode=(os.getenv("CHATBOT_FAULT_DETECT_MODE", "hybrid") or "hybrid").lower(),
         fault_min_confidence=max(0.0, min(1.0, float(os.getenv("CHATBOT_FAULT_MIN_CONFIDENCE", "0.5")))),
+        nl2sql_route_enabled=os.getenv("CHATBOT_NL2SQL_ROUTE_ENABLED", "true").lower() == "true",
+        default_prompt_version=(os.getenv("CHATBOT_PROMPT_DEFAULT_VERSION", "boiler_v1") or "boiler_v1").strip(),
+        suggested_questions_enabled=os.getenv("CHATBOT_SUGGESTED_QUESTIONS_ENABLED", "true").lower() == "true",
+        suggested_questions_max=max(1, min(10, int(os.getenv("CHATBOT_SUGGESTED_QUESTIONS_MAX", "5")))),
     )
 
     cfg = AppConfig(

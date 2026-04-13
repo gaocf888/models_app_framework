@@ -20,6 +20,26 @@ def title_max_runes() -> int:
     return max(8, int(os.getenv("CHATBOT_SESSION_TITLE_MAX_RUNES", "28")))
 
 
+def title_edit_max_runes() -> int:
+    """用户主动修改标题时的最大码位长度（默认大于首句截断，便于略长备注）。"""
+    return max(16, min(200, int(os.getenv("CHATBOT_SESSION_TITLE_EDIT_MAX_RUNES", "64"))))
+
+
+def normalize_edited_title(text: str) -> str:
+    """
+    校验并规范化接口传入的标题：去空白折叠、非空、按码位截断并加省略号。
+    若去空后无内容，抛出 ValueError。
+    """
+    t = re.sub(r"\s+", " ", (text or "").strip())
+    if not t:
+        raise ValueError("title must not be empty")
+    max_r = title_edit_max_runes()
+    chars = list(t)
+    if len(chars) <= max_r:
+        return t
+    return "".join(chars[:max_r]) + "…"
+
+
 def session_list_limit_cap() -> int:
     """单用户列表接口默认上限与硬顶。"""
     return max(1, min(200, int(os.getenv("CONV_SESSION_LIST_MAX", "50"))))

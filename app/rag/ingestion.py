@@ -130,6 +130,20 @@ class RAGIngestionService:
     def list_datasets(self) -> List[RAGDatasetMeta]:
         return list(self._datasets.values())
 
+    def reassign_namespace_for_doc(
+        self,
+        doc_name: str,
+        from_namespace: str | None,
+        to_namespace: str | None,
+        doc_version: str | None = None,
+    ) -> int:
+        return self._rag_service.reassign_namespace_for_doc(
+            doc_name=doc_name,
+            from_namespace=from_namespace,
+            to_namespace=to_namespace,
+            doc_version=doc_version,
+        )
+
     def delete_by_doc_name(
         self, doc_name: str, namespace: str | None = None, doc_version: str | None = None
     ) -> int:

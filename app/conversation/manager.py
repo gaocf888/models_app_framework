@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List
 
 from app.conversation.ids import validate_pair, validate_user_id
 from app.conversation.store import ConversationStore, get_default_store
@@ -42,6 +42,16 @@ class ConversationManager:
         """读取会话消息（供管理/导出），条数受 CONV_EXPORT_MAX_MESSAGES 限制。"""
         u, s = validate_pair(user_id, session_id)
         return self._store.get_messages(u, s, limit=limit)
+
+    def get_session_title_snapshot(self, user_id: str, session_id: str) -> Dict[str, str]:
+        """与 `list_sessions` 中 `title` / `title_source` 语义一致（`session_catalog.display_title`）。"""
+        u, s = validate_pair(user_id, session_id)
+        return self._store.get_session_title_snapshot(u, s)
+
+    def update_session_title(self, user_id: str, session_id: str, title: str) -> bool:
+        """更新会话展示标题（`title_source=user`）。会话不存在时返回 False。"""
+        u, s = validate_pair(user_id, session_id)
+        return self._store.update_session_title(u, s, title)
 
     def clear_session(self, user_id: str, session_id: str) -> None:
         """删除指定 user_id + session_id 的会话数据（Redis 或内存）。"""

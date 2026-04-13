@@ -6,7 +6,7 @@ from __future__ import annotations
 职责概览：
     - 提供非流式 `/chat`（已弃用，保留兼容）与流式 `/chat/stream`（SSE）对话入口；
     - 提供会话目录：`GET /sessions`（按 `user_id` 分页列举会话；方案 B：Redis `conv:index:` + `conv:meta:`，内存模式对齐）；
-    - 提供会话运维：`GET/DELETE /sessions/messages`，按 `user_id` + `session_id` 读写消息。
+    - 提供会话运维：`GET/DELETE /sessions/messages`、`PATCH /sessions/title`（修改展示标题）。
 
 部署前置条件（运维/开发）：
     1) LLM 服务可用：正确配置模型名称、服务地址与对 vLLM/OpenAI 兼容端的访问参数。
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 import json
 
@@ -35,6 +35,8 @@ from app.models.chatbot import (
     SessionListResponse,
     SessionMessageItem,
     SessionMessagesResponse,
+    SessionTitlePatchRequest,
+    SessionTitlePatchResponse,
 )
 from app.services.chatbot_service import ChatbotService
 
@@ -57,8 +59,8 @@ async def chat(req: ChatRequest) -> ChatResponse:
             可选 `image_urls`（多模态，空项会被过滤）、`enable_rag`、`enable_context` 等，详见模型 Field 说明。
 
     Returns:
-        ChatResponse: 包含 `answer`（助手全文）、`used_rag`（是否实际走检索）、
-            `context_snippets`（注入提示词前的检索片段列表）。
+        ChatResponse: 包含 `answer`、`used_rag`、`used_nl2sql`、`intent_label`、`suggested_questions`、
+            `context_snippets` 等字段。
 
     Raises:
         HTTPException: 本函数不直接抛出；Pydantic 校验失败时由框架返回 422。
@@ -83,7 +85,7 @@ async def chat_stream(req: ChatRequest, request: Request):
         StreamingResponse: `Content-Type: text/event-stream; charset=utf-8`。
             每条事件为 `data: ` + JSON + 换行 + 空行（符合 SSE 事件分隔约定），JSON 形态包括：
             - `{"delta": "...", "finished": false}`：增量文本；
-            - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag` 等元信息；
+            - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag`、`used_nl2sql`、`intent_label`、`suggested_questions`、`nl2sql_sql` 等；
             - `{"error": "...", "finished": true}`：异常时错误事件。
 
     Raises:
@@ -175,12 +177,13 @@ async def get_session_messages(
         limit (int | None): 可选，限制返回条数上限（仍不超过服务端配置的全局上限）。
 
     Returns:
-        SessionMessagesResponse: `messages` 按时间顺序，`role`/`content`/`ts` 与存储一致。
+        SessionMessagesResponse: `title`/`title_source` 与 `GET /sessions` 列表同源；`messages` 按时间顺序。
 
     Raises:
         HTTPException: 本函数不直接抛出；参数校验失败时 422。
     """
     raw = _conv_admin.get_session_messages(user_id, session_id, limit=limit)
+    snap = _conv_admin.get_session_title_snapshot(user_id, session_id)
     items = [
         SessionMessageItem(role=str(m.get("role", "")), content=str(m.get("content", "")), ts=m.get("ts"))
         for m in raw
@@ -188,8 +191,37 @@ async def get_session_messages(
     return SessionMessagesResponse(
         user_id=user_id,
         session_id=session_id,
+        title=str(snap.get("title") or ""),
+        title_source=str(snap.get("title_source") or "off"),
         count=len(items),
         messages=items,
+    )
+
+
+@router.patch(
+    "/sessions/title",
+    response_model=SessionTitlePatchResponse,
+    summary="修改会话展示标题",
+)
+async def patch_session_title(
+    user_id: Annotated[str, Query(description="调用方用户 ID")],
+    session_id: Annotated[str, Query(description="会话 ID")],
+    body: SessionTitlePatchRequest,
+) -> SessionTitlePatchResponse:
+    """
+    将目录中的展示标题更新为用户指定文案，并标记 `title_source=user`（与首句自动 `truncated` 区分）。
+
+    会话须已存在（至少有一条消息写入过）；否则返回 404。
+    """
+    ok = _conv_admin.update_session_title(user_id, session_id, body.title)
+    if not ok:
+        raise HTTPException(status_code=404, detail="session not found")
+    snap = _conv_admin.get_session_title_snapshot(user_id, session_id)
+    return SessionTitlePatchResponse(
+        user_id=user_id,
+        session_id=session_id,
+        title=str(snap.get("title") or ""),
+        title_source=str(snap.get("title_source") or "user"),
     )
 
 

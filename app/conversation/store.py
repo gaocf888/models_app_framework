@@ -203,6 +203,53 @@ class ConversationStore:
         n = cap if limit is None else min(max(1, limit), cap)
         return self.get_recent_history(user_id, session_id, limit=n)
 
+    def get_session_title_snapshot(self, user_id: str, session_id: str) -> Dict[str, str]:
+        """
+        与会话列表 `list_sessions` 同一套展示标题（`display_title`），供 GET /sessions/messages 等详情接口返回。
+        返回 {"title": 展示串, "title_source": "truncated"|"off"|"user"}。
+        """
+        key = (user_id, session_id)
+        msgs = self._data.get(key)
+        meta = self._catalog_meta.get(user_id, {}).get(session_id)
+        if meta is not None:
+            meta_dict: Dict[str, Any] = dict(meta)
+        elif msgs:
+            syn = self._memory_synthetic_meta(user_id, session_id)
+            meta_dict = syn if syn is not None else {}
+        else:
+            meta_dict = {}
+        disp = display_title(meta_dict, session_id)
+        return {"title": disp, "title_source": str(meta_dict.get("title_source") or "off")}
+
+    def update_session_title(self, user_id: str, session_id: str, title: str) -> bool:
+        """
+        用户修改展示标题：写入 catalog / meta，`title_source=user`。
+        要求会话已存在（内存中已有消息列表）。`title` 须已由上层规范化。
+        """
+        key = (user_id, session_id)
+        if key not in self._data:
+            return False
+        now_ms = int(time.time() * 1000)
+        now_s = str(time.time())
+        bucket = self._catalog_meta[user_id]
+        meta = bucket.get(session_id)
+        if meta is None:
+            meta = {
+                "title": "",
+                "title_source": "off",
+                "first_user_preview": "",
+                "message_count": len(self._data[key]),
+                "last_activity_at": now_ms,
+            }
+            bucket[session_id] = meta
+        meta["title"] = title
+        meta["title_source"] = "user"
+        meta["title_updated_at"] = now_s
+        meta["last_activity_at"] = now_ms
+        meta["message_count"] = len(self._data[key])
+        self._last_updated[key] = time.time()
+        return True
+
 
 class RedisConversationStore(ConversationStore):
     """
@@ -426,6 +473,76 @@ class RedisConversationStore(ConversationStore):
         except Exception as exc:  # noqa: BLE001
             logger.error("RedisConversationStore get_messages failed: %s", exc)
             return []
+
+    async def _get_session_title_snapshot_async(self, user_id: str, session_id: str) -> Dict[str, str]:
+        if self._redis is None:
+            return super().get_session_title_snapshot(user_id, session_id)
+        meta_key = f"{self._key_prefix}meta:{user_id}:{session_id}"
+        h = await self._redis.hgetall(meta_key)
+        meta: Dict[str, Any] = dict(h) if isinstance(h, dict) else {}
+        disp = display_title(meta, session_id)
+        return {"title": disp, "title_source": str(meta.get("title_source") or "off")}
+
+    def get_session_title_snapshot(self, user_id: str, session_id: str) -> Dict[str, str]:  # type: ignore[override]
+        if self._redis is None or self._loop is None:
+            return super().get_session_title_snapshot(user_id, session_id)
+        fut = asyncio.run_coroutine_threadsafe(
+            self._get_session_title_snapshot_async(user_id, session_id),
+            self._loop,
+        )
+        try:
+            return fut.result(timeout=5.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RedisConversationStore get_session_title_snapshot failed: %s", exc)
+            return {"title": display_title({}, session_id), "title_source": "off"}
+
+    async def _update_session_title_async(self, user_id: str, session_id: str, title: str) -> bool:
+        if self._redis is None:
+            return super().update_session_title(user_id, session_id, title)
+        conv_key = f"{self._key_prefix}{user_id}:{session_id}"
+        if not await self._redis.exists(conv_key):
+            return False
+        meta_key = f"{self._key_prefix}meta:{user_id}:{session_id}"
+        now = time.time()
+        now_ms = int(now * 1000)
+        mapping = {
+            "title": title,
+            "title_source": "user",
+            "title_updated_at": str(now),
+            "last_activity_at": str(now_ms),
+        }
+        try:
+            ll = int(await self._redis.llen(conv_key) or 0)
+            mapping["message_count"] = str(ll)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RedisConversationStore update_session_title message_count: %s", exc)
+        await self._redis.hset(meta_key, mapping=mapping)
+        if self._ttl_seconds > 0:
+            try:
+                await self._redis.expire(meta_key, self._ttl_seconds)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("RedisConversationStore update_session_title expire meta: %s", exc)
+        index_key = f"{self._key_prefix}index:{user_id}"
+        try:
+            await self._redis.zadd(index_key, {session_id: now_ms})
+            if self._ttl_seconds > 0:
+                await self._redis.expire(index_key, self._ttl_seconds)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RedisConversationStore update_session_title zadd index: %s", exc)
+        return True
+
+    def update_session_title(self, user_id: str, session_id: str, title: str) -> bool:  # type: ignore[override]
+        if self._redis is None or self._loop is None:
+            return super().update_session_title(user_id, session_id, title)
+        fut = asyncio.run_coroutine_threadsafe(
+            self._update_session_title_async(user_id, session_id, title),
+            self._loop,
+        )
+        try:
+            return fut.result(timeout=5.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RedisConversationStore update_session_title failed: %s", exc)
+            return False
 
     async def _clear_async(self, user_id: str, session_id: str) -> None:
         if self._redis is None:

@@ -88,8 +88,18 @@ class ChatbotChain:
         """
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage  # type: ignore[import-not-found]
 
-        # 1. 获取系统提示词模板（带 A/B 分流）
-        tpl = self._prompts.get_template(scene="chatbot", user_id=user_id, version=prompt_version)
+        from app.core.config import get_app_config
+
+        cfg_cb = get_app_config().chatbot
+        if prompt_version:
+            tpl = self._prompts.get_template(scene="chatbot", user_id=user_id, version=prompt_version)
+        else:
+            tpl = self._prompts.get_template(
+                scene="chatbot",
+                user_id=user_id,
+                version=None,
+                default_version=cfg_cb.default_prompt_version,
+            )
         system_prompt = tpl.content if tpl else "你是一个专业的中文智能客服助手。"
 
         messages: List[object] = [SystemMessage(content=system_prompt)]

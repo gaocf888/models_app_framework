@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
-from app.rag.document_repository import DocumentRepository
+from app.rag.document_repository import DocumentRepository, make_document_storage_key
 from app.rag.document_pipeline import ChunkingConfig, DocumentPipeline
 from app.rag.ingestion import RAGIngestionService
 from app.rag.job_repository import JobRepository
@@ -397,11 +397,12 @@ class IngestionOrchestrator:
         status: str,
         error: str | None = None,
     ) -> None:
-        doc_key = (
-            f"{doc.tenant_id or self._tenant_id_default}::"
-            f"{doc.namespace or '__default__'}::"
-            f"{doc.doc_name}::"
-            f"{doc.doc_version or 'v1'}"
+        doc_key = make_document_storage_key(
+            doc.doc_name,
+            namespace=doc.namespace,
+            tenant_id=doc.tenant_id,
+            doc_version=doc.doc_version,
+            tenant_id_fallback=self._tenant_id_default,
         )
         existing = self._doc_repo.get(doc_key) or {}
         created_at = existing.get("created_at") or utcnow_iso()
@@ -413,6 +414,7 @@ class IngestionOrchestrator:
             "namespace": doc.namespace,
             "source_type": doc.source_type,
             "source_uri": doc.source_uri,
+            "description": doc.description,
             "chunk_count": chunk_count,
             "pipeline_version": self._pipeline_version,
             "status": status,

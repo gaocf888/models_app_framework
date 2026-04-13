@@ -32,7 +32,7 @@ def create_app() -> FastAPI:
             "name": "chatbot",
             "description": (
                 "智能客服：多轮会话（Redis）、可选 RAG、流式 SSE；"
-                "会话管理：`GET /chatbot/sessions`、`GET/DELETE /chatbot/sessions/messages`。"
+                "会话管理：`GET /chatbot/sessions`、`GET/DELETE /chatbot/sessions/messages`、`PATCH /chatbot/sessions/title`。"
                 "业务路由须在 Header 携带 `Authorization: Bearer <SERVICE_API_KEY>`；"
                 "密钥由 `app.auth.keygen.generate_service_api_key` 生成后写入环境变量（见 `app/app-deploy/README.md`）。"
             ),
@@ -49,6 +49,7 @@ def create_app() -> FastAPI:
 **推荐集成路径**
 - **摄入（生产）**：`POST /rag/jobs/ingest` 异步任务 → `GET /rag/jobs/{job_id}` 轮询状态。
 - **单篇同步修订**：`POST /rag/documents/upsert`。
+- **文档 namespace 迁移（向量 + docs 登记；GraphRAG 默认异步修复）**：`POST /rag/documents/namespace/move`（`repair_graph_async`）。
 - **删除**：`POST /rag/documents/delete`。
 - **检索冒烟/调试**：`POST /rag/query`。
 

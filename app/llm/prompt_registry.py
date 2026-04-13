@@ -55,11 +55,18 @@ class PromptTemplateRegistry:
             self._templates[scene] = lst
         logger.info("loaded prompt templates for scenes: %s", list(self._templates.keys()))
 
-    def get_template(self, scene: str, user_id: Optional[str] = None, version: Optional[str] = None) -> Optional[PromptTemplate]:
+    def get_template(
+        self,
+        scene: str,
+        user_id: Optional[str] = None,
+        version: Optional[str] = None,
+        default_version: Optional[str] = None,
+    ) -> Optional[PromptTemplate]:
         """
         获取指定场景的提示词模板。
 
-        - 如显式提供 version，则按版本精确匹配；
+        - 如显式提供 version，则按版本精确匹配；未命中时回退该场景首个模板；
+        - 如 version 为空且提供 default_version，则优先精确匹配 default_version；
         - 否则，按 user_id 做简单哈希分流，根据权重选择一个版本；
         - 若场景未配置模板则返回 None。
         """
@@ -70,6 +77,12 @@ class PromptTemplateRegistry:
         if version:
             for tpl in templates:
                 if tpl.version == version:
+                    return tpl
+            return templates[0]
+
+        if default_version:
+            for tpl in templates:
+                if tpl.version == default_version:
                     return tpl
             return templates[0]
 

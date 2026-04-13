@@ -8,12 +8,17 @@ from app.core.logging import get_logger
 from app.models.chatbot import ChatRequest, ChatResponse
 from app.llm.client import VLLMHttpClient
 from app.llm.graphs import ChatbotLangGraphRunner
+from app.llm.graphs.chatbot_follow_up import build_suggested_questions
+from app.llm.graphs.chatbot_intent_rules import classify_chatbot_intent
+from app.llm.graphs.chatbot_nl2sql_answer import summarize_nl2sql_with_llm
 from app.llm.graphs.chatbot_similar_cases import (
     FaultCaseGateInput,
     format_similar_cases_block,
     retrieve_similar_case_snippets,
     run_fault_case_gate_decision,
 )
+from app.models.nl2sql import NL2SQLQueryRequest
+from app.services.nl2sql_service import NL2SQLService
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
@@ -54,6 +59,7 @@ class ChatbotService:
             llm_client=self._llm,
             prompt_registry=self._prompts,
         )
+        self._nl2sql = NL2SQLService(conv_manager=self._conv)
         self._chain = None
 
         # 如果安装了 LangChain 相关依赖，则启用 ChatbotChain 作为编排层
@@ -72,6 +78,72 @@ class ChatbotService:
         # _build_llm_messages / ChatbotChain 再追加本轮 query，会造成「双份当前用户句」且易干扰多轮理解。
         # 本轮 user/assistant 在得到 answer 后统一写入（见文末）。
 
+        cfg = self._chatbot_cfg
+        intent_labels = {x.strip().lower() for x in (cfg.intent_output_labels or []) if x.strip()}
+        enable_nl2sql = bool(req.enable_nl2sql_route) and bool(cfg.nl2sql_route_enabled)
+        ilabel, _, _ = classify_chatbot_intent(
+            req.query,
+            enable_nl2sql_route=enable_nl2sql,
+            image_urls=[u for u in req.image_urls if isinstance(u, str) and u.strip()],
+        )
+        if ilabel not in intent_labels:
+            ilabel = "kb_qa"
+
+        if ilabel == "data_query":
+            nreq = NL2SQLQueryRequest(user_id=req.user_id, session_id=req.session_id, question=req.query)
+            nresp = await self._nl2sql.query(nreq, record_conversation=False)
+            answer = await summarize_nl2sql_with_llm(
+                self._llm,
+                user_query=req.query,
+                sql=nresp.sql,
+                rows=list(nresp.rows or []),
+            )
+            suggested: list[str] = []
+            if cfg.suggested_questions_enabled:
+                suggested = await build_suggested_questions(
+                    query=req.query,
+                    answer=answer,
+                    context_snippets=[],
+                    intent_label="data_query",
+                    llm_client=self._llm,
+                    max_total=cfg.suggested_questions_max,
+                )
+            self._conv.append_user_message(req.user_id, req.session_id, req.query)
+            self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            return ChatResponse(
+                answer=answer,
+                used_rag=False,
+                used_nl2sql=True,
+                intent_label=ilabel,
+                suggested_questions=suggested,
+                context_snippets=[],
+            )
+
+        if ilabel == "clarify":
+            answer = (
+                "为了更准确地回答你，请补充更具体的信息：你要咨询的是哪一项业务、当前遇到的具体问题现象，以及你期望的结果。"
+            )
+            suggested_clarify: list[str] = []
+            if cfg.suggested_questions_enabled:
+                suggested_clarify = await build_suggested_questions(
+                    query=req.query,
+                    answer=answer,
+                    context_snippets=[],
+                    intent_label="clarify",
+                    llm_client=self._llm,
+                    max_total=min(3, cfg.suggested_questions_max),
+                )
+            self._conv.append_user_message(req.user_id, req.session_id, req.query)
+            self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            return ChatResponse(
+                answer=answer,
+                used_rag=False,
+                used_nl2sql=False,
+                intent_label=ilabel,
+                suggested_questions=suggested_clarify,
+                context_snippets=[],
+            )
+
         # 优先使用 LangChain ChatbotChain（若可用）
         if self._chain is not None:
             answer = await self._chain.run(
@@ -80,10 +152,11 @@ class ChatbotService:
                 query=req.query,
                 enable_rag=req.enable_rag,
                 enable_context=req.enable_context,
+                prompt_version=req.prompt_version,
             )
             # 目前链路内部已处理 RAG 与上下文，外部仅标记 used_rag 为请求开关
             used_rag = req.enable_rag
-            context_snippets: list[str] = []
+            context_snippets = []
         else:
             context_snippets = []
             used_rag = False
@@ -108,10 +181,28 @@ class ChatbotService:
                     base += f"（已检索到 {len(context_snippets)} 条上下文片段用于参考）"
                 answer = base
 
+        suggested_out: list[str] = []
+        if cfg.suggested_questions_enabled:
+            suggested_out = await build_suggested_questions(
+                query=req.query,
+                answer=answer,
+                context_snippets=context_snippets,
+                intent_label=ilabel,
+                llm_client=self._llm,
+                max_total=cfg.suggested_questions_max,
+            )
+
         self._conv.append_user_message(req.user_id, req.session_id, req.query)
         self._conv.append_assistant_message(req.user_id, req.session_id, answer)
 
-        return ChatResponse(answer=answer, used_rag=used_rag, context_snippets=context_snippets)
+        return ChatResponse(
+            answer=answer,
+            used_rag=used_rag,
+            used_nl2sql=False,
+            intent_label=ilabel,
+            suggested_questions=suggested_out,
+            context_snippets=context_snippets,
+        )
 
     async def stream_chat(self, req: ChatRequest) -> AsyncIterator[str]:
         if not req.user_id:
@@ -163,6 +254,104 @@ class ChatbotService:
         - 若启用相似案例扩展，与 LangGraph 路径一致：主回答流结束后追加限定 namespace 检索块。
         """
         start_ts = time.perf_counter()
+        cfg = self._chatbot_cfg
+        intent_labels = {x.strip().lower() for x in (cfg.intent_output_labels or []) if x.strip()}
+        enable_nl2sql = bool(req.enable_nl2sql_route) and bool(cfg.nl2sql_route_enabled)
+        imgs = [u for u in req.image_urls if isinstance(u, str) and u.strip()]
+        ilabel, _, _ = classify_chatbot_intent(
+            req.query,
+            enable_nl2sql_route=enable_nl2sql,
+            image_urls=imgs,
+        )
+        if ilabel not in intent_labels:
+            ilabel = "kb_qa"
+
+        duration_ms = lambda: int((time.perf_counter() - start_ts) * 1000)
+
+        if ilabel == "data_query":
+            nreq = NL2SQLQueryRequest(user_id=req.user_id, session_id=req.session_id, question=req.query)
+            nresp = await self._nl2sql.query(nreq, record_conversation=False)
+            answer = await summarize_nl2sql_with_llm(
+                self._llm,
+                user_query=req.query,
+                sql=nresp.sql,
+                rows=list(nresp.rows or []),
+            )
+            suggested: list[str] = []
+            if cfg.suggested_questions_enabled:
+                suggested = await build_suggested_questions(
+                    query=req.query,
+                    answer=answer,
+                    context_snippets=[],
+                    intent_label="data_query",
+                    llm_client=self._llm,
+                    max_total=cfg.suggested_questions_max,
+                )
+            if answer:
+                yield {"type": "delta", "delta": answer}
+            self._conv.append_user_message(req.user_id, req.session_id, req.query)
+            self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            yield {
+                "type": "finished",
+                "meta": {
+                    "used_rag": False,
+                    "used_nl2sql": True,
+                    "nl2sql_sql": nresp.sql or None,
+                    "intent_label": ilabel,
+                    "retrieval_attempts": 0,
+                    "rag_engine": None,
+                    "status": "answered",
+                    "duration_ms": duration_ms(),
+                    "terminate_reason": None,
+                    "similar_cases_appended": False,
+                    "similar_case_namespace": None,
+                    "fault_detect_sources": [],
+                    "fault_detect_confidence": 0.0,
+                    "need_similar_cases": False,
+                    "suggested_questions": suggested,
+                },
+            }
+            return
+
+        if ilabel == "clarify":
+            answer = (
+                "为了更准确地回答你，请补充更具体的信息：你要咨询的是哪一项业务、当前遇到的具体问题现象，以及你期望的结果。"
+            )
+            suggested_cl: list[str] = []
+            if cfg.suggested_questions_enabled:
+                suggested_cl = await build_suggested_questions(
+                    query=req.query,
+                    answer=answer,
+                    context_snippets=[],
+                    intent_label="clarify",
+                    llm_client=self._llm,
+                    max_total=min(3, cfg.suggested_questions_max),
+                )
+            yield {"type": "delta", "delta": answer}
+            self._conv.append_user_message(req.user_id, req.session_id, req.query)
+            self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            yield {
+                "type": "finished",
+                "meta": {
+                    "used_rag": False,
+                    "used_nl2sql": False,
+                    "nl2sql_sql": None,
+                    "intent_label": ilabel,
+                    "retrieval_attempts": 0,
+                    "rag_engine": None,
+                    "status": "clarifying",
+                    "duration_ms": duration_ms(),
+                    "terminate_reason": "need_clarify",
+                    "similar_cases_appended": False,
+                    "similar_case_namespace": None,
+                    "fault_detect_sources": [],
+                    "fault_detect_confidence": 0.0,
+                    "need_similar_cases": False,
+                    "suggested_questions": suggested_cl,
+                },
+            }
+            return
+
         context_snippets: list[str] = []
         if req.enable_rag:
             context_snippets = self._hybrid_rag.retrieve(req.query)
@@ -188,7 +377,6 @@ class ChatbotService:
         gate_conf = 0.0
         need_cases = False
         if self._chatbot_cfg.similar_case_enabled:
-            legacy_intent = "clarify" if len((req.query or "").strip()) <= 4 else "kb_qa"
             gate = await run_fault_case_gate_decision(
                 self._llm,
                 FaultCaseGateInput(
@@ -197,16 +385,16 @@ class ChatbotService:
                     fault_vision_enabled=self._chatbot_cfg.fault_vision_enabled,
                     fault_detect_mode=self._chatbot_cfg.fault_detect_mode,
                     fault_min_confidence=self._chatbot_cfg.fault_min_confidence,
-                    intent_label=legacy_intent,
+                    intent_label=ilabel,
                     query=req.query,
-                    image_urls=[u for u in req.image_urls if isinstance(u, str) and u.strip()],
+                    image_urls=imgs,
                     enable_fault_vision=req.enable_fault_vision,
                 ),
             )
             gate_sources = list(gate.fault_detect_sources)
             gate_conf = float(gate.fault_detect_confidence)
             need_cases = gate.need_similar_cases
-            if gate.need_similar_cases and legacy_intent != "clarify":
+            if gate.need_similar_cases and ilabel != "clarify":
                 snippets = retrieve_similar_case_snippets(
                     self._hybrid_rag,
                     query=gate.case_rag_query or req.query,
@@ -220,25 +408,37 @@ class ChatbotService:
             yield {"type": "delta", "delta": extra}
 
         full = (answer + extra).strip()
+        suggested_out: list[str] = []
+        if cfg.suggested_questions_enabled:
+            suggested_out = await build_suggested_questions(
+                query=req.query,
+                answer=full,
+                context_snippets=context_snippets,
+                intent_label=ilabel,
+                llm_client=self._llm,
+                max_total=cfg.suggested_questions_max,
+            )
         self._conv.append_user_message(req.user_id, req.session_id, req.query)
         if full:
             self._conv.append_assistant_message(req.user_id, req.session_id, full)
-        duration_ms = int((time.perf_counter() - start_ts) * 1000)
         yield {
             "type": "finished",
             "meta": {
                 "used_rag": bool(context_snippets),
-                "intent_label": "kb_qa",
+                "used_nl2sql": False,
+                "nl2sql_sql": None,
+                "intent_label": ilabel,
                 "retrieval_attempts": 1 if req.enable_rag else 0,
                 "rag_engine": "hybrid" if req.enable_rag else None,
                 "status": "answered",
-                "duration_ms": duration_ms,
+                "duration_ms": duration_ms(),
                 "terminate_reason": None,
                 "similar_cases_appended": similar_appended,
                 "similar_case_namespace": self._chatbot_cfg.similar_case_namespace if similar_appended else None,
                 "fault_detect_sources": gate_sources,
                 "fault_detect_confidence": gate_conf,
                 "need_similar_cases": need_cases,
+                "suggested_questions": suggested_out,
             },
         }
 
@@ -253,7 +453,16 @@ class ChatbotService:
         若提供 image_urls，则使用多模态 content（text + image_url）。
         """
         messages: list[Dict[str, Any]] = []
-        tpl = self._prompts.get_template(scene="chatbot", user_id=req.user_id, version=None)
+        cfg = self._chatbot_cfg
+        if req.prompt_version:
+            tpl = self._prompts.get_template(scene="chatbot", user_id=req.user_id, version=str(req.prompt_version))
+        else:
+            tpl = self._prompts.get_template(
+                scene="chatbot",
+                user_id=req.user_id,
+                version=None,
+                default_version=cfg.default_prompt_version,
+            )
         if tpl and tpl.content:
             messages.append({"role": "system", "content": tpl.content})
         if context_snippets:

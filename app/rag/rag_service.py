@@ -203,6 +203,21 @@ class RAGService:
             RAG_DOC_DELETE_COUNT.labels(namespace=ns).inc(deleted)
         return deleted
 
+    def reassign_namespace_for_doc(
+        self,
+        doc_name: str,
+        from_namespace: str | None,
+        to_namespace: str | None,
+        doc_version: str | None = None,
+    ) -> int:
+        store = self._store_provider.get_default_store()
+        return store.reassign_namespace_for_doc(
+            doc_name=doc_name,
+            from_namespace=from_namespace,
+            to_namespace=to_namespace,
+            doc_version=doc_version,
+        )
+
     @staticmethod
     def _rrf_fuse(
         semantic_hits: list[dict],

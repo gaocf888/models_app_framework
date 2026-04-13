@@ -15,13 +15,18 @@ from app.rag.agentic import AgenticRAGService, RAGContext, RAGMode
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
 
+from .chatbot_follow_up import build_suggested_questions
 from .chatbot_graph_state import ChatbotGraphState
+from .chatbot_intent_rules import classify_chatbot_intent
+from .chatbot_nl2sql_answer import summarize_nl2sql_with_llm
 from .chatbot_similar_cases import (
     FaultCaseGateInput,
     format_similar_cases_block,
     retrieve_similar_case_snippets,
     run_fault_case_gate_decision,
 )
+from app.models.nl2sql import NL2SQLQueryRequest
+from app.services.nl2sql_service import NL2SQLService
 
 logger = get_logger(__name__)
 
@@ -78,6 +83,12 @@ class ChatbotLangGraphRunner:
         self._fault_vision_enabled = bool(cfg.fault_vision_enabled)
         self._fault_detect_mode = (cfg.fault_detect_mode or "hybrid").lower()
         self._fault_min_confidence = max(0.0, min(1.0, float(cfg.fault_min_confidence)))
+        self._nl2sql_route_enabled_cfg = bool(cfg.nl2sql_route_enabled)
+        self._default_prompt_version = (cfg.default_prompt_version or "boiler_v1").strip()
+        self._suggested_questions_enabled = bool(cfg.suggested_questions_enabled)
+        self._suggested_questions_max = max(1, min(10, int(cfg.suggested_questions_max)))
+
+        self._nl2sql = NL2SQLService(conv_manager=conv_manager)
 
         self._graph = None
         if self._graph_enabled:
@@ -109,6 +120,7 @@ class ChatbotLangGraphRunner:
         graph.add_node("kb_rewrite_query", self._node_kb_rewrite_query)
         graph.add_node("kb_build_messages", self._node_kb_build_messages)
         graph.add_node("clarify_build_response", self._node_clarify_build_response)
+        graph.add_node("nl2sql_answer", self._node_nl2sql_answer)
         graph.add_node("finalize", self._node_finalize)
 
         # 入口固定为模板加载：
@@ -126,6 +138,7 @@ class ChatbotLangGraphRunner:
             self._route_by_intent,
             {
                 "kb_qa": "select_rag_engine",
+                "data_query": "nl2sql_answer",
                 "clarify": "clarify_build_response",
                 "unsafe": "unsafe_guard",
                 "handoff_human": "handoff_human",
@@ -135,6 +148,7 @@ class ChatbotLangGraphRunner:
         graph.add_edge("unsafe_guard", "finalize")
         graph.add_edge("handoff_human", "finalize")
         graph.add_edge("smalltalk_generate", "finalize")
+        graph.add_edge("nl2sql_answer", "finalize")
         graph.add_edge("select_rag_engine", "kb_retrieve")
         graph.add_edge("kb_retrieve", "kb_quality_check")
         # 质量路由（C-RAG 核心）：
@@ -242,6 +256,7 @@ class ChatbotLangGraphRunner:
                 extra = self._maybe_similar_cases_extra(state)
                 state["similar_cases_appended"] = bool(extra)
                 full = (answer + extra).strip()
+                await self._fill_suggested_questions(state, req, full)
                 self._persist_success(state, req, full, is_partial=False, terminate_reason=None)
                 if answer:
                     yield {"type": "delta", "delta": answer}
@@ -262,7 +277,9 @@ class ChatbotLangGraphRunner:
             state["similar_cases_appended"] = bool(extra)
             if extra:
                 yield {"type": "delta", "delta": extra}
-            self._persist_success(state, req, (answer + extra).strip(), is_partial=False, terminate_reason=None)
+            full_stream = (answer + extra).strip()
+            await self._fill_suggested_questions(state, req, full_stream)
+            self._persist_success(state, req, full_stream, is_partial=False, terminate_reason=None)
             yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts)}
         except GeneratorExit:
             # 客户端主动断开：
@@ -307,6 +324,8 @@ class ChatbotLangGraphRunner:
             "image_urls": [u for u in req.image_urls if isinstance(u, str) and u.strip()],
             "enable_rag": bool(req.enable_rag),
             "enable_context": bool(req.enable_context),
+            "enable_nl2sql_route": bool(req.enable_nl2sql_route) and self._nl2sql_route_enabled_cfg,
+            "client_prompt_version": (str(req.prompt_version).strip() if req.prompt_version else None),
             "history_limit": self._history_limit,
             "context_snippets": [],
             "retrieval_score": 0.0,
@@ -316,6 +335,9 @@ class ChatbotLangGraphRunner:
             "intent_reason": "",
             "status": "started",
             "used_rag": False,
+            "used_nl2sql": False,
+            "nl2sql_sql": "",
+            "suggested_questions": [],
             "error": None,
             "answer_parts": [],
             "answer_text": "",
@@ -334,6 +356,8 @@ class ChatbotLangGraphRunner:
         return merged  # type: ignore[return-value]
 
     def _should_append_similar_cases(self, state: ChatbotGraphState) -> bool:
+        if state.get("intent_label") == "data_query":
+            return False
         if not state.get("need_similar_cases"):
             return False
         if state.get("intent_label") == "clarify":
@@ -372,8 +396,12 @@ class ChatbotLangGraphRunner:
             state = m(state, await self._node_load_history(state))
             state = m(state, await self._node_intent_classify(state))
             state = m(state, await self._node_fault_case_gate(state))
-            if self._route_by_intent(state) == "clarify":
+            rintent = self._route_by_intent(state)
+            if rintent == "clarify":
                 state = m(state, await self._node_clarify_build_response(state))
+                return m(state, await self._node_finalize(state))
+            if rintent == "data_query":
+                state = m(state, await self._node_nl2sql_answer(state))
                 return m(state, await self._node_finalize(state))
             state = m(state, await self._node_select_rag_engine(state))
             while True:
@@ -394,7 +422,16 @@ class ChatbotLangGraphRunner:
         # 模板策略入口：
         # - 继续复用 PromptTemplateRegistry，保持与历史模板策略兼容；
         # - 若模板缺失，使用固定兜底 system_prompt，防止下游节点判空分叉。
-        tpl = self._prompts.get_template(scene="chatbot", user_id=state["user_id"], version=None)
+        client_ver = state.get("client_prompt_version")
+        if client_ver:
+            tpl = self._prompts.get_template(scene="chatbot", user_id=state["user_id"], version=str(client_ver))
+        else:
+            tpl = self._prompts.get_template(
+                scene="chatbot",
+                user_id=state["user_id"],
+                version=None,
+                default_version=self._default_prompt_version,
+            )
         out: ChatbotGraphState = {}
         if tpl and tpl.content:
             out["system_prompt"] = tpl.content
@@ -424,31 +461,37 @@ class ChatbotLangGraphRunner:
         if not self._intent_enabled:
             return {"intent_label": "kb_qa", "intent_confidence": 1.0, "intent_reason": "intent_disabled", "status": "intented"}
         q = (state.get("query") or "").strip()
-        # 企业首版采用稳定规则分类，而非 LLM 分类：
-        # - 优点：稳定、低成本、可解释；
-        # - 缺点：召回面较窄。后续若升级为 LLM 分类器，请保持 label/reason 字段兼容。
-        unclear_patterns = [
-            r"^怎么弄[啊呀吗呢]?$",
-            r"^怎么办[啊呀吗呢]?$",
-            r"^啥意思[啊呀吗呢]?$",
-            r"^(这个|那个|它).{0,3}(怎么|怎么办|啥意思)",
-        ]
-        label = "kb_qa"
-        reason = "default_kb_qa"
-        conf = 0.82
-        if len(q) <= 4:
-            label, reason, conf = "clarify", "query_too_short", 0.92
-        else:
-            for p in unclear_patterns:
-                if re.search(p, q):
-                    label, reason, conf = "clarify", "ambiguous_query_pattern", 0.9
-                    break
+        imgs = [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()]
+        label, reason, conf = classify_chatbot_intent(
+            q,
+            enable_nl2sql_route=bool(state.get("enable_nl2sql_route")),
+            image_urls=imgs,
+        )
         if label not in self._intent_output_labels:
-            # 未放量标签一律降级到 kb_qa，并保留原因便于观测。
             reason = f"label_not_enabled:{label}|{reason}"
             label = "kb_qa"
             conf = min(conf, 0.6)
         return {"intent_label": label, "intent_reason": reason, "intent_confidence": conf, "status": "intented"}
+
+    async def _node_nl2sql_answer(self, state: ChatbotGraphState) -> ChatbotGraphState:
+        """结构化问数：NL2SQL + 结果自然语言化（会话写入由 Runner 层统一 persist）。"""
+        q = str(state.get("query") or "")
+        req = NL2SQLQueryRequest(user_id=state["user_id"], session_id=state["session_id"], question=q)
+        resp = await self._nl2sql.query(req, record_conversation=False)
+        text = await summarize_nl2sql_with_llm(
+            self._llm,
+            user_query=q,
+            sql=resp.sql,
+            rows=list(resp.rows or []),
+        )
+        return {
+            "answer_text": text,
+            "used_nl2sql": True,
+            "nl2sql_sql": resp.sql or "",
+            "used_rag": False,
+            "llm_messages": [],
+            "context_snippets": [],
+        }
 
     async def _node_fault_case_gate(self, state: ChatbotGraphState) -> ChatbotGraphState:
         """锅炉/管材故障域判定 + 是否在本轮末尾追加相似案例（检索在 Runner 层执行）。"""
@@ -596,11 +639,17 @@ class ChatbotLangGraphRunner:
         return {}
 
     def _route_by_intent(self, state: ChatbotGraphState) -> str:
-        # 非 clarify 一律按 kb_qa 处理：
-        # 这样首版路径稳定，避免“新增标签误命中”导致行为不可预期。
-        label = str(state.get("intent_label") or "kb_qa")
+        label = str(state.get("intent_label") or "kb_qa").lower()
         if label == "clarify":
             return "clarify"
+        if label == "data_query":
+            return "data_query"
+        if label == "unsafe":
+            return "unsafe"
+        if label == "handoff_human":
+            return "handoff_human"
+        if label == "smalltalk":
+            return "smalltalk"
         return "kb_qa"
 
     def _route_after_quality_check(self, state: ChatbotGraphState) -> str:
@@ -647,6 +696,20 @@ class ChatbotLangGraphRunner:
         if self._persist_partial and partial:
             self._conv.append_assistant_message(req.user_id, req.session_id, f"[partial] {partial}")
 
+    async def _fill_suggested_questions(self, state: ChatbotGraphState, req: ChatRequest, answer_text: str) -> None:
+        if not self._suggested_questions_enabled:
+            state["suggested_questions"] = []
+            return
+        sq = await build_suggested_questions(
+            query=req.query,
+            answer=answer_text,
+            context_snippets=list(state.get("context_snippets") or []),
+            intent_label=str(state.get("intent_label") or "kb_qa"),
+            llm_client=self._llm,
+            max_total=self._suggested_questions_max,
+        )
+        state["suggested_questions"] = sq
+
     def _build_finished_meta(self, state: ChatbotGraphState, start_ts: float) -> Dict[str, Any]:
         # 结束 meta 同时服务于：
         # 1) SSE 最后一帧给前端；
@@ -665,4 +728,7 @@ class ChatbotLangGraphRunner:
             "fault_detect_sources": list(state.get("fault_detect_sources") or []),
             "fault_detect_confidence": float(state.get("fault_detect_confidence") or 0.0),
             "need_similar_cases": bool(state.get("need_similar_cases")),
+            "used_nl2sql": bool(state.get("used_nl2sql", False)),
+            "nl2sql_sql": (state.get("nl2sql_sql") or "") if state.get("used_nl2sql") else None,
+            "suggested_questions": list(state.get("suggested_questions") or []),
         }

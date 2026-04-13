@@ -45,6 +45,28 @@ class ChatRequest(BaseModel):
             "True：有图则多模态判定。"
         ),
     )
+    prompt_version: str | None = Field(
+        None,
+        description=(
+            "客服 system 模板版本，对应 configs/prompts.yaml 中 chatbot 条目的 version。"
+            "为空时使用服务端 CHATBOT_PROMPT_DEFAULT_VERSION（默认 boiler_v1）。"
+        ),
+    )
+
+    @field_validator("prompt_version", mode="before")
+    @classmethod
+    def _normalize_prompt_version(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s if s else None
+    enable_nl2sql_route: bool = Field(
+        True,
+        description=(
+            "是否允许将「台账/检修/统计类」问句路由到 NL2SQL（意图 data_query）。"
+            "关闭后此类问题也走向量 RAG。"
+        ),
+    )
 
     @field_validator("user_id")
     @classmethod
@@ -86,6 +108,14 @@ class SessionMessagesResponse(BaseModel):
     ok: bool = Field(True, description="是否成功")
     user_id: str = Field(..., description="用户 ID")
     session_id: str = Field(..., description="会话 ID")
+    title: str = Field(
+        ...,
+        description="会话展示标题，与 GET /chatbot/sessions 列表项 title 同源（CHATBOT_SESSION_TITLE_MODE 等）",
+    )
+    title_source: str = Field(
+        ...,
+        description="标题来源：truncated | off | user，与列表项 title_source 一致",
+    )
     count: int = Field(..., description="返回条数")
     messages: list[SessionMessageItem] = Field(default_factory=list, description="按时间顺序的消息列表")
 
@@ -96,12 +126,40 @@ class SessionDeleteResponse(BaseModel):
     session_id: str = Field(..., description="会话 ID")
 
 
+class SessionTitlePatchRequest(BaseModel):
+    """PATCH /sessions/title 请求体。"""
+
+    title: str = Field(..., description="新展示标题（非空；超长按 CHATBOT_SESSION_TITLE_EDIT_MAX_RUNES 截断）")
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _validate_title(cls, v: Any) -> str:
+        from app.conversation.session_catalog import normalize_edited_title
+
+        s = v if isinstance(v, str) else (str(v) if v is not None else "")
+        try:
+            return normalize_edited_title(s)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+
+class SessionTitlePatchResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    user_id: str = Field(..., description="用户 ID")
+    session_id: str = Field(..., description="会话 ID")
+    title: str = Field(..., description="写入后的展示标题（与 GET /sessions 列表一致）")
+    title_source: str = Field(
+        ...,
+        description="修改后为 user（用户自定义）；与自动 truncated/off 区分",
+    )
+
+
 class SessionListItem(BaseModel):
     """会话列表单行（方案 B：索引 + 元数据）。"""
 
     session_id: str = Field(..., description="会话 ID")
     title: str = Field(..., description="展示用标题")
-    title_source: str = Field(..., description="truncated | off；后续可扩展 llm")
+    title_source: str = Field(..., description="truncated | off | user（用户 PATCH 标题）；llm 预留")
     last_activity_at: int = Field(..., description="最近活跃时间（毫秒，与 Redis ZSET score 一致）")
     message_count: int = Field(0, description="会话内消息条数")
 
@@ -118,6 +176,12 @@ class SessionListResponse(BaseModel):
 class ChatResponse(BaseModel):
     answer: str = Field(..., description="助手回答全文")
     used_rag: bool = Field(..., description="本轮是否实际走了检索（无命中时也可能为 false）")
+    used_nl2sql: bool = Field(False, description="本轮是否走了 NL2SQL（结构化查库）分支")
+    intent_label: str | None = Field(None, description="规则/图编排判定的意图标签（如 kb_qa、data_query、clarify）")
+    suggested_questions: list[str] = Field(
+        default_factory=list,
+        description="回答后推荐的关联追问（流式结束 meta 中同名字段对齐）",
+    )
     context_snippets: list[str] = Field(
         default_factory=list,
         description="注入到提示词前的检索片段文本列表（与 /rag/query 的 snippets 同源业务数据，封装形态不同）",
