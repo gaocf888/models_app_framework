@@ -1,3 +1,6 @@
+import re
+
+from app.nl2sql.entity_rules import EntityRule, check_entity_rules
 from app.nl2sql.validator import SQLValidator
 
 
@@ -58,4 +61,62 @@ def test_validate_identifiers_reject_unknown_table() -> None:
     assert not ok
     assert reason is not None
     assert "unknown tables" in reason
+
+
+def test_parse_table_aliases_simple_join() -> None:
+    v = SQLValidator()
+    sql = "SELECT a.id FROM orders a JOIN orders b ON a.id = b.user_id"
+    m = v.parse_table_aliases_from_sql(sql)
+    assert m.get("a") == "orders"
+    assert m.get("b") == "orders"
+
+
+def test_validate_column_table_binding_rejects_wrong_column_for_alias() -> None:
+    v = SQLValidator()
+    tc = {"orders": {"id", "user_id", "amount", "created_at"}}
+    sql = "SELECT a.current_a FROM orders a"
+    ok, reason = v.validate_column_table_binding(sql, table_columns=tc)
+    assert not ok
+    assert reason is not None
+    assert "current_a" in reason
+
+
+def test_validate_column_table_binding_ignores_literal_dot_pattern() -> None:
+    v = SQLValidator()
+    tc = {"orders": {"id", "user_id"}}
+    sql = "SELECT id FROM orders o WHERE note = 'a.b'"
+    ok, _ = v.validate_column_table_binding(sql, table_columns=tc)
+    assert ok
+
+
+def test_entity_rule_hits_when_question_and_sql_match() -> None:
+    pat = re.compile(r"(?i)mill_name\s*=\s*'[^']*一号锅炉", re.DOTALL)
+    rules = [
+        EntityRule(
+            question_contains_any=("一号锅炉",),
+            sql_pattern=pat,
+            message="mill_name 不应绑定锅炉名称",
+        )
+    ]
+    ok, msg = check_entity_rules(
+        "查一号锅炉负荷",
+        "SELECT * FROM base_coal_mill WHERE mill_name = '一号锅炉'",
+        rules,
+    )
+    assert not ok
+    assert msg is not None
+    assert "mill_name" in msg
+
+
+def test_entity_rule_skips_when_question_has_no_keyword() -> None:
+    pat = re.compile(r"mill_name", re.I)
+    rules = [
+        EntityRule(
+            question_contains_any=("一号锅炉",),
+            sql_pattern=pat,
+            message="x",
+        )
+    ]
+    ok, _ = check_entity_rules("查磨煤机", "SELECT * FROM t WHERE mill_name = '一号锅炉'", rules)
+    assert ok
 

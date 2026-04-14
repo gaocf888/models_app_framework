@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Sequence
 
@@ -40,8 +41,21 @@ class RAGService:
     def _get_reranker(self):
         if self._reranker is not None:
             return self._reranker
-        model_path = self._cfg.hybrid.reranker_model_path
-        model_name = model_path or self._cfg.hybrid.reranker_model_name
+        hub_name = (self._cfg.hybrid.reranker_model_name or "BAAI/bge-reranker-large").strip()
+        raw_path = (self._cfg.hybrid.reranker_model_path or "").strip()
+        resolved_local: str | None = None
+        if raw_path:
+            expanded = os.path.abspath(os.path.expandvars(os.path.expanduser(raw_path)))
+            if os.path.isdir(expanded):
+                resolved_local = expanded
+            else:
+                # 路径无效时勿把绝对路径当作 HF repo id 传给 CrossEncoder（会触发 Repo id must be...）
+                logger.warning(
+                    "RAG_RERANKER_MODEL_PATH is not a directory (%s); falling back to hub id %s",
+                    expanded,
+                    hub_name,
+                )
+        load_id = resolved_local if resolved_local else hub_name
         try:
             from sentence_transformers import CrossEncoder  # type: ignore[import-untyped]
         except Exception as e:  # noqa: BLE001
@@ -50,12 +64,21 @@ class RAGService:
                 "Install with: pip install -r requirements-大模型应用.txt"
             ) from e
         try:
-            self._reranker = CrossEncoder(model_name)
-            logger.info("RAGService loaded CrossEncoder reranker: %s", model_name)
+            if resolved_local:
+                self._reranker = CrossEncoder(
+                    resolved_local,
+                    trust_remote_code=os.getenv("RAG_RERANKER_TRUST_REMOTE_CODE", "false").lower() == "true",
+                )
+            else:
+                self._reranker = CrossEncoder(
+                    hub_name,
+                    trust_remote_code=os.getenv("RAG_RERANKER_TRUST_REMOTE_CODE", "false").lower() == "true",
+                )
+            logger.info("RAGService loaded CrossEncoder reranker: %s", load_id)
             return self._reranker
         except Exception as e:  # noqa: BLE001
             # Reranker 不是摄入/检索链路的强依赖：模型缺失/无网时允许跳过重排。
-            logger.warning("RAGService failed to load reranker model=%s; skip rerank. err=%s", model_name, e)
+            logger.warning("RAGService failed to load reranker model=%s; skip rerank. err=%s", load_id, e)
             self._reranker = None
             return None
 

@@ -23,6 +23,11 @@
 
 ---
 
+## 0. 前提重要说明
+> 实现效果较好的NL2SQL的前提是：要有教完善的知识库知识摄入（因为当前NL2SQL对表结构、字段、表间关系的认知，是通过RAG知识库+数据库反射两种方式融合获取的）
+    1.  首先RAG知识摄入时，要确保摄入namespace分别为`nl2sql_schema`、`nl2sql_biz_knowledge`、`nl2sql_qa_examples`的三种知识（分别是数据库结构、数据库知识文档、数据库知识问答对（问法 → 标准 SQL））
+    2.  app/app-deploy/.env中配置业务数据库的连接信息
+
 ## 1. 总体技术概览
 
 ### 1.1 从使用视角看整体流程
@@ -47,13 +52,14 @@
      - API 层将请求交给 `NL2SQLService.query(...)`。  
    - **服务与链路调用**：  
      1. `NL2SQLService` 先使用 `ConversationManager` 记录用户问题，并打 `NL2SQL_QUERY_COUNT` 指标；  
-     2. 调用 `NL2SQLChain.generate_sql(question, user_id)` 生成候选 SQL：  
+     2. 调用 `NL2SQLChain.generate_sql_with_validation_context(question, user_id)`（与 `generate_sql` 等价，后者仅丢弃 `NL2SQLValidationContext`）生成候选 SQL：  
         - 首次调用时 `SchemaMetadataService.refresh_from_db()` 反射真实库表/列/**外键**；失败则回退 Demo/RAG 白名单。  
         - （可选）LangChain 下 `_plan`；**默认**在已成功反射真实库时 **跳过** `_plan`（`NL2SQL_DISABLE_PLANNER_WHEN_DB_SCHEMA`，避免污染 RAG query）。  
         - `NL2SQLRAGService.retrieve(...)` 三命名空间联合检索；`parse_nl2sql_schema_snippets` 解析文档表映射等。  
+        - 可选 **`load_entity_rules_from_env()`**（`NL2SQL_ENTITY_RULES` / `NL2SQL_ENTITY_RULES_FILE`）：否定业务规则（问题关键词 + SQL 正则）。  
         - `PromptTemplateRegistry(scene="nl2sql")`：`{{NL2SQL_SCHEMA_CATALOG}}` 注入全库目录（含 FK 提示）；`PromptBuilder` 拼装片段与输出规则。  
-        - LangChain ChatOpenAI 或 `VLLMHttpClient` 生成 SQL → `normalize_sql`（去围栏、引号外空白压单行）→ `validate` / 标识符白名单 → 失败可 `_refine_sql`。  
-     3. 若最终 SQL 非空，则由 `SQLExecutor.execute(sql)` 在业务数据库中执行查询，异常时记录 `NL2SQL_QUERY_ERROR_COUNT` 与错误信息到会话；  
+        - LangChain ChatOpenAI 或 `VLLMHttpClient` 生成 SQL → `normalize_sql`（去围栏、引号外空白压单行）→ **校验**：`validate` + 标识符白名单 +（`schema_ok` 时）**列–表绑定** +（若配置）**实体规则** → 失败可 **`_refine_sql`**（生成期修正）。  
+     3. 若最终 SQL 非空，则进入 **执行闭环**：可选 **`SQLExecutor.explain`**（`NL2SQL_EXPLAIN_BEFORE_EXECUTE`）→ **`SQLExecutor.execute`**；`EXPLAIN` 或 `SELECT` 失败时，在 **`NL2SQL_REFINE_ON_EXEC_ERROR`** 与 LangChain 可用且未用尽 **`NL2SQL_MAX_EXEC_REFINES`** 时，调用 **`refine_sql_after_executor_error`** 将错误信息反馈给 LLM 并 **复用同一 `ValidationContext` 再校验**，再重试；异常时记录 `NL2SQL_QUERY_ERROR_COUNT` 与错误信息到会话；  
      4. 无论 SQL 是否执行成功，均会将最终 SQL 文本追加到会话中，便于后续审计与分析。  
    - **关键配置与依赖**：  
      - 大模型：`LLM_DEFAULT_MODEL` / `LLM_DEFAULT_ENDPOINT` / `LLM_DEFAULT_API_KEY`（控制 LangChain ChatOpenAI 与 vLLM 客户端）；  
@@ -69,7 +75,7 @@
 >   后台任务或管理脚本 → `SchemaMetadataService` / 业务 ETL → `NL2SQLRAGService.index_*` → `RAGService.index_texts(..., namespace=...)` → `VectorStoreProvider`（向量库）。  
 >   如需通过 HTTP 统一管理，也可以配合 `/rag/ingest/texts` 接口，将 NL2SQL 相关片段以合适的 `namespace` 摄入。  
 > - **自然语言查询**：  
->   `POST /nl2sql/query` → `NL2SQLService.query` → `NL2SQLChain.generate_sql`（内部：SchemaMetadataService + NL2SQLRAGService + PromptBuilder + LLM + SQLValidator）→ `SQLExecutor.execute` → 返回 `rows`。
+>   `POST /nl2sql/query` → `NL2SQLService.query` → `NL2SQLChain.generate_sql_with_validation_context`（内部：Schema + RAG + Prompt + LLM + **多层 SQLValidator / entity_rules**）→ 可选 **`SQLExecutor.explain`** → **`SQLExecutor.execute`**（失败可 **refine 闭环**）→ 返回 `rows`。
 
 ### 1.2 能力一览表
 
@@ -78,8 +84,9 @@
 | **Schema 元数据管理** | `SchemaMetadataService` 内存维护 `TableSchema` 映射，可从真实 DB 反射刷新，也内置一套 Demo Schema 便于本地调试。 |
 | **NL2SQL 专用 RAG** | `NL2SQLRAGService` 使用 `RetrievalPolicy` 统一路由，在命名空间 `nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples` 上做向量+图事实联合检索，并合并去重结果。 |
 | **Prompt 编排** | `PromptBuilder` 按 NL2SQL 设计文档，将 Schema 片段、业务知识与示例拼装成结构化 Prompt，结合 `PromptTemplateRegistry` 中 scene=`nl2sql` 的模板。 |
-| **SQL 生成链路** | `NL2SQLChain` 将问题 →（可选）规划 `_plan` → RAG 检索 → Prompt 构建 → LLM 生成 SQL → 安全校验与自我修正。 |
-| **SQL 校验与执行** | `SQLValidator` 确保仅包含安全 SELECT 语句；`SQLExecutor` 基于 SQLAlchemy AsyncEngine 执行只读 SQL 并返回行列表。 |
+| **SQL 生成链路** | `NL2SQLChain` 将问题 →（可选）规划 `_plan` → RAG 检索 → Prompt 构建 → LLM 生成 SQL → **安全 + 白名单 + 列–表绑定 + 实体规则** 与生成期 **`_refine_sql`**；对外 **`generate_sql` / `generate_sql_with_validation_context`** 与执行期 **`refine_sql_after_executor_error`**。 |
+| **业务实体规则** | `app/nl2sql/entity_rules.py`：环境变量加载 **否定规则**（问题子串 + SQL 正则），在链上 `_validate_sql` 中与 `SQLValidator` 联动。 |
+| **SQL 校验与执行** | `SQLValidator`：只读、白名单、**主查询 FROM 别名下列绑定**（反射 `table→columns`）；`SQLExecutor`：**`explain` + `execute`**，只读查询。 |
 | **服务层与 API** | `NL2SQLService` 管理链路调用、执行、会话记录与指标；`/nl2sql/query` 作为统一 HTTP 入口。 |
 | **监控与可观测性** | 指标 `NL2SQL_QUERY_COUNT` / `NL2SQL_QUERY_ERROR_COUNT`；关键步骤 **INFO/WARNING** 日志（见 §8）；可选 `LangSmithTracker`。 |
 
@@ -101,6 +108,7 @@ flowchart TB
         PB["PromptBuilder"]
         LLM["LangChain ChatOpenAI / VLLMHttpClient"]
         VAL["SQLValidator"]
+        ER["entity_rules（可选）"]
     end
 
     subgraph Data["数据访问 / 元数据"]
@@ -124,6 +132,7 @@ flowchart TB
     NChain --> PB
     NChain --> LLM
     NChain --> VAL
+    NChain --> ER
 
     RAG --> RAGBase
     Exec --> DB
@@ -148,7 +157,7 @@ sequenceDiagram
     Client->>API: POST /nl2sql/query (question, user_id, session_id)
     API->>Svc: NL2SQLQueryRequest
     Svc->>Svc: 记录用户问题到 ConversationManager
-    Svc->>Chain: generate_sql(question, user_id)
+    Svc->>Chain: generate_sql_with_validation_context(question, user_id)
 
     alt LangChain 可用且未跳过规划
         Chain->>LLM: _plan(question)（可选）
@@ -168,17 +177,22 @@ sequenceDiagram
     else
         Chain->>LLM: VLLMHttpClient.generate(prompt)
     end
-    LLM-->>Chain: sql
+    LLM-->>Chain: raw_sql
 
-    Chain->>Val: validate(sql)
-    alt validate 失败 且 LangChain 可用
-        Chain->>LLM: _refine_sql(question, original_sql)
+    Chain->>Val: normalize + validate + whitelist + binding + entity_rules
+    alt 校验失败 且 LangChain 可用
+        Chain->>LLM: _refine_sql(question, original_sql, reason)
         LLM-->>Chain: refined_sql
-        Chain->>Val: validate(refined_sql)
+        Chain->>Val: 再次全量校验
     end
-    Chain-->>Svc: final_sql (possibly empty)
+    Chain-->>Svc: final_sql + NL2SQLValidationContext (possibly empty sql)
 
     alt final_sql 非空
+        opt NL2SQL_EXPLAIN_BEFORE_EXECUTE
+            Svc->>Exec: explain(sql)
+            Exec->>DB: EXPLAIN SELECT ...
+            DB-->>Exec: plan rows / 或错误
+        end
         Svc->>Exec: execute(sql)
         Exec->>DB: SELECT ...
         DB-->>Exec: rows
@@ -186,6 +200,8 @@ sequenceDiagram
     else
         Svc->>Svc: 不执行 SQL，rows=[]
     end
+
+    Note over Svc,Chain: EXPLAIN 或 execute 失败时，若开启 NL2SQL_REFINE_ON_EXEC_ERROR\n且 LangChain 可用，则 refine_sql_after_executor_error（带 MySQL 错误与 ValidationContext）\n再经同一套校验后重试，次数受 NL2SQL_MAX_EXEC_REFINES 限制（见 nl2sql_service.py）
 
     Svc->>Svc: 将 SQL/错误摘要写入 ConversationManager
     Svc-->>API: NL2SQLQueryResponse(sql, rows)
@@ -206,8 +222,9 @@ sequenceDiagram
 | Schema 元数据 | `app/nl2sql/schema_service.py` | 维护内存中的 `TableSchema` 映射；支持从真实数据库反射刷新 Schema；提供 Demo Schema。 |
 | NL2SQL 专用 RAG | `app/nl2sql/rag_service.py` | 使用 `RAGService` 在 `nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples` 命名空间上做多命名空间联合检索。 |
 | Prompt 构建器 | `app/nl2sql/prompt_builder.py` | 按 NL2SQL 设计，将问题、Schema 片段与业务知识拼为结构化 Prompt；对接 `PromptTemplateRegistry`。 |
-| SQL 校验 | `app/nl2sql/validator.py` | 只读 SQL 校验（确保仅 SELECT 等安全语句）。 |
-| SQL 执行 | `app/nl2sql/executor.py` | 基于 SQLAlchemy AsyncEngine 执行只读 SQL，并返回行列表。 |
+| SQL 校验 | `app/nl2sql/validator.py` | 只读 SQL；表/列白名单；**主查询 FROM 下列–表绑定**；`normalize_sql` 等。 |
+| 业务实体规则 | `app/nl2sql/entity_rules.py` | 从环境变量加载 **否定规则**（问题关键词 + SQL 正则）。 |
+| SQL 执行 | `app/nl2sql/executor.py` | AsyncEngine；**`explain`（EXPLAIN）** 与 **`execute`**（SELECT）。 |
 | 请求/响应模型 | `app/models/nl2sql.py` | `NL2SQLQueryRequest` / `NL2SQLQueryResponse` Pydantic 模型。 |
 | 共享配置 | `app/core/config.py` | `AppConfig.llm`（大模型 endpoint 等）；`DatabaseConfig`（`DB_URL` 等）被 `SchemaMetadataService` / `SQLExecutor` 使用。 |
 | 会话与指标 | `app/conversation/manager.py`、`app/core/metrics.py` | 会话记录与 Prometheus 指标（`NL2SQL_QUERY_COUNT` / `NL2SQL_QUERY_ERROR_COUNT`）。 |
@@ -266,26 +283,33 @@ index_qa_examples(snippets: List[str])
 - 构造函数依赖：
   - `SchemaMetadataService`、`NL2SQLRAGService`、`PromptBuilder`、`VLLMHttpClient`、`SQLValidator`、`PromptTemplateRegistry`；
   - 可选 `LangChain ChatOpenAI` 与 `LangSmithTracker`。
-- 生成 SQL 主流程（`generate_sql(question, user_id)`）：
+- 生成 SQL 主流程（**`generate_sql_with_validation_context`**；`generate_sql` 仅返回其中的 `str`）：
   1. **`_ensure_schema_refreshed_once`**：首次调用 `refresh_from_db()`；失败则打 WARNING，后续依赖 RAG/Demo。  
   2. **`_db_schema_available`**：若仅有 Demo `orders` 视为未接入真实库。  
   3. **（可选）`_plan`**：LangChain 可用 **且** 未满足「禁用规划 + 真实库」时执行；否则跳过。  
   4. **RAG**：`retrieve(rag_query)`，`rag_query` 含规划摘要时与问题拼接。  
-  5. **白名单**：真实库 → 表/列来自反射；否则从片段抽取。  
-  6. **Prompt**：替换 `{{NL2SQL_SCHEMA_CATALOG}}` 或附加 `schema_catalog`；`build` 完整 prompt。  
-  7. **LLM 生成** → **`normalize_sql`**（围栏、引号外空白折叠单行）。  
-  8. **校验**：`validate` + `validate_identifiers`（可选强列校验）；失败则 `_refine_sql` 再验。  
-  9. **LangSmith（可选）**。
+  5. **白名单 + `table_columns`**：真实库 → 表/列来自反射并构建 **表→列集合**；否则从片段抽取（不做列–表绑定）。  
+  6. **实体规则**：`load_entity_rules_from_env()`（可选）。  
+  7. **Prompt**：替换 `{{NL2SQL_SCHEMA_CATALOG}}` 或附加 `schema_catalog`；`build` 完整 prompt。  
+  8. **LLM 生成** → **`normalize_sql`**（围栏、引号外空白折叠单行）。  
+  9. **`_validate_sql`**：`validate` + `validate_identifiers` +（`schema_ok`）**`validate_column_table_binding`** +（若配置）**`check_entity_rules`**；失败则 **`_refine_sql`** 再验。  
+  10. 返回 **`(sql, NL2SQLValidationContext)`**；成功路径打 **LangSmith（可选）**。
 
-### 3.5 SQLValidator 与 SQLExecutor
+### 3.5 SQLValidator、entity_rules 与 SQLExecutor
 
-- 文件：`app/nl2sql/validator.py`、`app/nl2sql/executor.py`  
+- 文件：`app/nl2sql/validator.py`、`app/nl2sql/entity_rules.py`、`app/nl2sql/executor.py`  
 - `SQLValidator`：
   - 只读约束（SELECT / WITH），禁止危险关键字；  
   - `normalize_sql`：**引号感知的空白折叠**（字符串/引号标识符内部保留，外部压成单行）；去除 markdown ```sql``` 围栏；  
-  - `validate_identifiers`：表/列白名单（真实库成功时启用列级更强校验）。  
+  - `validate_identifiers`：表/列白名单（真实库成功时启用列级更强校验）；  
+  - **`parse_table_aliases_from_sql` / `validate_column_table_binding`**：在提供反射得到的 **`table_columns`** 时，解析主查询 `FROM` 的别名，校验 **`alias.column`**（及 **`table.column`** 形式且表名在映射中）是否落在正确表的列集合上。  
+- `entity_rules`：
+  - JSON 数组项字段：`question_contains_any`（或 `question_contains`）、`sql_pattern`（或 `sql_regex`）、`message`；  
+  - **若设置了 `NL2SQL_ENTITY_RULES_FILE` 且路径存在则只读文件**；否则在未配置文件时使用 **`NL2SQL_ENTITY_RULES`** 内联 JSON；文件不存在时当前实现 **不会**回退到内联。  
 - `SQLExecutor`：
   - 使用 `DatabaseConfig.url` 创建 AsyncEngine；  
+  - **`explain(sql)`**：执行 `EXPLAIN <sql>`，供服务层可选预检；  
+  - **`execute(sql)`**：只读查询；  
   - **INFO** 日志：`sql_len`、预览、**row_count**；失败 **WARNING** 带堆栈。
 
 ### 3.6 服务层与会话（NL2SQLService + ConversationManager）
@@ -293,10 +317,10 @@ index_qa_examples(snippets: List[str])
 - 文件：`app/services/nl2sql_service.py`、`app/conversation/manager.py`  
 - 行为：
   - 在 `query` 开始时，将用户问题写入会话（方便后续回放与分析）；  
-  - 调用 `NL2SQLChain.generate_sql(...)` 生成 SQL；  
-  - 若 SQL 非空，则通过 `SQLExecutor.execute` 执行并捕获异常：  
-    - 执行失败则增加 `NL2SQL_QUERY_ERROR_COUNT` 并将错误摘要写入会话；  
-  - 不论执行成功与否，最后将 SQL 文本写入会话（用于记录用户交互中“模型给出的 SQL”）；  
+  - 调用 **`NL2SQLChain.generate_sql_with_validation_context(...)`**，得到 **`sql`** 与 **`NL2SQLValidationContext`**（供执行失败 refine 复用校验边界）；  
+  - 若 SQL 非空：在 **`NL2SQL_EXPLAIN_BEFORE_EXECUTE`** 为真时先 **`SQLExecutor.explain`**，再 **`execute`**；任一步失败且 **`NL2SQL_REFINE_ON_EXEC_ERROR`** 允许时，调用 **`refine_sql_after_executor_error`**，在 **`NL2SQL_MAX_EXEC_REFINES`** 限制内循环重试；  
+  - 失败路径增加 `NL2SQL_QUERY_ERROR_COUNT` 并将错误摘要写入会话（EXPLAIN 与 execute 分别处理）；  
+  - 不论执行成功与否，最后将 **当前** SQL 文本写入会话（用于记录用户交互中“模型给出的 SQL”，含 refine 后版本）；  
   - 返回 `NL2SQLQueryResponse(sql, rows)`。
 
 ---
@@ -324,6 +348,18 @@ index_qa_examples(snippets: List[str])
 - `SchemaMetadataService.refresh_from_db()` 与 `SQLExecutor` 均通过 `get_app_config().db` 获取连接信息。
 
 其他常用：`NL2SQL_DISABLE_PLANNER_WHEN_DB_SCHEMA`、`NL2SQL_PROMPT_DEFAULT_VERSION`、`NL2SQL_SCHEMA_NAMESPACE_TOP_K`、`NL2SQL_SCHEMA_CATALOG_MAX_TABLES` / `MAX_COLS`。
+
+**校验与执行闭环（环境变量，不设则走代码默认值）**：
+
+| 变量 | 含义 |
+|------|------|
+| `NL2SQL_EXPLAIN_BEFORE_EXECUTE` | 默认 `false`：执行前是否 `EXPLAIN` |
+| `NL2SQL_REFINE_ON_EXEC_ERROR` | 默认 `true`：`EXPLAIN`/`SELECT` 失败是否 LLM 修正（需 LangChain） |
+| `NL2SQL_MAX_EXEC_REFINES` | 默认 `1`：执行阶段最大修正轮数 |
+| `NL2SQL_ENTITY_RULES` | 可选：内联 JSON 数组（否定实体规则） |
+| `NL2SQL_ENTITY_RULES_FILE` | 可选：规则 JSON 文件路径（存在则优先读文件，见 §3.5） |
+
+采样相关：`NL2SQL_CHAT_TEMPERATURE`、`NL2SQL_CHAT_TOP_P`、`NL2SQL_CHAT_SEED` 等见 `app/app-deploy/.env.example`。
 
 ---
 
@@ -374,7 +410,7 @@ flowchart LR
 | `app.services.nl2sql_service` | `query` 开始、空 SQL 警告、执行成功/异常 |
 | `app.nl2sql.chain` | 反射后表数量、`schema_from_db`、是否跳过 planner、RAG snippet 数、白名单规模、catalog 来源与 prompt 长度、LLM 后端、校验失败原因、`refine_sql`、成功摘要 |
 | `app.nl2sql.rag_service` | 检索模式、各 namespace 向量/图条数、去重前后 chunk 数 |
-| `app.nl2sql.executor` | SQL 预览、`row_count` 或执行异常 |
+| `app.nl2sql.executor` | SQL 预览、`explain` / `execute` 成功或异常 |
 | `app.nl2sql.schema_service` | 反射开始/成功（表数、FK 边数、表名样例）或异常 |
 
 ---
@@ -391,10 +427,10 @@ flowchart LR
    - 针对多表复杂问题，引入“显式规划 + 显式 Thought 输出 + SQL 生成”组合策略，提升可解释性。
 3. **规划与自我修正增强**：  
    - 在 `_plan` 中返回更结构化的规划结果，并用于优化 RAG 检索 query；  
-   - 在 `_refine_sql` 中加入执行错误信息作为上下文（例如语法错误信息、权限错误），实现针对性的自我修正。
+   - 已实现：执行期 **`refine_sql_after_executor_error`** 将 MySQL 错误传入 **`_refine_sql`**，与生成期修正共用骨架；可继续加强错误分类与针对性 prompt。  
 4. **安全与审计**：  
-   - 扩展 `SQLValidator` 的规则集，支持表级/字段级权限与资源约束；  
-   - 为 SQL 执行增加审计日志与“干跑（dry-run）”模式等能力。
+   - 扩展 `SQLValidator` / 实体规则：支持更丰富的正向约束（例如必选 JOIN）、表级/字段级权限；  
+   - 为 SQL 执行增加审计日志；**可选 `EXPLAIN` 预检** 已提供，可再演进 dry-run / 行数阈值等策略。
 5. **GraphRAG 结合**：  
    - 在后续版本中，将数据库 Schema 映射为图结构（表/列为节点、外键/业务关系为边），在 NL2SQL 中引入 GraphRAG，改善跨表/复杂 join 推理能力（当前已通过 **FK catalog + RAG** 提供基础关联提示）。
 

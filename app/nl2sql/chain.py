@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from typing import Iterable
 
 from app.core.logging import get_logger
@@ -16,9 +17,20 @@ from app.nl2sql.schema_snippet_parser import (
     format_enriched_catalog_line,
     parse_nl2sql_schema_snippets,
 )
+from app.nl2sql.entity_rules import EntityRule, check_entity_rules, load_entity_rules_from_env
 from app.nl2sql.validator import SQLValidator
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class NL2SQLValidationContext:
+    """供服务层在执行失败 / EXPLAIN 失败时做二次 refine 与再校验。"""
+
+    allowed_tables: frozenset[str]
+    allowed_columns: frozenset[str]
+    schema_ok: bool
+    table_columns: dict[str, frozenset[str]]
 
 NL2SQL_SCHEMA_CATALOG_PLACEHOLDER = "{{NL2SQL_SCHEMA_CATALOG}}"
 
@@ -71,17 +83,38 @@ class NL2SQLChain:
             default_model = llm_cfg.default_model
             model_cfg = llm_cfg.models[default_model]
 
+            # NL2SQL 单独使用低随机性参数，避免同题多次生成 SQL 漂移（与客服等场景的 LLM 温度解耦）
+            nl2sql_temp = float(os.getenv("NL2SQL_CHAT_TEMPERATURE", "0"))
+            nl2sql_top_p = float(os.getenv("NL2SQL_CHAT_TOP_P", "0.95"))
+            nl2sql_seed_raw = os.getenv("NL2SQL_CHAT_SEED", "").strip()
+            model_kw: dict = {"top_p": nl2sql_top_p}
+            if nl2sql_seed_raw:
+                try:
+                    model_kw["seed"] = int(nl2sql_seed_raw)
+                except ValueError:
+                    logger.warning("NL2SQL_CHAT_SEED ignored (not an int): %r", nl2sql_seed_raw)
             self._lc_chat_model = ChatOpenAI(
                 model=model_cfg.model_id,
                 base_url=model_cfg.endpoint.rstrip("/"),
                 api_key=model_cfg.api_key or "EMPTY",
-                temperature=model_cfg.temperature,
+                temperature=nl2sql_temp,
+                model_kwargs=model_kw,
             )
-            logger.info("NL2SQLChain: LangChain ChatOpenAI enabled.")
+            logger.info(
+                "NL2SQLChain: LangChain ChatOpenAI enabled (nl2sql temperature=%s top_p=%s).",
+                nl2sql_temp,
+                nl2sql_top_p,
+            )
         except Exception:
             logger.warning("NL2SQLChain: LangChain not available, fallback to VLLMHttpClient.")
 
     async def generate_sql(self, question: str, user_id: str | None = None) -> str:
+        sql, _ctx = await self.generate_sql_with_validation_context(question, user_id=user_id)
+        return sql
+
+    async def generate_sql_with_validation_context(
+        self, question: str, user_id: str | None = None
+    ) -> tuple[str, NL2SQLValidationContext]:
         logger.info(
             "NL2SQLChain.generate_sql start user_id=%s question_len=%d preview=%r",
             user_id,
@@ -123,6 +156,14 @@ class NL2SQLChain:
         schema_snippets = self._rag.retrieve(rag_query)
         rag_hints = parse_nl2sql_schema_snippets(schema_snippets)
         allowed_tables, allowed_columns, schema_ok = self._whitelist_from_schema_and_snippets(schema_snippets)
+        table_columns_map = self._table_columns_map() if schema_ok else {}
+        validation_ctx = NL2SQLValidationContext(
+            frozenset(allowed_tables),
+            frozenset(allowed_columns),
+            schema_ok,
+            {k: frozenset(v) for k, v in table_columns_map.items()},
+        )
+        entity_rules = load_entity_rules_from_env()
         if schema_ok != schema_from_db:
             logger.warning(
                 "NL2SQLChain: schema whitelist flag mismatch schema_from_db=%s schema_ok=%s",
@@ -200,7 +241,17 @@ class NL2SQLChain:
         if self._lc_chat_model is not None:
             sql = await self._generate_via_langchain(prompt)
         else:
-            sql = await self._llm.generate(model=None, prompt=prompt)  # type: ignore[arg-type]
+            vllm_kw: dict = {
+                "temperature": float(os.getenv("NL2SQL_CHAT_TEMPERATURE", "0")),
+                "top_p": float(os.getenv("NL2SQL_CHAT_TOP_P", "0.95")),
+            }
+            seed_raw = os.getenv("NL2SQL_CHAT_SEED", "").strip()
+            if seed_raw:
+                try:
+                    vllm_kw["seed"] = int(seed_raw)
+                except ValueError:
+                    pass
+            sql = await self._llm.generate(model=None, prompt=prompt, **vllm_kw)  # type: ignore[arg-type]
         raw_out_len = len(sql or "")
         sql = self._validator.normalize_sql(sql)
         logger.info(
@@ -213,9 +264,12 @@ class NL2SQLChain:
 
         valid, validation_error = self._validate_sql(
             sql,
+            question=question,
             allowed_tables=allowed_tables,
             allowed_columns=allowed_columns,
             enforce_column_whitelist=schema_ok,
+            table_columns=table_columns_map if schema_ok else None,
+            entity_rules=entity_rules,
         )
         if not valid:
             logger.warning(
@@ -236,9 +290,12 @@ class NL2SQLChain:
                     sql = self._validator.normalize_sql(sql)
                     valid, validation_error = self._validate_sql(
                         sql,
+                        question=question,
                         allowed_tables=allowed_tables,
                         allowed_columns=allowed_columns,
                         enforce_column_whitelist=schema_ok,
+                        table_columns=table_columns_map if schema_ok else None,
+                        entity_rules=entity_rules,
                     )
                     if not valid:
                         logger.warning(
@@ -246,7 +303,7 @@ class NL2SQLChain:
                             _text_preview(sql, 200),
                             validation_error,
                         )
-                        return ""
+                        return "", validation_ctx
                     logger.info(
                         "NL2SQLChain refine_sql ok sql_len=%d preview=%r",
                         len(sql or ""),
@@ -254,10 +311,10 @@ class NL2SQLChain:
                     )
                 except Exception:
                     logger.exception("NL2SQLChain: refine_sql failed, return empty SQL.")
-                    return ""
+                    return "", validation_ctx
             else:
                 logger.warning("NL2SQLChain validation failed and no LangChain; return empty SQL")
-                return ""
+                return "", validation_ctx
 
         # LangSmith trace（若启用）
         self._ls_tracker.log_run(
@@ -276,7 +333,50 @@ class NL2SQLChain:
             len(sql or ""),
             _text_preview(sql, 200),
         )
-        return sql
+        return sql, validation_ctx
+
+    async def refine_sql_after_executor_error(
+        self,
+        question: str,
+        bad_sql: str,
+        error_message: str,
+        *,
+        ctx: NL2SQLValidationContext,
+    ) -> str:
+        """
+        在 EXPLAIN / SELECT 执行失败后，将数据库错误信息喂给 LLM 做有限次修正（需 LangChain）。
+        返回空字符串表示放弃修正。
+        """
+        if self._lc_chat_model is None:
+            return ""
+        entity_rules = load_entity_rules_from_env()
+        try:
+            refined = await self._refine_sql(
+                question=question,
+                original_sql=bad_sql,
+                validation_error=f"MySQL / executor: {error_message}",
+            )
+            refined = self._validator.normalize_sql(refined)
+            ok, err = self._validate_sql(
+                refined,
+                question=question,
+                allowed_tables=set(ctx.allowed_tables),
+                allowed_columns=set(ctx.allowed_columns),
+                enforce_column_whitelist=ctx.schema_ok,
+                table_columns={k: set(v) for k, v in ctx.table_columns.items()} if ctx.schema_ok else None,
+                entity_rules=entity_rules,
+            )
+            if not ok:
+                logger.warning(
+                    "NL2SQLChain refine_sql_after_executor_error still invalid preview=%r reason=%s",
+                    _text_preview(refined, 200),
+                    err,
+                )
+                return ""
+            return refined
+        except Exception:
+            logger.exception("NL2SQLChain.refine_sql_after_executor_error failed")
+            return ""
 
     async def _plan(self, question: str) -> str:
         """
@@ -408,13 +508,24 @@ class NL2SQLChain:
             lines.append(f"... 其余 {len(rag_hints) - max_tables} 张表已省略")
         return "\n".join(lines)
 
+    def _table_columns_map(self) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        for t in self._schema.list_tables():
+            if not t.name:
+                continue
+            out[t.name.lower()] = {c.name.lower() for c in t.columns if c.name}
+        return out
+
     def _validate_sql(
         self,
         sql: str,
         *,
+        question: str | None = None,
         allowed_tables: set[str],
         allowed_columns: set[str],
         enforce_column_whitelist: bool,
+        table_columns: dict[str, set[str]] | None = None,
+        entity_rules: list[EntityRule] | None = None,
     ) -> tuple[bool, str | None]:
         if not self._validator.validate(sql):
             return False, "sql safety validation failed"
@@ -424,7 +535,17 @@ class NL2SQLChain:
             allowed_tables=allowed_tables or None,
             allowed_columns=cols,
         )
-        return ok, reason
+        if not ok:
+            return ok, reason
+        if table_columns:
+            ok_b, reason_b = self._validator.validate_column_table_binding(sql, table_columns=table_columns)
+            if not ok_b:
+                return ok_b, reason_b
+        if question is not None and entity_rules:
+            ok_e, msg = check_entity_rules(question, sql, entity_rules)
+            if not ok_e:
+                return False, msg or "entity rule violation"
+        return True, None
 
     def _build_schema_catalog_hint(
         self,

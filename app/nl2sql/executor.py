@@ -48,3 +48,29 @@ class SQLExecutor:
         logger.info("SQLExecutor.execute done row_count=%d", len(rows))
         return rows
 
+    async def explain(self, sql: str) -> List[dict[str, Any]]:
+        """
+        执行前 EXPLAIN，用于提前暴露语法错误、未知列等（与 SELECT 同连接语义）。
+        """
+        s = (sql or "").strip()
+        preview = s[:240] + ("..." if len(s) > 240 else "")
+        logger.info("SQLExecutor.explain start sql_len=%d preview=%r", len(s), preview)
+        rows: List[dict[str, Any]] = []
+        explain_stmt = f"EXPLAIN {s}"
+        try:
+            async with self._engine.begin() as conn:
+                result = await conn.execute(text(explain_stmt))
+                cols = result.keys()
+                for r in result.fetchall():
+                    rows.append({col: value for col, value in zip(cols, r)})
+        except Exception:
+            logger.warning(
+                "SQLExecutor.explain failed sql_len=%d preview=%r",
+                len(s),
+                preview,
+                exc_info=True,
+            )
+            raise
+        logger.info("SQLExecutor.explain done rows=%d", len(rows))
+        return rows
+

@@ -99,6 +99,8 @@ class VLLMHttpClient(LLMClient):
             messages=[{"role": "user", "content": prompt}],
             max_tokens=kwargs.get("max_tokens"),
             temperature=kwargs.get("temperature"),
+            top_p=kwargs.get("top_p"),
+            seed=kwargs.get("seed"),
         )
 
     async def chat(self, model: str, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
@@ -111,6 +113,10 @@ class VLLMHttpClient(LLMClient):
             "max_tokens": kwargs.get("max_tokens", cfg.max_tokens),
             "temperature": kwargs.get("temperature", cfg.temperature),
         }
+        if kwargs.get("top_p") is not None:
+            payload["top_p"] = kwargs["top_p"]
+        if kwargs.get("seed") is not None:
+            payload["seed"] = kwargs["seed"]
         payload.update(cfg.extras or {})
 
         headers: Dict[str, str] = {}
@@ -178,6 +184,10 @@ class VLLMHttpClient(LLMClient):
             "max_tokens": kwargs.get("max_tokens", cfg.max_tokens),
             "temperature": kwargs.get("temperature", cfg.temperature),
         }
+        if kwargs.get("top_p") is not None:
+            payload["top_p"] = kwargs["top_p"]
+        if kwargs.get("seed") is not None:
+            payload["seed"] = kwargs["seed"]
         payload.update(cfg.extras or {})
 
         headers: Dict[str, str] = {}

@@ -83,6 +83,13 @@ class NL2SQLRAGService:
         profile = get_app_config().rag.scene_profiles.nl2sql
         top = top_k if top_k is not None else profile.top_k
         schema_ns_top = int(os.getenv("NL2SQL_SCHEMA_NAMESPACE_TOP_K", str(max(top + 6, 12))))
+        # 各命名空间 chunk 上限：减少无关片段、稳定排序后的上下文（可调大恢复旧行为）
+        schema_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_SCHEMA_CHUNKS", "8")))
+        biz_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_BIZ_CHUNKS", "4")))
+        qa_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_QA_CHUNKS", "4")))
+        ns_schema = min(schema_ns_top, schema_chunk_cap)
+        ns_biz = min(top, biz_chunk_cap)
+        ns_qa = min(top, qa_chunk_cap)
         results: List[RetrievedChunk] = []
         decision = self._policy.decide(question)
         per_ns_vector: dict[str, int] = {}
@@ -91,7 +98,12 @@ class NL2SQLRAGService:
         for ns in (self.NS_SCHEMA, self.NS_BIZ, self.NS_QA):
             # 向量侧标准结构优先保留（含 doc/section 元信息）。
             if decision.mode != "graph":
-                ns_top = schema_ns_top if ns == self.NS_SCHEMA else top
+                if ns == self.NS_SCHEMA:
+                    ns_top = ns_schema
+                elif ns == self.NS_BIZ:
+                    ns_top = ns_biz
+                else:
+                    ns_top = ns_qa
                 chunks = self._rag.retrieve_chunks(
                     query=question,
                     top_k=ns_top,
@@ -108,8 +120,13 @@ class NL2SQLRAGService:
                     max_hops=decision.graph_hops,
                     max_items=decision.max_graph_items,
                 )
-                ns_top = schema_ns_top if ns == self.NS_SCHEMA else top
-                gf = graph_facts[:ns_top]
+                if ns == self.NS_SCHEMA:
+                    g_top = ns_schema
+                elif ns == self.NS_BIZ:
+                    g_top = ns_biz
+                else:
+                    g_top = ns_qa
+                gf = graph_facts[:g_top]
                 per_ns_graph[ns] = per_ns_graph.get(ns, 0) + len(gf)
                 for idx, fact in enumerate(gf):
                     results.append(
@@ -133,11 +150,17 @@ class NL2SQLRAGService:
             seen.add(key)
             unique_results.append(c)
         logger.info(
-            "NL2SQLRAG.retrieve_chunks mode=%s top_k=%s schema_ns_top=%s graph_enabled=%s "
-            "raw_total=%d unique=%d per_ns_vector=%s per_ns_graph=%s query_len=%d",
+            "NL2SQLRAG.retrieve_chunks mode=%s top_k=%s schema_raw_top=%s caps(schema,biz,qa)=(%s,%s,%s) "
+            "effective(schema,biz,qa)=(%s,%s,%s) graph_enabled=%s raw_total=%d unique=%d per_ns_vector=%s per_ns_graph=%s query_len=%d",
             decision.mode,
             top,
             schema_ns_top,
+            schema_chunk_cap,
+            biz_chunk_cap,
+            qa_chunk_cap,
+            ns_schema,
+            ns_biz,
+            ns_qa,
             self._graph_query is not None,
             len(results),
             len(unique_results),
