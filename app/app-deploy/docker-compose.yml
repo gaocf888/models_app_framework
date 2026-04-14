@@ -99,7 +99,7 @@ services:
       # MinerU 与 models-app 共享 IO（须与 mineru-deploy 中 MINERU_IO_HOST_PATH 指向同一宿主目录）
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
     environment:
-      - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
+      - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-large
 
   # ---------------------------------------------------------------------------
   # models-app-gpu：仅当 docker compose --profile small-model-gpu 时启动
