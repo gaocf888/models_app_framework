@@ -38,6 +38,8 @@ NL2SQL_SCHEMA_CATALOG_PLACEHOLDER = "{{NL2SQL_SCHEMA_CATALOG}}"
 def _text_preview(text: str | None, max_len: int = 200) -> str:
     s = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     s = " ".join(s.split())
+    if max_len <= 0:
+        return s
     if len(s) <= max_len:
         return s
     return s[: max_len - 3] + "..."
@@ -258,7 +260,7 @@ class NL2SQLChain:
             "NL2SQLChain LLM sql raw_len=%d normalized_len=%d preview=%r llm_backend=%s",
             raw_out_len,
             len(sql or ""),
-            _text_preview(sql, 240),
+            _text_preview(sql, 0),
             "langchain" if self._lc_chat_model is not None else "vllm_http",
         )
 
@@ -275,7 +277,7 @@ class NL2SQLChain:
             logger.warning(
                 "NL2SQLChain validation failed preview_question=%r sql_preview=%r reason=%s",
                 _text_preview(question, 80),
-                _text_preview(sql, 200),
+                _text_preview(sql, 0),
                 validation_error,
             )
             # 可选 Step 4: 在 LangChain 可用时尝试自检与修正
@@ -300,14 +302,14 @@ class NL2SQLChain:
                     if not valid:
                         logger.warning(
                             "NL2SQLChain refine_sql still invalid sql_preview=%r reason=%s",
-                            _text_preview(sql, 200),
+                            _text_preview(sql, 0),
                             validation_error,
                         )
                         return "", validation_ctx
                     logger.info(
                         "NL2SQLChain refine_sql ok sql_len=%d preview=%r",
                         len(sql or ""),
-                        _text_preview(sql, 200),
+                        _text_preview(sql, 0),
                     )
                 except Exception:
                     logger.exception("NL2SQLChain: refine_sql failed, return empty SQL.")
@@ -331,7 +333,7 @@ class NL2SQLChain:
         logger.info(
             "NL2SQLChain.generate_sql success sql_len=%d preview=%r",
             len(sql or ""),
-            _text_preview(sql, 200),
+            _text_preview(sql, 0),
         )
         return sql, validation_ctx
 
@@ -369,7 +371,7 @@ class NL2SQLChain:
             if not ok:
                 logger.warning(
                     "NL2SQLChain refine_sql_after_executor_error still invalid preview=%r reason=%s",
-                    _text_preview(refined, 200),
+                    _text_preview(refined, 0),
                     err,
                 )
                 return ""

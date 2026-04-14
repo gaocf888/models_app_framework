@@ -10,6 +10,21 @@
     1.  首先RAG知识摄入时，要确保摄入namespace分别为`nl2sql_schema`、`nl2sql_biz_knowledge`、`nl2sql_qa_examples`的三种知识（分别是数据库结构、数据库知识文档、数据库知识问答对（问法 → 标准 SQL））
     2.  app/app-deploy/.env中配置业务数据库的连接信息
 
+NL2SQL后续效果优化方向：
+```text
+启用 nl2sql_qa_examples（强烈建议）
+日志里 nl2sql_qa_examples: 0：为「锅炉名 + 时间 + 磨煤机 + 平均电流」各写 2～5 条「问法 → 标准 SQL」摄入该命名空间，通常比再写十页表结构更省 tokens、更提准确率。
+
+启用 nl2sql_biz_knowledge（建议）
+用短文档写：业务术语、统计口径、时间字段用哪列（如 record_time）、与 Word 表结构不重复的叙述，补日志里 biz=0 的空白。
+
+在库里补外键（若业务与 DBA 允许）
+针对日志 fk_edges=0：对真实存在的关系加 FK，让运行时 catalog 出现 FK: 提示，减轻多表 JOIN 全靠文档记忆的问题。
+
+图检索（若已部署 GraphRAG）
+日志 graph_enabled=False：若后续打开图侧且与 Schema/设备关系对齐，可补充「实体关系」召回（与 FK、文档三选一或组合）。
+```
+
 ## 1. 文档目的与范围
 
 | 项 | 说明 |
@@ -75,28 +90,41 @@
 3. 将 `sql` 与 `rows` 交给 **`summarize_nl2sql_with_llm`** 生成用户可见的自然语言回答。  
 4. Runner **`finalize`** 输出中带 `used_nl2sql`、`nl2sql_sql` 等 meta。
 
-### 4.3 文字版流程图（ASCII）
+### 4.3 文字版流程图（纯文本）
 
-以下为 **简化 ASCII**，便于在纯文本环境快速张贴；与 §5 Mermaid 一致。
+以下为 **不含 `|` 竖线的缩进流程图**，避免多数 Markdown 渲染器把 `|` 误判为「表格列」而拆碎版面；语义与 §5 Mermaid 一致。若需可编辑图示，请直接改 §5 中对应 Mermaid。
 
-```
-[Client] --POST /nl2sql/query--> [NL2SQL API]
-                                    |
-                                    v
-                            [NL2SQLService]
-                                    |
-                    +---------------+---------------------------+
-                    v                                           v
-            [NL2SQLChain]                               [执行闭环 -> DB]
-                    |                                 [EXPLAIN? -> execute]
-                    |                                 [失败 -> refine? 循环]
-    +-------+-------+-------+-------+-------+-------+-------+
-    v       v       v       v       v       v       v       v
- [Refresh] [Plan?] [RAG]  [Prompt] [LLM] [Norm] [Validate+]
-   Schema           3ns           +catalog   |  whitelist
-                                             |  col-table bind
-                                             |  entity rules?
-                                        [Refine?]  -> (sql, ctx)
+```text
+[Client]
+       POST /nl2sql/query
+            v
+    [NL2SQL API]
+            v
+   [NL2SQLService.query]
+            |
+            +------------------+------------------+
+            v                                     v
+   [NL2SQLChain 生成]                    [SQLExecutor 执行闭环]
+            |                           EXPLAIN? -> execute
+            |                           失败 -> refine?（有次数上限）
+            v
+   Refresh Schema（首次）
+            v
+   Plan?（可选，真实库默认跳过）
+            v
+   RAG 三命名空间检索
+            v
+   Prompt + NL2SQL_SCHEMA_CATALOG
+            v
+   LLM -> normalize_sql
+            v
+   Validate+（白名单 / 列–表绑定 / 实体规则）
+            v
+   Refine?（校验失败且 LangChain 可用）
+            v
+   输出 (sql, NL2SQLValidationContext)
+            v
+   回到 NL2SQLService：预检与执行（见上右支）
 ```
 
 ---

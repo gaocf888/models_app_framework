@@ -28,7 +28,7 @@ class SQLExecutor:
 
     async def execute(self, sql: str) -> List[dict[str, Any]]:
         s = (sql or "").strip()
-        preview = s[:240] + ("..." if len(s) > 240 else "")
+        preview = s
         logger.info("SQLExecutor.execute start sql_len=%d preview=%r", len(s), preview)
         rows: List[dict[str, Any]] = []
         try:
@@ -53,7 +53,7 @@ class SQLExecutor:
         执行前 EXPLAIN，用于提前暴露语法错误、未知列等（与 SELECT 同连接语义）。
         """
         s = (sql or "").strip()
-        preview = s[:240] + ("..." if len(s) > 240 else "")
+        preview = s
         logger.info("SQLExecutor.explain start sql_len=%d preview=%r", len(s), preview)
         rows: List[dict[str, Any]] = []
         explain_stmt = f"EXPLAIN {s}"
