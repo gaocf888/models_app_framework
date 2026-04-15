@@ -2,6 +2,12 @@ from pathlib import Path
 
 from ultralytics import YOLO
 
+try:
+    import torch_mlu
+    from torch_mlu.utils.model_transfer import transfer
+except ImportError:
+    pass
+
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parents[3]
     model = YOLO(str(project_root / "app/train/yolo/weights/pretrained/yolov8s.pt"))
@@ -21,3 +27,5 @@ if __name__ == "__main__":
         cache=False,
         amp=False,
     )
+
+    model.val()
