@@ -3,7 +3,8 @@ from __future__ import annotations
 """
 综合分析 LangGraph 状态 TypedDict 定义。
 
-运行态图使用 `dict` 增量合并；本模块供类型检查与文档对齐，字段与 `AnalysisGraphRunner` 各节点返回值一致。
+`StateGraph(AnalysisGraphState)` 下各字段为独立 channel，节点可只返回变更子集；
+勿使用 `StateGraph(dict)`：其对应单一 `__root__` 通道，子集返回值会覆盖整份状态导致丢键。
 """
 
 from typing import Any, Dict, List, Literal, Optional, TypedDict
@@ -32,7 +33,7 @@ class AnalysisGraphState(TypedDict, total=False):
     """
     综合分析 LangGraph 共享状态。
 
-    节点只增量返回本状态子集；Runner 在内存中合并（与 Chatbot LangGraph 一致）。
+    节点只增量返回本状态子集；LangGraph 按字段 last-write 合并。
     字段包含：
     - 请求快照（model_dump）与运行期 ID；
     - RAG / 质量门 / NL2SQL 中间结果；
@@ -51,6 +52,7 @@ class AnalysisGraphState(TypedDict, total=False):
     query: str
     data_mode: DataMode
     options: Dict[str, Any]
+    _checkpoint_thread_id: str
 
     # ----- 通用 -----
     node_latency_ms: Dict[str, int]
@@ -70,6 +72,8 @@ class AnalysisGraphState(TypedDict, total=False):
     template_versions: Dict[str, str]
 
     # ----- NL2SQL 分支 -----
+    intent_llm_result: Dict[str, Any]
+    planner_warnings: List[str]
     intent_version: str
     data_plan_version: str
     plan_rag_sources: List[Dict[str, Any]]

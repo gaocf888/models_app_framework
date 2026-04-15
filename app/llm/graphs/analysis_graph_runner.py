@@ -4,7 +4,7 @@ from __future__ import annotations
 综合分析（企业版 V2）编排实现。
 
 - 对外入口：`AnalysisGraphRunner.run_with_payload`、`run_with_nl2sql`（由 `AnalysisService` 调用）。
-- 两套 LangGraph `StateGraph`（payload / nl2sql）；`langgraph` 不可用时走 `_run_with_*_sequential`。
+- 两套 LangGraph `StateGraph(AnalysisGraphState)`（payload / nl2sql）；`langgraph` 不可用时走 `_run_with_*_sequential`。
 - 数据计划：优先 `configs/prompts.yaml` 中 `analysis_plan_<analysis_type>`，可选 LLM 意图/计划合并，最后才用内置默认任务。
 """
 
@@ -27,6 +27,7 @@ from app.core.metrics import (
     ANALYSIS_REQUEST_COUNT,
 )
 from app.llm.client import VLLMHttpClient
+from app.llm.graphs.analysis_graph_state import AnalysisGraphState
 from app.llm.prompt_registry import PromptTemplateRegistry
 from pydantic import ValidationError
 
@@ -160,13 +161,6 @@ class AnalysisGraphRunner:
         out = dict(state.get("node_status") or {})
         out[node] = status
         return out
-
-    @staticmethod
-    def _lg_dict_state_patch(state: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
-        """LangGraph StateGraph(dict) 在运行态按「整状态替换」合并时，用上一节点状态叠加本节点输出，避免丢键。"""
-        merged = dict(state)
-        merged.update(patch)
-        return merged
 
     def _payload_graph_input(
         self, req: AnalysisPayloadRequest, *, checkpoint_thread_id: str | None = None
@@ -426,7 +420,7 @@ class AnalysisGraphRunner:
         except Exception as exc:  # noqa: BLE001
             logger.warning("AnalysisGraphRunner: langgraph unavailable, payload graph disabled. err=%s", exc)
             return None
-        g = StateGraph(dict)
+        g = StateGraph(AnalysisGraphState)
         g.add_node("normalize_request", self._lg_payload_normalize_request)
         g.add_node("rag_enrichment", self._lg_payload_rag_enrichment)
         g.add_node("data_quality_gate", self._lg_payload_data_quality_gate)
@@ -448,7 +442,7 @@ class AnalysisGraphRunner:
         except Exception as exc:  # noqa: BLE001
             logger.warning("AnalysisGraphRunner: langgraph unavailable, nl2sql graph disabled. err=%s", exc)
             return None
-        g = StateGraph(dict)
+        g = StateGraph(AnalysisGraphState)
         g.add_node("normalize_request", self._lg_nl2sql_normalize_request)
         g.add_node("plan_context_rag", self._lg_nl2sql_plan_context_rag)
         g.add_node("intent_llm", self._lg_nl2sql_intent_llm)
@@ -478,22 +472,19 @@ class AnalysisGraphRunner:
         t0 = perf_counter()
         self._conv.append_user_message(req.user_id, req.session_id, req.query)
         ms = int((perf_counter() - t0) * 1000)
-        return self._lg_dict_state_patch(
-            state,
-            {
-                "request_id": f"anl_{uuid4().hex[:12]}",
-                "plan_id": f"plan_{uuid4().hex[:10]}",
-                "user_id": req.user_id,
-                "session_id": req.session_id,
-                "analysis_type": req.analysis_type,
-                "query": req.query,
-                "options": req.options.model_dump(mode="json"),
-                "input_payload": req.payload,
-                "degrade_reasons": [],
-                "node_latency_ms": self._merge_latency(state, "normalize_request", ms),
-                "node_status": self._merge_status(state, "normalize_request", "success"),
-            },
-        )
+        return {
+            "request_id": f"anl_{uuid4().hex[:12]}",
+            "plan_id": f"plan_{uuid4().hex[:10]}",
+            "user_id": req.user_id,
+            "session_id": req.session_id,
+            "analysis_type": req.analysis_type,
+            "query": req.query,
+            "options": req.options.model_dump(mode="json"),
+            "input_payload": req.payload,
+            "degrade_reasons": [],
+            "node_latency_ms": self._merge_latency(state, "normalize_request", ms),
+            "node_status": self._merge_status(state, "normalize_request", "success"),
+        }
 
     async def _lg_payload_rag_enrichment(self, state: dict[str, Any]) -> dict[str, Any]:
         req = AnalysisPayloadRequest.model_validate(state["payload_request"])
@@ -535,15 +526,12 @@ class AnalysisGraphRunner:
             ANALYSIS_DEGRADE_COUNT.labels(reason="strict_payload_quality_blocked").inc()
             degrade.append("strict_payload_quality_blocked")
             raise ValueError("strict mode enabled: payload quality is insufficient for analysis")
-        return self._lg_dict_state_patch(
-            state,
-            {
-                "quality_report": quality_report,
-                "degrade_reasons": degrade,
-                "node_latency_ms": self._merge_latency(state, "data_quality_gate", ms),
-                "node_status": self._merge_status(state, "data_quality_gate", "success"),
-            },
-        )
+        return {
+            "quality_report": quality_report,
+            "degrade_reasons": degrade,
+            "node_latency_ms": self._merge_latency(state, "data_quality_gate", ms),
+            "node_status": self._merge_status(state, "data_quality_gate", "success"),
+        }
 
     async def _lg_payload_synthesis(self, state: dict[str, Any]) -> dict[str, Any]:
         """图节点：LLM 综合 + 结构化报告 + 建议列表（无 NL2SQL）。"""
@@ -602,22 +590,19 @@ class AnalysisGraphRunner:
         )
         ms = int((perf_counter() - t_syn) * 1000)
         ANALYSIS_NODE_LATENCY.labels(node="synthesis", analysis_type=at).observe(perf_counter() - t_syn)
-        return self._lg_dict_state_patch(
-            state,
-            {
-                "summary": summary,
-                "structured_report": structured_report,
-                "suggestions": suggestions,
-                "template_versions": {
-                    "intent": intent_version,
-                    "data_plan": data_plan_version,
-                    "synthesis": synthesis_version,
-                    "report": report_version,
-                },
-                "node_latency_ms": self._merge_latency(state, "synthesis", ms),
-                "node_status": self._merge_status(state, "synthesis", "success"),
+        return {
+            "summary": summary,
+            "structured_report": structured_report,
+            "suggestions": suggestions,
+            "template_versions": {
+                "intent": intent_version,
+                "data_plan": data_plan_version,
+                "synthesis": synthesis_version,
+                "report": report_version,
             },
-        )
+            "node_latency_ms": self._merge_latency(state, "synthesis", ms),
+            "node_status": self._merge_status(state, "synthesis", "success"),
+        }
 
     async def _lg_payload_finalize(self, state: dict[str, Any]) -> dict[str, Any]:
         """图节点：组装 AnalysisV2Result、trace、会话助手消息，写入 v2_result。"""
@@ -669,7 +654,7 @@ class AnalysisGraphRunner:
             evidence=evidence,
             trace=trace,
         )
-        return self._lg_dict_state_patch(state, {"v2_result": result})
+        return {"v2_result": result}
 
     async def _lg_nl2sql_normalize_request(self, state: dict[str, Any]) -> dict[str, Any]:
         """图节点：与 payload 分支类似，写入 nl2sql 请求快照与 request_id。"""
@@ -677,21 +662,18 @@ class AnalysisGraphRunner:
         t0 = perf_counter()
         self._conv.append_user_message(req.user_id, req.session_id, req.query)
         ms = int((perf_counter() - t0) * 1000)
-        return self._lg_dict_state_patch(
-            state,
-            {
-                "request_id": f"anl_{uuid4().hex[:12]}",
-                "plan_id": f"plan_{uuid4().hex[:10]}",
-                "user_id": req.user_id,
-                "session_id": req.session_id,
-                "analysis_type": req.analysis_type,
-                "query": req.query,
-                "options": req.options.model_dump(mode="json"),
-                "degrade_reasons": [],
-                "node_latency_ms": self._merge_latency(state, "normalize_request", ms),
-                "node_status": self._merge_status(state, "normalize_request", "success"),
-            },
-        )
+        return {
+            "request_id": f"anl_{uuid4().hex[:12]}",
+            "plan_id": f"plan_{uuid4().hex[:10]}",
+            "user_id": req.user_id,
+            "session_id": req.session_id,
+            "analysis_type": req.analysis_type,
+            "query": req.query,
+            "options": req.options.model_dump(mode="json"),
+            "degrade_reasons": [],
+            "node_latency_ms": self._merge_latency(state, "normalize_request", ms),
+            "node_status": self._merge_status(state, "normalize_request", "success"),
+        }
 
     async def _lg_nl2sql_plan_context_rag(self, state: dict[str, Any]) -> dict[str, Any]:
         """图节点：规划前 RAG（scene=nl2sql），写入 plan_context / plan_rag_sources。"""
@@ -729,16 +711,13 @@ class AnalysisGraphRunner:
             warns.extend(w2)
         ms = int((perf_counter() - t0) * 1000)
         ANALYSIS_NODE_LATENCY.labels(node="intent_llm", analysis_type=at).observe(perf_counter() - t0)
-        return self._lg_dict_state_patch(
-            state,
-            {
-                "intent_llm_result": intent.model_dump(mode="json"),
-                "intent_version": intent_version,
-                "planner_warnings": warns,
-                "node_latency_ms": self._merge_latency(state, "intent_llm", ms),
-                "node_status": self._merge_status(state, "intent_llm", "success"),
-            },
-        )
+        return {
+            "intent_llm_result": intent.model_dump(mode="json"),
+            "intent_version": intent_version,
+            "planner_warnings": warns,
+            "node_latency_ms": self._merge_latency(state, "intent_llm", ms),
+            "node_status": self._merge_status(state, "intent_llm", "success"),
+        }
 
     async def _lg_nl2sql_plan_llm_merge(self, state: dict[str, Any]) -> dict[str, Any]:
         """图节点：合并模板与 LLM 计划，写入 plan_tasks，受 max_nl2sql_calls 截断。"""
@@ -769,16 +748,13 @@ class AnalysisGraphRunner:
             warns.extend(w3)
         ms = int((perf_counter() - t0) * 1000)
         ANALYSIS_NODE_LATENCY.labels(node="plan_llm", analysis_type=at).observe(perf_counter() - t0)
-        return self._lg_dict_state_patch(
-            state,
-            {
-                "data_plan_version": data_plan_version,
-                "plan_tasks": [self._plan_task_to_dict(t) for t in tasks],
-                "planner_warnings": warns,
-                "node_latency_ms": self._merge_latency(state, "plan_llm", ms),
-                "node_status": self._merge_status(state, "plan_llm", "success"),
-            },
-        )
+        return {
+            "data_plan_version": data_plan_version,
+            "plan_tasks": [self._plan_task_to_dict(t) for t in tasks],
+            "planner_warnings": warns,
+            "node_latency_ms": self._merge_latency(state, "plan_llm", ms),
+            "node_status": self._merge_status(state, "plan_llm", "success"),
+        }
 
     async def _lg_nl2sql_acquire_data(self, state: dict[str, Any]) -> dict[str, Any]:
         """图节点：按 plan_tasks 调用 NL2SQL，填充 gathered_data / nl2sql_calls。"""
@@ -786,17 +762,14 @@ class AnalysisGraphRunner:
         raw_tasks = list(state.get("plan_tasks") or [])
         tasks = [self._plan_task_from_dict(x) for x in raw_tasks if isinstance(x, dict)]
         nl2sql_calls, gathered_data, task_status, acquire_latency_ms = await self._execute_data_plan(req=req, tasks=tasks)
-        return self._lg_dict_state_patch(
-            state,
-            {
-                "nl2sql_calls": [c.model_dump(mode="json") for c in nl2sql_calls],
-                "gathered_data": gathered_data,
-                "task_status": task_status,
-                "acquire_latency_ms": acquire_latency_ms,
-                "node_latency_ms": self._merge_latency(state, "acquire_data", acquire_latency_ms),
-                "node_status": self._merge_status(state, "acquire_data", "success"),
-            },
-        )
+        return {
+            "nl2sql_calls": [c.model_dump(mode="json") for c in nl2sql_calls],
+            "gathered_data": gathered_data,
+            "task_status": task_status,
+            "acquire_latency_ms": acquire_latency_ms,
+            "node_latency_ms": self._merge_latency(state, "acquire_data", acquire_latency_ms),
+            "node_status": self._merge_status(state, "acquire_data", "success"),
+        }
 
     async def _lg_nl2sql_data_quality_gate(self, state: dict[str, Any]) -> dict[str, Any]:
         """图节点：基于取数结果与阈值做 nl2sql 质量评估；strict 失败抛错。"""
@@ -822,15 +795,12 @@ class AnalysisGraphRunner:
             ANALYSIS_DEGRADE_COUNT.labels(reason="strict_nl2sql_quality_blocked").inc()
             degrade.append("strict_nl2sql_quality_blocked")
             raise ValueError("strict mode enabled: NL2SQL data quality thresholds not met")
-        return self._lg_dict_state_patch(
-            state,
-            {
-                "quality_report": quality_report,
-                "degrade_reasons": degrade,
-                "node_latency_ms": self._merge_latency(state, "data_quality_gate", ms),
-                "node_status": self._merge_status(state, "data_quality_gate", "success"),
-            },
-        )
+        return {
+            "quality_report": quality_report,
+            "degrade_reasons": degrade,
+            "node_latency_ms": self._merge_latency(state, "data_quality_gate", ms),
+            "node_status": self._merge_status(state, "data_quality_gate", "success"),
+        }
 
     async def _lg_nl2sql_rag_enrichment(self, state: dict[str, Any]) -> dict[str, Any]:
         """图节点：取数后的业务解释 RAG（scene=analysis），写入 context_snippets。"""
@@ -847,27 +817,21 @@ class AnalysisGraphRunner:
             ANALYSIS_NODE_LATENCY.labels(node="rag_enrichment", analysis_type=at).observe(perf_counter() - t_rag)
             plan_src = list(state.get("plan_rag_sources") or [])
             merged_sources = (plan_src + biz_rag_sources)[:64]
-            return self._lg_dict_state_patch(
-                state,
-                {
-                    "context_snippets": context_snippets,
-                    "rag_sources": merged_sources,
-                    "used_rag": used_rag,
-                    "node_latency_ms": self._merge_latency(state, "rag_enrichment", ms),
-                    "node_status": self._merge_status(state, "rag_enrichment", "success"),
-                },
-            )
-        plan_src = list(state.get("plan_rag_sources") or [])
-        return self._lg_dict_state_patch(
-            state,
-            {
-                "context_snippets": [],
-                "rag_sources": plan_src[:64],
-                "used_rag": False,
-                "node_latency_ms": self._merge_latency(state, "rag_enrichment", 0),
+            return {
+                "context_snippets": context_snippets,
+                "rag_sources": merged_sources,
+                "used_rag": used_rag,
+                "node_latency_ms": self._merge_latency(state, "rag_enrichment", ms),
                 "node_status": self._merge_status(state, "rag_enrichment", "success"),
-            },
-        )
+            }
+        plan_src = list(state.get("plan_rag_sources") or [])
+        return {
+            "context_snippets": [],
+            "rag_sources": plan_src[:64],
+            "used_rag": False,
+            "node_latency_ms": self._merge_latency(state, "rag_enrichment", 0),
+            "node_status": self._merge_status(state, "rag_enrichment", "success"),
+        }
 
     async def _lg_nl2sql_synthesis(self, state: dict[str, Any]) -> dict[str, Any]:
         req = AnalysisNL2SQLRequest.model_validate(state["nl2sql_request"])
@@ -926,18 +890,15 @@ class AnalysisGraphRunner:
         )
         ms = int((perf_counter() - t_syn) * 1000)
         ANALYSIS_NODE_LATENCY.labels(node="synthesis", analysis_type=at).observe(perf_counter() - t_syn)
-        return self._lg_dict_state_patch(
-            state,
-            {
-                "summary": summary,
-                "structured_report": structured_report,
-                "suggestions": suggestions,
-                "synthesis_version": synthesis_version,
-                "report_version": report_version,
-                "node_latency_ms": self._merge_latency(state, "synthesis", ms),
-                "node_status": self._merge_status(state, "synthesis", "success"),
-            },
-        )
+        return {
+            "summary": summary,
+            "structured_report": structured_report,
+            "suggestions": suggestions,
+            "synthesis_version": synthesis_version,
+            "report_version": report_version,
+            "node_latency_ms": self._merge_latency(state, "synthesis", ms),
+            "node_status": self._merge_status(state, "synthesis", "success"),
+        }
 
     async def _lg_nl2sql_finalize(self, state: dict[str, Any]) -> dict[str, Any]:
         """图节点：组装 evidence、含 nl2sql 与规划告警的 trace，写入 v2_result。"""
@@ -1019,7 +980,7 @@ class AnalysisGraphRunner:
             evidence=evidence,
             trace=trace,
         )
-        return self._lg_dict_state_patch(state, {"v2_result": result})
+        return {"v2_result": result}
 
     async def run_with_payload(self, req: AnalysisPayloadRequest) -> AnalysisV2Result:
         """执行 payload 模式：优先 LangGraph 编译图，否则 `_run_with_payload_sequential`。"""
