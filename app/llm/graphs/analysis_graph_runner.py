@@ -483,6 +483,9 @@ class AnalysisGraphRunner:
             "degrade_reasons": [],
             "node_latency_ms": self._merge_latency(state, "normalize_request", ms),
             "node_status": self._merge_status(state, "normalize_request", "success"),
+            # LangGraph dict 状态需在各节点增量中保留请求快照，否则后续节点读不到。
+            "payload_request": state["payload_request"],
+            "data_mode": state.get("data_mode", "payload"),
         }
 
     async def _lg_payload_rag_enrichment(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -672,6 +675,8 @@ class AnalysisGraphRunner:
             "degrade_reasons": [],
             "node_latency_ms": self._merge_latency(state, "normalize_request", ms),
             "node_status": self._merge_status(state, "normalize_request", "success"),
+            "nl2sql_request": state["nl2sql_request"],
+            "data_mode": state.get("data_mode", "nl2sql"),
         }
 
     async def _lg_nl2sql_plan_context_rag(self, state: dict[str, Any]) -> dict[str, Any]:
