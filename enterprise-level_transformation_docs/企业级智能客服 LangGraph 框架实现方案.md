@@ -307,6 +307,9 @@ flowchart TB
 - 写入顺序保持“先生成后落库”（避免当前轮重复出现在 prompt）。
 - `enable_context=false` 时不读取历史（写入策略按现有语义保留）。
 - 历史窗口统一配置：`CHATBOT_HISTORY_LIMIT`（建议统一为 20，避免旧链路 10/20 不一致）。
+- 已支持会话冷层能力：`ConversationArchiveStore` 负责 EasySearch 归档与回查。
+- `/chatbot/sessions*` 查询在热层不足时可自动回查冷层（`CONV_QUERY_FALLBACK_COLD=true`）。
+- 可配置对象存储备份增强（`CONV_ARCHIVE_OBJECT_*`），作为冷层外的容灾补充。
 
 ### 6.4 多模态兼容
 
@@ -388,13 +391,19 @@ flowchart TB
 - `MAX_GRAPH_LATENCY_MS=60000`
 - `CHATBOT_FALLBACK_LEGACY_ON_ERROR=true`
 - `CHATBOT_HISTORY_LIMIT=20`
-- `CONV_SESSION_TTL_MINUTES=60`
+- `CONV_SESSION_TTL_MINUTES=10080`（建议 7 天；已启用冷层回查时不建议配置为 0）
 - `CONV_MAX_HISTORY_MESSAGES=50`
 - `CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT=true`
 - `MAX_REWRITE_QUERY_LENGTH=256`
 - `CHATBOT_CHECKPOINT_BACKEND=none|memory|redis`
 - `CHATBOT_CHECKPOINT_REDIS_URL=...`（redis backend 时）
 - `CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph`
+- `CONV_ARCHIVE_ENABLED=true`
+- `CONV_QUERY_FALLBACK_COLD=true`
+- `CONV_ARCHIVE_ES_INDEX=conversation_messages_v1`
+- `CONV_ARCHIVE_ES_SESSIONS_INDEX=conversation_sessions_v1`
+- `CONV_ARCHIVE_OBJECT_ENABLED=true`
+- `CONV_ARCHIVE_OBJECT_BACKEND=local|s3`
 
 说明：通过开关支持灰度与回滚，不需要改 API。
 
