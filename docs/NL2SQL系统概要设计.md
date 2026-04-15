@@ -250,3 +250,11 @@
 
 本概要设计以大语言模型为“智能大脑”，通过 RAG、Prompt 编排、SQL 校验与自我修正、Schema 管理和安全控制等模块，构建了一套可在企业场景中实际落地的 NL2SQL 系统方案。后续可以在此文档基础上，进一步细化为详细设计（类图、接口定义、目录结构），并基于统一的 FastAPI 接入层和 LLM 抽象层实现完整的 Python 服务。
 
+---
+
+## 附：与当前代码实现的对照文档
+
+- 企业级流程与图示：`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`
+- 代码行为级完整说明：`enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md`
+- 工程实现细节：`framework-guide/NL2SQL整体实现技术说明.md`
+

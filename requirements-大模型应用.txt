@@ -6,7 +6,7 @@
 # - 小模型通道/推理依赖放在 `requirements-小模型应用.txt`。
 
 # === 基础 Web 框架与运行环境 ===
-fastapi>=0.110.0          # Web API 框架，用于暴露 /llm/infer、/chatbot/chat、/analysis/run、/nl2sql/query 等接口
+fastapi>=0.110.0          # Web API 框架，用于暴露 /llm/infer、/chatbot/chat、/analysis/run-with-payload、/analysis/run-with-nl2sql、/nl2sql/query 等接口
 uvicorn[standard]>=0.27.0 # ASGI 服务器，开发/部署时运行 FastAPI 应用
 pydantic>=2.6.0           # 数据模型与请求/响应校验（ChatRequest、AnalysisInput、NL2SQL 请求等）
 python-dotenv>=1.0.0      # 从 .env 文件加载配置，便于本地/测试环境管理环境变量

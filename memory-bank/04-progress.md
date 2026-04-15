@@ -43,7 +43,7 @@
     - `app/api/chatbot.py`：`/chatbot/chat` 接口，打通智能客服基础链路 V1。
     - `app/models/analysis.py`：综合分析请求/结果数据模型。
     - `app/services/analysis_service.py`：AnalysisService 基础服务，占位实现 Agentic RAG + 多模态分析流程。
-    - `app/api/analysis.py`：`/analysis/run` 接口，打通综合分析基础链路 V1。
+    - `app/api/analysis.py`：V2 双入口（`/analysis/run-with-payload`、`/analysis/run-with-nl2sql`），完成企业版链路收敛。
     - `app/small_models/channel_manager.py`：小模型通道管理器骨架，实现通道的 start/stop/update/status。
     - `app/small_models/workers.py`：Decoder/Inference 工作线程占位实现。
     - `app/small_models/inference_engine.py`：小模型推理引擎占位实现。
@@ -73,7 +73,7 @@
 - 目标
   - 实现通用 LLM 推理服务（支持 RAG/上下文可配置）。
   - 实现基础智能客服链路（文本问答 + RAG + Redis 会话）。
-  - 实现首版综合分析 Agent（支持多模态输入占位、RAG + 工具调用框架）。
+  - 实现首版综合分析（后续已演进为 LangGraph 企业版 V2，支持双入口、RAG 证据与节点轨迹）。
   - 完成 Prompt 模板管理与简单版本控制机制。
 
 - 交付物

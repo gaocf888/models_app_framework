@@ -313,6 +313,7 @@ flowchart TB
 
 | 文档 | 内容 |
 |------|------|
+| `enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md` | 当前代码行为的端到端细节、校验与执行闭环、开关决策 |
 | `framework-guide/NL2SQL整体实现技术说明.md` | 模块映射、API、配置、日志 §8 |
 | `docs/大小模型应用技术架构与实现方案.md` | §1 基础能力、§4.6 NL2SQL |
 | `docs/NL2SQL系统概要设计.md` | 产品与模块概要 |

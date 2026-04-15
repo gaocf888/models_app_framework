@@ -83,3 +83,63 @@ NL2SQL_QUERY_ERROR_COUNT = Counter(
     "Total NL2SQL query errors",
 )
 
+# Analysis 指标（`AnalysisGraphRunner` / `AnalysisService`）：请求生命周期、各图节点耗时、
+# 单次分析内 NL2SQL 子调用次数、strict/质量门等降级计数。
+ANALYSIS_REQUEST_COUNT = Counter(
+    "analysis_requests_total",
+    "Total analysis requests",
+    ["analysis_type", "data_mode", "status"],
+)
+
+ANALYSIS_NODE_LATENCY = Histogram(
+    "analysis_node_latency_seconds",
+    "Analysis node latency in seconds",
+    ["node", "analysis_type"],
+)
+
+ANALYSIS_NL2SQL_CALL_COUNT = Counter(
+    "analysis_nl2sql_calls_total",
+    "Total analysis NL2SQL sub-calls",
+    ["analysis_type", "status"],
+)
+
+ANALYSIS_DEGRADE_COUNT = Counter(
+    "analysis_degrade_total",
+    "Total analysis degrade events",
+    ["reason"],
+)
+
+# Analysis Trace 运维指标（`AnalysisService` 列表/统计/趋势/TopN）：查询结果、延迟、趋势缓存、Redis 索引惰性清理。
+ANALYSIS_TRACE_QUERY_COUNT = Counter(
+    "analysis_trace_queries_total",
+    "Total analysis trace query calls",
+    ["endpoint", "status"],
+)
+
+ANALYSIS_TRACE_QUERY_LATENCY = Histogram(
+    "analysis_trace_query_latency_seconds",
+    "Analysis trace query latency in seconds",
+    ["endpoint"],
+)
+
+ANALYSIS_TRACE_TREND_CACHE_HIT_COUNT = Counter(
+    "analysis_trace_trend_cache_hits_total",
+    "Total analysis trace trend cache hits",
+)
+
+ANALYSIS_TRACE_TREND_CACHE_MISS_COUNT = Counter(
+    "analysis_trace_trend_cache_miss_total",
+    "Total analysis trace trend cache misses",
+)
+
+ANALYSIS_TRACE_TREND_CACHE_INVALIDATE_COUNT = Counter(
+    "analysis_trace_trend_cache_invalidate_total",
+    "Total analysis trace trend cache invalidations",
+)
+
+ANALYSIS_TRACE_INDEX_CLEANUP_COUNT = Counter(
+    "analysis_trace_index_cleanup_total",
+    "Total analysis trace stale index cleanups",
+    ["index_type"],
+)
+

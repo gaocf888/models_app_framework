@@ -2,7 +2,7 @@
 
 > 适用范围：**整体项目在线业务**值班排障总入口。  
 > 当前版本覆盖：**智能客服（已企业级完整实现）**。  
-> 后续将按模块成熟度逐步补齐：`/llm/infer`、`/analysis/run`、`/nl2sql/query`、`/small-model/*` 等。
+> 后续将按模块成熟度逐步补齐：`/llm/infer`、`/analysis/run-with-payload`、`/analysis/run-with-nl2sql`、`/nl2sql/query`、`/small-model/*` 等。
 
 ---
 
@@ -139,7 +139,8 @@ docker compose up -d --build
 本文件是“整体项目在线业务”值班总入口。后续模块达到企业级完整实现后，按同一结构补充：
 
 - `/llm/infer`
-- `/analysis/run`
+- `/analysis/run-with-payload`
+- `/analysis/run-with-nl2sql`
 - `/nl2sql/query`
 - `/small-model/channel/*`
 

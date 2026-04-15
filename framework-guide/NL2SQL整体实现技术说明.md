@@ -1,7 +1,7 @@
 # NL2SQL 整体实现技术说明
 
 > 本文描述**当前仓库已实现**的 NL2SQL（自然语言转 SQL）技术方案：基于 **LLM + RAG + Schema 元数据（含 DB 反射与外键提示）+ 安全执行** 的企业级实现。  
-> 配套文档：`docs/NL2SQL系统概要设计.md`（总体设计）、`docs/大小模型应用技术架构与实现方案.md`（4.6 节）、`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`（企业级流程与图示）、`memory-bank/02-components.md`（组件关系）。
+> 配套文档：`docs/NL2SQL系统概要设计.md`（总体设计）、`docs/大小模型应用技术架构与实现方案.md`（4.6 节）、`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`（企业级流程与图示）、`enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md`（代码行为明细）、`memory-bank/02-components.md`（组件关系）。
 
 **基座定位**：NL2SQL 与 **通用 RAG** 同属本应用的 **基础能力**（共享向量库基座、场景化检索策略、大模型与 Prompt 注册表、日志与指标）。不同之处在于：NL2SQL 面向 **结构化业务库只读查询**，并 **单独暴露** `POST /nl2sql/query`，供外部系统直接集成；智能客服在 **`data_query`** 意图下也会调用同一 `NL2SQLService`（通常 `record_conversation=False`），与 KB RAG 分流并行。
 

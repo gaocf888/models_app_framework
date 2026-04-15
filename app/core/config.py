@@ -408,6 +408,48 @@ class ChatbotConfig:
 
 
 @dataclass
+class AnalysisConfig:
+    """
+    综合分析（双入口 + LangGraph 编排）的环境配置映射目标。
+
+    含：默认报告与 NL2SQL 选项、strict、payload/nl2sql 质量阈值、trace 后端与 ES 连接、
+    LangGraph checkpoint、是否启用 nl2sql 路径上的 LLM 意图/计划分阶段调用。
+    """
+
+    default_report_template: str = "standard"
+    default_chart_mode: str = "auto"  # auto | minimal | off
+    default_report_style: str = "standard"
+    default_max_nl2sql_calls: int = 6
+    default_max_rows_per_query: int = 2000
+    default_max_suggestions: int = 8
+    strict_by_default: bool = False
+    trace_backend: str = "redis"  # redis | memory
+    trace_ttl_minutes: int = 1440
+    trace_max_items: int = 10000
+    trace_trend_cache_ttl_seconds: int = 30
+    trace_lazy_cleanup_batch_size: int = 200
+    trace_es_hosts: str = "http://localhost:9200"
+    trace_es_index: str = "analysis_trace_archive"
+    trace_es_verify_certs: bool = False
+    trace_es_timeout_seconds: int = 10
+    trace_es_username: str = ""
+    trace_es_password: str = ""
+    trace_es_api_key: str = ""
+    payload_time_window_coverage_min: float = 0.6
+    payload_anomaly_rate_max: float = 0.2
+    payload_missing_key_rate_max: float = 0.3
+    nl2sql_time_window_coverage_min: float = 0.5
+    nl2sql_anomaly_rate_max: float = 0.25
+    nl2sql_missing_key_rate_max: float = 0.35
+    # LangGraph checkpoint：none | memory | redis（与 Chatbot 一致；redis 依赖缺失时编译阶段会降级为无 checkpoint）
+    checkpoint_backend: str = "none"
+    checkpoint_redis_url: str | None = None
+    checkpoint_namespace: str = "analysis_graph"
+    # NL2SQL 综合分析：是否启用「意图 LLM + 数据计划 LLM」分阶段结构化规划（关闭则仅用 JSON 模板/内置默认）
+    nl2sql_llm_planner_enabled: bool = True
+
+
+@dataclass
 class AppConfig:
     """
     应用全局配置。
@@ -420,6 +462,7 @@ class AppConfig:
     prompt: PromptConfig = field(default_factory=PromptConfig)
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
     chatbot: ChatbotConfig = field(default_factory=ChatbotConfig)
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
 
 
 @dataclass
@@ -701,6 +744,45 @@ def _load_from_env() -> AppConfig:
         suggested_questions_enabled=os.getenv("CHATBOT_SUGGESTED_QUESTIONS_ENABLED", "true").lower() == "true",
         suggested_questions_max=max(1, min(10, int(os.getenv("CHATBOT_SUGGESTED_QUESTIONS_MAX", "5")))),
     )
+    analysis_cfg = AnalysisConfig(
+        default_report_template=(os.getenv("ANALYSIS_DEFAULT_REPORT_TEMPLATE", "standard") or "standard").strip(),
+        default_chart_mode=(os.getenv("ANALYSIS_DEFAULT_CHART_MODE", "auto") or "auto").strip().lower(),
+        default_report_style=(os.getenv("ANALYSIS_DEFAULT_REPORT_STYLE", "standard") or "standard").strip(),
+        default_max_nl2sql_calls=max(1, int(os.getenv("ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS", "6"))),
+        default_max_rows_per_query=max(50, int(os.getenv("ANALYSIS_DEFAULT_MAX_ROWS_PER_QUERY", "2000"))),
+        default_max_suggestions=max(1, min(20, int(os.getenv("ANALYSIS_DEFAULT_MAX_SUGGESTIONS", "8")))),
+        strict_by_default=os.getenv("ANALYSIS_STRICT_BY_DEFAULT", "false").lower() == "true",
+        trace_backend=(os.getenv("ANALYSIS_TRACE_BACKEND", "redis") or "redis").strip().lower(),
+        trace_ttl_minutes=max(10, int(os.getenv("ANALYSIS_TRACE_TTL_MINUTES", "1440"))),
+        trace_max_items=max(100, int(os.getenv("ANALYSIS_TRACE_MAX_ITEMS", "10000"))),
+        trace_trend_cache_ttl_seconds=max(1, int(os.getenv("ANALYSIS_TRACE_TREND_CACHE_TTL_SECONDS", "30"))),
+        trace_lazy_cleanup_batch_size=max(20, int(os.getenv("ANALYSIS_TRACE_LAZY_CLEANUP_BATCH_SIZE", "200"))),
+        trace_es_hosts=(os.getenv("ANALYSIS_TRACE_ES_HOSTS") or os.getenv("RAG_ES_HOSTS") or "http://localhost:9200").strip(),
+        trace_es_index=(os.getenv("ANALYSIS_TRACE_ES_INDEX", "analysis_trace_archive") or "analysis_trace_archive").strip(),
+        trace_es_verify_certs=os.getenv("ANALYSIS_TRACE_ES_VERIFY_CERTS", "false").lower() == "true",
+        trace_es_timeout_seconds=max(1, int(os.getenv("ANALYSIS_TRACE_ES_TIMEOUT_SECONDS", "10"))),
+        trace_es_username=(os.getenv("ANALYSIS_TRACE_ES_USERNAME") or os.getenv("RAG_ES_USERNAME") or "").strip(),
+        trace_es_password=(os.getenv("ANALYSIS_TRACE_ES_PASSWORD") or os.getenv("RAG_ES_PASSWORD") or "").strip(),
+        trace_es_api_key=(os.getenv("ANALYSIS_TRACE_ES_API_KEY") or os.getenv("RAG_ES_API_KEY") or "").strip(),
+        payload_time_window_coverage_min=max(
+            0.0, min(1.0, float(os.getenv("ANALYSIS_PAYLOAD_TIME_WINDOW_COVERAGE_MIN", "0.6")))
+        ),
+        payload_anomaly_rate_max=max(0.0, min(1.0, float(os.getenv("ANALYSIS_PAYLOAD_ANOMALY_RATE_MAX", "0.2")))),
+        payload_missing_key_rate_max=max(
+            0.0, min(1.0, float(os.getenv("ANALYSIS_PAYLOAD_MISSING_KEY_RATE_MAX", "0.3")))
+        ),
+        nl2sql_time_window_coverage_min=max(
+            0.0, min(1.0, float(os.getenv("ANALYSIS_NL2SQL_TIME_WINDOW_COVERAGE_MIN", "0.5")))
+        ),
+        nl2sql_anomaly_rate_max=max(0.0, min(1.0, float(os.getenv("ANALYSIS_NL2SQL_ANOMALY_RATE_MAX", "0.25")))),
+        nl2sql_missing_key_rate_max=max(
+            0.0, min(1.0, float(os.getenv("ANALYSIS_NL2SQL_MISSING_KEY_RATE_MAX", "0.35")))
+        ),
+        checkpoint_backend=(os.getenv("ANALYSIS_CHECKPOINT_BACKEND", "none") or "none").lower(),
+        checkpoint_redis_url=os.getenv("ANALYSIS_CHECKPOINT_REDIS_URL") or None,
+        checkpoint_namespace=(os.getenv("ANALYSIS_CHECKPOINT_NAMESPACE", "analysis_graph") or "analysis_graph"),
+        nl2sql_llm_planner_enabled=os.getenv("ANALYSIS_NL2SQL_LLM_PLANNER_ENABLED", "true").lower() == "true",
+    )
 
     cfg = AppConfig(
         env=env,
@@ -709,6 +791,7 @@ def _load_from_env() -> AppConfig:
         rag=rag_cfg,
         mineru=mineru_cfg,
         chatbot=chatbot_cfg,
+        analysis=analysis_cfg,
     )
     # 动态附加 db 字段，避免破坏现有 AppConfig 初始化调用点
     setattr(cfg, "db", db_cfg)

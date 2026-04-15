@@ -1,0 +1,77 @@
+groups:
+  - name: analysis-trace-recording-rules
+    interval: 30s
+    rules:
+      - record: analysis:trace_query_success_ratio:5m
+        expr: |
+          sum(rate(analysis_trace_queries_total{status="success"}[5m]))
+          /
+          sum(rate(analysis_trace_queries_total[5m]))
+      - record: analysis:trace_query_p95_seconds:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(analysis_trace_query_latency_seconds_bucket[5m])) by (le, endpoint)
+          )
+      - record: analysis:trace_trend_cache_hit_ratio:5m
+        expr: |
+          rate(analysis_trace_trend_cache_hits_total[5m])
+          /
+          (
+            rate(analysis_trace_trend_cache_hits_total[5m])
+            +
+            rate(analysis_trace_trend_cache_miss_total[5m])
+          )
+
+  - name: analysis-trace-alert-rules
+    interval: 30s
+    rules:
+      - alert: AnalysisTraceQueryAvailabilityLow
+        expr: analysis:trace_query_success_ratio:5m < 0.99
+        for: 10m
+        labels:
+          severity: warning
+          service: analysis
+        annotations:
+          summary: "Analysis trace query success ratio is low"
+          description: "Success ratio over 5m is below 99% for 10m."
+
+      - alert: AnalysisTraceQueryP95High
+        expr: max(analysis:trace_query_p95_seconds:5m) > 1.5
+        for: 15m
+        labels:
+          severity: warning
+          service: analysis
+        annotations:
+          summary: "Analysis trace query p95 latency is high"
+          description: "P95 latency exceeds 1.5s for 15m."
+
+      - alert: AnalysisTraceTrendCacheHitRatioLow
+        expr: analysis:trace_trend_cache_hit_ratio:5m < 0.2
+        for: 30m
+        labels:
+          severity: warning
+          service: analysis
+        annotations:
+          summary: "Analysis trace trend cache hit ratio is low"
+          description: "Trend cache hit ratio is below 20% for 30m."
+
+      - alert: AnalysisTraceIndexCleanupBurst
+        expr: sum(rate(analysis_trace_index_cleanup_total[5m])) > 3
+        for: 15m
+        labels:
+          severity: warning
+          service: analysis
+        annotations:
+          summary: "Analysis trace index cleanup rate is high"
+          description: "Potential index bloat/orphan burst detected."
+
+      - alert: AnalysisDegradeRateHigh
+        expr: sum(rate(analysis_degrade_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: critical
+          service: analysis
+        annotations:
+          summary: "Analysis degrade events rate is high"
+          description: "Analysis degrade rate exceeds threshold continuously."

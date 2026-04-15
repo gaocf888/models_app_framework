@@ -85,9 +85,9 @@
 
 > 至此，TODO-4（智能客服链路 V1）已完成骨架实现，具备最小可用对话能力，并与 RAG/会话管理打通，为下一步接入 LangChain 和真实大模型做准备。
 
-## 2026-03-16 综合分析 Agent 架构 V1 TODO-5 实现
+## 2026-03-16 综合分析（后续已升级为 LangGraph V2）TODO-5 实现
 
-- 实现综合分析 Agent 链路的基础骨架（V1，占位版）：
+- 实现综合分析链路的基础骨架（V1，占位版，后续已收敛到 V2）：
   - 新增 `app/models/analysis.py`：
     - 定义 `AnalysisInput` / `AnalysisResult`，支持文本描述与多模态数据引用 ID（图像/视频/GPS/传感器等）。
   - 新增 `app/services/analysis_service.py`：
@@ -96,11 +96,11 @@
       - 记录分析请求与结果摘要到会话上下文。
     - 目前返回占位分析报告，后续将接入 Agentic RAG + 大模型 + 工具调用。
   - 新增 `app/api/analysis.py`：
-    - 暴露 `POST /analysis/run` 接口，完成综合分析基础链路的打通。
+    - 暴露综合分析 V2 双入口（`POST /analysis/run-with-payload`、`POST /analysis/run-with-nl2sql`），完成企业版链路打通。
   - 更新 `app/main.py`：
     - 注册 `analysis` 路由到 `/analysis` 前缀。
 
-> 至此，TODO-5（综合分析 Agent 架构 V1）已完成骨架实现，为后续引入 LangChain/LangGraph、工具调用与多模态数据处理奠定基础。
+> 说明：该条目为历史阶段记录。当前综合分析已统一为 LangGraph 企业版 V2（`AnalysisGraphRunner` + 双入口）。
 
 ## 2026-03-16 小模型通道管理与推理流水线 V1 TODO-6 实现
 
@@ -296,7 +296,7 @@
 - 在以下链路中接入基础 trace 上报：
   - Chatbot：在 `app/llm/chains/chatbot_chain.py` 的 `ChatbotChain.run` 中记录输入、输出与场景元数据；
   - 通用 LLM 推理：在 `app/services/llm_inference_service.py` 的 `LLMInferenceService.infer` 中记录模型、Prompt 版本、RAG/上下文开关等信息；
-  - 综合分析：在 `app/llm/chains/analysis_chain.py` 的 `AnalysisChain.run` 中记录分析请求与生成的摘要；
+  - 综合分析：在 `app/llm/graphs/analysis_graph_runner.py` 的 V2 节点化流程中记录分析请求、节点轨迹与报告摘要；
   - NL2SQL：在 `app/nl2sql/chain.py` 的 `NL2SQLChain.generate_sql` 中记录自然语言问题与生成的 SQL。
 
 > 至此，TODO-P3 对 LangSmith 可选集成中间层的“代码侧落地”已完成，后续可在实际接入 LangSmith 服务时补充更丰富的指标字段并与 LangChain 内置 tracing 方式统一配置。
@@ -381,7 +381,7 @@
 - 文档同步：
   - 在 `docs/大小模型应用技术架构与实现方案.md` “4.6 NL2SQL” 小节中补充说明，明确当前 NL2SQL RAG 已通过 `NL2SQLRAGService` 落地多命名空间检索骨架，下一步可在此基础上演进为 Agentic RAG（例如对用户问题进行澄清、按需追加补充检索等）。
 
-## 2026-03-17 Agentic RAG 基座与综合分析/Chatbot 链路接入（下一阶段工作清单后续工作）实现
+## 2026-03-17 Agentic RAG 基座与综合分析/Chatbot 链路接入（历史阶段记录）实现
 
 - 新增 Agentic RAG 基座：
   - 新增 `app/rag/agentic.py`：
@@ -389,8 +389,8 @@
     - 定义 `AgenticRAGService`，统一对外暴露 `retrieve(...)` 接口：
       - BASIC 模式直接委托现有 `RAGService` 完成单步检索；
       - AGENTIC 模式当前版本复用基础检索实现，仅在结果中标记 `used_agentic=True`，为后续多步规划与工具调用预留扩展点。
-- 综合分析链路接入 Agentic RAG：
-  - 更新 `app/llm/chains/analysis_chain.py`：
+- 综合分析链路接入 Agentic RAG（当前已演进为 LangGraph V2 企业版）：
+  - 更新 `app/llm/graphs/analysis_graph_runner.py`：
     - 在构造函数中基于传入/默认 `RAGService` 创建 `AgenticRAGService` 实例；
     - 在 `run(...)` 中，当启用 RAG 时通过 `AgenticRAGService.retrieve(...)`、并传入 `RAGContext(user_id, session_id, scene="analysis")` 与 `RAGMode.AGENTIC` 完成上下文检索；
     - 保持对外行为兼容（仍返回 `AnalysisResult.used_rag` 与 `context_snippets`），为后续引入真正的 Agent 多步流程打下基础。
@@ -413,7 +413,7 @@
       - NL2SQL：问题理解与实体/表识别 → 基于规划结果的多命名空间 RAG 检索 → SQL 初稿生成 → SQL 自检与修正。
     - 明确 Agentic 基座（`AgenticRAGService` + `RAGMode`/`RAGContext`）与具体业务 Workflow 的职责边界：
       - 基座负责统一 RAG 能力与场景上下文管理；
-      - 各业务链路（AnalysisChain / ChatbotChain / NL2SQLChain / LLMInferenceService）负责具体剧本（步骤顺序与业务语义）。
+      - 各业务链路（AnalysisGraphRunner / ChatbotChain / NL2SQLChain / LLMInferenceService）负责具体剧本（步骤顺序与业务语义）。
 - 文档联动更新：
   - 在 `docs/大小模型应用技术架构与实现方案.md` 的相关小节中增加对蓝图文档的引用：
     - 在大模型推理（4.1）、智能客服（4.3）、综合分析（4.4）、NL2SQL（4.6）中，分别补充一句说明，指向 `docs/Agentic-Workflow-设计蓝图.md` 作为多步 Workflow 的详细设计依据。

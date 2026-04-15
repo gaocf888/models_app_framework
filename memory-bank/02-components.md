@@ -31,7 +31,7 @@
     - 接口：`POST /chatbot/chat`（兼容保留）、`POST /chatbot/chat/stream`（SSE 主用）。
     - 调用 `ChatbotService`。
   - `AnalysisRouter`
-    - 接口：`POST /analysis/run`。
+    - 接口：`POST /analysis/run-with-payload`、`POST /analysis/run-with-nl2sql`。
     - 调用 `AnalysisService`（Agentic RAG）。
   - `NL2SQLRouter`
     - 接口：`POST /nl2sql/query`。
@@ -74,7 +74,7 @@
 - **`ChainFactory`**
   - 职责：基于配置创建 LangChain 链/Agent：
     - Chatbot 链；
-    - 综合分析 Agent；
+    - 综合分析 LangGraph V2；
     - NL2SQL 链等。
   - 依赖：
     - `LLMClient`

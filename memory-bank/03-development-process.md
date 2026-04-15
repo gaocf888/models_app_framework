@@ -8,7 +8,7 @@
   - `api/`：FastAPI 路由层（所有对外/对内 HTTP 接口的入口）
     - `llm_inference.py`：大模型推理接口（纯推理，带 RAG/上下文开关参数）
     - `chatbot.py`：智能客服接口（支持流式响应、会话管理）
-    - `analysis.py`：综合分析 Agent 接口（Agentic RAG，多模态输入占位）
+    - `analysis.py`：综合分析企业版 V2 接口（LangGraph 节点化编排，双入口）
     - `nl2sql.py`：NL2SQL 查询与管理接口（自然语言查询 + Schema 刷新/测试等）
     - `small_model.py`：小模型通道管理接口（start/stop/update/status）
     - `rag_admin.py`：RAG 知识摄入与管理接口（文档/Schema/业务知识导入、索引重建等）
@@ -17,7 +17,7 @@
   - `services/`：业务无关服务层（大模型/小模型/RAG/NL2SQL/训练）
     - `llm_inference_service.py`：封装大模型通用推理逻辑（接入 LLMClient、RAG、上下文等）
     - `chatbot_service.py`：封装智能客服会话逻辑（多轮对话、RAG、用户上下文）
-    - `analysis_service.py`：封装综合分析 Agent 调用与多模态分析流程
+    - `analysis_service.py`：封装综合分析 V2 调用与多模态分析流程
     - `nl2sql_service.py`：封装 NL2SQL 端到端流程（问题 → RAG → SQL 生成 → 校验 → 执行）
     - `small_model_channel_service.py`：封装小模型通道管理对外服务（调用 ChannelManager）
     - `rag_ingestion_service.py`：RAG 知识摄入业务逻辑
@@ -35,7 +35,7 @@
     - `config_registry.py`：LLMConfigRegistry，实现大模型配置注册与查询
     - `chains/`
       - `chatbot_chain.py`：基于 LangChain 定义的智能客服链路
-      - `analysis_chain.py`：基于 LangChain/Agent 定义的综合分析链路
+      - `analysis_graph_runner.py`：基于 LangGraph 节点化编排的综合分析 LangGraph V2（企业版）链路
       - `nl2sql_chain.py`：基于 LangChain 定义的 NL2SQL 链路（调用 NL2SQL 组件）
     - `prompts/`：按场景划分 Prompt 模板
     - `prompt_registry.py`：PromptTemplateRegistry 实现，支持版本管理与 A/B 策略

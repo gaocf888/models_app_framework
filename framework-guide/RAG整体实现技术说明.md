@@ -234,7 +234,7 @@ GRAPH_RAG_USE_INTENT_ROUTING=true
 
 2. **知识检索：在对话/分析等场景中使用知识库**  
   - **默认（纯向量检索）**：  
-    - 上层链路（`ChatbotLangGraphRunner` / `AnalysisChain` / `LLMInferenceService` / `NL2SQLRAGService` 等）在需要 RAG 时：  
+    - 上层链路（`ChatbotLangGraphRunner` / `AnalysisGraphRunner` / `LLMInferenceService` / `NL2SQLRAGService` 等）在需要 RAG 时：
        1. 调用 `AgenticRAGService.retrieve(...)`（或直接调用 `RAGService.retrieve_context(...)`）发起检索；  
        2. `RAGService` 使用 `EmbeddingService` 对问题做嵌入，并在向量库中执行 `similarity_search_by_vector`；  
        3. 返回 Top-K 文本片段，由上层链路拼入 Prompt。  
@@ -268,8 +268,8 @@ GRAPH_RAG_USE_INTENT_ROUTING=true
 >   `POST /chatbot/chat/stream`（主用）或 `POST /chatbot/chat`（兼容）
 >   → `ChatbotService.stream_chat_events` → `ChatbotLangGraphRunner` → `AgenticRAGService/HybridRAGService` → RAG 检索 → LLM；
 >   若启用 `CHATBOT_SIMILAR_CASE_ENABLED`，主回答后由 Runner 再调 `HybridRAGService.retrieve(..., namespace=CHATBOT_SIMILAR_CASE_NAMESPACE)` 追加相似案例块（与主检索 namespace 解耦）。
-> - **综合分析 /analysis/run**：  
->   `POST /analysis/run` → `AnalysisService.run_analysis` → `AnalysisChain.run` → `AgenticRAGService` → RAG 检索 → LLM。  
+> - **综合分析（V2 双入口）**：
+>   `POST /analysis/run-with-payload` 或 `POST /analysis/run-with-nl2sql` → `AnalysisService` → `AnalysisGraphRunner` → `AgenticRAGService/HybridRAGService` → RAG 检索 → LLM。
 > - **NL2SQL /nl2sql/query 中的 RAG**：  
 >   `POST /nl2sql/query` → `NL2SQLService.query` → `NL2SQLChain.generate_sql` → `NL2SQLRAGService.retrieve` → `RetrievalPolicy` 决策（vector/graph/hybrid）→ 向量与图事实联合检索。
 
@@ -303,7 +303,7 @@ flowchart TB
     ARS["AgenticRAGService"]
 
     Chatbot["ChatbotLangGraphRunner"]
-    Analysis["AnalysisChain"]
+    Analysis["AnalysisGraphRunner"]
     LLMInf["LLMInferenceService"]
     NL2SQL["NL2SQLRAGService"]
 
@@ -687,7 +687,7 @@ sequenceDiagram
 flowchart LR
     subgraph Chains
         CC[ChatbotLangGraphRunner]
-        AC[AnalysisChain]
+        AC[AnalysisGraphRunner]
         LIC[LLMInferenceService]
     end
     ARS[AgenticRAGService]

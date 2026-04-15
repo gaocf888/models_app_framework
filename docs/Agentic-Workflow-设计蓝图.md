@@ -58,14 +58,14 @@
 
 ---
 
-## 2. 综合分析（AnalysisChain / AnalysisService）
+## 2. 综合分析（AnalysisGraphRunner / AnalysisService）
 
 ### 2.1 目标
 
 - 将综合分析从“一次大 Prompt”升级为“规划 + 多步检索 + 汇总证据 + 生成报告”的 Agent 工作流。
 - 更好地利用多模态引用（图像/视频/GPS/传感器）的信息，并为后续接入真实多模态小模型工具留出接口。
 
-### 2.2 多步 Workflow 骨架（建议主要在 `AnalysisChain` 中实现）
+### 2.2 多步 Workflow 骨架（建议主要在 `AnalysisGraphRunner` 中实现）
 
 1. **Step 0：基础上下文与多模态信息整理**
    - 整理 `AnalysisInput`：
@@ -228,7 +228,7 @@
 - **架构 / 代码层**：
   - 已具备清晰分层与抽象：
     - RAG 基座：`AgenticRAGService` + `RAGMode` + `RAGContext`，统一处理多场景 RAG 调用；
-    - 业务多步链路：`LLMInferenceService` / `AnalysisChain` / `ChatbotLangGraphRunner` / `NL2SQLChain` 各自实现轻量多步 Agent Workflow（Planner / Intent / RAG / Refine）；
+    - 业务多步链路：`LLMInferenceService` / `AnalysisGraphRunner` / `ChatbotLangGraphRunner` / `NL2SQLChain` 各自实现轻量多步 Agent Workflow（Planner / Intent / RAG / Refine）；
     - 降级策略：LangChain 不可用时自动回退到单步逻辑。
   - 可以视为**“企业级 Agentic RAG 的工程基座 + 多步骨架实现”**，后续增强可以在此基础上增量演进，而无需推翻现有设计。
 

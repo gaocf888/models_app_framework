@@ -1,14 +1,59 @@
-# 提示词模板与 A/B 测试配置示例
+# =============================================================================
+# 提示词模板配置（configs/prompts.yaml）
+# =============================================================================
 #
-# 说明：
-# - prompts.chatbot / analysis / nl2sql 下分别定义多版本模板；
-# - version 字段用于标识模板版本；
-# - weight 用于 A/B 分流时的权重；
-# - content 为实际的 system / instruction 文本，占位示例可根据业务自行调整。
+# 【文件职责】
+#   由 PromptTemplateRegistry（app/llm/prompt_registry.py）加载；每个「顶级键」= 一个 scene，
+#   供 get_template(scene=...) 按场景 + user_id 权重分流或多版本选择。
 #
-# 智能客服默认版本由环境变量 CHATBOT_PROMPT_DEFAULT_VERSION 指定（默认 boiler_v1），
-# 请求体也可传 prompt_version 覆盖。
+# 【列表项通用字段】（每个 scene 下为数组，可配置多条做 A/B）
+#   - version：版本字符串；显式请求或 default_version 时可精确命中。
+#   - weight：同一 scene 多版本时参与哈希分流的权重（≥0，总和为 0 时退回首条）。
+#   - description：给人看的说明，不参与模型推理。
+#   - content：注入 LLM 的 system / instruction 正文；部分场景为 JSON（见各模块说明）。
+#
+# -----------------------------------------------------------------------------
+# 「场景名」与代码对齐（必读）
+# -----------------------------------------------------------------------------
+#
+# 1) 本文件每个「顶级键」= PromptTemplateRegistry 的 scene，对应 get_template(scene=...)。
+#
+# 2) RAG 检索使用的 scene（传给 HybridRAGService.retrieve_chunks，不是本文件顶级键）：
+#    - "nl2sql"  — analysis_graph_runner._retrieve_plan_rag：plan_context_rag 节点，
+#                  命名空间 nl2sql_schema / nl2sql_biz_knowledge / nl2sql_qa_examples。
+#    - "analysis" — _retrieve_business_rag：payload / nl2sql 的 rag_enrichment 节点，全局检索。
+#    上述 top_k / rerank 等由 app/core/config.py 中 RAG_SCENE_NL2SQL_*、RAG_SCENE_ANALYSIS_* 等配置。
+#
+# 3) 综合分析 LLM 阶段：AnalysisGraphRunner._resolve_stage_template(stage=...) 查找顺序：
+#      <stage>_<analysis_type>  →  <stage>  →  "analysis"
+#    其中 stage 为：analysis_intent、analysis_data_plan、analysis_synthesis、analysis_report。
+#    可按分析类型增加顶级键，例如：analysis_intent_overheat_guidance。
+#
+# 4) NL2SQL「数据计划」JSON 模板：scene = "analysis_plan_<analysis_type>"
+#    analysis_type ∈ overheat_guidance | maintenance_strategy | custom
+#    见 analysis_graph_runner._build_data_plan_from_template。
+#
+# 5) NL2SQL「主链路 SQL 生成」：app/nl2sql/chain.py 使用 scene="nl2sql" 加载本文件 nl2sql 段。
+#
+# -----------------------------------------------------------------------------
+# 【模块编排顺序】（建议按此顺序阅读与维护本文件）
+# -----------------------------------------------------------------------------
+#
+#   ① 智能客服（chatbot）— 与综合分析独立，见 CHATBOT_PROMPT_DEFAULT_VERSION
+#   ② 综合分析 · 兜底（analysis）— 各 stage 解析失败或未配置时的最后回退
+#   ③ 综合分析 · 分阶段 LLM（analysis_intent / analysis_data_plan / analysis_synthesis / analysis_report）
+#   ④ 综合分析 · NL2SQL 数据计划 JSON（analysis_plan_*）— 与 LLM 计划合并，模板 item_id 优先
+#   ⑤ NL2SQL 主链路（nl2sql）— 单次问数 SQL 前缀，与 ④ 编排不同、勿混淆
+#
+# =============================================================================
+# ① 智能客服模块（scene="chatbot"）
+# =============================================================================
+#
+# 【谁用】ChatbotGraphRunner、chatbot_chain、ChatbotService；RAG ctx.scene=chatbot。
+# 【默认版本】环境变量 CHATBOT_PROMPT_DEFAULT_VERSION（默认 boiler_v1）；请求体可传 prompt_version 覆盖。
+# 【扩展】新增 version 条目并调 weight；勿改 scene 键名 chatbot。
 
+# --- boiler_v1：领域分层模板（生产推荐默认）---
 chatbot:
   - version: boiler_v1
     weight: 1.0
@@ -24,38 +69,189 @@ chatbot:
 
       【边界】不臆造设备参数、不代填正式报告结论；涉及人身与设备重大安全决策时，提醒以现场规程与人工确认为准。
 
+  # --- v1：通用短答（兼容旧版/低流量场景）---
   - version: v1
     weight: 1.0
     description: 通用简洁客服（兼容旧版）
     content: |
       你是一个专业的智能客服助手，请用简洁、礼貌的中文回答用户问题。
 
+  # --- v2：先结论后解释（兼容旧版）---
   - version: v2
     weight: 1.0
     description: 通用解释型客服（兼容旧版）
     content: |
       你是一名耐心的客服专家，请在回答用户问题时，先给出结论，再用 1-2 句话做简要解释。
 
+# =============================================================================
+# ② 综合分析模块 · 兜底 scene（scene="analysis"）
+# =============================================================================
+#
+# 【谁用】AnalysisGraphRunner._resolve_stage_template：当
+#   analysis_<stage>_<analysis_type> 与 analysis_<stage> 均未配置或 content 为空时，回退到本 scene。
+# 【内容形态】自由文本 system 提示，面向「综合结论」类兜底，非 JSON。
+
 analysis:
+  # --- v1：简明数据结论 ---
   - version: v1
     weight: 1.0
     description: 默认综合分析提示词
     content: |
       你是一名数据分析专家，请根据提供的上下文信息和多模态数据，给出简明的分析结论。
 
+  # --- v2：结论-依据-建议结构 ---
   - version: v2
     weight: 1.0
     description: 结构化分析提示词
     content: |
       你是一名高级分析师，请以“结论、依据、建议”的结构输出分析结果。
 
+# =============================================================================
+# ③ 综合分析模块 · 分阶段 LLM（仅 nl2sql 路径；payload 不调用意图/计划 LLM）
+# =============================================================================
+#
+# 【开关】ANALYSIS_NL2SQL_LLM_PLANNER_ENABLED=false 时，图节点仍执行但走空输出/仅用模板，
+#         详见 analysis_graph_runner._lg_nl2sql_intent_llm / _lg_nl2sql_plan_llm_merge。
+#
+# --- scene=analysis_intent（stage=analysis_intent）---
+# 【谁用】intent_llm 节点；Runner 拼接 JSON schema 要求模型只输出一个 JSON 对象。
+# 【输出契约】须可被 AnalysisIntentLLMOutput 校验（app/models/analysis_nl2sql_llm.py）。
+# 【与模板关系】不替代 analysis_plan_*；后续与 plan_llm 输出合并取数。
+
+analysis_intent:
+  - version: v1
+    weight: 1.0
+    description: 综合分析意图阶段（结构化 JSON，非自由文本结论）
+    content: |
+      你是一名综合分析规划助手。请根据用户问题明确分析目标、核心对象、时间范围与输出重点。
+
+# --- scene=analysis_data_plan（stage=analysis_data_plan）---
+# 【谁用】plan_llm 节点；须输出顶层含 tasks 数组的 JSON，项见 AnalysisPlanTaskLLMItem。
+# 【与模板关系】与 analysis_plan_<type> 合并：同 item_id 以模板为准；question 去重；dependency_ids 裁剪。
+
+analysis_data_plan:
+  - version: v1
+    weight: 1.0
+    description: 综合分析数据计划阶段（结构化 tasks 数组，与 JSON 模板合并时模板优先）
+    content: |
+      你是一名数据获取规划助手。请先识别本次分析所需的关键事实数据、关联维度数据和补充解释数据，并尽量指出依赖顺序。
+
+# --- scene=analysis_synthesis（stage=analysis_synthesis）---
+# 【谁用】payload / nl2sql 的 synthesis 节点；与 gathered_data、RAG 片段、可选 planning_context 拼接。
+# 【输出】自然语言摘要；结构化报告由 _build_structured_report 再组装。
+
+analysis_synthesis:
+  - version: v1
+    weight: 1.0
+    description: 综合分析结论生成模板
+    content: |
+      你是一名高级分析师。请基于给定事实数据与知识片段输出严谨结论，必须区分事实与推断，严禁编造数据。
+
+# --- scene=analysis_report（stage=analysis_report）---
+# 【谁用】解析模板版本号与默认文案；当前实现中「结构化 sections/tables」主要在 synthesis 内生成，
+#         本段用于版本追踪与报告口吻兜底，见 _lg_*_synthesis 中对 analysis_report 的解析。
+
+analysis_report:
+  - version: v1
+    weight: 1.0
+    description: 综合分析报告结构模板
+    content: |
+      你是一名报告生成助手。请按“结论摘要、关键依据、可执行建议、风险与限制”组织输出，文本需便于结构化拆解。
+
+# =============================================================================
+# ④ 综合分析模块 · NL2SQL 数据计划 JSON（scene=analysis_plan_<analysis_type>）
+# =============================================================================
+#
+# 【谁用】_build_data_plan_from_template：content 必须为 JSON 数组；每项字段建议：
+#   - item_id（string，唯一）、purpose、question、mandatory（bool）、dependency_ids（string 数组，引用其他 item_id）
+# 【优先级】相对 LLM plan 模板优先；无模板或 JSON 非法时回退代码内置默认任务再合并。
+# 【扩展】新增分析类型时：增加 analysis_plan_<新 analysis_type> 顶级键，并在 API 模型 AnalysisType 中对齐。
+
+# --- analysis_type=overheat_guidance ---
+analysis_plan_overheat_guidance:
+  - version: v1
+    weight: 1.0
+    description: 超温指导数据计划模板（JSON 数组）
+    content: |
+      [
+        {
+          "item_id": "q1",
+          "purpose": "超温事实明细",
+          "question": "查询超温事件明细、时间分布与区域聚类",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2",
+          "purpose": "运行参数关联",
+          "question": "查询风门开度、蒸汽流量、氧量与负荷变化",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q3",
+          "purpose": "燃烧器状态",
+          "question": "查询燃烧器投退记录、火检状态与异常告警",
+          "mandatory": false,
+          "dependency_ids": ["q1"]
+        }
+      ]
+
+# --- analysis_type=maintenance_strategy ---
+analysis_plan_maintenance_strategy:
+  - version: v1
+    weight: 1.0
+    description: 检修策略数据计划模板（JSON 数组）
+    content: |
+      [
+        {
+          "item_id": "q1",
+          "purpose": "壁厚测量数据",
+          "question": "查询壁厚测点历史、趋势与最小值分布",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2",
+          "purpose": "换管历史记录",
+          "question": "查询换管时间、材质、区域与对应缺陷原因",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q3",
+          "purpose": "超温频次统计",
+          "question": "按区域统计近周期超温频次并关联壁厚风险",
+          "mandatory": false,
+          "dependency_ids": ["q1"]
+        }
+      ]
+
+# --- analysis_type=custom（按需复制上结构并改 item_id/question；无则走代码内置默认）---
+# analysis_plan_custom:
+#   - version: v1
+#     weight: 1.0
+#     description: 自定义分析类型数据计划（JSON 数组）
+#     content: |
+#       []
+
+# =============================================================================
+# ⑤ NL2SQL 主链路模块（scene="nl2sql"）
+# =============================================================================
+#
+# 【谁用】app/nl2sql/chain.py 加载 SQL 生成前缀；与 ④「综合分析数据计划」不是同一调用链。
+# 【版本选择】环境变量 NL2SQL_PROMPT_DEFAULT_VERSION（见 app/app-deploy/.env.example）。
+# 【占位符】v2 含 {{NL2SQL_SCHEMA_CATALOG}}，由运行时注入当前库表结构。
+
 nl2sql:
+  # --- v1：通用只读 SELECT 前缀 ---
   - version: v1
     weight: 1.0
     description: 默认 NL2SQL 提示词前缀
     content: |
       你是一个资深 SQL 助手，请根据给定的数据库 Schema 信息和问题生成只读的 SELECT 语句。
 
+  # --- v2：业务库 + 全量 catalog 注入（推荐与业务表对齐）---
   - version: v2
     weight: 1.0
     description: 锅炉等业务库 NL2SQL（运行时注入全库表结构，默认版本见 NL2SQL_PROMPT_DEFAULT_VERSION）

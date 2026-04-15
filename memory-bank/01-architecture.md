@@ -13,7 +13,7 @@
 2. **应用编排层（LangChain / Agent 层）**
    - 利用 LangChain/LangGraph 对大模型相关任务进行编排：
      - 聊天客服链路（带 RAG/上下文）。
-     - 综合分析 Agent 链路（多模态输入 + RAG + 工具调用）。
+     - 综合分析 LangGraph V2 链路（双入口 + 多模态输入 + RAG + 工具调用）。
      - NL2SQL Pipeline（RAG + Prompt 编排 + LLM + SQL 校验/修正）。
    - 提供统一的「链」与「Agent」注册与路由机制。
 
