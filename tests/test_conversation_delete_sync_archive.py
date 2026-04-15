@@ -11,6 +11,7 @@ class _FakeArchive:
         self.fallback_enabled = False
         self.updated: list[tuple[str, str, str, bool]] = []
         self.allow_update_when_required = False
+        self.cold_messages: list[dict] = []
 
     def delete_session(self, *, user_id: str, session_id: str) -> None:
         self.calls.append((user_id, session_id))
@@ -32,6 +33,10 @@ class _FakeArchive:
         if require_existing:
             return self.allow_update_when_required
         return True
+
+    def list_messages(self, *, user_id: str, session_id: str, limit: int | None = None) -> list[dict]:
+        _ = (user_id, session_id, limit)
+        return list(self.cold_messages)
 
 
 def test_clear_session_also_deletes_archive(monkeypatch):
@@ -60,4 +65,24 @@ def test_update_title_can_fallback_to_cold_layer(monkeypatch):
 
     assert ok is True
     assert fake_archive.updated == [("u_1", "s_1", "new title", True)]
+
+
+def test_get_session_messages_dedup_by_message_id(monkeypatch):
+    fake_archive = _FakeArchive()
+    fake_archive.fallback_enabled = True
+    monkeypatch.setattr("app.conversation.manager.get_archive_store", lambda: fake_archive)
+
+    store = ConversationStore()
+    mgr = ConversationManager(store=store)
+    mgr.append_user_message("u_1", "s_1", "hello")
+    hot = mgr.get_session_messages("u_1", "s_1")
+    assert len(hot) == 1
+    hot_ts = float(hot[0]["ts"])
+    # 冷层时间戳通常是毫秒精度还原后的秒值（精度低于热层）
+    fake_archive.cold_messages = [{"role": "user", "content": "hello", "ts": int(hot_ts * 1000) / 1000.0}]
+
+    merged = mgr.get_session_messages("u_1", "s_1")
+    assert len(merged) == 1
+    assert merged[0]["role"] == "user"
+    assert merged[0]["content"] == "hello"
 

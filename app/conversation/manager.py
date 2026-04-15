@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Dict, List
 
 from app.conversation.archive_store import get_archive_store
@@ -52,13 +53,12 @@ class ConversationManager:
         if not cold:
             return hot
         merged: list[dict] = []
-        seen: set[tuple[str, str, float]] = set()
+        seen: set[str] = set()
         for m in (cold + hot):
             role = str(m.get("role", ""))
             content = str(m.get("content", ""))
             ts_raw = m.get("ts")
-            ts = float(ts_raw) if ts_raw is not None else 0.0
-            k = (role, content, ts)
+            k = self._build_message_id(u, s, role=role, content=content, ts=ts_raw)
             if k in seen:
                 continue
             seen.add(k)
@@ -170,4 +170,22 @@ class ConversationManager:
         except Exception:
             # 归档失败不影响在线会话主路径。
             pass
+
+    @staticmethod
+    def _to_ms(ts: float | int | None) -> int:
+        if ts is None:
+            return 0
+        t = float(ts)
+        if t > 10_000_000_000:
+            return int(t)
+        return int(t * 1000)
+
+    def _build_message_id(self, user_id: str, session_id: str, *, role: str, content: str, ts: float | int | None) -> str:
+        """
+        生成与冷层一致的 message_id（sha256(user|session|role|ts_ms|content)）。
+        用于热层+冷层合并去重，避免秒级/毫秒级时间精度差异造成重复。
+        """
+        ts_ms = self._to_ms(ts)
+        raw = f"{user_id}|{session_id}|{role}|{ts_ms}|{content}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
