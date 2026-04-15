@@ -86,15 +86,29 @@ class ConversationManager:
         ok = self._store.update_session_title(u, s, title)
         if ok:
             try:
-                get_archive_store().update_session_title(user_id=u, session_id=s, title=title, title_source="user")
+                get_archive_store().update_session_title(
+                    user_id=u, session_id=s, title=title, title_source="user", require_existing=False
+                )
             except Exception:
                 pass
-        return ok
+            return True
+        # 热层无会话时，允许冷层兜底更新（典型场景：热层 TTL 过期但冷层仍可回查）
+        try:
+            return get_archive_store().update_session_title(
+                user_id=u, session_id=s, title=title, title_source="user", require_existing=True
+            )
+        except Exception:
+            return False
 
     def clear_session(self, user_id: str, session_id: str) -> None:
-        """删除指定 user_id + session_id 的会话数据（Redis 或内存）。"""
+        """删除指定 user_id + session_id 的会话数据（热层 + 冷层）。"""
         u, s = validate_pair(user_id, session_id)
         self._store.clear(u, s)
+        try:
+            get_archive_store().delete_session(user_id=u, session_id=s)
+        except Exception:
+            # 冷层删除失败不抛出，避免影响热层已删除的主流程语义。
+            pass
 
     def list_sessions(
         self,

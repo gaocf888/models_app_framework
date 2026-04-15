@@ -260,12 +260,44 @@ class ConversationArchiveStore:
         except Exception as exc:  # noqa: BLE001
             logger.error("ConversationArchiveStore archive_message failed: %s", exc)
 
-    def update_session_title(self, *, user_id: str, session_id: str, title: str, title_source: str = "user") -> None:
+    def update_session_title(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        title: str,
+        title_source: str = "user",
+        require_existing: bool = False,
+    ) -> bool:
         if not self.enabled:
-            return
+            return False
         sess_id = self._session_doc_id(user_id, session_id)
         now_ms = int(time.time() * 1000)
         try:
+            if require_existing:
+                exists = False
+                msg_probe = self._es.search(
+                    index=self._msg_index,
+                    body={
+                        "query": {
+                            "bool": {
+                                "filter": [
+                                    {"term": {"user_id": user_id}},
+                                    {"term": {"session_id": session_id}},
+                                ]
+                            }
+                        },
+                        "size": 1,
+                    },
+                )
+                msg_hits = (msg_probe.get("hits") or {}).get("hits") or []
+                if msg_hits:
+                    exists = True
+                if not exists:
+                    sess_probe = self._es.get(index=self._session_index, id=sess_id, ignore=404)
+                    exists = bool(sess_probe and sess_probe.get("found"))
+                if not exists:
+                    return False
             self._es.update(
                 index=self._session_index,
                 id=sess_id,
@@ -292,8 +324,10 @@ class ConversationArchiveStore:
                 },
                 retry_on_conflict=3,
             )
+            return True
         except Exception as exc:  # noqa: BLE001
             logger.error("ConversationArchiveStore update_session_title failed: %s", exc)
+            return False
 
     def list_sessions(self, *, user_id: str, limit: int, offset: int, order_desc: bool = True) -> Tuple[List[Dict[str, Any]], int]:
         if not self.fallback_enabled:
@@ -388,6 +422,37 @@ class ConversationArchiveStore:
         except Exception as exc:  # noqa: BLE001
             logger.error("ConversationArchiveStore get_session_title_snapshot failed: %s", exc)
             return {}
+
+    def delete_session(self, *, user_id: str, session_id: str) -> None:
+        """
+        删除冷层中的会话数据（消息索引 + 会话汇总索引）。
+
+        说明：
+        - 该操作用于与热层删除保持一致，避免 `/chatbot/sessions*` 被冷层回查“补回”；
+        - 对象存储备份是离线容灾副本，默认不做联动删除。
+        """
+        if not self.enabled:
+            return
+        sess_id = self._session_doc_id(user_id, session_id)
+        try:
+            self._es.delete_by_query(
+                index=self._msg_index,
+                body={
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {"term": {"user_id": user_id}},
+                                {"term": {"session_id": session_id}},
+                            ]
+                        }
+                    }
+                },
+                conflicts="proceed",
+                refresh=True,
+            )
+            self._es.delete(index=self._session_index, id=sess_id, ignore=404, refresh=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("ConversationArchiveStore delete_session failed: %s", exc)
 
     def _backup_object(self, msg_doc: Dict[str, Any]) -> None:
         if not self._object_enabled:

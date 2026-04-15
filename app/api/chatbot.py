@@ -235,7 +235,7 @@ async def delete_session_messages(
     session_id: Annotated[str, Query(description="会话 ID")],
 ) -> SessionDeleteResponse:
     """
-    删除算法侧会话数据（清空 Redis/内存中 `conv:{user_id}:{session_id}` 对应内容）。
+    删除算法侧会话数据（清空热层 Redis/内存会话，并同步删除冷层归档索引记录）。
 
     不修改调用方业务库中的用户、订单等数据；仅释放本服务侧的上下文缓存。
 
