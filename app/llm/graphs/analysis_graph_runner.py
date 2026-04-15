@@ -1405,7 +1405,11 @@ class AnalysisGraphRunner:
         planning_context: str | None = None,
     ) -> str:
         """单次 LLM 调用生成分析摘要；失败时返回固定降级文案。"""
-        data_preview = json.dumps(data_blob, ensure_ascii=False)[:4000]
+        data_preview = json.dumps(
+            data_blob,
+            ensure_ascii=False,
+            default=self._json_fallback,
+        )[:4000]
         rag_text = "\n".join(f"- {s}" for s in context_snippets[:8])
         pc = (planning_context or "").strip()
         planning_block = f"\n分阶段规划意图(结构化要点):\n{pc[:2000]}\n" if pc else ""
@@ -1425,6 +1429,16 @@ class AnalysisGraphRunner:
         except Exception:  # noqa: BLE001
             logger.exception("analysis graph summary generation failed")
             return "综合分析生成失败，已返回基础报告，请稍后重试。"
+
+    @staticmethod
+    def _json_fallback(value: Any) -> str:
+        """将 datetime/Decimal/其它非 JSON 类型兜底序列化为字符串。"""
+        if hasattr(value, "isoformat"):
+            try:
+                return str(value.isoformat())
+            except Exception:  # noqa: BLE001
+                return str(value)
+        return str(value)
 
     @staticmethod
     def _build_suggestions(summary: str, analysis_type: str, max_items: int) -> list[dict]:
@@ -1592,7 +1606,13 @@ class AnalysisGraphRunner:
             },
             "sections": [
                 {"title": "结论摘要", "content": summary},
-                {"title": "执行说明", "content": f"数据覆盖概览: {json.dumps(data_coverage, ensure_ascii=False)}"},
+                {
+                    "title": "执行说明",
+                    "content": (
+                        "数据覆盖概览: "
+                        f"{json.dumps(data_coverage, ensure_ascii=False, default=self._json_fallback)}"
+                    ),
+                },
             ],
             "tables": [
                 {
