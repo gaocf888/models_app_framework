@@ -1610,7 +1610,7 @@ class AnalysisGraphRunner:
                     "title": "执行说明",
                     "content": (
                         "数据覆盖概览: "
-                        f"{json.dumps(data_coverage, ensure_ascii=False, default=self._json_fallback)}"
+                        f"{json.dumps(data_coverage, ensure_ascii=False, default=AnalysisGraphRunner._json_fallback)}"
                     ),
                 },
             ],
