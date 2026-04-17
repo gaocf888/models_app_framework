@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from fastapi import Depends, FastAPI
 from fastapi.openapi.utils import get_openapi
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
@@ -73,6 +76,15 @@ def create_app() -> FastAPI:
     ]
 
     app = FastAPI(title="AI App Platform", version="1.0.0", openapi_tags=tags_metadata)
+    cfg = get_app_config()
+    media_path = cfg.chatbot.image_public_path.strip() or "/chatbot/media"
+    if not media_path.startswith("/"):
+        media_path = "/" + media_path
+    media_dir = Path(cfg.chatbot.image_store_dir.strip() or "runtime/chatbot_images")
+    if not media_dir.is_absolute():
+        media_dir = (Path(__file__).resolve().parent / media_dir).resolve()
+    media_dir.mkdir(parents=True, exist_ok=True)
+    app.mount(media_path.rstrip("/"), StaticFiles(directory=str(media_dir), check_dir=False), name="chatbot-media")
 
     @app.exception_handler(ConversationIdValidationError)
     async def _conversation_id_validation_handler(

@@ -27,6 +27,7 @@ from .chatbot_similar_cases import (
 )
 from app.models.nl2sql import NL2SQLQueryRequest
 from app.services.nl2sql_service import NL2SQLService
+from app.services.chatbot_image_utils import build_user_message_with_images, strip_image_block_from_history
 
 logger = get_logger(__name__)
 
@@ -615,6 +616,8 @@ class ChatbotLangGraphRunner:
         for h in state.get("history_messages") or []:
             role = h.get("role", "user")
             content = h.get("content", "")
+            if isinstance(content, str):
+                content = strip_image_block_from_history(content)
             if content:
                 messages.append({"role": role, "content": content})
         image_urls = [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()]
@@ -678,7 +681,7 @@ class ChatbotLangGraphRunner:
     ) -> None:
         # 成功路径落库：固定先 user 再 assistant，保持会话顺序稳定。
         # 注意：partial 也走 assistant 落库，但会加 [partial] 前缀。
-        self._conv.append_user_message(req.user_id, req.session_id, req.query)
+        self._conv.append_user_message(req.user_id, req.session_id, build_user_message_with_images(req.query, req.image_urls))
         if answer:
             content = answer if not is_partial else f"[partial] {answer}"
             self._conv.append_assistant_message(req.user_id, req.session_id, content)
@@ -689,10 +692,10 @@ class ChatbotLangGraphRunner:
 
     def _persist_failure(self, req: ChatRequest) -> None:
         # 失败时仍写 user，保证会话线完整；assistant 不写入。
-        self._conv.append_user_message(req.user_id, req.session_id, req.query)
+        self._conv.append_user_message(req.user_id, req.session_id, build_user_message_with_images(req.query, req.image_urls))
 
     def _persist_disconnect(self, req: ChatRequest, partial: str) -> None:
-        self._conv.append_user_message(req.user_id, req.session_id, req.query)
+        self._conv.append_user_message(req.user_id, req.session_id, build_user_message_with_images(req.query, req.image_urls))
         if self._persist_partial and partial:
             self._conv.append_assistant_message(req.user_id, req.session_id, f"[partial] {partial}")
 
@@ -731,4 +734,5 @@ class ChatbotLangGraphRunner:
             "used_nl2sql": bool(state.get("used_nl2sql", False)),
             "nl2sql_sql": (state.get("nl2sql_sql") or "") if state.get("used_nl2sql") else None,
             "suggested_questions": list(state.get("suggested_questions") or []),
+            "processed_image_urls": [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
         }

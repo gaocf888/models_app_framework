@@ -405,6 +405,18 @@ class ChatbotConfig:
     # 回答结束后关联问题推荐（规则 + 片段 + LLM）
     suggested_questions_enabled: bool = True
     suggested_questions_max: int = 5
+    # 图片预处理总开关：true 时在 ChatbotService 入口对 image_urls 执行下载+缩放+压缩+本地落盘。
+    image_preprocess_enabled: bool = True
+    # 统一最长边（像素）：超过即等比缩放，降低视觉 token 与传输开销。
+    image_max_edge: int = 1280
+    # 触发有损压缩阈值（MB）：原图超过该体积时按 image_jpeg_quality 压缩；否则高质量保存。
+    image_compress_threshold_mb: float = 2.0
+    # 有损压缩质量（JPEG 1~95）：默认 80，兼顾可识别度与体积。
+    image_jpeg_quality: int = 80
+    # 本地落盘目录（可相对 app 目录）；用于历史会话图片回显与静态服务。
+    image_store_dir: str = "runtime/chatbot_images"
+    # 对外访问前缀（由 main.py 挂载 StaticFiles），默认 /chatbot/media。
+    image_public_path: str = "/chatbot/media"
 
 
 @dataclass
@@ -743,6 +755,12 @@ def _load_from_env() -> AppConfig:
         default_prompt_version=(os.getenv("CHATBOT_PROMPT_DEFAULT_VERSION", "boiler_v1") or "boiler_v1").strip(),
         suggested_questions_enabled=os.getenv("CHATBOT_SUGGESTED_QUESTIONS_ENABLED", "true").lower() == "true",
         suggested_questions_max=max(1, min(10, int(os.getenv("CHATBOT_SUGGESTED_QUESTIONS_MAX", "5")))),
+        image_preprocess_enabled=os.getenv("CHATBOT_IMAGE_PREPROCESS_ENABLED", "true").lower() == "true",
+        image_max_edge=max(256, int(os.getenv("CHATBOT_IMAGE_MAX_EDGE", "1280"))),
+        image_compress_threshold_mb=max(0.1, float(os.getenv("CHATBOT_IMAGE_COMPRESS_THRESHOLD_MB", "2"))),
+        image_jpeg_quality=max(50, min(95, int(os.getenv("CHATBOT_IMAGE_JPEG_QUALITY", "80")))),
+        image_store_dir=(os.getenv("CHATBOT_IMAGE_STORE_DIR", "runtime/chatbot_images") or "runtime/chatbot_images").strip(),
+        image_public_path=(os.getenv("CHATBOT_IMAGE_PUBLIC_PATH", "/chatbot/media") or "/chatbot/media").strip(),
     )
     analysis_cfg = AnalysisConfig(
         default_report_template=(os.getenv("ANALYSIS_DEFAULT_REPORT_TEMPLATE", "standard") or "standard").strip(),

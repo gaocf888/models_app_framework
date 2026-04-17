@@ -22,6 +22,8 @@ from app.services.nl2sql_service import NL2SQLService
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
+from app.services.chatbot_image_preprocessor import ChatbotImagePreprocessor
+from app.services.chatbot_image_utils import build_user_message_with_images, strip_image_block_from_history
 from typing import AsyncIterator, Dict, Any
 
 logger = get_logger(__name__)
@@ -53,6 +55,7 @@ class ChatbotService:
         self._llm = llm_client or VLLMHttpClient()
         self._prompts = prompt_registry or PromptTemplateRegistry()
         self._chatbot_cfg = get_app_config().chatbot
+        self._image_preprocessor = ChatbotImagePreprocessor(self._chatbot_cfg)
         self._graph_runner = ChatbotLangGraphRunner(
             rag_service=self._rag,
             conv_manager=self._conv,
@@ -72,6 +75,7 @@ class ChatbotService:
             logger.warning("ChatbotService: LangChain not available, fallback to simple implementation.")
 
     async def chat(self, req: ChatRequest) -> ChatResponse:
+        req = await self._preprocess_request_images(req)
         if not req.user_id:
             raise ValueError("user_id is required (must be provided by the caller).")
         # 不在此处提前 append_user：须先取历史再组 messages，否则当前句已进 history，
@@ -108,7 +112,7 @@ class ChatbotService:
                     llm_client=self._llm,
                     max_total=cfg.suggested_questions_max,
                 )
-            self._conv.append_user_message(req.user_id, req.session_id, req.query)
+            self._append_user_with_images(req)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
             return ChatResponse(
                 answer=answer,
@@ -133,7 +137,7 @@ class ChatbotService:
                     llm_client=self._llm,
                     max_total=min(3, cfg.suggested_questions_max),
                 )
-            self._conv.append_user_message(req.user_id, req.session_id, req.query)
+            self._append_user_with_images(req)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
             return ChatResponse(
                 answer=answer,
@@ -192,7 +196,7 @@ class ChatbotService:
                 max_total=cfg.suggested_questions_max,
             )
 
-        self._conv.append_user_message(req.user_id, req.session_id, req.query)
+        self._append_user_with_images(req)
         self._conv.append_assistant_message(req.user_id, req.session_id, answer)
 
         return ChatResponse(
@@ -218,6 +222,7 @@ class ChatbotService:
                 yield str(ev.get("delta") or "")
 
     async def stream_chat_events(self, req: ChatRequest) -> AsyncIterator[Dict[str, Any]]:
+        req = await self._preprocess_request_images(req)
         if not req.user_id:
             raise ValueError("user_id is required (must be provided by the caller).")
         """
@@ -289,7 +294,7 @@ class ChatbotService:
                 )
             if answer:
                 yield {"type": "delta", "delta": answer}
-            self._conv.append_user_message(req.user_id, req.session_id, req.query)
+            self._append_user_with_images(req)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
             yield {
                 "type": "finished",
@@ -309,6 +314,7 @@ class ChatbotService:
                     "fault_detect_confidence": 0.0,
                     "need_similar_cases": False,
                     "suggested_questions": suggested,
+                    "processed_image_urls": imgs,
                 },
             }
             return
@@ -328,7 +334,7 @@ class ChatbotService:
                     max_total=min(3, cfg.suggested_questions_max),
                 )
             yield {"type": "delta", "delta": answer}
-            self._conv.append_user_message(req.user_id, req.session_id, req.query)
+            self._append_user_with_images(req)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
             yield {
                 "type": "finished",
@@ -348,6 +354,7 @@ class ChatbotService:
                     "fault_detect_confidence": 0.0,
                     "need_similar_cases": False,
                     "suggested_questions": suggested_cl,
+                    "processed_image_urls": imgs,
                 },
             }
             return
@@ -418,7 +425,7 @@ class ChatbotService:
                 llm_client=self._llm,
                 max_total=cfg.suggested_questions_max,
             )
-        self._conv.append_user_message(req.user_id, req.session_id, req.query)
+        self._append_user_with_images(req)
         if full:
             self._conv.append_assistant_message(req.user_id, req.session_id, full)
         yield {
@@ -439,6 +446,7 @@ class ChatbotService:
                 "fault_detect_confidence": gate_conf,
                 "need_similar_cases": need_cases,
                 "suggested_questions": suggested_out,
+                "processed_image_urls": imgs,
             },
         }
 
@@ -472,6 +480,7 @@ class ChatbotService:
             role = h.get("role", "user")
             raw_c = h.get("content", "")
             content = raw_c if isinstance(raw_c, str) else (str(raw_c) if raw_c is not None else "")
+            content = strip_image_block_from_history(content)
             if content:
                 messages.append({"role": role, "content": content})
 
@@ -485,4 +494,15 @@ class ChatbotService:
         else:
             messages.append({"role": "user", "content": req.query})
         return messages
+
+    async def _preprocess_request_images(self, req: ChatRequest) -> ChatRequest:
+        imgs = [u for u in req.image_urls if isinstance(u, str) and u.strip()]
+        if not imgs:
+            return req
+        new_urls = await self._image_preprocessor.preprocess_urls(imgs)
+        return req.model_copy(update={"image_urls": new_urls})
+
+    def _append_user_with_images(self, req: ChatRequest) -> None:
+        content = build_user_message_with_images(req.query, req.image_urls)
+        self._conv.append_user_message(req.user_id, req.session_id, content)
 
