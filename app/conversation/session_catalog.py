@@ -10,6 +10,19 @@ import os
 import re
 from typing import Any
 
+_IMAGE_BLOCK_MARKER = "\n\n[image_urls]\n"
+
+
+def strip_image_block_for_title(text: str) -> str:
+    """
+    去除用户消息中附加的图片链接块，仅保留正文文本用于会话标题展示。
+    """
+    t = text or ""
+    idx = t.find(_IMAGE_BLOCK_MARKER)
+    if idx < 0:
+        return t
+    return t[:idx].rstrip()
+
 
 def title_mode() -> str:
     """off | truncate | llm（llm 未实现时与 truncate 行为一致，仅 title_source 仍为 truncated）。"""
@@ -48,7 +61,8 @@ def session_list_limit_cap() -> int:
 def truncate_for_title(text: str, max_runes: int | None = None) -> str:
     """将首条用户提问压缩为列表展示用标题（按 Unicode 码位截断）。"""
     max_runes = max_runes or title_max_runes()
-    t = re.sub(r"\s+", " ", (text or "").strip())
+    base = strip_image_block_for_title(text)
+    t = re.sub(r"\s+", " ", (base or "").strip())
     if not t:
         return "新对话"
     chars = list(t)
@@ -59,10 +73,10 @@ def truncate_for_title(text: str, max_runes: int | None = None) -> str:
 
 def display_title(meta: dict[str, Any], session_id: str) -> str:
     """列表展示：优先 Hash title，其次 first_user_preview 截断，再次 session_id 缩写。"""
-    raw = (meta.get("title") or "").strip()
+    raw = strip_image_block_for_title(str(meta.get("title") or "")).strip()
     if raw:
         return raw
-    preview = (meta.get("first_user_preview") or "").strip()
+    preview = strip_image_block_for_title(str(meta.get("first_user_preview") or "")).strip()
     if preview:
         return truncate_for_title(preview)
     return session_id if len(session_id) <= 16 else session_id[:12] + "…"

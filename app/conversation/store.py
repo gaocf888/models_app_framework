@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.conversation.session_catalog import (
     display_title,
     session_list_limit_cap,
+    strip_image_block_for_title,
     title_mode,
     truncate_for_title,
 )
@@ -68,11 +69,12 @@ class ConversationStore:
         meta["message_count"] = len(self._data.get(key, []))
 
         if role == "user" and not (meta.get("first_user_preview") or "").strip():
-            preview = content[:200] if len(content) <= 200 else content[:200]
+            title_content = strip_image_block_for_title(content)
+            preview = title_content[:200] if len(title_content) <= 200 else title_content[:200]
             meta["first_user_preview"] = preview
             mode = title_mode()
             if mode in ("truncate", "llm"):
-                meta["title"] = truncate_for_title(content)
+                meta["title"] = truncate_for_title(title_content)
                 meta["title_source"] = "truncated"
             else:
                 meta["title"] = ""
@@ -117,7 +119,8 @@ class ConversationStore:
         for x in msgs:
             if str(x.get("role", "")).lower() == "user":
                 c = x.get("content", "")
-                first_user = c if isinstance(c, str) else str(c)
+                raw_user = c if isinstance(c, str) else str(c)
+                first_user = strip_image_block_for_title(raw_user)
                 break
         mode = title_mode()
         title = ""

@@ -16,12 +16,13 @@
 
 ## 3. 总体架构
 
-客户端 → `POST /chatbot/chat/stream`（或兼容 `POST /chatbot/chat`）→ `ChatbotService` → `ChatbotLangGraphRunner` → LangGraph（或 Legacy 顺序链路）→ SSE / JSON 返回。
+客户端 → `POST /chatbot/chat/stream`（或兼容 `POST /chatbot/chat`）→ `ChatbotService` → `ChatbotLangGraphRunner` → LangGraph（或 Legacy 顺序链路）→ SSE / JSON 返回；可通过 `POST /chatbot/chat/stop` + `stream_id` 显式中断。
 
 组件职责：
 
 - `app/api/chatbot.py`：HTTP 与 SSE 帧封装。
 - `ChatbotService`（`chatbot_service.py`）：图开关、异常回退 Legacy、会话与 Runner 共用 `ConversationManager`。
+- `ChatbotImagePreprocessor`（`chatbot_image_preprocessor.py`）：在 `ChatbotService` 入口前对 `image_urls` 做缩放/压缩并落盘为本地静态 URL（默认 `/chatbot/media`），降低多模态上下文与传输开销。
 - `ChatbotLangGraphRunner`（`chatbot_graph_runner.py`）：`StateGraph` 编译与执行、**图后**流式生成、相似案例追加、**关联问题** `_fill_suggested_questions`、落库。
 - LangGraph：状态机（模板、历史、意图、故障门控、**按意图分支**、RAG/C-RAG 或 NL2SQL、`finalize`）。
 - `HybridRAGService` / `AgenticRAGService`：主链路检索；相似案例为 Runner 层**二次** `retrieve(namespace=…)`。
@@ -314,13 +315,16 @@ flowchart TB
 ### 6.4 多模态兼容
 
 - 保留 `image_urls` 过滤逻辑（空串/null/空白过滤），避免 empty image 400。
+- 入口前图片预处理：`ChatbotService` 在进入 Graph/Legacy 前，对 `image_urls` 执行「下载 → 最长边缩放 → 超阈值有损压缩 → 本地落盘」，并将请求中的图片链接替换为处理后 URL。
 - 保留多模态消息结构：`content=[text + image_url...]`；过滤后为空自动回退纯文本。
+- 本地静态访问由 `main.py` 挂载 `StaticFiles`（默认前缀 `/chatbot/media`），支持会话历史回显。
 
 ### 6.5 流式协议兼容
 
 - SSE 事件格式保持现状：
+  - 启动：`{"started":true,"stream_id":"..."}`（首帧，供 stop 接口调用）
   - 进行中：`{"delta":"...","finished":false}`
-  - 结束：`{"finished":true,"meta":{...}}`（含 `used_rag`、`intent_label`、`retrieval_attempts`、**`used_nl2sql`**、**`suggested_questions`** 等，字段可扩展）
+  - 结束：`{"finished":true,"meta":{...}}`（含 `stream_id`、`used_rag`、`intent_label`、`retrieval_attempts`、**`used_nl2sql`**、**`suggested_questions`**、**`processed_image_urls`**（预处理后 URL 列表）等，字段可扩展）
   - 异常：`{"error":"...","finished":true}`
 - `ensure_ascii=false` 保持不变，中文不转义。
 - 终止语义（企业级默认）：
@@ -394,7 +398,14 @@ flowchart TB
 - `CONV_SESSION_TTL_MINUTES=10080`（建议 7 天；已启用冷层回查时不建议配置为 0）
 - `CONV_MAX_HISTORY_MESSAGES=50`
 - `CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT=true`
+- `/chatbot/chat/stop`：请求体含 `user_id`、`session_id`、`stream_id`；用于显式中断流式输出
 - `MAX_REWRITE_QUERY_LENGTH=256`
+- `CHATBOT_IMAGE_PREPROCESS_ENABLED=true`
+- `CHATBOT_IMAGE_MAX_EDGE=1280`
+- `CHATBOT_IMAGE_COMPRESS_THRESHOLD_MB=2`
+- `CHATBOT_IMAGE_JPEG_QUALITY=80`
+- `CHATBOT_IMAGE_STORE_DIR=runtime/chatbot_images`
+- `CHATBOT_IMAGE_PUBLIC_PATH=/chatbot/media`
 - `CHATBOT_CHECKPOINT_BACKEND=none|memory|redis`
 - `CHATBOT_CHECKPOINT_REDIS_URL=...`（redis backend 时）
 - `CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph`

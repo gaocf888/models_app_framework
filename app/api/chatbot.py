@@ -30,6 +30,8 @@ from app.conversation.session_catalog import session_list_limit_cap
 from app.models.chatbot import (
     ChatRequest,
     ChatResponse,
+    ChatStreamStopRequest,
+    ChatStreamStopResponse,
     SessionDeleteResponse,
     SessionListItem,
     SessionListResponse,
@@ -39,6 +41,7 @@ from app.models.chatbot import (
     SessionTitlePatchResponse,
 )
 from app.services.chatbot_service import ChatbotService
+from app.services.chatbot_image_utils import split_message_content_and_images
 
 router = APIRouter()
 # 与 ChatbotService 共用同一 ConversationManager，保证对话写入与 GET /sessions、GET/DELETE .../messages 读写一致。
@@ -84,6 +87,7 @@ async def chat_stream(req: ChatRequest, request: Request):
     Returns:
         StreamingResponse: `Content-Type: text/event-stream; charset=utf-8`。
             每条事件为 `data: ` + JSON + 换行 + 空行（符合 SSE 事件分隔约定），JSON 形态包括：
+            - `{"started": true, "stream_id": "..."}`：流式已建立，可用于 `/chat/stop` 中断；
             - `{"delta": "...", "finished": false}`：增量文本；
             - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag`、`used_nl2sql`、`intent_label`、`suggested_questions`、`nl2sql_sql` 等；
             - `{"error": "...", "finished": true}`：异常时错误事件。
@@ -98,7 +102,10 @@ async def chat_stream(req: ChatRequest, request: Request):
             async for ev in service.stream_chat_events(req):
                 if await request.is_disconnected():
                     return
-                if ev.get("type") == "delta":
+                if ev.get("type") == "started":
+                    payload = json.dumps({"started": True, "stream_id": ev.get("stream_id")}, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+                elif ev.get("type") == "delta":
                     payload = json.dumps({"delta": ev.get("delta", ""), "finished": False}, ensure_ascii=False)
                     yield f"data: {payload}\n\n"
                 elif ev.get("type") == "finished":
@@ -111,6 +118,23 @@ async def chat_stream(req: ChatRequest, request: Request):
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream; charset=utf-8",
+    )
+
+
+@router.post("/chat/stop", response_model=ChatStreamStopResponse, summary="中断指定流式对话")
+async def stop_chat_stream(req: ChatStreamStopRequest) -> ChatStreamStopResponse:
+    """
+    显式中断某次流式输出。
+
+    使用方式：
+    - 先从 `/chat/stream` 首帧 `{"started": true, "stream_id": "..."}` 获取 `stream_id`；
+    - 再调用本接口发送停止信号。
+    """
+    await service.stop_stream(req.user_id, req.session_id, req.stream_id)
+    return ChatStreamStopResponse(
+        user_id=req.user_id,
+        session_id=req.session_id,
+        stream_id=req.stream_id,
     )
 
 
@@ -184,10 +208,22 @@ async def get_session_messages(
     """
     raw = _conv_admin.get_session_messages(user_id, session_id, limit=limit)
     snap = _conv_admin.get_session_title_snapshot(user_id, session_id)
-    items = [
-        SessionMessageItem(role=str(m.get("role", "")), content=str(m.get("content", "")), ts=m.get("ts"))
-        for m in raw
-    ]
+    items: list[SessionMessageItem] = []
+    for m in raw:
+        role = str(m.get("role", ""))
+        raw_content = str(m.get("content", ""))
+        content_text, image_urls = split_message_content_and_images(raw_content)
+        # assistant/system 历史通常不携带图片块；保持输出干净。
+        if role != "user":
+            image_urls = []
+        items.append(
+            SessionMessageItem(
+                role=role,
+                content=content_text,
+                image_urls=image_urls,
+                ts=m.get("ts"),
+            )
+        )
     return SessionMessagesResponse(
         user_id=user_id,
         session_id=session_id,

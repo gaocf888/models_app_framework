@@ -101,6 +101,7 @@ class SessionMessageItem(BaseModel):
 
     role: str = Field(..., description="user / assistant / system")
     content: str = Field(..., description="消息正文")
+    image_urls: list[str] = Field(default_factory=list, description="该消息关联图片链接列表（仅 user 消息可能有值）")
     ts: float | None = Field(None, description="写入时时间戳（秒，可能为空）")
 
 
@@ -186,4 +187,35 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="注入到提示词前的检索片段文本列表（与 /rag/query 的 snippets 同源业务数据，封装形态不同）",
     )
+
+
+class ChatStreamStopRequest(BaseModel):
+    user_id: str = Field(..., description="用户 ID（与 stream 请求一致）")
+    session_id: str = Field(..., description="会话 ID（与 stream 请求一致）")
+    stream_id: str = Field(..., description="需要停止的流式请求标识（由 /chat/stream started 事件返回）")
+
+    @field_validator("user_id")
+    @classmethod
+    def _validate_stop_user_id(cls, v: str) -> str:
+        return validate_user_id(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_stop_session_id(cls, v: str) -> str:
+        return validate_session_id(v)
+
+    @field_validator("stream_id")
+    @classmethod
+    def _validate_stream_id(cls, v: str) -> str:
+        s = (v or "").strip()
+        if not s:
+            raise ValueError("stream_id is required")
+        return s
+
+
+class ChatStreamStopResponse(BaseModel):
+    ok: bool = Field(True, description="是否已接受停止请求")
+    user_id: str = Field(..., description="用户 ID")
+    session_id: str = Field(..., description="会话 ID")
+    stream_id: str = Field(..., description="被停止的流式请求 ID")
 

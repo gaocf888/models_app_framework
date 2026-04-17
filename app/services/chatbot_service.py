@@ -24,6 +24,7 @@ from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
 from app.services.chatbot_image_preprocessor import ChatbotImagePreprocessor
 from app.services.chatbot_image_utils import build_user_message_with_images, strip_image_block_from_history
+from app.services.chatbot_stream_control import ChatbotStreamControl
 from typing import AsyncIterator, Dict, Any
 
 logger = get_logger(__name__)
@@ -56,6 +57,7 @@ class ChatbotService:
         self._prompts = prompt_registry or PromptTemplateRegistry()
         self._chatbot_cfg = get_app_config().chatbot
         self._image_preprocessor = ChatbotImagePreprocessor(self._chatbot_cfg)
+        self._stream_ctrl = ChatbotStreamControl()
         self._graph_runner = ChatbotLangGraphRunner(
             rag_service=self._rag,
             conv_manager=self._conv,
@@ -229,27 +231,39 @@ class ChatbotService:
         结构化流式事件输出（供 API 层组装 SSE payload 使用）。
 
         事件类型：
+        - started: {"type": "started", "stream_id": "..."}
         - delta: {"type": "delta", "delta": "..."}
         - finished: {"type": "finished", "meta": {...}}
         """
+        stream_id = self._stream_ctrl.begin_stream(req.user_id, req.session_id)
+        yield {"type": "started", "stream_id": stream_id}
         # 显式关闭 graph：走 legacy 流式实现，确保开关语义符合部署预期。
         if not self._chatbot_cfg.graph_enabled:
-            async for ev in self._stream_chat_legacy_events(req):
-                yield ev
-            return
+            try:
+                async for ev in self._stream_chat_legacy_events(req, stream_id=stream_id):
+                    yield ev
+                return
+            finally:
+                await self._stream_ctrl.clear_stream(req.user_id, req.session_id, stream_id)
 
         try:
-            async for ev in self._graph_runner.run_stream_events(req):
+            async for ev in self._graph_runner.run_stream_events(
+                req,
+                stream_id=stream_id,
+                cancel_checker=self._stream_ctrl.is_cancelled,
+            ):
                 yield ev
             return
         except Exception:
             if not self._chatbot_cfg.fallback_legacy_on_error:
                 raise
             logger.exception("ChatbotService.stream_chat_events graph failed, fallback to legacy path.")
-            async for ev in self._stream_chat_legacy_events(req):
+            async for ev in self._stream_chat_legacy_events(req, stream_id=stream_id):
                 yield ev
+        finally:
+            await self._stream_ctrl.clear_stream(req.user_id, req.session_id, stream_id)
 
-    async def _stream_chat_legacy_events(self, req: ChatRequest) -> AsyncIterator[Dict[str, Any]]:
+    async def _stream_chat_legacy_events(self, req: ChatRequest, stream_id: str | None = None) -> AsyncIterator[Dict[str, Any]]:
         """
         旧版流式路径（兜底/回退专用）。
 
@@ -315,6 +329,7 @@ class ChatbotService:
                     "need_similar_cases": False,
                     "suggested_questions": suggested,
                     "processed_image_urls": imgs,
+                    "stream_id": stream_id,
                 },
             }
             return
@@ -355,6 +370,7 @@ class ChatbotService:
                     "need_similar_cases": False,
                     "suggested_questions": suggested_cl,
                     "processed_image_urls": imgs,
+                    "stream_id": stream_id,
                 },
             }
             return
@@ -373,16 +389,44 @@ class ChatbotService:
 
         messages = self._build_llm_messages(req=req, history=history, context_snippets=context_snippets)
         parts: list[str] = []
+        gate_sources: list[str] = []
+        gate_conf = 0.0
+        need_cases = False
         async for delta in self._llm.stream_chat(model=None, messages=messages):  # type: ignore[arg-type]
+            if await self._is_stream_cancelled(req, stream_id):
+                partial = "".join(parts).strip()
+                self._append_user_with_images(req)
+                if self._chatbot_cfg.persist_partial_on_disconnect and partial:
+                    self._conv.append_assistant_message(req.user_id, req.session_id, f"[partial] {partial}")
+                yield {
+                    "type": "finished",
+                    "meta": {
+                        "used_rag": bool(context_snippets),
+                        "used_nl2sql": False,
+                        "nl2sql_sql": None,
+                        "intent_label": ilabel,
+                        "retrieval_attempts": 1 if req.enable_rag else 0,
+                        "rag_engine": "hybrid" if req.enable_rag else None,
+                        "status": "aborted",
+                        "duration_ms": duration_ms(),
+                        "terminate_reason": "user_cancelled",
+                        "similar_cases_appended": False,
+                        "similar_case_namespace": None,
+                        "fault_detect_sources": gate_sources,
+                        "fault_detect_confidence": gate_conf,
+                        "need_similar_cases": need_cases,
+                        "suggested_questions": [],
+                        "processed_image_urls": imgs,
+                        "stream_id": stream_id,
+                    },
+                }
+                return
             parts.append(delta)
             yield {"type": "delta", "delta": delta}
 
         answer = "".join(parts).strip()
         extra = ""
         similar_appended = False
-        gate_sources: list[str] = []
-        gate_conf = 0.0
-        need_cases = False
         if self._chatbot_cfg.similar_case_enabled:
             gate = await run_fault_case_gate_decision(
                 self._llm,
@@ -447,6 +491,7 @@ class ChatbotService:
                 "need_similar_cases": need_cases,
                 "suggested_questions": suggested_out,
                 "processed_image_urls": imgs,
+                "stream_id": stream_id,
             },
         }
 
@@ -505,4 +550,12 @@ class ChatbotService:
     def _append_user_with_images(self, req: ChatRequest) -> None:
         content = build_user_message_with_images(req.query, req.image_urls)
         self._conv.append_user_message(req.user_id, req.session_id, content)
+
+    async def stop_stream(self, user_id: str, session_id: str, stream_id: str) -> None:
+        await self._stream_ctrl.cancel_stream(user_id, session_id, stream_id)
+
+    async def _is_stream_cancelled(self, req: ChatRequest, stream_id: str | None) -> bool:
+        if not stream_id:
+            return False
+        return await self._stream_ctrl.is_cancelled(req.user_id, req.session_id, stream_id)
 

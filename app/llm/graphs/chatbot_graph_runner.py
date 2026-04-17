@@ -233,7 +233,12 @@ class ChatbotLangGraphRunner:
             if event.get("type") == "delta":
                 yield str(event.get("delta") or "")
 
-    async def run_stream_events(self, req: ChatRequest) -> AsyncIterator[Dict[str, Any]]:
+    async def run_stream_events(
+        self,
+        req: ChatRequest,
+        stream_id: str | None = None,
+        cancel_checker: Any | None = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
         """
         运行图并输出结构化事件。
 
@@ -253,6 +258,12 @@ class ChatbotLangGraphRunner:
             # 意图澄清、或仅有固定话术而无 llm_messages（如检索触发的澄清/占位分支）
             no_stream_path = state.get("intent_label") == "clarify" or (bool(pre_answer) and not llm_messages)
             if no_stream_path:
+                if await self._is_cancelled(req, stream_id, cancel_checker):
+                    self._persist_disconnect(req, "")
+                    state["status"] = "aborted"
+                    state["terminate_reason"] = "user_cancelled"
+                    yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
+                    return
                 answer = pre_answer
                 extra = self._maybe_similar_cases_extra(state)
                 state["similar_cases_appended"] = bool(extra)
@@ -263,11 +274,18 @@ class ChatbotLangGraphRunner:
                     yield {"type": "delta", "delta": answer}
                 if extra:
                     yield {"type": "delta", "delta": extra}
-                yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts)}
+                yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
                 return
 
             parts: List[str] = []
             async for delta in self._llm.stream_chat(model=None, messages=llm_messages):  # type: ignore[arg-type]
+                if await self._is_cancelled(req, stream_id, cancel_checker):
+                    partial = "".join(parts).strip()
+                    self._persist_disconnect(req, partial)
+                    state["status"] = "aborted"
+                    state["terminate_reason"] = "user_cancelled"
+                    yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
+                    return
                 self._ensure_within_latency(start_ts)
                 parts.append(delta)
                 state["answer_parts"] = list(parts)
@@ -281,7 +299,7 @@ class ChatbotLangGraphRunner:
             full_stream = (answer + extra).strip()
             await self._fill_suggested_questions(state, req, full_stream)
             self._persist_success(state, req, full_stream, is_partial=False, terminate_reason=None)
-            yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts)}
+            yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
         except GeneratorExit:
             # 客户端主动断开：
             # - 这是“正常中断”而非服务异常；
@@ -309,7 +327,7 @@ class ChatbotLangGraphRunner:
                         "enable_rag": req.enable_rag,
                         "enable_context": req.enable_context,
                     },
-                    outputs=self._build_finished_meta(state, start_ts),
+                    outputs=self._build_finished_meta(state, start_ts, stream_id),
                     metadata={
                         "error": state.get("error"),
                         "prompt_variant": state.get("prompt_variant"),
@@ -713,7 +731,7 @@ class ChatbotLangGraphRunner:
         )
         state["suggested_questions"] = sq
 
-    def _build_finished_meta(self, state: ChatbotGraphState, start_ts: float) -> Dict[str, Any]:
+    def _build_finished_meta(self, state: ChatbotGraphState, start_ts: float, stream_id: str | None = None) -> Dict[str, Any]:
         # 结束 meta 同时服务于：
         # 1) SSE 最后一帧给前端；
         # 2) LangSmith outputs 聚合。
@@ -735,4 +753,14 @@ class ChatbotLangGraphRunner:
             "nl2sql_sql": (state.get("nl2sql_sql") or "") if state.get("used_nl2sql") else None,
             "suggested_questions": list(state.get("suggested_questions") or []),
             "processed_image_urls": [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
+            "stream_id": stream_id,
         }
+
+    async def _is_cancelled(self, req: ChatRequest, stream_id: str | None, cancel_checker: Any | None) -> bool:
+        if not stream_id or cancel_checker is None:
+            return False
+        try:
+            return bool(await cancel_checker(req.user_id, req.session_id, stream_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cancel checker failed stream_id=%s err=%s", stream_id, exc)
+            return False

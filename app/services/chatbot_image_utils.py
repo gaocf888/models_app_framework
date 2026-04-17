@@ -29,3 +29,30 @@ def strip_image_block_from_history(content: str) -> str:
         return content
     return content[:idx].rstrip()
 
+
+def split_message_content_and_images(content: str) -> tuple[str, List[str]]:
+    """
+    解析会话持久化文本，拆分为「纯文本 content」与「image_urls 列表」。
+
+    兼容性：
+    - 历史老数据（无 marker）会返回 (原文, [])；
+    - 格式异常行自动忽略，不影响主文本返回。
+    """
+    if not content:
+        return content, []
+    idx = content.find(IMAGE_BLOCK_MARKER)
+    if idx < 0:
+        return content, []
+    text = content[:idx].rstrip()
+    tail = content[idx + len(IMAGE_BLOCK_MARKER) :]
+    urls: List[str] = []
+    for line in tail.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("- "):
+            s = s[2:].strip()
+        if s:
+            urls.append(s)
+    return text, urls
+
