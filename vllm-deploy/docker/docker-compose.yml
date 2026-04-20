@@ -25,6 +25,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
       - STARTUP_WAIT_TIMEOUT=${STARTUP_WAIT_TIMEOUT:-1200}
+      - PATH=/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       - WORKSPACE=/workspace
     healthcheck:
       test: ["CMD", "python3", "/workspace/scripts/health.py"]
