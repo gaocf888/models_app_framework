@@ -7,6 +7,9 @@
 > - 烤好后的新镜像：`vendor/vllm-stack:vllm-deploy-2025.01`  
 > 请按实际镜像名替换。
 
+> 步骤1到步骤4，针对厂商提供的镜像中没有安装必要的python依赖(pyyaml requests psutil),通过离线方式安装并构建新的镜像
+> 若通过验证，厂商提供的镜像中包含了上述必要依赖，忽略步骤1到步骤4，直接执行步骤5即可
+
 ### 步骤 1：准备离线依赖包
 1. 在一台 **有公网** 的开发机上，根据 `vllm-deploy/requirements-extras.txt` 下载 wheel 包：
    ```bash
@@ -57,20 +60,28 @@ docker commit vllm-offline-build vendor/vllm-stack:vllm-deploy-2025.01
    # 只安装 extras 依赖，避免用 PyPI 覆盖厂商栈
    VLLM_REQUIREMENTS_PROFILE=extras
    ```
-3. 其余环境变量（`MODEL_PRESET`、`MODEL_PATH`、`CUDA_VISIBLE_DEVICES` 等）按主 `README.md` 正常设置。  
-   其中建议将 `MODEL_PATH` 固定为宿主机离线路径 `/opt/models/llm`。
+3. 其余环境变量按主 `README.md` 正常设置（`MODEL_PRESET`、`MODEL_PATH`、设备可见变量、`VLLM_PLATFORM` 等）。  
+   - 英伟达使用 `CUDA_VISIBLE_DEVICES`；国产请按卡型设置 `ASCEND_RT_VISIBLE_DEVICES` / `MLU_VISIBLE_DEVICES` / `MX_VISIBLE_DEVICES` / `XPU_VISIBLE_DEVICES`。  
+   - 其中建议将 `MODEL_PATH` 固定为宿主机离线路径 `/opt/models/llm`。
+4. 选择平台 overlay：  
+   - 英伟达：`VLLM_PLATFORM=nvidia`（或脚本参数 `--platform nvidia`）  
+   - 寒武纪：`VLLM_PLATFORM=cambricon`（或脚本参数 `--platform cambricon`）  
+   - 沐曦：`VLLM_PLATFORM=mthreads`（或脚本参数 `--platform mthreads`）  
+   - 昇腾：`VLLM_PLATFORM=ascend`（或脚本参数 `--platform ascend`）  
+   - 其他国产平台建议继续新增 `docker/docker-compose.<platform>.yml`，不要改坏现有平台文件。
+5. 参数优先级与来源请参考主文档 `README.md` 的「参数来源与覆盖逻辑（模型启动 / 部署）」章节；离线场景沿用同一套规则。
 
 ### 步骤 6：按主 README 的 Compose 流程构建与启动
 完成以上准备后，后续完全沿用主 `README.md` 中的「构建与启动」部分：
 ```bash
 cd vllm-deploy
 chmod +x deploy.sh
-./deploy.sh
+./deploy.sh --platform cambricon
 ```
 或在 `docker/` 下手动：
 ```bash
 cd vllm-deploy/docker
-docker compose --env-file ../.env up -d --build
+docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.cambricon.yml up -d --build
 ```
 此时：
 - `docker/docker-compose.yml` 的 `build.args.BASE_IMAGE` 会使用你刚提交的 `vendor/vllm-stack:vllm-deploy-2025.01`；

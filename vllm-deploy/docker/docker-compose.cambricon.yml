@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  vllm:
+    privileged: true
+    environment:
+      - MLU_VISIBLE_DEVICES=${MLU_VISIBLE_DEVICES:-0}
+    volumes:
+      # 寒武纪常见做法为特权模式并透传 /dev；若厂商文档要求更细粒度设备挂载，请按现场规范调整。
+      - /dev:/dev

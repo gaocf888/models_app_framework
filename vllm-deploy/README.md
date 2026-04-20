@@ -10,8 +10,8 @@
 ## 前置条件
 
 - 已安装 **Docker** 与 **Docker Compose**（`docker compose` 或 `docker-compose`）。
-- **英伟达环境**：宿主机安装 **NVIDIA 驱动** 与 **NVIDIA Container Toolkit**，以便 Compose 中 `deploy.resources.reservations.devices` 生效。
-- **国产环境**：按厂商文档使用其容器运行时，并**按需修改** `docker/docker-compose.yml` 中与 GPU、设备、特权或 `deploy` 相关的段落（本仓库无法覆盖所有厂商差异）。
+- **英伟达环境**：宿主机安装 **NVIDIA 驱动** 与 **NVIDIA Container Toolkit**。
+- **国产环境**：按厂商文档安装对应驱动与容器运行时；本仓库通过平台化 compose overlay 管理硬件差异。
 
 基础镜像需允许在构建阶段执行 `apt-get` 与 `pip`（见 Dockerfile）。若厂商镜像已预装 `python3`，重复安装通常无害或快速跳过，具体以镜像说明为准。
 
@@ -31,6 +31,51 @@ cp .env.example .env
 # BASE_IMAGE=your-registry/vendor-vllm:tag
 # VLLM_REQUIREMENTS_PROFILE=extras
 ```
+
+## 多平台 compose 结构（推荐）
+
+为避免不同厂商显卡配置互相污染，仓库采用“基座 + 平台 overlay”：
+
+- `docker/docker-compose.yml`：通用配置（镜像构建、端口、挂载、命令、健康检查）。
+- `docker/docker-compose.nvidia.yml`：英伟达差异项（`CUDA_VISIBLE_DEVICES`、GPU reservation）。
+- `docker/docker-compose.cambricon.yml`：寒武纪差异项（`privileged: true`、`MLU_VISIBLE_DEVICES`、`/dev` 透传）。
+- `docker/docker-compose.mthreads.yml`：沐曦差异项（`privileged: true`、`MX_VISIBLE_DEVICES`、`/dev` 透传）。
+- `docker/docker-compose.ascend.yml`：昇腾差异项（`privileged: true`、`ASCEND_RT_VISIBLE_DEVICES`、`/dev` 透传）。
+
+平台选择方式：
+
+- 脚本方式：`./deploy.sh --platform nvidia|cambricon|mthreads|ascend`
+- 环境变量方式：在 `.env` 设置 `VLLM_PLATFORM=nvidia|cambricon|mthreads|ascend` 后直接 `./deploy.sh`
+
+若你有其他国产平台（例如燧原等），建议继续新增对应 `docker-compose.<platform>.yml`，不要把所有平台逻辑塞在一个文件里。
+
+## 参数来源与覆盖逻辑（模型启动 / 部署）
+
+为避免调参时改错文件，建议按下面理解：
+
+1. **模型推理参数主来源：`config/models.yaml` + `config/vllm.yaml`**
+   - `models.yaml`：模型预设（`path`、`dtype`、`max_model_len`、`tensor_parallel_size`、多模态参数等）。
+   - `vllm.yaml`：服务默认参数（`server/model/hardware/performance/multimodal`）。
+   - 启动时 `start.py` 会先读取 `vllm.yaml`，再按 `MODEL_PRESET` 应用 `models.yaml` 预设。
+
+2. **环境变量会覆盖部分 YAML 参数（运行期）**
+   - `start.py` 中 `_apply_env_overrides` 会用环境变量覆盖配置：
+   - `VLLM_HOST`、`VLLM_PORT`、`MODEL_PATH`、`SERVED_MODEL_NAME`、
+     `TENSOR_PARALLEL_SIZE`、`GPU_MEMORY_UTILIZATION`、`MAX_MODEL_LEN`、`MAX_NUM_SEQS`。
+   - 因此同一参数若在 YAML 与 `.env` 同时配置，最终以环境变量为准。
+
+3. **容器部署参数不在 YAML 中**
+   - 端口映射、卷挂载、健康检查、日志策略、`privileged`、设备透传等在 `docker-compose*.yml`。
+   - 平台切换（`nvidia/cambricon/mthreads/ascend`）由 `deploy.sh --platform` 或 `.env` 的 `VLLM_PLATFORM` 决定。
+
+4. **镜像构建参数是 build 阶段，不属于运行期 vLLM 参数**
+   - `BASE_IMAGE`、`VLLM_REQUIREMENTS_PROFILE` 在 `Dockerfile` + compose `build.args` 生效。
+   - 修改这类参数后需要重新构建镜像（`up --build`）。
+
+5. **推荐调参顺序（实践）**
+   - 先在 `models.yaml` 维护各模型“标准预设”；
+   - 用 `vllm.yaml` 放通用默认；
+   - 仅把环境差异（机器端口、路径、卡可见性、少量临时覆盖）放到 `.env`。
 
 ## 模型权重准备
 
@@ -77,20 +122,20 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwe
    - 按「模型权重准备」一节任意一种方式将模型下载到宿主机 `MODEL_PATH`（默认 `/opt/models/llm`）下，并在 `config/vllm.yaml` / `config/models.yaml` 中确认路径与预设一致。
 
 3. **构建并启动服务**
-   - 推荐使用一键脚本（自动带上 `--env-file ../.env`）：
+   - 推荐使用一键脚本（自动带上 `--env-file ../.env` 与平台 overlay）：
 
      ```bash
      cd vllm-deploy
      chmod +x deploy.sh
-     ./deploy.sh
+     ./deploy.sh --platform nvidia
      ```
 
    - 或手动执行（在 `docker/` 下）：
 
      ```bash
      cd vllm-deploy/docker
-     docker compose --env-file ../.env up -d --build
-     # 旧版：docker-compose --env-file ../.env up -d --build
+     docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
+     # 旧版：docker-compose --env-file ../.env -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
      ```
 
 4. **（可选）使用 docker 目录下的 .env**
@@ -147,11 +192,11 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
 
 ## 切换模型（改环境变量后重建容器）
 
-在 `vllm-deploy/.env` 中修改 `MODEL_PRESET`、`CUDA_VISIBLE_DEVICES`、`TENSOR_PARALLEL_SIZE` 等，然后：
+在 `vllm-deploy/.env` 中修改 `MODEL_PRESET`、设备可见变量（英伟达用 `CUDA_VISIBLE_DEVICES`，寒武纪用 `MLU_VISIBLE_DEVICES`，其他国产用对应厂商变量）、`TENSOR_PARALLEL_SIZE` 等，然后：
 
 ```bash
-cd docker
-docker compose up -d
+cd vllm-deploy
+./deploy.sh --platform nvidia
 ```
 
 ## LangChain 调用示例

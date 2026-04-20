@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  vllm:
+    privileged: true
+    environment:
+      - ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0}
+    volumes:
+      # 昇腾（npu）在部分环境需要透传 /dev；若厂商要求专用 runtime/设备目录，请按现场文档调整。
+      - /dev:/dev

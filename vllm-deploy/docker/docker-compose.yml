@@ -23,7 +23,6 @@ services:
     environment:
       - MODEL_PRESET=${MODEL_PRESET:-qwen2.5-vl-7b}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
       - STARTUP_WAIT_TIMEOUT=${STARTUP_WAIT_TIMEOUT:-1200}
       - WORKSPACE=/workspace
@@ -33,13 +32,6 @@ services:
       timeout: 10s
       start_period: 60s
       retries: 3
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     networks:
       - vllm-network
     logging:

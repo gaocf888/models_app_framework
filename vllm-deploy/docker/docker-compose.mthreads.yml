@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  vllm:
+    privileged: true
+    environment:
+      - MX_VISIBLE_DEVICES=${MX_VISIBLE_DEVICES:-0}
+    volumes:
+      # 沐曦（gcu）常见做法为特权模式并透传 /dev；若现场文档要求特定设备节点，请按规范收敛为精确挂载。
+      - /dev:/dev
