@@ -1,3 +1,9 @@
+# 配置优先级2
+# 当前vllm-deploy/ 的全部配置文件如下（按照配置生效优先级排序）：
+# .env
+# config/models.yaml
+# config/vllm.yaml
+
 # 模型预设配置
 presets:
   # ==================== 通义千问 2.5 系列 ====================
@@ -110,6 +116,28 @@ presets:
         - "./images"
         - "./videos"
     description: "Qwen3-VL 32B 多模态模型，最新的视觉语言能力"
+
+  # Qwen3.5 27B 原生多模态模型
+  qwen3-27b:
+    path: "./models/Qwen3.5-27B"
+    served_model_name: "qwen3.5-27b"
+    dtype: "bfloat16"
+    # 两张 64GB 显卡下，提升多轮长上下文能力；并发适当收敛以平衡显存占用
+    max_model_len: 16384
+    enforce_eager: true
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.88
+    max_num_seqs: 4
+    max_num_batched_tokens: 12288
+    enable_prefix_caching: true
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.5 27B 原生多模态模型，支持图像理解与多轮对话"
 
   # ==================== 额外常用模型 ====================
 

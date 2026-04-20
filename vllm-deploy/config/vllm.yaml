@@ -1,3 +1,9 @@
+# 配置优先级3
+# 当前vllm-deploy/ 的全部配置文件如下（按照配置生效优先级排序）：
+# .env
+# config/models.yaml
+# config/vllm.yaml
+
 # vLLM 服务核心配置
 server:
   host: "0.0.0.0"

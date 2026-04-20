@@ -9,7 +9,7 @@
 
 ## 前置条件
 
-- 已安装 **Docker** 与 **Docker Compose**（`docker compose` 或 `docker-compose`）。
+- 已安装 **Docker** 与 **Docker Compose**（`docker compose` 或 `docker-compose`） [Kylin系统中，使用命令一键部署：bash <(wget -qO- https://xuanyuan.cloud/docker.sh)  ]。
 - **英伟达环境**：宿主机安装 **NVIDIA 驱动** 与 **NVIDIA Container Toolkit**。
 - **国产环境**：按厂商文档安装对应驱动与容器运行时；本仓库通过平台化 compose overlay 管理硬件差异。
 
@@ -51,7 +51,8 @@ cp .env.example .env
 
 ## 参数来源与覆盖逻辑（模型启动 / 部署）
 
-为避免调参时改错文件，建议按下面理解：
+> 参数配置优先级顺序：.env、config/models.yaml、config/vllm.yaml 
+> 为避免调参时改错文件，建议按下面理解：
 
 1. **模型推理参数主来源：`config/models.yaml` + `config/vllm.yaml`**
    - `models.yaml`：模型预设（`path`、`dtype`、`max_model_len`、`tensor_parallel_size`、多模态参数等）。
@@ -111,6 +112,13 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwe
 
 1. **准备配置与环境变量**
    - 在 `vllm-deploy/` 下复制环境变量模板并按需修改：
+     > 针对使用的显卡和部署的模型，关键配置项：
+     > BASE_IMAGE -- 基础镜像(国产卡使用厂商提供pytorch+vllm的开发框架镜像)
+     > VLLM_REQUIREMENTS_PROFILE -- 安装依赖的版本(区分国产卡和N卡，国产卡基础镜像中已安装适配版pytorch和vllm，不需要再次安装)
+     > VLLM_PLATFORM -- 针对使用deploy.sh脚本进行部署时选择 对应显卡的 docker-compose配置文件
+     > MODEL_PRESET -- 配置的部署模型(据此从config/models.yaml中读取配置)
+     > *_VISIBLE_DEVICES -- 指定容器中可见的加速卡编号
+     > TENSOR_PARALLEL_SIZE -- 模型并行张量的卡数
 
      ```bash
      cd vllm-deploy
