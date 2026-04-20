@@ -1,5 +1,5 @@
 # 构建参数（与 docker-compose / docker build --build-arg 一致）
-# BASE_IMAGE：按实际环境设置为已适配镜像。
+# BASE_IMAGE：英伟达环境默认 CUDA 运行时；国产算力请改为厂商提供的已适配镜像。
 # VLLM_REQUIREMENTS_PROFILE：full=安装 requirements.txt（含 vLLM）；extras=仅 requirements-extras.txt。
 ARG BASE_IMAGE=nvidia/cuda:12.3.0-runtime-ubuntu22.04
 FROM ${BASE_IMAGE}
@@ -10,18 +10,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV WORKSPACE=/workspace
 
-# 系统依赖（yum/dnf 版本）：python3 / pip / curl
-# 说明：部分 Kylin/RHEL 系镜像只有 yum 或 dnf，无 apt-get。
-RUN set -eux; \
-    if command -v yum >/dev/null 2>&1; then \
-      yum install -y python3 python3-pip curl && yum clean all; \
-    elif command -v dnf >/dev/null 2>&1; then \
-      dnf install -y python3 python3-pip curl && dnf clean all; \
-    else \
-      echo "错误: 当前基础镜像中未找到 yum/dnf，请改用 Dockerfile 或更换基础镜像"; \
-      exit 1; \
-    fi; \
-    ln -sf /usr/bin/python3 /usr/bin/python
+# 系统依赖：python3 / pip / curl（部署文档要求基础镜像需具备可写层以完成安装）
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python
 
 WORKDIR ${WORKSPACE}
 

@@ -237,7 +237,7 @@ class VLLMService:
             return "npu"
         elif Path("/proc/driver/cambricon").exists():
             return "mlu"
-        elif shutil.which("mxsmi"):
+        elif shutil.which("mx-smi"):
             return "gcu"
         elif shutil.which("xpu-smi"):
             return "xpu"

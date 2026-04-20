@@ -87,3 +87,5 @@ docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.cambri
 - `docker/docker-compose.yml` 的 `build.args.BASE_IMAGE` 会使用你刚提交的 `vendor/vllm-stack:vllm-deploy-2025.01`；
 - Dockerfile 会根据 `VLLM_REQUIREMENTS_PROFILE=extras`，仅使用 `requirements-extras.txt` 做一次离线环境内 `pip` 补充安装；
 - 运行期服务的端口、挂载、健康检查等与在线场景完全一致。
+
+> 说明：当前仓库默认 `docker/Dockerfile` 已切换为 `yum/dnf` 包管理版本，原 `apt-get` 版本备份为 `docker/Dockerfile_bak`。若你的离线基础镜像是 Debian/Ubuntu 体系，请改用 `Dockerfile_bak` 或按现场镜像调整包安装命令。

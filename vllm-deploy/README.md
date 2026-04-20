@@ -13,7 +13,7 @@
 - **英伟达环境**：宿主机安装 **NVIDIA 驱动** 与 **NVIDIA Container Toolkit**。
 - **国产环境**：按厂商文档安装对应驱动与容器运行时；本仓库通过平台化 compose overlay 管理硬件差异。
 
-基础镜像需允许在构建阶段执行 `apt-get` 与 `pip`（见 Dockerfile）。若厂商镜像已预装 `python3`，重复安装通常无害或快速跳过，具体以镜像说明为准。
+基础镜像需允许在构建阶段执行包安装与 `pip`（见 `docker/Dockerfile`）。当前仓库默认 `Dockerfile` 为 `yum/dnf` 版本；原 `apt-get` 版本已备份为 `docker/Dockerfile_bak`。若你的基础镜像是 Debian/Ubuntu 体系，请切回 `Dockerfile_bak` 或按需改造。
 
 ## 构建参数（`.env` 或 `docker compose build --build-arg`）
 
