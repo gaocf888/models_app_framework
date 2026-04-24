@@ -102,8 +102,6 @@ class ChatbotChain:
             )
         system_prompt = tpl.content if tpl else "你是一个专业的中文智能客服助手。"
 
-        messages: List[object] = [SystemMessage(content=system_prompt)]
-
         # 1.1 意图识别与路由规划（Agentic 轻量步骤）
         intent_summary: str | None = None
         try:
@@ -111,31 +109,10 @@ class ChatbotChain:
         except Exception:  # noqa: BLE001
             logger.exception("ChatbotChain: intent analysis failed, fallback to simple flow.")
             intent_summary = None
-        if intent_summary:
-            messages.append(
-                SystemMessage(
-                    content=(
-                        "以下是对当前轮用户意图与建议处理策略的内部规划，请在回答时参考但不要直接暴露给用户：\n"
-                        f"{intent_summary}"
-                    )
-                )
-            )
 
-        # 2. 可选拼接会话上下文摘要（当前简单使用最近若干轮原文）
-        if enable_context:
-            history = self._conv.get_recent_history(user_id, session_id, limit=10)
-            for h in history:
-                role = h.get("role", "user")
-                content = h.get("content", "")
-                if not content:
-                    continue
-                if role == "user":
-                    messages.append(HumanMessage(content=content))
-                else:
-                    # 助手轮次用 AIMessage，避免塞进 System 导致模型不按「多轮对话」理解事实（如用户自称姓名）
-                    messages.append(AIMessage(content=content))
-
-        # 3. 可选使用 RAG 检索相关上下文（通过 AgenticRAGService 统一入口）
+        # 3. 可选使用 RAG（须在组 messages 前完成；与意图说明一并并入**单条** SystemMessage，
+        # 避免 vLLM/Qwen chat_template 对「仅首条可为 system」的限制。）
+        ctx_snippets: list[str] = []
         if enable_rag:
             rag_ctx = RAGContext(user_id=user_id, session_id=session_id, scene="chatbot")
             rag_result = await self._agentic_rag.retrieve(
@@ -144,10 +121,40 @@ class ChatbotChain:
                 mode=RAGMode.AGENTIC,
                 top_k=None,
             )
-            ctx_snippets = rag_result.context_snippets
-            if ctx_snippets:
-                ctx_text = "\n".join(f"- {t}" for t in ctx_snippets)
-                messages.append(SystemMessage(content=f"以下是与用户问题相关的知识片段，请优先参考：\n{ctx_text}"))
+            ctx_snippets = list(rag_result.context_snippets or [])
+
+        system_chunks: list[str] = [system_prompt]
+        if intent_summary:
+            system_chunks.append(
+                "以下是对当前轮用户意图与建议处理策略的内部规划，请在回答时参考但不要直接暴露给用户：\n"
+                f"{intent_summary}"
+            )
+        if ctx_snippets:
+            ctx_text = "\n".join(f"- {t}" for t in ctx_snippets)
+            system_chunks.append(f"以下是与用户问题相关的知识片段，请优先参考：\n{ctx_text}")
+
+        messages: List[object] = [SystemMessage(content="\n\n".join(system_chunks))]
+
+        # 2. 可选拼接会话上下文（最近若干轮）；历史中的 system 并入首条 system，不单独再塞 SystemMessage
+        if enable_context:
+            history = self._conv.get_recent_history(user_id, session_id, limit=10)
+            extra_system: list[str] = []
+            for h in history:
+                role = (h.get("role", "user") or "user")
+                content = h.get("content", "")
+                if not content:
+                    continue
+                if str(role).lower() == "system":
+                    extra_system.append(str(content))
+                    continue
+                if role == "user":
+                    messages.append(HumanMessage(content=content))
+                else:
+                    messages.append(AIMessage(content=content))
+            if extra_system:
+                first = messages[0]
+                merged = "\n\n".join([first.content, *extra_system])  # type: ignore[attr-defined]
+                messages[0] = SystemMessage(content=merged)
 
         # 4. 当前用户问题
         messages.append(HumanMessage(content=query))

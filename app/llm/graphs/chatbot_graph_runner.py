@@ -621,23 +621,32 @@ class ChatbotLangGraphRunner:
 
     async def _node_kb_build_messages(self, state: ChatbotGraphState) -> ChatbotGraphState:
         # 统一 messages 构建顺序（请勿随意调整）：
-        # system prompt -> 检索上下文 -> 历史 -> 当前 user（文本/多模态）
-        # 该顺序与历史实现保持一致，可减少迁移后回答风格漂移。
+        # 单条合并 system（模板 + RAG + 历史中的 system）-> 其余历史 -> 当前 user（文本/多模态）
+        # 说明：Qwen 等 chat_template 仅允许首条为 system，连续两条 role=system 会报
+        # TemplateError: System message must be at the beginning.
         messages: List[Dict[str, Any]] = []
-        system_prompt = str(state.get("system_prompt") or "")
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+        system_chunks: List[str] = []
+        sp = str(state.get("system_prompt") or "").strip()
+        if sp:
+            system_chunks.append(sp)
         snippets = state.get("context_snippets") or []
         if snippets:
             ctx = "\n".join(f"- {c}" for c in snippets)
-            messages.append({"role": "system", "content": f"以下是与用户问题相关的知识片段，请优先参考：\n{ctx}"})
+            system_chunks.append(f"以下是与用户问题相关的知识片段，请优先参考：\n{ctx}")
         for h in state.get("history_messages") or []:
-            role = h.get("role", "user")
+            role = (h.get("role", "user") or "user")
+            role_l = str(role).lower()
             content = h.get("content", "")
             if isinstance(content, str):
                 content = strip_image_block_from_history(content)
-            if content:
-                messages.append({"role": role, "content": content})
+            if not content:
+                continue
+            if role_l == "system":
+                system_chunks.append(content)
+                continue
+            messages.append({"role": role_l, "content": content})
+        if system_chunks:
+            messages.insert(0, {"role": "system", "content": "\n\n".join(system_chunks)})
         image_urls = [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()]
         query = str(state.get("query") or "")
         if image_urls:

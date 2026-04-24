@@ -37,6 +37,20 @@ class VLLMService:
         "max_num_batched_tokens": ("performance", "max_num_batched_tokens"),
         "enable_prefix_caching": ("performance", "enable_prefix_caching"),
         "enforce_eager": ("hardware", "enforce_eager"),
+        "attention_backend": ("hardware", "attention_backend"),
+        "attention-backend": ("hardware", "attention_backend"),
+        "default_chat_template_kwargs": ("model", "default_chat_template_kwargs"),
+        "default-chat-template-kwargs": ("model", "default_chat_template_kwargs"),
+    }
+
+    # attention backend 兼容别名映射（统一为 vLLM 可识别值）
+    _ATTENTION_BACKEND_ALIASES = {
+        "flash": "flash_attn",
+        "flashattn": "flash_attn",
+        "flash-attn": "flash_attn",
+        "flash_attention": "flash_attn",
+        "sdpa": "torch_sdpa",
+        "torch-sdpa": "torch_sdpa",
     }
 
     def __init__(self, config_dir: str = None):
@@ -244,6 +258,23 @@ class VLLMService:
 
         return "cpu"
 
+    @classmethod
+    def _normalize_attention_backend(cls, backend) -> Optional[str]:
+        """规范 attention backend，兼容短名与大小写。"""
+        if backend is None:
+            return None
+
+        value = str(backend).strip()
+        if not value:
+            return None
+
+        alias = cls._ATTENTION_BACKEND_ALIASES.get(value.lower())
+        if alias:
+            return alias
+
+        # vLLM 接收枚举名，支持大小写不敏感输入（统一到小写下划线形式）
+        return value.lower().replace("-", "_")
+
     def build_command(self) -> list:
         """构建 vLLM 启动命令"""
         cmd = ["vllm", "serve"]
@@ -283,6 +314,18 @@ class VLLMService:
         cmd.extend(["--block-size", str(hardware.get("block_size", 32))])
         if hardware.get("enforce_eager"):
             cmd.append("--enforce-eager")
+        attention_backend = self._normalize_attention_backend(hardware.get("attention_backend"))
+        if attention_backend:
+            cmd.extend(["--attention-backend", attention_backend])
+        default_kwargs = model.get("default_chat_template_kwargs")
+        if default_kwargs is not None:
+            if isinstance(default_kwargs, str):
+                cmd.extend(["--default-chat-template-kwargs", default_kwargs])
+            else:
+                cmd.extend([
+                    "--default-chat-template-kwargs",
+                    json.dumps(default_kwargs, separators=(",", ":"))
+                ])
 
         # 性能配置
         perf = self.vllm_config.get("performance", {})

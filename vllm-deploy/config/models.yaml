@@ -78,13 +78,16 @@ presets:
     path: "./models/Qwen2.5-VL-32B-Instruct"
     served_model_name: "qwen2.5-vl-32b-instruct"
     dtype: "bfloat16"
-    max_model_len: 8192
-    enforce_eager: true
+    max_model_len: 16384
+    # enforce_eager: true
     tensor_parallel_size: 2
-    gpu_memory_utilization: 0.92
+    gpu_memory_utilization: 0.9
     max_num_seqs: 8
-    max_num_batched_tokens: 8192
+    max_num_batched_tokens: 12288
     enable_prefix_caching: true
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
     multimodal:
       enabled: true
       limit_images: 4
@@ -118,18 +121,42 @@ presets:
     description: "Qwen3-VL 32B 多模态模型，最新的视觉语言能力"
 
   # Qwen3.5 27B 原生多模态模型
+#  qwen3-27b:
+#    path: "./models/Qwen3.5-27B"
+#    served_model_name: "qwen3.5-27b"
+#    dtype: "bfloat16"
+#    # 两张 64GB 显卡下，提升多轮长上下文能力；并发适当收敛以平衡显存占用
+#    max_model_len: 16384
+#    enforce_eager: true
+#    tensor_parallel_size: 2
+#    gpu_memory_utilization: 0.88
+#    max_num_seqs: 4
+#    max_num_batched_tokens: 12288
+#    enable_prefix_caching: true
+#    multimodal:
+#      enabled: true
+#      limit_images: 4
+#      limit_videos: 1
+#      media_paths:
+#        - "./images"
+#        - "./videos"
+#    description: "Qwen3.5 27B 原生多模态模型，支持图像理解与多轮对话"
+
+  # Qwen3.5 27B 原生多模态模型
   qwen3-27b:
     path: "./models/Qwen3.5-27B"
     served_model_name: "qwen3.5-27b"
-    dtype: "bfloat16"
+    dtype: "half"
     # 两张 64GB 显卡下，提升多轮长上下文能力；并发适当收敛以平衡显存占用
     max_model_len: 16384
-    enforce_eager: true
     tensor_parallel_size: 2
-    gpu_memory_utilization: 0.88
-    max_num_seqs: 4
+    gpu_memory_utilization: 0.9
+    max_num_seqs: 128
     max_num_batched_tokens: 12288
     enable_prefix_caching: true
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
     multimodal:
       enabled: true
       limit_images: 4

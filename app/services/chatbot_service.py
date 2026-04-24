@@ -516,18 +516,27 @@ class ChatbotService:
                 version=None,
                 default_version=cfg.default_prompt_version,
             )
+        # Qwen 等 tokenizer 的 chat_template 仅允许「第一条」为 system；连续两条 role=system 会触发
+        # TemplateError: System message must be at the beginning. 故模板与 RAG 说明合并为单条 system。
+        system_chunks: list[str] = []
         if tpl and tpl.content:
-            messages.append({"role": "system", "content": tpl.content})
+            system_chunks.append(tpl.content)
         if context_snippets:
             ctx = "\n".join(f"- {c}" for c in context_snippets)
-            messages.append({"role": "system", "content": f"以下是与用户问题相关的知识片段，请优先参考：\n{ctx}"})
+            system_chunks.append(f"以下是与用户问题相关的知识片段，请优先参考：\n{ctx}")
         for h in history:
-            role = h.get("role", "user")
+            role = (h.get("role", "user") or "user").lower()
             raw_c = h.get("content", "")
             content = raw_c if isinstance(raw_c, str) else (str(raw_c) if raw_c is not None else "")
             content = strip_image_block_from_history(content)
-            if content:
-                messages.append({"role": role, "content": content})
+            if not content:
+                continue
+            if role == "system":
+                system_chunks.append(content)
+                continue
+            messages.append({"role": role, "content": content})
+        if system_chunks:
+            messages.insert(0, {"role": "system", "content": "\n\n".join(system_chunks)})
 
         # 模型层已过滤空串；此处再防御，避免任意路径带入空 URL 触发 vLLM「empty image」400
         image_urls = [u for u in req.image_urls if isinstance(u, str) and u.strip()]
