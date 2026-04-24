@@ -21,9 +21,9 @@
 #   MINERU_DOCKER_NETWORK → external 网络名，须已存在（连接 mineru-api）
 #   GRAPH_DOCKER_NETWORK  → external 网络名，用于连接 Neo4j（GraphRAG）
 #   EMBEDDING_MODELS_HOST_PATH
-#                         → 宿主机嵌入模型根目录（默认 /opt/models/embeddings）
+#                         → 宿主机嵌入模型根目录（默认 /aidata/models/embeddings）
 #   RERANKER_MODELS_HOST_PATH
-#                         → 宿主机重排模型根目录（默认 /opt/models/reranker）
+#                         → 宿主机重排模型根目录（默认 /aidata/models/reranker）
 #   SMALL_MODEL_WEIGHTS_HOST_PATH
 #                         → 宿主机权重目录；未设置时使用下方占位卷 small-model-weights-dummy
 #   SMALL_MODEL_NVIDIA_VISIBLE_DEVICES
@@ -93,9 +93,9 @@ services:
       # 应用内部文件日志目录（配合 LOG_FILE=/workspace/logs/app.log）
       - app-logs:/workspace/logs
       # 嵌入模型离线挂载
-      - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+      - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 重排模型离线挂载
-      - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/workspace/models/rerank/bge-reranker-large:ro
+      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/workspace/models/rerank/bge-reranker-large:ro
       # MinerU 与 models-app 共享 IO（须与 mineru-deploy 中 MINERU_IO_HOST_PATH 指向同一宿主目录）
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
     environment:
@@ -145,7 +145,7 @@ services:
       - huggingface-cache:/root/.cache/huggingface
       - app-logs:/workspace/logs
       # 嵌入模型离线挂载
-      - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+      - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 小模型证据输出（与 configs 中 evidence_dir 为 workspace 相对路径时一致）
       - small-model-data:/workspace/data/small_model_evidence
       # 权重：宿主机目录 -> 容器内 /workspace/models/small（只读）
@@ -153,7 +153,7 @@ services:
       - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
       # 重排模型离线挂载
-      - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
 
 networks:
   # 本栈内部：Redis ↔ 应用

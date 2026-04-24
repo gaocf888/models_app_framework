@@ -97,6 +97,30 @@ presets:
         - "./videos"
     description: "Qwen2.5-VL 32B 多模态模型，更强的视觉理解能力"
 
+  # Qwen2.5-VL 32B AWQ 多模态模型
+  qwen2.5-vl-32b-awq:
+    path: "./models/Qwen2.5-VL-32B-Instruct-AWQ"
+    served_model_name: "qwen2.5-vl-32b-instruct-awq"
+    dtype: "half"
+    quantization: "awq"
+    max_model_len: 16384
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.9
+    max_num_seqs: 8
+    max_num_batched_tokens: 12288
+    enable_prefix_caching: true
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen2.5-VL 32B AWQ 多模态模型，兼顾效果与显存占用"
+
   # ==================== 通义千问 3 视觉语言模型 ====================
 
   # Qwen3-VL 32B 多模态模型

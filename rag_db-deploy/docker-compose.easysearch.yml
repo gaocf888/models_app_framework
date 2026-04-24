@@ -26,7 +26,9 @@ services:
         hard: 65536
     volumes:
       - ${EASYSEARCH_DATA_VOLUME}:/app/easysearch/data
-      - ./easysearch/config/easysearch.yml:/app/easysearch/config/easysearch.yml:ro
+      # 不挂载 easysearch.yml：使用镜像默认配置与证书，避免宿主机 yml 与容器内 TLS 文件不一致导致反复启动失败。
+      # 若需自定义：再增加挂载行，并须同时持久化同目录的 instance.crt / instance.key / ca.crt 等。
+      # - ./easysearch/config/easysearch.yml:/app/easysearch/config/easysearch.yml:ro
       - ./easysearch/init:/opt/easysearch/init:ro
     ports:
       - "${EASYSEARCH_PORT}:9200"

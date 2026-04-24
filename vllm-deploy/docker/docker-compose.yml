@@ -15,7 +15,7 @@ services:
     ports:
       - "${VLLM_PORT:-8000}:8000"
     volumes:
-      - ${MODEL_PATH:-/opt/models/llm}:/workspace/models:ro
+      - ${MODEL_PATH:-/aidata/models/llm}:/workspace/models:ro
       - ../config:/workspace/config:ro
       - ../scripts:/workspace/scripts:ro
       - ../logs:/workspace/logs

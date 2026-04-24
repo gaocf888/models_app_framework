@@ -62,7 +62,7 @@ docker commit vllm-offline-build vendor/vllm-stack:vllm-deploy-2025.01
    ```
 3. 其余环境变量按主 `README.md` 正常设置（`MODEL_PRESET`、`MODEL_PATH`、设备可见变量、`VLLM_PLATFORM` 等）。  
    - 英伟达使用 `CUDA_VISIBLE_DEVICES`；国产请按卡型设置 `ASCEND_RT_VISIBLE_DEVICES` / `MLU_VISIBLE_DEVICES` / `MX_VISIBLE_DEVICES` / `XPU_VISIBLE_DEVICES`。  
-   - 其中建议将 `MODEL_PATH` 固定为宿主机离线路径 `/opt/models/llm`。
+   - 其中建议将 `MODEL_PATH` 固定为宿主机离线路径 `/aidata/models/llm`。
 4. 选择平台 overlay：  
    - 英伟达：`VLLM_PLATFORM=nvidia`（或脚本参数 `--platform nvidia`）  
    - 寒武纪：`VLLM_PLATFORM=cambricon`（或脚本参数 `--platform cambricon`）  

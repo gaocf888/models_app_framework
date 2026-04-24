@@ -166,8 +166,8 @@ VLLM_DOCKER_NETWORK=docker_vllm-network
 RAG_DOCKER_NETWORK=ai-stack
 MINERU_DOCKER_NETWORK=mineru-stack   # 启用 MinerU 时必须存在
 GRAPH_DOCKER_NETWORK=graph-stack     # 启用 GraphRAG 时
-EMBEDDING_MODELS_HOST_PATH=/opt/models/embeddings
-RERANKER_MODELS_HOST_PATH=/opt/models/reranker
+EMBEDDING_MODELS_HOST_PATH=/aidata/models/embeddings
+RERANKER_MODELS_HOST_PATH=/aidata/models/reranker
 ```
 
 - 网络名需与对应子项目的 `.env` / compose 一致（可用 `docker network ls` 核对）。  
@@ -214,8 +214,8 @@ LOG_FILE_COMPRESS=true
 
 ### 2.9 模型离线使用
 > 整个项目中包括 嵌入模型、重排序模型、mineru模型
-> 嵌入模型：RAG知识文档切块后转向量(本地离线路径下/opt/models/embeddings/中存在离线模型文件时，自动走离线，否则自动走在线下载)
-> 重排序模型：RAG混合检索多路召回后，进行重排序(默认走在线下载，若走离线：首先需要修改.env中的RAG_RERANKER_MODEL_PATH（放开注释），然后离线下载模型到宿主机/opt/models/reranker/路径中，注意：如果配置离线了，离线路径中没有有效模型文件，会报错，不会自动切换在线下载)
+> 嵌入模型：RAG知识文档切块后转向量(本地离线路径下/aidata/models/embeddings/中存在离线模型文件时，自动走离线，否则自动走在线下载)
+> 重排序模型：RAG混合检索多路召回后，进行重排序(默认走在线下载，若走离线：首先需要修改.env中的RAG_RERANKER_MODEL_PATH（放开注释），然后离线下载模型到宿主机/aidata/models/reranker/路径中，注意：如果配置离线了，离线路径中没有有效模型文件，会报错，不会自动切换在线下载)
 > mineru模型：使用mineru进行扫描图片格式PDF文件解析
 
 若部署环境**无法访问 Hugging Face Hub**，或希望避免在线下载，推荐将嵌入模型和重排序模型预先下载到宿主机统一离线路径，并通过挂载暴露给应用：
@@ -269,16 +269,16 @@ LOG_FILE_COMPRESS=true
      models-app:
        # ...
        volumes:
-         - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+         - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
        environment:
          - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
 
      models-app-gpu:
        # ...
        volumes:
-         - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+         - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
        environment:
          - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
    ```
@@ -343,6 +343,7 @@ cd app/app-deploy
 cp .env.example .env          # 首次，之后直接编辑 .env
 docker compose up -d --build
 ```
+> 启动之前关键修改确认项：LLM_DEFAULT_MODEL  （需要与vllm-deploy/实际部署的大模型名称一致）
 
 默认会启动：
 

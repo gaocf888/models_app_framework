@@ -283,8 +283,8 @@ docker compose --profile small-model-gpu up -d --build
 | `huggingface-cache` | 应用容器 `/root/.cache/huggingface` | 嵌入/下载模型缓存，减少重复拉取 |
 | `small-model-data` | **仅 models-app-gpu** `/workspace/data/small_model_evidence` | 小模型证据片段等可写数据 |
 | `SMALL_MODEL_WEIGHTS_HOST_PATH` → `/workspace/models/small:ro` | **仅 models-app-gpu** | 只读权重；未设置时用占位卷 **`small-model-weights-dummy`**（空卷，仅开发联调 compose） |
-| `${EMBEDDING_MODELS_HOST_PATH}/bge-small-zh-v1.5`（默认 `/opt/models/embeddings/...`） → `/workspace/models/embeddings/bge-small-zh-v1.5:ro` | `models-app` / `models-app-gpu` | **离线嵌入模型权重目录**；配合 `EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5` 使用，实现完全离线加载 |
-| `${RERANKER_MODELS_HOST_PATH}/bge-reranker-large`（默认 `/opt/models/reranker/...`） → `/models/rerank/bge-reranker-large:ro` | `models-app` / `models-app-gpu` | **离线重排模型目录**；`RAG_RERANKER_MODEL_PATH` 指向该容器路径 |
+| `${EMBEDDING_MODELS_HOST_PATH}/bge-small-zh-v1.5`（默认 `/aidata/models/embeddings/...`） → `/workspace/models/embeddings/bge-small-zh-v1.5:ro` | `models-app` / `models-app-gpu` | **离线嵌入模型权重目录**；配合 `EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5` 使用，实现完全离线加载 |
+| `${RERANKER_MODELS_HOST_PATH}/bge-reranker-large`（默认 `/aidata/models/reranker/...`） → `/models/rerank/bge-reranker-large:ro` | `models-app` / `models-app-gpu` | **离线重排模型目录**；`RAG_RERANKER_MODEL_PATH` 指向该容器路径 |
 
 ---
 
@@ -394,8 +394,8 @@ docker compose --profile small-model-gpu down
 
    并在 `app/app-deploy/.env` 中配置：
 
-   - `EMBEDDING_MODELS_HOST_PATH=/opt/models/embeddings`
-   - `RERANKER_MODELS_HOST_PATH=/opt/models/reranker`
+   - `EMBEDDING_MODELS_HOST_PATH=/aidata/models/embeddings`
+   - `RERANKER_MODELS_HOST_PATH=/aidata/models/reranker`
 
 2. **在 compose 中挂载到应用容器**
 
@@ -406,14 +406,14 @@ docker compose --profile small-model-gpu down
      models-app:
        # ...
        volumes:
-         - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+         - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
 
      models-app-gpu:
        # ...
        volumes:
-         - ${EMBEDDING_MODELS_HOST_PATH:-/opt/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ${RERANKER_MODELS_HOST_PATH:-/opt/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+         - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
    ```
 
 3. **在 `.env` 中指定嵌入模型路径**

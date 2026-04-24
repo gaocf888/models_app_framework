@@ -29,6 +29,7 @@ class VLLMService:
         "dtype": ("model", "dtype"),
         "max_model_len": ("model", "max_model_len"),
         "trust_remote_code": ("model", "trust_remote_code"),
+        "quantization": ("model", "quantization"),
         "served_model_name": ("server", "served_model_name"),
         "tensor_parallel_size": ("hardware", "tensor_parallel_size"),
         "gpu_memory_utilization": ("hardware", "gpu_memory_utilization"),
@@ -302,6 +303,8 @@ class VLLMService:
         cmd.extend(["--dtype", model.get("dtype", "float16")])
         if model.get("trust_remote_code"):
             cmd.append("--trust-remote-code")
+        if model.get("quantization"):
+            cmd.extend(["--quantization", str(model["quantization"])])
         if model.get("max_model_len"):
             cmd.extend(["--max-model-len", str(model["max_model_len"])])
 

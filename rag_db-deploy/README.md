@@ -6,7 +6,7 @@
 
 - `docker-compose.easysearch.yml`：EasySearch 单节点 Docker 编排文件。
 - `.env.example`：部署变量模板（容器侧）。
-- `easysearch/config/easysearch.yml`：数据库配置示例（容器挂载）。
+- `easysearch/config/easysearch.yml`：数据库配置**参考示例**（默认不挂载进容器；编排使用镜像内建配置即可稳定 `down`/`up`）。
 - `easysearch/init/01-init-rag-indexes.sh`：初始化脚本（可选），用于创建 RAG 索引和别名。
 - `project-env/rag-es.env.example`：项目侧环境变量模板（应用服务读取）。
 
@@ -117,6 +117,7 @@ docker exec rag-easysearch sh /opt/easysearch/init/01-init-rag-indexes.sh
 
 - **Q: 若启动时报错（配置文件的问题easysearch.yml中配置项与默认项目不匹配）?**
   ```text
+  目前已经采用不挂载配置文件了，始终使用默认配置（所以就不需要如下配置了）
   # 第一步：停止服务，清除卷数据，重启
   cd rag_db-deploy
   docker compose -f docker-compose.easysearch.yml --env-file .env down -v
