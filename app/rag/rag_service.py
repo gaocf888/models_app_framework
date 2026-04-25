@@ -23,6 +23,14 @@ from app.rag.vector_store import VectorStoreProvider
 logger = get_logger(__name__)
 
 
+def _cross_encoder_device_repr(reranker: object) -> str:
+    """CrossEncoder 所用设备：新版为 `device`，旧版曾为 `_target_device`（访问后者会触发弃用告警）。"""
+    try:
+        return str(reranker.device)  # type: ignore[attr-defined]
+    except AttributeError:
+        return str(getattr(reranker, "_target_device", "?"))
+
+
 class RAGService:
     """
     统一的 RAG 检索服务。
@@ -86,7 +94,7 @@ class RAGService:
                         hub_name,
                         **common_kwargs,
                     )
-                target_device = str(getattr(self._reranker, "_target_device", None))
+                target_device = _cross_encoder_device_repr(self._reranker)
                 logger.info(
                     "RAGService loaded CrossEncoder reranker: %s device=%s configured_device=%s",
                     load_id,
@@ -308,7 +316,7 @@ class RAGService:
         pairs = [[query, h.get("text", "")] for h in hits]
         scores = reranker.predict(pairs)
         rerank_ms = int((time.perf_counter() - t0) * 1000)
-        target_device = str(getattr(reranker, "_target_device", None))
+        target_device = _cross_encoder_device_repr(reranker)
         logger.info(
             "RAGService rerank done pairs=%s rerank_ms=%s device=%s",
             len(pairs),

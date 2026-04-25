@@ -28,11 +28,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /workspace
 
 # 修改为 yum 命令（麒麟/CentOS 系统）
+# libxcb：部分音视频栈（如 torchcodec + FFmpeg 4）动态依赖 libxcb.so.1；主修复见 requirements 中 sentence-transformers<5。
 RUN yum update -y && \
     yum install -y --setopt=tsflags=nodocs \
     gcc \
     gcc-c++ \
     make \
+    libxcb \
     && yum clean all && \
     rm -rf /var/cache/yum
 

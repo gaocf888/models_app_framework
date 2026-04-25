@@ -18,7 +18,7 @@ class Inference:
     uploading video files, and performing real-time inference.
 
     Attributes:
-        st (module): Streamlit module for UI creation.
+        st (module): Streamlit module for web creation.
         temp_dict (dict): Temporary dictionary to store the model path.
         model_path (str): Path to the loaded model.
         model (YOLO): The YOLO model instance.

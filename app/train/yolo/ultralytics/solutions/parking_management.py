@@ -13,7 +13,7 @@ from ultralytics.utils.plotting import Annotator
 
 class ParkingPtsSelection:
     """
-    A class for selecting and managing parking zone points on images using a Tkinter-based UI.
+    A class for selecting and managing parking zone points on images using a Tkinter-based web.
 
     This class provides functionality to upload an image, select points to define parking zones, and save the
     selected points to a JSON file. It uses Tkinter for the graphical user interface.
@@ -48,7 +48,7 @@ class ParkingPtsSelection:
     """
 
     def __init__(self):
-        """Initializes the ParkingPtsSelection class, setting up UI and properties for parking zone point selection."""
+        """Initializes the ParkingPtsSelection class, setting up web and properties for parking zone point selection."""
         check_requirements("tkinter")
         import tkinter as tk
         from tkinter import filedialog, messagebox

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chatbot 流式测试 · /chatbot/chat/stream</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --answer: #f0f4f8;
+      --meta: #22c55e;
+      --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 1.25rem 1rem 2rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin-bottom: 1.25rem; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+    }
+    @media (min-width: 720px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+      .grid .full { grid-column: 1 / -1; }
+    }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      margin: 0;
+      padding: 0.75rem 1rem 1rem;
+    }
+    legend { padding: 0 0.35rem; color: var(--muted); font-size: 0.8rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"],
+    input[type="url"],
+    input[type="password"],
+    textarea,
+    select {
+      width: 100%;
+      margin-top: 0.2rem;
+      padding: 0.45rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    textarea { min-height: 4.5rem; resize: vertical; font-family: inherit; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; align-items: center; margin-top: 0.5rem; }
+    .row label { display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--text); font-size: 0.875rem; }
+    .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+    button {
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button.primary { background: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.secondary { background: var(--border); color: var(--text); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .out {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      min-height: 200px;
+      padding: 1rem;
+    }
+    .out h2 { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.5rem; font-weight: 500; }
+    #answer {
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--answer);
+      font-size: 0.95rem;
+      min-height: 3rem;
+    }
+    #status { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
+    #meta {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.75rem;
+      color: var(--meta);
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 240px;
+      overflow: auto;
+    }
+    .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
+    code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Chatbot 流式测试</h1>
+    <p class="sub">
+      调用 <code>POST /chatbot/chat/stream</code>（SSE）。需后端 <code>CORSMiddleware</code> 允许浏览器跨域；
+      请求头 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code> 与线上一致。
+    </p>
+
+    <div class="grid">
+      <fieldset>
+        <legend>连接与服务密钥</legend>
+        <label>API 根地址（不含路径尾斜杠）</label>
+        <input type="url" id="baseUrl" value="http://127.0.0.1:8083" autocomplete="off" />
+        <label>Service API Key（Bearer，可空则不带鉴权头；仅当服务端关闭鉴权时可用）</label>
+        <input type="password" id="apiKey" placeholder="留空或粘贴密钥" autocomplete="off" />
+      </fieldset>
+
+      <fieldset>
+        <legend>会话与身份</legend>
+        <label>user_id（勿含冒号 <code>:</code>）</label>
+        <input type="text" id="userId" value="u_web_test" autocomplete="off" />
+        <label>session_id</label>
+        <input type="text" id="sessionId" value="u_web_test_s_001" autocomplete="off" />
+      </fieldset>
+
+      <fieldset class="full">
+        <legend>本轮问题</legend>
+        <label>query</label>
+        <textarea id="query" placeholder="输入要向知识库 / 模型提问的内容"></textarea>
+      </fieldset>
+
+      <fieldset>
+        <legend>布尔开关</legend>
+        <div class="row">
+          <label><input type="checkbox" id="enableRag" checked /> enable_rag</label>
+          <label><input type="checkbox" id="enableContext" checked /> enable_context</label>
+          <label><input type="checkbox" id="enableNl2sql" checked /> enable_nl2sql_route</label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>可选参数</legend>
+        <label>prompt_version（空则服务端默认）</label>
+        <input type="text" id="promptVersion" placeholder="例如 boiler_v1" autocomplete="off" />
+        <label>enable_fault_vision</label>
+        <select id="faultVision">
+          <option value="">默认（不传 / 服务端默认）</option>
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+        <label>image_urls（每行一个 URL，可为空）</label>
+        <textarea id="imageUrls" rows="2" placeholder="https://..."></textarea>
+      </fieldset>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="primary" id="btnSend">发送并开始流式输出</button>
+      <button type="button" class="secondary" id="btnStop" disabled>中断（需 stream_id）</button>
+      <button type="button" class="secondary" id="btnClear">清空输出</button>
+    </div>
+
+    <div class="out" style="margin-top: 1rem;">
+      <div id="status">就绪</div>
+      <h2>回答（delta 拼接）</h2>
+      <div id="answer"></div>
+      <div id="err" class="err" hidden></div>
+      <h2 style="margin-top:1rem;">结束帧 meta</h2>
+      <div id="meta">（尚未完成）</div>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
+  const headers = () => {
+    const h = { "Content-Type": "application/json", Accept: "text/event-stream" };
+    const k = $("apiKey").value.trim();
+    if (k) h["Authorization"] = "Bearer " + k;
+    return h;
+  };
+
+  function buildBody() {
+    const body = {
+      user_id: $("userId").value.trim(),
+      session_id: $("sessionId").value.trim(),
+      query: $("query").value,
+      enable_rag: $("enableRag").checked,
+      enable_context: $("enableContext").checked,
+      enable_nl2sql_route: $("enableNl2sql").checked,
+      image_urls: $("imageUrls").value
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    };
+    const pv = $("promptVersion").value.trim();
+    if (pv) body.prompt_version = pv;
+    const fv = $("faultVision").value;
+    if (fv === "true") body.enable_fault_vision = true;
+    else if (fv === "false") body.enable_fault_vision = false;
+    return body;
+  }
+
+  let abortCtrl = null;
+  let currentStreamId = null;
+
+  function setBusy(b) {
+    $("btnSend").disabled = b;
+    $("btnStop").disabled = !b || !currentStreamId;
+  }
+
+  function appendStatus(t) {
+    $("status").textContent = t;
+  }
+
+  function showErr(msg) {
+    const el = $("err");
+    if (!msg) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.hidden = false;
+    el.textContent = msg;
+  }
+
+  $("btnClear").addEventListener("click", () => {
+    $("answer").textContent = "";
+    $("meta").textContent = "（尚未完成）";
+    showErr("");
+    appendStatus("已清空");
+    currentStreamId = null;
+    setBusy(false);
+  });
+
+  $("btnStop").addEventListener("click", async () => {
+    if (!currentStreamId) return;
+    const uid = $("userId").value.trim();
+    const sid = $("sessionId").value.trim();
+    const url = baseUrl() + "/chatbot/chat/stop";
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          user_id: uid,
+          session_id: sid,
+          stream_id: currentStreamId,
+        }),
+        credentials: "omit",
+      });
+      const text = await r.text();
+      appendStatus("已请求停止: HTTP " + r.status + " " + text.slice(0, 200));
+      if (abortCtrl) abortCtrl.abort();
+    } catch (e) {
+      appendStatus("停止请求失败: " + e);
+    }
+  });
+
+  /**
+   * 解析 SSE：按空行分帧，每帧内取以 "data: " 开头的行并拼接 JSON。
+   */
+  async function readSseStream(response, onEvent) {
+    const reader = response.body.getReader();
+    const dec = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const raw = buffer.slice(0, idx).trimEnd();
+        buffer = buffer.slice(idx + 2);
+        const lines = raw.split("\n").map((l) => l.trimEnd());
+        const dataLines = lines.filter((l) => l.startsWith("data:"));
+        if (!dataLines.length) continue;
+        const payload = dataLines
+          .map((l) => (l.startsWith("data:") ? l.slice(5).trimStart() : l))
+          .join("\n");
+        let obj;
+        try {
+          obj = JSON.parse(payload);
+        } catch (e) {
+          onEvent({ parseError: true, raw: payload, error: String(e) });
+          continue;
+        }
+        onEvent(obj);
+      }
+    }
+    const tail = buffer.trim();
+    if (tail) {
+      const dataLines = tail.split("\n").filter((l) => l.startsWith("data:"));
+      if (dataLines.length) {
+        const payload = dataLines.map((l) => l.slice(5).trimStart()).join("\n");
+        try {
+          onEvent(JSON.parse(payload));
+        } catch (e) {
+          onEvent({ parseError: true, raw: payload, error: String(e) });
+        }
+      }
+    }
+  }
+
+  $("btnSend").addEventListener("click", async () => {
+    showErr("");
+    $("answer").textContent = "";
+    $("meta").textContent = "…";
+    currentStreamId = null;
+    abortCtrl = new AbortController();
+    setBusy(true);
+    appendStatus("请求中…");
+
+    const url = baseUrl() + "/chatbot/chat/stream";
+    let answerText = "";
+
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(buildBody()),
+        signal: abortCtrl.signal,
+        credentials: "omit",
+      });
+
+      if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error("HTTP " + resp.status + "\n" + t.slice(0, 2000));
+      }
+
+      const ct = (resp.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("text/event-stream") && !ct.includes("event-stream")) {
+        appendStatus("警告: Content-Type 非 text/event-stream: " + ct);
+      }
+
+      await readSseStream(resp, (ev) => {
+        if (ev.parseError) {
+          showErr("SSE JSON 解析失败: " + ev.error + "\n片段: " + (ev.raw || "").slice(0, 500));
+          return;
+        }
+        if (ev.started === true && ev.stream_id) {
+          currentStreamId = ev.stream_id;
+          $("btnStop").disabled = false;
+          appendStatus("已连接，stream_id=" + ev.stream_id);
+          return;
+        }
+        if (ev.error && ev.finished) {
+          showErr(String(ev.error));
+          appendStatus("服务端错误帧");
+          $("meta").textContent = JSON.stringify(ev, null, 2);
+          return;
+        }
+        if (ev.delta != null && ev.finished === false) {
+          answerText += ev.delta;
+          $("answer").textContent = answerText;
+          appendStatus("生成中… 已收字符 " + answerText.length);
+          return;
+        }
+        if (ev.finished === true) {
+          $("meta").textContent = JSON.stringify(ev.meta || {}, null, 2);
+          appendStatus("完成");
+          return;
+        }
+      });
+    } catch (e) {
+      if (e.name === "AbortError") {
+        appendStatus("已中止");
+      } else {
+        showErr(String(e.message || e));
+        appendStatus("失败");
+      }
+    } finally {
+      setBusy(false);
+      $("btnStop").disabled = true;
+      abortCtrl = null;
+    }
+  });
+})();
+  </script>
+</body>
+</html>

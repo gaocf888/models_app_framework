@@ -30,7 +30,7 @@ def _log_images(path, prefix=""):
     if live:
         name = path.name
 
-        # Group images by batch to enable sliders in UI
+        # Group images by batch to enable sliders in web
         if m := re.search(r"_batch(\d+)", name):
             ni = m[1]
             new_stem = re.sub(r"_batch(\d+)", "_batch", path.stem)

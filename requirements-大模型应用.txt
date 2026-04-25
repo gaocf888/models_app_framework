@@ -20,7 +20,9 @@ sqlalchemy>=2.0.0         # ORM/SQL 构建与执行，NL2SQL 的 SQLExecutor 使
 aiomysql>=0.2.0           # 异步 MySQL 驱动，用于 NL2SQL Demo 数据库访问（可按实际数据库替换）
 
 # === RAG / GraphRAG / 嵌入模型 ===
-sentence-transformers>=2.2.0  # 嵌入服务（EmbeddingService）主依赖，支持中文 BGE 等模型
+# 5.x 在 import 阶段会拉取 torchcodec（音视频多模态）；沐曦/国产 CUDA 等定制 PyTorch 常与官方 torchcodec
+# 及 FFmpeg 预编译不匹配，表现为 libtorchcodec / libxcb 加载失败。本应用仅用文本嵌入与 CrossEncoder，保留 <5 即可。
+sentence-transformers>=2.2.0,<5.0.0  # 嵌入服务（EmbeddingService）主依赖，支持中文 BGE 等模型
 faiss-cpu>=1.7.4              # 向量检索后端，当前默认使用本地 FAISS 文件索引
 numpy<2.0                     # 与 elasticsearch 7.x 兼容（7.x 依赖 np.float_，在 numpy 2.0 已移除）
 # elasticsearch>=8.12.0         # ES / EasySearch（兼容 ES API）向量+全文混合检索
