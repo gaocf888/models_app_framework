@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import List
 from urllib.parse import urlparse
@@ -17,6 +18,11 @@ try:
     from PIL import Image
 except Exception:  # noqa: BLE001
     Image = None  # type: ignore[assignment]
+
+try:
+    from minio import Minio
+except Exception:  # noqa: BLE001
+    Minio = None  # type: ignore[assignment]
 
 
 class ChatbotImagePreprocessor:
@@ -34,9 +40,21 @@ class ChatbotImagePreprocessor:
         self._max_edge = max(256, int(cfg.image_max_edge))
         self._compress_threshold_bytes = int(max(0.1, float(cfg.image_compress_threshold_mb)) * 1024 * 1024)
         self._jpeg_quality = max(50, min(95, int(cfg.image_jpeg_quality)))
+        self._storage_backend = (cfg.image_storage_backend or "minio").strip().lower()
         self._public_path = self._normalize_public_path(cfg.image_public_path)
         self._store_dir = self._resolve_store_dir(cfg.image_store_dir)
         self._store_dir.mkdir(parents=True, exist_ok=True)
+        self._minio = None
+        self._minio_bucket = (cfg.image_minio_bucket or "chatbot-images").strip()
+        self._minio_presign_ttl_seconds = max(60, int(cfg.image_minio_presign_ttl_seconds))
+        if self._storage_backend == "minio":
+            self._init_minio(
+                endpoint=(cfg.image_minio_endpoint or "").strip(),
+                access_key=(cfg.image_minio_access_key or "").strip(),
+                secret_key=(cfg.image_minio_secret_key or "").strip(),
+                secure=bool(cfg.image_minio_secure),
+                auto_create_bucket=bool(cfg.image_minio_auto_create_bucket),
+            )
 
     @property
     def public_path(self) -> str:
@@ -88,9 +106,64 @@ class ChatbotImagePreprocessor:
             out_bytes = out_buf.getvalue()
 
         file_name = f"{uuid.uuid4().hex}.jpg"
+        if self._storage_backend == "minio":
+            minio_url = self._upload_to_minio(file_name=file_name, content=out_bytes)
+            if minio_url:
+                return minio_url
+            logger.warning("minio upload unavailable, fallback to local file service path.")
         out_path = self._store_dir / file_name
         out_path.write_bytes(out_bytes)
         return f"{self._public_path}/{file_name}"
+
+    def _init_minio(
+        self,
+        *,
+        endpoint: str,
+        access_key: str,
+        secret_key: str,
+        secure: bool,
+        auto_create_bucket: bool,
+    ) -> None:
+        if Minio is None:
+            logger.warning("minio package not installed; image_storage_backend=minio will fallback to local.")
+            return
+        if not endpoint or not access_key or not secret_key:
+            logger.warning("minio config incomplete; image_storage_backend=minio will fallback to local.")
+            return
+        try:
+            self._minio = Minio(
+                endpoint,
+                access_key=access_key,
+                secret_key=secret_key,
+                secure=secure,
+            )
+            if auto_create_bucket and not self._minio.bucket_exists(self._minio_bucket):
+                self._minio.make_bucket(self._minio_bucket)
+                logger.info("created minio bucket for chatbot images: %s", self._minio_bucket)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("init minio client failed, fallback local storage: %s", exc)
+            self._minio = None
+
+    def _upload_to_minio(self, *, file_name: str, content: bytes) -> str | None:
+        if self._minio is None:
+            return None
+        object_name = f"chatbot/{file_name}"
+        try:
+            self._minio.put_object(
+                bucket_name=self._minio_bucket,
+                object_name=object_name,
+                data=io.BytesIO(content),
+                length=len(content),
+                content_type="image/jpeg",
+            )
+            return self._minio.presigned_get_object(
+                bucket_name=self._minio_bucket,
+                object_name=object_name,
+                expires=timedelta(seconds=self._minio_presign_ttl_seconds),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("upload image to minio failed, object=%s err=%s", object_name, exc)
+            return None
 
     @staticmethod
     def _to_rgb(im: "Image.Image") -> "Image.Image":

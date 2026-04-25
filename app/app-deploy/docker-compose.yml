@@ -57,6 +57,23 @@ services:
       timeout: 5s
       retries: 5
 
+  minio:
+    image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/minio/minio:latest
+    container_name: models-app-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      app-internal: {}
+      vllm-external: {}
+
   # ---------------------------------------------------------------------------
   # models-app：默认在线 API（大模型 + RAG + NL2SQL + 会话等，无 CUDA PyTorch）
   # ---------------------------------------------------------------------------
@@ -69,6 +86,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      minio:
+        condition: service_started
     env_file:
       - .env
     # 多 worker：UVICORN_WORKERS 来自 .env，由 shell 在容器内展开（$$ 为 compose 转义）
@@ -117,6 +136,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      minio:
+        condition: service_started
     env_file:
       - .env
     command:
@@ -181,6 +202,7 @@ volumes:
   redis-data: {}
   huggingface-cache: {}
   app-logs: {}
+  minio-data: {}
   small-model-data: {}
   # 占位卷：未配置 SMALL_MODEL_WEIGHTS_HOST_PATH 时避免 compose 报错；无真实权重，生产请务必配置宿主机路径
   small-model-weights-dummy:

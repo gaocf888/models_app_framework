@@ -14,6 +14,7 @@ python-dotenv>=1.0.0      # 从 .env 文件加载配置，便于本地/测试环
 # === 缓存、会话与后端服务访问 ===
 redis>=5.0.0              # 会话与上下文存储（ConversationManager、会话摘要等）
 httpx>=0.27.0             # HTTP 客户端，封装 vLLM/OpenAI 兼容接口等后端调用
+minio>=7.2.0              # 图片预处理后上传 MinIO，返回预签名 URL 供 vLLM 多模态拉取
 
 # === 数据库与 NL2SQL 相关 ===
 sqlalchemy>=2.0.0         # ORM/SQL 构建与执行，NL2SQL 的 SQLExecutor 使用

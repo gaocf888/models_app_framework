@@ -408,7 +408,7 @@ class ChatbotConfig:
     # 回答结束后关联问题推荐（规则 + 片段 + LLM）
     suggested_questions_enabled: bool = True
     suggested_questions_max: int = 5
-    # 图片预处理总开关：true 时在 ChatbotService 入口对 image_urls 执行下载+缩放+压缩+本地落盘。
+    # 图片预处理总开关：true 时在 ChatbotService 入口对 image_urls 执行下载+缩放+压缩+存储（local/minio）。
     image_preprocess_enabled: bool = True
     # 统一最长边（像素）：超过即等比缩放，降低视觉 token 与传输开销。
     image_max_edge: int = 1280
@@ -416,10 +416,20 @@ class ChatbotConfig:
     image_compress_threshold_mb: float = 2.0
     # 有损压缩质量（JPEG 1~95）：默认 80，兼顾可识别度与体积。
     image_jpeg_quality: int = 80
+    # 图片存储后端：minio | local。默认 minio（推荐，便于多实例共享与给 vLLM 提供可访问 URL）。
+    image_storage_backend: str = "minio"
     # 本地落盘目录（可相对 app 目录）；用于历史会话图片回显与静态服务。
     image_store_dir: str = "runtime/chatbot_images"
     # 对外访问前缀（由 main.py 挂载 StaticFiles），默认 /chatbot/media。
     image_public_path: str = "/chatbot/media"
+    # --- MinIO 配置（image_storage_backend=minio 时生效） ---
+    image_minio_endpoint: str = "models-app-minio:9000"
+    image_minio_access_key: str = "minioadmin"
+    image_minio_secret_key: str = "minioadmin"
+    image_minio_bucket: str = "chatbot-images"
+    image_minio_secure: bool = False
+    image_minio_auto_create_bucket: bool = True
+    image_minio_presign_ttl_seconds: int = 900
 
 
 @dataclass
@@ -763,8 +773,16 @@ def _load_from_env() -> AppConfig:
         image_max_edge=max(256, int(os.getenv("CHATBOT_IMAGE_MAX_EDGE", "1280"))),
         image_compress_threshold_mb=max(0.1, float(os.getenv("CHATBOT_IMAGE_COMPRESS_THRESHOLD_MB", "2"))),
         image_jpeg_quality=max(50, min(95, int(os.getenv("CHATBOT_IMAGE_JPEG_QUALITY", "80")))),
+        image_storage_backend=(os.getenv("CHATBOT_IMAGE_STORAGE_BACKEND", "minio") or "minio").strip().lower(),
         image_store_dir=(os.getenv("CHATBOT_IMAGE_STORE_DIR", "runtime/chatbot_images") or "runtime/chatbot_images").strip(),
         image_public_path=(os.getenv("CHATBOT_IMAGE_PUBLIC_PATH", "/chatbot/media") or "/chatbot/media").strip(),
+        image_minio_endpoint=(os.getenv("CHATBOT_IMAGE_MINIO_ENDPOINT", "models-app-minio:9000") or "models-app-minio:9000").strip(),
+        image_minio_access_key=(os.getenv("CHATBOT_IMAGE_MINIO_ACCESS_KEY", "minioadmin") or "minioadmin").strip(),
+        image_minio_secret_key=(os.getenv("CHATBOT_IMAGE_MINIO_SECRET_KEY", "minioadmin") or "minioadmin").strip(),
+        image_minio_bucket=(os.getenv("CHATBOT_IMAGE_MINIO_BUCKET", "chatbot-images") or "chatbot-images").strip(),
+        image_minio_secure=os.getenv("CHATBOT_IMAGE_MINIO_SECURE", "false").lower() == "true",
+        image_minio_auto_create_bucket=os.getenv("CHATBOT_IMAGE_MINIO_AUTO_CREATE_BUCKET", "true").lower() == "true",
+        image_minio_presign_ttl_seconds=max(60, int(os.getenv("CHATBOT_IMAGE_MINIO_PRESIGN_TTL_SECONDS", "900"))),
     )
     analysis_cfg = AnalysisConfig(
         default_report_template=(os.getenv("ANALYSIS_DEFAULT_REPORT_TEMPLATE", "standard") or "standard").strip(),
