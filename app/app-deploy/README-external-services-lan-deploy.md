@@ -91,9 +91,9 @@ mkdir -p /aidata/models/llm
 mkdir -p /aidata/models/embeddings/bge-small-zh-v1.5
 mkdir -p /aidata/models/reranker/bge-reranker-large
 
-# MinerU 模型与 IO 目录（示例）
-mkdir -p /data/mineru/models
-mkdir -p /data/mineru/io
+# MinerU 模型与 IO 目录（示例，与 mineru-deploy/.env.example 中 MINERU_*_HOST_PATH 一致）
+mkdir -p /aidata/mineru/models
+mkdir -p /aidata/mineru/io
 
 ```
 
@@ -125,15 +125,15 @@ MINERU_ENABLED=true
 MINERU_BASE_URL=http://mineru-api:8000
 MINERU_DOCKER_NETWORK=mineru-stack
 MINERU_IO_CONTAINER_PATH=/workspace/mineru-io
-MINERU_IO_HOST_PATH=/data/mineru/io
+MINERU_IO_HOST_PATH=/aidata/mineru/io
 ```
 
 `mineru-deploy/.env`：
 
 ```env
 MINERU_NETWORK_NAME=mineru-stack
-MINERU_MODELS_HOST_PATH=/data/mineru/models
-MINERU_IO_HOST_PATH=/data/mineru/io
+MINERU_MODELS_HOST_PATH=/aidata/mineru/models
+MINERU_IO_HOST_PATH=/aidata/mineru/io
 HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```

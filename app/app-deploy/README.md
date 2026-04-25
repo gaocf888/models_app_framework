@@ -385,7 +385,7 @@ docker compose --profile small-model-gpu down
    建议在宿主机统一使用以下目录约定：
 
    ```text
-   /opt/models/
+   /aidata/models/
      embeddings/
        bge-small-zh-v1.5/   # 存放 BAAI/bge-small-zh-v1.5 的所有文件
      reranker/

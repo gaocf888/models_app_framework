@@ -60,7 +60,7 @@ TRANSFORMERS_OFFLINE=0
 
 说明：
 - 运行时允许在线拉取模型
-- 模型缓存写入 `/io/.hf_cache`（宿主机对应 `${MINERU_IO_HOST_PATH}/.hf_cachecd `）
+- 模型缓存写入 `/io/.hf_cache`（宿主机对应 `${MINERU_IO_HOST_PATH}/.hf_cache`）
 - 适合可联网环境
 
 > 国内网络可选：`MINERU_MODEL_SOURCE=modelscope`
@@ -80,7 +80,7 @@ TRANSFORMERS_OFFLINE=1
   - 在魔塔社区中搜索 OpenDataLab/PDF-Extract-Kit-1.0
   - 使用git lfs下载到 ${MINERU_MODELS_HOST_PATH} 路径下
   > 为保证下载后路径一致，建议先在有网环境部署，然后使用docker cp从容器中复制下载后的模型到本地，然后拷贝到离线服务器的${MINERU_MODELS_HOST_PATH}路径中
-    （docker cp mineru-api:/root/.cache/modelscope/hub/models/OpenDataLab /data/mineru/models/OpenDataLab）
+    （docker cp mineru-api:/root/.cache/modelscope/hub/models/OpenDataLab /aidata/mineru/models/OpenDataLab）
        下载后路径要确保下面的路径：
          宿主：${MINERU_MODELS_HOST_PATH}/OpenDataLab/PDF-Extract-Kit-1.0/...
          容器：/models/OpenDataLab/PDF-Extract-Kit-1.0/...

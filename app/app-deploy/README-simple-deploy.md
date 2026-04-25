@@ -227,21 +227,21 @@ LOG_FILE_COMPRESS=true
 
    下面是嵌入模型路径
    ```text
-   /opt/models/
+   /aidata/models/
      embeddings/
        bge-small-zh-v1.5/   # BAAI/bge-small-zh-v1.5 的完整模型文件
    ```
    
    下面是重排序模型路径
    ```text
-   /opt/models/
+   /aidata/models/
      reranker/
        bge-reranker-large/  # BAAI/bge-reranker-large 的完整模型文件
    ```
    
    下面是mineru模型下载路径
    ```text
-   /data/mineru/models
+   /aidata/mineru/models
    ```
    
    mineru模型下载说明
