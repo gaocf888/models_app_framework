@@ -216,6 +216,7 @@ LOG_FILE_COMPRESS=true
 > 整个项目中包括 嵌入模型、重排序模型、mineru模型
 > 嵌入模型：RAG知识文档切块后转向量(本地离线路径下/aidata/models/embeddings/中存在离线模型文件时，自动走离线，否则自动走在线下载)
 > 重排序模型：RAG混合检索多路召回后，进行重排序(默认走在线下载，若走离线：首先需要修改.env中的RAG_RERANKER_MODEL_PATH（放开注释），然后离线下载模型到宿主机/aidata/models/reranker/路径中，注意：如果配置离线了，离线路径中没有有效模型文件，会报错，不会自动切换在线下载)
+> 若部署在多卡环境且重排耗时高，建议新增 `.env`：`RAG_RERANKER_DEVICE=cuda:1`（与 vLLM 分卡）。
 > mineru模型：使用mineru进行扫描图片格式PDF文件解析
 
 若部署环境**无法访问 Hugging Face Hub**，或希望避免在线下载，推荐将嵌入模型和重排序模型预先下载到宿主机统一离线路径，并通过挂载暴露给应用：
@@ -283,15 +284,18 @@ LOG_FILE_COMPRESS=true
          - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
    ```
 
-3. **在 `.env` 中指定嵌入模型路径**
+3. **在 `.env` 中指定嵌入/重排模型运行参数**
 
    在 `app/app-deploy/.env` 中确认或新增：
 
    ```env
    EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5
+   RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
+   # 可选：显式指定重排设备（cpu / cuda / cuda:1）
+   # RAG_RERANKER_DEVICE=cuda:1
    ```
 
-   应用启动后，`EmbeddingService` 会**直接从该本地路径加载模型**，不再尝试访问 Hugging Face。
+   应用启动后，`EmbeddingService` 会**直接从该本地路径加载模型**，不再尝试访问 Hugging Face；`RAGService` 会按 `RAG_RERANKER_DEVICE`（若配置）在指定设备执行重排。
 
 4. **启动/重启应用栈**
 

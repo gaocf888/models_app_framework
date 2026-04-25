@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Sequence
 
@@ -37,50 +39,66 @@ class RAGService:
         self._embedding_service = embedding_service or EmbeddingService()
         self._store_provider = store_provider or VectorStoreProvider()
         self._reranker = None
+        self._reranker_lock = threading.Lock()
 
     def _get_reranker(self):
         if self._reranker is not None:
             return self._reranker
-        hub_name = (self._cfg.hybrid.reranker_model_name or "BAAI/bge-reranker-large").strip()
-        raw_path = (self._cfg.hybrid.reranker_model_path or "").strip()
-        resolved_local: str | None = None
-        if raw_path:
-            expanded = os.path.abspath(os.path.expandvars(os.path.expanduser(raw_path)))
-            if os.path.isdir(expanded):
-                resolved_local = expanded
-            else:
-                # 路径无效时勿把绝对路径当作 HF repo id 传给 CrossEncoder（会触发 Repo id must be...）
-                logger.warning(
-                    "RAG_RERANKER_MODEL_PATH is not a directory (%s); falling back to hub id %s",
-                    expanded,
-                    hub_name,
+        with self._reranker_lock:
+            if self._reranker is not None:
+                return self._reranker
+            hub_name = (self._cfg.hybrid.reranker_model_name or "BAAI/bge-reranker-large").strip()
+            raw_path = (self._cfg.hybrid.reranker_model_path or "").strip()
+            configured_device = (self._cfg.hybrid.reranker_device or "").strip() or None
+            resolved_local: str | None = None
+            if raw_path:
+                expanded = os.path.abspath(os.path.expandvars(os.path.expanduser(raw_path)))
+                if os.path.isdir(expanded):
+                    resolved_local = expanded
+                else:
+                    # 路径无效时勿把绝对路径当作 HF repo id 传给 CrossEncoder（会触发 Repo id must be...）
+                    logger.warning(
+                        "RAG_RERANKER_MODEL_PATH is not a directory (%s); falling back to hub id %s",
+                        expanded,
+                        hub_name,
+                    )
+            load_id = resolved_local if resolved_local else hub_name
+            try:
+                from sentence_transformers import CrossEncoder  # type: ignore[import-untyped]
+            except Exception as e:  # noqa: BLE001
+                raise ImportError(
+                    "CrossEncoder reranker requires sentence-transformers. "
+                    "Install with: pip install -r requirements-大模型应用.txt"
+                ) from e
+            try:
+                common_kwargs = {
+                    "trust_remote_code": os.getenv("RAG_RERANKER_TRUST_REMOTE_CODE", "false").lower() == "true",
+                }
+                if configured_device:
+                    common_kwargs["device"] = configured_device
+                if resolved_local:
+                    self._reranker = CrossEncoder(
+                        resolved_local,
+                        **common_kwargs,
+                    )
+                else:
+                    self._reranker = CrossEncoder(
+                        hub_name,
+                        **common_kwargs,
+                    )
+                target_device = str(getattr(self._reranker, "_target_device", None))
+                logger.info(
+                    "RAGService loaded CrossEncoder reranker: %s device=%s configured_device=%s",
+                    load_id,
+                    target_device,
+                    configured_device or "auto",
                 )
-        load_id = resolved_local if resolved_local else hub_name
-        try:
-            from sentence_transformers import CrossEncoder  # type: ignore[import-untyped]
-        except Exception as e:  # noqa: BLE001
-            raise ImportError(
-                "CrossEncoder reranker requires sentence-transformers. "
-                "Install with: pip install -r requirements-大模型应用.txt"
-            ) from e
-        try:
-            if resolved_local:
-                self._reranker = CrossEncoder(
-                    resolved_local,
-                    trust_remote_code=os.getenv("RAG_RERANKER_TRUST_REMOTE_CODE", "false").lower() == "true",
-                )
-            else:
-                self._reranker = CrossEncoder(
-                    hub_name,
-                    trust_remote_code=os.getenv("RAG_RERANKER_TRUST_REMOTE_CODE", "false").lower() == "true",
-                )
-            logger.info("RAGService loaded CrossEncoder reranker: %s", load_id)
-            return self._reranker
-        except Exception as e:  # noqa: BLE001
-            # Reranker 不是摄入/检索链路的强依赖：模型缺失/无网时允许跳过重排。
-            logger.warning("RAGService failed to load reranker model=%s; skip rerank. err=%s", load_id, e)
-            self._reranker = None
-            return None
+                return self._reranker
+            except Exception as e:  # noqa: BLE001
+                # Reranker 不是摄入/检索链路的强依赖：模型缺失/无网时允许跳过重排。
+                logger.warning("RAGService failed to load reranker model=%s; skip rerank. err=%s", load_id, e)
+                self._reranker = None
+                return None
 
     def index_texts(
         self,
@@ -286,8 +304,17 @@ class RAGService:
         if reranker is None:
             # 跳过重排：保持融合顺序，避免流式/推理接口因 reranker 加载失败直接中断。
             return hits
+        t0 = time.perf_counter()
         pairs = [[query, h.get("text", "")] for h in hits]
         scores = reranker.predict(pairs)
+        rerank_ms = int((time.perf_counter() - t0) * 1000)
+        target_device = str(getattr(reranker, "_target_device", None))
+        logger.info(
+            "RAGService rerank done pairs=%s rerank_ms=%s device=%s",
+            len(pairs),
+            rerank_ms,
+            target_device,
+        )
         RAG_RERANK_COUNT.inc()
         for idx, hit in enumerate(hits):
             hit["_rerank_score"] = float(scores[idx])

@@ -176,6 +176,9 @@ class HybridRetrievalConfig:
     rerank_top_n: int = 12
     reranker_model_path: str | None = None
     reranker_model_name: str = "BAAI/bge-reranker-large"
+    # 可选：显式指定 CrossEncoder 设备，例如 cpu / cuda / cuda:1。
+    # 为空时使用 sentence-transformers 默认设备选择。
+    reranker_device: str | None = None
 
 
 @dataclass
@@ -605,6 +608,7 @@ def _load_from_env() -> AppConfig:
         rerank_top_n=int(os.getenv("RAG_HYBRID_RERANK_TOP_N", "12")),
         reranker_model_path=os.getenv("RAG_RERANKER_MODEL_PATH") or None,
         reranker_model_name=os.getenv("RAG_RERANKER_MODEL_NAME", "BAAI/bge-reranker-large"),
+        reranker_device=os.getenv("RAG_RERANKER_DEVICE") or None,
     )
     scene_profiles_cfg = RAGSceneProfilesConfig(
         llm_inference=RAGSceneProfile(

@@ -148,6 +148,9 @@ LLM_DEFAULT_MODEL=<与 vllm served_model_name 一致>
 VLLM_DOCKER_NETWORK=<与 vllm 实际网络名一致>
 EMBEDDING_MODELS_HOST_PATH=/aidata/models/embeddings
 RERANKER_MODELS_HOST_PATH=/aidata/models/reranker
+RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
+# 可选：多卡场景建议与 vLLM 分卡（如 cuda:1）
+# RAG_RERANKER_DEVICE=cuda:1
 ```
 
 `vllm-deploy/.env`：

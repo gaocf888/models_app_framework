@@ -38,6 +38,12 @@
 # 【启动顺序建议】
 #   rag_db-deploy → vllm-deploy（deploy.sh）→ mineru-deploy（若启用）→ 本目录 docker compose
 #
+# 【沐曦 models-app · 解释器与启动命令】
+#   Dockerfile-mx 基于沐曦 vllm-metax 镜像，业务依赖与 torch 安装在 conda base。
+#   models-app 的 command 必须使用「/opt/conda/bin/python -m uvicorn」，与镜像内 CUDA / RAG 重排等一致；
+#   若改用系统 python3 或独立 uvicorn 入口，易出现 GPU 不可用或与已安装包错位。
+#   models-app-gpu 使用 Dockerfile-mx.small-model-gpu：若该镜像无 /opt/conda，请将下方 command 改为该镜像实际 Python 路径。
+#
 # =============================================================================
 
 services:
@@ -72,11 +78,12 @@ services:
         condition: service_healthy
     env_file:
       - .env
-    # 多 worker：UVICORN_WORKERS 来自 .env，由 shell 在容器内展开（$$ 为 compose 转义）
+    # 多 worker：UVICORN_WORKERS 来自 .env，由 shell 在容器内展开（$$ 为 compose 转义）。
+    # 与 Dockerfile-mx 一致：conda 解释器 + python -m uvicorn（见文件头「沐曦 models-app · 解释器与启动命令」）。
     command:
       - sh
       - -c
-      - exec uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
+      - exec /opt/conda/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
     ports:
       - "${APP_PORT:-8083}:8083"
     # Linux 上访问宿主机 MySQL 等：使用主机名 host.docker.internal
@@ -120,10 +127,11 @@ services:
         condition: service_healthy
     env_file:
       - .env
+    # 与 models-app 相同启动形态；须与 Dockerfile-mx.small-model-gpu 中 Python 布局一致（无 conda 时请改路径）。
     command:
       - sh
       - -c
-      - exec uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
+      - exec /opt/conda/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
     ports:
       - "${APP_PORT_GPU:-8081}:8083"
     extra_hosts:

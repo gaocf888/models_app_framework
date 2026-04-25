@@ -286,6 +286,8 @@ docker compose --profile small-model-gpu up -d --build
 | `${EMBEDDING_MODELS_HOST_PATH}/bge-small-zh-v1.5`（默认 `/aidata/models/embeddings/...`） → `/workspace/models/embeddings/bge-small-zh-v1.5:ro` | `models-app` / `models-app-gpu` | **离线嵌入模型权重目录**；配合 `EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5` 使用，实现完全离线加载 |
 | `${RERANKER_MODELS_HOST_PATH}/bge-reranker-large`（默认 `/aidata/models/reranker/...`） → `/models/rerank/bge-reranker-large:ro` | `models-app` / `models-app-gpu` | **离线重排模型目录**；`RAG_RERANKER_MODEL_PATH` 指向该容器路径 |
 
+> 若多卡环境出现重排慢或与 vLLM 争卡，建议在 `.env` 显式设置 `RAG_RERANKER_DEVICE`（如 `cuda:1`），用于指定 CrossEncoder 重排设备。
+
 ---
 
 ## 验证与健康检查
@@ -416,12 +418,15 @@ docker compose --profile small-model-gpu down
          - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
    ```
 
-3. **在 `.env` 中指定嵌入模型路径**
+3. **在 `.env` 中指定嵌入/重排模型运行参数**
 
    编辑 `app/app-deploy/.env`：
 
    ```env
    EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5
+   RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
+   # 可选：显式指定重排设备（cpu / cuda / cuda:1）
+   # RAG_RERANKER_DEVICE=cuda:1
    ```
 
    这样 `EmbeddingService` 会优先直接从该路径加载模型权重，完全不依赖 Hugging Face 在线下载。
@@ -449,6 +454,7 @@ docker compose --profile small-model-gpu down
 | `Connection refused` 使用 `127.0.0.1` 访问对端服务 | 在容器内 `127.0.0.1` 是自身，应改用 **`vllm-service` / `rag-easysearch`**。 |
 | EasySearch TLS / 401 | HTTPS + `RAG_ES_VERIFY_CERTS`；用户名密码与库一致。 |
 | GPU 容器 `cuda: False` | 宿主机 Toolkit / Docker GPU 设置；`nvidia-smi` 在宿主机是否正常。 |
+| RAG 重排耗时过高（rerank 慢） | 检查日志中 `RAGService rerank done ... device=... rerank_ms=...`；必要时设置 `RAG_RERANKER_DEVICE=cuda:1` 与 vLLM 分卡，并适当调小 `RAG_SCENE_CHATBOT_RERANK_TOP_N`。 |
 | YOLO 找不到权重 | **`SMALL_MODEL_WEIGHTS_HOST_PATH`** 是否设置；宿主机路径与 YAML 是否对齐。 |
 | `docker compose` 报外部网络不存在 | 先启动 `rag_db-deploy`、`vllm-deploy`（`deploy.sh`）、（可选）`mineru-deploy`，或先执行 `docker network create <network-name>`。 |
 
