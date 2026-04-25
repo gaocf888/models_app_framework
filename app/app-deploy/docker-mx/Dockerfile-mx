@@ -12,9 +12,9 @@
 # 不包含：小模型 GPU 推理依赖 → 使用 Dockerfile.small-model-gpu + profile small-model-gpu
 # =============================================================================
 
-FROM python:3.11-slim-bookworm
+# FROM python:3.11-slim-bookworm
 # 针对沐曦卡服务器，因app-deploy应用中由reranker重排序模型，为了推理速度，基础镜像使用沐曦的AI框架镜像(适配版torch)
-# FROM cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.17.0-maca.ai3.5.3.307-torch2.8-py312-kylinv11-amd64
+FROM cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.17.0-maca.ai3.5.3.307-torch2.8-py312-kylinv11-amd64
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -24,9 +24,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /workspace
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# 修改为 yum 命令（麒麟/CentOS 系统）
+RUN yum update -y && \
+    yum install -y --setopt=tsflags=nodocs \
+    gcc \
+    gcc-c++ \
+    make \
+    && yum clean all && \
+    rm -rf /var/cache/yum
+
+RUN set -eux; \
+    if command -v yum >/dev/null 2>&1; then \
+      yum install -y python3 python3-pip curl && yum clean all; \
+    elif command -v dnf >/dev/null 2>&1; then \
+      dnf install -y python3 python3-pip curl && dnf clean all; \
+    else \
+      echo "错误: 当前基础镜像中未找到 yum/dnf，请改用 Dockerfile 或更换基础镜像"; \
+      exit 1; \
+    fi; \
+    ln -sf /usr/bin/python3 /usr/bin/python
 
 # 构建阶段若出现 json.decoder.JSONDecodeError（解析 PyPI 索引 JSON 失败），多为响应被截断/超时；
 # 已加大 pip 超时与重试。仍不稳定时可指定镜像，例如：

@@ -2,7 +2,7 @@ services:
   mineru-api:
     build:
       context: .
-      dockerfile: Dockerfile.cpu
+      dockerfile: Dockerfile-mx.cpu
       args:
         MINERU_PIP_SPEC: ${MINERU_CPU_PIP_SPEC:-mineru[core]}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}

@@ -142,8 +142,9 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwe
 
      ```bash
      cd vllm-deploy/docker
-     docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
-     # 旧版：docker-compose --env-file ../.env -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
+     docker compose --env-file ../.env -f docker-compose-mx.yml -f docker-compose.nvidia.yml up -d --build
+     # 沐曦：docker compose --env-file ../.env -f docker-compose-mx.yml -f docker-compose.mthreads.yml up -d --build
+     # 旧版：docker-compose --env-file ../.env -f docker-compose-mx.yml -f docker-compose.nvidia.yml up -d --build
      ```
 
 4. **（可选）使用 docker 目录下的 .env**

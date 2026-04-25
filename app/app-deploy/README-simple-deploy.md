@@ -342,6 +342,13 @@ docker compose -f docker-compose.neo4j.yml --env-file .env up -d
 cd app/app-deploy
 cp .env.example .env          # 首次，之后直接编辑 .env
 docker compose up -d --build
+
+# 上面是通用启动方式，若启动app-deploy/时想使用沐曦AI框架镜像(为了reranker效率)，使用下面的启动配置文件
+cd app/app-deploy
+cp .env.example .env          # 首次，之后直接编辑 .env
+cp .env docker-mx
+cd docker-mx
+docker compose --env-file .env -f docker-compose-mx.yml up -d --build
 ```
 > 启动之前关键修改确认项：LLM_DEFAULT_MODEL  （需要与vllm-deploy/实际部署的大模型名称一致）
 

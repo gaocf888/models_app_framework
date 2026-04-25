@@ -51,7 +51,7 @@ curl -N -X POST "http://127.0.0.1:8083/chatbot/chat/stream" \
 先查：
 
 ```bash
-docker compose -f app/app-deploy/docker-compose.yml logs -f models-app
+docker compose -f app/app-deploy/docker-compose-mx.yml logs -f models-app
 ```
 
 重点看三类错误：

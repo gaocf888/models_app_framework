@@ -154,7 +154,7 @@ docker compose --env-file .env -f docker-compose.gpu.yml logs -f mineru-api
 2. 使用 `Dockerfile.cpu` 构建 CPU 镜像（示例镜像名 `mineru-cpu:py311`，可自行调整）：
 
    ```bash
-   docker build -f Dockerfile.cpu -t mineru-cpu:py311 .
+   docker build -f Dockerfile-mx.cpu -t mineru-cpu:py311 .
    ```
 
 3. 导出镜像为离线文件：
@@ -961,7 +961,7 @@ MINERU_DEVICE_MODE=gpu
 然后叠加 GPU compose：
 
 ```bash
-docker compose --env-file .env -f docker-compose.yml -f docker-compose.gpu.yml up -d
+docker compose --env-file .env -f docker-compose-mx.yml -f docker-compose.gpu.yml up -d
 ```
 
 ## 六、离线服务器部署

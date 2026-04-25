@@ -2,7 +2,7 @@ services:
   mineru-api:
     build:
       context: .
-      dockerfile: Dockerfile.gpu
+      dockerfile: Dockerfile-mx.gpu
       args:
         MINERU_PIP_SPEC: ${MINERU_GPU_PIP_SPEC:-mineru[core]}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}

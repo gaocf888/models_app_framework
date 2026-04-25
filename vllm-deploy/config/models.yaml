@@ -81,7 +81,7 @@ presets:
     max_model_len: 16384
     # enforce_eager: true
     tensor_parallel_size: 2
-    gpu_memory_utilization: 0.9
+    gpu_memory_utilization: 0.8
     max_num_seqs: 8
     max_num_batched_tokens: 12288
     enable_prefix_caching: true
@@ -105,7 +105,7 @@ presets:
     quantization: "awq"
     max_model_len: 16384
     tensor_parallel_size: 2
-    gpu_memory_utilization: 0.9
+    gpu_memory_utilization: 0.8
     max_num_seqs: 8
     max_num_batched_tokens: 12288
     enable_prefix_caching: true
@@ -174,7 +174,7 @@ presets:
     # 两张 64GB 显卡下，提升多轮长上下文能力；并发适当收敛以平衡显存占用
     max_model_len: 16384
     tensor_parallel_size: 2
-    gpu_memory_utilization: 0.9
+    gpu_memory_utilization: 0.8
     max_num_seqs: 128
     max_num_batched_tokens: 12288
     enable_prefix_caching: true

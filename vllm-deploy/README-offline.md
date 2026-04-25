@@ -81,7 +81,7 @@ chmod +x deploy.sh
 或在 `docker/` 下手动：
 ```bash
 cd vllm-deploy/docker
-docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.cambricon.yml up -d --build
+docker compose --env-file ../.env -f docker-compose-mx.yml -f docker-compose.cambricon.yml up -d --build
 ```
 此时：
 - `docker/docker-compose.yml` 的 `build.args.BASE_IMAGE` 会使用你刚提交的 `vendor/vllm-stack:vllm-deploy-2025.01`；

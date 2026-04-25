@@ -62,10 +62,11 @@ services:
   # ---------------------------------------------------------------------------
   models-app:
     build:
-      context: ../..
-      dockerfile: app/app-deploy/Dockerfile-mx
+      context: ../../..
+      dockerfile: app/app-deploy/docker-mx/Dockerfile-mx
     container_name: models-app
     restart: unless-stopped
+    privileged: true
     depends_on:
       redis:
         condition: service_healthy

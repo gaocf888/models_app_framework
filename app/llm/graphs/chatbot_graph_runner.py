@@ -490,6 +490,15 @@ class ChatbotLangGraphRunner:
             reason = f"label_not_enabled:{label}|{reason}"
             label = "kb_qa"
             conf = min(conf, 0.6)
+        logger.info(
+            "chatbot.intent decision label=%s reason=%s conf=%.3f enable_nl2sql=%s has_images=%s query_len=%s",
+            label,
+            reason,
+            conf,
+            bool(state.get("enable_nl2sql_route")),
+            bool(imgs),
+            len(q),
+        )
         return {"intent_label": label, "intent_reason": reason, "intent_confidence": conf, "status": "intented"}
 
     async def _node_nl2sql_answer(self, state: ChatbotGraphState) -> ChatbotGraphState:
@@ -671,16 +680,25 @@ class ChatbotLangGraphRunner:
     def _route_by_intent(self, state: ChatbotGraphState) -> str:
         label = str(state.get("intent_label") or "kb_qa").lower()
         if label == "clarify":
-            return "clarify"
-        if label == "data_query":
-            return "data_query"
-        if label == "unsafe":
-            return "unsafe"
-        if label == "handoff_human":
-            return "handoff_human"
-        if label == "smalltalk":
-            return "smalltalk"
-        return "kb_qa"
+            route = "clarify"
+        elif label == "data_query":
+            route = "data_query"
+        elif label == "unsafe":
+            route = "unsafe"
+        elif label == "handoff_human":
+            route = "handoff_human"
+        elif label == "smalltalk":
+            route = "smalltalk"
+        else:
+            route = "kb_qa"
+        logger.info(
+            "chatbot.route intent label=%s route=%s reason=%s conf=%s",
+            label,
+            route,
+            state.get("intent_reason"),
+            state.get("intent_confidence"),
+        )
+        return route
 
     def _route_after_quality_check(self, state: ChatbotGraphState) -> str:
         # 路由优先级（非常关键）：
@@ -689,14 +707,33 @@ class ChatbotLangGraphRunner:
         # 3) 低分且预算耗尽 -> clarify（避免继续硬答）
         # 4) 其它 -> build
         if not state.get("enable_rag", True):
+            logger.info(
+                "chatbot.route quality enable_rag=false route=build attempts=%s score=%s min_score=%s crag_enabled=%s",
+                state.get("retrieval_attempts"),
+                state.get("retrieval_score"),
+                self._min_score,
+                self._crag_enabled,
+            )
             return "build"
         score = float(state.get("retrieval_score", 0.0))
         attempts = int(state.get("retrieval_attempts", 0))
         if self._crag_enabled and score < self._min_score and attempts < self._max_attempts:
-            return "retry"
-        if score < self._min_score and attempts >= self._max_attempts:
-            return "clarify"
-        return "build"
+            route = "retry"
+        elif score < self._min_score and attempts >= self._max_attempts:
+            route = "clarify"
+        else:
+            route = "build"
+        logger.info(
+            "chatbot.route quality route=%s attempts=%s score=%.3f min_score=%.3f max_attempts=%s snippets=%s rag_engine=%s",
+            route,
+            attempts,
+            score,
+            self._min_score,
+            self._max_attempts,
+            len(state.get("context_snippets") or []),
+            state.get("rag_engine"),
+        )
+        return route
 
     def _persist_success(
         self,

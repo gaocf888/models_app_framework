@@ -284,6 +284,13 @@ class ChatbotService:
         )
         if ilabel not in intent_labels:
             ilabel = "kb_qa"
+        logger.info(
+            "chatbot.legacy intent label=%s enable_nl2sql=%s has_images=%s query_len=%s",
+            ilabel,
+            enable_nl2sql,
+            bool(imgs),
+            len(req.query or ""),
+        )
 
         duration_ms = lambda: int((time.perf_counter() - start_ts) * 1000)
 
@@ -337,6 +344,10 @@ class ChatbotService:
         if ilabel == "clarify":
             answer = (
                 "为了更准确地回答你，请补充更具体的信息：你要咨询的是哪一项业务、当前遇到的具体问题现象，以及你期望的结果。"
+            )
+            logger.info(
+                "chatbot.legacy route=clarify terminate_reason=need_clarify query=%s",
+                (req.query or "")[:120],
             )
             suggested_cl: list[str] = []
             if cfg.suggested_questions_enabled:

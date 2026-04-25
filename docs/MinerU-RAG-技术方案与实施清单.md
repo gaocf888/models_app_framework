@@ -73,7 +73,7 @@ docker compose --env-file .env up -d
 
 # --- GPU ---
 # .env: MINERU_DEVICE_MODE=gpu
-docker compose --env-file .env -f docker-compose.yml -f docker-compose.gpu.yml up -d
+docker compose --env-file .env -f docker-compose-mx.yml -f docker-compose.gpu.yml up -d
 ```
 
 **禁止**：在未叠加 `docker-compose.gpu.yml` 时仅改 `MINERU_DEVICE_MODE=gpu` 却期望使用 NVIDIA——**不会**自动注入 `gpus`。
