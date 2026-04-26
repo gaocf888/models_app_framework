@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -49,6 +50,10 @@ class IngestionOrchestrator:
         self._job_repo = JobRepository(state_dir=state_dir)
         self._doc_repo = DocumentRepository(state_dir=state_dir)
         self._load_state()
+        if ingest_cfg.recover_stuck_running_on_startup:
+            recovered = self.recover_stuck_jobs(max_stuck_seconds=ingest_cfg.running_stuck_timeout_seconds)
+            if recovered > 0:
+                logger.warning("recovered %s stale RUNNING ingestion jobs on startup", recovered)
 
     def close(self) -> None:
         self._executor.shutdown(wait=True, cancel_futures=False)
@@ -154,6 +159,42 @@ class IngestionOrchestrator:
     def count_jobs(self) -> int:
         with self._lock:
             return len(self._jobs)
+
+    def recover_stuck_jobs(self, max_stuck_seconds: int = 1800) -> int:
+        """
+        将长时间未更新的 RUNNING 任务标记为 FAILED（典型于进程重启中断后）。
+        返回恢复的任务数量。
+        """
+        threshold = max(60, int(max_stuck_seconds))
+        now = datetime.now(timezone.utc)
+        recovered = 0
+        with self._lock:
+            jobs = list(self._jobs.values())
+            for job in jobs:
+                if job.status != IngestionJobStatus.RUNNING:
+                    continue
+                updated = self._parse_iso(job.updated_at)
+                if updated is None:
+                    continue
+                age = (now - updated).total_seconds()
+                if age < threshold:
+                    continue
+                job.status = IngestionJobStatus.FAILED
+                job.error_code = "E_ORPHANED_AFTER_RESTART"
+                job.error_message = (
+                    f"Recovered stale RUNNING job after restart; no heartbeat for {int(age)}s (threshold={threshold}s)."
+                )
+                job.step = "recovered_stuck"
+                job.finished_at = utcnow_iso()
+                job.updated_at = utcnow_iso()
+                recovered += 1
+                logger.warning("recovered stale RUNNING job job_id=%s age_s=%s", job.job_id, int(age))
+            if recovered > 0:
+                self._save_state()
+                for job in jobs:
+                    if job.status == IngestionJobStatus.FAILED and job.error_code == "E_ORPHANED_AFTER_RESTART":
+                        self._save_job_record(job)
+        return recovered
 
     def _guarded_run_job(self, job_id: str, chunk_cfg: ChunkingConfig | None) -> None:
         """线程入口：未捕获异常时落 FAILED，避免进程内永远 RUNNING 且无 ES 文档。"""
@@ -524,4 +565,13 @@ class IngestionOrchestrator:
             parts.append(f"{tenant}|{ns}|{d.doc_name}|{ver}")
         parts.sort()
         return "||".join(parts)
+
+    @staticmethod
+    def _parse_iso(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except Exception:  # noqa: BLE001
+            return None
 

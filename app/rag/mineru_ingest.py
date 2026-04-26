@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -64,7 +65,16 @@ def prepare_pdf_document_for_pipeline(doc: DocumentSource) -> tuple[DocumentSour
     client = MinerUClient(cfg)
     blocking_timeout = max(cfg.timeout_s + 120.0, 300.0)
 
+    wait_t0 = time.perf_counter()
     with gate.acquire(blocking_timeout_s=blocking_timeout):
+        wait_ms = int((time.perf_counter() - wait_t0) * 1000)
+        if wait_ms > 1000:
+            logger.info(
+                "MinerU gate acquired after wait_ms=%s doc_name=%s max_concurrent=%s",
+                wait_ms,
+                doc.doc_name,
+                cfg.max_concurrent,
+            )
         md, mineru_meta = client.parse_pdf_to_markdown(path, doc_name=doc.doc_name)
 
     meta = {**doc.metadata, "pdf_parse_route": "mineru", **mineru_meta}

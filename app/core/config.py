@@ -236,6 +236,10 @@ class RAGIngestionConfig:
     clean_fix_encoding_noise: bool = True
     clean_min_repeated_line_pages: int = 2
     tenant_id_default: str | None = None
+    # 进程启动时回收“僵尸 RUNNING”任务（上次重启中断导致）。
+    recover_stuck_running_on_startup: bool = True
+    # RUNNING 任务超过该秒数未更新，判定为卡死并自动转 FAILED。
+    running_stuck_timeout_seconds: int = 1800
 
 
 @dataclass
@@ -682,6 +686,8 @@ def _load_from_env() -> AppConfig:
         clean_fix_encoding_noise=os.getenv("RAG_CLEAN_FIX_ENCODING_NOISE", "true").lower() == "true",
         clean_min_repeated_line_pages=int(os.getenv("RAG_CLEAN_MIN_REPEATED_LINE_PAGES", "2")),
         tenant_id_default=os.getenv("RAG_TENANT_ID_DEFAULT") or None,
+        recover_stuck_running_on_startup=os.getenv("RAG_RECOVER_STUCK_RUNNING_ON_STARTUP", "true").lower() == "true",
+        running_stuck_timeout_seconds=max(60, int(os.getenv("RAG_RUNNING_STUCK_TIMEOUT_SECONDS", "1800"))),
     )
     agentic_cfg = RAGAgenticConfig(
         enabled=os.getenv("RAG_AGENTIC_ENABLED", "true").lower() == "true",

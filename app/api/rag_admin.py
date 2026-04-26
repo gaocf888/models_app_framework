@@ -437,6 +437,14 @@ class RetryJobResponse(BaseModel):
     retry_of: str = Field(..., description="原失败任务 ID")
 
 
+class RecoverStuckJobsResponse(BaseModel):
+    """手动回收长时间未更新的 RUNNING 任务。"""
+
+    ok: bool = Field(True, description="是否执行成功")
+    recovered: int = Field(..., description="被转为 FAILED 的僵尸 RUNNING 任务数量")
+    threshold_seconds: int = Field(..., description="判定卡死阈值（秒）")
+
+
 class UpsertDocumentResponse(BaseModel):
     """同步 upsert 单文档后的响应。"""
 
@@ -633,6 +641,29 @@ async def retry_ingestion_job(
     except Exception as e:  # noqa: BLE001
         logger.exception("rag retry_ingestion_job failed: %s", job_id)
         raise HTTPException(status_code=500, detail=f"RAG retry_ingestion_job failed: {e}") from e
+
+
+@router.post(
+    "/jobs/recover_stuck",
+    summary="回收僵尸 RUNNING 任务",
+    response_model=RecoverStuckJobsResponse,
+    response_description="将超时未更新的 RUNNING 任务转为 FAILED，便于重试。",
+)
+async def recover_stuck_ingestion_jobs(
+    threshold_seconds: Annotated[int, Query(description="判定卡死阈值（秒）", ge=60, le=86400)] = 1800,
+) -> RecoverStuckJobsResponse:
+    """
+    手动回收长时间未更新的 RUNNING 任务（常见于服务重启中断后）。
+
+    **Query**
+    - `threshold_seconds`：可选，默认 1800；超过该秒数未更新的 RUNNING 任务将被转为 FAILED。
+    """
+    try:
+        recovered = _get_orchestrator().recover_stuck_jobs(max_stuck_seconds=threshold_seconds)
+        return RecoverStuckJobsResponse(ok=True, recovered=recovered, threshold_seconds=threshold_seconds)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("rag recover_stuck_ingestion_jobs failed")
+        raise HTTPException(status_code=500, detail=f"RAG recover_stuck_ingestion_jobs failed: {e}") from e
 
 
 @router.get(
