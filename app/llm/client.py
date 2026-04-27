@@ -126,7 +126,8 @@ class VLLMHttpClient(LLMClient):
         logger.debug("calling vLLM(chat) model=%s endpoint=%s", cfg.model_id, url)
 
         start = time.perf_counter()
-        resp = await self._client.post(url, json=payload, headers=headers)
+        req_timeout = kwargs.get("timeout")
+        resp = await self._client.post(url, json=payload, headers=headers, timeout=req_timeout)
         duration = time.perf_counter() - start
 
         LLM_REQUEST_COUNT.labels(model=cfg.model_id).inc()

@@ -1428,7 +1428,11 @@ class AnalysisGraphRunner:
             "请输出：1) 核心结论；2) 关键依据；3) 可执行建议。"
         )
         try:
-            summary = await self._llm.generate(model=None, prompt=prompt)  # type: ignore[arg-type]
+            summary = await self._llm.generate(  # type: ignore[arg-type]
+                model=None,
+                prompt=prompt,
+                timeout=self._analysis_cfg.synthesis_timeout_seconds,
+            )
             return summary
         except Exception:  # noqa: BLE001
             logger.exception("analysis graph summary generation failed")

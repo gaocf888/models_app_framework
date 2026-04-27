@@ -55,6 +55,42 @@ class NL2SQLChain:
     - 如未安装 LangChain，则回退到内部 VLLMHttpClient；
     - 用 SQLValidator 做基础安全校验，未通过时返回空字符串。
     """
+    _tidb_forbidden_aliases_default = {
+        "load",
+        "row_number",
+        "rank",
+        "dense_rank",
+        "lead",
+        "lag",
+        "window",
+        "select",
+        "from",
+        "where",
+        "group",
+        "order",
+        "limit",
+        "join",
+        "key",
+        "index",
+        "table",
+        "column",
+        "primary",
+        "default",
+        "desc",
+        "interval",
+        "current_date",
+        "current_time",
+        "current_timestamp",
+    }
+    _tidb_postgres_interval_pattern = re.compile(
+        r"\binterval\s*'(\d+)\s*(day|days|hour|hours|minute|minutes|month|months|year|years)'",
+        re.IGNORECASE,
+    )
+    _tidb_window_pattern = re.compile(r"\bover\s*\(", re.IGNORECASE)
+    _tidb_lag_like_pattern = re.compile(
+        r"\b(lag|lead|row_number|rank|dense_rank)\s*\(",
+        re.IGNORECASE,
+    )
 
     def __init__(
         self,
@@ -73,6 +109,7 @@ class NL2SQLChain:
         self._prompts = prompt_registry or PromptTemplateRegistry()
         self._ls_tracker = LangSmithTracker()
         self._schema_refreshed = False
+        self._tidb_forbidden_aliases = self._load_tidb_forbidden_aliases_from_env()
 
         # 可选的 LangChain LLM
         self._lc_chat_model = None
@@ -256,6 +293,11 @@ class NL2SQLChain:
             sql = await self._llm.generate(model=None, prompt=prompt, **vllm_kw)  # type: ignore[arg-type]
         raw_out_len = len(sql or "")
         sql = self._validator.normalize_sql(sql)
+        sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
+        sql, filter_notes = self._rewrite_query_filters(sql, question=question)
+        rewrite_notes.extend(filter_notes)
+        if rewrite_notes:
+            logger.info("NL2SQLChain TiDB rewrite applied: %s", "; ".join(rewrite_notes))
         logger.info(
             "NL2SQLChain LLM sql raw_len=%d normalized_len=%d preview=%r llm_backend=%s",
             raw_out_len,
@@ -263,6 +305,45 @@ class NL2SQLChain:
             _text_preview(sql, 0),
             "langchain" if self._lc_chat_model is not None else "vllm_http",
         )
+        dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
+        if not dialect_ok:
+            logger.warning(
+                "NL2SQLChain TiDB dialect check failed preview_question=%r sql_preview=%r reason=%s",
+                _text_preview(question, 80),
+                _text_preview(sql, 0),
+                dialect_reason,
+            )
+            if self._lc_chat_model is not None:
+                try:
+                    logger.info("NL2SQLChain TiDB dialect refine start reason=%s", dialect_reason)
+                    sql = await self._refine_sql(
+                        question=question,
+                        original_sql=sql,
+                        validation_error=dialect_reason,
+                    )
+                    sql = self._validator.normalize_sql(sql)
+                    sql, refine_notes = self._rewrite_tidb_compatible_sql(sql)
+                    sql, filter_notes = self._rewrite_query_filters(sql, question=question)
+                    refine_notes.extend(filter_notes)
+                    if refine_notes:
+                        logger.info(
+                            "NL2SQLChain TiDB rewrite applied after refine: %s",
+                            "; ".join(refine_notes),
+                        )
+                    dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
+                    if not dialect_ok:
+                        logger.warning(
+                            "NL2SQLChain TiDB dialect refine still invalid sql_preview=%r reason=%s",
+                            _text_preview(sql, 0),
+                            dialect_reason,
+                        )
+                        return "", validation_ctx
+                except Exception:
+                    logger.exception("NL2SQLChain: TiDB dialect refine failed, return empty SQL.")
+                    return "", validation_ctx
+            else:
+                logger.warning("NL2SQLChain TiDB dialect failed and no LangChain; return empty SQL")
+                return "", validation_ctx
 
         valid, validation_error = self._validate_sql(
             sql,
@@ -290,6 +371,22 @@ class NL2SQLChain:
                         validation_error=validation_error,
                     )
                     sql = self._validator.normalize_sql(sql)
+                    sql, refine_notes = self._rewrite_tidb_compatible_sql(sql)
+                    sql, filter_notes = self._rewrite_query_filters(sql, question=question)
+                    refine_notes.extend(filter_notes)
+                    if refine_notes:
+                        logger.info(
+                            "NL2SQLChain TiDB rewrite applied in refine_sql: %s",
+                            "; ".join(refine_notes),
+                        )
+                    dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
+                    if not dialect_ok:
+                        logger.warning(
+                            "NL2SQLChain refine_sql TiDB dialect invalid sql_preview=%r reason=%s",
+                            _text_preview(sql, 0),
+                            dialect_reason,
+                        )
+                        return "", validation_ctx
                     valid, validation_error = self._validate_sql(
                         sql,
                         question=question,
@@ -359,6 +456,22 @@ class NL2SQLChain:
                 validation_error=f"MySQL / executor: {error_message}",
             )
             refined = self._validator.normalize_sql(refined)
+            refined, rewrite_notes = self._rewrite_tidb_compatible_sql(refined)
+            refined, filter_notes = self._rewrite_query_filters(refined, question=question)
+            rewrite_notes.extend(filter_notes)
+            if rewrite_notes:
+                logger.info(
+                    "NL2SQLChain TiDB rewrite applied in refine_sql_after_executor_error: %s",
+                    "; ".join(rewrite_notes),
+                )
+            dialect_ok, dialect_reason = self._validate_tidb_dialect(refined)
+            if not dialect_ok:
+                logger.warning(
+                    "NL2SQLChain refine_sql_after_executor_error TiDB dialect invalid preview=%r reason=%s",
+                    _text_preview(refined, 0),
+                    dialect_reason,
+                )
+                return ""
             ok, err = self._validate_sql(
                 refined,
                 question=question,
@@ -420,6 +533,10 @@ class NL2SQLChain:
             "请输出一条仅包含安全 SELECT 查询的 SQL，不要包含 DROP/DELETE/UPDATE/INSERT 等写操作。"
             " 输出为单行可执行 SQL：除字符串字面量内部外不要换行或多余缩进。"
             " 若问题涉及锅炉/设备名称与明细记录等多实体，应通过 JOIN 关联台账表与事实表，禁止用 boiler_id='1' 等臆造数字代替「一号锅炉」类名称条件。"
+            " 当前数据库方言为 TiDB/MySQL："
+            "1) 禁止使用 PostgreSQL 语法（例如 INTERVAL '7 days'）；"
+            "2) 禁止使用高风险别名（如 load、row_number）；"
+            "3) 默认禁止窗口函数与 OVER()/LAG()/LEAD()/ROW_NUMBER()，请改写为普通聚合或直接去除窗口依赖。"
         )
         messages: list[object] = [
             SystemMessage(content=system),
@@ -437,6 +554,240 @@ class NL2SQLChain:
         out = content.strip()
         logger.debug("NL2SQLChain._refine_sql output_len=%d preview=%r", len(out), _text_preview(out, 160))
         return out
+
+    def _rewrite_tidb_compatible_sql(self, sql: str) -> tuple[str, list[str]]:
+        """对 LLM SQL 进行 TiDB 兼容重写（高风险 alias + PostgreSQL interval + 可选窗口降级）。"""
+        s = self._validator.normalize_sql(sql)
+        notes: list[str] = []
+        if not s:
+            return s, notes
+        s, alias_notes = self._rewrite_high_risk_aliases(s)
+        notes.extend(alias_notes)
+        s, interval_notes = self._rewrite_postgres_interval_literal(s)
+        notes.extend(interval_notes)
+        window_policy = os.getenv("NL2SQL_TIDB_WINDOW_POLICY", "refine").strip().lower()
+        if window_policy == "degrade" and self._contains_window_functions(s):
+            s, window_notes = self._degrade_window_functions(s)
+            notes.extend(window_notes)
+        return s, notes
+
+    def _rewrite_high_risk_aliases(self, sql: str) -> tuple[str, list[str]]:
+        notes: list[str] = []
+        rewritten = sql
+        for bad in sorted(self._tidb_forbidden_aliases):
+            good = self._safe_alias_forbidden(bad)
+            pat = re.compile(rf"(?i)\bAS\s+(`?){re.escape(bad)}\1\b")
+            if pat.search(rewritten):
+                rewritten = pat.sub(lambda m: f"AS {good}", rewritten)
+                rewritten = self._replace_identifier_outside_quotes(rewritten, bad, good)
+                notes.append(f"alias {bad}->{good}")
+        return rewritten, notes
+
+    def _rewrite_postgres_interval_literal(self, sql: str) -> tuple[str, list[str]]:
+        notes: list[str] = []
+        rewritten = sql
+        unit_map = {
+            "days": "DAY",
+            "day": "DAY",
+            "hours": "HOUR",
+            "hour": "HOUR",
+            "minutes": "MINUTE",
+            "minute": "MINUTE",
+            "months": "MONTH",
+            "month": "MONTH",
+            "years": "YEAR",
+            "year": "YEAR",
+        }
+
+        def _repl(m: re.Match[str]) -> str:
+            num = m.group(1)
+            unit = unit_map.get(m.group(2).lower(), m.group(2).upper())
+            notes.append(f"interval_literal->{num} {unit}")
+            return f"INTERVAL {num} {unit}"
+
+        rewritten = self._tidb_postgres_interval_pattern.sub(_repl, rewritten)
+        return rewritten, notes
+
+    def _degrade_window_functions(self, sql: str) -> tuple[str, list[str]]:
+        notes: list[str] = []
+        rewritten = sql
+        patterns = [
+            (re.compile(r"\bLAG\s*\([^)]*\)\s*OVER\s*\([^)]*\)", re.IGNORECASE), "NULL"),
+            (re.compile(r"\bLEAD\s*\([^)]*\)\s*OVER\s*\([^)]*\)", re.IGNORECASE), "NULL"),
+            (re.compile(r"\bROW_NUMBER\s*\(\s*\)\s*OVER\s*\([^)]*\)", re.IGNORECASE), "1"),
+            (re.compile(r"\bRANK\s*\(\s*\)\s*OVER\s*\([^)]*\)", re.IGNORECASE), "1"),
+            (re.compile(r"\bDENSE_RANK\s*\(\s*\)\s*OVER\s*\([^)]*\)", re.IGNORECASE), "1"),
+        ]
+        for pat, replacement in patterns:
+            if pat.search(rewritten):
+                rewritten = pat.sub(replacement, rewritten)
+                notes.append("degrade_window_function")
+        return rewritten, notes
+
+    def _contains_window_functions(self, sql: str) -> bool:
+        return bool(self._tidb_window_pattern.search(sql) or self._tidb_lag_like_pattern.search(sql))
+
+    def _rewrite_query_filters(self, sql: str, *, question: str) -> tuple[str, list[str]]:
+        """P2：优化口径（近一周动态时间窗 + 区域放宽匹配）。"""
+        notes: list[str] = []
+        rewritten = sql
+        if self._question_implies_recent_week(question):
+            rewritten, time_notes = self._rewrite_recent_week_time_window(rewritten)
+            notes.extend(time_notes)
+        rewritten, region_notes = self._rewrite_relaxed_region_match(rewritten, question=question)
+        notes.extend(region_notes)
+        return rewritten, notes
+
+    @staticmethod
+    def _question_implies_recent_week(question: str) -> bool:
+        q = (question or "").lower()
+        keys = ("近一周", "最近一周", "近7天", "最近7天", "最近七天", "过去7天", "过去七天", "last 7 day")
+        return any(k in q for k in keys)
+
+    def _rewrite_recent_week_time_window(self, sql: str) -> tuple[str, list[str]]:
+        notes: list[str] = []
+        rewritten = sql
+        # 优先改写固定日期区间，避免“历史固定时间”导致 0 行。
+        between_pat = re.compile(
+            r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*?(?:time|date|ts|timestamp))\s+BETWEEN\s+'[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9:]{8})?'\s+AND\s+'[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9:]{8})?'"
+        )
+
+        def _between_repl(m: re.Match[str]) -> str:
+            col = m.group(1)
+            notes.append("dynamic_recent_week_between")
+            return f"{col} >= DATE_SUB(NOW(), INTERVAL 7 DAY) AND {col} <= NOW()"
+
+        rewritten = between_pat.sub(_between_repl, rewritten)
+        ge_pat = re.compile(
+            r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*?(?:time|date|ts|timestamp))\s*>=\s*'[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9:]{8})?'"
+        )
+        if ge_pat.search(rewritten):
+            rewritten = ge_pat.sub(
+                lambda m: f"{m.group(1)} >= DATE_SUB(NOW(), INTERVAL 7 DAY)", rewritten
+            )
+            notes.append("dynamic_recent_week_ge")
+        return rewritten, notes
+
+    def _rewrite_relaxed_region_match(self, sql: str, *, question: str) -> tuple[str, list[str]]:
+        notes: list[str] = []
+        rewritten = sql
+        # 对“区域/部位”类条件放宽匹配，避免严格等值导致 0 行。
+        col_pat = re.compile(r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*=\s*'([^']{2,48})'")
+        col_signals = (
+            "area",
+            "region",
+            "zone",
+            "location",
+            "position",
+            "part",
+            "wall",
+            "device_name",
+            "point_name",
+        )
+
+        def _repl(m: re.Match[str]) -> str:
+            col = m.group(1)
+            col_l = col.lower()
+            if not any(k in col_l for k in col_signals):
+                return m.group(0)
+            val = m.group(2).strip()
+            if "%" in val:
+                return m.group(0)
+            if not any(
+                k in val
+                for k in ("墙", "壁", "区", "侧", "前", "后", "左", "右", "过热器", "再热器", "水冷", "front", "rear")
+            ):
+                return m.group(0)
+            like_val = val.replace("'", "''")
+            notes.append("relax_region_equals_to_like")
+            return f"{col} LIKE '%{like_val}%'"
+
+        rewritten = col_pat.sub(_repl, rewritten)
+        return rewritten, notes
+
+    def _validate_tidb_dialect(self, sql: str) -> tuple[bool, str | None]:
+        s = self._validator.normalize_sql(sql)
+        if not s:
+            return False, "empty sql"
+        aliases = self._extract_aliases(s)
+        bad_aliases = sorted(a for a in aliases if a in self._tidb_forbidden_aliases)
+        if bad_aliases:
+            return False, f"forbidden alias for TiDB: {', '.join(bad_aliases)}"
+        if self._tidb_postgres_interval_pattern.search(s):
+            return False, "postgres interval literal is forbidden in TiDB/MySQL"
+        allow_window = os.getenv("NL2SQL_TIDB_ALLOW_WINDOW", "false").strip().lower() == "true"
+        if not allow_window and self._contains_window_functions(s):
+            return False, "window functions (OVER/LAG/LEAD/ROW_NUMBER) are forbidden by TiDB policy"
+        return True, None
+
+    def _load_tidb_forbidden_aliases_from_env(self) -> set[str]:
+        aliases = set(self._tidb_forbidden_aliases_default)
+        raw = os.getenv("NL2SQL_TIDB_FORBIDDEN_ALIASES", "").strip()
+        if not raw:
+            return aliases
+        for token in raw.split(","):
+            t = token.strip().strip("`").strip('"').lower()
+            if t and re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", t):
+                aliases.add(t)
+        return aliases
+
+    def _safe_alias_forbidden(self, alias: str) -> str:
+        base = re.sub(r"[^a-zA-Z0-9_]+", "_", alias.lower()).strip("_") or "col"
+        if base.endswith("_alias"):
+            candidate = base
+        else:
+            candidate = f"{base}_alias"
+        while candidate in self._tidb_forbidden_aliases:
+            candidate = f"{candidate}_x"
+        return candidate
+
+    def _extract_aliases(self, sql: str) -> set[str]:
+        aliases: set[str] = set()
+        for m in re.finditer(r"(?i)\bAS\s+(`?)([a-zA-Z_][a-zA-Z0-9_]*)\1\b", sql):
+            aliases.add(m.group(2).lower())
+        for a in self._validator.parse_table_aliases_from_sql(sql).keys():
+            aliases.add(a.lower())
+        return aliases
+
+    def _replace_identifier_outside_quotes(self, sql: str, src: str, dst: str) -> str:
+        pat = re.compile(rf"\b{re.escape(src)}\b", re.IGNORECASE)
+        quote: str | None = None
+        allowed_positions: set[int] = set()
+        i = 0
+        n = len(sql)
+        while i < n:
+            ch = sql[i]
+            if quote == "'":
+                if ch == "'" and (i + 1 < n and sql[i + 1] == "'"):
+                    i += 2
+                    continue
+                if ch == "'":
+                    quote = None
+                i += 1
+                continue
+            if quote in ('"', "`"):
+                if ch == quote and (i + 1 < n and sql[i + 1] == quote):
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in ("'", '"', "`"):
+                quote = ch
+                i += 1
+                continue
+            if quote is None:
+                allowed_positions.add(i)
+            i += 1
+
+        def _repl(m: re.Match[str]) -> str:
+            idx = m.start()
+            if idx in allowed_positions:
+                return dst
+            return m.group(0)
+
+        return pat.sub(_repl, sql)
 
     async def _ensure_schema_refreshed_once(self) -> None:
         if self._schema_refreshed:

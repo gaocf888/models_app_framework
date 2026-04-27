@@ -451,6 +451,7 @@ class AnalysisConfig:
     default_max_nl2sql_calls: int = 6
     default_max_rows_per_query: int = 2000
     default_max_suggestions: int = 8
+    synthesis_timeout_seconds: float = 90.0
     strict_by_default: bool = False
     trace_backend: str = "redis"  # redis | memory
     trace_ttl_minutes: int = 1440
@@ -802,6 +803,7 @@ def _load_from_env() -> AppConfig:
         default_max_nl2sql_calls=max(1, int(os.getenv("ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS", "6"))),
         default_max_rows_per_query=max(50, int(os.getenv("ANALYSIS_DEFAULT_MAX_ROWS_PER_QUERY", "2000"))),
         default_max_suggestions=max(1, min(20, int(os.getenv("ANALYSIS_DEFAULT_MAX_SUGGESTIONS", "8")))),
+        synthesis_timeout_seconds=max(5.0, float(os.getenv("ANALYSIS_SYNTHESIS_TIMEOUT_SECONDS", "90"))),
         strict_by_default=os.getenv("ANALYSIS_STRICT_BY_DEFAULT", "false").lower() == "true",
         trace_backend=(os.getenv("ANALYSIS_TRACE_BACKEND", "redis") or "redis").strip().lower(),
         trace_ttl_minutes=max(10, int(os.getenv("ANALYSIS_TRACE_TTL_MINUTES", "1440"))),
