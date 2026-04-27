@@ -359,6 +359,7 @@ docker compose --env-file .env -f docker-compose-mx.yml up -d --build
 默认会启动：
 
 - `models-app-redis`（Redis，会话存储）；  
+- `models-app-minio` (MinIO对象存储)
 - `models-app`（FastAPI 应用）。
 
 如需小模型 GPU 能力（`/small-model/*`），再执行：
