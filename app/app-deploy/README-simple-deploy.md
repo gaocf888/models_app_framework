@@ -139,7 +139,8 @@ python -c "from app.auth.keygen import generate_service_api_key; print(generate_
 ### 2.4 业务数据库（NL2SQL，可选）
 
 ```env
-DB_URL=mysql+aiomysql://root:your_mysql_password@host.docker.internal:3306/aishare
+DB_PORT=3306
+DB_URL=mysql+aiomysql://root:your_mysql_password@host.docker.internal:${DB_PORT}/aishare
 ```
 
 如果当前环境智能客服暂不依赖 NL2SQL，可保留默认或指向测试库。

@@ -6,6 +6,10 @@ from __future__ import annotations
 - 对外入口：`AnalysisGraphRunner.run_with_payload`、`run_with_nl2sql`（由 `AnalysisService` 调用）。
 - 两套 LangGraph `StateGraph(AnalysisGraphState)`（payload / nl2sql）；`langgraph` 不可用时走 `_run_with_*_sequential`。
 - 数据计划：优先 `configs/prompts.yaml` 中 `analysis_plan_<analysis_type>`，可选 LLM 意图/计划合并，最后才用内置默认任务。
+- 阶段模板加载优先级（`_resolve_stage_template`）：
+  `stage_<analysis_type>` -> `stage` -> `analysis`。
+  例如 `analysis_type=overheat_guidance` 时：
+  `analysis_intent_overheat_guidance` -> `analysis_intent` -> `analysis`（其余 stage 同理）。
 """
 
 import json
@@ -1749,6 +1753,12 @@ class AnalysisGraphRunner:
         1) 优先匹配 stage + analysis_type；
         2) 回退 stage；
         3) 最终回退 analysis；
+
+        例：`analysis_type=overheat_guidance` 且 `stage=analysis_synthesis` 时，
+        依次尝试：
+        - `analysis_synthesis_overheat_guidance`
+        - `analysis_synthesis`
+        - `analysis`
         """
         candidate_scenes = [
             f"{stage}_{analysis_type}",

@@ -507,6 +507,8 @@ class DatabaseConfig:
     url: str
     user: str
     password: str
+    host: str
+    port: int
     database: str
 
 
@@ -550,17 +552,20 @@ def _load_from_env() -> AppConfig:
     db_password = os.getenv("DB_PASSWORD", "1qaz@4321")
     db_host = os.getenv("DB_HOST", "124.222.37.179")
     db_name = os.getenv("DB_NAME", "boiler")
+    db_port = int(os.getenv("DB_PORT", "3306"))
     # userinfo 中的 @ : # 等必须百分号编码，否则第一个 @ 会被当成「凭据结束」，例如密码 1qaz@4321 会把 host 错解析成 4321@124...
     db_url = os.getenv(
         "DB_URL",
         "mysql+aiomysql://"
-        f"{quote(db_user, safe='')}:{quote(db_password, safe='')}@{db_host}/{db_name}",
+        f"{quote(db_user, safe='')}:{quote(db_password, safe='')}@{db_host}:{db_port}/{db_name}",
     )
 
     db_cfg = DatabaseConfig(
         url=db_url,
         user=db_user,
         password=db_password,
+        host=db_host,
+        port=db_port,
         database=db_name,
     )
 

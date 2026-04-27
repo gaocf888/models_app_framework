@@ -114,7 +114,7 @@ cp .env.example .env
 - `LLM_DEFAULT_MODEL=` 与当前 vLLM 模型别名一致  
 - `RAG_ES_HOSTS=https://rag-easysearch:9200`（HTTP/HTTPS、`verify` 与库一致）  
 - `RAG_ES_USERNAME` / `RAG_ES_PASSWORD`  
-- `DB_URL` 或 `DB_HOST` / `DB_USER` / `DB_PASSWORD` / `DB_NAME`（若使用 NL2SQL；数据库在宿主机时用 `host.docker.internal`）
+- `DB_URL` 或 `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME`（若使用 NL2SQL；数据库在宿主机时用 `host.docker.internal`）
 
 `REDIS_URL=redis://redis:6379/0` 一般**保持默认**（`redis` 为本 compose 服务名）。
 
