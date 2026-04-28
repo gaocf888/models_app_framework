@@ -46,7 +46,7 @@ class NL2SQLService:
             record_conversation,
         )
         sql, vctx = await self._chain.generate_sql_with_validation_context(
-            req.question, user_id=req.user_id
+            req.question, user_id=req.user_id, analysis_type=req.analysis_type
         )
         rows: list = []
         explain_first = os.getenv("NL2SQL_EXPLAIN_BEFORE_EXECUTE", "false").lower() == "true"

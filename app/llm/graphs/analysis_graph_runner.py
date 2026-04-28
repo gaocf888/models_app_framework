@@ -2171,6 +2171,7 @@ class AnalysisGraphRunner:
                             user_id=req.user_id,
                             session_id=req.session_id,
                             question=task.question,
+                            analysis_type=req.analysis_type,
                         ),
                         record_conversation=False,
                     )

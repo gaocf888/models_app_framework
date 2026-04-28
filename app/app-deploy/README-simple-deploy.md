@@ -16,6 +16,7 @@
 > 实现效果较好的NL2SQL的前提是：要有教完善的知识库知识摄入（因为当前NL2SQL对表结构、字段、表间关系的认知，是通过RAG知识库+数据库反射两种方式融合获取的）
     1.  首先RAG知识摄入时，要确保摄入namespace分别为`nl2sql_schema`、`nl2sql_biz_knowledge`、`nl2sql_qa_examples`的三种知识（分别是数据库结构、数据库知识文档、数据库知识问答对（问法 → 标准 SQL））
     2.  app/app-deploy/.env中配置业务数据库的连接信息
+    3.  目前.env中配置了数据库表的白名单（应用进程 · 业务库 - ANALYSIS_NL2SQL_TABLE_SCOPE_DEFAULT、ANALYSIS_NL2SQL_JOIN_WHITELIST），后续数据库结构更新后，除了更新RAG知识库，无比要同步实现该白名单的更新
 
 ## 1. 组件与依赖概览
 

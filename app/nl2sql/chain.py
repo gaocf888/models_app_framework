@@ -31,6 +31,7 @@ class NL2SQLValidationContext:
     allowed_columns: frozenset[str]
     schema_ok: bool
     table_columns: dict[str, frozenset[str]]
+    join_whitelist: frozenset[str]
 
 NL2SQL_SCHEMA_CATALOG_PLACEHOLDER = "{{NL2SQL_SCHEMA_CATALOG}}"
 
@@ -147,12 +148,24 @@ class NL2SQLChain:
         except Exception:
             logger.warning("NL2SQLChain: LangChain not available, fallback to VLLMHttpClient.")
 
-    async def generate_sql(self, question: str, user_id: str | None = None) -> str:
-        sql, _ctx = await self.generate_sql_with_validation_context(question, user_id=user_id)
+    async def generate_sql(
+        self,
+        question: str,
+        user_id: str | None = None,
+        analysis_type: str | None = None,
+    ) -> str:
+        sql, _ctx = await self.generate_sql_with_validation_context(
+            question,
+            user_id=user_id,
+            analysis_type=analysis_type,
+        )
         return sql
 
     async def generate_sql_with_validation_context(
-        self, question: str, user_id: str | None = None
+        self,
+        question: str,
+        user_id: str | None = None,
+        analysis_type: str | None = None,
     ) -> tuple[str, NL2SQLValidationContext]:
         logger.info(
             "NL2SQLChain.generate_sql start user_id=%s question_len=%d preview=%r",
@@ -196,11 +209,21 @@ class NL2SQLChain:
         rag_hints = parse_nl2sql_schema_snippets(schema_snippets)
         allowed_tables, allowed_columns, schema_ok = self._whitelist_from_schema_and_snippets(schema_snippets)
         table_columns_map = self._table_columns_map() if schema_ok else {}
+        scoped_tables = self._resolve_table_scope(analysis_type=analysis_type, table_columns=table_columns_map)
+        if scoped_tables:
+            allowed_tables &= scoped_tables
+            table_columns_map = {k: v for k, v in table_columns_map.items() if k in scoped_tables}
+            if allowed_columns:
+                scope_cols = {c for cols in table_columns_map.values() for c in cols}
+                if scope_cols:
+                    allowed_columns &= scope_cols
+        join_whitelist = self._build_join_whitelist(table_columns_map, analysis_type=analysis_type)
         validation_ctx = NL2SQLValidationContext(
             frozenset(allowed_tables),
             frozenset(allowed_columns),
             schema_ok,
             {k: frozenset(v) for k, v in table_columns_map.items()},
+            frozenset(join_whitelist),
         )
         entity_rules = load_entity_rules_from_env()
         if schema_ok != schema_from_db:
@@ -218,7 +241,10 @@ class NL2SQLChain:
             schema_ok,
         )
 
-        full_catalog = self._format_enriched_schema_catalog(self._schema.list_tables(), rag_hints)
+        catalog_tables = self._schema.list_tables()
+        if scoped_tables:
+            catalog_tables = [t for t in catalog_tables if t.name and t.name.lower() in scoped_tables]
+        full_catalog = self._format_enriched_schema_catalog(catalog_tables, rag_hints)
 
         # NL2SQL 专用 Prompt 前缀（scene=nl2sql），支持 {{NL2SQL_SCHEMA_CATALOG}} 注入全库表结构
         prompt_default_version = os.getenv("NL2SQL_PROMPT_DEFAULT_VERSION", "v2")
@@ -352,6 +378,7 @@ class NL2SQLChain:
             allowed_columns=allowed_columns,
             enforce_column_whitelist=schema_ok,
             table_columns=table_columns_map if schema_ok else None,
+            join_whitelist=join_whitelist,
             entity_rules=entity_rules,
         )
         if not valid:
@@ -394,6 +421,7 @@ class NL2SQLChain:
                         allowed_columns=allowed_columns,
                         enforce_column_whitelist=schema_ok,
                         table_columns=table_columns_map if schema_ok else None,
+                        join_whitelist=join_whitelist,
                         entity_rules=entity_rules,
                     )
                     if not valid:
@@ -479,6 +507,7 @@ class NL2SQLChain:
                 allowed_columns=set(ctx.allowed_columns),
                 enforce_column_whitelist=ctx.schema_ok,
                 table_columns={k: set(v) for k, v in ctx.table_columns.items()} if ctx.schema_ok else None,
+                join_whitelist=set(ctx.join_whitelist),
                 entity_rules=entity_rules,
             )
             if not ok:
@@ -628,44 +657,201 @@ class NL2SQLChain:
         return bool(self._tidb_window_pattern.search(sql) or self._tidb_lag_like_pattern.search(sql))
 
     def _rewrite_query_filters(self, sql: str, *, question: str) -> tuple[str, list[str]]:
-        """P2：优化口径（近一周动态时间窗 + 区域放宽匹配）。"""
+        """P2：优化口径（通用时间语义动态窗 + 区域放宽匹配）。"""
         notes: list[str] = []
         rewritten = sql
-        if self._question_implies_recent_week(question):
-            rewritten, time_notes = self._rewrite_recent_week_time_window(rewritten)
+        time_window = self._extract_time_window_from_question(question)
+        if time_window is not None:
+            rewritten, time_notes = self._rewrite_dynamic_time_window(
+                rewritten,
+                start_expr=time_window[0],
+                end_expr=time_window[1],
+                tag=time_window[2],
+            )
             notes.extend(time_notes)
         rewritten, region_notes = self._rewrite_relaxed_region_match(rewritten, question=question)
         notes.extend(region_notes)
         return rewritten, notes
 
     @staticmethod
-    def _question_implies_recent_week(question: str) -> bool:
-        q = (question or "").lower()
-        keys = ("近一周", "最近一周", "近7天", "最近7天", "最近七天", "过去7天", "过去七天", "last 7 day")
-        return any(k in q for k in keys)
+    def _extract_numeric_window(q: str, unit_keys: tuple[str, ...]) -> int | None:
+        pat = re.compile(
+            rf"(?:近|最近|过去|recent|last|past)\s*([0-9]{{1,3}})\s*({'|'.join(unit_keys)})",
+            re.IGNORECASE,
+        )
+        m = pat.search(q)
+        if m:
+            return max(1, int(m.group(1)))
+        zh_pat = re.compile(rf"(?:近|最近|过去)\s*([一二两三四五六七八九十百]+)\s*({'|'.join(unit_keys)})")
+        m2 = zh_pat.search(q)
+        if not m2:
+            return None
+        zh = m2.group(1)
+        zh_map = {
+            "一": 1,
+            "二": 2,
+            "两": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+            "十": 10,
+        }
+        if zh == "十":
+            return 10
+        if zh.endswith("十") and len(zh) == 2:
+            return zh_map.get(zh[0], 1) * 10
+        if "十" in zh and len(zh) == 2:
+            return 10 + zh_map.get(zh[1], 0)
+        return zh_map.get(zh)
 
-    def _rewrite_recent_week_time_window(self, sql: str) -> tuple[str, list[str]]:
+    def _extract_time_window_from_question(self, question: str) -> tuple[str, str, str] | None:
+        q = (question or "").strip().lower()
+        if not q:
+            return None
+        this_month_start = "DATE_FORMAT(CURDATE(), '%Y-%m-01')"
+        this_year_start = "DATE_FORMAT(CURDATE(), '%Y-01-01')"
+        this_week_start = "DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)"
+        if "今天" in q or "今日" in q:
+            return ("CURDATE()", "DATE_ADD(CURDATE(), INTERVAL 1 DAY)", "today")
+        if "昨天" in q:
+            return ("DATE_SUB(CURDATE(), INTERVAL 1 DAY)", "CURDATE()", "yesterday")
+        if "前天" in q:
+            return (
+                "DATE_SUB(CURDATE(), INTERVAL 2 DAY)",
+                "DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
+                "day_before_yesterday",
+            )
+        if "本周" in q or "这周" in q:
+            return (this_week_start, f"DATE_ADD({this_week_start}, INTERVAL 7 DAY)", "this_week")
+        if "上周" in q:
+            return (f"DATE_SUB({this_week_start}, INTERVAL 7 DAY)", this_week_start, "last_week")
+        if "本月" in q or "这个月" in q:
+            return (this_month_start, f"DATE_ADD({this_month_start}, INTERVAL 1 MONTH)", "this_month")
+        if "上月" in q or "上个月" in q:
+            return (
+                f"DATE_SUB({this_month_start}, INTERVAL 1 MONTH)",
+                this_month_start,
+                "last_month",
+            )
+        if "今年" in q or "本年" in q:
+            return (this_year_start, f"DATE_ADD({this_year_start}, INTERVAL 1 YEAR)", "this_year")
+        if "去年" in q:
+            return (
+                f"DATE_SUB({this_year_start}, INTERVAL 1 YEAR)",
+                this_year_start,
+                "last_year",
+            )
+        if "最近一周" in q or "近一周" in q:
+            return ("DATE_SUB(NOW(), INTERVAL 7 DAY)", "NOW()", "recent_7_days")
+        if "最近七天" in q or "近七天" in q:
+            return ("DATE_SUB(NOW(), INTERVAL 7 DAY)", "NOW()", "recent_7_days")
+        if "最近半年" in q or "近半年" in q:
+            return ("DATE_SUB(NOW(), INTERVAL 6 MONTH)", "NOW()", "recent_6_months")
+
+        n_day = self._extract_numeric_window(q, ("天", "day", "days"))
+        if n_day:
+            return (f"DATE_SUB(NOW(), INTERVAL {n_day} DAY)", "NOW()", f"recent_{n_day}_days")
+        n_week = self._extract_numeric_window(q, ("周", "week", "weeks"))
+        if n_week:
+            return (f"DATE_SUB(NOW(), INTERVAL {n_week} WEEK)", "NOW()", f"recent_{n_week}_weeks")
+        n_month = self._extract_numeric_window(q, ("月", "month", "months"))
+        if n_month:
+            return (f"DATE_SUB(NOW(), INTERVAL {n_month} MONTH)", "NOW()", f"recent_{n_month}_months")
+        n_hour = self._extract_numeric_window(q, ("小时", "hour", "hours", "h"))
+        if n_hour:
+            return (f"DATE_SUB(NOW(), INTERVAL {n_hour} HOUR)", "NOW()", f"recent_{n_hour}_hours")
+        n_min = self._extract_numeric_window(q, ("分钟", "minute", "minutes", "min"))
+        if n_min:
+            return (f"DATE_SUB(NOW(), INTERVAL {n_min} MINUTE)", "NOW()", f"recent_{n_min}_minutes")
+
+        m_year = re.search(r"\b(20\d{2})年\b", q)
+        if m_year:
+            y = m_year.group(1)
+            return (f"'{y}-01-01 00:00:00'", f"'{int(y)+1}-01-01 00:00:00'", f"year_{y}")
+        m_ym = re.search(r"\b(20\d{2})[-/年](0?[1-9]|1[0-2])月?\b", q)
+        if m_ym:
+            y = int(m_ym.group(1))
+            mon = int(m_ym.group(2))
+            next_y = y + 1 if mon == 12 else y
+            next_m = 1 if mon == 12 else mon + 1
+            return (
+                f"'{y:04d}-{mon:02d}-01 00:00:00'",
+                f"'{next_y:04d}-{next_m:02d}-01 00:00:00'",
+                f"month_{y:04d}_{mon:02d}",
+            )
+        return None
+
+    def _rewrite_dynamic_time_window(
+        self,
+        sql: str,
+        *,
+        start_expr: str,
+        end_expr: str,
+        tag: str,
+    ) -> tuple[str, list[str]]:
         notes: list[str] = []
         rewritten = sql
+        def _is_time_col(col: str) -> bool:
+            c = col.lower().split(".")[-1]
+            return c.endswith("time") or c.endswith("date") or c == "ts" or c.endswith("timestamp")
         # 优先改写固定日期区间，避免“历史固定时间”导致 0 行。
         between_pat = re.compile(
-            r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*?(?:time|date|ts|timestamp))\s+BETWEEN\s+'[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9:]{8})?'\s+AND\s+'[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9:]{8})?'"
+            r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s+BETWEEN\s+('[^']+'|NOW\(\)|CURDATE\(\)|DATE_[A-Z_]+\([^)]*\))\s+AND\s+('[^']+'|NOW\(\)|CURDATE\(\)|DATE_[A-Z_]+\([^)]*\))"
         )
 
         def _between_repl(m: re.Match[str]) -> str:
             col = m.group(1)
-            notes.append("dynamic_recent_week_between")
-            return f"{col} >= DATE_SUB(NOW(), INTERVAL 7 DAY) AND {col} <= NOW()"
+            if not _is_time_col(col):
+                return m.group(0)
+            notes.append(f"dynamic_time_window_between:{tag}")
+            return f"{col} >= {start_expr} AND {col} <= {end_expr}"
 
         rewritten = between_pat.sub(_between_repl, rewritten)
-        ge_pat = re.compile(
-            r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*?(?:time|date|ts|timestamp))\s*>=\s*'[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9:]{8})?'"
-        )
+        ge_pat = re.compile(r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*>=\s*('[^']+'|NOW\(\)|CURDATE\(\)|DATE_[A-Z_]+\([^)]*\))")
         if ge_pat.search(rewritten):
             rewritten = ge_pat.sub(
-                lambda m: f"{m.group(1)} >= DATE_SUB(NOW(), INTERVAL 7 DAY)", rewritten
+                lambda m: f"{m.group(1)} >= {start_expr}" if _is_time_col(m.group(1)) else m.group(0),
+                rewritten,
             )
-            notes.append("dynamic_recent_week_ge")
+            notes.append(f"dynamic_time_window_ge:{tag}")
+        le_pat = re.compile(r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*<=\s*('[^']+'|NOW\(\)|CURDATE\(\)|DATE_[A-Z_]+\([^)]*\))")
+        if le_pat.search(rewritten):
+            rewritten = le_pat.sub(
+                lambda m: f"{m.group(1)} <= {end_expr}" if _is_time_col(m.group(1)) else m.group(0),
+                rewritten,
+            )
+            notes.append(f"dynamic_time_window_le:{tag}")
+        eq_pat = re.compile(r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*=\s*'[^']+'")
+        if eq_pat.search(rewritten):
+            rewritten = eq_pat.sub(
+                lambda m: (
+                    f"{m.group(1)} >= {start_expr} AND {m.group(1)} <= {end_expr}"
+                    if _is_time_col(m.group(1))
+                    else m.group(0)
+                ),
+                rewritten,
+            )
+            notes.append(f"dynamic_time_window_eq_to_range:{tag}")
+        if not notes:
+            col_hint = re.search(r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\b", rewritten)
+            if col_hint:
+                col = col_hint.group(1)
+                if not _is_time_col(col):
+                    return rewritten, notes
+                if re.search(r"(?i)\bwhere\b", rewritten):
+                    rewritten = re.sub(
+                        r"(?i)\bwhere\b",
+                        f"WHERE {col} >= {start_expr} AND {col} <= {end_expr} AND ",
+                        rewritten,
+                        count=1,
+                    )
+                else:
+                    rewritten = f"{rewritten} WHERE {col} >= {start_expr} AND {col} <= {end_expr}"
+                notes.append(f"dynamic_time_window_injected:{tag}")
         return rewritten, notes
 
     def _rewrite_relaxed_region_match(self, sql: str, *, question: str) -> tuple[str, list[str]]:
@@ -878,6 +1064,7 @@ class NL2SQLChain:
         allowed_columns: set[str],
         enforce_column_whitelist: bool,
         table_columns: dict[str, set[str]] | None = None,
+        join_whitelist: set[str] | None = None,
         entity_rules: list[EntityRule] | None = None,
     ) -> tuple[bool, str | None]:
         if not self._validator.validate(sql):
@@ -894,10 +1081,136 @@ class NL2SQLChain:
             ok_b, reason_b = self._validator.validate_column_table_binding(sql, table_columns=table_columns)
             if not ok_b:
                 return ok_b, reason_b
+        if table_columns and join_whitelist:
+            ok_j, reason_j = self._validate_join_whitelist(sql, table_columns, join_whitelist)
+            if not ok_j:
+                return ok_j, reason_j
         if question is not None and entity_rules:
             ok_e, msg = check_entity_rules(question, sql, entity_rules)
             if not ok_e:
                 return False, msg or "entity rule violation"
+        return True, None
+
+    @staticmethod
+    def _parse_csv_env_set(key: str) -> set[str]:
+        raw = (os.getenv(key) or "").strip()
+        if not raw:
+            return set()
+        out: set[str] = set()
+        for tok in raw.split(","):
+            t = tok.strip().strip("`").strip('"').lower()
+            if t:
+                out.add(t)
+        return out
+
+    def _resolve_table_scope(
+        self,
+        *,
+        analysis_type: str | None,
+        table_columns: dict[str, set[str]],
+    ) -> set[str]:
+        scoped = self._parse_csv_env_set("ANALYSIS_NL2SQL_TABLE_SCOPE_DEFAULT")
+        if not scoped:
+            return set()
+        existing = set(table_columns.keys())
+        hit = {t for t in scoped if t in existing}
+        logger.info(
+            "NL2SQLChain table_scope analysis_type=%s configured=%d matched=%d",
+            (analysis_type or "-"),
+            len(scoped),
+            len(hit),
+        )
+        return hit
+
+    @staticmethod
+    def _join_pair_key(left_tbl: str, left_col: str, right_tbl: str, right_col: str) -> str:
+        a = f"{left_tbl.lower()}.{left_col.lower()}"
+        b = f"{right_tbl.lower()}.{right_col.lower()}"
+        return f"{a}={b}" if a <= b else f"{b}={a}"
+
+    def _parse_manual_join_whitelist(self, analysis_type: str | None) -> set[str]:
+        keys: set[str] = set()
+        raw = (os.getenv("ANALYSIS_NL2SQL_JOIN_WHITELIST") or "").strip()
+        at = (analysis_type or "").strip().lower()
+        scoped_raw = (os.getenv(f"ANALYSIS_NL2SQL_JOIN_WHITELIST_{at.upper()}") or "").strip() if at else ""
+        src = ";".join([x for x in (raw, scoped_raw) if x])
+        if not src:
+            return keys
+        pat = re.compile(
+            r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*$"
+        )
+        for seg in src.split(";"):
+            s = seg.strip()
+            if not s:
+                continue
+            m = pat.match(s)
+            if not m:
+                continue
+            keys.add(self._join_pair_key(m.group(1), m.group(2), m.group(3), m.group(4)))
+        return keys
+
+    def _build_join_whitelist(
+        self,
+        table_columns: dict[str, set[str]],
+        *,
+        analysis_type: str | None,
+    ) -> set[str]:
+        allow_tables = set(table_columns.keys())
+        out: set[str] = set()
+        for t in self._schema.list_tables():
+            tname = (t.name or "").lower()
+            if not tname or (allow_tables and tname not in allow_tables):
+                continue
+            for lcol, rtab, rcol in (t.foreign_keys or []):
+                lt = tname
+                lc = (lcol or "").lower()
+                rt = (rtab or "").lower()
+                rc = (rcol or "").lower()
+                if not (lt and lc and rt and rc):
+                    continue
+                if allow_tables and (rt not in allow_tables):
+                    continue
+                if lc not in table_columns.get(lt, set()) or rc not in table_columns.get(rt, set()):
+                    continue
+                out.add(self._join_pair_key(lt, lc, rt, rc))
+        out |= self._parse_manual_join_whitelist(analysis_type)
+        return out
+
+    def _validate_join_whitelist(
+        self,
+        sql: str,
+        table_columns: dict[str, set[str]],
+        join_whitelist: set[str],
+    ) -> tuple[bool, str | None]:
+        alias_map = self._validator.parse_table_aliases_from_sql(sql)
+        eq_pat = re.compile(
+            r"\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b",
+            re.IGNORECASE,
+        )
+
+        def _to_tbl(token: str) -> str | None:
+            tk = token.lower()
+            if tk in alias_map:
+                return alias_map[tk]
+            if tk in table_columns:
+                return tk
+            return None
+
+        bad: list[str] = []
+        for m in eq_pat.finditer(sql):
+            lt = _to_tbl(m.group(1))
+            lc = m.group(2).lower()
+            rt = _to_tbl(m.group(3))
+            rc = m.group(4).lower()
+            if not lt or not rt or lt == rt:
+                continue
+            if lc not in table_columns.get(lt, set()) or rc not in table_columns.get(rt, set()):
+                continue
+            key = self._join_pair_key(lt, lc, rt, rc)
+            if key not in join_whitelist:
+                bad.append(key)
+        if bad:
+            return False, "join key not in whitelist: " + "; ".join(bad[:4])
         return True, None
 
     def _build_schema_catalog_hint(

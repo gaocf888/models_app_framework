@@ -11,6 +11,7 @@ class NL2SQLQueryRequest(BaseModel):
     user_id: str = Field(..., description="用户唯一标识（由调用方后台传入）")
     session_id: str = Field(..., description="会话唯一标识")
     question: str = Field(..., description="自然语言问题")
+    analysis_type: str | None = Field(default=None, description="可选：分析场景类型")
 
     @field_validator("user_id")
     @classmethod
