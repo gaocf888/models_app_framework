@@ -119,6 +119,12 @@ class InspectionExtractService:
                     warnings.append("all_records_failed_validation")
                 else:
                     warnings.append("llm_no_records_extracted")
+                self._log_empty_result_diagnostics(
+                    raw_records=raw_records,
+                    warnings=warnings,
+                    parse_route=parse_route,
+                    model=llm_model,
+                )
             summary = self._build_summary(records, warnings)
             INSPECT_EXTRACT_RECORD_COUNT.inc(len(records))
 
@@ -193,7 +199,8 @@ class InspectionExtractService:
         parse_prompt = (
             f"{parse_tpl}\n\n"
             "请仅输出 JSON。顶层必须是对象，且包含 records 数组。\n"
-            "records 每项尽量包含：检测位置、行号、管号、壁厚、evidence。\n"
+            "records 每项应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管。\n"
+            "可选补充字段：evidence、warnings。\n"
             f"文档内容如下（已截断）：\n{snippets}"
         )
         logger.info(
@@ -223,6 +230,11 @@ class InspectionExtractService:
         if not stage1_records:
             logger.info("inspection_extract llm short_circuit_empty_parse_records")
             return []
+
+        # 若 parse 阶段已给出完整分类字段，则直接进入后处理，避免二次改写与额外时延。
+        if self._records_have_full_schema(stage1_records):
+            logger.info("inspection_extract llm skip_classify_parse_already_full records=%s", len(stage1_records))
+            return stage1_records
 
         classify_prompt = (
             f"{classify_tpl}\n\n"
@@ -306,6 +318,22 @@ class InspectionExtractService:
         return False
 
     @staticmethod
+    def _records_have_full_schema(records: list[dict[str, Any]]) -> bool:
+        if not records:
+            return False
+        required_cn = {"检测位置", "行号", "管号", "壁厚", "检测类型", "缺陷类型", "是否换管"}
+        required_en = {"location", "row_no", "tube_no", "thickness", "detection_type", "defect_type", "replaced"}
+        for rec in records:
+            if not isinstance(rec, dict):
+                return False
+            keys = set(rec.keys())
+            has_cn = required_cn.issubset(keys)
+            has_en = required_en.issubset(keys)
+            if not (has_cn or has_en):
+                return False
+        return True
+
+    @staticmethod
     def _extract_records_from_markdown_table(parsed_text: str) -> list[dict[str, Any]]:
         lines = [x.strip() for x in (parsed_text or "").splitlines() if x.strip()]
         if not lines:
@@ -371,6 +399,79 @@ class InspectionExtractService:
         if len(text) > limit:
             clipped += f"\n...<truncated {len(text) - limit} chars>"
         logger.info("inspection_extract llm raw stage=%s response=\n%s", stage, clipped)
+
+    def _log_empty_result_diagnostics(
+        self,
+        *,
+        raw_records: list[dict[str, Any]],
+        warnings: list[str],
+        parse_route: str,
+        model: str,
+    ) -> None:
+        if not raw_records:
+            logger.warning(
+                "inspection_extract empty_result reason=no_raw_records parse_route=%s model=%s warnings=%s",
+                parse_route,
+                model,
+                warnings[:5],
+            )
+            return
+        diag = self._diagnose_raw_records(raw_records)
+        invalid_msgs = [w for w in warnings if w.startswith("record_")]
+        logger.warning(
+            "inspection_extract empty_result reason=validation_failed raw_records=%s invalid_records=%s "
+            "missing={location:%s,row_no:%s,tube_no:%s,thickness:%s,detection_type:%s,defect_type:%s,replaced:%s} "
+            "parse_route=%s model=%s top_invalid=%s",
+            len(raw_records),
+            len(invalid_msgs),
+            diag["location_missing"],
+            diag["row_no_missing"],
+            diag["tube_no_missing"],
+            diag["thickness_missing"],
+            diag["detection_type_missing"],
+            diag["defect_type_missing"],
+            diag["replaced_missing"],
+            parse_route,
+            model,
+            invalid_msgs[:3],
+        )
+
+    @staticmethod
+    def _diagnose_raw_records(raw_records: list[dict[str, Any]]) -> dict[str, int]:
+        def _is_empty(v: Any) -> bool:
+            if v is None:
+                return True
+            if isinstance(v, str):
+                return v.strip() == ""
+            return False
+
+        out = {
+            "location_missing": 0,
+            "row_no_missing": 0,
+            "tube_no_missing": 0,
+            "thickness_missing": 0,
+            "detection_type_missing": 0,
+            "defect_type_missing": 0,
+            "replaced_missing": 0,
+        }
+        for item in raw_records:
+            if not isinstance(item, dict):
+                continue
+            if _is_empty(item.get("检测位置")) and _is_empty(item.get("location")):
+                out["location_missing"] += 1
+            if _is_empty(item.get("行号")) and _is_empty(item.get("row_no")) and _is_empty(item.get("row")):
+                out["row_no_missing"] += 1
+            if _is_empty(item.get("管号")) and _is_empty(item.get("tube_no")) and _is_empty(item.get("tube")):
+                out["tube_no_missing"] += 1
+            if _is_empty(item.get("壁厚")) and _is_empty(item.get("thickness")) and _is_empty(item.get("thk")):
+                out["thickness_missing"] += 1
+            if _is_empty(item.get("检测类型")) and _is_empty(item.get("detection_type")) and _is_empty(item.get("type")):
+                out["detection_type_missing"] += 1
+            if _is_empty(item.get("缺陷类型")) and _is_empty(item.get("defect_type")):
+                out["defect_type_missing"] += 1
+            if _is_empty(item.get("是否换管")) and _is_empty(item.get("replaced")) and _is_empty(item.get("replace_flag")):
+                out["replaced_missing"] += 1
+        return out
 
     def _post_process_records(
         self,
