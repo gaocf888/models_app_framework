@@ -119,11 +119,12 @@ class InspectionExtractService:
                     warnings.append("all_records_failed_validation")
                 else:
                     warnings.append("llm_no_records_extracted")
-                self._log_empty_result_diagnostics(
-                    raw_records=raw_records,
-                    warnings=warnings,
-                    parse_route=parse_route,
-                    model=llm_model,
+                logger.warning(
+                    "inspection_extract empty_result parse_route=%s model=%s raw_records=%s warnings=%s",
+                    parse_route,
+                    llm_model,
+                    len(raw_records),
+                    warnings,
                 )
             summary = self._build_summary(records, warnings)
             INSPECT_EXTRACT_RECORD_COUNT.inc(len(records))
@@ -217,8 +218,11 @@ class InspectionExtractService:
         )
         self._log_llm_raw(stage="parse", raw=parse_result)
         stage1 = self._extract_json_like(parse_result)
+        logger.info("inspection_extract parse payload_type=%s", type(stage1).__name__ if stage1 is not None else "None")
         stage1_records = self._extract_records(stage1)
         logger.info("inspection_extract llm stage=parse result_records=%s", len(stage1_records))
+        if stage1_records and isinstance(stage1_records[0], dict):
+            logger.info("inspection_extract parse records sample_keys=%s", sorted(stage1_records[0].keys()))
         if not stage1_records:
             table_records = self._extract_records_from_markdown_table(parsed_text)
             if table_records:
@@ -227,6 +231,8 @@ class InspectionExtractService:
                     "inspection_extract llm stage=parse fallback=markdown_table records=%s",
                     len(stage1_records),
                 )
+                if stage1_records and isinstance(stage1_records[0], dict):
+                    logger.info("inspection_extract parse fallback sample_keys=%s", sorted(stage1_records[0].keys()))
         if not stage1_records:
             logger.info("inspection_extract llm short_circuit_empty_parse_records")
             return []
@@ -260,6 +266,7 @@ class InspectionExtractService:
         )
         self._log_llm_raw(stage="classify", raw=classify_result)
         stage2 = self._extract_json_like(classify_result)
+        logger.info("inspection_extract classify payload_type=%s", type(stage2).__name__ if stage2 is not None else "None")
         stage2_records = self._extract_records(stage2)
         logger.info("inspection_extract llm stage=classify result_records=%s", len(stage2_records))
 
@@ -296,6 +303,7 @@ class InspectionExtractService:
             )
             self._log_llm_raw(stage="repair", raw=repaired_result)
             stage3 = self._extract_json_like(repaired_result)
+            logger.info("inspection_extract repair payload_type=%s", type(stage3).__name__ if stage3 is not None else "None")
             candidate_records = self._extract_records(stage3)
             logger.info("inspection_extract llm stage=repair result_records=%s", len(candidate_records))
             if candidate_records:
@@ -400,79 +408,6 @@ class InspectionExtractService:
             clipped += f"\n...<truncated {len(text) - limit} chars>"
         logger.info("inspection_extract llm raw stage=%s response=\n%s", stage, clipped)
 
-    def _log_empty_result_diagnostics(
-        self,
-        *,
-        raw_records: list[dict[str, Any]],
-        warnings: list[str],
-        parse_route: str,
-        model: str,
-    ) -> None:
-        if not raw_records:
-            logger.warning(
-                "inspection_extract empty_result reason=no_raw_records parse_route=%s model=%s warnings=%s",
-                parse_route,
-                model,
-                warnings[:5],
-            )
-            return
-        diag = self._diagnose_raw_records(raw_records)
-        invalid_msgs = [w for w in warnings if w.startswith("record_")]
-        logger.warning(
-            "inspection_extract empty_result reason=validation_failed raw_records=%s invalid_records=%s "
-            "missing={location:%s,row_no:%s,tube_no:%s,thickness:%s,detection_type:%s,defect_type:%s,replaced:%s} "
-            "parse_route=%s model=%s top_invalid=%s",
-            len(raw_records),
-            len(invalid_msgs),
-            diag["location_missing"],
-            diag["row_no_missing"],
-            diag["tube_no_missing"],
-            diag["thickness_missing"],
-            diag["detection_type_missing"],
-            diag["defect_type_missing"],
-            diag["replaced_missing"],
-            parse_route,
-            model,
-            invalid_msgs[:3],
-        )
-
-    @staticmethod
-    def _diagnose_raw_records(raw_records: list[dict[str, Any]]) -> dict[str, int]:
-        def _is_empty(v: Any) -> bool:
-            if v is None:
-                return True
-            if isinstance(v, str):
-                return v.strip() == ""
-            return False
-
-        out = {
-            "location_missing": 0,
-            "row_no_missing": 0,
-            "tube_no_missing": 0,
-            "thickness_missing": 0,
-            "detection_type_missing": 0,
-            "defect_type_missing": 0,
-            "replaced_missing": 0,
-        }
-        for item in raw_records:
-            if not isinstance(item, dict):
-                continue
-            if _is_empty(item.get("检测位置")) and _is_empty(item.get("location")):
-                out["location_missing"] += 1
-            if _is_empty(item.get("行号")) and _is_empty(item.get("row_no")) and _is_empty(item.get("row")):
-                out["row_no_missing"] += 1
-            if _is_empty(item.get("管号")) and _is_empty(item.get("tube_no")) and _is_empty(item.get("tube")):
-                out["tube_no_missing"] += 1
-            if _is_empty(item.get("壁厚")) and _is_empty(item.get("thickness")) and _is_empty(item.get("thk")):
-                out["thickness_missing"] += 1
-            if _is_empty(item.get("检测类型")) and _is_empty(item.get("detection_type")) and _is_empty(item.get("type")):
-                out["detection_type_missing"] += 1
-            if _is_empty(item.get("缺陷类型")) and _is_empty(item.get("defect_type")):
-                out["defect_type_missing"] += 1
-            if _is_empty(item.get("是否换管")) and _is_empty(item.get("replaced")) and _is_empty(item.get("replace_flag")):
-                out["replaced_missing"] += 1
-        return out
-
     def _post_process_records(
         self,
         *,
@@ -520,6 +455,14 @@ class InspectionExtractService:
         text = (raw or "").strip()
         if not text:
             return None
+        # 兼容仅有起始 ```json、未闭合 ``` 的输出
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines:
+                lines = lines[1:]
+            text = "\n".join(lines).strip()
+            if text.endswith("```"):
+                text = text[:-3].strip()
         fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
         if fence:
             text = fence.group(1).strip()
@@ -549,7 +492,7 @@ class InspectionExtractService:
                 if isinstance(parsed, list):
                     return parsed
             except json.JSONDecodeError:
-                return None
+                pass
         return None
 
     @staticmethod
