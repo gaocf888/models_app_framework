@@ -208,9 +208,21 @@ class InspectionExtractService:
             timeout=llm_timeout_s,
             max_tokens=int(getattr(self._cfg, "llm_max_tokens_parse", 1024)),
         )
+        self._log_llm_raw(stage="parse", raw=parse_result)
         stage1 = self._extract_json_like(parse_result)
         stage1_records = self._extract_records(stage1)
         logger.info("inspection_extract llm stage=parse result_records=%s", len(stage1_records))
+        if not stage1_records:
+            table_records = self._extract_records_from_markdown_table(parsed_text)
+            if table_records:
+                stage1_records = table_records
+                logger.info(
+                    "inspection_extract llm stage=parse fallback=markdown_table records=%s",
+                    len(stage1_records),
+                )
+        if not stage1_records:
+            logger.info("inspection_extract llm short_circuit_empty_parse_records")
+            return []
 
         classify_prompt = (
             f"{classify_tpl}\n\n"
@@ -234,6 +246,7 @@ class InspectionExtractService:
             timeout=llm_timeout_s,
             max_tokens=int(getattr(self._cfg, "llm_max_tokens_classify", 1024)),
         )
+        self._log_llm_raw(stage="classify", raw=classify_result)
         stage2 = self._extract_json_like(classify_result)
         stage2_records = self._extract_records(stage2)
         logger.info("inspection_extract llm stage=classify result_records=%s", len(stage2_records))
@@ -269,6 +282,7 @@ class InspectionExtractService:
                 timeout=llm_timeout_s,
                 max_tokens=int(getattr(self._cfg, "llm_max_tokens_repair", 768)),
             )
+            self._log_llm_raw(stage="repair", raw=repaired_result)
             stage3 = self._extract_json_like(repaired_result)
             candidate_records = self._extract_records(stage3)
             logger.info("inspection_extract llm stage=repair result_records=%s", len(candidate_records))
@@ -290,6 +304,73 @@ class InspectionExtractService:
                 continue
             return True
         return False
+
+    @staticmethod
+    def _extract_records_from_markdown_table(parsed_text: str) -> list[dict[str, Any]]:
+        lines = [x.strip() for x in (parsed_text or "").splitlines() if x.strip()]
+        if not lines:
+            return []
+
+        def _norm_header(x: str) -> str:
+            return re.sub(r"\s+", "", x).lower()
+
+        records: list[dict[str, Any]] = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if "|" not in line:
+                i += 1
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            normalized = [_norm_header(c) for c in cells]
+            key_map: dict[str, int] = {}
+            for idx, h in enumerate(normalized):
+                if any(k in h for k in ("检测位置", "位置", "location")):
+                    key_map["location"] = idx
+                elif any(k in h for k in ("行号", "行", "row")):
+                    key_map["row_no"] = idx
+                elif any(k in h for k in ("管号", "管", "tube")):
+                    key_map["tube_no"] = idx
+                elif any(k in h for k in ("壁厚", "厚度", "thickness", "thk")):
+                    key_map["thickness"] = idx
+
+            if len(key_map) < 4:
+                i += 1
+                continue
+
+            j = i + 1
+            if j < len(lines) and "|" in lines[j]:
+                sep_cells = [c.strip() for c in lines[j].strip("|").split("|")]
+                if sep_cells and all(set(c) <= {"-", ":"} for c in sep_cells if c):
+                    j += 1
+
+            while j < len(lines) and "|" in lines[j]:
+                row_cells = [c.strip() for c in lines[j].strip("|").split("|")]
+                max_idx = max(key_map.values())
+                if len(row_cells) <= max_idx:
+                    j += 1
+                    continue
+                rec = {
+                    "检测位置": row_cells[key_map["location"]],
+                    "行号": row_cells[key_map["row_no"]],
+                    "管号": row_cells[key_map["tube_no"]],
+                    "壁厚": row_cells[key_map["thickness"]],
+                }
+                if rec["检测位置"] and rec["行号"] and rec["管号"] and str(rec["壁厚"]).strip():
+                    records.append(rec)
+                j += 1
+            i = j
+        return records
+
+    def _log_llm_raw(self, *, stage: str, raw: str) -> None:
+        if not bool(getattr(self._cfg, "log_llm_raw_response", False)):
+            return
+        limit = int(getattr(self._cfg, "log_llm_raw_max_chars", 2000))
+        text = (raw or "").strip()
+        clipped = text[:limit]
+        if len(text) > limit:
+            clipped += f"\n...<truncated {len(text) - limit} chars>"
+        logger.info("inspection_extract llm raw stage=%s response=\n%s", stage, clipped)
 
     def _post_process_records(
         self,

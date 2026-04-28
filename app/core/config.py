@@ -494,6 +494,8 @@ class InspectionExtractConfig:
     llm_max_tokens_parse: int = 1024
     llm_max_tokens_classify: int = 1024
     llm_max_tokens_repair: int = 768
+    log_llm_raw_response: bool = False
+    log_llm_raw_max_chars: int = 2000
 
 
 @dataclass
@@ -864,6 +866,8 @@ def _load_from_env() -> AppConfig:
         llm_max_tokens_parse=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_PARSE", "1024"))),
         llm_max_tokens_classify=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_CLASSIFY", "1024"))),
         llm_max_tokens_repair=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_REPAIR", "768"))),
+        log_llm_raw_response=os.getenv("INSPECT_EXTRACT_LOG_LLM_RAW_RESPONSE", "false").lower() == "true",
+        log_llm_raw_max_chars=max(200, int(os.getenv("INSPECT_EXTRACT_LOG_LLM_RAW_MAX_CHARS", "2000"))),
     )
 
     cfg = AppConfig(
