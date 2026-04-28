@@ -191,38 +191,61 @@ class InspectionExtractService:
     ) -> list[dict[str, Any]]:
         snippets = parsed_text[:20000]
         llm_timeout_s = float(getattr(self._cfg, "llm_timeout_seconds", 180.0))
+        parse_chunk_retry = 1
+        logger.info("【检修提取】开始LLM抽取流程，模型=%s，超时=%.1fs", model, llm_timeout_s)
         parse_tpl = self._get_prompt_content(scene="inspection_extract_parse", user_id=req.user_id, version=prompt_version)
         classify_tpl = self._get_prompt_content(
             scene="inspection_extract_classify", user_id=req.user_id, version=prompt_version
         )
         repair_tpl = self._get_prompt_content(scene="inspection_extract_repair", user_id=req.user_id, version=prompt_version)
 
-        parse_prompt = (
-            f"{parse_tpl}\n\n"
-            "请仅输出 JSON。顶层必须是对象，且包含 records 数组。\n"
-            "records 每项应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管。\n"
-            "可选补充字段：evidence、warnings。\n"
-            f"文档内容如下（已截断）：\n{snippets}"
-        )
-        logger.info(
-            "inspection_extract llm stage=parse model=%s prompt_chars=%s timeout_s=%.1f",
-            model,
-            len(parse_prompt),
-            llm_timeout_s,
-        )
-        parse_result = await self._llm.generate(
-            model=model,
-            prompt=parse_prompt,
-            timeout=llm_timeout_s,
-            max_tokens=int(getattr(self._cfg, "llm_max_tokens_parse", 1024)),
-        )
-        self._log_llm_raw(stage="parse", raw=parse_result)
-        stage1 = self._extract_json_like(parse_result)
-        logger.info("inspection_extract parse payload_type=%s", type(stage1).__name__ if stage1 is not None else "None")
-        stage1_records = self._extract_records(stage1)
-        logger.info("inspection_extract llm stage=parse result_records=%s", len(stage1_records))
-        if stage1_records and isinstance(stage1_records[0], dict):
-            logger.info("inspection_extract parse records sample_keys=%s", sorted(stage1_records[0].keys()))
+        chunks = self._split_parse_chunks(parsed_text, max_chunk_chars=6000)
+        logger.info("inspection_extract parse chunk_count=%s", len(chunks))
+        logger.info("【检修提取】Parse阶段分块数量=%s", len(chunks))
+        stage1_records: list[dict[str, Any]] = []
+        for idx, chunk in enumerate(chunks, start=1):
+            records_i: list[dict[str, Any]] = []
+            logger.info("【检修提取】开始解析分块 %s/%s，长度=%s", idx, len(chunks), len(chunk))
+            for attempt in range(parse_chunk_retry + 1):
+                parse_prompt = (
+                    f"{parse_tpl}\n\n"
+                    "请仅输出 JSON。顶层必须是对象，且包含 records 数组。\n"
+                    "records 每项应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管。\n"
+                    "可选补充字段：evidence、warnings。\n"
+                    f"文档分块如下（第{idx}/{len(chunks)}块）：\n{chunk}"
+                )
+                logger.info(
+                    "inspection_extract llm stage=parse chunk=%s/%s model=%s prompt_chars=%s timeout_s=%.1f",
+                    idx,
+                    len(chunks),
+                    model,
+                    len(parse_prompt),
+                    llm_timeout_s,
+                )
+                parse_result = await self._llm.generate(
+                    model=model,
+                    prompt=parse_prompt,
+                    timeout=llm_timeout_s,
+                    max_tokens=int(getattr(self._cfg, "llm_max_tokens_parse", 1024)),
+                )
+                self._log_llm_raw(stage=f"parse[{idx}/{len(chunks)}]-try{attempt+1}", raw=parse_result)
+                stage1 = self._extract_json_like(parse_result)
+                logger.info("inspection_extract parse payload_type=%s", type(stage1).__name__ if stage1 is not None else "None")
+                records_i = self._extract_records(stage1)
+                logger.info("inspection_extract llm stage=parse chunk=%s result_records=%s", idx, len(records_i))
+                if records_i and isinstance(records_i[0], dict):
+                    logger.info("inspection_extract parse records sample_keys=%s", sorted(records_i[0].keys()))
+                if records_i:
+                    logger.info("【检修提取】分块 %s/%s 解析成功，记录数=%s，尝试次数=%s", idx, len(chunks), len(records_i), attempt + 1)
+                    break
+                if attempt < parse_chunk_retry:
+                    logger.warning("【检修提取】分块 %s/%s 解析失败，开始重试 第 %s 次", idx, len(chunks), attempt + 1)
+            if not records_i:
+                logger.warning("【检修提取】分块 %s/%s 最终解析失败，已跳过该分块", idx, len(chunks))
+            stage1_records.extend(records_i)
+
+        logger.info("inspection_extract llm stage=parse merged_records=%s", len(stage1_records))
+        logger.info("【检修提取】Parse阶段合并后记录数=%s", len(stage1_records))
         if not stage1_records:
             table_records = self._extract_records_from_markdown_table(parsed_text)
             if table_records:
@@ -233,42 +256,56 @@ class InspectionExtractService:
                 )
                 if stage1_records and isinstance(stage1_records[0], dict):
                     logger.info("inspection_extract parse fallback sample_keys=%s", sorted(stage1_records[0].keys()))
+                logger.info("【检修提取】启用表格兜底成功，记录数=%s", len(stage1_records))
         if not stage1_records:
             logger.info("inspection_extract llm short_circuit_empty_parse_records")
+            logger.warning("【检修提取】Parse阶段无记录，流程提前结束")
             return []
 
         # 若 parse 阶段已给出完整分类字段，则直接进入后处理，避免二次改写与额外时延。
         if self._records_have_full_schema(stage1_records):
             logger.info("inspection_extract llm skip_classify_parse_already_full records=%s", len(stage1_records))
+            logger.info("【检修提取】Parse结果字段完整，跳过Classify阶段")
             return stage1_records
 
-        classify_prompt = (
-            f"{classify_tpl}\n\n"
-            "请仅输出 JSON。顶层对象包含 records 数组。\n"
-            "检测类型只能是：测厚/缺陷。\n"
-            "缺陷类型只能是：高温腐蚀、磨损、结渣、蠕变、管道变形、表面吹损、氧化皮堆积、机械损伤。\n"
-            "是否换管只能是：是/否。\n"
-            f"候选记录(JSON)：{json.dumps(stage1_records, ensure_ascii=False)}\n"
-            f"文档摘要：{snippets[:8000]}"
-        )
-        logger.info(
-            "inspection_extract llm stage=classify model=%s records_in=%s prompt_chars=%s timeout_s=%.1f",
-            model,
-            len(stage1_records),
-            len(classify_prompt),
-            llm_timeout_s,
-        )
-        classify_result = await self._llm.generate(
-            model=model,
-            prompt=classify_prompt,
-            timeout=llm_timeout_s,
-            max_tokens=int(getattr(self._cfg, "llm_max_tokens_classify", 1024)),
-        )
-        self._log_llm_raw(stage="classify", raw=classify_result)
-        stage2 = self._extract_json_like(classify_result)
-        logger.info("inspection_extract classify payload_type=%s", type(stage2).__name__ if stage2 is not None else "None")
-        stage2_records = self._extract_records(stage2)
-        logger.info("inspection_extract llm stage=classify result_records=%s", len(stage2_records))
+        stage2_records: list[dict[str, Any]] = []
+        classify_batches = self._batch_records(stage1_records, batch_size=80)
+        logger.info("【检修提取】Classify阶段批次数=%s", len(classify_batches))
+        for bidx, batch in enumerate(classify_batches, start=1):
+            classify_prompt = (
+                f"{classify_tpl}\n\n"
+                "请仅输出 JSON。顶层对象包含 records 数组。\n"
+                "检测类型只能是：测厚/缺陷。\n"
+                "缺陷类型只能是：高温腐蚀、磨损、结渣、蠕变、管道变形、表面吹损、氧化皮堆积、机械损伤。\n"
+                "是否换管只能是：是/否。\n"
+                f"候选记录(JSON)：{json.dumps(batch, ensure_ascii=False)}\n"
+                f"文档摘要：{snippets[:4000]}"
+            )
+            logger.info(
+                "inspection_extract llm stage=classify batch=%s/%s model=%s records_in=%s prompt_chars=%s timeout_s=%.1f",
+                bidx,
+                len(classify_batches),
+                model,
+                len(batch),
+                len(classify_prompt),
+                llm_timeout_s,
+            )
+            logger.info("【检修提取】开始分类批次 %s/%s，输入记录=%s", bidx, len(classify_batches), len(batch))
+            classify_result = await self._llm.generate(
+                model=model,
+                prompt=classify_prompt,
+                timeout=llm_timeout_s,
+                max_tokens=int(getattr(self._cfg, "llm_max_tokens_classify", 1024)),
+            )
+            self._log_llm_raw(stage=f"classify[{bidx}/{len(classify_batches)}]", raw=classify_result)
+            stage2 = self._extract_json_like(classify_result)
+            logger.info("inspection_extract classify payload_type=%s", type(stage2).__name__ if stage2 is not None else "None")
+            recs_b = self._extract_records(stage2)
+            logger.info("inspection_extract llm stage=classify batch=%s result_records=%s", bidx, len(recs_b))
+            logger.info("【检修提取】分类批次 %s/%s 完成，输出记录=%s", bidx, len(classify_batches), len(recs_b))
+            stage2_records.extend(recs_b)
+        logger.info("inspection_extract llm stage=classify merged_records=%s", len(stage2_records))
+        logger.info("【检修提取】Classify阶段合并后记录数=%s", len(stage2_records))
 
         if not self._need_repair(stage2_records):
             logger.info("inspection_extract llm skip_repair records=%s", len(stage2_records))
@@ -295,6 +332,7 @@ class InspectionExtractService:
                 len(repair_prompt),
                 llm_timeout_s,
             )
+            logger.info("【检修提取】开始Repair阶段，输入记录=%s", len(repair_input))
             repaired_result = await self._llm.generate(
                 model=model,
                 prompt=repair_prompt,
@@ -306,9 +344,65 @@ class InspectionExtractService:
             logger.info("inspection_extract repair payload_type=%s", type(stage3).__name__ if stage3 is not None else "None")
             candidate_records = self._extract_records(stage3)
             logger.info("inspection_extract llm stage=repair result_records=%s", len(candidate_records))
+            logger.info("【检修提取】Repair阶段输出记录=%s", len(candidate_records))
             if candidate_records:
                 break
+        logger.info("【检修提取】LLM抽取流程结束，最终记录数=%s", len(candidate_records))
         return candidate_records
+
+    @staticmethod
+    def _split_parse_chunks(parsed_text: str, *, max_chunk_chars: int) -> list[str]:
+        text = (parsed_text or "").strip()
+        if not text:
+            return []
+        lines = [x for x in text.splitlines()]
+        chunks: list[str] = []
+
+        # 优先按 markdown 表格块拆分
+        i = 0
+        while i < len(lines):
+            if "|" not in lines[i]:
+                i += 1
+                continue
+            j = i
+            while j < len(lines) and "|" in lines[j]:
+                j += 1
+            if j - i >= 2:
+                start = max(0, i - 8)
+                end = min(len(lines), j + 2)
+                chunk = "\n".join(lines[start:end]).strip()
+                if chunk:
+                    chunks.append(chunk)
+            i = j
+
+        # 若无表格，按文本长度分块
+        if not chunks:
+            step = max(1000, max_chunk_chars)
+            p = 0
+            while p < len(text):
+                chunks.append(text[p : p + step])
+                p += step
+
+        # 对已识别块进一步按最大长度切分
+        normalized: list[str] = []
+        for c in chunks:
+            if len(c) <= max_chunk_chars:
+                normalized.append(c)
+                continue
+            p = 0
+            while p < len(c):
+                normalized.append(c[p : p + max_chunk_chars])
+                p += max_chunk_chars
+        return normalized or [text[:max_chunk_chars]]
+
+    @staticmethod
+    def _batch_records(records: list[dict[str, Any]], *, batch_size: int) -> list[list[dict[str, Any]]]:
+        if not records:
+            return [[]]
+        out: list[list[dict[str, Any]]] = []
+        for i in range(0, len(records), max(1, batch_size)):
+            out.append(records[i : i + max(1, batch_size)])
+        return out
 
     @staticmethod
     def _need_repair(records: list[dict[str, Any]]) -> bool:
