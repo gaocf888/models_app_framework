@@ -212,15 +212,19 @@ async def get_session_messages(
     for m in raw:
         role = str(m.get("role", ""))
         raw_content = str(m.get("content", ""))
-        content_text, image_urls = split_message_content_and_images(raw_content)
+        content_text, original_image_urls, processed_image_urls = split_message_content_and_images(raw_content)
         # assistant/system 历史通常不携带图片块；保持输出干净。
         if role != "user":
-            image_urls = []
+            original_image_urls = []
+            processed_image_urls = []
+        image_urls = list(original_image_urls or processed_image_urls)
         items.append(
             SessionMessageItem(
                 role=role,
                 content=content_text,
                 image_urls=image_urls,
+                original_image_urls=original_image_urls,
+                processed_image_urls=processed_image_urls,
                 ts=m.get("ts"),
             )
         )
