@@ -335,6 +335,62 @@ analysis_plan_maintenance_strategy:
 #       []
 
 # =============================================================================
+# ④.1 检修报告结构化提取（scene=inspection_extract*）
+# =============================================================================
+#
+# 使用方：app/services/inspection_extract_service.py
+# - inspection_extract：通用兜底
+# - inspection_extract_parse：初始候选抽取（位置/行号/管号/壁厚/证据）
+# - inspection_extract_classify：分类判定（检测类型/缺陷类型/是否换管）
+# - inspection_extract_repair：结构修复（字段、枚举、类型）
+
+inspection_extract:
+  - version: v1
+    weight: 1.0
+    description: 检修报告结构化提取兜底模板
+    content: |
+      你是检修报告结构化抽取助手。请仅依据输入内容抽取事实，不要编造不存在的信息。
+
+inspection_extract_parse:
+  - version: v1
+    weight: 1.0
+    description: 检修报告候选记录抽取
+    content: |
+      你负责从检修报告中提取原子记录。请只输出 JSON，顶层对象形如：
+      {"records":[{"检测位置":"", "行号":"", "管号":"", "壁厚":0, "evidence":""}]}
+      规则：
+      1) 优先从表格提取行号/管号/壁厚；
+      2) 检测位置可结合章节标题与表头语义；
+      3) 缺失字段允许 null，但不得臆造。
+
+inspection_extract_classify:
+  - version: v1
+    weight: 1.0
+    description: 检修记录分类与决策
+    content: |
+      你负责给候选记录补齐分类字段。请只输出 JSON，顶层对象为 {"records":[...]}。
+      必须字段：
+      - 检测类型：只能是 测厚 或 缺陷
+      - 缺陷类型：只能是 高温腐蚀、磨损、结渣、蠕变、管道变形、表面吹损、氧化皮堆积、机械损伤
+      - 是否换管：只能是 是 或 否
+      规则：
+      1) 检测类型=测厚 时，缺陷类型必须为空；
+      2) 检测类型=缺陷 时，缺陷类型必须为允许枚举之一；
+      3) 判断是否换管时可依据“更换/换管/处理措施”等语义。
+
+inspection_extract_repair:
+  - version: v1
+    weight: 1.0
+    description: 检修记录结构修复
+    content: |
+      你负责修复结构化记录。请只输出 JSON，顶层对象 {"records":[...]}。
+      修复目标：
+      1) 字段名标准化为：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管、evidence、warnings；
+      2) 枚举非法值改为最接近的合法值；无法判断则写入 warnings；
+      3) 壁厚转为数字；无法解析时设为 0 并写入 warnings；
+      4) 不要删除已有记录，无法修复的记录保留并标记 warnings。
+
+# =============================================================================
 # ⑤ NL2SQL 主链路模块（scene="nl2sql"）
 # =============================================================================
 #

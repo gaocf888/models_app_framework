@@ -238,6 +238,7 @@ class ChatbotLangGraphRunner:
         req: ChatRequest,
         stream_id: str | None = None,
         cancel_checker: Any | None = None,
+        original_image_urls: List[str] | None = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         运行图并输出结构化事件。
@@ -247,7 +248,7 @@ class ChatbotLangGraphRunner:
         - finished: 完成事件（含 meta）
         """
         # state 在一次请求生命周期内共享；每个节点只增量更新自己负责字段。
-        state = self._initial_state(req)
+        state = self._initial_state(req, original_image_urls=original_image_urls)
         start_ts = time.perf_counter()
         try:
             state = await self._run_graph(state)
@@ -259,7 +260,7 @@ class ChatbotLangGraphRunner:
             no_stream_path = state.get("intent_label") == "clarify" or (bool(pre_answer) and not llm_messages)
             if no_stream_path:
                 if await self._is_cancelled(req, stream_id, cancel_checker):
-                    self._persist_disconnect(req, "")
+                    self._persist_disconnect(state, req, "")
                     state["status"] = "aborted"
                     state["terminate_reason"] = "user_cancelled"
                     yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
@@ -281,7 +282,7 @@ class ChatbotLangGraphRunner:
             async for delta in self._llm.stream_chat(model=None, messages=llm_messages):  # type: ignore[arg-type]
                 if await self._is_cancelled(req, stream_id, cancel_checker):
                     partial = "".join(parts).strip()
-                    self._persist_disconnect(req, partial)
+                    self._persist_disconnect(state, req, partial)
                     state["status"] = "aborted"
                     state["terminate_reason"] = "user_cancelled"
                     yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
@@ -305,7 +306,7 @@ class ChatbotLangGraphRunner:
             # - 这是“正常中断”而非服务异常；
             # - 按配置决定是否落 partial，便于下一轮会话续接。
             partial = "".join(state.get("answer_parts") or []).strip()
-            self._persist_disconnect(req, partial)
+            self._persist_disconnect(state, req, partial)
             state["status"] = "aborted"
             state["terminate_reason"] = "client_disconnect"
             raise
@@ -313,7 +314,7 @@ class ChatbotLangGraphRunner:
             logger.exception("ChatbotLangGraphRunner.run_stream failed: %s", exc)
             state["status"] = "failed"
             state["error"] = str(exc)
-            self._persist_failure(req)
+            self._persist_failure(state, req)
             raise
         finally:
             if self._ls.enabled:
@@ -335,11 +336,13 @@ class ChatbotLangGraphRunner:
                     },
                 )
 
-    def _initial_state(self, req: ChatRequest) -> ChatbotGraphState:
+    def _initial_state(self, req: ChatRequest, original_image_urls: List[str] | None = None) -> ChatbotGraphState:
+        original_urls = [u for u in (original_image_urls or []) if isinstance(u, str) and u.strip()]
         return {
             "user_id": req.user_id,
             "session_id": req.session_id,
             "query": req.query,
+            "original_image_urls": original_urls,
             "image_urls": [u for u in req.image_urls if isinstance(u, str) and u.strip()],
             "enable_rag": bool(req.enable_rag),
             "enable_context": bool(req.enable_context),
@@ -745,7 +748,16 @@ class ChatbotLangGraphRunner:
     ) -> None:
         # 成功路径落库：固定先 user 再 assistant，保持会话顺序稳定。
         # 注意：partial 也走 assistant 落库，但会加 [partial] 前缀。
-        self._conv.append_user_message(req.user_id, req.session_id, build_user_message_with_images(req.query, req.image_urls))
+        self._conv.append_user_message(
+            req.user_id,
+            req.session_id,
+            build_user_message_with_images(
+                req.query,
+                req.image_urls,
+                original_image_urls=[u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()],
+                processed_image_urls=[u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
+            ),
+        )
         if answer:
             content = answer if not is_partial else f"[partial] {answer}"
             self._conv.append_assistant_message(req.user_id, req.session_id, content)
@@ -754,12 +766,30 @@ class ChatbotLangGraphRunner:
         state["terminate_reason"] = terminate_reason
         state["status"] = "aborted" if is_partial else "answered"
 
-    def _persist_failure(self, req: ChatRequest) -> None:
+    def _persist_failure(self, state: ChatbotGraphState, req: ChatRequest) -> None:
         # 失败时仍写 user，保证会话线完整；assistant 不写入。
-        self._conv.append_user_message(req.user_id, req.session_id, build_user_message_with_images(req.query, req.image_urls))
+        self._conv.append_user_message(
+            req.user_id,
+            req.session_id,
+            build_user_message_with_images(
+                req.query,
+                req.image_urls,
+                original_image_urls=[u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()],
+                processed_image_urls=[u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
+            ),
+        )
 
-    def _persist_disconnect(self, req: ChatRequest, partial: str) -> None:
-        self._conv.append_user_message(req.user_id, req.session_id, build_user_message_with_images(req.query, req.image_urls))
+    def _persist_disconnect(self, state: ChatbotGraphState, req: ChatRequest, partial: str) -> None:
+        self._conv.append_user_message(
+            req.user_id,
+            req.session_id,
+            build_user_message_with_images(
+                req.query,
+                req.image_urls,
+                original_image_urls=[u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()],
+                processed_image_urls=[u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
+            ),
+        )
         if self._persist_partial and partial:
             self._conv.append_assistant_message(req.user_id, req.session_id, f"[partial] {partial}")
 
@@ -799,6 +829,7 @@ class ChatbotLangGraphRunner:
             "nl2sql_sql": (state.get("nl2sql_sql") or "") if state.get("used_nl2sql") else None,
             "suggested_questions": list(state.get("suggested_questions") or []),
             "processed_image_urls": [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
+            "original_image_urls": [u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()],
             "stream_id": stream_id,
         }
 

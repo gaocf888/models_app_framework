@@ -480,6 +480,19 @@ class AnalysisConfig:
 
 
 @dataclass
+class InspectionExtractConfig:
+    """
+    检修报告结构化提取模块配置。
+    """
+
+    enabled: bool = True
+    strict_default: bool = False
+    max_repair_retries: int = 1
+    prompt_version: str = "v1"
+    model_name: str | None = None
+
+
+@dataclass
 class AppConfig:
     """
     应用全局配置。
@@ -493,6 +506,7 @@ class AppConfig:
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
     chatbot: ChatbotConfig = field(default_factory=ChatbotConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    inspection_extract: InspectionExtractConfig = field(default_factory=InspectionExtractConfig)
 
 
 @dataclass
@@ -836,6 +850,13 @@ def _load_from_env() -> AppConfig:
         checkpoint_namespace=(os.getenv("ANALYSIS_CHECKPOINT_NAMESPACE", "analysis_graph") or "analysis_graph"),
         nl2sql_llm_planner_enabled=os.getenv("ANALYSIS_NL2SQL_LLM_PLANNER_ENABLED", "true").lower() == "true",
     )
+    inspection_extract_cfg = InspectionExtractConfig(
+        enabled=os.getenv("INSPECT_EXTRACT_ENABLED", "true").lower() == "true",
+        strict_default=os.getenv("INSPECT_EXTRACT_STRICT_DEFAULT", "false").lower() == "true",
+        max_repair_retries=max(0, int(os.getenv("INSPECT_EXTRACT_MAX_REPAIR_RETRIES", "1"))),
+        prompt_version=(os.getenv("INSPECT_EXTRACT_PROMPT_VERSION", "v1") or "v1").strip(),
+        model_name=(os.getenv("INSPECT_EXTRACT_MODEL_NAME") or "").strip() or None,
+    )
 
     cfg = AppConfig(
         env=env,
@@ -845,6 +866,7 @@ def _load_from_env() -> AppConfig:
         mineru=mineru_cfg,
         chatbot=chatbot_cfg,
         analysis=analysis_cfg,
+        inspection_extract=inspection_extract_cfg,
     )
     # 动态附加 db 字段，避免破坏现有 AppConfig 初始化调用点
     setattr(cfg, "db", db_cfg)

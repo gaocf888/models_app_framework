@@ -101,7 +101,18 @@ class SessionMessageItem(BaseModel):
 
     role: str = Field(..., description="user / assistant / system")
     content: str = Field(..., description="消息正文")
-    image_urls: list[str] = Field(default_factory=list, description="该消息关联图片链接列表（仅 user 消息可能有值）")
+    image_urls: list[str] = Field(
+        default_factory=list,
+        description="该消息关联图片链接（默认展示用，优先 original_image_urls，兼容字段）",
+    )
+    original_image_urls: list[str] = Field(
+        default_factory=list,
+        description="用户原始传入图片链接（仅 user 消息可能有值）",
+    )
+    processed_image_urls: list[str] = Field(
+        default_factory=list,
+        description="预处理后用于模型推理的图片链接（仅 user 消息可能有值）",
+    )
     ts: float | None = Field(None, description="写入时时间戳（秒，可能为空）")
 
 

@@ -77,6 +77,7 @@ class ChatbotService:
             logger.warning("ChatbotService: LangChain not available, fallback to simple implementation.")
 
     async def chat(self, req: ChatRequest) -> ChatResponse:
+        original_image_urls = self._clean_image_urls(req.image_urls)
         req = await self._preprocess_request_images(req)
         if not req.user_id:
             raise ValueError("user_id is required (must be provided by the caller).")
@@ -114,7 +115,7 @@ class ChatbotService:
                     llm_client=self._llm,
                     max_total=cfg.suggested_questions_max,
                 )
-            self._append_user_with_images(req)
+            self._append_user_with_images(req, original_image_urls=original_image_urls)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
             return ChatResponse(
                 answer=answer,
@@ -139,7 +140,7 @@ class ChatbotService:
                     llm_client=self._llm,
                     max_total=min(3, cfg.suggested_questions_max),
                 )
-            self._append_user_with_images(req)
+            self._append_user_with_images(req, original_image_urls=original_image_urls)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
             return ChatResponse(
                 answer=answer,
@@ -198,7 +199,7 @@ class ChatbotService:
                 max_total=cfg.suggested_questions_max,
             )
 
-        self._append_user_with_images(req)
+        self._append_user_with_images(req, original_image_urls=original_image_urls)
         self._conv.append_assistant_message(req.user_id, req.session_id, answer)
 
         return ChatResponse(
@@ -224,6 +225,7 @@ class ChatbotService:
                 yield str(ev.get("delta") or "")
 
     async def stream_chat_events(self, req: ChatRequest) -> AsyncIterator[Dict[str, Any]]:
+        original_image_urls = self._clean_image_urls(req.image_urls)
         req = await self._preprocess_request_images(req)
         if not req.user_id:
             raise ValueError("user_id is required (must be provided by the caller).")
@@ -240,7 +242,11 @@ class ChatbotService:
         # 显式关闭 graph：走 legacy 流式实现，确保开关语义符合部署预期。
         if not self._chatbot_cfg.graph_enabled:
             try:
-                async for ev in self._stream_chat_legacy_events(req, stream_id=stream_id):
+                async for ev in self._stream_chat_legacy_events(
+                    req,
+                    stream_id=stream_id,
+                    original_image_urls=original_image_urls,
+                ):
                     yield ev
                 return
             finally:
@@ -251,6 +257,7 @@ class ChatbotService:
                 req,
                 stream_id=stream_id,
                 cancel_checker=self._stream_ctrl.is_cancelled,
+                original_image_urls=original_image_urls,
             ):
                 yield ev
             return
@@ -258,12 +265,21 @@ class ChatbotService:
             if not self._chatbot_cfg.fallback_legacy_on_error:
                 raise
             logger.exception("ChatbotService.stream_chat_events graph failed, fallback to legacy path.")
-            async for ev in self._stream_chat_legacy_events(req, stream_id=stream_id):
+            async for ev in self._stream_chat_legacy_events(
+                req,
+                stream_id=stream_id,
+                original_image_urls=original_image_urls,
+            ):
                 yield ev
         finally:
             await self._stream_ctrl.clear_stream(req.user_id, req.session_id, stream_id)
 
-    async def _stream_chat_legacy_events(self, req: ChatRequest, stream_id: str | None = None) -> AsyncIterator[Dict[str, Any]]:
+    async def _stream_chat_legacy_events(
+        self,
+        req: ChatRequest,
+        stream_id: str | None = None,
+        original_image_urls: list[str] | None = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
         """
         旧版流式路径（兜底/回退专用）。
 
@@ -315,7 +331,7 @@ class ChatbotService:
                 )
             if answer:
                 yield {"type": "delta", "delta": answer}
-            self._append_user_with_images(req)
+            self._append_user_with_images(req, original_image_urls=original_image_urls)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
             yield {
                 "type": "finished",
@@ -360,7 +376,7 @@ class ChatbotService:
                     max_total=min(3, cfg.suggested_questions_max),
                 )
             yield {"type": "delta", "delta": answer}
-            self._append_user_with_images(req)
+            self._append_user_with_images(req, original_image_urls=original_image_urls)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
             yield {
                 "type": "finished",
@@ -406,7 +422,7 @@ class ChatbotService:
         async for delta in self._llm.stream_chat(model=None, messages=messages):  # type: ignore[arg-type]
             if await self._is_stream_cancelled(req, stream_id):
                 partial = "".join(parts).strip()
-                self._append_user_with_images(req)
+                self._append_user_with_images(req, original_image_urls=original_image_urls)
                 if self._chatbot_cfg.persist_partial_on_disconnect and partial:
                     self._conv.append_assistant_message(req.user_id, req.session_id, f"[partial] {partial}")
                 yield {
@@ -480,7 +496,7 @@ class ChatbotService:
                 llm_client=self._llm,
                 max_total=cfg.suggested_questions_max,
             )
-        self._append_user_with_images(req)
+        self._append_user_with_images(req, original_image_urls=original_image_urls)
         if full:
             self._conv.append_assistant_message(req.user_id, req.session_id, full)
         yield {
@@ -567,9 +583,18 @@ class ChatbotService:
         new_urls = await self._image_preprocessor.preprocess_urls(imgs)
         return req.model_copy(update={"image_urls": new_urls})
 
-    def _append_user_with_images(self, req: ChatRequest) -> None:
-        content = build_user_message_with_images(req.query, req.image_urls)
+    def _append_user_with_images(self, req: ChatRequest, original_image_urls: list[str] | None = None) -> None:
+        content = build_user_message_with_images(
+            req.query,
+            req.image_urls,
+            original_image_urls=self._clean_image_urls(original_image_urls or []),
+            processed_image_urls=self._clean_image_urls(req.image_urls),
+        )
         self._conv.append_user_message(req.user_id, req.session_id, content)
+
+    @staticmethod
+    def _clean_image_urls(image_urls: list[str]) -> list[str]:
+        return [u for u in image_urls if isinstance(u, str) and u.strip()]
 
     async def stop_stream(self, user_id: str, session_id: str, stream_id: str) -> None:
         await self._stream_ctrl.cancel_stream(user_id, session_id, stream_id)

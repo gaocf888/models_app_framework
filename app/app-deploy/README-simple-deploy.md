@@ -20,7 +20,7 @@
 
 ## 1. 组件与依赖概览
 
-上线智能客服 / 通用 LLM API 时，通常需要以下容器：
+上线智能客服 / 综合分析 / 检修报告结构化提取 / 通用 LLM API 时，通常需要以下容器：
 
 | 能力 | 目录 | 说明 |
 |------|------|------|
@@ -28,7 +28,7 @@
 | RAG 向量 + 全文库 | `rag_db-deploy/` | EasySearch，存储知识库文档 |
 | PDF 扫描解析（可选） | `mineru-deploy/` | 提供 `mineru-api`（扫描件 PDF 转 Markdown） |
 | 图数据库（可选 GraphRAG） | `graphrag_db-deploy/` | Neo4j，当前聊天默认仍以向量 RAG 为主 |
-| 应用 API | `app/app-deploy/` | FastAPI 服务，暴露 `/chatbot/*`、`/llm/*`、`/analysis/*` 等 |
+| 应用 API | `app/app-deploy/` | FastAPI 服务，暴露 `/chatbot/*`、`/llm/*`、`/analysis/*`、`/inspection-extract/*` 等 |
 | 会话存储 | `app/app-deploy/` 内置 Redis | 存储会话历史，可通过 `REDIS_URL` 切换到外部 Redis |
 
 部署顺序推荐：**EasySearch → vLLM →（可选）MinerU →（可选 Neo4j）→ 应用栈**。
@@ -394,6 +394,37 @@ curl -s "http://127.0.0.1:8000/health"
 curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
 ```
 
+### 4.1.1 `/inspection-extract/upload` + `/inspection-extract/run` 测试（检修报告结构化提取）
+
+推荐调用顺序：先 upload，再 run。
+
+```bash
+# 1) 上传文档（返回 url 与 source_type）
+curl -s -X POST "http://127.0.0.1:${APP_PORT:-8083}/inspection-extract/upload" \
+  -H "Authorization: Bearer ${SERVICE_API_KEY}" \
+  -F "file=@/path/to/report.docx"
+
+# 2) 使用上一步返回的 url 调用 run
+curl -s -X POST "http://127.0.0.1:${APP_PORT:-8083}/inspection-extract/run" \
+  -H "Authorization: Bearer ${SERVICE_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "demo-user",
+    "session_id": "demo-session",
+    "source_type": "docx",
+    "content": "https://minio.xxx/presigned-url",
+    "strict": false,
+    "return_evidence": true
+  }'
+```
+
+期望响应：
+
+- HTTP 200；
+- `records` 返回结构化结果；
+- `summary` 包含 `total/defect_count/replace_count`；
+- `trace.parse_route` 可见 `docx`、`pdf_text` 或 `mineru`。
+
 ### 4.2 `/chatbot/chat` 测试（兼容接口）
 
 ```bash
@@ -460,6 +491,7 @@ docker compose down
 
 - 需要完整参数与治理策略时：`app/app-deploy/README.md`。  
 - 智能客服链路设计：`framework-guide/智能客服整体实现技术说明.md`。  
+- 检修报告结构化提取：`framework-guide/报告解析企业级实现方案.md`、`enterprise-level_transformation_docs/企业级检修报告结构化提取实现和使用说明.md`。  
 - RAG / GraphRAG 细节：`framework-guide/RAG整体实现技术说明.md`。  
 - 底座数据库部署：`rag_db-deploy/README.md`、`graphrag_db-deploy/README.md`。  
 - 大模型服务部署：`vllm-deploy/README.md`。\n

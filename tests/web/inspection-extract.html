@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>检修报告结构化提取测试 · /inspection-extract</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --ok: #22c55e;
+      --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 1.25rem 1rem 2rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin-bottom: 1.25rem; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+    @media (min-width: 780px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+      .grid .full { grid-column: 1 / -1; }
+    }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      margin: 0;
+      padding: 0.75rem 1rem 1rem;
+    }
+    legend { padding: 0 0.35rem; color: var(--muted); font-size: 0.8rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"],
+    input[type="url"],
+    input[type="password"],
+    select,
+    textarea {
+      width: 100%;
+      margin-top: 0.2rem;
+      padding: 0.45rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    input[type="file"] {
+      width: 100%;
+      margin-top: 0.25rem;
+      padding: 0.45rem 0.4rem;
+      border-radius: 6px;
+      border: 1px dashed var(--border);
+      background: #0d1117;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; align-items: center; margin-top: 0.5rem; }
+    .row label { display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--text); font-size: 0.875rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+    button {
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button.primary { background: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.secondary { background: var(--border); color: var(--text); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .out {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      min-height: 200px;
+      padding: 1rem;
+    }
+    .out h2 { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.5rem; font-weight: 500; }
+    #status { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; white-space: pre-wrap; }
+    #uploadResult, #runResult {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.82rem;
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem;
+      min-height: 4rem;
+      max-height: 360px;
+      overflow: auto;
+    }
+    .ok { color: var(--ok); }
+    .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
+    code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>检修报告结构化提取测试</h1>
+    <p class="sub">
+      推荐流程：先调用 <code>POST /inspection-extract/upload</code> 上传本地文件，再将返回的 URL 用于
+      <code>POST /inspection-extract/run</code>。请求头带
+      <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。
+    </p>
+
+    <div class="grid">
+      <fieldset>
+        <legend>连接与鉴权</legend>
+        <label>API 根地址（不含路径尾斜杠）</label>
+        <input type="url" id="baseUrl" value="http://127.0.0.1:8083" autocomplete="off" />
+        <label>Service API Key（可空，仅服务端关闭鉴权时可用）</label>
+        <input type="password" id="apiKey" placeholder="粘贴密钥" autocomplete="off" />
+      </fieldset>
+
+      <fieldset>
+        <legend>会话参数（run 接口）</legend>
+        <label>user_id</label>
+        <input type="text" id="userId" value="u_web_inspect" autocomplete="off" />
+        <label>session_id</label>
+        <input type="text" id="sessionId" value="u_web_inspect_s_001" autocomplete="off" />
+      </fieldset>
+
+      <fieldset class="full">
+        <legend>上传本地文件 -> MinIO</legend>
+        <label>选择报告文件（支持 doc/docx/pdf）</label>
+        <input type="file" id="fileInput" accept=".doc,.docx,.pdf,.md,.txt" />
+        <div class="actions">
+          <button type="button" class="primary" id="btnUpload">1) 上传文件</button>
+          <button type="button" class="secondary" id="btnUseUpload" disabled>将上传结果填充到 run 参数</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>run 参数</legend>
+        <label>source_type</label>
+        <select id="sourceType">
+          <option value="docx">docx</option>
+          <option value="pdf">pdf</option>
+          <option value="markdown">markdown</option>
+          <option value="text">text</option>
+          <option value="html">html</option>
+        </select>
+        <label>content（建议填 upload 返回的 MinIO URL）</label>
+        <textarea id="content" rows="3" placeholder="https://minio...presigned-url"></textarea>
+      </fieldset>
+
+      <fieldset>
+        <legend>可选参数</legend>
+        <label>prompt_version（空则服务端默认）</label>
+        <input type="text" id="promptVersion" placeholder="v1" />
+        <div class="row">
+          <label><input type="checkbox" id="strict" /> strict</label>
+          <label><input type="checkbox" id="returnEvidence" checked /> return_evidence</label>
+        </div>
+      </fieldset>
+    </div>
+
+    <div class="actions" style="margin-top: 1rem;">
+      <button type="button" class="primary" id="btnRun">2) 执行结构化提取</button>
+      <button type="button" class="secondary" id="btnClear">清空输出</button>
+    </div>
+
+    <div class="out" style="margin-top: 1rem;">
+      <div id="status">就绪</div>
+      <h2>upload 响应</h2>
+      <div id="uploadResult">（尚未上传）</div>
+      <h2 style="margin-top: 1rem;">run 响应</h2>
+      <div id="runResult">（尚未执行）</div>
+      <div id="err" class="err" hidden></div>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  let lastUpload = null;
+
+  const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
+  const authHeaders = (extra) => {
+    const h = Object.assign({}, extra || {});
+    const k = $("apiKey").value.trim();
+    if (k) h["Authorization"] = "Bearer " + k;
+    return h;
+  };
+
+  function setStatus(msg, ok = false) {
+    const el = $("status");
+    el.textContent = msg;
+    el.className = ok ? "ok" : "";
+  }
+
+  function showErr(msg) {
+    const el = $("err");
+    if (!msg) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.hidden = false;
+    el.textContent = msg;
+  }
+
+  function pretty(obj) {
+    try { return JSON.stringify(obj, null, 2); } catch (_) { return String(obj); }
+  }
+
+  async function readJsonSafe(resp) {
+    const text = await resp.text();
+    try {
+      return { json: JSON.parse(text), raw: text };
+    } catch (_) {
+      return { json: null, raw: text };
+    }
+  }
+
+  $("btnUpload").addEventListener("click", async () => {
+    showErr("");
+    const file = $("fileInput").files && $("fileInput").files[0];
+    if (!file) {
+      showErr("请先选择本地文件。");
+      return;
+    }
+    setStatus("上传中…");
+    $("btnUpload").disabled = true;
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const resp = await fetch(baseUrl() + "/inspection-extract/upload", {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+        credentials: "omit",
+      });
+      const out = await readJsonSafe(resp);
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 2000));
+      }
+      lastUpload = out.json;
+      $("uploadResult").textContent = pretty(out.json || out.raw);
+      $("btnUseUpload").disabled = !lastUpload;
+      setStatus("上传成功", true);
+    } catch (e) {
+      setStatus("上传失败");
+      showErr(String(e.message || e));
+    } finally {
+      $("btnUpload").disabled = false;
+    }
+  });
+
+  $("btnUseUpload").addEventListener("click", () => {
+    if (!lastUpload) return;
+    if (lastUpload.source_type) $("sourceType").value = String(lastUpload.source_type);
+    if (lastUpload.url) $("content").value = String(lastUpload.url);
+    setStatus("已填充 upload 返回的 source_type/url", true);
+  });
+
+  $("btnRun").addEventListener("click", async () => {
+    showErr("");
+    setStatus("执行中…");
+    $("btnRun").disabled = true;
+    const body = {
+      user_id: $("userId").value.trim(),
+      session_id: $("sessionId").value.trim(),
+      source_type: $("sourceType").value,
+      content: $("content").value.trim(),
+      strict: $("strict").checked,
+      return_evidence: $("returnEvidence").checked,
+    };
+    const pv = $("promptVersion").value.trim();
+    if (pv) body.prompt_version = pv;
+
+    try {
+      const resp = await fetch(baseUrl() + "/inspection-extract/run", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json", Accept: "application/json" }),
+        body: JSON.stringify(body),
+        credentials: "omit",
+      });
+      const out = await readJsonSafe(resp);
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 3000));
+      }
+      $("runResult").textContent = pretty(out.json || out.raw);
+      setStatus("执行完成", true);
+    } catch (e) {
+      setStatus("执行失败");
+      showErr(String(e.message || e));
+    } finally {
+      $("btnRun").disabled = false;
+    }
+  });
+
+  $("btnClear").addEventListener("click", () => {
+    $("uploadResult").textContent = "（尚未上传）";
+    $("runResult").textContent = "（尚未执行）";
+    showErr("");
+    setStatus("已清空");
+    lastUpload = null;
+    $("btnUseUpload").disabled = true;
+  });
+})();
+  </script>
+</body>
+</html>
+

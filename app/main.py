@@ -73,6 +73,13 @@ def create_app() -> FastAPI:
                 "须携带 `Authorization: Bearer <SERVICE_API_KEY>`（密钥生成见 `app/auth/keygen.py` 与部署文档）。"
             ),
         },
+        {
+            "name": "inspection-extract",
+            "description": (
+                "检修报告结构化提取：针对 docx/pdf 检修报告进行字段抽取与标准化输出。"
+                "须携带 `Authorization: Bearer <SERVICE_API_KEY>`。"
+            ),
+        },
     ]
 
     app = FastAPI(title="AI App Platform", version="1.0.0", openapi_tags=tags_metadata)
@@ -110,7 +117,7 @@ def create_app() -> FastAPI:
     async def health_api_prefix() -> dict:
         return {"status": "ok"}
 
-    from app.api import analysis, chatbot, llm_inference, nl2sql, rag_admin, small_model, train_admin
+    from app.api import analysis, chatbot, inspection_extract, llm_inference, nl2sql, rag_admin, small_model, train_admin
 
     _auth = [Depends(require_service_api_key)]
 
@@ -143,6 +150,12 @@ def create_app() -> FastAPI:
         nl2sql.router,
         prefix="/nl2sql",
         tags=["nl2sql"],
+        dependencies=_auth,
+    )
+    app.include_router(
+        inspection_extract.router,
+        prefix="/inspection-extract",
+        tags=["inspection-extract"],
         dependencies=_auth,
     )
     app.include_router(

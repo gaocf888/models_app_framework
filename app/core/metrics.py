@@ -143,3 +143,30 @@ ANALYSIS_TRACE_INDEX_CLEANUP_COUNT = Counter(
     ["index_type"],
 )
 
+# Inspection Extract 指标：请求量、解析与 LLM 耗时、输出记录数、校验失败数。
+INSPECT_EXTRACT_REQUEST_COUNT = Counter(
+    "inspect_extract_requests_total",
+    "Total inspection extract requests",
+    ["status"],
+)
+
+INSPECT_EXTRACT_PARSE_LATENCY = Histogram(
+    "inspect_extract_parse_latency_seconds",
+    "Inspection extract parse latency in seconds",
+)
+
+INSPECT_EXTRACT_LLM_LATENCY = Histogram(
+    "inspect_extract_llm_latency_seconds",
+    "Inspection extract LLM latency in seconds",
+)
+
+INSPECT_EXTRACT_RECORD_COUNT = Counter(
+    "inspect_extract_records_total",
+    "Total structured records extracted",
+)
+
+INSPECT_EXTRACT_VALIDATION_FAIL_COUNT = Counter(
+    "inspect_extract_validation_fail_total",
+    "Total validation failures in extracted records",
+)
+

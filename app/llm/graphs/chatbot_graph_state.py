@@ -25,6 +25,7 @@ class ChatbotGraphState(TypedDict, total=False):
     user_id: str
     session_id: str
     query: str
+    original_image_urls: List[str]
     image_urls: List[str]
     enable_rag: bool
     enable_context: bool
