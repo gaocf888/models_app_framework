@@ -490,6 +490,10 @@ class InspectionExtractConfig:
     max_repair_retries: int = 1
     prompt_version: str = "v1"
     model_name: str | None = None
+    llm_timeout_seconds: float = 180.0
+    llm_max_tokens_parse: int = 1024
+    llm_max_tokens_classify: int = 1024
+    llm_max_tokens_repair: int = 768
 
 
 @dataclass
@@ -856,6 +860,10 @@ def _load_from_env() -> AppConfig:
         max_repair_retries=max(0, int(os.getenv("INSPECT_EXTRACT_MAX_REPAIR_RETRIES", "1"))),
         prompt_version=(os.getenv("INSPECT_EXTRACT_PROMPT_VERSION", "v1") or "v1").strip(),
         model_name=(os.getenv("INSPECT_EXTRACT_MODEL_NAME") or "").strip() or None,
+        llm_timeout_seconds=max(10.0, float(os.getenv("INSPECT_EXTRACT_LLM_TIMEOUT_SECONDS", "180"))),
+        llm_max_tokens_parse=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_PARSE", "1024"))),
+        llm_max_tokens_classify=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_CLASSIFY", "1024"))),
+        llm_max_tokens_repair=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_REPAIR", "768"))),
     )
 
     cfg = AppConfig(

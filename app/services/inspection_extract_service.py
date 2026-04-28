@@ -114,6 +114,11 @@ class InspectionExtractService:
                 threshold_rules=threshold_rules,
                 parsed_text=parsed_text,
             )
+            if not records:
+                if raw_records:
+                    warnings.append("all_records_failed_validation")
+                else:
+                    warnings.append("llm_no_records_extracted")
             summary = self._build_summary(records, warnings)
             INSPECT_EXTRACT_RECORD_COUNT.inc(len(records))
 
@@ -178,6 +183,7 @@ class InspectionExtractService:
         model: str,
     ) -> list[dict[str, Any]]:
         snippets = parsed_text[:20000]
+        llm_timeout_s = float(getattr(self._cfg, "llm_timeout_seconds", 180.0))
         parse_tpl = self._get_prompt_content(scene="inspection_extract_parse", user_id=req.user_id, version=prompt_version)
         classify_tpl = self._get_prompt_content(
             scene="inspection_extract_classify", user_id=req.user_id, version=prompt_version
@@ -190,9 +196,21 @@ class InspectionExtractService:
             "records 每项尽量包含：检测位置、行号、管号、壁厚、evidence。\n"
             f"文档内容如下（已截断）：\n{snippets}"
         )
-        parse_result = await self._llm.generate(model=model, prompt=parse_prompt)
+        logger.info(
+            "inspection_extract llm stage=parse model=%s prompt_chars=%s timeout_s=%.1f",
+            model,
+            len(parse_prompt),
+            llm_timeout_s,
+        )
+        parse_result = await self._llm.generate(
+            model=model,
+            prompt=parse_prompt,
+            timeout=llm_timeout_s,
+            max_tokens=int(getattr(self._cfg, "llm_max_tokens_parse", 1024)),
+        )
         stage1 = self._extract_json_like(parse_result)
         stage1_records = self._extract_records(stage1)
+        logger.info("inspection_extract llm stage=parse result_records=%s", len(stage1_records))
 
         classify_prompt = (
             f"{classify_tpl}\n\n"
@@ -203,25 +221,75 @@ class InspectionExtractService:
             f"候选记录(JSON)：{json.dumps(stage1_records, ensure_ascii=False)}\n"
             f"文档摘要：{snippets[:8000]}"
         )
-        classify_result = await self._llm.generate(model=model, prompt=classify_prompt)
+        logger.info(
+            "inspection_extract llm stage=classify model=%s records_in=%s prompt_chars=%s timeout_s=%.1f",
+            model,
+            len(stage1_records),
+            len(classify_prompt),
+            llm_timeout_s,
+        )
+        classify_result = await self._llm.generate(
+            model=model,
+            prompt=classify_prompt,
+            timeout=llm_timeout_s,
+            max_tokens=int(getattr(self._cfg, "llm_max_tokens_classify", 1024)),
+        )
         stage2 = self._extract_json_like(classify_result)
         stage2_records = self._extract_records(stage2)
+        logger.info("inspection_extract llm stage=classify result_records=%s", len(stage2_records))
+
+        if not self._need_repair(stage2_records):
+            logger.info("inspection_extract llm skip_repair records=%s", len(stage2_records))
+            return stage2_records
+
+        if len(stage2_records) > 200:
+            logger.info("inspection_extract llm skip_repair_too_many_records records=%s", len(stage2_records))
+            return stage2_records
 
         retries = max(0, int(self._cfg.max_repair_retries))
         candidate_records = stage2_records
         for _ in range(retries + 1):
+            repair_input = candidate_records
             repair_prompt = (
                 f"{repair_tpl}\n\n"
                 "请仅输出 JSON。顶层对象包含 records 数组。\n"
                 "修复项：字段缺失、枚举非法、数字格式错误。无法修复时保留 warnings。\n"
-                f"待修复记录(JSON)：{json.dumps(candidate_records, ensure_ascii=False)}"
+                f"待修复记录(JSON)：{json.dumps(repair_input, ensure_ascii=False)}"
             )
-            repaired_result = await self._llm.generate(model=model, prompt=repair_prompt)
+            logger.info(
+                "inspection_extract llm stage=repair model=%s records_in=%s prompt_chars=%s timeout_s=%.1f",
+                model,
+                len(repair_input),
+                len(repair_prompt),
+                llm_timeout_s,
+            )
+            repaired_result = await self._llm.generate(
+                model=model,
+                prompt=repair_prompt,
+                timeout=llm_timeout_s,
+                max_tokens=int(getattr(self._cfg, "llm_max_tokens_repair", 768)),
+            )
             stage3 = self._extract_json_like(repaired_result)
             candidate_records = self._extract_records(stage3)
+            logger.info("inspection_extract llm stage=repair result_records=%s", len(candidate_records))
             if candidate_records:
                 break
         return candidate_records
+
+    @staticmethod
+    def _need_repair(records: list[dict[str, Any]]) -> bool:
+        if not records:
+            return True
+        for rec in records:
+            if not isinstance(rec, dict):
+                return True
+            keys = set(rec.keys())
+            if "检测位置" in keys and "壁厚" in keys:
+                continue
+            if "location" in keys and ("thickness" in keys or "壁厚" in keys):
+                continue
+            return True
+        return False
 
     def _post_process_records(
         self,
