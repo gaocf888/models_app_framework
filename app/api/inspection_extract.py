@@ -17,7 +17,12 @@ async def upload_inspection_report(file: UploadFile = File(...)) -> InspectionUp
     return await service.upload_file(file_name=file.filename or "inspection_report.bin", content=data, content_type=file.content_type)
 
 
-@router.post("/run", response_model=InspectionExtractResponse, summary="检修报告结构化提取")
+@router.post(
+    "/run",
+    response_model=InspectionExtractResponse,
+    response_model_exclude={"records": {"__all__": {"evidence", "warnings"}}},
+    summary="检修报告结构化提取",
+)
 async def run_inspection_extract(req: InspectionExtractRequest) -> InspectionExtractResponse:
     return await service.extract_from_document(req)
 

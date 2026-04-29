@@ -93,8 +93,8 @@ class InspectionExtractLlmOrchestrator:
                 parse_prompt = (
                     f"{parse_tpl}\n\n"
                     "优先输出 NDJSON（每行一个 JSON 对象，不加 markdown 代码块）。\n"
-                    "每个对象应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管。\n"
-                    "可选补充字段：evidence、warnings。\n"
+                    "每个对象应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管、evidence、warnings。\n"
+                    "其中 evidence 为空时填 null；warnings 为空时填 []。\n"
                     "若你无法输出 NDJSON，则回退输出 JSON：{\"records\":[...]}。\n"
                     f"文档分块如下（第{idx}/{len(chunks)}块）：\n{chunk}"
                 )
@@ -125,10 +125,12 @@ class InspectionExtractLlmOrchestrator:
                     records_i = _salvage_records_from_truncated_json(parse_result)
                     if records_i:
                         parse_format = "json_salvage"
+                records_i = _ensure_debug_fields(records_i)
                 logger.info("inspection_extract llm stage=parse chunk=%s result_records=%s", idx, len(records_i))
                 logger.info("inspection_extract parse chunk=%s parse_format=%s", idx, parse_format)
                 if records_i and isinstance(records_i[0], dict):
                     logger.info("inspection_extract parse records sample_keys=%s", sorted(records_i[0].keys()))
+                    self._log_parse_chunk_records(stage=f"parse[{idx}/{len(chunks)}]", records=records_i)
                 if records_i:
                     logger.info("【检修提取】分块 %s/%s 解析成功，记录数=%s，尝试次数=%s", idx, len(chunks), len(records_i), attempt + 1)
                     break
@@ -309,6 +311,16 @@ class InspectionExtractLlmOrchestrator:
                 part,
             )
 
+    def _log_parse_chunk_records(self, *, stage: str, records: list[dict[str, Any]]) -> None:
+        if not bool(getattr(self._cfg, "log_llm_raw_response", False)):
+            return
+        limit = int(getattr(self._cfg, "log_llm_raw_max_chars", 2000))
+        text = json.dumps(records, ensure_ascii=False)
+        clipped = text[:limit]
+        if len(text) > limit:
+            clipped += f"\n...<truncated {len(text) - limit} chars>"
+        logger.info("inspection_extract parse normalized_records stage=%s payload=\n%s", stage, clipped)
+
 
 def _batch_records(records: list[dict[str, Any]], *, batch_size: int) -> list[list[dict[str, Any]]]:
     if not records:
@@ -316,6 +328,24 @@ def _batch_records(records: list[dict[str, Any]], *, batch_size: int) -> list[li
     out: list[list[dict[str, Any]]] = []
     for i in range(0, len(records), max(1, batch_size)):
         out.append(records[i : i + max(1, batch_size)])
+    return out
+
+
+def _ensure_debug_fields(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for x in records or []:
+        if not isinstance(x, dict):
+            continue
+        y = dict(x)
+        y.setdefault("evidence", None)
+        w = y.get("warnings")
+        if w is None:
+            y["warnings"] = []
+        elif isinstance(w, list):
+            y["warnings"] = [str(i) for i in w]
+        else:
+            y["warnings"] = [str(w)]
+        out.append(y)
     return out
 
 
