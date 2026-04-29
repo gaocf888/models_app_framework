@@ -66,7 +66,17 @@ class InspectionExtractLlmOrchestrator:
         stage1_records: list[dict[str, Any]] = []
         for idx, chunk in enumerate(chunks, start=1):
             records_i: list[dict[str, Any]] = []
-            logger.info("【检修提取】开始解析分块 %s/%s，长度=%s", idx, len(chunks), len(chunk))
+            chunk_meta = _summarize_chunk(chunk)
+            logger.info(
+                "【检修提取】开始解析分块 %s/%s，长度=%s heading_path=%s text_lines=%s table_lines=%s table_blocks=%s",
+                idx,
+                len(chunks),
+                len(chunk),
+                chunk_meta["heading_path"],
+                chunk_meta["text_lines"],
+                chunk_meta["table_lines"],
+                chunk_meta["table_blocks"],
+            )
             for attempt in range(parse_chunk_retry + 1):
                 parse_prompt = (
                     f"{parse_tpl}\n\n"
@@ -240,6 +250,37 @@ def _batch_records(records: list[dict[str, Any]], *, batch_size: int) -> list[li
     for i in range(0, len(records), max(1, batch_size)):
         out.append(records[i : i + max(1, batch_size)])
     return out
+
+
+def _summarize_chunk(chunk: str) -> dict[str, Any]:
+    lines = [x.strip() for x in (chunk or "").splitlines() if x.strip()]
+    if not lines:
+        return {"heading_path": "-", "text_lines": 0, "table_lines": 0, "table_blocks": 0}
+
+    heading_path = "-"
+    text_lines = 0
+    table_lines = 0
+    table_blocks = 0
+
+    heading_re = re.compile(r"^\[处理单元\s+heading_path=(.+?)\]\s*$")
+    for ln in lines:
+        m = heading_re.match(ln)
+        if m:
+            heading_path = m.group(1).strip() or "-"
+            continue
+        if ln.startswith("[DOCX_V2_TABLE"):
+            table_blocks += 1
+            continue
+        if re.match(r"^r\d+\s*:", ln):
+            table_lines += 1
+            continue
+        text_lines += 1
+    return {
+        "heading_path": heading_path,
+        "text_lines": text_lines,
+        "table_lines": table_lines,
+        "table_blocks": table_blocks,
+    }
 
 
 def _need_repair(records: list[dict[str, Any]]) -> bool:
