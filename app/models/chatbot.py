@@ -146,8 +146,40 @@ class SessionMessageDeleteResponse(BaseModel):
     ok: bool = Field(True, description="是否成功")
     user_id: str = Field(..., description="用户 ID")
     session_id: str = Field(..., description="会话 ID")
-    message_id: str = Field(..., description="已删除消息的 message_id")
-    deleted: bool = Field(True, description="热层或冷层是否至少删除到一条记录")
+    message_ids: list[str] = Field(default_factory=list, description="请求删除的 message_id 列表")
+    deleted_ids: list[str] = Field(default_factory=list, description="实际删除成功的 message_id 列表")
+    not_found_ids: list[str] = Field(default_factory=list, description="未找到的 message_id 列表")
+    deleted_count: int = Field(0, description="删除成功数量")
+
+
+class SessionMessagesDeleteRequest(BaseModel):
+    user_id: str = Field(..., description="用户 ID")
+    session_id: str = Field(..., description="会话 ID")
+    message_ids: list[str] = Field(default_factory=list, description="待删除的 message_id 列表")
+
+    @field_validator("user_id")
+    @classmethod
+    def _validate_del_user_id(cls, v: str) -> str:
+        return validate_user_id(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_del_session_id(cls, v: str) -> str:
+        return validate_session_id(v)
+
+    @field_validator("message_ids", mode="before")
+    @classmethod
+    def _normalize_message_ids(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return []
+        out: list[str] = []
+        for x in v:
+            s = str(x or "").strip().lower()
+            if s:
+                out.append(s)
+        return out
 
 
 class SessionTitlePatchRequest(BaseModel):

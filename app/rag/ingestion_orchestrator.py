@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -14,6 +14,7 @@ from app.core.logging import get_logger
 from app.rag.document_repository import DocumentRepository, make_document_storage_key
 from app.rag.document_pipeline import ChunkingConfig, DocumentPipeline
 from app.rag.ingestion import RAGIngestionService
+from app.rag.ingestion_job_queue import IngestionJobQueue
 from app.rag.job_repository import JobRepository
 from app.rag.content_url_fetch import ContentFetchError, materialize_document_content_from_url
 from app.rag.mineru_errors import MinerUParseError
@@ -41,22 +42,25 @@ class IngestionOrchestrator:
         )
         self._pipeline_version = ingest_cfg.pipeline_version
         self._tenant_id_default = ingest_cfg.tenant_id_default or "__tenant__"
-        max_workers = max(1, ingest_cfg.max_concurrency)
-        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rag-ingest")
+        self._max_workers = max(1, ingest_cfg.max_concurrency)
         self._lock = threading.RLock()
         self._jobs: Dict[str, IngestionJob] = {}
+        self._stop_event = threading.Event()
+        self._worker_threads: list[threading.Thread] = []
         self._state_file = Path(state_dir) / "jobs.json"
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
         self._job_repo = JobRepository(state_dir=state_dir)
         self._doc_repo = DocumentRepository(state_dir=state_dir)
+        redis_url = os.getenv("REDIS_URL") or None
+        self._queue = IngestionJobQueue(redis_url=redis_url, key_prefix="rag:ingest:jobs")
         self._load_state()
-        if ingest_cfg.recover_stuck_running_on_startup:
-            recovered = self.recover_stuck_jobs(max_stuck_seconds=ingest_cfg.running_stuck_timeout_seconds)
-            if recovered > 0:
-                logger.warning("recovered %s stale RUNNING ingestion jobs on startup", recovered)
+        self._recover_and_requeue_on_startup(max_stuck_seconds=ingest_cfg.running_stuck_timeout_seconds)
+        self._start_workers()
 
     def close(self) -> None:
-        self._executor.shutdown(wait=True, cancel_futures=False)
+        self._stop_event.set()
+        for t in self._worker_threads:
+            t.join(timeout=1.0)
 
     def submit_job(
         self,
@@ -93,10 +97,97 @@ class IngestionOrchestrator:
             },
         )
         with self._lock:
+            cfg = chunk_cfg or self._default_chunk_cfg
+            job.metrics["chunk_cfg"] = {
+                "chunk_size": int(cfg.chunk_size),
+                "chunk_overlap": int(cfg.chunk_overlap),
+                "min_chunk_size": int(cfg.min_chunk_size),
+            }
             self._jobs[job_id] = job
             self._save_state()
-        self._executor.submit(self._guarded_run_job, job_id, chunk_cfg)
+            self._save_job_record(job)
+        queued = self._queue.enqueue(job_id)
+        if not queued:
+            # 无 Redis 时回退进程内执行；有 Redis但已在队列中时无需重复入队。
+            if not self._queue.enabled:
+                self._start_local_job_thread(job_id)
         return job_id
+
+    def _start_workers(self) -> None:
+        if self._queue.enabled:
+            for i in range(self._max_workers):
+                t = threading.Thread(target=self._queue_worker_loop, name=f"rag-ingest-qw-{i}", daemon=True)
+                t.start()
+                self._worker_threads.append(t)
+            logger.info("started ingestion queue workers: count=%s", len(self._worker_threads))
+
+    def _start_local_job_thread(self, job_id: str) -> None:
+        t = threading.Thread(target=self._guarded_run_job, args=(job_id,), daemon=True, name=f"rag-ingest-{job_id[:8]}")
+        t.start()
+        self._worker_threads.append(t)
+
+    def _queue_worker_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                job_id = self._queue.pop(block_timeout_s=2)
+                if not job_id:
+                    continue
+                if not self._queue.acquire_lease(job_id):
+                    logger.warning("skip duplicate claimed ingestion job due active lease: job_id=%s", job_id)
+                    self._queue.nack_requeue(job_id)
+                    self._queue.sleep_briefly(0.2)
+                    continue
+                try:
+                    with self._lock:
+                        job = self._jobs.get(job_id)
+                    if job and job.status in (
+                        IngestionJobStatus.SUCCESS,
+                        IngestionJobStatus.FAILED,
+                        IngestionJobStatus.PARTIAL,
+                    ):
+                        self._queue.ack(job_id)
+                        continue
+                    self._guarded_run_job(job_id)
+                    self._queue.ack(job_id)
+                finally:
+                    self._queue.release_lease(job_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("ingestion queue worker loop error")
+                self._queue.sleep_briefly(0.5)
+
+    def _recover_and_requeue_on_startup(self, max_stuck_seconds: int) -> None:
+        if self._queue.enabled:
+            self._queue.requeue_processing_on_startup()
+        with self._lock:
+            jobs = list(self._jobs.values())
+        recovered_running = 0
+        requeued_pending = 0
+        for job in jobs:
+            if job.status == IngestionJobStatus.RUNNING:
+                job.status = IngestionJobStatus.PENDING
+                job.step = "requeued_after_restart"
+                job.error_code = "E_RESTART_RECOVERED"
+                job.error_message = "Recovered RUNNING job after service restart and re-queued."
+                job.finished_at = None
+                job.updated_at = utcnow_iso()
+                recovered_running += 1
+                with self._lock:
+                    self._jobs[job.job_id] = job
+                    self._save_state()
+                    self._save_job_record(job)
+            if job.status == IngestionJobStatus.PENDING:
+                if self._queue.enabled:
+                    if self._queue.enqueue(job.job_id):
+                        requeued_pending += 1
+                else:
+                    self._start_local_job_thread(job.job_id)
+        if recovered_running > 0 or requeued_pending > 0:
+            logger.warning(
+                "ingestion startup recovery: running_to_pending=%s pending_enqueued=%s max_stuck_seconds=%s",
+                recovered_running,
+                requeued_pending,
+                max_stuck_seconds,
+            )
 
     def get_job(self, job_id: str) -> Optional[IngestionJob]:
         """
@@ -146,6 +237,8 @@ class IngestionOrchestrator:
             old = self._jobs.get(job_id)
         if old is None:
             raise ValueError(f"job not found: {job_id}")
+        if chunk_cfg is None:
+            chunk_cfg = self._resolve_chunk_cfg(old)
         return self.submit_job(documents=old.documents, operator=old.operator, chunk_cfg=chunk_cfg)
 
     def list_jobs(self, limit: int = 20, offset: int = 0) -> List[IngestionJob]:
@@ -196,10 +289,10 @@ class IngestionOrchestrator:
                         self._save_job_record(job)
         return recovered
 
-    def _guarded_run_job(self, job_id: str, chunk_cfg: ChunkingConfig | None) -> None:
+    def _guarded_run_job(self, job_id: str) -> None:
         """线程入口：未捕获异常时落 FAILED，避免进程内永远 RUNNING 且无 ES 文档。"""
         try:
-            self._run_job(job_id, chunk_cfg)
+            self._run_job(job_id)
         except Exception as e:  # noqa: BLE001
             logger.exception("ingestion job thread crashed job_id=%s", job_id)
             with self._lock:
@@ -227,10 +320,16 @@ class IngestionOrchestrator:
                 except Exception:  # noqa: BLE001
                     logger.exception("save_job_record after job crash failed job_id=%s", job_id)
 
-    def _run_job(self, job_id: str, chunk_cfg: ChunkingConfig | None) -> None:
-        pipeline = DocumentPipeline(cfg=chunk_cfg or self._default_chunk_cfg)
+    def _run_job(self, job_id: str) -> None:
         with self._lock:
             job = self._jobs[job_id]
+        pipeline = DocumentPipeline(cfg=self._resolve_chunk_cfg(job))
+        with self._lock:
+            job = self._jobs[job_id]
+            # 清理历史恢复/失败字段，避免成功后残留 error_code/error_message。
+            job.error_code = None
+            job.error_message = None
+            job.finished_at = None
             job.status = IngestionJobStatus.RUNNING
             job.step = "validate_input"
             job.updated_at = utcnow_iso()
@@ -377,6 +476,8 @@ class IngestionOrchestrator:
             job.step = "finalize"
             if failed == 0:
                 job.status = IngestionJobStatus.SUCCESS
+                job.error_code = None
+                job.error_message = None
             elif failed == len(job.documents):
                 job.status = IngestionJobStatus.FAILED
                 job.error_code = "ALL_DOCS_FAILED"
@@ -402,6 +503,17 @@ class IngestionOrchestrator:
             job.metrics["step_durations_ms"][f"{doc_name}:{step}"] = int(max(0, elapsed_ms))
             self._save_state()
             self._save_job_record(job)
+
+    def _resolve_chunk_cfg(self, job: IngestionJob) -> ChunkingConfig:
+        raw = (job.metrics or {}).get("chunk_cfg") or {}
+        try:
+            return ChunkingConfig(
+                chunk_size=max(1, int(raw.get("chunk_size", self._default_chunk_cfg.chunk_size))),
+                chunk_overlap=max(0, int(raw.get("chunk_overlap", self._default_chunk_cfg.chunk_overlap))),
+                min_chunk_size=max(1, int(raw.get("min_chunk_size", self._default_chunk_cfg.min_chunk_size))),
+            )
+        except Exception:  # noqa: BLE001
+            return self._default_chunk_cfg
 
     @staticmethod
     def _validate_document(doc: DocumentSource) -> None:

@@ -6,7 +6,7 @@ from __future__ import annotations
 职责概览：
     - 提供非流式 `/chat`（已弃用，保留兼容）与流式 `/chat/stream`（SSE）对话入口；
     - 提供会话目录：`GET /sessions`（按 `user_id` 分页列举会话；方案 B：Redis `conv:index:` + `conv:meta:`，内存模式对齐）；
-    - 提供会话运维：`GET/DELETE /sessions/messages`、`DELETE /sessions/message`（单条消息）、`PATCH /sessions/title`（修改展示标题）。
+    - 提供会话运维：`GET/DELETE /sessions/messages`、`DELETE /sessions/message`（单条/批量消息）、`PATCH /sessions/title`（修改展示标题）。
 
 部署前置条件（运维/开发）：
     1) LLM 服务可用：正确配置模型名称、服务地址与对 vLLM/OpenAI 兼容端的访问参数。
@@ -37,6 +37,7 @@ from app.models.chatbot import (
     SessionListItem,
     SessionListResponse,
     SessionMessageDeleteResponse,
+    SessionMessagesDeleteRequest,
     SessionMessageItem,
     SessionMessagesResponse,
     SessionTitlePatchRequest,
@@ -50,6 +51,35 @@ router = APIRouter()
 _shared_conv = ConversationManager()
 service = ChatbotService(conv_manager=_shared_conv)
 _conv_admin = _shared_conv
+
+
+def _delete_messages_by_ids(user_id: str, session_id: str, message_ids: list[str]) -> SessionMessageDeleteResponse:
+    mids = [str(x or "").strip().lower() for x in (message_ids or []) if str(x or "").strip()]
+    if not mids:
+        raise HTTPException(status_code=422, detail="message_id is required")
+    # 去重并保持首现顺序，避免重复删除同一 id。
+    uniq_mids = list(dict.fromkeys(mids))
+    invalid = [x for x in uniq_mids if not is_valid_message_id_hex(x)]
+    if invalid:
+        raise HTTPException(status_code=422, detail=f"invalid message_id: {', '.join(invalid)}")
+    deleted_ids: list[str] = []
+    not_found_ids: list[str] = []
+    for mid in uniq_mids:
+        ok = _conv_admin.delete_message(user_id, session_id, mid)
+        if ok:
+            deleted_ids.append(mid)
+        else:
+            not_found_ids.append(mid)
+    if not deleted_ids:
+        raise HTTPException(status_code=404, detail="message not found")
+    return SessionMessageDeleteResponse(
+        user_id=user_id,
+        session_id=session_id,
+        message_ids=uniq_mids,
+        deleted_ids=deleted_ids,
+        not_found_ids=not_found_ids,
+        deleted_count=len(deleted_ids),
+    )
 
 
 @router.post("/chat", response_model=ChatResponse, summary="智能客服对话（基础版）", deprecated=True, include_in_schema=False)
@@ -245,31 +275,37 @@ async def get_session_messages(
 @router.delete(
     "/sessions/message",
     response_model=SessionMessageDeleteResponse,
-    summary="删除会话中的单条消息",
+    summary="删除会话中的单条或多条消息",
 )
 async def delete_session_message(
     user_id: Annotated[str, Query(description="调用方用户 ID")],
     session_id: Annotated[str, Query(description="会话 ID")],
-    message_id: Annotated[str, Query(description="消息 id，与 GET /sessions/messages 中 message_id 一致")],
+    message_id: Annotated[list[str], Query(description="消息 id 列表（可重复传参，与 GET /sessions/messages 中 message_id 一致）")],
 ) -> SessionMessageDeleteResponse:
     """
-    按 ``message_id`` 删除一条消息（热层 Redis/内存 + 冷层 ES 中同 id 文档）。
+    按 ``message_id`` 删除一条或多条消息（热层 Redis/内存 + 冷层 ES 中同 id 文档）。
 
-    - ``message_id`` 须为 64 位十六进制小写字符串；
-    - 热层与冷层至少一处删除成功则返回 200；均不存在则 404。
+    - ``message_id`` 支持重复 query 参数（如 ``?message_id=a&message_id=b``）；
+    - 每个 id 须为 64 位十六进制小写字符串；
+    - 全部均不存在时返回 404；部分成功返回 200 并在 ``not_found_ids`` 中给出未命中项。
     """
-    mid = (message_id or "").strip().lower()
-    if not is_valid_message_id_hex(mid):
-        raise HTTPException(status_code=422, detail="invalid message_id")
-    ok = _conv_admin.delete_message(user_id, session_id, mid)
-    if not ok:
-        raise HTTPException(status_code=404, detail="message not found")
-    return SessionMessageDeleteResponse(
-        user_id=user_id,
-        session_id=session_id,
-        message_id=mid,
-        deleted=True,
-    )
+    return _delete_messages_by_ids(user_id, session_id, message_id)
+
+
+@router.post(
+    "/sessions/messages/delete",
+    response_model=SessionMessageDeleteResponse,
+    summary="批量删除会话消息（Body 传 message_ids）",
+)
+async def delete_session_messages_batch(body: SessionMessagesDeleteRequest) -> SessionMessageDeleteResponse:
+    """
+    批量删除会话消息（推荐）：通过 JSON Body 传 ``message_ids`` 列表。
+
+    说明：
+    - 与 ``DELETE /sessions/message`` 逻辑一致；
+    - 适合网关/SDK 对 DELETE body 支持不稳定的场景。
+    """
+    return _delete_messages_by_ids(body.user_id, body.session_id, body.message_ids)
 
 
 @router.patch(

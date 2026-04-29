@@ -65,6 +65,24 @@ def _get_doc_repo() -> DocumentRepository:
     return DocumentRepository()
 
 
+def warmup_rag_admin_components() -> None:
+    """
+    Eagerly initialize orchestrator so queue workers and startup recovery run
+    when the app boots, not only on first ingest request.
+    """
+    _get_orchestrator()
+
+
+def shutdown_rag_admin_components() -> None:
+    """
+    Gracefully stop background workers on app shutdown.
+    """
+    try:
+        _get_orchestrator().close()
+    except Exception:  # noqa: BLE001
+        logger.warning("rag admin orchestrator close failed", exc_info=True)
+
+
 '''
 class IngestTextsRequest(BaseModel):
     dataset_id: str = Field(..., description="数据集标识")

@@ -45,7 +45,13 @@ class InspectionExtractLlmOrchestrator:
         snippets = parsed_text[:20000]
         llm_timeout_s = float(getattr(self._cfg, "llm_timeout_seconds", 180.0))
         parse_chunk_retry = 1
-        logger.info("【检修提取】开始LLM抽取流程，模型=%s，超时=%.1fs", model, llm_timeout_s)
+        logger.info(
+            "【检修提取】开始LLM抽取流程，模型=%s，超时=%.1fs，log_llm_raw=%s，log_parse_chunk_full=%s",
+            model,
+            llm_timeout_s,
+            bool(getattr(self._cfg, "log_llm_raw_response", False)),
+            bool(getattr(self._cfg, "log_parse_chunk_full", False)),
+        )
         parse_tpl = self._get_prompt_content(scene="inspection_extract_parse", user_id=req.user_id, version=prompt_version)
         classify_tpl = self._get_prompt_content(
             scene="inspection_extract_classify", user_id=req.user_id, version=prompt_version

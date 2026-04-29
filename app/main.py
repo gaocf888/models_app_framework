@@ -172,6 +172,15 @@ def create_app() -> FastAPI:
         dependencies=_auth,
     )
 
+    @app.on_event("startup")
+    async def _startup_warm_components() -> None:
+        # Ensure durable ingestion workers are ready immediately after boot.
+        rag_admin.warmup_rag_admin_components()
+
+    @app.on_event("shutdown")
+    async def _shutdown_components() -> None:
+        rag_admin.shutdown_rag_admin_components()
+
     @app.get("/metrics")
     async def metrics() -> PlainTextResponse:
         data = generate_latest()

@@ -236,8 +236,6 @@ class RAGIngestionConfig:
     clean_fix_encoding_noise: bool = True
     clean_min_repeated_line_pages: int = 2
     tenant_id_default: str | None = None
-    # 进程启动时回收“僵尸 RUNNING”任务（上次重启中断导致）。
-    recover_stuck_running_on_startup: bool = True
     # RUNNING 任务超过该秒数未更新，判定为卡死并自动转 FAILED。
     running_stuck_timeout_seconds: int = 1800
 
@@ -520,6 +518,7 @@ class InspectionExtractConfig:
     log_llm_raw_response: bool = False
     log_llm_raw_max_chars: int = 2000
     # 排障：打印送入 LLM 的完整 parse 分块正文（生产慎用）；0 表示不按字符截断（仍按段拆分日志）
+    # 运行时默认：若环境变量未设置，则与 log_llm_raw_response 一致（见 load_app_config）
     log_parse_chunk_full: bool = False
     log_parse_chunk_max_chars: int = 0
     # v1 | v2：v2 使用独立 docx 摄入（底纹等），与旧解析并行；默认 v1 不替换现网
@@ -745,7 +744,6 @@ def _load_from_env() -> AppConfig:
         clean_fix_encoding_noise=os.getenv("RAG_CLEAN_FIX_ENCODING_NOISE", "true").lower() == "true",
         clean_min_repeated_line_pages=int(os.getenv("RAG_CLEAN_MIN_REPEATED_LINE_PAGES", "2")),
         tenant_id_default=os.getenv("RAG_TENANT_ID_DEFAULT") or None,
-        recover_stuck_running_on_startup=os.getenv("RAG_RECOVER_STUCK_RUNNING_ON_STARTUP", "true").lower() == "true",
         running_stuck_timeout_seconds=max(60, int(os.getenv("RAG_RUNNING_STUCK_TIMEOUT_SECONDS", "1800"))),
     )
     agentic_cfg = RAGAgenticConfig(
@@ -897,6 +895,16 @@ def _load_from_env() -> AppConfig:
     else:
         _v2_fills_list = _default_inspection_v2_shading_fills()
 
+    _inspect_log_llm_raw = os.getenv("INSPECT_EXTRACT_LOG_LLM_RAW_RESPONSE", "false").lower() == "true"
+    _inspect_chunk_full_ev = (os.getenv("INSPECT_EXTRACT_LOG_PARSE_CHUNK_FULL") or "").strip().lower()
+    if _inspect_chunk_full_ev in ("true", "1", "yes"):
+        _inspect_log_parse_chunk_full = True
+    elif _inspect_chunk_full_ev in ("false", "0", "no"):
+        _inspect_log_parse_chunk_full = False
+    else:
+        # 未设置环境变量时与 raw LLM 日志一致，避免排障时漏打完整分块
+        _inspect_log_parse_chunk_full = _inspect_log_llm_raw
+
     inspection_extract_cfg = InspectionExtractConfig(
         enabled=os.getenv("INSPECT_EXTRACT_ENABLED", "true").lower() == "true",
         strict_default=os.getenv("INSPECT_EXTRACT_STRICT_DEFAULT", "false").lower() == "true",
@@ -907,9 +915,9 @@ def _load_from_env() -> AppConfig:
         llm_max_tokens_parse=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_PARSE", "1024"))),
         llm_max_tokens_classify=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_CLASSIFY", "1024"))),
         llm_max_tokens_repair=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_REPAIR", "768"))),
-        log_llm_raw_response=os.getenv("INSPECT_EXTRACT_LOG_LLM_RAW_RESPONSE", "false").lower() == "true",
+        log_llm_raw_response=_inspect_log_llm_raw,
         log_llm_raw_max_chars=max(200, int(os.getenv("INSPECT_EXTRACT_LOG_LLM_RAW_MAX_CHARS", "2000"))),
-        log_parse_chunk_full=os.getenv("INSPECT_EXTRACT_LOG_PARSE_CHUNK_FULL", "false").lower() == "true",
+        log_parse_chunk_full=_inspect_log_parse_chunk_full,
         log_parse_chunk_max_chars=max(0, int(os.getenv("INSPECT_EXTRACT_LOG_PARSE_CHUNK_MAX_CHARS", "0"))),
         pipeline_version=(os.getenv("INSPECT_EXTRACT_PIPELINE_VERSION", "v1") or "v1").strip().lower(),
         v2_shading_candidate_fills=_v2_fills_list,

@@ -1,6 +1,8 @@
 import tempfile
 import time
 import unittest
+from unittest.mock import MagicMock
+import threading
 
 from app.rag.ingestion_orchestrator import IngestionOrchestrator
 from app.rag.models import DocumentSource
@@ -118,6 +120,29 @@ class TestIngestionOrchestrator(unittest.TestCase):
                 self.assertGreaterEqual(orch.count_jobs(), 2)
                 page = orch.list_jobs(limit=1, offset=0)
                 self.assertEqual(1, len(page))
+            finally:
+                orch.close()
+
+    def test_lease_conflict_requeue_instead_of_ack(self):
+        with tempfile.TemporaryDirectory() as d:
+            orch = IngestionOrchestrator(ingestion_service=_FakeIngestionService(), state_dir=d)
+            try:
+                mock_queue = MagicMock()
+                mock_queue.pop.side_effect = ["job-lease-conflict", None]
+                mock_queue.acquire_lease.return_value = False
+                mock_queue.enabled = True
+                orch._queue = mock_queue  # noqa: SLF001
+                orch._stop_event.clear()  # noqa: SLF001
+
+                # Run loop in background; trigger stop shortly after first pass.
+                t = threading.Thread(target=orch._queue_worker_loop, daemon=True)  # noqa: SLF001
+                t.start()
+                time.sleep(0.1)
+                orch._stop_event.set()  # noqa: SLF001
+                t.join(timeout=1.0)
+
+                mock_queue.nack_requeue.assert_called_once_with("job-lease-conflict")
+                mock_queue.ack.assert_not_called()
             finally:
                 orch.close()
 
