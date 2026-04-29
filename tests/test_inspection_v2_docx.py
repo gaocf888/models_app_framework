@@ -8,6 +8,7 @@ from unittest.mock import patch
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import RGBColor
 
 from app.inspection_v2.docx_rich_text import normalize_shading_fill, serialize_docx_for_inspection_v2
 from app.models.inspection_extract import InspectionExtractRequest
@@ -52,6 +53,43 @@ def test_serialize_docx_marks_shading_candidate() -> None:
         assert "超标候选" in out
         assert "底纹=FF0000" in out
         assert "c1=" in out
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def test_serialize_docx_marks_any_color_even_non_candidate() -> None:
+    doc = Document()
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "5.2"
+    _set_cell_shading(table.cell(0, 0), "00FF00")
+
+    fd, path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    doc.save(path)
+    try:
+        out = serialize_docx_for_inspection_v2(path, candidate_fills=set())
+        assert "颜色标注" in out
+        assert "底纹=00FF00" in out
+        assert "超标候选" not in out
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def test_serialize_docx_marks_run_font_color() -> None:
+    doc = Document()
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.cell(0, 0)
+    p = cell.paragraphs[0]
+    run = p.add_run("4.73")
+    run.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+
+    fd, path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    doc.save(path)
+    try:
+        out = serialize_docx_for_inspection_v2(path, candidate_fills=set())
+        assert "颜色标注" in out
+        assert "字体=FF0000" in out
     finally:
         Path(path).unlink(missing_ok=True)
 

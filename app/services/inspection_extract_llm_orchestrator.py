@@ -260,10 +260,19 @@ class InspectionExtractLlmOrchestrator:
             return
         limit = int(getattr(self._cfg, "log_llm_raw_max_chars", 2000))
         text = (raw or "").strip()
+        total_len = len(text)
         clipped = text[:limit]
-        if len(text) > limit:
-            clipped += f"\n...<truncated {len(text) - limit} chars>"
-        logger.info("inspection_extract llm raw stage=%s response=\n%s", stage, clipped)
+        truncated = total_len > limit
+        if truncated:
+            clipped += f"\n...<truncated {total_len - limit} chars>"
+        logger.info(
+            "inspection_extract llm raw stage=%s total_chars=%s limit=%s truncated=%s response=\n%s",
+            stage,
+            total_len,
+            limit,
+            truncated,
+            clipped,
+        )
 
     def _log_parse_chunk_full(self, *, idx: int, total: int, chunk: str) -> None:
         if not bool(getattr(self._cfg, "log_parse_chunk_full", False)):
