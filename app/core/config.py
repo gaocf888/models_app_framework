@@ -515,6 +515,8 @@ class InspectionExtractConfig:
     llm_max_tokens_parse: int = 1024
     llm_max_tokens_classify: int = 1024
     llm_max_tokens_repair: int = 768
+    # Parse 分块并发度（1=串行，>1=并发；建议结合 vLLM 承载能力小步调优）
+    parse_concurrency: int = 1
     log_llm_raw_response: bool = False
     log_llm_raw_max_chars: int = 2000
     # 排障：打印送入 LLM 的完整 parse 分块正文（生产慎用）；0 表示不按字符截断（仍按段拆分日志）
@@ -915,6 +917,7 @@ def _load_from_env() -> AppConfig:
         llm_max_tokens_parse=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_PARSE", "1024"))),
         llm_max_tokens_classify=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_CLASSIFY", "1024"))),
         llm_max_tokens_repair=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_REPAIR", "768"))),
+        parse_concurrency=max(1, int(os.getenv("INSPECT_EXTRACT_PARSE_CONCURRENCY", "1"))),
         log_llm_raw_response=_inspect_log_llm_raw,
         log_llm_raw_max_chars=max(200, int(os.getenv("INSPECT_EXTRACT_LOG_LLM_RAW_MAX_CHARS", "2000"))),
         log_parse_chunk_full=_inspect_log_parse_chunk_full,

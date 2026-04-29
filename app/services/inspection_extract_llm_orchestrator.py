@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import hashlib
@@ -63,82 +64,52 @@ class InspectionExtractLlmOrchestrator:
         if pr == "docx_v2":
             max_chars = max(2000, int(getattr(self._cfg, "v2_parse_unit_max_chars", 6000)))
         chunks = split_parse_chunks(parsed_text, parse_route=parse_route, max_chunk_chars=max_chars)
+        total_chunks = len(chunks)
         logger.info(
             "inspection_extract parse chunk_count=%s parse_route=%s max_chunk_chars=%s",
-            len(chunks),
+            total_chunks,
             parse_route,
             max_chars,
         )
-        logger.info("【检修提取】Parse阶段分块数量=%s", len(chunks))
-        stage1_records: list[dict[str, Any]] = []
-        for idx, chunk in enumerate(chunks, start=1):
-            records_i: list[dict[str, Any]] = []
-            chunk_meta = _summarize_chunk(chunk)
-            self._log_parse_chunk_full(idx=idx, total=len(chunks), chunk=chunk)
-            logger.info(
-                "【检修提取】开始解析分块 %s/%s，长度=%s heading_path=%s text_lines=%s table_lines=%s table_blocks=%s table_idx_range=%s row_idx_range=%s chunk_sha1=%s preview=%s",
-                idx,
-                len(chunks),
-                len(chunk),
-                chunk_meta["heading_path"],
-                chunk_meta["text_lines"],
-                chunk_meta["table_lines"],
-                chunk_meta["table_blocks"],
-                chunk_meta["table_idx_range"],
-                chunk_meta["row_idx_range"],
-                chunk_meta["chunk_sha1"],
-                chunk_meta["preview"],
-            )
-            for attempt in range(parse_chunk_retry + 1):
-                parse_prompt = (
-                    f"{parse_tpl}\n\n"
-                    "优先输出 NDJSON（每行一个 JSON 对象，不加 markdown 代码块）。\n"
-                    "每个对象应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管、evidence、warnings。\n"
-                    "其中 evidence 为空时填 null；warnings 为空时填 []。\n"
-                    "若你无法输出 NDJSON，则回退输出 JSON：{\"records\":[...]}。\n"
-                    f"文档分块如下（第{idx}/{len(chunks)}块）：\n{chunk}"
-                )
-                logger.info(
-                    "inspection_extract llm stage=parse chunk=%s/%s model=%s prompt_chars=%s timeout_s=%.1f",
-                    idx,
-                    len(chunks),
-                    model,
-                    len(parse_prompt),
-                    llm_timeout_s,
-                )
-                parse_result = await self._llm.generate(
+        logger.info("【检修提取】Parse阶段分块数量=%s", total_chunks)
+        parse_concurrency = max(1, int(getattr(self._cfg, "parse_concurrency", 1)))
+        logger.info("inspection_extract parse concurrency=%s", parse_concurrency)
+        if parse_concurrency <= 1:
+            stage1_results: list[tuple[int, list[dict[str, Any]]]] = []
+            for idx, chunk in enumerate(chunks, start=1):
+                recs = await self._parse_one_chunk(
+                    idx=idx,
+                    total=total_chunks,
+                    chunk=chunk,
+                    parse_tpl=parse_tpl,
                     model=model,
-                    prompt=parse_prompt,
-                    timeout=llm_timeout_s,
-                    max_tokens=int(getattr(self._cfg, "llm_max_tokens_parse", 1024)),
+                    llm_timeout_s=llm_timeout_s,
+                    parse_chunk_retry=parse_chunk_retry,
                 )
-                self._log_llm_raw(stage=f"parse[{idx}/{len(chunks)}]-try{attempt+1}", raw=parse_result)
-                stage1 = _extract_json_like(parse_result)
-                logger.info("inspection_extract parse payload_type=%s", type(stage1).__name__ if stage1 is not None else "None")
-                records_i = _extract_records(stage1)
-                parse_format = "json"
-                if not records_i:
-                    records_i = _extract_records_from_ndjson(parse_result)
-                    if records_i:
-                        parse_format = "ndjson"
-                if not records_i:
-                    records_i = _salvage_records_from_truncated_json(parse_result)
-                    if records_i:
-                        parse_format = "json_salvage"
-                records_i = _ensure_debug_fields(records_i)
-                logger.info("inspection_extract llm stage=parse chunk=%s result_records=%s", idx, len(records_i))
-                logger.info("inspection_extract parse chunk=%s parse_format=%s", idx, parse_format)
-                if records_i and isinstance(records_i[0], dict):
-                    logger.info("inspection_extract parse records sample_keys=%s", sorted(records_i[0].keys()))
-                    self._log_parse_chunk_records(stage=f"parse[{idx}/{len(chunks)}]", records=records_i)
-                if records_i:
-                    logger.info("【检修提取】分块 %s/%s 解析成功，记录数=%s，尝试次数=%s", idx, len(chunks), len(records_i), attempt + 1)
-                    break
-                if attempt < parse_chunk_retry:
-                    logger.warning("【检修提取】分块 %s/%s 解析失败，开始重试 第 %s 次", idx, len(chunks), attempt + 1)
-            if not records_i:
-                logger.warning("【检修提取】分块 %s/%s 最终解析失败，已跳过该分块", idx, len(chunks))
-            stage1_records.extend(records_i)
+                stage1_results.append((idx, recs))
+        else:
+            sem = asyncio.Semaphore(parse_concurrency)
+
+            async def _run_with_sem(idx: int, chunk: str) -> tuple[int, list[dict[str, Any]]]:
+                async with sem:
+                    recs = await self._parse_one_chunk(
+                        idx=idx,
+                        total=total_chunks,
+                        chunk=chunk,
+                        parse_tpl=parse_tpl,
+                        model=model,
+                        llm_timeout_s=llm_timeout_s,
+                        parse_chunk_retry=parse_chunk_retry,
+                    )
+                    return idx, recs
+
+            stage1_results = await asyncio.gather(
+                *[_run_with_sem(idx, chunk) for idx, chunk in enumerate(chunks, start=1)]
+            )
+
+        stage1_records: list[dict[str, Any]] = []
+        for _, recs in sorted(stage1_results, key=lambda x: x[0]):
+            stage1_records.extend(recs)
 
         logger.info("inspection_extract llm stage=parse merged_records=%s", len(stage1_records))
         logger.info("【检修提取】Parse阶段合并后记录数=%s", len(stage1_records))
@@ -247,6 +218,85 @@ class InspectionExtractLlmOrchestrator:
                 break
         logger.info("【检修提取】LLM抽取流程结束，最终记录数=%s", len(candidate_records))
         return candidate_records
+
+    async def _parse_one_chunk(
+        self,
+        *,
+        idx: int,
+        total: int,
+        chunk: str,
+        parse_tpl: str,
+        model: str,
+        llm_timeout_s: float,
+        parse_chunk_retry: int,
+    ) -> list[dict[str, Any]]:
+        records_i: list[dict[str, Any]] = []
+        chunk_meta = _summarize_chunk(chunk)
+        self._log_parse_chunk_full(idx=idx, total=total, chunk=chunk)
+        logger.info(
+            "【检修提取】开始解析分块 %s/%s，长度=%s heading_path=%s text_lines=%s table_lines=%s table_blocks=%s table_idx_range=%s row_idx_range=%s chunk_sha1=%s preview=%s",
+            idx,
+            total,
+            len(chunk),
+            chunk_meta["heading_path"],
+            chunk_meta["text_lines"],
+            chunk_meta["table_lines"],
+            chunk_meta["table_blocks"],
+            chunk_meta["table_idx_range"],
+            chunk_meta["row_idx_range"],
+            chunk_meta["chunk_sha1"],
+            chunk_meta["preview"],
+        )
+        for attempt in range(parse_chunk_retry + 1):
+            parse_prompt = (
+                f"{parse_tpl}\n\n"
+                "优先输出 NDJSON（每行一个 JSON 对象，不加 markdown 代码块）。\n"
+                "每个对象应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管、evidence、warnings。\n"
+                "其中 evidence 为空时填 null；warnings 为空时填 []。\n"
+                "若你无法输出 NDJSON，则回退输出 JSON：{\"records\":[...]}。\n"
+                f"文档分块如下（第{idx}/{total}块）：\n{chunk}"
+            )
+            logger.info(
+                "inspection_extract llm stage=parse chunk=%s/%s model=%s prompt_chars=%s timeout_s=%.1f",
+                idx,
+                total,
+                model,
+                len(parse_prompt),
+                llm_timeout_s,
+            )
+            parse_result = await self._llm.generate(
+                model=model,
+                prompt=parse_prompt,
+                timeout=llm_timeout_s,
+                max_tokens=int(getattr(self._cfg, "llm_max_tokens_parse", 1024)),
+            )
+            self._log_llm_raw(stage=f"parse[{idx}/{total}]-try{attempt+1}", raw=parse_result)
+            stage1 = _extract_json_like(parse_result)
+            logger.info("inspection_extract parse payload_type=%s", type(stage1).__name__ if stage1 is not None else "None")
+            records_i = _extract_records(stage1)
+            parse_format = "json"
+            if not records_i:
+                records_i = _extract_records_from_ndjson(parse_result)
+                if records_i:
+                    parse_format = "ndjson"
+            if not records_i:
+                records_i = _salvage_records_from_truncated_json(parse_result)
+                if records_i:
+                    parse_format = "json_salvage"
+            records_i = _ensure_debug_fields(records_i)
+            logger.info("inspection_extract llm stage=parse chunk=%s result_records=%s", idx, len(records_i))
+            logger.info("inspection_extract parse chunk=%s parse_format=%s", idx, parse_format)
+            if records_i and isinstance(records_i[0], dict):
+                logger.info("inspection_extract parse records sample_keys=%s", sorted(records_i[0].keys()))
+                self._log_parse_chunk_records(stage=f"parse[{idx}/{total}]", records=records_i)
+            if records_i:
+                logger.info("【检修提取】分块 %s/%s 解析成功，记录数=%s，尝试次数=%s", idx, total, len(records_i), attempt + 1)
+                break
+            if attempt < parse_chunk_retry:
+                logger.warning("【检修提取】分块 %s/%s 解析失败，开始重试 第 %s 次", idx, total, attempt + 1)
+        if not records_i:
+            logger.warning("【检修提取】分块 %s/%s 最终解析失败，已跳过该分块", idx, total)
+        return records_i
 
     def _get_prompt_content(self, *, scene: str, user_id: str, version: str) -> str:
         tpl = self._prompts.get_template(scene=scene, user_id=user_id, version=version)
