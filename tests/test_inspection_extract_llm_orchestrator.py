@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.services.inspection_extract_llm_orchestrator import (
     _extract_records_from_ndjson,
+    _looks_like_inspection_record_row,
     _salvage_records_from_truncated_json,
     _summarize_chunk,
 )
@@ -15,6 +16,12 @@ def test_extract_records_from_ndjson_lines() -> None:
     out = _extract_records_from_ndjson(raw)
     assert len(out) == 2
     assert out[0]["管号"] == "-5"
+
+
+def test_extract_records_from_ndjson_rejects_records_wrapper() -> None:
+    raw = '{"records": []}'
+    assert _extract_records_from_ndjson(raw) == []
+    assert not _looks_like_inspection_record_row({"records": []})
 
 
 def test_salvage_records_from_truncated_json() -> None:

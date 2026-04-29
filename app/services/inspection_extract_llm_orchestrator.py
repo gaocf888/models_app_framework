@@ -68,6 +68,7 @@ class InspectionExtractLlmOrchestrator:
         for idx, chunk in enumerate(chunks, start=1):
             records_i: list[dict[str, Any]] = []
             chunk_meta = _summarize_chunk(chunk)
+            self._log_parse_chunk_full(idx=idx, total=len(chunks), chunk=chunk)
             logger.info(
                 "【检修提取】开始解析分块 %s/%s，长度=%s heading_path=%s text_lines=%s table_lines=%s table_blocks=%s table_idx_range=%s row_idx_range=%s chunk_sha1=%s preview=%s",
                 idx,
@@ -257,6 +258,41 @@ class InspectionExtractLlmOrchestrator:
         if len(text) > limit:
             clipped += f"\n...<truncated {len(text) - limit} chars>"
         logger.info("inspection_extract llm raw stage=%s response=\n%s", stage, clipped)
+
+    def _log_parse_chunk_full(self, *, idx: int, total: int, chunk: str) -> None:
+        if not bool(getattr(self._cfg, "log_parse_chunk_full", False)):
+            return
+        max_c = int(getattr(self._cfg, "log_parse_chunk_max_chars", 0))
+        body = chunk or ""
+        truncated_note = ""
+        if max_c > 0 and len(body) > max_c:
+            body = body[:max_c]
+            truncated_note = f" (truncated_to_max_chars={max_c})"
+        sha = hashlib.sha1((chunk or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
+        logger.info(
+            "inspection_extract parse_chunk_full_meta chunk=%s/%s bytes=%s sha1=%s%s",
+            idx,
+            total,
+            len(chunk or ""),
+            sha,
+            truncated_note,
+        )
+        step = 24000
+        if not body:
+            logger.info("inspection_extract parse_chunk_full_body chunk=%s/%s part=1/1 content=", idx, total)
+            return
+        for off in range(0, len(body), step):
+            part = body[off : off + step]
+            pi = off // step + 1
+            total_parts = (len(body) + step - 1) // step
+            logger.info(
+                "inspection_extract parse_chunk_full_body chunk=%s/%s part=%s/%s content=\n%s",
+                idx,
+                total,
+                pi,
+                total_parts,
+                part,
+            )
 
 
 def _batch_records(records: list[dict[str, Any]], *, batch_size: int) -> list[list[dict[str, Any]]]:
@@ -475,6 +511,17 @@ def _strip_markdown_fence(raw: str) -> str:
     return text
 
 
+def _looks_like_inspection_record_row(d: dict[str, Any]) -> bool:
+    """排除 NDJSON 误解析的 {\"records\":[]} 包装行，仅保留业务行对象。"""
+    keys = set(d.keys())
+    if keys <= {"records"}:
+        return False
+    loc = "检测位置" in keys or "location" in keys
+    tube = "管号" in keys or "tube_no" in keys
+    thk = "壁厚" in keys or "thickness" in keys
+    return bool(loc and tube and thk)
+
+
 def _extract_records_from_ndjson(raw: str) -> list[dict[str, Any]]:
     text = _strip_markdown_fence(raw)
     if not text:
@@ -488,7 +535,7 @@ def _extract_records_from_ndjson(raw: str) -> list[dict[str, Any]]:
             obj = json.loads(s)
         except json.JSONDecodeError:
             continue
-        if isinstance(obj, dict):
+        if isinstance(obj, dict) and _looks_like_inspection_record_row(obj):
             out.append(obj)
     return out
 

@@ -519,6 +519,9 @@ class InspectionExtractConfig:
     llm_max_tokens_repair: int = 768
     log_llm_raw_response: bool = False
     log_llm_raw_max_chars: int = 2000
+    # 排障：打印送入 LLM 的完整 parse 分块正文（生产慎用）；0 表示不按字符截断（仍按段拆分日志）
+    log_parse_chunk_full: bool = False
+    log_parse_chunk_max_chars: int = 0
     # v1 | v2：v2 使用独立 docx 摄入（底纹等），与旧解析并行；默认 v1 不替换现网
     pipeline_version: str = "v1"
     # docx 单元格底纹 w:fill 命中下列十六进制时标记为「超标候选」（与阈值规则并存）
@@ -906,6 +909,8 @@ def _load_from_env() -> AppConfig:
         llm_max_tokens_repair=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_REPAIR", "768"))),
         log_llm_raw_response=os.getenv("INSPECT_EXTRACT_LOG_LLM_RAW_RESPONSE", "false").lower() == "true",
         log_llm_raw_max_chars=max(200, int(os.getenv("INSPECT_EXTRACT_LOG_LLM_RAW_MAX_CHARS", "2000"))),
+        log_parse_chunk_full=os.getenv("INSPECT_EXTRACT_LOG_PARSE_CHUNK_FULL", "false").lower() == "true",
+        log_parse_chunk_max_chars=max(0, int(os.getenv("INSPECT_EXTRACT_LOG_PARSE_CHUNK_MAX_CHARS", "0"))),
         pipeline_version=(os.getenv("INSPECT_EXTRACT_PIPELINE_VERSION", "v1") or "v1").strip().lower(),
         v2_shading_candidate_fills=_v2_fills_list,
         v2_parse_unit_max_chars=max(2000, int(os.getenv("INSPECT_EXTRACT_V2_PARSE_UNIT_MAX_CHARS", "6000"))),
