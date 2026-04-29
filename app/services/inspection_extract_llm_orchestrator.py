@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
 from typing import Any
 
 from app.core.config import InspectionExtractConfig
@@ -68,7 +69,7 @@ class InspectionExtractLlmOrchestrator:
             records_i: list[dict[str, Any]] = []
             chunk_meta = _summarize_chunk(chunk)
             logger.info(
-                "【检修提取】开始解析分块 %s/%s，长度=%s heading_path=%s text_lines=%s table_lines=%s table_blocks=%s",
+                "【检修提取】开始解析分块 %s/%s，长度=%s heading_path=%s text_lines=%s table_lines=%s table_blocks=%s table_idx_range=%s row_idx_range=%s chunk_sha1=%s preview=%s",
                 idx,
                 len(chunks),
                 len(chunk),
@@ -76,13 +77,18 @@ class InspectionExtractLlmOrchestrator:
                 chunk_meta["text_lines"],
                 chunk_meta["table_lines"],
                 chunk_meta["table_blocks"],
+                chunk_meta["table_idx_range"],
+                chunk_meta["row_idx_range"],
+                chunk_meta["chunk_sha1"],
+                chunk_meta["preview"],
             )
             for attempt in range(parse_chunk_retry + 1):
                 parse_prompt = (
                     f"{parse_tpl}\n\n"
-                    "请仅输出 JSON。顶层必须是对象，且包含 records 数组。\n"
-                    "records 每项应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管。\n"
+                    "优先输出 NDJSON（每行一个 JSON 对象，不加 markdown 代码块）。\n"
+                    "每个对象应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管。\n"
                     "可选补充字段：evidence、warnings。\n"
+                    "若你无法输出 NDJSON，则回退输出 JSON：{\"records\":[...]}。\n"
                     f"文档分块如下（第{idx}/{len(chunks)}块）：\n{chunk}"
                 )
                 logger.info(
@@ -103,7 +109,17 @@ class InspectionExtractLlmOrchestrator:
                 stage1 = _extract_json_like(parse_result)
                 logger.info("inspection_extract parse payload_type=%s", type(stage1).__name__ if stage1 is not None else "None")
                 records_i = _extract_records(stage1)
+                parse_format = "json"
+                if not records_i:
+                    records_i = _extract_records_from_ndjson(parse_result)
+                    if records_i:
+                        parse_format = "ndjson"
+                if not records_i:
+                    records_i = _salvage_records_from_truncated_json(parse_result)
+                    if records_i:
+                        parse_format = "json_salvage"
                 logger.info("inspection_extract llm stage=parse chunk=%s result_records=%s", idx, len(records_i))
+                logger.info("inspection_extract parse chunk=%s parse_format=%s", idx, parse_format)
                 if records_i and isinstance(records_i[0], dict):
                     logger.info("inspection_extract parse records sample_keys=%s", sorted(records_i[0].keys()))
                 if records_i:
@@ -255,12 +271,23 @@ def _batch_records(records: list[dict[str, Any]], *, batch_size: int) -> list[li
 def _summarize_chunk(chunk: str) -> dict[str, Any]:
     lines = [x.strip() for x in (chunk or "").splitlines() if x.strip()]
     if not lines:
-        return {"heading_path": "-", "text_lines": 0, "table_lines": 0, "table_blocks": 0}
+        return {
+            "heading_path": "-",
+            "text_lines": 0,
+            "table_lines": 0,
+            "table_blocks": 0,
+            "table_idx_range": "-",
+            "row_idx_range": "-",
+            "chunk_sha1": "-",
+            "preview": "-",
+        }
 
     heading_path = "-"
     text_lines = 0
     table_lines = 0
     table_blocks = 0
+    table_idxs: list[int] = []
+    row_idxs: list[int] = []
 
     heading_re = re.compile(r"^\[处理单元\s+heading_path=(.+?)\]\s*$")
     for ln in lines:
@@ -268,18 +295,36 @@ def _summarize_chunk(chunk: str) -> dict[str, Any]:
         if m:
             heading_path = m.group(1).strip() or "-"
             continue
-        if ln.startswith("[DOCX_V2_TABLE"):
+        tm = re.match(r"^\[DOCX_V2_TABLE\s+idx=(\d+)\b", ln)
+        if tm:
             table_blocks += 1
+            table_idxs.append(int(tm.group(1)))
             continue
-        if re.match(r"^r\d+\s*:", ln):
+        rm = re.match(r"^r(\d+)\s*:", ln)
+        if rm:
             table_lines += 1
+            row_idxs.append(int(rm.group(1)))
             continue
         text_lines += 1
+
+    preview_raw = " | ".join(lines[:3])[:260]
+    preview = preview_raw.replace("\n", " ").replace("\r", " ")
+    chunk_sha1 = hashlib.sha1((chunk or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+    def _fmt_range(nums: list[int]) -> str:
+        if not nums:
+            return "-"
+        return f"{min(nums)}-{max(nums)}"
+
     return {
         "heading_path": heading_path,
         "text_lines": text_lines,
         "table_lines": table_lines,
         "table_blocks": table_blocks,
+        "table_idx_range": _fmt_range(table_idxs),
+        "row_idx_range": _fmt_range(row_idxs),
+        "chunk_sha1": chunk_sha1,
+        "preview": preview,
     }
 
 
@@ -372,16 +417,9 @@ def _extract_records_from_markdown_table(parsed_text: str) -> list[dict[str, Any
 
 
 def _extract_json_like(raw: str) -> dict[str, Any] | list[Any] | None:
-    text = (raw or "").strip()
+    text = _strip_markdown_fence(raw)
     if not text:
         return None
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines:
-            lines = lines[1:]
-        text = "\n".join(lines).strip()
-        if text.endswith("```"):
-            text = text[:-3].strip()
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
     if fence:
         text = fence.group(1).strip()
@@ -421,3 +459,93 @@ def _extract_records(payload: dict[str, Any] | list[Any] | None) -> list[dict[st
     if isinstance(rows, list):
         return [x for x in rows if isinstance(x, dict)]
     return []
+
+
+def _strip_markdown_fence(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines:
+            lines = lines[1:]
+        text = "\n".join(lines).strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    return text
+
+
+def _extract_records_from_ndjson(raw: str) -> list[dict[str, Any]]:
+    text = _strip_markdown_fence(raw)
+    if not text:
+        return []
+    out: list[dict[str, Any]] = []
+    for ln in text.splitlines():
+        s = ln.strip().rstrip(",")
+        if not s or not s.startswith("{") or not s.endswith("}"):
+            continue
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
+
+
+def _salvage_records_from_truncated_json(raw: str) -> list[dict[str, Any]]:
+    """
+    宽松恢复：当大 JSON 尾部截断时，尽量提取 records 数组中已经完整闭合的对象。
+    """
+    text = _strip_markdown_fence(raw)
+    if not text:
+        return []
+    anchor = text.find('"records"')
+    if anchor >= 0:
+        text = text[anchor:]
+    arr_pos = text.find("[")
+    if arr_pos >= 0:
+        text = text[arr_pos + 1 :]
+
+    out: list[dict[str, Any]] = []
+    depth = 0
+    in_str = False
+    esc = False
+    buf: list[str] = []
+    for ch in text:
+        if in_str:
+            buf.append(ch)
+            if esc:
+                esc = False
+                continue
+            if ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            if depth > 0:
+                buf.append(ch)
+            continue
+        if ch == "{":
+            depth += 1
+            buf.append(ch)
+            continue
+        if ch == "}":
+            if depth > 0:
+                buf.append(ch)
+                depth -= 1
+                if depth == 0:
+                    candidate = "".join(buf).strip().rstrip(",")
+                    buf = []
+                    try:
+                        obj = json.loads(candidate)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(obj, dict):
+                        out.append(obj)
+            continue
+        if depth > 0:
+            buf.append(ch)
+    return out
