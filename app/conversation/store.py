@@ -109,6 +109,87 @@ class ConversationStore:
         self._last_updated.pop(key, None)
         self._catalog_meta.get(user_id, {}).pop(session_id, None)
 
+    def delete_message(self, user_id: str, session_id: str, message_id: str) -> bool:
+        """按 message_id 删除一条消息；会话为空时等价于 clear。未找到返回 False。"""
+        from app.conversation.message_id import build_conversation_message_id
+
+        key = (user_id, session_id)
+        messages = self._data.get(key)
+        if not messages:
+            return False
+        new_list: List[Dict[str, Any]] = []
+        found = False
+        for m in messages:
+            role = str(m.get("role", ""))
+            raw_c = m.get("content", "")
+            c = raw_c if isinstance(raw_c, str) else (str(raw_c) if raw_c is not None else "")
+            mid = build_conversation_message_id(user_id, session_id, role, c, m.get("ts"))
+            if mid == message_id:
+                found = True
+                continue
+            new_list.append(m)
+        if not found:
+            return False
+        if not new_list:
+            self.clear(user_id, session_id)
+            return True
+        self._data[key] = new_list
+        self._last_updated[key] = time.time()
+        self._sync_memory_catalog_after_messages(user_id, session_id, new_list)
+        return True
+
+    def _sync_memory_catalog_after_messages(
+        self, user_id: str, session_id: str, messages: List[Dict[str, Any]]
+    ) -> None:
+        """删除或改写消息后同步内存目录（条数、最近活跃、非用户自定义标题）。"""
+        now = time.time()
+        now_ms = int(now * 1000)
+        bucket = self._catalog_meta[user_id]
+        meta = bucket.get(session_id)
+        if meta is None:
+            meta = {
+                "title": "",
+                "title_source": "off",
+                "first_user_preview": "",
+                "message_count": 0,
+                "last_activity_at": now_ms,
+            }
+            bucket[session_id] = meta
+
+        meta["message_count"] = len(messages)
+        last_ts = messages[-1].get("ts") if messages else None
+        if last_ts is not None:
+            lt = float(last_ts)
+            lat_ms = int(lt) if lt > 10_000_000_000 else int(lt * 1000)
+        else:
+            lat_ms = now_ms
+        meta["last_activity_at"] = lat_ms
+
+        if str(meta.get("title_source") or "off") == "user":
+            return
+
+        first_plain = ""
+        for x in messages:
+            if str(x.get("role", "")).lower() != "user":
+                continue
+            raw_c = x.get("content", "")
+            c = raw_c if isinstance(raw_c, str) else (str(raw_c) if raw_c is not None else "")
+            first_plain = strip_image_block_for_title(c)
+            break
+        preview = (first_plain[:200] if first_plain else "")[:200]
+        meta["first_user_preview"] = preview
+        mode = title_mode()
+        if first_plain.strip():
+            if mode in ("truncate", "llm"):
+                meta["title"] = truncate_for_title(first_plain)
+                meta["title_source"] = "truncated"
+            else:
+                meta["title"] = ""
+                meta["title_source"] = "off"
+        else:
+            meta["title"] = ""
+            meta["title_source"] = "off"
+
     def _memory_synthetic_meta(self, user_id: str, session_id: str) -> Dict[str, Any] | None:
         """无 catalog 条目但有历史消息时，为列表接口合成元数据（兼容升级前数据）。"""
         msgs = self._data.get((user_id, session_id))
@@ -545,6 +626,145 @@ class RedisConversationStore(ConversationStore):
             return fut.result(timeout=5.0)
         except Exception as exc:  # noqa: BLE001
             logger.error("RedisConversationStore update_session_title failed: %s", exc)
+            return False
+
+    async def _redis_refresh_meta_from_messages(
+        self, user_id: str, session_id: str, items: List[Dict[str, Any]]
+    ) -> None:
+        """重写会话 list 后同步 meta 与 ZSET 活跃时间。"""
+        if self._redis is None:
+            return
+        meta_key = f"{self._key_prefix}meta:{user_id}:{session_id}"
+        index_key = f"{self._key_prefix}index:{user_id}"
+        now_ms = int(time.time() * 1000)
+        last = items[-1]
+        ts_raw = last.get("ts")
+        if ts_raw is not None:
+            t = float(ts_raw)
+            score_ms = int(t) if t > 10_000_000_000 else int(t * 1000)
+        else:
+            score_ms = now_ms
+        ll = len(items)
+        try:
+            prev = await self._redis.hgetall(meta_key)
+            meta_prev: Dict[str, Any] = dict(prev) if isinstance(prev, dict) else {}
+        except Exception:  # noqa: BLE001
+            meta_prev = {}
+        title_src = str(meta_prev.get("title_source") or "off")
+        mapping: Dict[str, str] = {
+            "message_count": str(ll),
+            "last_activity_at": str(score_ms),
+        }
+        if title_src != "user":
+            first_plain = ""
+            for x in items:
+                if str(x.get("role", "")).lower() != "user":
+                    continue
+                raw_c = x.get("content", "")
+                c = raw_c if isinstance(raw_c, str) else (str(raw_c) if raw_c is not None else "")
+                first_plain = strip_image_block_for_title(c)
+                break
+            preview = (first_plain[:200] if first_plain else "")[:200]
+            mapping["first_user_preview"] = preview
+            mode = title_mode()
+            if first_plain.strip():
+                if mode in ("truncate", "llm"):
+                    mapping["title"] = truncate_for_title(first_plain)
+                    mapping["title_source"] = "truncated"
+                else:
+                    mapping["title"] = ""
+                    mapping["title_source"] = "off"
+            else:
+                mapping["title"] = ""
+                mapping["title_source"] = "off"
+        await self._redis.hset(meta_key, mapping=mapping)
+        if self._ttl_seconds > 0:
+            try:
+                await self._redis.expire(meta_key, self._ttl_seconds)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("RedisConversationStore meta expire after delete: %s", exc)
+        try:
+            await self._redis.zadd(index_key, {session_id: score_ms})
+            if self._ttl_seconds > 0:
+                await self._redis.expire(index_key, self._ttl_seconds)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RedisConversationStore zadd after delete: %s", exc)
+
+    async def _delete_message_async(self, user_id: str, session_id: str, message_id: str) -> bool:
+        from app.conversation.message_id import build_conversation_message_id
+
+        if self._redis is None:
+            return super().delete_message(user_id, session_id, message_id)
+        key = f"{self._key_prefix}{user_id}:{session_id}"
+        raw = await self._redis.lrange(key, 0, -1)
+        items: List[Dict[str, Any]] = []
+        for item in raw or []:
+            if not isinstance(item, str):
+                continue
+            try:
+                obj = json.loads(item)
+            except json.JSONDecodeError:
+                logger.warning("skip malformed conv history item key=%s snippet=%s", key, str(item)[:200])
+                continue
+            if isinstance(obj, dict) and obj.get("role") is not None:
+                c = obj.get("content", "")
+                if c is not None and str(c).strip():
+                    items.append(
+                        {
+                            "role": str(obj["role"]),
+                            "content": c if isinstance(c, str) else str(c),
+                            "ts": obj.get("ts"),
+                        }
+                    )
+        new_items: List[Dict[str, Any]] = []
+        found = False
+        for obj in items:
+            mid = build_conversation_message_id(
+                user_id,
+                session_id,
+                str(obj.get("role", "")),
+                str(obj.get("content", "")),
+                obj.get("ts"),
+            )
+            if mid == message_id:
+                found = True
+                continue
+            new_items.append(obj)
+        if not found:
+            return False
+        if not new_items:
+            await self._clear_async(user_id, session_id)
+            super().clear(user_id, session_id)
+            return True
+        pipe = self._redis.pipeline(transaction=True)
+        pipe.delete(key)
+        for obj in new_items:
+            payload = json.dumps(
+                {"role": obj["role"], "content": obj["content"], "ts": obj["ts"]},
+                ensure_ascii=False,
+            )
+            pipe.rpush(key, payload)
+        if self._ttl_seconds > 0:
+            pipe.expire(key, self._ttl_seconds)
+        await pipe.execute()
+        try:
+            await self._redis.ltrim(key, -self._max_history, -1)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RedisConversationStore delete_message ltrim: %s", exc)
+        await self._redis_refresh_meta_from_messages(user_id, session_id, new_items)
+        return True
+
+    def delete_message(self, user_id: str, session_id: str, message_id: str) -> bool:  # type: ignore[override]
+        if self._redis is None or self._loop is None:
+            return super().delete_message(user_id, session_id, message_id)
+        fut = asyncio.run_coroutine_threadsafe(
+            self._delete_message_async(user_id, session_id, message_id),
+            self._loop,
+        )
+        try:
+            return bool(fut.result(timeout=10.0))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RedisConversationStore delete_message failed: %s", exc)
             return False
 
     async def _clear_async(self, user_id: str, session_id: str) -> None:

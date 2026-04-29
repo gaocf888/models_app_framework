@@ -479,6 +479,29 @@ class AnalysisConfig:
     nl2sql_llm_planner_enabled: bool = True
 
 
+def _default_inspection_v2_shading_fills() -> list[str]:
+    """常见「超标」底纹 RGB（无 #，大写），可通过环境变量覆盖。"""
+    return [
+        "FF0000",
+        "C00000",
+        "F79646",
+        "E6B8B7",
+        "F2DCDB",
+        "FF6666",
+        "C0504D",
+        "943634",
+    ]
+
+
+def _normalize_inspection_shading_fill_hex(raw: str) -> str:
+    s = raw.strip().upper().replace("#", "")
+    if len(s) == 8 and s.startswith("FF"):
+        s = s[2:]
+    if len(s) >= 6:
+        return s[-6:]
+    return s
+
+
 @dataclass
 class InspectionExtractConfig:
     """
@@ -496,6 +519,13 @@ class InspectionExtractConfig:
     llm_max_tokens_repair: int = 768
     log_llm_raw_response: bool = False
     log_llm_raw_max_chars: int = 2000
+    # v1 | v2：v2 使用独立 docx 摄入（底纹等），与旧解析并行；默认 v1 不替换现网
+    pipeline_version: str = "v1"
+    # docx 单元格底纹 w:fill 命中下列十六进制时标记为「超标候选」（与阈值规则并存）
+    v2_shading_candidate_fills: list[str] = field(default_factory=_default_inspection_v2_shading_fills)
+    # V2：Processing Unit 分块后每块最大字符；classify 批大小（与文档 20～40 条建议对齐）
+    v2_parse_unit_max_chars: int = 6000
+    v2_classify_batch_size: int = 40
 
 
 @dataclass
@@ -856,6 +886,14 @@ def _load_from_env() -> AppConfig:
         checkpoint_namespace=(os.getenv("ANALYSIS_CHECKPOINT_NAMESPACE", "analysis_graph") or "analysis_graph"),
         nl2sql_llm_planner_enabled=os.getenv("ANALYSIS_NL2SQL_LLM_PLANNER_ENABLED", "true").lower() == "true",
     )
+    _v2_fills_env = os.getenv("INSPECT_EXTRACT_V2_SHADING_CANDIDATE_FILLS", "").strip()
+    if _v2_fills_env:
+        _v2_fills_list = [
+            _normalize_inspection_shading_fill_hex(x) for x in _v2_fills_env.split(",") if x.strip()
+        ]
+    else:
+        _v2_fills_list = _default_inspection_v2_shading_fills()
+
     inspection_extract_cfg = InspectionExtractConfig(
         enabled=os.getenv("INSPECT_EXTRACT_ENABLED", "true").lower() == "true",
         strict_default=os.getenv("INSPECT_EXTRACT_STRICT_DEFAULT", "false").lower() == "true",
@@ -868,6 +906,10 @@ def _load_from_env() -> AppConfig:
         llm_max_tokens_repair=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_REPAIR", "768"))),
         log_llm_raw_response=os.getenv("INSPECT_EXTRACT_LOG_LLM_RAW_RESPONSE", "false").lower() == "true",
         log_llm_raw_max_chars=max(200, int(os.getenv("INSPECT_EXTRACT_LOG_LLM_RAW_MAX_CHARS", "2000"))),
+        pipeline_version=(os.getenv("INSPECT_EXTRACT_PIPELINE_VERSION", "v1") or "v1").strip().lower(),
+        v2_shading_candidate_fills=_v2_fills_list,
+        v2_parse_unit_max_chars=max(2000, int(os.getenv("INSPECT_EXTRACT_V2_PARSE_UNIT_MAX_CHARS", "6000"))),
+        v2_classify_batch_size=max(8, min(200, int(os.getenv("INSPECT_EXTRACT_V2_CLASSIFY_BATCH_SIZE", "40")))),
     )
 
     cfg = AppConfig(

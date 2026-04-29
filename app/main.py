@@ -35,7 +35,8 @@ def create_app() -> FastAPI:
             "name": "chatbot",
             "description": (
                 "智能客服：多轮会话（Redis）、可选 RAG、流式 SSE；"
-                "会话管理：`GET /chatbot/sessions`、`GET/DELETE /chatbot/sessions/messages`、`PATCH /chatbot/sessions/title`。"
+                "会话管理：`GET /chatbot/sessions`、`GET /chatbot/sessions/messages`、`DELETE /chatbot/sessions/messages`（整会话）、"
+                "`DELETE /chatbot/sessions/message`（单条）、`PATCH /chatbot/sessions/title`。"
                 "业务路由须在 Header 携带 `Authorization: Bearer <SERVICE_API_KEY>`；"
                 "密钥由 `app.auth.keygen.generate_service_api_key` 生成后写入环境变量（见 `app/app-deploy/README.md`）。"
             ),

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from app.conversation.manager import ConversationManager
+from app.conversation.message_id import build_conversation_message_id
 from app.conversation.store import ConversationStore
 
 
 class _FakeArchive:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.delete_msg_calls: list[tuple[str, str, str]] = []
         self.enabled = True
         self.fallback_enabled = False
         self.updated: list[tuple[str, str, str, bool]] = []
@@ -15,6 +17,10 @@ class _FakeArchive:
 
     def delete_session(self, *, user_id: str, session_id: str) -> None:
         self.calls.append((user_id, session_id))
+
+    def delete_message(self, *, user_id: str, session_id: str, message_id: str) -> bool:
+        self.delete_msg_calls.append((user_id, session_id, message_id))
+        return False
 
     def archive_message(self, **_: object) -> None:
         return
@@ -85,4 +91,26 @@ def test_get_session_messages_dedup_by_message_id(monkeypatch):
     assert len(merged) == 1
     assert merged[0]["role"] == "user"
     assert merged[0]["content"] == "hello"
+
+
+def test_delete_message_removes_hot_and_calls_archive(monkeypatch):
+    fake_archive = _FakeArchive()
+    monkeypatch.setattr("app.conversation.manager.get_archive_store", lambda: fake_archive)
+
+    store = ConversationStore()
+    mgr = ConversationManager(store=store)
+    mgr.append_user_message("u_1", "s_1", "a")
+    mgr.append_assistant_message("u_1", "s_1", "b")
+    msgs = mgr.get_session_messages("u_1", "s_1")
+    assert len(msgs) == 2
+    mid0 = build_conversation_message_id(
+        "u_1", "s_1", msgs[0]["role"], msgs[0]["content"], msgs[0].get("ts")
+    )
+
+    ok = mgr.delete_message("u_1", "s_1", mid0)
+    assert ok is True
+    rest = mgr.get_session_messages("u_1", "s_1")
+    assert len(rest) == 1
+    assert rest[0]["role"] == "assistant"
+    assert fake_archive.delete_msg_calls == [("u_1", "s_1", mid0)]
 

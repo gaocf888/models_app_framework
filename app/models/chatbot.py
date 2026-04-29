@@ -99,6 +99,10 @@ class ChatRequest(BaseModel):
 class SessionMessageItem(BaseModel):
     """会话单条消息（与 Redis/内存存储字段一致）。"""
 
+    message_id: str = Field(
+        ...,
+        description="消息稳定 id（与冷层 ES 文档 id 一致，用于单条删除；由 user/session/role/ts/原始 content 计算）",
+    )
     role: str = Field(..., description="user / assistant / system")
     content: str = Field(..., description="消息正文")
     image_urls: list[str] = Field(
@@ -136,6 +140,14 @@ class SessionDeleteResponse(BaseModel):
     ok: bool = Field(True, description="是否执行成功")
     user_id: str = Field(..., description="用户 ID")
     session_id: str = Field(..., description="会话 ID")
+
+
+class SessionMessageDeleteResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    user_id: str = Field(..., description="用户 ID")
+    session_id: str = Field(..., description="会话 ID")
+    message_id: str = Field(..., description="已删除消息的 message_id")
+    deleted: bool = Field(True, description="热层或冷层是否至少删除到一条记录")
 
 
 class SessionTitlePatchRequest(BaseModel):

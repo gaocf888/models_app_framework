@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 from typing import Dict, List
 
 from app.conversation.archive_store import get_archive_store
 from app.conversation.ids import validate_pair, validate_user_id
+from app.conversation.message_id import build_conversation_message_id
 from app.conversation.store import ConversationStore, get_default_store
 
 
@@ -58,7 +58,7 @@ class ConversationManager:
             role = str(m.get("role", ""))
             content = str(m.get("content", ""))
             ts_raw = m.get("ts")
-            k = self._build_message_id(u, s, role=role, content=content, ts=ts_raw)
+            k = build_conversation_message_id(u, s, role, content, ts_raw)
             if k in seen:
                 continue
             seen.add(k)
@@ -109,6 +109,21 @@ class ConversationManager:
         except Exception:
             # 冷层删除失败不抛出，避免影响热层已删除的主流程语义。
             pass
+
+    def delete_message(self, user_id: str, session_id: str, message_id: str) -> bool:
+        """
+        按 message_id 删除单条消息（热层 + 冷层中同一 id 的文档）。
+
+        热层无该条但冷层有时仍可删除冷层（例如热层 TTL 已过期）。
+        """
+        u, s = validate_pair(user_id, session_id)
+        hot_ok = self._store.delete_message(u, s, message_id)
+        cold_ok = False
+        try:
+            cold_ok = get_archive_store().delete_message(user_id=u, session_id=s, message_id=message_id)
+        except Exception:
+            pass
+        return hot_ok or cold_ok
 
     def list_sessions(
         self,
@@ -170,22 +185,3 @@ class ConversationManager:
         except Exception:
             # 归档失败不影响在线会话主路径。
             pass
-
-    @staticmethod
-    def _to_ms(ts: float | int | None) -> int:
-        if ts is None:
-            return 0
-        t = float(ts)
-        if t > 10_000_000_000:
-            return int(t)
-        return int(t * 1000)
-
-    def _build_message_id(self, user_id: str, session_id: str, *, role: str, content: str, ts: float | int | None) -> str:
-        """
-        生成与冷层一致的 message_id（sha256(user|session|role|ts_ms|content)）。
-        用于热层+冷层合并去重，避免秒级/毫秒级时间精度差异造成重复。
-        """
-        ts_ms = self._to_ms(ts)
-        raw = f"{user_id}|{session_id}|{role}|{ts_ms}|{content}"
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-

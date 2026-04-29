@@ -6,7 +6,7 @@ from __future__ import annotations
 职责概览：
     - 提供非流式 `/chat`（已弃用，保留兼容）与流式 `/chat/stream`（SSE）对话入口；
     - 提供会话目录：`GET /sessions`（按 `user_id` 分页列举会话；方案 B：Redis `conv:index:` + `conv:meta:`，内存模式对齐）；
-    - 提供会话运维：`GET/DELETE /sessions/messages`、`PATCH /sessions/title`（修改展示标题）。
+    - 提供会话运维：`GET/DELETE /sessions/messages`、`DELETE /sessions/message`（单条消息）、`PATCH /sessions/title`（修改展示标题）。
 
 部署前置条件（运维/开发）：
     1) LLM 服务可用：正确配置模型名称、服务地址与对 vLLM/OpenAI 兼容端的访问参数。
@@ -26,6 +26,7 @@ from fastapi.responses import StreamingResponse
 import json
 
 from app.conversation.manager import ConversationManager
+from app.conversation.message_id import build_conversation_message_id, is_valid_message_id_hex
 from app.conversation.session_catalog import session_list_limit_cap
 from app.models.chatbot import (
     ChatRequest,
@@ -35,6 +36,7 @@ from app.models.chatbot import (
     SessionDeleteResponse,
     SessionListItem,
     SessionListResponse,
+    SessionMessageDeleteResponse,
     SessionMessageItem,
     SessionMessagesResponse,
     SessionTitlePatchRequest,
@@ -212,6 +214,7 @@ async def get_session_messages(
     for m in raw:
         role = str(m.get("role", ""))
         raw_content = str(m.get("content", ""))
+        msg_id = build_conversation_message_id(user_id, session_id, role, raw_content, m.get("ts"))
         content_text, original_image_urls, processed_image_urls = split_message_content_and_images(raw_content)
         # assistant/system 历史通常不携带图片块；保持输出干净。
         if role != "user":
@@ -220,6 +223,7 @@ async def get_session_messages(
         image_urls = list(original_image_urls or processed_image_urls)
         items.append(
             SessionMessageItem(
+                message_id=msg_id,
                 role=role,
                 content=content_text,
                 image_urls=image_urls,
@@ -235,6 +239,36 @@ async def get_session_messages(
         title_source=str(snap.get("title_source") or "off"),
         count=len(items),
         messages=items,
+    )
+
+
+@router.delete(
+    "/sessions/message",
+    response_model=SessionMessageDeleteResponse,
+    summary="删除会话中的单条消息",
+)
+async def delete_session_message(
+    user_id: Annotated[str, Query(description="调用方用户 ID")],
+    session_id: Annotated[str, Query(description="会话 ID")],
+    message_id: Annotated[str, Query(description="消息 id，与 GET /sessions/messages 中 message_id 一致")],
+) -> SessionMessageDeleteResponse:
+    """
+    按 ``message_id`` 删除一条消息（热层 Redis/内存 + 冷层 ES 中同 id 文档）。
+
+    - ``message_id`` 须为 64 位十六进制小写字符串；
+    - 热层与冷层至少一处删除成功则返回 200；均不存在则 404。
+    """
+    mid = (message_id or "").strip().lower()
+    if not is_valid_message_id_hex(mid):
+        raise HTTPException(status_code=422, detail="invalid message_id")
+    ok = _conv_admin.delete_message(user_id, session_id, mid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="message not found")
+    return SessionMessageDeleteResponse(
+        user_id=user_id,
+        session_id=session_id,
+        message_id=mid,
+        deleted=True,
     )
 
 

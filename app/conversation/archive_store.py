@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.conversation.message_id import build_conversation_message_id, conversation_ts_to_ms
 from app.conversation.session_catalog import display_title
 from app.core.logging import get_logger
 
@@ -168,20 +169,6 @@ class ConversationArchiveStore:
         self._es.indices.create(index=self._session_index, body=sess_mapping, ignore=400)
 
     @staticmethod
-    def _to_ms(ts: float | int | None) -> int:
-        if ts is None:
-            return int(time.time() * 1000)
-        t = float(ts)
-        if t > 10_000_000_000:
-            return int(t)
-        return int(t * 1000)
-
-    @staticmethod
-    def _message_id(user_id: str, session_id: str, role: str, content: str, ts_ms: int) -> str:
-        raw = f"{user_id}|{session_id}|{role}|{ts_ms}|{content}"
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-    @staticmethod
     def _session_doc_id(user_id: str, session_id: str) -> str:
         return hashlib.sha256(f"{user_id}|{session_id}".encode("utf-8")).hexdigest()
 
@@ -199,9 +186,9 @@ class ConversationArchiveStore:
     ) -> None:
         if not self.enabled:
             return
-        ts_ms = self._to_ms(ts)
+        ts_ms = conversation_ts_to_ms(ts)
         now_ms = int(time.time() * 1000)
-        msg_id = self._message_id(user_id, session_id, role, content, ts_ms)
+        msg_id = build_conversation_message_id(user_id, session_id, role, content, ts)
         body = {
             "message_id": msg_id,
             "user_id": user_id,
@@ -422,6 +409,57 @@ class ConversationArchiveStore:
         except Exception as exc:  # noqa: BLE001
             logger.error("ConversationArchiveStore get_session_title_snapshot failed: %s", exc)
             return {}
+
+    def delete_message(self, *, user_id: str, session_id: str, message_id: str) -> bool:
+        """
+        删除冷层单条消息文档，并将会话汇总索引 ``message_count`` 减一（不低于 0）。
+
+        校验 ES 文档的 ``user_id`` / ``session_id`` 与请求一致，避免误删。
+        """
+        if not self.enabled or self._es is None:
+            return False
+        try:
+            src = self._es.get(index=self._msg_index, id=message_id, ignore=[404])
+        except Exception as exc:  # noqa: BLE001
+            logger.error("ConversationArchiveStore delete_message get failed: %s", exc)
+            return False
+        if not src or not src.get("found"):
+            return False
+        doc = src.get("_source") or {}
+        if str(doc.get("user_id") or "") != str(user_id) or str(doc.get("session_id") or "") != str(session_id):
+            return False
+        try:
+            res = self._es.delete(index=self._msg_index, id=message_id, refresh=True)
+            deleted = (res or {}).get("result") == "deleted"
+        except Exception as exc:  # noqa: BLE001
+            logger.error("ConversationArchiveStore delete_message delete failed: %s", exc)
+            return False
+        if not deleted:
+            return False
+        sess_id = self._session_doc_id(user_id, session_id)
+        now_ms = int(time.time() * 1000)
+        try:
+            self._es.update(
+                index=self._session_index,
+                id=sess_id,
+                body={
+                    "script": {
+                        "source": (
+                            "if (ctx._source.message_count != null) { "
+                            "ctx._source.message_count = Math.max(0L, ctx._source.message_count - 1); "
+                            "} else { ctx._source.message_count = 0; } "
+                            "ctx._source.updated_at_ms = params.now;"
+                        ),
+                        "lang": "painless",
+                        "params": {"now": now_ms},
+                    }
+                },
+                retry_on_conflict=3,
+                ignore=[404],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ConversationArchiveStore delete_message session counter: %s", exc)
+        return True
 
     def delete_session(self, *, user_id: str, session_id: str) -> None:
         """
