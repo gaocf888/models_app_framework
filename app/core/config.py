@@ -432,6 +432,12 @@ class ChatbotConfig:
     image_minio_secure: bool = False
     image_minio_auto_create_bucket: bool = True
     image_minio_presign_ttl_seconds: int = 900
+    # 上下文结构化索引增强（旁路能力，不改变主链路语义）
+    outline_enabled: bool = False
+    outline_async_enabled: bool = True
+    reference_resolve_enabled: bool = True
+    outline_es_enabled: bool = True
+    outline_es_index: str = "conversation_outline_v1"
 
 
 @dataclass
@@ -852,6 +858,11 @@ def _load_from_env() -> AppConfig:
         image_minio_secure=os.getenv("CHATBOT_IMAGE_MINIO_SECURE", "false").lower() == "true",
         image_minio_auto_create_bucket=os.getenv("CHATBOT_IMAGE_MINIO_AUTO_CREATE_BUCKET", "true").lower() == "true",
         image_minio_presign_ttl_seconds=max(60, int(os.getenv("CHATBOT_IMAGE_MINIO_PRESIGN_TTL_SECONDS", "900"))),
+        outline_enabled=os.getenv("CHATBOT_OUTLINE_ENABLED", "false").lower() == "true",
+        outline_async_enabled=os.getenv("CHATBOT_OUTLINE_ASYNC_ENABLED", "true").lower() == "true",
+        reference_resolve_enabled=os.getenv("CHATBOT_REFERENCE_RESOLVE_ENABLED", "true").lower() == "true",
+        outline_es_enabled=os.getenv("CHATBOT_OUTLINE_ES_ENABLED", "true").lower() == "true",
+        outline_es_index=(os.getenv("CHATBOT_OUTLINE_ES_INDEX", "conversation_outline_v1") or "conversation_outline_v1").strip(),
     )
     analysis_cfg = AnalysisConfig(
         default_report_template=(os.getenv("ANALYSIS_DEFAULT_REPORT_TEMPLATE", "standard") or "standard").strip(),

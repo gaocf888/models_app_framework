@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+import asyncio
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from app.conversation.manager import ConversationManager
@@ -28,6 +29,8 @@ from .chatbot_similar_cases import (
 from app.models.nl2sql import NL2SQLQueryRequest
 from app.services.nl2sql_service import NL2SQLService
 from app.services.chatbot_image_utils import build_user_message_with_images, strip_image_block_from_history
+from app.services.chatbot_outline import ChatbotOutlineStore
+from app.conversation.message_id import build_conversation_message_id
 
 logger = get_logger(__name__)
 
@@ -52,6 +55,7 @@ class ChatbotLangGraphRunner:
         conv_manager: ConversationManager,
         llm_client: VLLMHttpClient,
         prompt_registry: PromptTemplateRegistry,
+        outline_store: ChatbotOutlineStore | None = None,
     ) -> None:
         self._rag = rag_service
         self._hybrid_rag = HybridRAGService(rag_service=rag_service)
@@ -59,6 +63,7 @@ class ChatbotLangGraphRunner:
         self._conv = conv_manager
         self._llm = llm_client
         self._prompts = prompt_registry
+        self._outline_store = outline_store
         self._ls = LangSmithTracker()
 
         cfg = get_app_config().chatbot
@@ -236,6 +241,7 @@ class ChatbotLangGraphRunner:
     async def run_stream_events(
         self,
         req: ChatRequest,
+        model_req: ChatRequest | None = None,
         stream_id: str | None = None,
         cancel_checker: Any | None = None,
         original_image_urls: List[str] | None = None,
@@ -248,7 +254,7 @@ class ChatbotLangGraphRunner:
         - finished: 完成事件（含 meta）
         """
         # state 在一次请求生命周期内共享；每个节点只增量更新自己负责字段。
-        state = self._initial_state(req, original_image_urls=original_image_urls)
+        state = self._initial_state(req, model_req=model_req, original_image_urls=original_image_urls)
         start_ts = time.perf_counter()
         try:
             state = await self._run_graph(state)
@@ -336,12 +342,18 @@ class ChatbotLangGraphRunner:
                     },
                 )
 
-    def _initial_state(self, req: ChatRequest, original_image_urls: List[str] | None = None) -> ChatbotGraphState:
+    def _initial_state(
+        self,
+        req: ChatRequest,
+        model_req: ChatRequest | None = None,
+        original_image_urls: List[str] | None = None,
+    ) -> ChatbotGraphState:
         original_urls = [u for u in (original_image_urls or []) if isinstance(u, str) and u.strip()]
+        eff_req = model_req or req
         return {
             "user_id": req.user_id,
             "session_id": req.session_id,
-            "query": req.query,
+            "query": eff_req.query,
             "original_image_urls": original_urls,
             "image_urls": [u for u in req.image_urls if isinstance(u, str) and u.strip()],
             "enable_rag": bool(req.enable_rag),
@@ -761,10 +773,36 @@ class ChatbotLangGraphRunner:
         if answer:
             content = answer if not is_partial else f"[partial] {answer}"
             self._conv.append_assistant_message(req.user_id, req.session_id, content)
+            if not is_partial and self._outline_store is not None and self._outline_store.enabled:
+                self._schedule_outline_index(req.user_id, req.session_id, content)
         state["answer_text"] = answer
         state["is_partial"] = is_partial
         state["terminate_reason"] = terminate_reason
         state["status"] = "aborted" if is_partial else "answered"
+
+    def _schedule_outline_index(self, user_id: str, session_id: str, answer_text: str) -> None:
+        if self._outline_store is None:
+            return
+        history = self._conv.get_recent_history(user_id, session_id, limit=1)
+        if not history:
+            return
+        last = history[-1]
+        role = str(last.get("role", ""))
+        content = str(last.get("content", ""))
+        if role != "assistant" or not content:
+            return
+        message_id = build_conversation_message_id(user_id, session_id, role, content, last.get("ts"))
+        try:
+            asyncio.create_task(
+                self._outline_store.save_outline(
+                    user_id=user_id,
+                    session_id=session_id,
+                    assistant_message_id=message_id,
+                    answer_text=answer_text,
+                )
+            )
+        except Exception:
+            pass
 
     def _persist_failure(self, state: ChatbotGraphState, req: ChatRequest) -> None:
         # 失败时仍写 user，保证会话线完整；assistant 不写入。

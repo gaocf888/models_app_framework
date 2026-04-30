@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import time
 
 from app.conversation.manager import ConversationManager
+from app.conversation.message_id import build_conversation_message_id
 from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.models.chatbot import ChatRequest, ChatResponse
@@ -24,6 +26,7 @@ from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
 from app.services.chatbot_image_preprocessor import ChatbotImagePreprocessor
 from app.services.chatbot_image_utils import build_user_message_with_images, strip_image_block_from_history
+from app.services.chatbot_outline import ChatbotOutlineStore
 from app.services.chatbot_stream_control import ChatbotStreamControl
 from typing import AsyncIterator, Dict, Any
 
@@ -57,12 +60,14 @@ class ChatbotService:
         self._prompts = prompt_registry or PromptTemplateRegistry()
         self._chatbot_cfg = get_app_config().chatbot
         self._image_preprocessor = ChatbotImagePreprocessor(self._chatbot_cfg)
+        self._outline_store = ChatbotOutlineStore(self._chatbot_cfg)
         self._stream_ctrl = ChatbotStreamControl()
         self._graph_runner = ChatbotLangGraphRunner(
             rag_service=self._rag,
             conv_manager=self._conv,
             llm_client=self._llm,
             prompt_registry=self._prompts,
+            outline_store=self._outline_store,
         )
         self._nl2sql = NL2SQLService(conv_manager=self._conv)
         self._chain = None
@@ -79,6 +84,7 @@ class ChatbotService:
     async def chat(self, req: ChatRequest) -> ChatResponse:
         original_image_urls = self._clean_image_urls(req.image_urls)
         req = await self._preprocess_request_images(req)
+        model_req = await self._apply_structured_reference(req)
         if not req.user_id:
             raise ValueError("user_id is required (must be provided by the caller).")
         # 不在此处提前 append_user：须先取历史再组 messages，否则当前句已进 history，
@@ -89,9 +95,9 @@ class ChatbotService:
         intent_labels = {x.strip().lower() for x in (cfg.intent_output_labels or []) if x.strip()}
         enable_nl2sql = bool(req.enable_nl2sql_route) and bool(cfg.nl2sql_route_enabled)
         ilabel, _, _ = classify_chatbot_intent(
-            req.query,
+            model_req.query,
             enable_nl2sql_route=enable_nl2sql,
-            image_urls=[u for u in req.image_urls if isinstance(u, str) and u.strip()],
+            image_urls=[u for u in model_req.image_urls if isinstance(u, str) and u.strip()],
         )
         if ilabel not in intent_labels:
             ilabel = "kb_qa"
@@ -117,6 +123,7 @@ class ChatbotService:
                 )
             self._append_user_with_images(req, original_image_urls=original_image_urls)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            self._schedule_outline_index(req.user_id, req.session_id)
             return ChatResponse(
                 answer=answer,
                 used_rag=False,
@@ -142,6 +149,7 @@ class ChatbotService:
                 )
             self._append_user_with_images(req, original_image_urls=original_image_urls)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            self._schedule_outline_index(req.user_id, req.session_id)
             return ChatResponse(
                 answer=answer,
                 used_rag=False,
@@ -156,7 +164,7 @@ class ChatbotService:
             answer = await self._chain.run(
                 user_id=req.user_id,
                 session_id=req.session_id,
-                query=req.query,
+                query=model_req.query,
                 enable_rag=req.enable_rag,
                 enable_context=req.enable_context,
                 prompt_version=req.prompt_version,
@@ -168,7 +176,7 @@ class ChatbotService:
             context_snippets = []
             used_rag = False
             if req.enable_rag:
-                context_snippets = self._hybrid_rag.retrieve(req.query)
+                context_snippets = self._hybrid_rag.retrieve(model_req.query)
                 used_rag = len(context_snippets) > 0
 
             history = []
@@ -177,7 +185,7 @@ class ChatbotService:
                 logger.info("chat history size=%s", len(history))
 
             # 使用统一 LLM 客户端生成回答（多模态 message）
-            messages = self._build_llm_messages(req=req, history=history, context_snippets=context_snippets)
+            messages = self._build_llm_messages(req=model_req, history=history, context_snippets=context_snippets)
 
             try:
                 answer = await self._llm.chat(model=None, messages=messages)  # type: ignore[arg-type]
@@ -201,6 +209,7 @@ class ChatbotService:
 
         self._append_user_with_images(req, original_image_urls=original_image_urls)
         self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+        self._schedule_outline_index(req.user_id, req.session_id)
 
         return ChatResponse(
             answer=answer,
@@ -227,6 +236,7 @@ class ChatbotService:
     async def stream_chat_events(self, req: ChatRequest) -> AsyncIterator[Dict[str, Any]]:
         original_image_urls = self._clean_image_urls(req.image_urls)
         req = await self._preprocess_request_images(req)
+        model_req = await self._apply_structured_reference(req)
         if not req.user_id:
             raise ValueError("user_id is required (must be provided by the caller).")
         """
@@ -243,9 +253,10 @@ class ChatbotService:
         if not self._chatbot_cfg.graph_enabled:
             try:
                 async for ev in self._stream_chat_legacy_events(
-                    req,
+                    model_req,
                     stream_id=stream_id,
                     original_image_urls=original_image_urls,
+                    original_query=req.query,
                 ):
                     yield ev
                 return
@@ -255,6 +266,7 @@ class ChatbotService:
         try:
             async for ev in self._graph_runner.run_stream_events(
                 req,
+                model_req=model_req,
                 stream_id=stream_id,
                 cancel_checker=self._stream_ctrl.is_cancelled,
                 original_image_urls=original_image_urls,
@@ -266,9 +278,10 @@ class ChatbotService:
                 raise
             logger.exception("ChatbotService.stream_chat_events graph failed, fallback to legacy path.")
             async for ev in self._stream_chat_legacy_events(
-                req,
+                model_req,
                 stream_id=stream_id,
                 original_image_urls=original_image_urls,
+                original_query=req.query,
             ):
                 yield ev
         finally:
@@ -279,6 +292,7 @@ class ChatbotService:
         req: ChatRequest,
         stream_id: str | None = None,
         original_image_urls: list[str] | None = None,
+        original_query: str | None = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         旧版流式路径（兜底/回退专用）。
@@ -289,6 +303,7 @@ class ChatbotService:
         - 若启用相似案例扩展，与 LangGraph 路径一致：主回答流结束后追加限定 namespace 检索块。
         """
         start_ts = time.perf_counter()
+        persist_req = req if not original_query else req.model_copy(update={"query": original_query})
         cfg = self._chatbot_cfg
         intent_labels = {x.strip().lower() for x in (cfg.intent_output_labels or []) if x.strip()}
         enable_nl2sql = bool(req.enable_nl2sql_route) and bool(cfg.nl2sql_route_enabled)
@@ -311,11 +326,15 @@ class ChatbotService:
         duration_ms = lambda: int((time.perf_counter() - start_ts) * 1000)
 
         if ilabel == "data_query":
-            nreq = NL2SQLQueryRequest(user_id=req.user_id, session_id=req.session_id, question=req.query)
+            nreq = NL2SQLQueryRequest(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                question=(original_query or req.query),
+            )
             nresp = await self._nl2sql.query(nreq, record_conversation=False)
             answer = await summarize_nl2sql_with_llm(
                 self._llm,
-                user_query=req.query,
+                user_query=(original_query or req.query),
                 sql=nresp.sql,
                 rows=list(nresp.rows or []),
             )
@@ -331,8 +350,9 @@ class ChatbotService:
                 )
             if answer:
                 yield {"type": "delta", "delta": answer}
-            self._append_user_with_images(req, original_image_urls=original_image_urls)
+            self._append_user_with_images(persist_req, original_image_urls=original_image_urls)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            self._schedule_outline_index(req.user_id, req.session_id)
             yield {
                 "type": "finished",
                 "meta": {
@@ -376,8 +396,9 @@ class ChatbotService:
                     max_total=min(3, cfg.suggested_questions_max),
                 )
             yield {"type": "delta", "delta": answer}
-            self._append_user_with_images(req, original_image_urls=original_image_urls)
+            self._append_user_with_images(persist_req, original_image_urls=original_image_urls)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            self._schedule_outline_index(req.user_id, req.session_id)
             yield {
                 "type": "finished",
                 "meta": {
@@ -422,7 +443,7 @@ class ChatbotService:
         async for delta in self._llm.stream_chat(model=None, messages=messages):  # type: ignore[arg-type]
             if await self._is_stream_cancelled(req, stream_id):
                 partial = "".join(parts).strip()
-                self._append_user_with_images(req, original_image_urls=original_image_urls)
+                self._append_user_with_images(persist_req, original_image_urls=original_image_urls)
                 if self._chatbot_cfg.persist_partial_on_disconnect and partial:
                     self._conv.append_assistant_message(req.user_id, req.session_id, f"[partial] {partial}")
                 yield {
@@ -496,9 +517,10 @@ class ChatbotService:
                 llm_client=self._llm,
                 max_total=cfg.suggested_questions_max,
             )
-        self._append_user_with_images(req, original_image_urls=original_image_urls)
+        self._append_user_with_images(persist_req, original_image_urls=original_image_urls)
         if full:
             self._conv.append_assistant_message(req.user_id, req.session_id, full)
+            self._schedule_outline_index(req.user_id, req.session_id)
         yield {
             "type": "finished",
             "meta": {
@@ -603,4 +625,45 @@ class ChatbotService:
         if not stream_id:
             return False
         return await self._stream_ctrl.is_cancelled(req.user_id, req.session_id, stream_id)
+
+    async def _apply_structured_reference(self, req: ChatRequest) -> ChatRequest:
+        if not self._outline_store.enabled:
+            return req
+        ref = await self._outline_store.resolve_reference(user_id=req.user_id, session_id=req.session_id, query=req.query)
+        if not ref:
+            return req
+        idx = int(ref.get("index") or 0)
+        gist = str(ref.get("gist") or "").strip()
+        if idx <= 0 or not gist:
+            return req
+        overlay = (
+            "[resolved_reference]\n"
+            f"上文第{idx}点：{gist}\n"
+            "请优先基于该点回答，并明确与该点对应关系。\n"
+        )
+        return req.model_copy(update={"query": f"{overlay}\n用户问题：{req.query}"})
+
+    def _schedule_outline_index(self, user_id: str, session_id: str) -> None:
+        if not self._outline_store.enabled or not self._chatbot_cfg.outline_async_enabled:
+            return
+        history = self._conv.get_recent_history(user_id, session_id, limit=1)
+        if not history:
+            return
+        last = history[-1]
+        role = str(last.get("role", ""))
+        content = str(last.get("content", ""))
+        if role != "assistant" or not content:
+            return
+        message_id = build_conversation_message_id(user_id, session_id, role, content, last.get("ts"))
+        try:
+            asyncio.create_task(
+                self._outline_store.save_outline(
+                    user_id=user_id,
+                    session_id=session_id,
+                    assistant_message_id=message_id,
+                    answer_text=content,
+                )
+            )
+        except Exception:
+            pass
 
