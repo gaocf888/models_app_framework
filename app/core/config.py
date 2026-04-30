@@ -436,6 +436,7 @@ class ChatbotConfig:
     outline_enabled: bool = False
     outline_async_enabled: bool = True
     reference_resolve_enabled: bool = True
+    reference_lookback_turns: int = 8
     outline_es_enabled: bool = True
     outline_es_index: str = "conversation_outline_v1"
 
@@ -861,6 +862,7 @@ def _load_from_env() -> AppConfig:
         outline_enabled=os.getenv("CHATBOT_OUTLINE_ENABLED", "false").lower() == "true",
         outline_async_enabled=os.getenv("CHATBOT_OUTLINE_ASYNC_ENABLED", "true").lower() == "true",
         reference_resolve_enabled=os.getenv("CHATBOT_REFERENCE_RESOLVE_ENABLED", "true").lower() == "true",
+        reference_lookback_turns=max(1, min(50, int(os.getenv("CHATBOT_REFERENCE_LOOKBACK_TURNS", "8")))),
         outline_es_enabled=os.getenv("CHATBOT_OUTLINE_ES_ENABLED", "true").lower() == "true",
         outline_es_index=(os.getenv("CHATBOT_OUTLINE_ES_INDEX", "conversation_outline_v1") or "conversation_outline_v1").strip(),
     )
