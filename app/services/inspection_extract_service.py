@@ -1026,7 +1026,16 @@ class InspectionExtractJobScheduler:
         recs = data.get("records") if isinstance(data, dict) else []
         if not isinstance(recs, list):
             recs = []
-        return InspectionExtractChunkRecordsResponse(job_id=job_id, work_idx=work_idx, records=[x for x in recs if isinstance(x, dict)])
+        public_rows: list[dict[str, Any]] = []
+        for row in recs:
+            if not isinstance(row, dict):
+                continue
+            # API 不对外暴露调试字段；落盘与日志仍保留 evidence/warnings 便于排障。
+            y = dict(row)
+            y.pop("evidence", None)
+            y.pop("warnings", None)
+            public_rows.append(y)
+        return InspectionExtractChunkRecordsResponse(job_id=job_id, work_idx=work_idx, records=public_rows)
 
 
 def _read_meta(jd: Path) -> dict[str, Any] | None:
