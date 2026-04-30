@@ -530,6 +530,10 @@ class InspectionExtractConfig:
     # V2：Processing Unit 分块后每块最大字符；classify 批大小（与文档 20～40 条建议对齐）
     v2_parse_unit_max_chars: int = 6000
     v2_classify_batch_size: int = 40
+    # 异步检修任务（断点续跑）根目录：每任务子目录含 request.json、chunks/*.json、job_meta.json
+    async_jobs_state_dir: str = "./data/inspection_extract_jobs"
+    # REDIS_URL 启用时：检修异步队列 worker 线程数（与摄入队列分离 key_prefix）
+    async_queue_workers: int = 2
 
 
 @dataclass
@@ -926,6 +930,10 @@ def _load_from_env() -> AppConfig:
         v2_shading_candidate_fills=_v2_fills_list,
         v2_parse_unit_max_chars=max(2000, int(os.getenv("INSPECT_EXTRACT_V2_PARSE_UNIT_MAX_CHARS", "6000"))),
         v2_classify_batch_size=max(8, min(200, int(os.getenv("INSPECT_EXTRACT_V2_CLASSIFY_BATCH_SIZE", "40")))),
+        async_jobs_state_dir=(
+            os.getenv("INSPECT_EXTRACT_ASYNC_JOBS_DIR", "./data/inspection_extract_jobs") or "./data/inspection_extract_jobs"
+        ).strip(),
+        async_queue_workers=max(1, int(os.getenv("INSPECT_EXTRACT_ASYNC_QUEUE_WORKERS", "2"))),
     )
 
     cfg = AppConfig(

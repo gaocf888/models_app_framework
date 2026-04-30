@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import io
+import json
+import os
 import re
 import tempfile
+import threading
 import time
 import uuid
 from datetime import timedelta
@@ -26,14 +30,22 @@ from app.llm.prompt_registry import PromptTemplateRegistry
 from app.models.inspection_extract import (
     DefectType,
     DetectionType,
+    InspectionExtractAsyncSubmitResponse,
+    InspectionExtractChunkListItem,
+    InspectionExtractChunkListResponse,
+    InspectionExtractChunkRecordsResponse,
     InspectionExtractRequest,
     InspectionExtractResponse,
+    InspectionExtractJobMetrics,
+    InspectionExtractJobStatusResponse,
     InspectionExtractTrace,
     InspectionUploadResponse,
     InspectionRecord,
     InspectionSummary,
     ReplaceFlag,
 )
+from app.rag.ingestion_job_queue import IngestionJobQueue
+from app.rag.models import utcnow_iso
 from app.rag.document_pipeline.parsers import DocumentParser
 from app.rag.mineru_ingest import prepare_pdf_document_for_pipeline
 from app.rag.models import DocumentSource
@@ -64,6 +76,7 @@ class InspectionExtractService:
         self._minio_presign_ttl_seconds = max(300, int(self._chat_cfg.image_minio_presign_ttl_seconds))
         self._minio = self._build_minio_client()
         self._llm_orch = InspectionExtractLlmOrchestrator(llm=self._llm, prompts=self._prompts, cfg=self._cfg)
+        self._job_sched: InspectionExtractJobScheduler | None = None
 
     async def upload_file(self, *, file_name: str, content: bytes, content_type: str | None = None) -> InspectionUploadResponse:
         if self._minio is None:
@@ -595,4 +608,459 @@ class InspectionExtractService:
                 continue
             out.append(token)
         return out
+
+    @property
+    def job_scheduler(self) -> "InspectionExtractJobScheduler":
+        if self._job_sched is None:
+            self._job_sched = InspectionExtractJobScheduler(self)
+        return self._job_sched
+
+    def submit_async_job(self, req: InspectionExtractRequest) -> InspectionExtractAsyncSubmitResponse:
+        job_id = self.job_scheduler.submit_new_job(req)
+        return InspectionExtractAsyncSubmitResponse(
+            ok=True,
+            job_id=job_id,
+            job_status_path=f"/inspection-extract/jobs/{job_id}",
+        )
+
+    def recover_async_jobs_on_startup(self) -> None:
+        self.job_scheduler.recover_pending_on_startup()
+
+    def get_job_status(self, job_id: str) -> InspectionExtractJobStatusResponse | None:
+        return self.job_scheduler.get_public_status(job_id)
+
+    def list_job_chunks(self, job_id: str) -> InspectionExtractChunkListResponse | None:
+        return self.job_scheduler.list_chunks(job_id)
+
+    def get_job_chunk_records(self, job_id: str, work_idx: int) -> InspectionExtractChunkRecordsResponse | None:
+        return self.job_scheduler.get_chunk_payload(job_id, work_idx)
+
+
+class InspectionExtractJobScheduler:
+    """
+    检修异步任务：目录持久化 +（可选）Redis 队列与摄入 IngestionJobQueue 同机制：
+    pending 列表、processing、lease、多 worker 线程；无 REDIS_URL 时进程内线程 + asyncio.run。
+    """
+
+    def __init__(self, service: InspectionExtractService) -> None:
+        self._svc = service
+        cfg = get_app_config().inspection_extract
+        self._root = Path(cfg.async_jobs_state_dir)
+        self._root.mkdir(parents=True, exist_ok=True)
+        redis_url = os.getenv("REDIS_URL") or None
+        self._queue = IngestionJobQueue(redis_url=redis_url, key_prefix="inspection:extract:jobs")
+        self._max_workers = max(1, int(getattr(cfg, "async_queue_workers", 2)))
+        self._stop_event = threading.Event()
+        self._worker_threads: list[threading.Thread] = []
+        self._start_workers()
+        if self._queue.enabled:
+            logger.info(
+                "inspection_extract async Redis queue enabled workers=%s prefix=inspection:extract:jobs",
+                self._max_workers,
+            )
+        else:
+            logger.warning(
+                "inspection_extract async Redis queue disabled (REDIS_URL empty); jobs run in-process threads only"
+            )
+
+    def shutdown_workers(self, *, join_timeout_s: float = 2.0) -> None:
+        self._stop_event.set()
+        for t in self._worker_threads:
+            t.join(timeout=join_timeout_s)
+
+    def _start_workers(self) -> None:
+        if not self._queue.enabled:
+            return
+        for i in range(self._max_workers):
+            t = threading.Thread(
+                target=self._queue_worker_loop,
+                name=f"inspect-extract-qw-{i}",
+                daemon=True,
+            )
+            t.start()
+            self._worker_threads.append(t)
+        logger.info("inspection_extract started Redis queue worker threads=%s", len(self._worker_threads))
+
+    def _queue_worker_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                job_id = self._queue.pop(block_timeout_s=2)
+                if not job_id:
+                    continue
+                if not self._queue.acquire_lease(job_id):
+                    logger.warning(
+                        "inspection_extract skip duplicate claimed job due active lease job_id=%s",
+                        job_id,
+                    )
+                    self._queue.nack_requeue(job_id)
+                    self._queue.sleep_briefly(0.2)
+                    continue
+                try:
+                    jd = self._job_dir(job_id)
+                    meta = _read_meta(jd)
+                    if meta and meta.get("status") in {"completed", "failed"}:
+                        self._queue.ack(job_id)
+                        continue
+                    asyncio.run(self._run_job_guarded(job_id))
+                    self._queue.ack(job_id)
+                finally:
+                    self._queue.release_lease(job_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("inspection_extract queue worker loop error")
+                self._queue.sleep_briefly(0.5)
+
+    def _thread_run_job(self, job_id: str) -> None:
+        try:
+            asyncio.run(self._run_job_guarded(job_id))
+        except Exception:  # noqa: BLE001
+            logger.exception("inspection_extract local thread job crashed job_id=%s", job_id)
+
+    def _start_local_job_thread(self, job_id: str) -> None:
+        t = threading.Thread(
+            target=self._thread_run_job,
+            args=(job_id,),
+            daemon=True,
+            name=f"inspect-extract-{job_id[:8]}",
+        )
+        t.start()
+
+    def _job_dir(self, job_id: str) -> Path:
+        return self._root / job_id
+
+    def submit_new_job(self, req: InspectionExtractRequest) -> str:
+        job_id = uuid.uuid4().hex
+        jd = self._job_dir(job_id)
+        jd.mkdir(parents=True, exist_ok=False)
+        (jd / "request.json").write_text(req.model_dump_json(), encoding="utf-8")
+        now = utcnow_iso()
+        meta = {
+            "job_id": job_id,
+            "status": "pending",
+            "step": "queued",
+            "created_at": now,
+            "updated_at": now,
+            "finished_at": None,
+            "error_code": None,
+            "error_message": None,
+            "metrics": {},
+        }
+        _atomic_write_json(jd / "job_meta.json", meta)
+
+        queued = self._queue.enqueue(job_id)
+        if self._queue.enabled:
+            if not queued:
+                logger.info("inspection_extract job already in Redis queued set job_id=%s", job_id)
+        else:
+            self._start_local_job_thread(job_id)
+        return job_id
+
+    def recover_pending_on_startup(self) -> None:
+        if self._queue.enabled:
+            moved = self._queue.requeue_processing_on_startup()
+            if moved > 0:
+                logger.warning("inspection_extract Redis queue startup recovery requeued_processing=%s", moved)
+
+        self._root.mkdir(parents=True, exist_ok=True)
+        recovered_running = 0
+        requeued = 0
+        for sub in self._root.iterdir():
+            if not sub.is_dir():
+                continue
+            mp = sub / "job_meta.json"
+            if not mp.is_file():
+                continue
+            try:
+                meta = json.loads(mp.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            jid = str(meta.get("job_id") or sub.name)
+            st = str(meta.get("status") or "").lower()
+            if st == "running":
+                meta["status"] = "pending"
+                meta["step"] = "requeued_after_restart"
+                meta["error_code"] = "E_RESTART_RECOVERED"
+                meta["error_message"] = "Recovered RUNNING job after service restart and re-queued."
+                meta["finished_at"] = None
+                meta["updated_at"] = utcnow_iso()
+                _atomic_write_json(mp, meta)
+                recovered_running += 1
+                st = "pending"
+
+            if st == "pending":
+                if self._queue.enabled:
+                    if self._queue.enqueue(jid):
+                        requeued += 1
+                else:
+                    self._start_local_job_thread(jid)
+                    requeued += 1
+
+        if recovered_running > 0 or requeued > 0:
+            logger.warning(
+                "inspection_extract startup recovery running_to_pending=%s jobs_scheduled=%s redis=%s",
+                recovered_running,
+                requeued,
+                self._queue.enabled,
+            )
+
+    async def _run_job_guarded(self, job_id: str) -> None:
+        try:
+            await self._run_job(job_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("inspection_extract async job crashed job_id=%s", job_id)
+            jd = self._job_dir(job_id)
+            meta = _read_meta(jd)
+            if meta and meta.get("status") not in {"completed", "failed"}:
+                meta["status"] = "failed"
+                meta["step"] = "error"
+                meta["error_code"] = type(exc).__name__
+                meta["error_message"] = (str(exc) or "unknown")[:2000]
+                meta["finished_at"] = utcnow_iso()
+                meta["updated_at"] = utcnow_iso()
+                _atomic_write_json(jd / "job_meta.json", meta)
+
+    async def _run_job(self, job_id: str) -> None:
+        meta_lock = asyncio.Lock()
+        jd = self._job_dir(job_id)
+        if not jd.is_dir():
+            return
+        async with meta_lock:
+            meta = _read_meta(jd)
+            if meta is None:
+                return
+            if meta.get("status") in {"completed", "failed"}:
+                return
+            meta["status"] = "running"
+            meta["step"] = "parsing_doc"
+            meta["updated_at"] = utcnow_iso()
+            meta["error_code"] = None
+            meta["error_message"] = None
+            _atomic_write_json(jd / "job_meta.json", meta)
+
+        req = InspectionExtractRequest.model_validate(json.loads((jd / "request.json").read_text(encoding="utf-8")))
+        strict = self._svc._cfg.strict_default if req.strict is None else bool(req.strict)
+        prompt_version = (req.prompt_version or self._svc._cfg.prompt_version or "v1").strip() or "v1"
+        llm_model = self._svc._cfg.model_name or get_app_config().llm.default_model
+
+        parse_t0 = time.perf_counter()
+        if self._svc._is_inspection_v2_pipeline():
+            parsed_text, parse_route = self._svc._parse_document_v2(req)
+        else:
+            parsed_text, parse_route = self._svc._parse_document(req)
+        parse_ms = int((time.perf_counter() - parse_t0) * 1000)
+        (jd / "parsed_text.txt").write_text(parsed_text, encoding="utf-8")
+
+        max_chars = 6000
+        pr = (parse_route or "text").strip().lower()
+        if pr == "docx_v2":
+            max_chars = max(2000, int(getattr(self._svc._cfg, "v2_parse_unit_max_chars", 6000)))
+        from app.inspection_v2.chunk_table_filter import filter_table_work_items
+        from app.inspection_v2.orchestrator import split_parse_chunks
+
+        chunks = split_parse_chunks(parsed_text, parse_route=parse_route, max_chunk_chars=max_chars)
+        work_items = filter_table_work_items(chunks, parse_route=parse_route)
+        chunks_total = len(work_items)
+
+        async def _after_chunk(work_idx: int, record_count: int) -> None:
+            async with meta_lock:
+                m = _read_meta(jd)
+                if m is None:
+                    return
+                done = _count_chunk_files(jd)
+                m.setdefault("metrics", {})
+                m["metrics"]["chunks_done"] = done
+                m["metrics"]["chunks_total"] = chunks_total
+                m["updated_at"] = utcnow_iso()
+                _atomic_write_json(jd / "job_meta.json", m)
+            _ = record_count
+
+        async with meta_lock:
+            m = _read_meta(jd)
+            if m:
+                m["step"] = "llm_parse"
+                m.setdefault("metrics", {})
+                m["metrics"]["parse_route"] = parse_route
+                m["metrics"]["chunks_total"] = chunks_total
+                m["metrics"]["chunks_done"] = _count_chunk_files(jd)
+                m["metrics"]["parse_latency_ms"] = parse_ms
+                m["metrics"]["llm_model"] = llm_model
+                m["metrics"]["prompt_version"] = prompt_version
+                m["updated_at"] = utcnow_iso()
+                _atomic_write_json(jd / "job_meta.json", m)
+
+        llm_t0 = time.perf_counter()
+        raw_records = await self._svc._llm_orch.run_llm_extraction_with_job_directory(
+            req,
+            parsed_text,
+            parse_route=parse_route,
+            prompt_version=prompt_version,
+            model=llm_model,
+            job_dir=jd,
+            after_chunk_saved=_after_chunk,
+        )
+        llm_ms = int((time.perf_counter() - llm_t0) * 1000)
+
+        threshold_rules = self._svc._extract_threshold_rules(parsed_text)
+        async with meta_lock:
+            m = _read_meta(jd)
+            if m:
+                m["step"] = "post_process"
+                m.setdefault("metrics", {})
+                m["metrics"]["llm_latency_ms"] = llm_ms
+                m["updated_at"] = utcnow_iso()
+                _atomic_write_json(jd / "job_meta.json", m)
+
+        records, warnings = self._svc._post_process_records(
+            raw_records=raw_records,
+            return_evidence=req.return_evidence,
+            threshold_rules=threshold_rules,
+            parsed_text=parsed_text,
+        )
+        if not records:
+            if raw_records:
+                warnings.append("all_records_failed_validation")
+            else:
+                warnings.append("llm_no_records_extracted")
+
+        summary = self._svc._build_summary(records, warnings)
+        trace = InspectionExtractTrace(
+            parse_route=parse_route,
+            llm_model=llm_model,
+            prompt_version=f"inspection_extract:{prompt_version}",
+            parse_latency_ms=parse_ms,
+            llm_latency_ms=llm_ms,
+        )
+        resp = InspectionExtractResponse(ok=True, records=records, summary=summary, trace=trace)
+        if strict and (not records):
+            err_msg = "strict mode enabled: no valid structured records extracted"
+            async with meta_lock:
+                m = _read_meta(jd)
+                if m:
+                    m["status"] = "failed"
+                    m["step"] = "done"
+                    m["error_code"] = "STRICT_NO_RECORDS"
+                    m["error_message"] = err_msg
+                    m["finished_at"] = utcnow_iso()
+                    m["updated_at"] = utcnow_iso()
+                    m.setdefault("metrics", {})
+                    m["metrics"]["llm_latency_ms"] = llm_ms
+                    _atomic_write_json(jd / "job_meta.json", m)
+            (jd / "final_response.json").write_text(
+                json.dumps({"ok": False, "error": err_msg}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return
+
+        async with meta_lock:
+            m = _read_meta(jd)
+            if m:
+                m["status"] = "completed"
+                m["step"] = "done"
+                m["finished_at"] = utcnow_iso()
+                m["updated_at"] = utcnow_iso()
+                m.setdefault("metrics", {})
+                m["metrics"]["chunks_done"] = chunks_total
+                m["metrics"]["llm_latency_ms"] = llm_ms
+                _atomic_write_json(jd / "job_meta.json", m)
+        (jd / "final_response.json").write_text(resp.model_dump_json(), encoding="utf-8")
+
+    def get_public_status(self, job_id: str) -> InspectionExtractJobStatusResponse | None:
+        jd = self._job_dir(job_id)
+        meta = _read_meta(jd)
+        if meta is None:
+            return None
+        metrics = InspectionExtractJobMetrics(**(meta.get("metrics") or {}))
+        result: InspectionExtractResponse | None = None
+        fin_path = jd / "final_response.json"
+        if fin_path.is_file() and meta.get("status") == "completed":
+            try:
+                result = InspectionExtractResponse.model_validate(json.loads(fin_path.read_text(encoding="utf-8")))
+            except Exception:  # noqa: BLE001
+                result = None
+        return InspectionExtractJobStatusResponse(
+            job_id=str(meta.get("job_id") or job_id),
+            status=str(meta.get("status") or "unknown"),
+            step=str(meta.get("step") or ""),
+            created_at=str(meta.get("created_at") or ""),
+            updated_at=str(meta.get("updated_at") or ""),
+            finished_at=meta.get("finished_at"),
+            error_code=meta.get("error_code"),
+            error_message=meta.get("error_message"),
+            metrics=metrics,
+            result=result,
+        )
+
+    def list_chunks(self, job_id: str) -> InspectionExtractChunkListResponse | None:
+        jd = self._job_dir(job_id)
+        if not jd.is_dir():
+            return None
+        meta = _read_meta(jd)
+        if meta is None:
+            return None
+        total = int((meta.get("metrics") or {}).get("chunks_total") or 0)
+        items: list[InspectionExtractChunkListItem] = []
+        for w in range(1, max(total, _max_chunk_index(jd)) + 1):
+            fp = jd / "chunks" / f"{w}.json"
+            if fp.is_file():
+                try:
+                    data = json.loads(fp.read_text(encoding="utf-8"))
+                    recs = data.get("records") if isinstance(data, dict) else None
+                    n = len(recs) if isinstance(recs, list) else 0
+                except Exception:  # noqa: BLE001
+                    n = 0
+                items.append(InspectionExtractChunkListItem(work_idx=w, status="done", record_count=n))
+            else:
+                items.append(InspectionExtractChunkListItem(work_idx=w, status="pending", record_count=0))
+        return InspectionExtractChunkListResponse(job_id=job_id, chunks=items)
+
+    def get_chunk_payload(self, job_id: str, work_idx: int) -> InspectionExtractChunkRecordsResponse | None:
+        jd = self._job_dir(job_id)
+        if not jd.is_dir() or _read_meta(jd) is None:
+            return None
+        fp = jd / "chunks" / f"{work_idx}.json"
+        if not fp.is_file():
+            return None
+        try:
+            data = json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return None
+        recs = data.get("records") if isinstance(data, dict) else []
+        if not isinstance(recs, list):
+            recs = []
+        return InspectionExtractChunkRecordsResponse(job_id=job_id, work_idx=work_idx, records=[x for x in recs if isinstance(x, dict)])
+
+
+def _read_meta(jd: Path) -> dict[str, Any] | None:
+    p = jd / "job_meta.json"
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _count_chunk_files(jd: Path) -> int:
+    ch = jd / "chunks"
+    if not ch.is_dir():
+        return 0
+    return len([p for p in ch.glob("*.json") if p.name[:-5].isdigit()])
+
+
+def _max_chunk_index(jd: Path) -> int:
+    ch = jd / "chunks"
+    if not ch.is_dir():
+        return 0
+    best = 0
+    for p in ch.glob("*.json"):
+        stem = p.stem
+        if stem.isdigit():
+            best = max(best, int(stem))
+    return best
 

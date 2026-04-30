@@ -10,10 +10,13 @@ import asyncio
 import json
 import re
 import hashlib
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from app.core.config import InspectionExtractConfig
 from app.core.logging import get_logger
+from app.inspection_v2.chunk_table_filter import filter_table_work_items
 from app.inspection_v2.orchestrator import split_parse_chunks
 from app.llm.client import VLLMHttpClient
 from app.llm.prompt_registry import PromptTemplateRegistry
@@ -113,6 +116,164 @@ class InspectionExtractLlmOrchestrator:
 
         logger.info("inspection_extract llm stage=parse merged_records=%s", len(stage1_records))
         logger.info("【检修提取】Parse阶段合并后记录数=%s", len(stage1_records))
+        return await self._finalize_after_stage1_merge(
+            req,
+            parsed_text,
+            parse_route=parse_route,
+            prompt_version=prompt_version,
+            model=model,
+            classify_tpl=classify_tpl,
+            repair_tpl=repair_tpl,
+            stage1_records=stage1_records,
+        )
+
+    async def run_llm_extraction_with_job_directory(
+        self,
+        req: InspectionExtractRequest,
+        parsed_text: str,
+        *,
+        parse_route: str,
+        prompt_version: str,
+        model: str,
+        job_dir: Path,
+        after_chunk_saved: Callable[[int, int], Awaitable[None]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        仅对「含表格」分块做 parse；每块完成后写入 job_dir/chunks/{work_idx}.json，支持断点续跑。
+        classify/repair 与同步路径一致；合并前写入 checkpoints/stage1_merged.json。
+        """
+        snippets = parsed_text[:20000]
+        llm_timeout_s = float(getattr(self._cfg, "llm_timeout_seconds", 180.0))
+        parse_chunk_retry = 1
+        parse_tpl = self._get_prompt_content(scene="inspection_extract_parse", user_id=req.user_id, version=prompt_version)
+        classify_tpl = self._get_prompt_content(
+            scene="inspection_extract_classify", user_id=req.user_id, version=prompt_version
+        )
+        repair_tpl = self._get_prompt_content(scene="inspection_extract_repair", user_id=req.user_id, version=prompt_version)
+
+        max_chars = 6000
+        pr = (parse_route or "text").strip().lower()
+        if pr == "docx_v2":
+            max_chars = max(2000, int(getattr(self._cfg, "v2_parse_unit_max_chars", 6000)))
+        chunks = split_parse_chunks(parsed_text, parse_route=parse_route, max_chunk_chars=max_chars)
+        work_items = filter_table_work_items(chunks, parse_route=parse_route)
+        total_work = len(work_items)
+        logger.info(
+            "inspection_extract job_dir parse chunk_count=%s table_chunks=%s parse_route=%s max_chunk_chars=%s",
+            len(chunks),
+            total_work,
+            parse_route,
+            max_chars,
+        )
+
+        chunks_dir = job_dir / "chunks"
+        checkpoints_dir = job_dir / "checkpoints"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+
+        parse_concurrency = max(1, int(getattr(self._cfg, "parse_concurrency", 1)))
+        logger.info("inspection_extract job_dir parse concurrency=%s", parse_concurrency)
+
+        pending: list[tuple[int, str]] = []
+        for work_idx, chunk in work_items:
+            fp = chunks_dir / f"{work_idx}.json"
+            if fp.is_file():
+                continue
+            pending.append((work_idx, chunk))
+
+        if pending:
+
+            async def _run_one(idx: int, chunk: str) -> tuple[int, list[dict[str, Any]]]:
+                recs = await self._parse_one_chunk(
+                    idx=idx,
+                    total=total_work,
+                    chunk=chunk,
+                    parse_tpl=parse_tpl,
+                    model=model,
+                    llm_timeout_s=llm_timeout_s,
+                    parse_chunk_retry=parse_chunk_retry,
+                )
+                payload = {"work_idx": idx, "records": recs}
+                _atomic_write_json(chunks_dir / f"{idx}.json", payload)
+                if after_chunk_saved is not None:
+                    await after_chunk_saved(idx, len(recs))
+                return idx, recs
+
+            if parse_concurrency <= 1:
+                for idx, ch in pending:
+                    await _run_one(idx, ch)
+            else:
+                sem = asyncio.Semaphore(parse_concurrency)
+
+                async def _with_sem(idx: int, chunk: str) -> tuple[int, list[dict[str, Any]]]:
+                    async with sem:
+                        return await _run_one(idx, chunk)
+
+                await asyncio.gather(*[_with_sem(i, c) for i, c in pending])
+
+        stage1_records: list[dict[str, Any]] = []
+        for work_idx in range(1, total_work + 1):
+            fp = chunks_dir / f"{work_idx}.json"
+            if not fp.is_file():
+                logger.error("inspection_extract job_dir missing chunk file work_idx=%s job_dir=%s", work_idx, job_dir)
+                continue
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                logger.exception("inspection_extract job_dir corrupt chunk file work_idx=%s", work_idx)
+                continue
+            rows = data.get("records") if isinstance(data, dict) else None
+            if isinstance(rows, list):
+                stage1_records.extend([x for x in rows if isinstance(x, dict)])
+
+        logger.info(
+            "inspection_extract job_dir stage1_from_chunks records=%s total_work=%s",
+            len(stage1_records),
+            total_work,
+        )
+
+        if not stage1_records and total_work == 0:
+            table_records = _extract_records_from_markdown_table(parsed_text)
+            if table_records:
+                stage1_records = table_records
+                logger.info(
+                    "inspection_extract job_dir fallback=markdown_table records=%s (no table chunks)",
+                    len(stage1_records),
+                )
+
+        _atomic_write_json(
+            checkpoints_dir / "stage1_merged.json",
+            {"records": stage1_records, "parse_route": parse_route, "snippets_len": len(snippets)},
+        )
+
+        return await self._finalize_after_stage1_merge(
+            req,
+            parsed_text,
+            parse_route=parse_route,
+            prompt_version=prompt_version,
+            model=model,
+            classify_tpl=classify_tpl,
+            repair_tpl=repair_tpl,
+            stage1_records=stage1_records,
+        )
+
+    async def _finalize_after_stage1_merge(
+        self,
+        req: InspectionExtractRequest,
+        parsed_text: str,
+        *,
+        parse_route: str,
+        prompt_version: str,
+        model: str,
+        classify_tpl: str,
+        repair_tpl: str,
+        stage1_records: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        snippets = parsed_text[:20000]
+        llm_timeout_s = float(getattr(self._cfg, "llm_timeout_seconds", 180.0))
+        pr = (parse_route or "text").strip().lower()
+
+        stage1_records = list(stage1_records)
         if not stage1_records:
             table_records = _extract_records_from_markdown_table(parsed_text)
             if table_records:
@@ -397,6 +558,13 @@ def _ensure_debug_fields(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             y["warnings"] = [str(w)]
         out.append(y)
     return out
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
 
 
 def _summarize_chunk(chunk: str) -> dict[str, Any]:

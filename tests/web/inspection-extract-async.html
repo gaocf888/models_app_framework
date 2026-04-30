@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>检修报告异步提取测试 · /inspection-extract/run/async</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #8b5cf6;
+      --accent-hover: #7c3aed;
+      --ok: #22c55e;
+      --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 1.25rem 1rem 2rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin-bottom: 1.25rem; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+    @media (min-width: 780px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+      .grid .full { grid-column: 1 / -1; }
+    }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      margin: 0;
+      padding: 0.75rem 1rem 1rem;
+    }
+    legend { padding: 0 0.35rem; color: var(--muted); font-size: 0.8rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"],
+    input[type="url"],
+    input[type="password"],
+    input[type="number"],
+    select,
+    textarea {
+      width: 100%;
+      margin-top: 0.2rem;
+      padding: 0.45rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    input[type="file"] {
+      width: 100%;
+      margin-top: 0.25rem;
+      padding: 0.45rem 0.4rem;
+      border-radius: 6px;
+      border: 1px dashed var(--border);
+      background: #0d1117;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; align-items: center; margin-top: 0.5rem; }
+    .row label { display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--text); font-size: 0.875rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+    button {
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button.primary { background: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.secondary { background: var(--border); color: var(--text); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .out {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      min-height: 160px;
+      padding: 1rem;
+    }
+    .out h2 { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.5rem; font-weight: 500; }
+    #status { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; white-space: pre-wrap; }
+    #uploadResult, #jobStatus, #chunksOut, #chunkDetail {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.82rem;
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem;
+      min-height: 3rem;
+      max-height: 280px;
+      overflow: auto;
+    }
+    #chunkDetail { max-height: 420px; }
+    .ok { color: var(--ok); }
+    .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
+    code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    .pill { display: inline-block; padding: 0.15rem 0.45rem; border-radius: 4px; background: #0d1117; border: 1px solid var(--border); font-size: 0.75rem; margin-right: 0.35rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>检修报告异步结构化提取测试</h1>
+    <p class="sub">
+      流程：<code>upload</code> → <code>POST /inspection-extract/run/async</code> 得到 <code>job_id</code> → 轮询
+      <code>GET /inspection-extract/jobs/{job_id}</code>；可按块查看 <code>GET .../chunks</code>、<code>GET .../chunks/{work_idx}</code>。
+      请求头 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。同步接口见 <a href="inspection-extract.html" style="color:#a78bfa;">inspection-extract.html</a>。
+    </p>
+
+    <div class="grid">
+      <fieldset>
+        <legend>连接与鉴权</legend>
+        <label>API 根地址（不含路径尾斜杠）</label>
+        <input type="url" id="baseUrl" value="http://127.0.0.1:8083" autocomplete="off" />
+        <label>Service API Key</label>
+        <input type="password" id="apiKey" placeholder="粘贴密钥" autocomplete="off" />
+      </fieldset>
+
+      <fieldset>
+        <legend>会话参数（与 /run 相同）</legend>
+        <label>user_id</label>
+        <input type="text" id="userId" value="u_web_inspect_async" autocomplete="off" />
+        <label>session_id</label>
+        <input type="text" id="sessionId" value="u_web_inspect_async_s_001" autocomplete="off" />
+      </fieldset>
+
+      <fieldset class="full">
+        <legend>上传本地文件 -> MinIO</legend>
+        <label>选择报告文件</label>
+        <input type="file" id="fileInput" accept=".doc,.docx,.pdf,.md,.txt" />
+        <div class="actions">
+          <button type="button" class="primary" id="btnUpload">1) 上传文件</button>
+          <button type="button" class="secondary" id="btnUseUpload" disabled>填充 content / source_type</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>run/async 请求体</legend>
+        <label>source_type</label>
+        <select id="sourceType">
+          <option value="docx">docx</option>
+          <option value="pdf">pdf</option>
+          <option value="markdown">markdown</option>
+          <option value="text">text</option>
+          <option value="html">html</option>
+        </select>
+        <label>content（MinIO URL）</label>
+        <textarea id="content" rows="3" placeholder="https://..."></textarea>
+      </fieldset>
+
+      <fieldset>
+        <legend>可选</legend>
+        <label>prompt_version</label>
+        <input type="text" id="promptVersion" placeholder="v1" />
+        <div class="row">
+          <label><input type="checkbox" id="strict" /> strict</label>
+          <label><input type="checkbox" id="returnEvidence" checked /> return_evidence</label>
+        </div>
+        <label>轮询间隔（毫秒）</label>
+        <input type="number" id="pollMs" value="2000" min="500" step="500" />
+      </fieldset>
+    </div>
+
+    <div class="actions" style="margin-top: 1rem;">
+      <button type="button" class="primary" id="btnSubmitAsync">2) 提交异步任务 run/async</button>
+      <button type="button" class="secondary" id="btnPollOnce">手动拉取任务状态</button>
+      <button type="button" class="secondary" id="btnChunks">刷新分块列表</button>
+      <button type="button" class="secondary" id="btnStopPoll">停止轮询</button>
+      <button type="button" class="secondary" id="btnClear">清空输出</button>
+    </div>
+
+    <fieldset style="margin-top:1rem;border:1px solid var(--border);border-radius:8px;background:var(--panel);padding:0.75rem 1rem;">
+      <legend style="font-size:0.8rem;color:var(--muted);">恢复会话（可选）</legend>
+      <label>手动粘贴 job_id（刷新页面后可继续轮询）</label>
+      <div class="row" style="margin-top:0.35rem;">
+        <input type="text" id="manualJobId" placeholder="32位 hex job_id" autocomplete="off" style="flex:1;min-width:200px;" />
+        <button type="button" class="secondary" id="btnUseManualJob">使用该 ID 并开始轮询</button>
+      </div>
+    </fieldset>
+
+    <p style="font-size:0.8rem;color:var(--muted);margin:0.75rem 0 0;">
+      当前 job_id：<span id="jobIdLabel" class="pill">（未提交）</span>
+      <span id="pollState" class="pill">轮询：关</span>
+    </p>
+
+    <div class="out" style="margin-top: 1rem;">
+      <div id="status">就绪</div>
+      <h2>upload 响应</h2>
+      <div id="uploadResult">（尚未上传）</div>
+      <h2 style="margin-top: 1rem;">任务状态 GET /jobs/{job_id}</h2>
+      <div id="jobStatus">（尚未提交或拉取）</div>
+      <h2 style="margin-top: 1rem;">分块列表 GET /jobs/{job_id}/chunks</h2>
+      <div id="chunksOut">（未刷新）</div>
+      <h2 style="margin-top: 1rem;">选中分块详情 GET /chunks/{work_idx}</h2>
+      <label style="margin-top:0.5rem;display:inline-block;">work_idx</label>
+      <input type="number" id="workIdx" min="1" value="1" style="max-width:120px;display:inline-block;margin-left:0.5rem;" />
+      <button type="button" class="secondary" id="btnChunkDetail" style="margin-left:0.5rem;">加载该块</button>
+      <div id="chunkDetail" style="margin-top:0.5rem;">（未加载）</div>
+      <div id="err" class="err" hidden></div>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  let lastUpload = null;
+  let currentJobId = null;
+  let pollTimer = null;
+
+  const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
+  const authHeaders = (extra) => {
+    const h = Object.assign({}, extra || {});
+    const k = $("apiKey").value.trim();
+    if (k) h["Authorization"] = "Bearer " + k;
+    return h;
+  };
+
+  function setStatus(msg, ok = false) {
+    const el = $("status");
+    el.textContent = msg;
+    el.className = ok ? "ok" : "";
+  }
+
+  function showErr(msg) {
+    const el = $("err");
+    if (!msg) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.hidden = false;
+    el.textContent = msg;
+  }
+
+  function pretty(obj) {
+    try { return JSON.stringify(obj, null, 2); } catch (_) { return String(obj); }
+  }
+
+  async function readJsonSafe(resp) {
+    const text = await resp.text();
+    try {
+      return { json: JSON.parse(text), raw: text };
+    } catch (_) {
+      return { json: null, raw: text };
+    }
+  }
+
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    $("pollState").textContent = "轮询：关";
+  }
+
+  function startPolling() {
+    stopPolling();
+    if (!currentJobId) return;
+    const ms = Math.max(500, parseInt($("pollMs").value, 10) || 2000);
+    $("pollState").textContent = "轮询：开 (" + ms + "ms)";
+    pollTimer = setInterval(fetchJobOnce, ms);
+    fetchJobOnce();
+  }
+
+  async function fetchJobOnce() {
+    if (!currentJobId) return;
+    showErr("");
+    try {
+      const url =
+        baseUrl() +
+        "/inspection-extract/jobs/" +
+        encodeURIComponent(currentJobId) +
+        "?include_result=false";
+      const resp = await fetch(url, {
+        method: "GET",
+        headers: authHeaders({ Accept: "application/json" }),
+        credentials: "omit",
+      });
+      const out = await readJsonSafe(resp);
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 2000));
+      }
+      $("jobStatus").textContent = pretty(out.json || out.raw);
+      const st = (out.json && out.json.status) || "";
+      if (st === "completed" || st === "failed") {
+        stopPolling();
+        setStatus(st === "completed" ? "任务已完成（已停止轮询）" : "任务失败（已停止轮询）", st === "completed");
+        if (st === "completed") {
+          await fetchChunksOnce();
+        }
+      } else {
+        setStatus("运行中… status=" + st);
+      }
+    } catch (e) {
+      showErr(String(e.message || e));
+      stopPolling();
+      setStatus("拉取状态失败");
+    }
+  }
+
+  async function fetchChunksOnce() {
+    if (!currentJobId) {
+      showErr("暂无 job_id");
+      return;
+    }
+    try {
+      const resp = await fetch(
+        baseUrl() +
+          "/inspection-extract/jobs/" +
+          encodeURIComponent(currentJobId) +
+          "/chunks",
+        {
+          method: "GET",
+          headers: authHeaders({ Accept: "application/json" }),
+          credentials: "omit",
+        }
+      );
+      const out = await readJsonSafe(resp);
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 2000));
+      }
+      $("chunksOut").textContent = pretty(out.json || out.raw);
+    } catch (e) {
+      showErr(String(e.message || e));
+    }
+  }
+
+  $("btnUpload").addEventListener("click", async () => {
+    showErr("");
+    const file = $("fileInput").files && $("fileInput").files[0];
+    if (!file) {
+      showErr("请先选择本地文件。");
+      return;
+    }
+    setStatus("上传中…");
+    $("btnUpload").disabled = true;
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const resp = await fetch(baseUrl() + "/inspection-extract/upload", {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+        credentials: "omit",
+      });
+      const out = await readJsonSafe(resp);
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 2000));
+      }
+      lastUpload = out.json;
+      $("uploadResult").textContent = pretty(out.json || out.raw);
+      $("btnUseUpload").disabled = !lastUpload;
+      setStatus("上传成功", true);
+    } catch (e) {
+      setStatus("上传失败");
+      showErr(String(e.message || e));
+    } finally {
+      $("btnUpload").disabled = false;
+    }
+  });
+
+  $("btnUseUpload").addEventListener("click", () => {
+    if (!lastUpload) return;
+    if (lastUpload.source_type) $("sourceType").value = String(lastUpload.source_type);
+    if (lastUpload.url) $("content").value = String(lastUpload.url);
+    setStatus("已填充 upload 返回字段", true);
+  });
+
+  $("btnSubmitAsync").addEventListener("click", async () => {
+    showErr("");
+    stopPolling();
+    setStatus("提交异步任务…");
+    $("btnSubmitAsync").disabled = true;
+    const body = {
+      user_id: $("userId").value.trim(),
+      session_id: $("sessionId").value.trim(),
+      source_type: $("sourceType").value,
+      content: $("content").value.trim(),
+      strict: $("strict").checked,
+      return_evidence: $("returnEvidence").checked,
+    };
+    const pv = $("promptVersion").value.trim();
+    if (pv) body.prompt_version = pv;
+
+    try {
+      const resp = await fetch(baseUrl() + "/inspection-extract/run/async", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json", Accept: "application/json" }),
+        body: JSON.stringify(body),
+        credentials: "omit",
+      });
+      const out = await readJsonSafe(resp);
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 3000));
+      }
+      const jid = out.json && out.json.job_id;
+      currentJobId = jid || null;
+      if (currentJobId) $("manualJobId").value = currentJobId;
+      $("jobIdLabel").textContent = currentJobId || "（无 job_id）";
+      $("jobStatus").textContent = pretty(out.json || out.raw);
+      setStatus("已提交，开始轮询…", true);
+      if (currentJobId) startPolling();
+    } catch (e) {
+      setStatus("提交失败");
+      showErr(String(e.message || e));
+    } finally {
+      $("btnSubmitAsync").disabled = false;
+    }
+  });
+
+  $("btnUseManualJob").addEventListener("click", () => {
+    const j = $("manualJobId").value.trim();
+    if (!j) {
+      showErr("请粘贴 job_id");
+      return;
+    }
+    showErr("");
+    currentJobId = j;
+    $("jobIdLabel").textContent = currentJobId;
+    setStatus("已载入 job_id，开始轮询…", true);
+    startPolling();
+  });
+
+  $("btnPollOnce").addEventListener("click", async () => {
+    if (!currentJobId) {
+      showErr("请先提交异步任务或使用「使用该 ID 并开始轮询」");
+      return;
+    }
+    await fetchJobOnce();
+  });
+
+  $("btnChunks").addEventListener("click", fetchChunksOnce);
+
+  $("btnStopPoll").addEventListener("click", () => {
+    stopPolling();
+    setStatus("已停止轮询");
+  });
+
+  $("btnChunkDetail").addEventListener("click", async () => {
+    if (!currentJobId) {
+      showErr("暂无 job_id");
+      return;
+    }
+    const w = Math.max(1, parseInt($("workIdx").value, 10) || 1);
+    showErr("");
+    try {
+      const resp = await fetch(
+        baseUrl() +
+          "/inspection-extract/jobs/" +
+          encodeURIComponent(currentJobId) +
+          "/chunks/" +
+          w,
+        {
+          method: "GET",
+          headers: authHeaders({ Accept: "application/json" }),
+          credentials: "omit",
+        }
+      );
+      const out = await readJsonSafe(resp);
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 2000));
+      }
+      $("chunkDetail").textContent = pretty(out.json || out.raw);
+    } catch (e) {
+      $("chunkDetail").textContent = "";
+      showErr(String(e.message || e));
+    }
+  });
+
+  $("btnClear").addEventListener("click", () => {
+    stopPolling();
+    currentJobId = null;
+    $("jobIdLabel").textContent = "（未提交）";
+    $("uploadResult").textContent = "（尚未上传）";
+    $("jobStatus").textContent = "（尚未提交或拉取）";
+    $("chunksOut").textContent = "（未刷新）";
+    $("chunkDetail").textContent = "（未加载）";
+    showErr("");
+    setStatus("已清空");
+    lastUpload = null;
+    $("btnUseUpload").disabled = true;
+  });
+})();
+  </script>
+</body>
+</html>

@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.conversation.ids import validate_session_id, validate_user_id
 
@@ -127,4 +127,55 @@ class InspectionUploadResponse(BaseModel):
     source_type: str = Field(..., description="推断出的文档类型")
     url: str = Field(..., description="可访问 URL（预签名）")
     bucket: str = Field(..., description="MinIO bucket")
+
+
+class InspectionExtractAsyncSubmitResponse(BaseModel):
+    """POST /inspection-extract/run/async 立即返回。"""
+
+    ok: bool = True
+    job_id: str = Field(..., description="异步任务 ID，用于轮询与按块拉取")
+    job_status_path: str = Field(..., description="GET 状态相对路径，如 /inspection-extract/jobs/{job_id}")
+
+
+class InspectionExtractJobMetrics(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    parse_route: str | None = None
+    chunks_total: int = 0
+    chunks_done: int = 0
+    llm_model: str | None = None
+    prompt_version: str | None = None
+    parse_latency_ms: int | None = None
+    llm_latency_ms: int | None = None
+
+
+class InspectionExtractJobStatusResponse(BaseModel):
+    job_id: str
+    status: str = Field(..., description="pending | running | completed | failed")
+    step: str = Field(..., description="当前阶段：parsing_doc | llm_parse | post_process | done 等")
+    created_at: str
+    updated_at: str
+    finished_at: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    metrics: InspectionExtractJobMetrics = Field(default_factory=InspectionExtractJobMetrics)
+    # 终态时可选：与同步 /run 一致；大结果建议客户端主要按块拉取
+    result: InspectionExtractResponse | None = None
+
+
+class InspectionExtractChunkListItem(BaseModel):
+    work_idx: int
+    status: str = Field(..., description="done 表示该块 parse 已落盘")
+    record_count: int = 0
+
+
+class InspectionExtractChunkListResponse(BaseModel):
+    job_id: str
+    chunks: list[InspectionExtractChunkListItem] = Field(default_factory=list)
+
+
+class InspectionExtractChunkRecordsResponse(BaseModel):
+    job_id: str
+    work_idx: int
+    records: list[dict[str, Any]] = Field(default_factory=list, description="该块 parse 原始记录（dict）")
 

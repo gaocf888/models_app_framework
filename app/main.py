@@ -176,10 +176,15 @@ def create_app() -> FastAPI:
     async def _startup_warm_components() -> None:
         # Ensure durable ingestion workers are ready immediately after boot.
         rag_admin.warmup_rag_admin_components()
+        inspection_extract.service.recover_async_jobs_on_startup()
 
     @app.on_event("shutdown")
     async def _shutdown_components() -> None:
         rag_admin.shutdown_rag_admin_components()
+        try:
+            inspection_extract.service.job_scheduler.shutdown_workers()
+        except Exception:
+            pass
 
     @app.get("/metrics")
     async def metrics() -> PlainTextResponse:
