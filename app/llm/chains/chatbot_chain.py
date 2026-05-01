@@ -131,7 +131,13 @@ class ChatbotChain:
             )
         if ctx_snippets:
             ctx_text = "\n".join(f"- {t}" for t in ctx_snippets)
-            system_chunks.append(f"以下是与用户问题相关的知识片段，请优先参考：\n{ctx_text}")
+            system_chunks.append(
+                "以下为检索得到的知识片段（列表顺序仅为检索结果顺序，与用户所指会话中的小节、主题或「第N点」"
+                "均无对应关系，禁止用片段顺序顶替会话内容）。用户泛指上文（如「上述现场排查/检修建议」）时，"
+                "请先在对话历史中按语义对齐助手较近一轮的相关段落再展开；仅当用户明确说「第N点/条」时再对齐编号。"
+                "再以片段补充条文或机理。\n"
+                f"{ctx_text}"
+            )
 
         messages: List[object] = [SystemMessage(content="\n\n".join(system_chunks))]
 
