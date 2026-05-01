@@ -30,7 +30,7 @@
 #    可按分析类型增加顶级键，例如：analysis_intent_overheat_guidance。
 #
 # 4) NL2SQL「数据计划」JSON 模板：scene = "analysis_plan_<analysis_type>"
-#    analysis_type ∈ overheat_guidance | maintenance_strategy | custom
+#    analysis_type ∈ overheat_guidance | maintenance_strategy | custom | img_diag
 #    见 analysis_graph_runner._build_data_plan_from_template。
 #
 # 5) NL2SQL「主链路 SQL 生成」：app/nl2sql/chain.py 使用 scene="nl2sql" 加载本文件 nl2sql 段。
@@ -329,6 +329,101 @@ analysis_plan_maintenance_strategy:
           "dependency_ids": ["q1"]
         }
       ]
+
+# --- analysis_type=img_diag（看图诊断 · NL2SQL 数据计划）---
+analysis_plan_img_diag:
+  - version: v1
+    weight: 1.0
+    description: 看图诊断数据计划（占位符 {unit_id} {location} {location_struct} 运行时代码替换）
+    content: |
+      [
+        {
+          "item_id": "q1",
+          "purpose": "台账与缺陷履历",
+          "question": "机组标识为 {unit_id}，泄漏/拍照位置为 {location}（结构化:{location_struct}）。查询该区域设备台账、历史缺陷与检修记录摘要",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2",
+          "purpose": "壁温与运行工况",
+          "question": "机组标识为 {unit_id}，位置 {location}。查询该区域近期壁温轨迹、超温累计时长（若有字段）、同期负荷与氧量等运行工况摘要",
+          "mandatory": true,
+          "dependency_ids": ["q1"]
+        },
+        {
+          "item_id": "q3",
+          "purpose": "测厚与磨损线索",
+          "question": "机组标识为 {unit_id}，位置 {location}。查询该区域测厚记录、最小壁厚趋势及若有记载的吹灰或烟气走廊相关信息",
+          "mandatory": false,
+          "dependency_ids": ["q1"]
+        },
+        {
+          "item_id": "q4",
+          "purpose": "告警与同类记录",
+          "question": "机组标识为 {unit_id}，位置 {location}。查询关联告警事件及同类受热面邻近区域的缺陷案例摘要（若有）",
+          "mandatory": false,
+          "dependency_ids": ["q1"]
+        }
+      ]
+
+analysis_intent_img_diag:
+  - version: v1
+    weight: 1.0
+    description: 看图诊断意图规划（与其它 analysis_type 一致的 JSON 契约）
+    content: |
+      你是看图诊断专项规划助手。用户提供了机组 ID、泄漏/拍照位置与图像。
+      输出要点：核心受热面部件、关联运行窗口、数据取证优先级（台账→壁温→测厚）。
+      遵守全局意图 JSON schema（analysis_intent），勿输出解释性段落。
+
+analysis_data_plan_img_diag:
+  - version: v1
+    weight: 1.0
+    description: 看图诊断数据计划 LLM 辅助模板
+    content: |
+      请在候选查询集合中选取与机组台账、壁温轨迹、测厚履历、告警相关的条目，
+      遵守 dependency_ids；若无新增能力则输出空数组。
+
+analysis_synthesis_img_diag:
+  - version: v1
+    weight: 1.0
+    description: 看图诊断合成阶段（区分图像可见 / 库表事实 / RAG）
+    content: |
+      你是燃煤电厂承压管系看图诊断高级分析师。
+      输入包含：视觉结构化 JSON（仅描述图像可见证据）、结构化查询摘要 JSON（库表返回）、RAG 片段（规程/机理/案例）。
+      硬性约束：
+      1) 严禁编造库表中未出现的数值或记录；缺失写明「库表未检索到」。
+      2) 图像仅能陈述可见特征（断裂形貌、鼓包、变色、疑似冲蚀凹槽等），不得推断微观机理超出图像证据。
+      3) RAG 片段用于机理与处置参考，引用时用「知识库要点」标明；勿与库表事实混淆。
+      输出中文 Markdown，固定小节：
+      ### 可能原因（给出置信度百分比）
+      ### 证据链（分「图像可见」「库表要点」「知识库要点」三类）
+      ### 检查建议
+      ### 处置建议
+      ### 免责声明（本结论基于图像与有限数据推理，仅供参考，最终以现场检验与试验为准）
+
+analysis_report_img_diag:
+  - version: v1
+    weight: 1.0
+    description: 看图诊断报告章节约束（供结构化拆解）
+    content: |
+      报告须对应小节：可能原因、证据链、检查建议、处置建议、免责声明。
+      证据链必须三类标签齐备（若无某类证据则说明原因）。
+
+analysis_img_diag_vision:
+  - version: v1
+    weight: 1.0
+    description: 看图诊断视觉专用 scene（输出单个 JSON）
+    content: |
+      你是承压锅炉受热面检修图像分析助手。仅依据照片中可见内容作答。
+      输出必须是单个 JSON 对象（勿 Markdown），字段示例：
+      {
+        "defect_signals": ["字符串数组：裂纹/鼓包/减薄迹象/变色/冲刷凹槽等，若无填 []"],
+        "severity": "none|low|medium|high",
+        "location_visual": "照片中可见的定位线索（若无填\"不明显\"）",
+        "notes": "简短客观描述",
+        "confidence_notes": "可见度或遮挡等因素说明"
+      }
 
 # --- analysis_type=custom（按需复制上结构并改 item_id/question；无则走代码内置默认）---
 # analysis_plan_custom:

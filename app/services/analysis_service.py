@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-综合分析应用服务层：默认值注入、`AnalysisGraphRunner` 编排、trace 写入与运维查询（列表/统计/趋势/降级 TopN）。
+综合分析应用服务层：默认值注入、`AnalysisImgDiagGraphRunner`（兼容 payload/nl2sql/img_diag）编排、trace 与运维查询。
 """
 
 import time
@@ -19,6 +19,7 @@ from app.core.metrics import (
     ANALYSIS_TRACE_TREND_CACHE_MISS_COUNT,
 )
 from app.models.analysis import (
+    AnalysisImgDiagRequest,
     AnalysisTraceDegradeItem,
     AnalysisTraceDegradeTopNResponse,
     AnalysisNL2SQLRequest,
@@ -29,13 +30,15 @@ from app.models.analysis import (
     AnalysisTraceView,
     AnalysisV2Result,
 )
+from app.models.inspection_extract import InspectionUploadResponse
 from app.llm.client import VLLMHttpClient
-from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
+from app.llm.graphs.analysis_img_diag_runner import AnalysisImgDiagGraphRunner
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
 from app.services.nl2sql_service import NL2SQLService
 from app.services.analysis_trace_store import create_analysis_trace_store
+from app.services.analysis_img_diag_upload import upload_analysis_img_diag_image
 
 logger = get_logger(__name__)
 
@@ -45,8 +48,8 @@ class AnalysisService:
     综合分析服务（企业版 V2）。
 
     说明：
-    - 仅保留企业级双入口链路（payload/nl2sql）；
-    - 统一由 AnalysisGraphRunner 编排，不再保留旧版 /analysis/run 回退链路。
+    - 入口：`payload` / `nl2sql` / `img_diag`（看图诊断），均由 `AnalysisImgDiagGraphRunner` 编排；
+    - 不再保留旧版 /analysis/run 回退链路。
     """
 
     def __init__(
@@ -79,7 +82,7 @@ class AnalysisService:
         self._trace_trend_cache_ttl = max(1, int(analysis_cfg.trace_trend_cache_ttl_seconds))
         self._trace_trend_cache: dict[str, tuple[float, AnalysisTraceTrendResponse]] = {}
         self._trace_trend_cache_lock = Lock()
-        self._graph_runner = AnalysisGraphRunner(
+        self._graph_runner = AnalysisImgDiagGraphRunner(
             conv_manager=self._conv,
             llm_client=self._llm,
             prompt_registry=self._prompts,
@@ -99,6 +102,18 @@ class AnalysisService:
         result = await self._graph_runner.run_with_nl2sql(req)
         self._save_trace(result)
         return result
+
+    async def run_analysis_img_diag(self, data: AnalysisImgDiagRequest) -> AnalysisV2Result:
+        req = self._apply_defaults_img_diag(data)
+        result = await self._graph_runner.run_with_img_diag(req)
+        self._save_trace(result)
+        return result
+
+    async def upload_img_diag_image(
+        self, *, file_name: str, content: bytes, content_type: str | None
+    ) -> InspectionUploadResponse:
+        """看图诊断图片上传（详见 `analysis_img_diag_upload.upload_analysis_img_diag_image`）。"""
+        return await upload_analysis_img_diag_image(file_name=file_name, content=content, content_type=content_type)
 
     def get_trace(self, request_id: str) -> AnalysisTraceView | None:
         """按 request_id 读取单次分析完整 trace（后端由 `ANALYSIS_TRACE_BACKEND` 决定）。"""
@@ -297,7 +312,7 @@ class AnalysisService:
                 key = ts.replace(second=0, microsecond=0)
                 if bucket == "hour":
                     key = key.replace(minute=0)
-                row = agg.setdefault(key, {"total": 0, "payload": 0, "nl2sql": 0})
+                row = agg.setdefault(key, {"total": 0, "payload": 0, "nl2sql": 0, "img_diag": 0})
                 row["total"] += 1
                 row[mode] = row.get(mode, 0) + 1
 
@@ -311,6 +326,7 @@ class AnalysisService:
                         by_data_mode={
                             "payload": int(row.get("payload", 0)),
                             "nl2sql": int(row.get("nl2sql", 0)),
+                            "img_diag": int(row.get("img_diag", 0)),
                         },
                     )
                 )
@@ -369,6 +385,29 @@ class AnalysisService:
     @staticmethod
     def _apply_defaults_payload(data: AnalysisPayloadRequest) -> AnalysisPayloadRequest:
         """用 `AnalysisConfig` 补齐 options 中的默认模板、strict、行数上限等。"""
+        cfg = get_app_config().analysis
+        chart_mode = data.options.chart_mode
+        if chart_mode not in {"auto", "minimal", "off"}:
+            chart_mode = cfg.default_chart_mode
+        return data.model_copy(
+            update={
+                "options": data.options.model_copy(
+                    update={
+                        "report_template": data.options.report_template or cfg.default_report_template,
+                        "chart_mode": chart_mode,
+                        "report_style": data.options.report_style or cfg.default_report_style,
+                        "max_nl2sql_calls": data.options.max_nl2sql_calls or cfg.default_max_nl2sql_calls,
+                        "max_rows_per_query": data.options.max_rows_per_query or cfg.default_max_rows_per_query,
+                        "max_suggestions": data.options.max_suggestions or cfg.default_max_suggestions,
+                        "strict": data.options.strict or cfg.strict_by_default,
+                    }
+                )
+            }
+        )
+
+    @staticmethod
+    def _apply_defaults_img_diag(data: AnalysisImgDiagRequest) -> AnalysisImgDiagRequest:
+        """同 `_apply_defaults_nl2sql`，作用于看图诊断请求体（默认开启业务 RAG，见 `AnalysisOptions.enable_rag`）。"""
         cfg = get_app_config().analysis
         chart_mode = data.options.chart_mode
         if chart_mode not in {"auto", "minimal", "off"}:

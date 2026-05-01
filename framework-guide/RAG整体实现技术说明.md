@@ -268,8 +268,9 @@ GRAPH_RAG_USE_INTENT_ROUTING=true
 >   `POST /chatbot/chat/stream`（主用）或 `POST /chatbot/chat`（兼容）
 >   → `ChatbotService.stream_chat_events` → `ChatbotLangGraphRunner` → `AgenticRAGService/HybridRAGService` → RAG 检索 → LLM；
 >   若启用 `CHATBOT_SIMILAR_CASE_ENABLED`，主回答后由 Runner 再调 `HybridRAGService.retrieve(..., namespace=CHATBOT_SIMILAR_CASE_NAMESPACE)` 追加相似案例块（与主检索 namespace 解耦）。
-> - **综合分析（V2 双入口）**：
->   `POST /analysis/run-with-payload` 或 `POST /analysis/run-with-nl2sql` → `AnalysisService` → `AnalysisGraphRunner` → `AgenticRAGService/HybridRAGService` → RAG 检索 → LLM。
+> - **综合分析（V2：payload / nl2sql + 看图诊断）**：
+>   `POST /analysis/run-with-payload` 或 `POST /analysis/run-with-nl2sql` → `AnalysisService` → **`AnalysisGraphRunner`**：`scene=nl2sql`（规划前检索）与 **`scene=analysis`**（业务 **`rag_enrichment`**）；
+>   **`POST /analysis/run-img-diag`** → **`AnalysisImgDiagGraphRunner`**：规划前仍为 **`scene=nl2sql`**，业务向 **`scene=analysis`** 在 **并行臂** **`_retrieve_business_rag`** 执行（**跳过** nl2sql 图尾部 **`rag_enrichment`**），再与视觉 / 库表一并 **`synthesis`**。
 > - **NL2SQL /nl2sql/query 中的 RAG**：  
 >   `POST /nl2sql/query` → `NL2SQLService.query` → `NL2SQLChain.generate_sql` → `NL2SQLRAGService.retrieve` → `RetrievalPolicy` 决策（vector/graph/hybrid）→ 向量与图事实联合检索。
 

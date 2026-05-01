@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>综合分析 · 看图诊断测试 · /analysis/run-img-diag</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --ok: #22c55e;
+      --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 1.25rem 1rem 2rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin-bottom: 1.25rem; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+    @media (min-width: 780px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+      .grid .full { grid-column: 1 / -1; }
+    }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      margin: 0;
+      padding: 0.75rem 1rem 1rem;
+    }
+    legend { padding: 0 0.35rem; color: var(--muted); font-size: 0.8rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"],
+    input[type="url"],
+    input[type="password"],
+    input[type="number"],
+    select,
+    textarea {
+      width: 100%;
+      margin-top: 0.2rem;
+      padding: 0.45rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    input[type="file"] {
+      width: 100%;
+      margin-top: 0.25rem;
+      padding: 0.45rem 0.4rem;
+      border-radius: 6px;
+      border: 1px dashed var(--border);
+      background: #0d1117;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; align-items: center; margin-top: 0.5rem; }
+    .row label { display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--text); font-size: 0.875rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+    button {
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button.primary { background: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.secondary { background: var(--border); color: var(--text); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .out {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      min-height: 200px;
+      padding: 1rem;
+    }
+    .out h2 { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.5rem; font-weight: 500; }
+    #status { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; white-space: pre-wrap; }
+    #uploadResult, #runResult {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.82rem;
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem;
+      min-height: 4rem;
+      max-height: 420px;
+      overflow: auto;
+    }
+    .ok { color: var(--ok); }
+    .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
+    code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>综合分析 · 看图诊断测试</h1>
+    <p class="sub">
+      流程：可先 <code>POST /analysis/img-diag/upload</code> 上传现场图（jpeg/png/webp），将返回的 <code>url</code> 填入
+      <code>image_urls</code>；再 <code>POST /analysis/run-img-diag</code>。请求头
+      <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。
+      编排说明见企业文档：<code>enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md</code>。
+    </p>
+
+    <div class="grid">
+      <fieldset>
+        <legend>连接与鉴权</legend>
+        <label>API 根地址（不含路径尾斜杠）</label>
+        <input type="url" id="baseUrl" value="http://127.0.0.1:8083" autocomplete="off" />
+        <label>Service API Key（可空，仅服务端关闭鉴权时可用）</label>
+        <input type="password" id="apiKey" placeholder="粘贴密钥" autocomplete="off" />
+      </fieldset>
+
+      <fieldset>
+        <legend>会话</legend>
+        <label>user_id</label>
+        <input type="text" id="userId" value="u_web_img_diag" autocomplete="off" />
+        <label>session_id</label>
+        <input type="text" id="sessionId" value="u_web_img_diag_s_001" autocomplete="off" />
+      </fieldset>
+
+      <fieldset class="full">
+        <legend>上传现场图 → MinIO（可选）</legend>
+        <label>选择图片（jpeg / png / webp）</label>
+        <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" />
+        <div class="actions">
+          <button type="button" class="primary" id="btnUpload">1) 上传图片</button>
+          <button type="button" class="secondary" id="btnAppendUrl" disabled>将上传 URL 追加到 image_urls</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>看图诊断请求体</legend>
+        <label>unit_id（机组 ID）</label>
+        <input type="text" id="unitId" value="UNIT-02" autocomplete="off" />
+        <label>leak_location_text（漏泄 / 拍照位置描述）</label>
+        <input type="text" id="leakLocationText" value="#2炉高温过热器B侧第4排" autocomplete="off" />
+        <label>leak_location_struct（可选 JSON 对象，空则用 {}）</label>
+        <textarea id="leakLocationStruct" rows="3" placeholder='{"炉":"#2","受热面":"高温过热器","侧":"B","排":"4"}'></textarea>
+      </fieldset>
+
+      <fieldset>
+        <legend>提问与图片 URL</legend>
+        <label>query（用户提问）</label>
+        <textarea id="query" rows="3" placeholder="结合这个位置和照片，分析可能原因？"></textarea>
+        <label>image_urls（每行一个 URL，至少一行）</label>
+        <textarea id="imageUrls" rows="4" placeholder="https://minio.../presigned.jpg"></textarea>
+        <label>data_requirements_hint（可选，每行一条）</label>
+        <textarea id="dataHints" rows="2" placeholder="留空则 []"></textarea>
+      </fieldset>
+
+      <fieldset>
+        <legend>options（可选）</legend>
+        <div class="row">
+          <label><input type="checkbox" id="enableRag" checked /> enable_rag</label>
+          <label><input type="checkbox" id="enableContext" checked /> enable_context</label>
+          <label><input type="checkbox" id="strict" /> strict</label>
+        </div>
+        <label>max_nl2sql_calls（空则服务端默认）</label>
+        <input type="number" id="maxNl2sql" placeholder="6" min="1" max="12" />
+      </fieldset>
+    </div>
+
+    <div class="actions" style="margin-top: 1rem;">
+      <button type="button" class="primary" id="btnRun">2) 执行看图诊断</button>
+      <button type="button" class="secondary" id="btnClear">清空输出</button>
+    </div>
+
+    <div class="out" style="margin-top: 1rem;">
+      <div id="status">就绪</div>
+      <h2>upload 响应</h2>
+      <div id="uploadResult">（尚未上传）</div>
+      <h2 style="margin-top: 1rem;">run-img-diag 响应</h2>
+      <div id="runResult">（尚未执行）</div>
+      <div id="err" class="err" hidden></div>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  let lastUploadUrl = null;
+
+  const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
+  const authHeaders = (extra) => {
+    const h = Object.assign({}, extra || {});
+    const k = $("apiKey").value.trim();
+    if (k) h["Authorization"] = "Bearer " + k;
+    return h;
+  };
+
+  function setStatus(msg, ok = false) {
+    const el = $("status");
+    el.textContent = msg;
+    el.className = ok ? "ok" : "";
+  }
+
+  function showErr(msg) {
+    const el = $("err");
+    if (!msg) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.hidden = false;
+    el.textContent = msg;
+  }
+
+  function pretty(obj) {
+    try { return JSON.stringify(obj, null, 2); } catch (_) { return String(obj); }
+  }
+
+  async function readJsonSafe(resp) {
+    const text = await resp.text();
+    try {
+      return { json: JSON.parse(text), raw: text };
+    } catch (_) {
+      return { json: null, raw: text };
+    }
+  }
+
+  function parseStructField() {
+    const raw = $("leakLocationStruct").value.trim();
+    if (!raw) return {};
+    try {
+      const o = JSON.parse(raw);
+      if (o !== null && typeof o === "object" && !Array.isArray(o)) return o;
+      throw new Error("leak_location_struct 须为 JSON 对象");
+    } catch (e) {
+      throw new Error("leak_location_struct JSON 无效：" + (e.message || e));
+    }
+  }
+
+  function imageUrlsList() {
+    return $("imageUrls").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  }
+
+  function dataHintsList() {
+    return $("dataHints").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  }
+
+  $("btnUpload").addEventListener("click", async () => {
+    showErr("");
+    const file = $("fileInput").files && $("fileInput").files[0];
+    if (!file) {
+      showErr("请先选择图片文件。");
+      return;
+    }
+    setStatus("上传中…");
+    $("btnUpload").disabled = true;
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const resp = await fetch(baseUrl() + "/analysis/img-diag/upload", {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+        credentials: "omit",
+      });
+      const out = await readJsonSafe(resp);
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 2000));
+      }
+      lastUploadUrl = out.json && out.json.url ? String(out.json.url) : null;
+      $("uploadResult").textContent = pretty(out.json || out.raw);
+      $("btnAppendUrl").disabled = !lastUploadUrl;
+      setStatus("上传成功", true);
+    } catch (e) {
+      setStatus("上传失败");
+      lastUploadUrl = null;
+      $("btnAppendUrl").disabled = true;
+      showErr(String(e.message || e));
+    } finally {
+      $("btnUpload").disabled = false;
+    }
+  });
+
+  $("btnAppendUrl").addEventListener("click", () => {
+    if (!lastUploadUrl) return;
+    const ta = $("imageUrls");
+    const cur = ta.value.trim();
+    ta.value = cur ? cur + "\n" + lastUploadUrl : lastUploadUrl;
+    setStatus("已将上传 URL 追加到 image_urls", true);
+  });
+
+  $("btnRun").addEventListener("click", async () => {
+    showErr("");
+    let structObj;
+    try {
+      structObj = parseStructField();
+    } catch (e) {
+      showErr(String(e.message || e));
+      return;
+    }
+
+    const urls = imageUrlsList();
+    if (!urls.length) {
+      showErr("请至少填写一行 image_urls（可先上传图片并追加）。");
+      return;
+    }
+
+    const uid = $("userId").value.trim();
+    const sid = $("sessionId").value.trim();
+    const q = $("query").value.trim();
+    if (!uid || !sid || !q) {
+      showErr("请填写 user_id、session_id、query。");
+      return;
+    }
+
+    const unitId = $("unitId").value.trim();
+    const leakText = $("leakLocationText").value.trim();
+    if (!unitId || !leakText) {
+      showErr("请填写 unit_id 与 leak_location_text。");
+      return;
+    }
+
+    const options = {
+      enable_rag: $("enableRag").checked,
+      enable_context: $("enableContext").checked,
+      strict: $("strict").checked,
+    };
+    const maxNl = $("maxNl2sql").value.trim();
+    if (maxNl !== "") {
+      const n = parseInt(maxNl, 10);
+      if (!Number.isFinite(n) || n < 1 || n > 12) {
+        showErr("max_nl2sql_calls 须为 1～12 的整数。");
+        return;
+      }
+      options.max_nl2sql_calls = n;
+    }
+
+    const body = {
+      user_id: uid,
+      session_id: sid,
+      unit_id: unitId,
+      leak_location_text: leakText,
+      leak_location_struct: structObj,
+      query: q,
+      image_urls: urls,
+      data_requirements_hint: dataHintsList(),
+      options,
+    };
+
+    setStatus("执行中（看图诊断可能较慢）…");
+    $("btnRun").disabled = true;
+    try {
+      const resp = await fetch(baseUrl() + "/analysis/run-img-diag", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json", Accept: "application/json" }),
+        body: JSON.stringify(body),
+        credentials: "omit",
+      });
+      const out = await readJsonSafe(resp);
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 6000));
+      }
+      $("runResult").textContent = pretty(out.json || out.raw);
+      setStatus("执行完成", true);
+    } catch (e) {
+      setStatus("执行失败");
+      showErr(String(e.message || e));
+    } finally {
+      $("btnRun").disabled = false;
+    }
+  });
+
+  $("btnClear").addEventListener("click", () => {
+    $("uploadResult").textContent = "（尚未上传）";
+    $("runResult").textContent = "（尚未执行）";
+    showErr("");
+    setStatus("已清空");
+    lastUploadUrl = null;
+    $("btnAppendUrl").disabled = true;
+  });
+})();
+  </script>
+</body>
+</html>

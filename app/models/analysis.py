@@ -52,8 +52,8 @@ class AnalysisResult(BaseModel):
     context_snippets: List[str] = Field(default_factory=list, description="检索到的文本上下文片段摘要")
 
 
-AnalysisType = Literal["overheat_guidance", "maintenance_strategy", "custom"]
-DataMode = Literal["payload", "nl2sql"]
+AnalysisType = Literal["overheat_guidance", "maintenance_strategy", "custom", "img_diag"]
+DataMode = Literal["payload", "nl2sql", "img_diag"]
 
 
 class AnalysisOptions(BaseModel):
@@ -89,6 +89,49 @@ class AnalysisPayloadRequest(BaseModel):
     @classmethod
     def _v2_sid(cls, v: str) -> str:
         return validate_session_id(v)
+
+
+class AnalysisImgDiagRequest(BaseModel):
+    """看图诊断（随手拍）：图像理解 ‖ NL2SQL ‖ 业务 RAG 并行后合成。"""
+
+    user_id: str = Field(..., description="用户唯一标识（由调用方后台传入）")
+    session_id: str = Field(..., description="会话唯一标识")
+    unit_id: str = Field(..., description="机组 ID（用于 NL2SQL 与 RAG 检索上下文）")
+    leak_location_text: str = Field(..., description="泄漏/拍照位置文本描述（如 #2炉高温过热器B侧第4排）")
+    leak_location_struct: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="可选结构化位置字段（炉号、受热面、侧别、排号等），参与占位符替换",
+    )
+    query: str = Field(..., description="用户自然语言提问")
+    image_urls: List[str] = Field(..., description="现场照片 URL 列表（建议先通过 img-diag/upload 上传）")
+    data_requirements_hint: List[str] = Field(default_factory=list, description="可选的补充数据维度提示")
+    options: AnalysisOptions = Field(default_factory=AnalysisOptions, description="执行选项；看图诊断默认开启 enable_rag")
+
+    @field_validator("user_id")
+    @classmethod
+    def _v_uid(cls, v: str) -> str:
+        return validate_user_id(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def _v_sid(cls, v: str) -> str:
+        return validate_session_id(v)
+
+    @field_validator("unit_id", "leak_location_text", "query")
+    @classmethod
+    def _v_strip(cls, v: str) -> str:
+        text = (v or "").strip()
+        if not text:
+            raise ValueError("must not be empty")
+        return text
+
+    @field_validator("image_urls")
+    @classmethod
+    def _v_images(cls, v: List[str]) -> List[str]:
+        cleaned = [u.strip() for u in v if isinstance(u, str) and u.strip()]
+        if not cleaned:
+            raise ValueError("image_urls must contain at least one URL")
+        return cleaned
 
 
 class AnalysisNL2SQLRequest(BaseModel):
@@ -131,6 +174,10 @@ class AnalysisEvidence(BaseModel):
     rag_sources: List[Dict[str, Any]] = Field(default_factory=list, description="RAG 证据来源")
     nl2sql_calls: List[AnalysisNL2SQLCall] = Field(default_factory=list, description="NL2SQL 调用明细")
     data_coverage: Dict[str, Any] = Field(default_factory=dict, description="数据覆盖率与质量摘要")
+    vision_findings: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="看图诊断：视觉结构化理解结果（若无则为 None）",
+    )
 
 
 class AnalysisTrace(BaseModel):

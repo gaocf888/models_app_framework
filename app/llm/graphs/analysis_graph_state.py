@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
-AnalysisType = Literal["overheat_guidance", "maintenance_strategy", "custom"]
-DataMode = Literal["payload", "nl2sql"]
+AnalysisType = Literal["overheat_guidance", "maintenance_strategy", "custom", "img_diag"]
+DataMode = Literal["payload", "nl2sql", "img_diag"]
 
 
 class NL2SQLPlanItem(TypedDict, total=False):

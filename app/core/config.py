@@ -482,6 +482,11 @@ class AnalysisConfig:
     checkpoint_namespace: str = "analysis_graph"
     # NL2SQL 综合分析：是否启用「意图 LLM + 数据计划 LLM」分阶段结构化规划（关闭则仅用 JSON 模板/内置默认）
     nl2sql_llm_planner_enabled: bool = True
+    # 看图诊断（img_diag）：视觉模型（空则走 LLM 默认模型）、各臂超时与上传大小上限
+    img_diag_vision_model: str | None = None
+    img_diag_vision_timeout_seconds: float = 120.0
+    img_diag_lane_timeout_seconds: float = 180.0
+    img_diag_upload_max_mb: int = 15
 
 
 def _default_inspection_v2_shading_fills() -> list[str]:
@@ -905,6 +910,14 @@ def _load_from_env() -> AppConfig:
         checkpoint_redis_url=os.getenv("ANALYSIS_CHECKPOINT_REDIS_URL") or None,
         checkpoint_namespace=(os.getenv("ANALYSIS_CHECKPOINT_NAMESPACE", "analysis_graph") or "analysis_graph"),
         nl2sql_llm_planner_enabled=os.getenv("ANALYSIS_NL2SQL_LLM_PLANNER_ENABLED", "true").lower() == "true",
+        img_diag_vision_model=(os.getenv("ANALYSIS_IMG_DIAG_VISION_MODEL") or "").strip() or None,
+        img_diag_vision_timeout_seconds=max(
+            5.0, float(os.getenv("ANALYSIS_IMG_DIAG_VISION_TIMEOUT_SECONDS", "120"))
+        ),
+        img_diag_lane_timeout_seconds=max(
+            10.0, float(os.getenv("ANALYSIS_IMG_DIAG_LANE_TIMEOUT_SECONDS", "180"))
+        ),
+        img_diag_upload_max_mb=max(1, int(os.getenv("ANALYSIS_IMG_DIAG_UPLOAD_MAX_MB", "15"))),
     )
     _v2_fills_env = os.getenv("INSPECT_EXTRACT_V2_SHADING_CANDIDATE_FILLS", "").strip()
     if _v2_fills_env:

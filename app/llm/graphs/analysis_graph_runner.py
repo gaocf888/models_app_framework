@@ -1541,6 +1541,27 @@ class AnalysisGraphRunner:
                     "action": "对二级监测区（3-4mm 且高超温频次）执行周级复测与趋势追踪。",
                 },
             ]
+        if analysis_type == "img_diag":
+            return [
+                {
+                    "priority": 1,
+                    "category": "inspection",
+                    "owner": "检修班组",
+                    "eta": "immediate",
+                    "trigger": "pipe_leak_photo",
+                    "rationale": "爆管后需扩大排查同类损伤管段并留存证据。",
+                    "action": "对相邻排管子开展宏观检查与测厚/硬度抽检，记录缺口形态与壁厚最小值。",
+                },
+                {
+                    "priority": 2,
+                    "category": "operation_review",
+                    "owner": "运行专工",
+                    "eta": "24h",
+                    "trigger": "local_overheat_pattern",
+                    "rationale": "火焰偏斜或烟温偏差常与局部失效机理一致，需复核运行边界条件。",
+                    "action": "核查该区域燃烧配风、壁温测点可靠性与近期壁温轨迹，必要时优化二次风配比。",
+                },
+            ]
         return [
             {
                 "priority": 1,
@@ -2055,6 +2076,29 @@ class AnalysisGraphRunner:
                 _PlanTask("q1", "壁厚测量数据", f"{req.query}，查询壁厚测量结果与趋势", mandatory=True),
                 _PlanTask("q2", "换管历史记录", f"{req.query}，查询换管历史、材质与时间信息", mandatory=True),
                 _PlanTask("q3", "超温频次统计", f"{req.query}，按区域统计超温频次", mandatory=False, dependency_ids=["q1"]),
+            ]
+        elif req.analysis_type == "img_diag":
+            base = [
+                _PlanTask(
+                    "q1",
+                    "位置台账与缺陷履历",
+                    f"{req.query}，查询机组设备台账、受热面定位信息及该区域历史缺陷与检修记录",
+                    mandatory=True,
+                ),
+                _PlanTask(
+                    "q2",
+                    "壁温与泄漏关联工况",
+                    f"{req.query}，查询与该区域相关的壁温趋势、超温累计时长及同期负荷与烟气参数摘要",
+                    mandatory=True,
+                    dependency_ids=["q1"],
+                ),
+                _PlanTask(
+                    "q3",
+                    "测厚与材质线索",
+                    f"{req.query}，查询该区域测厚结果、最小壁厚历史及若有记载的材质的服役年限",
+                    mandatory=False,
+                    dependency_ids=["q1"],
+                ),
             ]
         else:
             base = [
