@@ -44,8 +44,8 @@ NL2SQL后续效果优化方向：
 - **接入形态**：  
   1. **直接调用**：`POST /nl2sql/query`（`NL2SQLQueryRequest` → `sql` + `rows`），适合 BI、低代码、内部工具。  
   2. **内嵌复用（智能客服）**：意图 **`data_query`** 调用同一 `NL2SQLService`（通常 `record_conversation=False`），再由 `chatbot_nl2sql_answer.summarize_nl2sql_with_llm` 将 SQL/结果转为自然语言。  
-  3. **内嵌复用（综合分析 V2 · nl2sql 主图）**：`POST /analysis/run-with-nl2sql` 经 `AnalysisService.run_analysis_nl2sql` → `AnalysisGraphRunner.run_with_nl2sql`；在图节点 **`acquire_data`**（顺序回退路径同名逻辑）中由 **`_execute_data_plan`** 按计划任务 **多次** 调用 `NL2SQLService.query(..., record_conversation=False)`（每项最多 2 次尝试，受 `options.max_nl2sql_calls` 等与模板合并后的任务列表约束）。取数结果进入质量门、业务侧 RAG（`scene=analysis`）与 **`synthesis`** 生成结构化报告，**不再**走 `summarize_nl2sql_with_llm` 的客服式口语化链路。详细编排与配置见 **`enterprise-level_transformation_docs/企业级综合分析实现和使用说明.md`**。  
-  4. **内嵌复用（综合分析 · 看图诊断）**：`POST /analysis/run-img-diag` 经 **`AnalysisService.run_analysis_img_diag`** → **`AnalysisImgDiagGraphRunner.run_with_img_diag`**；NL2SQL **并行臂** 内顺序执行父类节点直至 **`data_quality_gate`**（含 **`acquire_data`** → **`_execute_data_plan`**），与 **`run-with-nl2sql`** 同源 **`NL2SQLService.query`** 语义；取数后与视觉结论、并行业务 RAG 一并进入 **`_generate_summary`**。模板占位符 **`analysis_plan_img_diag`**、**`analysis_type=img_diag`** 见 **`enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md`**。
+  3. **内嵌复用（综合分析 V2 · nl2sql 主图）**：`POST /analysis/run-with-nl2sql` 经 `AnalysisService.run_analysis_nl2sql` → `AnalysisGraphRunner.run_with_nl2sql`；在图节点 **`acquire_data`**（顺序回退路径同名逻辑）中由 **`_execute_data_plan`** 按计划任务 **多次** 调用 `NL2SQLService.query(..., record_conversation=False)`（**默认同 dependency 层并行**调度各次 `query`，见 **`ANALYSIS_NL2SQL_ACQUIRE_*`**；每项最多 2 次尝试，受 `options.max_nl2sql_calls` 等与模板合并后的任务列表约束）。取数结果进入质量门、业务侧 RAG（`scene=analysis`）与 **`synthesis`** 生成结构化报告，**不再**走 `summarize_nl2sql_with_llm` 的客服式口语化链路。详细编排与配置见 **`enterprise-level_transformation_docs/企业级综合分析实现和使用说明.md`**。  
+  4. **内嵌复用（综合分析 · 看图诊断）**：`POST /analysis/run-img-diag` 经 **`AnalysisService.run_analysis_img_diag`** → **`AnalysisImgDiagGraphRunner.run_with_img_diag`**；NL2SQL **并行臂** 内 **顺序执行父类 nl2sql 节点链**直至 **`data_quality_gate`**（其中 **`acquire_data`** → **`_execute_data_plan`** 与 nl2sql 主图 **同源**，含 **同层多任务并行 `query`**）；与 **`run-with-nl2sql`** 同源 **`NL2SQLService.query`** 语义；取数后与视觉结论、并行业务 RAG 一并进入 **`_generate_summary`**。模板占位符 **`analysis_plan_img_diag`**、**`analysis_type=img_diag`** 见 **`enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md`**。
 
 ---
 
@@ -55,7 +55,7 @@ NL2SQL后续效果优化方向：
 |------|------|-----------|
 | HTTP API（直连问数） | `app/api/nl2sql.py` | 鉴权后转发 `NL2SQLService`；起止日志 |
 | HTTP API（分析取数） | `app/api/analysis.py` 中 `POST /analysis/run-with-nl2sql`、`POST /analysis/run-img-diag` | 鉴权后 **`run_analysis_nl2sql`** / **`run_analysis_img_diag`**；编排内循环调用同一 `NL2SQLService` |
-| 分析编排（nl2sql 模式 / img_diag NL 臂） | `analysis_graph_runner.py`、`analysis_img_diag_runner.py` | `_build_nl2sql_graph` / `_execute_data_plan`（及看图诊断并行臂内同源节点）：多任务 NL2SQL、`analysis_nl2sql_calls_total` 等指标 |
+| 分析编排（nl2sql 模式 / img_diag NL 臂） | `analysis_graph_runner.py`、`analysis_img_diag_runner.py` | `_build_nl2sql_graph` / `_execute_data_plan`（**dependency 分层、默认同层并行 query**；看图诊断并行臂内同源）：多任务 NL2SQL、`analysis_nl2sql_calls_total` 等指标 |
 | 服务层 | `app/services/nl2sql_service.py` | Chain + Executor + 可选 **EXPLAIN 预检** + **执行失败 refine 闭环** + 会话 + 指标 |
 | 生成链路 | `app/nl2sql/chain.py` | 反射、规划、RAG、Prompt、LLM、归一化、**多层校验**、**生成期 refine**；对外提供 `generate_sql` / `generate_sql_with_validation_context` 与 **`refine_sql_after_executor_error`** |
 | Schema | `app/nl2sql/schema_service.py` | DB 反射、`TableSchema`、**外键** → catalog |
@@ -99,7 +99,7 @@ NL2SQL后续效果优化方向：
 1. 客户端调用 **`POST /analysis/run-with-nl2sql`**（`AnalysisNL2SQLRequest`：`user_id`、`session_id`、`analysis_type`、`query`、可选 `data_requirements_hint` 与 `options` 等），鉴权同其他分析接口。  
 2. **`AnalysisService.run_analysis_nl2sql`** 将请求交给 **`AnalysisGraphRunner.run_with_nl2sql`**（`langgraph` 不可用时顺序回退 **`_run_with_nl2sql_sequential`**，节点语义一致）。  
 3. 图在 **`plan_context_rag`** 等节点完成规划前检索（`scene=nl2sql`）与可选 **`intent_llm` / `plan_llm`** 后，得到 **`plan_tasks`**（模板 `analysis_plan_<analysis_type>` 与 LLM 计划合并，受 **`max_nl2sql_calls`** 截断）。  
-4. **`acquire_data`** 调用 **`_execute_data_plan`**：对每条任务构造 **`NL2SQLQueryRequest(user_id, session_id, question=task.question)`**，执行 **`await self._nl2sql.query(..., record_conversation=False)`**；单次任务失败时 **最多再试 1 次**（合计最多 2 次尝试）；依赖未满足的任务记为 **`skipped`**。每次 `query` 内部仍走 **与 §4.1 相同的 Chain 生成 + 执行闭环**（`NL2SQL_EXPLAIN_*`、`refine` 等由全局 NL2SQL 环境变量控制）。  
+4. **`acquire_data`** 调用 **`_execute_data_plan`**：按 **`dependency_ids` 分层**；同层 Runnable 任务默认 **`asyncio.gather` 并行**发起 **`await self._nl2sql.query(..., record_conversation=False)`**（可 **`ANALYSIS_NL2SQL_ACQUIRE_PARALLEL_ENABLED`** 关闭）。对每条任务构造 **`NL2SQLQueryRequest(user_id, session_id, question=task.question)`**；单次任务失败时 **最多再试 1 次**（合计最多 2 次尝试）；依赖未满足的任务记为 **`skipped`**。每次 `query` 内部仍走 **与 §4.1 相同的 Chain 生成 + 执行闭环**（`NL2SQL_EXPLAIN_*`、`refine` 等由全局 NL2SQL 环境变量控制）。  
 5. 聚合后的行集进入 **`data_quality_gate`**、**`rag_enrichment`**（`scene=analysis`）、**`synthesis`** 与 **`finalize`**，输出 **`AnalysisV2Result`**（含 NL2SQL 调用轨迹、报告章节等）。  
 
 与客服场景的差异：**一次分析请求可触发多次 `NL2SQLService.query`**；会话侧不在 NL2SQL 服务内重复写入（`record_conversation=False`），由分析 trace / 报告承担审计面。
@@ -108,7 +108,7 @@ NL2SQL后续效果优化方向：
 
 1. 客户端调用 **`POST /analysis/run-img-diag`**（**`AnalysisImgDiagRequest`**：`unit_id`、`leak_location_text`、`query`、`image_urls` 等），鉴权同其他分析接口；可先 **`POST /analysis/img-diag/upload`** 取得 **`image_urls`**。  
 2. **`AnalysisService.run_analysis_img_diag`** 调用 **`AnalysisImgDiagGraphRunner.run_with_img_diag`**：并行 **`_lane_vision`**、NL2SQL **子序列**（规划前 **`scene=nl2sql`** → **`acquire_data`** → **`_execute_data_plan`** → **`data_quality_gate`**）、业务 **`scene=analysis`** RAG。  
-3. **`acquire_data`** 内仍对 **`plan_tasks`** 逐项 **`NL2SQLService.query(..., record_conversation=False)`**，约束与 **`analysis_plan_img_diag`** / **`max_nl2sql_calls`** 等与 nl2sql 主图一致（含占位符 **`{unit_id}`** 等替换）。  
+3. **`acquire_data`** 内通过父类 **`_execute_data_plan`** 调度 **`plan_tasks`**（**默认同层并行** **`NL2SQLService.query(..., record_conversation=False)`**，与 nl2sql 主图一致），约束与 **`analysis_plan_img_diag`** / **`max_nl2sql_calls`** 等一致（含占位符 **`{unit_id}`** 等替换）。  
 4. **合成**：**不**再走 nl2sql 图尾部 **`rag_enrichment`**；并行臂产出汇入 **`_generate_summary`**，返回 **`AnalysisV2Result`**（**`evidence.data_coverage.mode=img_diag`**、**`vision_findings`**、**`parallel_lane_trace`**）。
 
 ### 4.5 文字版流程图（纯文本）
@@ -196,7 +196,7 @@ flowchart TB
     C1 --> HTTP
     C2 --> CBQ["NL2SQLService.query\n(record_conversation=False)"]
     C3 --> ANA
-    ANA --> PLN["_execute_data_plan\n循环 plan_tasks"]
+    ANA --> PLN["_execute_data_plan\n分层并行 plan_tasks"]
     PLN --> CBQ
     HTTP --> R0
     CBQ --> R0

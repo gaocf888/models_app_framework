@@ -3,6 +3,8 @@ from __future__ import annotations
 """
 看图诊断（img_diag）编排：视觉理解 ‖ NL2SQL（规划→取数→质量门）‖ 业务 RAG 并行，再文本合成。
 
+NL2SQL 臂内 **`acquire_data`** 复用父类 **`AnalysisGraphRunner._execute_data_plan`**（依赖分层、默认同层并行 `NL2SQLService.query`），本文件无需重复实现取数并行策略。
+
 对外入口：`AnalysisImgDiagGraphRunner.run_with_img_diag`。
 """
 

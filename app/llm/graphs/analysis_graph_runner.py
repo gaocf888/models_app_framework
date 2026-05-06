@@ -6,12 +6,14 @@ from __future__ import annotations
 - 对外入口：`AnalysisGraphRunner.run_with_payload`、`run_with_nl2sql`（由 `AnalysisService` 调用）。
 - 两套 LangGraph `StateGraph(AnalysisGraphState)`（payload / nl2sql）；`langgraph` 不可用时走 `_run_with_*_sequential`。
 - 数据计划：优先 `configs/prompts.yaml` 中 `analysis_plan_<analysis_type>`，可选 LLM 意图/计划合并，最后才用内置默认任务。
+- **acquire_data / `_execute_data_plan`**：默认按 **`dependency_ids` 分层**，同层任务 **`asyncio.gather` 并行**调用 `NL2SQLService.query`（单任务内仍为「生成 SQL → 执行」串行）；可通过 **`ANALYSIS_NL2SQL_ACQUIRE_PARALLEL_ENABLED`** / **`ANALYSIS_NL2SQL_ACQUIRE_MAX_PARALLEL`** 关闭或限流（见 `AnalysisConfig`）。
 - 阶段模板加载优先级（`_resolve_stage_template`）：
   `stage_<analysis_type>` -> `stage` -> `analysis`。
   例如 `analysis_type=overheat_guidance` 时：
   `analysis_intent_overheat_guidance` -> `analysis_intent` -> `analysis`（其余 stage 同理）。
 """
 
+import asyncio
 import json
 import re
 from datetime import datetime, timezone
@@ -72,6 +74,7 @@ class AnalysisGraphRunner:
 
     图节点名与 Prometheus `analysis_node_latency_seconds` 的 `node` 标签一致；trace 中 `execution_summary.graph_nodes`
     记录节点顺序；可选 LangGraph checkpoint（`AnalysisConfig.checkpoint_*`）。
+    **`acquire_data`**（`_execute_data_plan`）默认按依赖分层 **并行** 调度 NL2SQL 子调用（**`AnalysisConfig.nl2sql_acquire_*`**）。
     """
 
     def __init__(
@@ -761,7 +764,7 @@ class AnalysisGraphRunner:
         }
 
     async def _lg_nl2sql_acquire_data(self, state: dict[str, Any]) -> dict[str, Any]:
-        """图节点：按 plan_tasks 调用 NL2SQL，填充 gathered_data / nl2sql_calls。"""
+        """图节点：按 plan_tasks 执行 NL2SQL（`_execute_data_plan`：默认同依赖层并行 query，见配置项）。"""
         req = AnalysisNL2SQLRequest.model_validate(state["nl2sql_request"])
         raw_tasks = list(state.get("plan_tasks") or [])
         tasks = [self._plan_task_from_dict(x) for x in raw_tasks if isinstance(x, dict)]
@@ -2066,16 +2069,35 @@ class AnalysisGraphRunner:
             return templated
         hints = req.data_requirements_hint or []
         if req.analysis_type == "overheat_guidance":
+            # 与 prompts.yaml · analysis_plan_overheat_guidance 语义对齐（模板缺失时的兜底）
             base = [
                 _PlanTask("q1", "超温事实明细", f"{req.query}，查询超温事件明细与时间分布", mandatory=True),
-                _PlanTask("q2", "运行参数关联", f"{req.query}，查询风门开度、蒸汽流量等运行参数", mandatory=True),
-                _PlanTask("q3", "燃烧器状态", f"{req.query}，查询燃烧器状态及切换记录", mandatory=False, dependency_ids=["q1"]),
+                _PlanTask(
+                    "q2",
+                    "运行参数关联",
+                    f"{req.query}，查询风门开度、蒸汽流量等运行参数",
+                    mandatory=True,
+                    dependency_ids=["q1"],
+                ),
+                _PlanTask(
+                    "q3",
+                    "燃烧器状态",
+                    f"{req.query}，查询燃烧器状态及切换记录",
+                    mandatory=False,
+                    dependency_ids=["q1"],
+                ),
             ]
         elif req.analysis_type == "maintenance_strategy":
             base = [
                 _PlanTask("q1", "壁厚测量数据", f"{req.query}，查询壁厚测量结果与趋势", mandatory=True),
                 _PlanTask("q2", "换管历史记录", f"{req.query}，查询换管历史、材质与时间信息", mandatory=True),
-                _PlanTask("q3", "超温频次统计", f"{req.query}，按区域统计超温频次", mandatory=False, dependency_ids=["q1"]),
+                _PlanTask(
+                    "q3",
+                    "超温频次统计",
+                    f"{req.query}，按区域统计超温频次",
+                    mandatory=False,
+                    dependency_ids=["q1"],
+                ),
             ]
         elif req.analysis_type == "img_diag":
             base = [
@@ -2094,8 +2116,15 @@ class AnalysisGraphRunner:
                 ),
                 _PlanTask(
                     "q3",
-                    "测厚与材质线索",
-                    f"{req.query}，查询该区域测厚结果、最小壁厚历史及若有记载的材质的服役年限",
+                    "测厚与磨损线索",
+                    f"{req.query}，查询该区域测厚结果、最小壁厚趋势及若有记载的吹灰或烟气走廊相关信息",
+                    mandatory=False,
+                    dependency_ids=["q1"],
+                ),
+                _PlanTask(
+                    "q4",
+                    "告警与同类记录",
+                    f"{req.query}，查询关联告警事件及同类受热面邻近区域的缺陷案例摘要（若有）",
                     mandatory=False,
                     dependency_ids=["q1"],
                 ),
@@ -2174,14 +2203,65 @@ class AnalysisGraphRunner:
             )
         return tasks
 
-    async def _execute_data_plan(
+    async def _run_single_nl2sql_plan_task(
+        self, req: AnalysisNL2SQLRequest, task: _PlanTask
+    ) -> tuple[AnalysisNL2SQLCall, dict[str, list[dict]]]:
+        """单次 plan 任务：LLM 生成 SQL + 执行（封装于 NL2SQLService.query），最多 2 次尝试。"""
+        max_attempts = 2
+        last_error: str | None = None
+        final_sql = ""
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = await self._nl2sql.query(
+                    NL2SQLQueryRequest(
+                        user_id=req.user_id,
+                        session_id=req.session_id,
+                        question=task.question,
+                        analysis_type=req.analysis_type,
+                    ),
+                    record_conversation=False,
+                )
+                final_sql = resp.sql
+                rows = resp.rows[: req.options.max_rows_per_query]
+                call = AnalysisNL2SQLCall(
+                    item_id=task.item_id,
+                    purpose=task.purpose,
+                    question=task.question,
+                    sql=final_sql,
+                    row_count=len(rows),
+                    status="success",
+                    attempts=attempt,
+                    dependency_ids=task.dependency_ids,
+                )
+                ANALYSIS_NL2SQL_CALL_COUNT.labels(analysis_type=req.analysis_type, status="success").inc()
+                return call, {task.item_id: rows}
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                logger.exception(
+                    "analysis nl2sql task failed item=%s attempt=%s", task.item_id, attempt
+                )
+        err_text = last_error or "nl2sql_query_failed"
+        call = AnalysisNL2SQLCall(
+            item_id=task.item_id,
+            purpose=task.purpose,
+            question=task.question,
+            sql=final_sql,
+            row_count=0,
+            status="failed",
+            attempts=max_attempts,
+            dependency_ids=task.dependency_ids,
+            error=err_text,
+        )
+        ANALYSIS_NL2SQL_CALL_COUNT.labels(analysis_type=req.analysis_type, status="failed").inc()
+        return call, {}
+
+    async def _execute_data_plan_sequential(
         self, *, req: AnalysisNL2SQLRequest, tasks: list[_PlanTask]
-    ) -> tuple[list[AnalysisNL2SQLCall], dict[str, list[dict]], dict[str, str], int]:
-        """逐项执行 NL2SQL：依赖未满足则 skipped；每项最多 2 次尝试。返回调用轨迹、聚合数据、任务状态与耗时毫秒。"""
+    ) -> tuple[list[AnalysisNL2SQLCall], dict[str, list[dict]], dict[str, str]]:
+        """与并行版语义一致，仅按 plan_tasks 顺序串行调度（并行关闭或单任务时使用）。"""
         calls: list[AnalysisNL2SQLCall] = []
         gathered_data: dict[str, list[dict]] = {}
         task_status: dict[str, str] = {}
-        t_data = perf_counter()
         for task in tasks:
             if task.dependency_ids and any(task_status.get(dep) != "success" for dep in task.dependency_ids):
                 calls.append(
@@ -2202,65 +2282,89 @@ class AnalysisGraphRunner:
                     analysis_type=req.analysis_type, status="skipped"
                 ).inc()
                 continue
+            call, gd = await self._run_single_nl2sql_plan_task(req, task)
+            calls.append(call)
+            gathered_data.update(gd)
+            if call.status == "success":
+                task_status[task.item_id] = "success"
+            else:
+                task_status[task.item_id] = "mandatory_failed" if task.mandatory else "optional_failed"
+        return calls, gathered_data, task_status
 
-            max_attempts = 2
-            last_error: str | None = None
-            final_sql = ""
-            rows: list[dict] = []
-            success = False
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    resp = await self._nl2sql.query(
-                        NL2SQLQueryRequest(
-                            user_id=req.user_id,
-                            session_id=req.session_id,
-                            question=task.question,
-                            analysis_type=req.analysis_type,
-                        ),
-                        record_conversation=False,
-                    )
-                    final_sql = resp.sql
-                    rows = resp.rows[: req.options.max_rows_per_query]
-                    success = True
-                    calls.append(
-                        AnalysisNL2SQLCall(
-                            item_id=task.item_id,
-                            purpose=task.purpose,
-                            question=task.question,
-                            sql=final_sql,
-                            row_count=len(rows),
-                            status="success",
-                            attempts=attempt,
-                            dependency_ids=task.dependency_ids,
-                        )
-                    )
-                    gathered_data[task.item_id] = rows
-                    task_status[task.item_id] = "success"
-                    ANALYSIS_NL2SQL_CALL_COUNT.labels(
-                        analysis_type=req.analysis_type, status="success"
-                    ).inc()
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    last_error = str(exc)
-                    logger.exception("analysis nl2sql task failed item=%s attempt=%s", task.item_id, attempt)
-            if not success:
+    async def _execute_data_plan(
+        self, *, req: AnalysisNL2SQLRequest, tasks: list[_PlanTask]
+    ) -> tuple[list[AnalysisNL2SQLCall], dict[str, list[dict]], dict[str, str], int]:
+        """执行 NL2SQL：依赖未满足则 skipped；每项最多 2 次尝试。默认同层无依赖任务并行（含生成 SQL 与查库）。"""
+        t_data = perf_counter()
+        order_idx = {t.item_id: i for i, t in enumerate(tasks)}
+        task_by_id = {t.item_id: t for t in tasks}
+
+        if not self._analysis_cfg.nl2sql_acquire_parallel_enabled or len(tasks) <= 1:
+            calls, gathered_data, task_status = await self._execute_data_plan_sequential(req=req, tasks=tasks)
+            duration_s = perf_counter() - t_data
+            ANALYSIS_NODE_LATENCY.labels(node="acquire_data", analysis_type=req.analysis_type).observe(duration_s)
+            return calls, gathered_data, task_status, int(duration_s * 1000)
+
+        calls = []
+        gathered_data = {}
+        task_status = {}
+        unfinished = {t.item_id for t in tasks}
+        max_par = max(1, self._analysis_cfg.nl2sql_acquire_max_parallel)
+        sem = asyncio.Semaphore(max_par)
+
+        async def bounded(task: _PlanTask) -> tuple[AnalysisNL2SQLCall, dict[str, list[dict]]]:
+            async with sem:
+                return await self._run_single_nl2sql_plan_task(req, task)
+
+        while unfinished:
+            runnable: list[_PlanTask] = []
+            for t in tasks:
+                if t.item_id not in unfinished:
+                    continue
+                if not all(d not in unfinished for d in t.dependency_ids):
+                    continue
+                if not all(task_status.get(d) == "success" for d in t.dependency_ids):
+                    continue
+                runnable.append(t)
+            if runnable:
+                logger.info(
+                    "analysis acquire_data parallel wave item_ids=%s unfinished_before=%d",
+                    [x.item_id for x in runnable],
+                    len(unfinished),
+                )
+                results = await asyncio.gather(*[bounded(t) for t in runnable])
+                for call, gd_part in results:
+                    calls.append(call)
+                    gathered_data.update(gd_part)
+                    tid = call.item_id
+                    unfinished.discard(tid)
+                    pt = task_by_id[tid]
+                    if call.status == "success":
+                        task_status[tid] = "success"
+                    else:
+                        task_status[tid] = "mandatory_failed" if pt.mandatory else "optional_failed"
+                continue
+            for t in tasks:
+                if t.item_id not in unfinished:
+                    continue
                 calls.append(
                     AnalysisNL2SQLCall(
-                        item_id=task.item_id,
-                        purpose=task.purpose,
-                        question=task.question,
-                        sql=final_sql,
+                        item_id=t.item_id,
+                        purpose=t.purpose,
+                        question=t.question,
+                        sql="",
                         row_count=0,
-                        status="failed",
-                        attempts=max_attempts,
-                        dependency_ids=task.dependency_ids,
-                        error=last_error,
+                        status="skipped",
+                        attempts=0,
+                        dependency_ids=t.dependency_ids,
+                        error="dependency_not_satisfied",
                     )
                 )
-                task_status[task.item_id] = "mandatory_failed" if task.mandatory else "optional_failed"
-                ANALYSIS_NL2SQL_CALL_COUNT.labels(
-                    analysis_type=req.analysis_type, status="failed"
-                ).inc()
+                task_status[t.item_id] = "mandatory_failed" if t.mandatory else "optional_skipped"
+                ANALYSIS_NL2SQL_CALL_COUNT.labels(analysis_type=req.analysis_type, status="skipped").inc()
+                unfinished.discard(t.item_id)
+
+        calls.sort(key=lambda c: order_idx.get(c.item_id, 10**9))
         duration_s = perf_counter() - t_data
         ANALYSIS_NODE_LATENCY.labels(node="acquire_data", analysis_type=req.analysis_type).observe(duration_s)
         return calls, gathered_data, task_status, int(duration_s * 1000)

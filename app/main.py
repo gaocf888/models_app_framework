@@ -134,7 +134,7 @@ def create_app() -> FastAPI:
         tags=["chatbot"],
         dependencies=_auth,
     )
-    # 企业版综合分析 V2：双入口执行 + trace 运维（实现见 app/api/analysis.py）
+    # 企业版综合分析 V2：payload / nl2sql / 看图诊断 + trace 运维（实现见 app/api/analysis.py）
     app.include_router(
         analysis.router,
         prefix="/analysis",

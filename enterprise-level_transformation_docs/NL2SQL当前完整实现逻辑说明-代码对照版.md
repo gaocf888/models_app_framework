@@ -11,7 +11,7 @@
 
 1. HTTP 直连：`POST /nl2sql/query`（`app/api/nl2sql.py`）。  
 2. 智能客服：意图为 `data_query` 时调用 `NL2SQLService.query(..., record_conversation=False)`（`app/llm/graphs/chatbot_graph_runner.py` 图节点 **`nl2sql_answer`**，或 `app/services/chatbot_service.py` 非图 / legacy 流式路径），再由 `chatbot_nl2sql_answer.py` 将 `sql + rows` 转自然语言。  
-3. **综合分析 V2（nl2sql 模式）**：`POST /analysis/run-with-nl2sql` → `AnalysisService.run_analysis_nl2sql` → `AnalysisGraphRunner.run_with_nl2sql`；在 **`acquire_data`** / **`_execute_data_plan`** 中按计划任务 **多次** 调用 `NL2SQLService.query(..., record_conversation=False)`，结果进入分析质量门与 **`synthesis`**，不经过客服的 `summarize_nl2sql_with_llm`。
+3. **综合分析 V2（nl2sql 模式）**：`POST /analysis/run-with-nl2sql` → `AnalysisService.run_analysis_nl2sql` → `AnalysisGraphRunner.run_with_nl2sql`；在 **`acquire_data`** / **`_execute_data_plan`** 中按计划任务 **多次** 调用 `NL2SQLService.query(..., record_conversation=False)`（**默认同 dependency 层并行**调度，见 **`ANALYSIS_NL2SQL_ACQUIRE_*`**），结果进入分析质量门与 **`synthesis`**，不经过客服的 `summarize_nl2sql_with_llm`。
 
 请求/响应模型：
 - `NL2SQLQueryRequest(user_id, session_id, question)`
@@ -176,7 +176,7 @@
 
 - **入口**：`app/api/analysis.py` 中 **`POST /analysis/run-with-nl2sql`**。  
 - **调用链**：`AnalysisService.run_analysis_nl2sql` → `AnalysisGraphRunner.run_with_nl2sql`（或顺序回退 **`_run_with_nl2sql_sequential`**）。  
-- **与 `NL2SQLService` 的衔接**：`analysis_graph_runner.py` 内 **`_execute_data_plan`** 遍历合并后的 **`plan_tasks`**，对每个任务执行 **`await self._nl2sql.query(NL2SQLQueryRequest(...), record_conversation=False)`**；行数按 **`options.max_rows_per_query`** 截断；Prometheus 侧有 **`analysis_nl2sql_calls_total`**（及按 `analysis_type` 分标签的计数，见 `app/core/metrics.py`）。  
+- **与 `NL2SQLService` 的衔接**：`analysis_graph_runner.py` 内 **`_execute_data_plan`** 按 **`dependency_ids`** 对合并后的 **`plan_tasks`** 分层调度；**默认同层 Runnable 任务并行**调用 **`await self._nl2sql.query(NL2SQLQueryRequest(...), record_conversation=False)`**（**`ANALYSIS_NL2SQL_ACQUIRE_*`**，单任务内 query 仍为串行闭环）；行数按 **`options.max_rows_per_query`** 截断；Prometheus 侧有 **`analysis_nl2sql_calls_total`**（及按 `analysis_type` 分标签的计数，见 `app/core/metrics.py`）。  
 - **与 Chatbot 的差异**：分析链路 **不** 调用 `summarize_nl2sql_with_llm`，而是在取数后走 **`data_quality_gate`**、业务 RAG（`scene=analysis`）与 **`synthesis`** 生成结构化报告；一次请求可包含 **多条** NL2SQL 任务（受 **`max_nl2sql_calls`** 等约束）。  
 
 编排与提示词模板说明见 **`enterprise-level_transformation_docs/企业级综合分析实现和使用说明.md`**。

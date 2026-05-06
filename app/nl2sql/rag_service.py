@@ -84,9 +84,9 @@ class NL2SQLRAGService:
         top = top_k if top_k is not None else profile.top_k
         schema_ns_top = int(os.getenv("NL2SQL_SCHEMA_NAMESPACE_TOP_K", str(max(top + 6, 12))))
         # 各命名空间 chunk 上限：减少无关片段、稳定排序后的上下文（可调大恢复旧行为）
-        schema_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_SCHEMA_CHUNKS", "8")))
-        biz_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_BIZ_CHUNKS", "4")))
-        qa_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_QA_CHUNKS", "4")))
+        schema_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_SCHEMA_CHUNKS", "10")))
+        biz_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_BIZ_CHUNKS", "6")))
+        qa_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_QA_CHUNKS", "6")))
         ns_schema = min(schema_ns_top, schema_chunk_cap)
         ns_biz = min(top, biz_chunk_cap)
         ns_qa = min(top, qa_chunk_cap)

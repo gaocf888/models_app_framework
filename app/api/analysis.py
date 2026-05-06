@@ -4,8 +4,22 @@ from __future__ import annotations
 综合分析 HTTP 接口（企业版 V2）。
 
 职责：
-    - 提供企业级双入口：payload / nl2sql；
-    - 提供 trace 回放、统计、趋势、降级 TopN 运维接口。
+    - 提供企业级执行入口：**payload** / **nl2sql** / **看图诊断（img_diag）**；
+    - 提供看图诊断图片上传（MinIO 预签名 URL，供 `run-img-diag` 引用）；
+    - 提供 trace 回放、统计、趋势、降级 TopN 运维接口（三种执行模式均可按 `request_id` 查询）。
+
+**NL2SQL 入口（`run-with-nl2sql`）与看图诊断（`run-img-diag`）——区别与联系（速览）**
+    - **联系**：二者编排中均含 **NL2SQL 数据臂**（按计划多次 `NL2SQLService.query`）。看图诊断由 **`AnalysisImgDiagGraphRunner`**
+      基于 **`AnalysisGraphRunner`** 调度，NL2SQL 子链 **复用父类节点**（含 **`acquire_data` / `_execute_data_plan`** 及默认同层并行取数）。
+      响应均为 **`AnalysisV2Result`**，`evidence.nl2sql_calls` 与 trace 字段语义一致；子查询层同样 **`record_conversation=False`**。
+    - **区别**：NL2SQL 以 **`analysis_type`** + **`query`** 驱动 **`analysis_plan_<type>`** 数据计划（见 **`configs/prompts.yaml`**）。
+      看图诊断以 **机组、泄漏位置、图片 URL、提问** 为主，无 **`analysis_type`**，走 **`run_with_img_diag`**：以 **`asyncio.gather`**
+      并行 **视觉 ‖ NL2SQL 臂 ‖ 业务 RAG**，过 **`data_quality_gate`** 后再合成。证据侧多看 **`vision_findings`**，**`data_coverage.mode`**
+      为 **`img_diag`**；图片可先 **`img-diag/upload`** 换预签名 URL。
+
+**精简版（编排对照）**
+    - **相同点**：都包含 **NL2SQL**；取数阶段 **`acquire_data`**（**`_execute_data_plan`**）均为按计划 **`dependency_ids` 分层**、**同层内默认并行** 多轮「生成 SQL + 执行查库」。
+    - **区别（侧重数据/并行形态）**：**`run-with-nl2sql`** 路径里与结构化数据相关的主干节点 **`acquire_data`**，职责即 NL2SQL **生成 SQL 与查库**（外加图中前后的规划 RAG、合成等按编译图顺序执行）。**`run-img-diag`** 在 **`run_with_img_diag`** 外层以 **`asyncio.gather`** 将 **视觉 ‖ 业务 RAG ‖ NL2SQL 整条臂**（臂内仍含规划前 RAG、**`acquire_data`**、直至 **`data_quality_gate`**）**三路由并行**。
 
 鉴权与身份：
     - 请求头须携带 `Authorization: Bearer <SERVICE_API_KEY>`（密钥生成与配置见 `app/auth/keygen.py` 与
@@ -119,7 +133,14 @@ async def run_analysis_with_nl2sql(data: AnalysisNL2SQLRequest) -> AnalysisV2Res
 )
 async def upload_analysis_img_diag(file: UploadFile = File(...)) -> InspectionUploadResponse:
     """
-    multipart/form-data：`file` 为图片本体；大小上限见 `ANALYSIS_IMG_DIAG_UPLOAD_MAX_MB`。
+    **鉴权**：`Authorization: Bearer <SERVICE_API_KEY>`（与其它 `/analysis/*` 路由一致）。
+
+    **请求**：`multipart/form-data`，字段 `file` 为图片本体（jpeg/png/webp 等，以服务层校验为准）；
+    单文件大小上限见配置 **`ANALYSIS_IMG_DIAG_UPLOAD_MAX_MB`**。
+
+    **响应体 `InspectionUploadResponse`（200）**：含对象存储键与预签名 URL，将 URL 填入 **`run-img-diag`** 的 `image_urls`。
+
+    **错误**：空文件 **400**；参数/格式不合规 **400**（`detail` 为可读说明）；存储不可用 **503**。
     """
     data = await file.read()
     if not data:
@@ -144,12 +165,29 @@ async def upload_analysis_img_diag(file: UploadFile = File(...)) -> InspectionUp
 )
 async def run_analysis_img_diag(data: AnalysisImgDiagRequest) -> AnalysisV2Result:
     """
-    **请求体 `AnalysisImgDiagRequest`**
-    - `unit_id`：**必填**。机组 ID。
-    - `leak_location_text`：**必填**。泄漏/拍照位置描述。
-    - `image_urls`：**必填**。至少一张可访问图片 URL（建议先调用 `/analysis/img-diag/upload`）。
-    - `query`：**必填**。用户提问。
-    - `options.enable_rag`：默认 **true**，并行业务向 RAG（scene=analysis）。
+    看图诊断：并行「视觉理解 ‖ NL2SQL 取数 ‖ 业务 RAG」后合成报告。编排见 **`AnalysisImgDiagGraphRunner.run_with_img_diag`**
+    （NL2SQL 臂复用父类节点至 **`data_quality_gate`**）。
+
+    **鉴权**：`Authorization: Bearer <SERVICE_API_KEY>`。
+
+    **路径 / Query**：无。
+
+    **请求体 `AnalysisImgDiagRequest`（Schema 为准，以下为速查）**
+    - `user_id`：**必填**。后台用户标识；规则同其它分析接口。
+    - `session_id`：**必填**。会话标识。
+    - `unit_id`：**必填**。机组 ID（参与 NL2SQL / RAG 上下文）。
+    - `leak_location_text`：**必填**。泄漏或拍照位置的自然语言描述。
+    - `leak_location_struct`：可选，默认 `{}`。结构化位置字段（炉号、受热面等），参与报告占位符替换。
+    - `image_urls`：**必填**。至少一张可访问图片 URL（建议先 **`POST /analysis/img-diag/upload`**）。
+    - `query`：**必填**。用户自然语言提问。
+    - `data_requirements_hint`：可选，默认 `[]`。补充数据维度提示，合并进 NL2SQL 计划任务。
+    - `options`：可选，默认见模型；看图诊断侧 **`enable_rag`** 默认 **true**（业务向 RAG）。另含 `strict`、`max_nl2sql_calls`、
+      `max_rows_per_query` 等，由 **`AnalysisService._apply_defaults_img_diag`** 与环境配置补齐。
+
+    **响应体 `AnalysisV2Result`（200）**
+    - 与 NL2SQL 模式相同顶层字段；`evidence` 常含 **`vision_findings`**、**`nl2sql_calls`**；**`data_coverage.mode`** 为 **`img_diag`**。
+
+    子查询层同样使用 `record_conversation=False`，行为说明同 **`run-with-nl2sql`**。
     """
     return await service.run_analysis_img_diag(data)
 
@@ -167,10 +205,10 @@ async def get_analysis_trace(
     按 `request_id` 查询单次分析的持久化 trace（后端由 `ANALYSIS_TRACE_BACKEND` 决定：Redis / ES / 内存等）。
 
     **路径参数**
-    - `request_id`：**必填**。执行 `run-with-payload` / `run-with-nl2sql` 时响应体中的 `request_id`。
+    - `request_id`：**必填**。执行 **`run-with-payload`** / **`run-with-nl2sql`** / **`run-img-diag`** 时响应体中的 `request_id`。
 
     **响应体 `AnalysisTraceView`（200）**
-    - `request_id`、`analysis_type`、`summary`、`data_mode`（`payload` | `nl2sql`）。
+    - `request_id`、`analysis_type`、`summary`、`data_mode`（**`payload`** | **`nl2sql`** | **`img_diag`**）。
     - `trace`：完整 `AnalysisTrace`（节点耗时、模板版本、`data_plan_trace`、`degrade_reasons` 等）。
     - `data_coverage`：自 `evidence.data_coverage` 展平的覆盖摘要。
 
@@ -263,7 +301,7 @@ async def get_analysis_trace_stats(
     ] = None,
     data_mode: Annotated[
         str | None,
-        Query(description="可选。只统计该 `data_mode`（payload / nl2sql）。"),
+        Query(description="可选。只统计该 `data_mode`（payload / nl2sql / img_diag）。"),
     ] = None,
     started_from: Annotated[
         str | None,
@@ -319,7 +357,7 @@ async def get_analysis_trace_trend(
 
     **响应体 `AnalysisTraceTrendResponse`（200）**
     - `ok`、`bucket`：实际使用的粒度。
-    - `points[]`：`bucket_start`（ISO8601）、`total`、`by_data_mode`（含 `payload` / `nl2sql` 计数）。
+    - `points[]`：`bucket_start`（ISO8601）、`total`、`by_data_mode`（含 **`payload`** / **`nl2sql`** / **`img_diag`** 等计数）。
     """
     return service.get_trace_trend(
         bucket=bucket,

@@ -51,7 +51,7 @@ class NL2SQLService:
         rows: list = []
         explain_first = os.getenv("NL2SQL_EXPLAIN_BEFORE_EXECUTE", "false").lower() == "true"
         refine_on_exec = os.getenv("NL2SQL_REFINE_ON_EXEC_ERROR", "true").lower() == "true"
-        max_refines = max(0, int(os.getenv("NL2SQL_MAX_EXEC_REFINES", "1")))
+        max_refines = max(0, int(os.getenv("NL2SQL_MAX_EXEC_REFINES", "0")))
         refine_attempts_left = max_refines
 
         if not (sql or "").strip():
