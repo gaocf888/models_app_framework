@@ -4,6 +4,7 @@ from __future__ import annotations
 综合分析应用服务层：默认值注入、`AnalysisImgDiagGraphRunner`（兼容 payload/nl2sql/img_diag）编排、trace 与运维查询。
 """
 
+import json
 import time
 from datetime import datetime, timezone
 from threading import Lock
@@ -18,6 +19,8 @@ from app.core.metrics import (
     ANALYSIS_TRACE_TREND_CACHE_INVALIDATE_COUNT,
     ANALYSIS_TRACE_TREND_CACHE_MISS_COUNT,
 )
+from fastapi.responses import StreamingResponse
+
 from app.models.analysis import (
     AnalysisImgDiagRequest,
     AnalysisTraceDegradeItem,
@@ -102,6 +105,28 @@ class AnalysisService:
         result = await self._graph_runner.run_with_nl2sql(req)
         self._save_trace(result)
         return result
+
+    async def run_analysis_nl2sql_stream(self, data: AnalysisNL2SQLRequest) -> StreamingResponse:
+        """
+        NL2SQL 流式 synthesis：`text/event-stream`，事件 JSON 与 `AnalysisGraphRunner.iter_nl2sql_stream_events` 一致。
+        完整 `AnalysisV2Result` 在 summary 流结束后由后台任务组装，写入日志并调用 `analysis_stream_hooks` 钩子，
+        同时 **`_save_trace`** 与同步路由一致（在钩子回调中执行）。
+        """
+        req = self._apply_defaults_nl2sql(data)
+
+        async def on_complete(result: AnalysisV2Result) -> None:
+            self._save_trace(result)
+
+        async def event_gen():
+            async for ev in self._graph_runner.iter_nl2sql_stream_events(req, on_complete=on_complete):
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8")
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+        return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
 
     async def run_analysis_img_diag(self, data: AnalysisImgDiagRequest) -> AnalysisV2Result:
         req = self._apply_defaults_img_diag(data)

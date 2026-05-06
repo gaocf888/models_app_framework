@@ -34,6 +34,7 @@ OpenAPI 说明：各接口的字段释义、必填与约束以 **请求/响应�
 from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, Path, Query, UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.models.analysis import (
     AnalysisImgDiagRequest,
@@ -123,6 +124,33 @@ async def run_analysis_with_nl2sql(data: AnalysisNL2SQLRequest) -> AnalysisV2Res
     子查询层使用 `record_conversation=False`，不在会话中重复堆叠 NL2SQL 明细（与直连 `/nl2sql/query` 行为差异）。
     """
     return await service.run_analysis_nl2sql(data)
+
+
+@router.post(
+    "/run-with-nl2sql-stream",
+    summary="综合分析执行（NL2SQL 模式 · 流式 summary）",
+    response_class=StreamingResponse,
+    response_description="`text/event-stream`：先推送元数据，再流式输出 Markdown 片段，最后 `summary_complete` 与 `structured_async_enqueued`；完整 JSON 在服务端异步落日志 / trace。",
+)
+async def run_analysis_with_nl2sql_stream(data: AnalysisNL2SQLRequest) -> StreamingResponse:
+    """
+    与 **`/run-with-nl2sql`** 相同鉴权、请求体与**前半段业务链路**（规划 RAG → 取数 → 质量门 → 业务 RAG），
+    **synthesis 阶段**改为 **vLLM 流式输出** summary（标准 Markdown 文本增量）。
+
+    **响应**：`text/event-stream`（SSE），每条 `data: {json}\\n\\n`：
+    - `event: meta`：含 `request_id`、`plan_id`、`analysis_type`、`orchestrator=sequential_stream` 等；
+    - 多条 `summary_delta`：增量文本；
+    - `summary_complete`：流结束元数据（`chars`、`synthesis_ms`）；
+    - `structured_async_enqueued`：已排队后台组装与 trace 持久化。
+
+    完整 **`AnalysisV2Result`（含 `structured_report`）** 在流结束后**异步**构建，与同步接口结构一致；
+    默认写入**应用日志**并调用 **`app.services.analysis_stream_hooks.register_analysis_nl2sql_stream_structured_hook`** 已注册投递器；
+    **trace 存储**在后台与同步路由相同执行 **`_save_trace`**（含完整 `structured_report`）。
+
+    **说明**：本路由为**顺序管道 + 流式合成**；与已启用 LangGraph 时的 **`/run-with-nl2sql`** 相比，
+    前者在内部使用与无图降级相同的顺序实现，若需与 LangGraph 版行为逐字节一致请使用同步接口。
+    """
+    return await service.run_analysis_nl2sql_stream(data)
 
 
 @router.post(

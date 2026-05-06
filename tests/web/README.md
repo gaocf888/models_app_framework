@@ -21,6 +21,7 @@ python3 -m http.server 8765
 | [inspection-extract.html](inspection-extract.html) | 检修提取 **同步**：`upload` + `POST /inspection-extract/run` |
 | [inspection-extract-async.html](inspection-extract-async.html) | 检修提取 **异步**：`run/async` + 任务轮询与分块 |
 | [analysis-img-diag.html](analysis-img-diag.html) | 综合分析 **看图诊断**：`POST /analysis/img-diag/upload` + `POST /analysis/run-img-diag` |
+| [analysis-nl2sql-overheat-stream.html](analysis-nl2sql-overheat-stream.html) | 综合分析 **NL2SQL 流式 synthesis**（超温等）：`POST /analysis/run-with-nl2sql-stream`（SSE） |
 
 ---
 
@@ -146,7 +147,31 @@ python3 -m http.server 8765
 
 ---
 
-## 5. 通用常见问题与安全
+## 5. `analysis-nl2sql-overheat-stream.html`（综合分析 · NL2SQL 流式 synthesis）
+
+### 5.1 前置条件
+
+- `POST /analysis/run-with-nl2sql-stream` 已部署；vLLM 流式与 NL2SQL 服务可用  
+- 本页默认演示 **`analysis_type=overheat_guidance`**，亦可在页面中切换为 `maintenance_strategy` / `custom`  
+
+### 5.2 访问示例
+
+[http://127.0.0.1:8765/analysis-nl2sql-overheat-stream.html](http://127.0.0.1:8765/analysis-nl2sql-overheat-stream.html)
+
+### 5.3 行为说明
+
+- **取数、质量门、RAG** 阶段仍阻塞在首包之前，状态栏会提示「首包前请耐心等待」  
+- SSE 事件顺序一般为：`meta` → 多条 `summary_delta` → `summary_complete` → `structured_async_enqueued`  
+- 页面上 **summary** 为 Markdown 源码增量拼接，非即时 HTML 渲染  
+- 完整 `AnalysisV2Result`（含 `structured_report`）在服务端 **异步** 落日志与 trace；可用 `GET /analysis/traces/{request_id}` 按首帧 `meta.request_id` 查询  
+
+### 5.4 与同步接口差异（提示）
+
+- 流式路由走 **顺序管道** 实现；若生产上同步接口走 LangGraph 且需行为逐字节一致，请用 `POST /analysis/run-with-nl2sql` 对照。  
+
+---
+
+## 6. 通用常见问题与安全
 
 - **401/403**：密钥错误或未填（而后端已开鉴权）  
 - **422**：`user_id` / `session_id` 等不符合后端校验规则  

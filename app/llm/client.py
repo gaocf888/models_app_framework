@@ -198,7 +198,10 @@ class VLLMHttpClient(LLMClient):
         logger.debug("calling vLLM(stream_chat) model=%s endpoint=%s", cfg.model_id, url)
 
         start = time.perf_counter()
-        async with self._client.stream("POST", url, json=payload, headers=headers) as resp:
+        req_timeout = kwargs.get("timeout")
+        async with self._client.stream(
+            "POST", url, json=payload, headers=headers, timeout=req_timeout
+        ) as resp:
             if resp.status_code >= 400:
                 err_body = (await resp.aread()).decode("utf-8", errors="replace")[:4000]
                 logger.error("vLLM stream_chat HTTP %s url=%s body=%s", resp.status_code, url, err_body)

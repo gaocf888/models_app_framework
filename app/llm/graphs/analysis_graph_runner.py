@@ -21,7 +21,7 @@ from statistics import median
 from time import perf_counter
 from uuid import uuid4
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, AsyncIterator, Awaitable, Callable, cast
 
 from app.conversation.manager import ConversationManager
 from app.core.config import get_app_config
@@ -53,6 +53,7 @@ from app.models.analysis_nl2sql_llm import (
 )
 from app.models.nl2sql import NL2SQLQueryRequest
 from app.rag.hybrid_rag_service import HybridRAGService
+from app.services.analysis_stream_hooks import dispatch_analysis_nl2sql_stream_structured
 from app.services.nl2sql_service import NL2SQLService
 
 logger = get_logger(__name__)
@@ -66,6 +67,30 @@ class _PlanTask:
     mandatory: bool = True
     dependency_ids: list[str] = field(default_factory=list)
     namespace_hint: str | None = None
+
+
+@dataclass
+class _Nl2SqlPipelineThroughRagContext:
+    """NL2SQL 顺序路径中，自会话写入起至 `rag_enrichment` 结束的快照（与 `_run_with_nl2sql_sequential` 前半段一致）。"""
+
+    request_id: str
+    plan_id: str
+    tasks: list[_PlanTask]
+    nl2sql_calls: list[AnalysisNL2SQLCall]
+    gathered_data: dict[str, list[dict]]
+    task_status: dict[str, str]
+    quality_report: dict[str, Any]
+    context_snippets: list[str]
+    plan_rag_sources: list[dict[str, Any]]
+    biz_rag_sources: list[dict[str, Any]]
+    used_rag: bool
+    intent_version: str
+    data_plan_version: str
+    planner_warnings: list[str]
+    intent_obj: AnalysisIntentLLMOutput
+    node_latency_ms: dict[str, int]
+    node_status: dict[str, str]
+    degrade_reasons: list[str]
 
 
 class AnalysisGraphRunner:
@@ -1190,8 +1215,8 @@ class AnalysisGraphRunner:
             ).inc()
             raise
 
-    async def _run_with_nl2sql_sequential(self, req: AnalysisNL2SQLRequest) -> AnalysisV2Result:
-        """无 LangGraph 时的顺序执行路径，与 nl2sql 图节点语义对齐。"""
+    async def _run_nl2sql_pipeline_through_rag(self, req: AnalysisNL2SQLRequest) -> _Nl2SqlPipelineThroughRagContext:
+        """顺序路径中与 LangGraph 前半段等价：会话 → 规划 RAG → 意图/计划 → 取数 → 质量门 → 业务 RAG（供同步与流式 synthesis 复用）。"""
         request_id = f"anl_{uuid4().hex[:12]}"
         plan_id = f"plan_{uuid4().hex[:10]}"
         node_latency_ms: dict[str, int] = {}
@@ -1285,6 +1310,31 @@ class AnalysisGraphRunner:
                 (perf_counter() - t_rag)
             )
 
+        return _Nl2SqlPipelineThroughRagContext(
+            request_id=request_id,
+            plan_id=plan_id,
+            tasks=tasks,
+            nl2sql_calls=nl2sql_calls,
+            gathered_data=gathered_data,
+            task_status=task_status,
+            quality_report=quality_report,
+            context_snippets=context_snippets,
+            plan_rag_sources=plan_rag_sources,
+            biz_rag_sources=biz_rag_sources,
+            used_rag=used_rag,
+            intent_version=intent_version,
+            data_plan_version=data_plan_version,
+            planner_warnings=planner_warnings,
+            intent_obj=intent_obj,
+            node_latency_ms=node_latency_ms,
+            node_status=node_status,
+            degrade_reasons=degrade_reasons,
+        )
+
+    async def _run_with_nl2sql_sequential(self, req: AnalysisNL2SQLRequest) -> AnalysisV2Result:
+        """无 LangGraph 时的顺序执行路径，与 nl2sql 图节点语义对齐。"""
+        ctx = await self._run_nl2sql_pipeline_through_rag(req)
+
         t_syn = perf_counter()
         synthesis_prompt, synthesis_version = self._resolve_stage_template(
             stage="analysis_synthesis",
@@ -1300,16 +1350,52 @@ class AnalysisGraphRunner:
         )
         planning_ctx: str | None = None
         if self._analysis_cfg.nl2sql_llm_planner_enabled:
-            planning_ctx = json.dumps(intent_obj.model_dump(mode="json"), ensure_ascii=False)
+            planning_ctx = json.dumps(ctx.intent_obj.model_dump(mode="json"), ensure_ascii=False)
         summary = await self._generate_summary(
             query=req.query,
             analysis_type=req.analysis_type,
             data_mode="nl2sql",
-            data_blob=gathered_data,
-            context_snippets=context_snippets,
+            data_blob=ctx.gathered_data,
+            context_snippets=ctx.context_snippets,
             system_prompt=synthesis_prompt,
             planning_context=planning_ctx,
         )
+        return self._finalize_nl2sql_sequential_v2(
+            req,
+            ctx,
+            summary=summary,
+            synthesis_version=synthesis_version,
+            report_version=report_version,
+            synthesis_started=t_syn,
+        )
+
+    def _finalize_nl2sql_sequential_v2(
+        self,
+        req: AnalysisNL2SQLRequest,
+        ctx: _Nl2SqlPipelineThroughRagContext,
+        *,
+        summary: str,
+        synthesis_version: str,
+        report_version: str,
+        synthesis_started: float,
+    ) -> AnalysisV2Result:
+        """顺序 NL2SQL 路径：在已有 summary 上组装 structured_report / evidence / trace（同步与流式后处理共用）。"""
+        request_id = ctx.request_id
+        plan_id = ctx.plan_id
+        tasks = ctx.tasks
+        nl2sql_calls = ctx.nl2sql_calls
+        gathered_data = ctx.gathered_data
+        quality_report = ctx.quality_report
+        plan_rag_sources = ctx.plan_rag_sources
+        biz_rag_sources = ctx.biz_rag_sources
+        used_rag = ctx.used_rag
+        intent_version = ctx.intent_version
+        data_plan_version = ctx.data_plan_version
+        planner_warnings = ctx.planner_warnings
+        node_latency_ms = ctx.node_latency_ms
+        node_status = ctx.node_status
+        degrade_reasons = ctx.degrade_reasons
+
         suggestions = self._build_suggestions(summary, req.analysis_type, req.options.max_suggestions)
         structured_report = self._build_structured_report(
             summary=summary,
@@ -1327,9 +1413,9 @@ class AnalysisGraphRunner:
                 "records": self._extract_records_from_gathered(gathered_data),
             },
         )
-        self._mark_node(node_latency_ms, node_status, "synthesis", t_syn, ok=True)
+        self._mark_node(node_latency_ms, node_status, "synthesis", synthesis_started, ok=True)
         ANALYSIS_NODE_LATENCY.labels(node="synthesis", analysis_type=req.analysis_type).observe(
-            (perf_counter() - t_syn)
+            (perf_counter() - synthesis_started)
         )
 
         self._conv.append_assistant_message(req.user_id, req.session_id, summary)
@@ -1400,6 +1486,37 @@ class AnalysisGraphRunner:
             trace=trace,
         )
 
+    def _build_summary_prompt(
+        self,
+        *,
+        query: str,
+        analysis_type: str,
+        data_mode: str,
+        data_blob: dict,
+        context_snippets: list[str],
+        system_prompt: str,
+        planning_context: str | None = None,
+    ) -> str:
+        """与 `_generate_summary` / 流式 synthesis 共用同一提示词拼接逻辑。"""
+        data_preview = json.dumps(
+            data_blob,
+            ensure_ascii=False,
+            default=self._json_fallback,
+        )[:4000]
+        rag_text = "\n".join(f"- {s}" for s in context_snippets[:8])
+        pc = (planning_context or "").strip()
+        planning_block = f"\n分阶段规划意图(结构化要点):\n{pc[:2000]}\n" if pc else ""
+        return (
+            f"{system_prompt}\n\n"
+            f"分析类型: {analysis_type}\n"
+            f"数据来源模式: {data_mode}\n"
+            f"用户问题: {query}\n"
+            f"{planning_block}"
+            f"数据摘要(JSON截断): {data_preview}\n"
+            f"RAG参考片段:\n{rag_text}\n\n"
+            "请输出：1) 核心结论；2) 关键依据；3) 可执行建议。"
+        )
+
     async def _generate_summary(
         self,
         *,
@@ -1412,23 +1529,14 @@ class AnalysisGraphRunner:
         planning_context: str | None = None,
     ) -> str:
         """单次 LLM 调用生成分析摘要；失败时返回固定降级文案。"""
-        data_preview = json.dumps(
-            data_blob,
-            ensure_ascii=False,
-            default=self._json_fallback,
-        )[:4000]
-        rag_text = "\n".join(f"- {s}" for s in context_snippets[:8])
-        pc = (planning_context or "").strip()
-        planning_block = f"\n分阶段规划意图(结构化要点):\n{pc[:2000]}\n" if pc else ""
-        prompt = (
-            f"{system_prompt}\n\n"
-            f"分析类型: {analysis_type}\n"
-            f"数据来源模式: {data_mode}\n"
-            f"用户问题: {query}\n"
-            f"{planning_block}"
-            f"数据摘要(JSON截断): {data_preview}\n"
-            f"RAG参考片段:\n{rag_text}\n\n"
-            "请输出：1) 核心结论；2) 关键依据；3) 可执行建议。"
+        prompt = self._build_summary_prompt(
+            query=query,
+            analysis_type=analysis_type,
+            data_mode=data_mode,
+            data_blob=data_blob,
+            context_snippets=context_snippets,
+            system_prompt=system_prompt,
+            planning_context=planning_context,
         )
         try:
             summary = await self._llm.generate(  # type: ignore[arg-type]
@@ -1440,6 +1548,168 @@ class AnalysisGraphRunner:
         except Exception:  # noqa: BLE001
             logger.exception("analysis graph summary generation failed")
             return "综合分析生成失败，已返回基础报告，请稍后重试。"
+
+    async def _stream_summary_text(
+        self,
+        *,
+        query: str,
+        analysis_type: str,
+        data_mode: str,
+        data_blob: dict,
+        context_snippets: list[str],
+        system_prompt: str,
+        planning_context: str | None = None,
+    ) -> AsyncIterator[str]:
+        """流式生成 summary（Markdown 文本增量），提示词与非流式 synthesis 一致。"""
+        prompt = self._build_summary_prompt(
+            query=query,
+            analysis_type=analysis_type,
+            data_mode=data_mode,
+            data_blob=data_blob,
+            context_snippets=context_snippets,
+            system_prompt=system_prompt,
+            planning_context=planning_context,
+        )
+        async for chunk in self._llm.stream_generate(  # type: ignore[union-attr]
+            model=None,
+            prompt=prompt,
+            timeout=float(self._analysis_cfg.synthesis_timeout_seconds),
+        ):
+            yield chunk
+
+    async def iter_nl2sql_stream_events(
+        self,
+        req: AnalysisNL2SQLRequest,
+        *,
+        on_complete: Callable[[AnalysisV2Result], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """
+        NL2SQL 专用：完成与 `_run_nl2sql_pipeline_through_rag` 一致的前半段后，
+        以 SSE 友好的事件字典流式推送 summary，并在结束后异步组装完整 JSON（日志 + 可选投递钩子 + on_complete）。
+        """
+        ANALYSIS_REQUEST_COUNT.labels(
+            analysis_type=req.analysis_type, data_mode="nl2sql", status="started"
+        ).inc()
+        try:
+            ctx = await self._run_nl2sql_pipeline_through_rag(req)
+            synthesis_prompt, synthesis_version = self._resolve_stage_template(
+                stage="analysis_synthesis",
+                analysis_type=req.analysis_type,
+                user_id=req.user_id,
+                default_text="你是一名综合分析助手，请基于事实数据给出结论和建议。",
+            )
+            _report_prompt, report_version = self._resolve_stage_template(
+                stage="analysis_report",
+                analysis_type=req.analysis_type,
+                user_id=req.user_id,
+                default_text="请输出结构化报告，包含结论、依据、建议。",
+            )
+            planning_ctx: str | None = None
+            if self._analysis_cfg.nl2sql_llm_planner_enabled:
+                planning_ctx = json.dumps(ctx.intent_obj.model_dump(mode="json"), ensure_ascii=False)
+
+            yield {
+                "event": "meta",
+                "request_id": ctx.request_id,
+                "plan_id": ctx.plan_id,
+                "analysis_type": req.analysis_type,
+                "data_mode": "nl2sql",
+                "orchestrator": "sequential_stream",
+                "template_versions": {
+                    "synthesis": synthesis_version,
+                    "report": report_version,
+                },
+            }
+
+            t_syn = perf_counter()
+            parts: list[str] = []
+            try:
+                async for chunk in self._stream_summary_text(
+                    query=req.query,
+                    analysis_type=req.analysis_type,
+                    data_mode="nl2sql",
+                    data_blob=ctx.gathered_data,
+                    context_snippets=ctx.context_snippets,
+                    system_prompt=synthesis_prompt,
+                    planning_context=planning_ctx,
+                ):
+                    parts.append(chunk)
+                    yield {"event": "summary_delta", "text": chunk}
+            except Exception:  # noqa: BLE001
+                logger.exception("analysis nl2sql stream summary failed")
+                fb = "综合分析生成失败，已返回基础报告，请稍后重试。"
+                parts = [fb]
+                yield {"event": "summary_delta", "text": fb}
+
+            summary = "".join(parts)
+            synthesis_ms = int((perf_counter() - t_syn) * 1000)
+            yield {
+                "event": "summary_complete",
+                "request_id": ctx.request_id,
+                "chars": len(summary),
+                "synthesis_ms": synthesis_ms,
+            }
+
+            asyncio.create_task(
+                self._nl2sql_stream_background_finalize(
+                    req,
+                    ctx,
+                    summary=summary,
+                    synthesis_version=synthesis_version,
+                    report_version=report_version,
+                    synthesis_started=t_syn,
+                    on_complete=on_complete,
+                )
+            )
+            yield {"event": "structured_async_enqueued", "request_id": ctx.request_id}
+
+            ANALYSIS_REQUEST_COUNT.labels(
+                analysis_type=req.analysis_type, data_mode="nl2sql", status="success"
+            ).inc()
+        except Exception:
+            ANALYSIS_REQUEST_COUNT.labels(
+                analysis_type=req.analysis_type, data_mode="nl2sql", status="failed"
+            ).inc()
+            raise
+
+    async def _nl2sql_stream_background_finalize(
+        self,
+        req: AnalysisNL2SQLRequest,
+        ctx: _Nl2SqlPipelineThroughRagContext,
+        *,
+        summary: str,
+        synthesis_version: str,
+        report_version: str,
+        synthesis_started: float,
+        on_complete: Callable[[AnalysisV2Result], Awaitable[None]] | None,
+    ) -> None:
+        """流式 summary 结束后：组装与同步路径一致的 `AnalysisV2Result`，写日志并投递扩展钩子。"""
+        try:
+            result = self._finalize_nl2sql_sequential_v2(
+                req,
+                ctx,
+                summary=summary,
+                synthesis_version=synthesis_version,
+                report_version=report_version,
+                synthesis_started=synthesis_started,
+            )
+            payload = result.model_dump(mode="json")
+            dumped = json.dumps(payload, ensure_ascii=False)
+            if len(dumped) > 16000:
+                dumped = dumped[:16000] + "...(truncated)"
+            logger.info(
+                "analysis_nl2sql_stream_full_json request_id=%s json=%s",
+                ctx.request_id,
+                dumped,
+            )
+            await dispatch_analysis_nl2sql_stream_structured(payload)
+            if on_complete is not None:
+                await on_complete(result)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "analysis_nl2sql_stream_background_finalize failed request_id=%s",
+                ctx.request_id,
+            )
 
     @staticmethod
     def _json_fallback(value: Any) -> str:
