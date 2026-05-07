@@ -20,7 +20,7 @@ python3 -m http.server 8765
 | [chatbot-stream.html](chatbot-stream.html) | 智能客服：`POST /chatbot/chat/stream`（SSE） |
 | [inspection-extract.html](inspection-extract.html) | 检修提取 **同步**：`upload` + `POST /inspection-extract/run` |
 | [inspection-extract-async.html](inspection-extract-async.html) | 检修提取 **异步**：`run/async` + 任务轮询与分块 |
-| [analysis-img-diag.html](analysis-img-diag.html) | 综合分析 **看图诊断**：`POST /analysis/img-diag/upload` + `POST /analysis/run-img-diag`（或流式 **`run-img-diag-stream`**） |
+| [analysis-img-diag.html](analysis-img-diag-stream.html) | 综合分析 **看图诊断（流式）**：`POST /analysis/img-diag/upload` + `POST /analysis/run-img-diag-stream`（SSE，与超温流式页同构） |
 | [analysis-nl2sql-overheat-stream.html](analysis-nl2sql-overheat-stream.html) | 综合分析 **NL2SQL 流式 synthesis**（超温等）：`POST /analysis/run-with-nl2sql-stream`（SSE） |
 
 ---
@@ -119,7 +119,7 @@ python3 -m http.server 8765
 
 ### 4.1 前置条件
 
-- `POST /analysis/img-diag/upload`、`POST /analysis/run-img-diag`、`POST /analysis/run-img-diag-stream` 可用  
+- `POST /analysis/img-diag/upload`、`POST /analysis/run-img-diag-stream` 可用（本页主流程为流式；同步 `run-img-diag` 可改用 API 客户端自测）  
 - MinIO（或与上传接口一致的对象存储）已配置  
 - 多模态 / 视觉模型与 NL2SQL、RAG 等依赖按部署文档就绪  
 
@@ -133,7 +133,7 @@ python3 -m http.server 8765
 2. （可选）选择 jpeg/png/webp → 「1) 上传图片」→ 「将上传 URL 追加到 image_urls」（可多次上传多图）  
 3. 填写 **unit_id**、**leak_location_text**、**query**；按需编辑 **leak_location_struct**（JSON 对象）  
 4. **image_urls** 至少一行（预签名 URL）  
-5. 「2) 执行看图诊断」→ 查看 JSON（含 `evidence.vision_findings`、`parallel_lane_trace` 等）
+5. 「2) 开始流式看图诊断」→ 区段内 **summary 增量**、`meta` / 事件 trace；完整 JSON 见服务端日志与 `GET /analysis/traces/{request_id}`（`request_id` 见首包 `meta`）
 
 ### 4.4 请求体要点（与后端 `AnalysisImgDiagRequest` 对齐）
 

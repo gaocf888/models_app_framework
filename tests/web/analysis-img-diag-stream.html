@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>综合分析 · 看图诊断测试 · /analysis/run-img-diag</title>
+  <title>综合分析 · 看图诊断流式测试 · /analysis/run-img-diag-stream</title>
   <style>
     :root {
       --bg: #0f1419;
@@ -14,6 +14,8 @@
       --accent: #3b82f6;
       --accent-hover: #2563eb;
       --ok: #22c55e;
+      --answer: #f0f4f8;
+      --meta: #22c55e;
       --err: #f87171;
     }
     * { box-sizing: border-box; }
@@ -58,6 +60,7 @@
       color: var(--text);
       font-size: 0.9rem;
     }
+    textarea { min-height: 3rem; resize: vertical; font-family: inherit; }
     input[type="file"] {
       width: 100%;
       margin-top: 0.25rem;
@@ -92,7 +95,7 @@
     }
     .out h2 { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.5rem; font-weight: 500; }
     #status { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; white-space: pre-wrap; }
-    #uploadResult, #runResult {
+    #uploadResult {
       white-space: pre-wrap;
       word-break: break-word;
       font-size: 0.82rem;
@@ -100,23 +103,54 @@
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: 0.75rem;
-      min-height: 4rem;
-      max-height: 420px;
+      min-height: 3rem;
+      max-height: 280px;
       overflow: auto;
+    }
+    #answer {
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--answer);
+      font-size: 0.95rem;
+      min-height: 4rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #0d1117;
+      padding: 0.75rem;
+      max-height: 480px;
+      overflow: auto;
+    }
+    #meta, #eventLog {
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.75rem;
+      color: var(--meta);
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #eventLog {
+      color: var(--muted);
+      max-height: 160px;
+      overflow: auto;
+      font-family: ui-monospace, Consolas, monospace;
     }
     .ok { color: var(--ok); }
     .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
     code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    .hint { font-size: 0.75rem; color: var(--muted); margin-top: 0.35rem; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>综合分析 · 看图诊断测试</h1>
+    <h1>综合分析 · 看图诊断（流式 synthesis）</h1>
     <p class="sub">
-      流程：可先 <code>POST /analysis/img-diag/upload</code> 上传现场图（jpeg/png/webp），将返回的 <code>url</code> 填入
-      <code>image_urls</code>；再 <code>POST /analysis/run-img-diag</code>。请求头
-      <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。
-      编排说明见企业文档：<code>enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md</code>。
+      流程：可先 <code>POST /analysis/img-diag/upload</code> 上传现场图，将返回的 <code>url</code> 填入
+      <code>image_urls</code>；再 <code>POST /analysis/run-img-diag-stream</code>（<code>text/event-stream</code>）。
+      视觉 / 业务 RAG / NL2SQL 三臂并行与同步接口相同；仅结论阶段以 SSE 增量下发（<code>summary_delta</code>）。
+      完整 JSON 在服务端异步写日志与 trace，可用 <code>GET /analysis/traces/{request_id}</code> 查询（<code>request_id</code> 见首帧 <code>meta</code>）。
+      鉴权 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>；需 CORS 放行本页来源。
+      编排说明：<code>enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md</code>。
     </p>
 
     <div class="grid">
@@ -147,7 +181,7 @@
       </fieldset>
 
       <fieldset>
-        <legend>看图诊断请求体</legend>
+        <legend>看图诊断请求体（AnalysisImgDiagRequest）</legend>
         <label>unit_id（机组 ID）</label>
         <input type="text" id="unitId" value="UNIT-02" autocomplete="off" />
         <label>leak_location_text（漏泄 / 拍照位置描述）</label>
@@ -160,6 +194,7 @@
         <legend>提问与图片 URL</legend>
         <label>query（用户提问）</label>
         <textarea id="query" rows="3" placeholder="结合这个位置和照片，分析可能原因？"></textarea>
+        <p class="hint">示例：<button type="button" class="secondary" id="btnFillDemo" style="padding:0.2rem 0.5rem;font-size:0.75rem;">填入示例 query</button></p>
         <label>image_urls（每行一个 URL，至少一行）</label>
         <textarea id="imageUrls" rows="4" placeholder="https://minio.../presigned.jpg"></textarea>
         <label>data_requirements_hint（可选，每行一条）</label>
@@ -179,7 +214,8 @@
     </div>
 
     <div class="actions" style="margin-top: 1rem;">
-      <button type="button" class="primary" id="btnRun">2) 执行看图诊断</button>
+      <button type="button" class="primary" id="btnRun">2) 开始流式看图诊断</button>
+      <button type="button" class="secondary" id="btnAbort" disabled>中断请求</button>
       <button type="button" class="secondary" id="btnClear">清空输出</button>
     </div>
 
@@ -187,8 +223,12 @@
       <div id="status">就绪</div>
       <h2>upload 响应</h2>
       <div id="uploadResult">（尚未上传）</div>
-      <h2 style="margin-top: 1rem;">run-img-diag 响应</h2>
-      <div id="runResult">（尚未执行）</div>
+      <h2 style="margin-top: 1rem;">summary（Markdown 增量，run-img-diag-stream）</h2>
+      <div id="answer"></div>
+      <h2 style="margin-top: 1rem;">末帧与 meta</h2>
+      <div id="meta">（尚未开始）</div>
+      <h2 style="margin-top: 1rem;">事件 trace（调试用）</h2>
+      <div id="eventLog"></div>
       <div id="err" class="err" hidden></div>
     </div>
   </div>
@@ -198,6 +238,9 @@
   const $ = (id) => document.getElementById(id);
 
   let lastUploadUrl = null;
+  let abortCtrl = null;
+
+  const DEMO_QUERY = "结合机组、泄漏位置和照片，分析可能的泄漏/爆管原因与建议的检修关注点。";
 
   const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
   const authHeaders = (extra) => {
@@ -257,6 +300,46 @@
     return $("dataHints").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   }
 
+  function buildBody(structObj) {
+    const options = {
+      enable_rag: $("enableRag").checked,
+      enable_context: $("enableContext").checked,
+      strict: $("strict").checked,
+    };
+    const maxNl = $("maxNl2sql").value.trim();
+    if (maxNl !== "") {
+      const n = parseInt(maxNl, 10);
+      if (Number.isFinite(n) && n >= 1 && n <= 12) options.max_nl2sql_calls = n;
+    }
+    return {
+      user_id: $("userId").value.trim(),
+      session_id: $("sessionId").value.trim(),
+      unit_id: $("unitId").value.trim(),
+      leak_location_text: $("leakLocationText").value.trim(),
+      leak_location_struct: structObj,
+      query: $("query").value.trim(),
+      image_urls: imageUrlsList(),
+      data_requirements_hint: dataHintsList(),
+      options,
+    };
+  }
+
+  function setBusy(b) {
+    $("btnRun").disabled = b;
+    $("btnAbort").disabled = !b;
+  }
+
+  function logEvent(line) {
+    const el = $("eventLog");
+    const ts = new Date().toISOString().slice(11, 23);
+    el.textContent += "[" + ts + "] " + line + "\n";
+    el.scrollTop = el.scrollHeight;
+  }
+
+  $("btnFillDemo").addEventListener("click", () => {
+    $("query").value = DEMO_QUERY;
+  });
+
   $("btnUpload").addEventListener("click", async () => {
     showErr("");
     const file = $("fileInput").files && $("fileInput").files[0];
@@ -301,6 +384,48 @@
     setStatus("已将上传 URL 追加到 image_urls", true);
   });
 
+  async function readSseStream(response, onEvent) {
+    const reader = response.body.getReader();
+    const dec = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const raw = buffer.slice(0, idx).trimEnd();
+        buffer = buffer.slice(idx + 2);
+        const lines = raw.split("\n").map((l) => l.trimEnd());
+        const dataLines = lines.filter((l) => l.startsWith("data:"));
+        if (!dataLines.length) continue;
+        const payload = dataLines
+          .map((l) => (l.startsWith("data:") ? l.slice(5).trimStart() : l))
+          .join("\n");
+        let obj;
+        try {
+          obj = JSON.parse(payload);
+        } catch (e) {
+          onEvent({ parseError: true, raw: payload, error: String(e) });
+          continue;
+        }
+        onEvent(obj);
+      }
+    }
+    const tail = buffer.trim();
+    if (tail) {
+      const dataLines = tail.split("\n").filter((l) => l.startsWith("data:"));
+      if (dataLines.length) {
+        const payload = dataLines.map((l) => l.slice(5).trimStart()).join("\n");
+        try {
+          onEvent(JSON.parse(payload));
+        } catch (e) {
+          onEvent({ parseError: true, raw: payload, error: String(e) });
+        }
+      }
+    }
+  }
+
   $("btnRun").addEventListener("click", async () => {
     showErr("");
     let structObj;
@@ -332,63 +457,117 @@
       return;
     }
 
-    const options = {
-      enable_rag: $("enableRag").checked,
-      enable_context: $("enableContext").checked,
-      strict: $("strict").checked,
-    };
-    const maxNl = $("maxNl2sql").value.trim();
-    if (maxNl !== "") {
-      const n = parseInt(maxNl, 10);
-      if (!Number.isFinite(n) || n < 1 || n > 12) {
-        showErr("max_nl2sql_calls 须为 1～12 的整数。");
-        return;
-      }
-      options.max_nl2sql_calls = n;
-    }
+    const body = buildBody(structObj);
 
-    const body = {
-      user_id: uid,
-      session_id: sid,
-      unit_id: unitId,
-      leak_location_text: leakText,
-      leak_location_struct: structObj,
-      query: q,
-      image_urls: urls,
-      data_requirements_hint: dataHintsList(),
-      options,
-    };
+    $("answer").textContent = "";
+    $("meta").textContent = "…";
+    $("eventLog").textContent = "";
+    abortCtrl = new AbortController();
+    setBusy(true);
+    setStatus("连接中（三臂并行与取数可能较慢，首包前请耐心等待）…");
+    let answerText = "";
 
-    setStatus("执行中（看图诊断可能较慢）…");
-    $("btnRun").disabled = true;
+    const url = baseUrl() + "/analysis/run-img-diag-stream";
+
     try {
-      const resp = await fetch(baseUrl() + "/analysis/run-img-diag", {
+      const resp = await fetch(url, {
         method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json", Accept: "application/json" }),
+        headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
         body: JSON.stringify(body),
+        signal: abortCtrl.signal,
         credentials: "omit",
       });
-      const out = await readJsonSafe(resp);
+
       if (!resp.ok) {
-        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 6000));
+        const t = await resp.text();
+        throw new Error("HTTP " + resp.status + "\n" + t.slice(0, 4000));
       }
-      $("runResult").textContent = pretty(out.json || out.raw);
-      setStatus("执行完成", true);
+
+      const ct = (resp.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("text/event-stream") && !ct.includes("event-stream")) {
+        setStatus("警告: Content-Type 非 text/event-stream: " + ct);
+      }
+
+      await readSseStream(resp, (ev) => {
+        if (ev.parseError) {
+          showErr("SSE JSON 解析失败: " + ev.error + "\n片段: " + (ev.raw || "").slice(0, 500));
+          logEvent("parse_error");
+          return;
+        }
+        const kind = ev.event;
+        logEvent(kind || "?");
+
+        if (kind === "meta") {
+          $("meta").textContent =
+            "request_id: " +
+            (ev.request_id || "") +
+            "\nplan_id: " +
+            (ev.plan_id || "") +
+            "\nanalysis_type: " +
+            (ev.analysis_type || "") +
+            "\norchestrator: " +
+            (ev.orchestrator || "") +
+            "\n" +
+            JSON.stringify(ev.template_versions || {}, null, 2);
+          setStatus("已连接，流式 synthesis 中…");
+          return;
+        }
+        if (kind === "summary_delta" && ev.text != null) {
+          answerText += ev.text;
+          $("answer").textContent = answerText;
+          setStatus("生成中… 已收字符 " + answerText.length);
+          return;
+        }
+        if (kind === "summary_complete") {
+          const tail =
+            "chars: " +
+            (ev.chars != null ? ev.chars : answerText.length) +
+            "  synthesis_ms: " +
+            (ev.synthesis_ms != null ? ev.synthesis_ms : "—") +
+            "\nrequest_id: " +
+            (ev.request_id || "");
+          $("meta").textContent = ($("meta").textContent || "") + "\n\n--- summary_complete ---\n" + tail;
+          setStatus("summary 流结束，结构化结果后台处理中");
+          return;
+        }
+        if (kind === "structured_async_enqueued") {
+          $("meta").textContent =
+            ($("meta").textContent || "") +
+            "\n\n--- structured_async_enqueued ---\nrequest_id: " +
+            (ev.request_id || "");
+          setStatus("完成（完整 JSON 已排队；见服务端日志与 GET /analysis/traces/{request_id}）", true);
+          return;
+        }
+      });
     } catch (e) {
-      setStatus("执行失败");
-      showErr(String(e.message || e));
+      if (e.name === "AbortError") {
+        setStatus("已中断");
+        logEvent("aborted");
+      } else {
+        showErr(String(e.message || e));
+        setStatus("失败");
+      }
     } finally {
-      $("btnRun").disabled = false;
+      setBusy(false);
+      abortCtrl = null;
     }
+  });
+
+  $("btnAbort").addEventListener("click", () => {
+    if (abortCtrl) abortCtrl.abort();
   });
 
   $("btnClear").addEventListener("click", () => {
     $("uploadResult").textContent = "（尚未上传）";
-    $("runResult").textContent = "（尚未执行）";
+    $("answer").textContent = "";
+    $("meta").textContent = "（尚未开始）";
+    $("eventLog").textContent = "";
     showErr("");
     setStatus("已清空");
     lastUploadUrl = null;
     $("btnAppendUrl").disabled = true;
+    abortCtrl = null;
+    setBusy(false);
   });
 })();
   </script>
