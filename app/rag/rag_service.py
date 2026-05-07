@@ -162,9 +162,14 @@ class RAGService:
         namespace: str | None = None,
         use_hybrid: bool | None = None,
         scene: str | None = None,
+        rerank_query: str | None = None,
     ) -> List[RetrievedChunk]:
         """
         执行检索并返回标准 RetrievedChunk 列表（设计稿 §E 统一检索输出）。
+
+        - query：用于向量嵌入与关键词/元数据召回（主检索句）。
+        - rerank_query：若传入且在 hybrid 开启且 CrossEncoder 可用时，仅用于最后重排；
+          用于「召回用用户原句、重排时再拼场景标签」等两阶段策略。
         """
         RAG_QUERY_COUNT.inc()
         profile = self._get_scene_profile(scene)
@@ -206,7 +211,8 @@ class RAGService:
             rerank_base = profile.rerank_top_n if profile is not None else self._cfg.hybrid.rerank_top_n
             rerank_top_n = max(rerank_base, k)
             candidates = fused[:rerank_top_n]
-            hits = self._rerank(query=query, hits=candidates)[:k]
+            rr_q = rerank_query if (rerank_query is not None and str(rerank_query).strip()) else query
+            hits = self._rerank(query=rr_q, hits=candidates)[:k]
 
         out: List[RetrievedChunk] = []
         for h in hits:
@@ -224,6 +230,7 @@ class RAGService:
         namespace: str | None = None,
         use_hybrid: bool | None = None,
         scene: str | None = None,
+        rerank_query: str | None = None,
     ) -> List[str]:
         """
         执行检索并返回候选上下文文本列表。
@@ -241,6 +248,7 @@ class RAGService:
             namespace=namespace,
             use_hybrid=use_hybrid,
             scene=scene,
+            rerank_query=rerank_query,
         )
         return [c.text for c in chunks if c.text]
 

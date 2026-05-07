@@ -1,5 +1,8 @@
 """
-综合分析 NL2SQL 流式路由的后处理钩子（结构化 JSON 异步投递预留）。
+综合分析流式路由的后处理钩子（结构化 JSON 异步投递预留）。
+
+**触发路径**：`POST /analysis/run-with-nl2sql-stream`、`POST /analysis/run-img-diag-stream` 在 summary 流结束后，
+后台任务均调用 `dispatch_analysis_nl2sql_stream_structured`（函数名历史遗留；看图诊断复用同一钩子列表）。
 
 用法：
     from app.services.analysis_stream_hooks import register_analysis_nl2sql_stream_structured_hook

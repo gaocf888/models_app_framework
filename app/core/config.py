@@ -485,6 +485,12 @@ class AnalysisConfig:
     # acquire_data：无依赖任务并行执行（生成 SQL + 查库仍发生在各 NL2SQLService.query 内）
     nl2sql_acquire_parallel_enabled: bool = True
     nl2sql_acquire_max_parallel: int = 8
+    # 规划前 RAG 检索 query 构造：
+    # legacy — 与旧版一致：`{analysis_type} {用户 query}`（英文枚举参与向量/关键词/重排）；
+    # user_only — 仅用用户 query 做主检索；
+    # cn_label_prefix — `{中文场景标签} {用户 query}` 单次检索（标签见 analysis_graph_runner 映射）；
+    # two_stage — 召回仅用用户 query；Hybrid 重排时使用「中文标签 + query」（无映射则退回枚举 + query）。
+    plan_rag_query_mode: str = "two_stage"
     # 看图诊断（img_diag）：视觉模型（空则走 LLM 默认模型）、各臂超时与上传大小上限
     img_diag_vision_model: str | None = None
     img_diag_vision_timeout_seconds: float = 120.0
@@ -916,6 +922,9 @@ def _load_from_env() -> AppConfig:
         nl2sql_acquire_parallel_enabled=os.getenv("ANALYSIS_NL2SQL_ACQUIRE_PARALLEL_ENABLED", "true").lower()
         == "true",
         nl2sql_acquire_max_parallel=max(1, int(os.getenv("ANALYSIS_NL2SQL_ACQUIRE_MAX_PARALLEL", "8"))),
+        plan_rag_query_mode=(
+            (os.getenv("ANALYSIS_PLAN_RAG_QUERY_MODE", "two_stage") or "two_stage").strip().lower()
+        ),
         img_diag_vision_model=(os.getenv("ANALYSIS_IMG_DIAG_VISION_MODEL") or "").strip() or None,
         img_diag_vision_timeout_seconds=max(
             5.0, float(os.getenv("ANALYSIS_IMG_DIAG_VISION_TIMEOUT_SECONDS", "120"))

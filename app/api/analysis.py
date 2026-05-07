@@ -4,22 +4,22 @@ from __future__ import annotations
 综合分析 HTTP 接口（企业版 V2）。
 
 职责：
-    - 提供企业级执行入口：**payload** / **nl2sql** / **看图诊断（img_diag）**；
-    - 提供看图诊断图片上传（MinIO 预签名 URL，供 `run-img-diag` 引用）；
-    - 提供 trace 回放、统计、趋势、降级 TopN 运维接口（三种执行模式均可按 `request_id` 查询）。
+    - 提供企业级执行入口：**payload** / **nl2sql** / **看图诊断（img_diag）** / **看图诊断流式（run-img-diag-stream）**；
+    - 提供看图诊断图片上传（MinIO 预签名 URL，供 **`run-img-diag`** / **`run-img-diag-stream`** 的 `image_urls` 引用）；
+    - 提供 trace 回放、统计、趋势、降级 TopN 运维接口（payload / nl2sql / img_diag 及对应 **流式** 路由均在后台写入 trace 后可按 `request_id` 查询）。
 
-**NL2SQL 入口（`run-with-nl2sql`）与看图诊断（`run-img-diag`）——区别与联系（速览）**
+**NL2SQL 入口（`run-with-nl2sql` / `run-with-nl2sql-stream`）与看图诊断（`run-img-diag` / `run-img-diag-stream`）——区别与联系（速览）**
     - **联系**：二者编排中均含 **NL2SQL 数据臂**（按计划多次 `NL2SQLService.query`）。看图诊断由 **`AnalysisImgDiagGraphRunner`**
       基于 **`AnalysisGraphRunner`** 调度，NL2SQL 子链 **复用父类节点**（含 **`acquire_data` / `_execute_data_plan`** 及默认同层并行取数）。
       响应均为 **`AnalysisV2Result`**，`evidence.nl2sql_calls` 与 trace 字段语义一致；子查询层同样 **`record_conversation=False`**。
     - **区别**：NL2SQL 以 **`analysis_type`** + **`query`** 驱动 **`analysis_plan_<type>`** 数据计划（见 **`configs/prompts.yaml`**）。
-      看图诊断以 **机组、泄漏位置、图片 URL、提问** 为主，无 **`analysis_type`**，走 **`run_with_img_diag`**：以 **`asyncio.gather`**
+      看图诊断以 **机组、泄漏位置、图片 URL、提问** 为主，无 **`analysis_type`**，走 **`run_with_img_diag`**（同步）或 **`iter_img_diag_stream_events`**（流式 synthesis）：以 **`asyncio.gather`**
       并行 **视觉 ‖ NL2SQL 臂 ‖ 业务 RAG**，过 **`data_quality_gate`** 后再合成。证据侧多看 **`vision_findings`**，**`data_coverage.mode`**
       为 **`img_diag`**；图片可先 **`img-diag/upload`** 换预签名 URL。
 
 **精简版（编排对照）**
     - **相同点**：都包含 **NL2SQL**；取数阶段 **`acquire_data`**（**`_execute_data_plan`**）均为按计划 **`dependency_ids` 分层**、**同层内默认并行** 多轮「生成 SQL + 执行查库」。
-    - **区别（侧重数据/并行形态）**：**`run-with-nl2sql`** 路径里与结构化数据相关的主干节点 **`acquire_data`**，职责即 NL2SQL **生成 SQL 与查库**（外加图中前后的规划 RAG、合成等按编译图顺序执行）。**`run-img-diag`** 在 **`run_with_img_diag`** 外层以 **`asyncio.gather`** 将 **视觉 ‖ 业务 RAG ‖ NL2SQL 整条臂**（臂内仍含规划前 RAG、**`acquire_data`**、直至 **`data_quality_gate`**）**三路由并行**。
+    - **区别（侧重数据/并行形态）**：**`run-with-nl2sql`** 路径里与结构化数据相关的主干节点 **`acquire_data`**，职责即 NL2SQL **生成 SQL 与查库**（外加图中前后的规划 RAG、合成等按编译图顺序执行）。**`run-img-diag`**（同步 **`run_with_img_diag`**）与 **`run-img-diag-stream`**（流式 **`iter_img_diag_stream_events`**）在并行臂上一致：外层以 **`asyncio.gather`** 将 **视觉 ‖ 业务 RAG ‖ NL2SQL 整条臂**（臂内仍含规划前 RAG、**`acquire_data`**、直至 **`data_quality_gate`**）**三路由并行**。
 
 鉴权与身份：
     - 请求头须携带 `Authorization: Bearer <SERVICE_API_KEY>`（密钥生成与配置见 `app/auth/keygen.py` 与
@@ -157,7 +157,7 @@ async def run_analysis_with_nl2sql_stream(data: AnalysisNL2SQLRequest) -> Stream
     "/img-diag/upload",
     response_model=InspectionUploadResponse,
     summary="看图诊断 · 上传现场照片",
-    response_description="上传 jpeg/png/webp 至 MinIO，返回预签名 URL，供 run-img-diag 的 image_urls 引用。",
+    response_description="上传 jpeg/png/webp 至 MinIO，返回预签名 URL，供 run-img-diag / run-img-diag-stream 的 image_urls 引用。",
 )
 async def upload_analysis_img_diag(file: UploadFile = File(...)) -> InspectionUploadResponse:
     """
@@ -166,7 +166,7 @@ async def upload_analysis_img_diag(file: UploadFile = File(...)) -> InspectionUp
     **请求**：`multipart/form-data`，字段 `file` 为图片本体（jpeg/png/webp 等，以服务层校验为准）；
     单文件大小上限见配置 **`ANALYSIS_IMG_DIAG_UPLOAD_MAX_MB`**。
 
-    **响应体 `InspectionUploadResponse`（200）**：含对象存储键与预签名 URL，将 URL 填入 **`run-img-diag`** 的 `image_urls`。
+    **响应体 `InspectionUploadResponse`（200）**：含对象存储键与预签名 URL，将 URL 填入 **`run-img-diag`** 或 **`run-img-diag-stream`** 的 `image_urls`。
 
     **错误**：空文件 **400**；参数/格式不合规 **400**（`detail` 为可读说明）；存储不可用 **503**。
     """
@@ -220,6 +220,27 @@ async def run_analysis_img_diag(data: AnalysisImgDiagRequest) -> AnalysisV2Resul
     return await service.run_analysis_img_diag(data)
 
 
+@router.post(
+    "/run-img-diag-stream",
+    summary="看图诊断执行（并行视觉 + NL2SQL + RAG · 流式 summary）",
+    response_class=StreamingResponse,
+    response_description="`text/event-stream`：先 `meta`，再流式 `summary_delta`，最后 `summary_complete` 与 `structured_async_enqueued`；完整 JSON 异步落日志 / trace。",
+)
+async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> StreamingResponse:
+    """
+    与 **`/run-img-diag`** 相同鉴权、请求体与**并行臂**（视觉 ‖ NL2SQL ‖ 业务 RAG），**synthesis** 改为流式输出 summary。
+
+    **响应**：`text/event-stream`（SSE），每条 `data: {json}\\n\\n`：
+    - `event: meta`：含 `request_id`、`plan_id`、`analysis_type=img_diag`、`orchestrator=img_diag_parallel_stream` 等；
+    - 多条 `summary_delta`：增量文本；
+    - `summary_complete`：`chars`、`synthesis_ms`；
+    - `structured_async_enqueued`：已排队后台组装完整 **`AnalysisV2Result`**（与应用日志、`register_analysis_nl2sql_stream_structured_hook` 钩子**一致**，trace 由 **`_save_trace`** 写入）。
+
+    **同步接口** **`/run-img-diag`** 保持不变。
+    """
+    return await service.run_analysis_img_diag_stream(data)
+
+
 @router.get(
     "/traces/{request_id}",
     summary="查询综合分析执行 trace",
@@ -233,7 +254,7 @@ async def get_analysis_trace(
     按 `request_id` 查询单次分析的持久化 trace（后端由 `ANALYSIS_TRACE_BACKEND` 决定：Redis / ES / 内存等）。
 
     **路径参数**
-    - `request_id`：**必填**。执行 **`run-with-payload`** / **`run-with-nl2sql`** / **`run-img-diag`** 时响应体中的 `request_id`。
+    - `request_id`：**必填**。来自同步 **`run-with-payload`** / **`run-with-nl2sql`** / **`run-img-diag`** 响应体，或流式 **`run-with-nl2sql-stream`** / **`run-img-diag-stream`** 首包 **`meta.request_id`**（完整 JSON 不在 SSE 内返回时，trace 在 **`structured_async_enqueued`** 之后异步写入）。
 
     **响应体 `AnalysisTraceView`（200）**
     - `request_id`、`analysis_type`、`summary`、`data_mode`（**`payload`** | **`nl2sql`** | **`img_diag`**）。

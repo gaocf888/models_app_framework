@@ -58,6 +58,13 @@ from app.services.nl2sql_service import NL2SQLService
 
 logger = get_logger(__name__)
 
+# 规划前 RAG：analysis_type → 短中文标签（cn_label_prefix / two_stage 重排用，与业务知识库表述对齐）
+_PLAN_RAG_ANALYSIS_TYPE_CN: dict[str, str] = {
+    "overheat_guidance": "超温分析",
+    "maintenance_strategy": "检修策略分析",
+    "img_diag": "看图诊断",
+}
+
 
 @dataclass
 class _PlanTask:
@@ -134,7 +141,13 @@ class AnalysisGraphRunner:
         return str(doc_id) if doc_id is not None else ""
 
     def _retrieve_rag_with_sources(
-        self, *, query: str, namespace: str | None, top_k: int, scene: str = "analysis"
+        self,
+        *,
+        query: str,
+        namespace: str | None,
+        top_k: int,
+        scene: str = "analysis",
+        rerank_query: str | None = None,
     ) -> tuple[list[str], list[dict[str, Any]]]:
         """
         统一 RAG 检索输出：
@@ -144,7 +157,13 @@ class AnalysisGraphRunner:
         # 优先使用 retrieve_chunks（可拿到 doc_id/score），否则回退 retrieve_context 文本检索。
         rag_svc = getattr(self._hybrid_rag, "_rag_service", None)
         if rag_svc is not None and hasattr(rag_svc, "retrieve_chunks"):
-            chunks = rag_svc.retrieve_chunks(query=query, top_k=top_k, namespace=namespace, scene=scene)
+            chunks = rag_svc.retrieve_chunks(
+                query=query,
+                top_k=top_k,
+                namespace=namespace,
+                scene=scene,
+                rerank_query=rerank_query,
+            )
             snippets = [getattr(c, "text", "") for c in chunks if getattr(c, "text", "")]
             sources = [
                 {
@@ -2294,22 +2313,45 @@ class AnalysisGraphRunner:
         warnings = [f"nl2sql_quality_violation:{v}" for v in violations]
         return {"failed": len(violations) > 0, "violations": violations, "thresholds": thresholds, "warnings": warnings}
 
+    def _plan_rag_recall_rerank_queries(self, user_query: str, analysis_type: str) -> tuple[str, str | None]:
+        """
+        规划前 RAG 主检索句与可选重排句（见 `AnalysisConfig.plan_rag_query_mode`）。
+        返回 (recall_query, rerank_query)；rerank_query 仅在 Hybrid 重排阶段使用。
+        """
+        q = (user_query or "").strip()
+        mode = (self._analysis_cfg.plan_rag_query_mode or "two_stage").strip().lower()
+        cn = (_PLAN_RAG_ANALYSIS_TYPE_CN.get(analysis_type) or "").strip()
+        if mode == "legacy":
+            return (f"{analysis_type} {q}".strip(), None)
+        if mode == "user_only":
+            return (q, None)
+        if mode == "cn_label_prefix":
+            if cn:
+                return (f"{cn} {q}".strip(), None)
+            return (f"{analysis_type} {q}".strip(), None)
+        if mode != "two_stage":
+            logger.warning("unknown plan_rag_query_mode=%s; fallback to two_stage", mode)
+        rr = f"{cn} {q}".strip() if cn else f"{analysis_type} {q}".strip()
+        return (q, rr)
+
     def _retrieve_plan_rag(
         self, query: str, analysis_type: str, enable_rag: bool
     ) -> tuple[list[str], list[dict[str, Any]]]:
         """规划前 RAG：逐 nl2sql_* 命名空间检索，scene 固定为 nl2sql。"""
         if not enable_rag:
             return [], []
+        recall_q, rerank_q = self._plan_rag_recall_rerank_queries(query, analysis_type)
         namespaces = ["nl2sql_schema", "nl2sql_biz_knowledge", "nl2sql_qa_examples"]
         results: list[str] = []
         sources: list[dict[str, Any]] = []
         for ns in namespaces:
             try:
                 parts, src = self._retrieve_rag_with_sources(
-                    query=f"{analysis_type} {query}",
+                    query=recall_q,
                     namespace=ns,
                     top_k=3,
                     scene="nl2sql",
+                    rerank_query=rerank_q,
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("analysis plan rag retrieve failed namespace=%s", ns)

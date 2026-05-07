@@ -51,7 +51,7 @@ class AnalysisService:
     综合分析服务（企业版 V2）。
 
     说明：
-    - 入口：`payload` / `nl2sql` / `img_diag`（看图诊断），均由 `AnalysisImgDiagGraphRunner` 编排；
+    - 入口：`payload` / `nl2sql` / `img_diag`（看图诊断同步）/ **`run_analysis_img_diag_stream`**（看图诊断 · SSE 流式 synthesis），均由 `AnalysisImgDiagGraphRunner` 编排；
     - 不再保留旧版 /analysis/run 回退链路。
     """
 
@@ -133,6 +133,28 @@ class AnalysisService:
         result = await self._graph_runner.run_with_img_diag(req)
         self._save_trace(result)
         return result
+
+    async def run_analysis_img_diag_stream(self, data: AnalysisImgDiagRequest) -> StreamingResponse:
+        """
+        看图诊断流式 synthesis：`text/event-stream`，事件形态与 `run-with-nl2sql-stream` 一致（`meta` / `summary_delta` / …）。
+        完整 `AnalysisV2Result` 在 summary 流结束后由后台任务组装，写入日志并调用 `analysis_stream_hooks`，
+        **`_save_trace`** 在钩子回调中执行（与 NL2SQL 流式路由一致）。
+        """
+        req = self._apply_defaults_img_diag(data)
+
+        async def on_complete(result: AnalysisV2Result) -> None:
+            self._save_trace(result)
+
+        async def event_gen():
+            async for ev in self._graph_runner.iter_img_diag_stream_events(req, on_complete=on_complete):
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8")
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+        return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
 
     async def upload_img_diag_image(
         self, *, file_name: str, content: bytes, content_type: str | None

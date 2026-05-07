@@ -92,7 +92,10 @@ class AnalysisPayloadRequest(BaseModel):
 
 
 class AnalysisImgDiagRequest(BaseModel):
-    """看图诊断（随手拍）：图像理解 ‖ NL2SQL ‖ 业务 RAG 并行后合成。"""
+    """看图诊断（随手拍）：图像理解 ‖ NL2SQL ‖ 业务 RAG 并行后合成。
+
+    HTTP：**`POST /analysis/run-img-diag`**（同步 **`AnalysisV2Result`**）与 **`POST /analysis/run-img-diag-stream`**（`text/event-stream`，字段语义对齐 **`run-with-nl2sql-stream`**）共用本模型。
+    """
 
     user_id: str = Field(..., description="用户唯一标识（由调用方后台传入）")
     session_id: str = Field(..., description="会话唯一标识")

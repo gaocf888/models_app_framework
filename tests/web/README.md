@@ -20,7 +20,7 @@ python3 -m http.server 8765
 | [chatbot-stream.html](chatbot-stream.html) | 智能客服：`POST /chatbot/chat/stream`（SSE） |
 | [inspection-extract.html](inspection-extract.html) | 检修提取 **同步**：`upload` + `POST /inspection-extract/run` |
 | [inspection-extract-async.html](inspection-extract-async.html) | 检修提取 **异步**：`run/async` + 任务轮询与分块 |
-| [analysis-img-diag.html](analysis-img-diag.html) | 综合分析 **看图诊断**：`POST /analysis/img-diag/upload` + `POST /analysis/run-img-diag` |
+| [analysis-img-diag.html](analysis-img-diag.html) | 综合分析 **看图诊断**：`POST /analysis/img-diag/upload` + `POST /analysis/run-img-diag`（或流式 **`run-img-diag-stream`**） |
 | [analysis-nl2sql-overheat-stream.html](analysis-nl2sql-overheat-stream.html) | 综合分析 **NL2SQL 流式 synthesis**（超温等）：`POST /analysis/run-with-nl2sql-stream`（SSE） |
 
 ---
@@ -119,7 +119,7 @@ python3 -m http.server 8765
 
 ### 4.1 前置条件
 
-- `POST /analysis/img-diag/upload`、`POST /analysis/run-img-diag` 可用  
+- `POST /analysis/img-diag/upload`、`POST /analysis/run-img-diag`、`POST /analysis/run-img-diag-stream` 可用  
 - MinIO（或与上传接口一致的对象存储）已配置  
 - 多模态 / 视觉模型与 NL2SQL、RAG 等依赖按部署文档就绪  
 
