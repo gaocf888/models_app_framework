@@ -65,6 +65,11 @@ _PLAN_RAG_ANALYSIS_TYPE_CN: dict[str, str] = {
     "img_diag": "看图诊断",
 }
 
+# 数据计划子任务送 NL2SQL 时的额外约束（抑制臆造机组/墙别 WHERE）
+_PLAN_TASK_SCOPE_GUARD_CN = "若用户未指定机组/区域，则不要在 WHERE 中臆造具体锅炉名或墙别。"
+# 规划前 RAG：写入「请结合以下规则线索」的条数（命名空间间轮询取值）
+_PLAN_GUIDE_MAX_SNIPPETS = 4
+
 
 @dataclass
 class _PlanTask:
@@ -233,6 +238,58 @@ class AnalysisGraphRunner:
     def _norm_question_key(q: str) -> str:
         return re.sub(r"\s+", " ", (q or "").strip().lower())[:200]
 
+    @staticmethod
+    def _compose_plan_task_question(user_query: str, specific_question: str) -> str:
+        """
+        数据计划子任务问句：统一为「用户原句 + 子任务具体描述」，并附加机组/区域约束说明。
+        """
+        uq = (user_query or "").strip()
+        sq = (specific_question or "").strip()
+        if uq and sq:
+            body = f"{uq}。{sq}"
+        elif uq:
+            body = uq
+        else:
+            body = sq
+        if not body:
+            return ""
+        return f"{body}。{_PLAN_TASK_SCOPE_GUARD_CN}"
+
+    @staticmethod
+    def _plan_context_snippets_for_guide(plan_context: list[str], *, max_items: int | None = None) -> list[str]:
+        """
+        规则线索：按 nl2sql_schema → biz → qa 三组（每组至多 3 条）做轮询取前 N 条，
+        避免全部被单一命名空间前几块占满。
+        """
+        if not plan_context:
+            return []
+        cap = max_items if max_items is not None else _PLAN_GUIDE_MAX_SNIPPETS
+        bucket_size = 3
+        buckets: list[list[str]] = []
+        i = 0
+        while i < len(plan_context):
+            buckets.append(plan_context[i : i + bucket_size])
+            i += bucket_size
+        out: list[str] = []
+        round_idx = 0
+        while len(out) < cap:
+            progressed = False
+            for b in buckets:
+                if round_idx < len(b):
+                    out.append(b[round_idx])
+                    progressed = True
+                    if len(out) >= cap:
+                        return out
+            if not progressed:
+                break
+            round_idx += 1
+        return out
+
+    @classmethod
+    def _plan_context_guide_text(cls, plan_context: list[str]) -> str:
+        parts = cls._plan_context_snippets_for_guide(plan_context, max_items=_PLAN_GUIDE_MAX_SNIPPETS)
+        return "；".join(parts)
+
     def _extend_tasks_with_hints(self, tasks: list[_PlanTask], req: AnalysisNL2SQLRequest) -> None:
         existing = {t.item_id for t in tasks}
         for i, h in enumerate(req.data_requirements_hint or [], start=1):
@@ -244,7 +301,7 @@ class AnalysisGraphRunner:
                 _PlanTask(
                     item_id=qid,
                     purpose=f"提示补充:{h}",
-                    question=f"{req.query}，补充查询与「{h}」直接相关的数据",
+                    question=self._compose_plan_task_question(req.query, f"补充查询与「{h}」直接相关的数据"),
                     mandatory=False,
                 )
             )
@@ -253,9 +310,18 @@ class AnalysisGraphRunner:
     def _apply_plan_context_guide(tasks: list[_PlanTask], plan_context: list[str]) -> None:
         if not plan_context or not tasks:
             return
-        guide = "；".join(plan_context[:2])
+        guide = AnalysisGraphRunner._plan_context_guide_text(plan_context)
+        if not guide:
+            return
         for task in tasks:
-            task.question = f"{task.question}。请结合以下规则线索：{guide}"
+            q = (task.question or "").rstrip()
+            if not q:
+                continue
+            # 子任务已以句末标点结尾时不再插入第二个「。」（避免出现。。）
+            if q[-1] in ("。", ".", "！", "!", "？", "?"):
+                task.question = f"{q}请结合以下规则线索：{guide}"
+            else:
+                task.question = f"{q}。请结合以下规则线索：{guide}"
 
     def _merge_nl2sql_template_and_llm_tasks(
         self,
@@ -284,7 +350,7 @@ class AnalysisGraphRunner:
                 _PlanTask(
                     item_id=nid,
                     purpose=it.purpose.strip()[:300] or nid,
-                    question=it.question.strip()[:4000],
+                    question=self._compose_plan_task_question(req.query, it.question.strip())[:4000],
                     mandatory=bool(it.mandatory),
                     dependency_ids=[str(x).strip() for x in dep_ok],
                 )
@@ -812,7 +878,10 @@ class AnalysisGraphRunner:
         req = AnalysisNL2SQLRequest.model_validate(state["nl2sql_request"])
         raw_tasks = list(state.get("plan_tasks") or [])
         tasks = [self._plan_task_from_dict(x) for x in raw_tasks if isinstance(x, dict)]
-        nl2sql_calls, gathered_data, task_status, acquire_latency_ms = await self._execute_data_plan(req=req, tasks=tasks)
+        analysis_request_id = str(state.get("request_id") or "").strip() or None
+        nl2sql_calls, gathered_data, task_status, acquire_latency_ms = await self._execute_data_plan(
+            req=req, tasks=tasks, analysis_request_id=analysis_request_id
+        )
         return {
             "nl2sql_calls": [c.model_dump(mode="json") for c in nl2sql_calls],
             "gathered_data": gathered_data,
@@ -1234,9 +1303,12 @@ class AnalysisGraphRunner:
             ).inc()
             raise
 
-    async def _run_nl2sql_pipeline_through_rag(self, req: AnalysisNL2SQLRequest) -> _Nl2SqlPipelineThroughRagContext:
+    async def _run_nl2sql_pipeline_through_rag(
+        self, req: AnalysisNL2SQLRequest, *, request_id: str | None = None
+    ) -> _Nl2SqlPipelineThroughRagContext:
         """顺序路径中与 LangGraph 前半段等价：会话 → 规划 RAG → 意图/计划 → 取数 → 质量门 → 业务 RAG（供同步与流式 synthesis 复用）。"""
-        request_id = f"anl_{uuid4().hex[:12]}"
+        t_pipeline = perf_counter()
+        request_id = (request_id or "").strip() or f"anl_{uuid4().hex[:12]}"
         plan_id = f"plan_{uuid4().hex[:10]}"
         node_latency_ms: dict[str, int] = {}
         node_status: dict[str, str] = {}
@@ -1286,7 +1358,7 @@ class AnalysisGraphRunner:
         node_status["plan_llm"] = "success"
 
         nl2sql_calls, gathered_data, task_status, acquire_latency_ms = await self._execute_data_plan(
-            req=req, tasks=tasks
+            req=req, tasks=tasks, analysis_request_id=request_id
         )
         node_latency_ms["acquire_data"] = acquire_latency_ms
         node_status["acquire_data"] = "success"
@@ -1328,6 +1400,35 @@ class AnalysisGraphRunner:
             ANALYSIS_NODE_LATENCY.labels(node="rag_enrichment", analysis_type=req.analysis_type).observe(
                 (perf_counter() - t_rag)
             )
+
+        pipeline_ms = int((perf_counter() - t_pipeline) * 1000)
+        logger.info(
+            "analysis_nl2sql_pipeline_summary %s",
+            json.dumps(
+                {
+                    "request_id": request_id,
+                    "plan_id": plan_id,
+                    "analysis_type": req.analysis_type,
+                    "user_id": req.user_id,
+                    "session_id": req.session_id,
+                    "pipeline_ms": pipeline_ms,
+                    "node_latency_ms": dict(node_latency_ms),
+                    "nl2sql_calls": [
+                        {
+                            "item_id": c.item_id,
+                            "status": c.status,
+                            "row_count": c.row_count,
+                            "attempts": c.attempts,
+                            "error": (c.error or "")[:400],
+                        }
+                        for c in nl2sql_calls
+                    ],
+                    "planner_warnings": planner_warnings,
+                    "degrade_reasons": degrade_reasons,
+                },
+                ensure_ascii=False,
+            ),
+        )
 
         return _Nl2SqlPipelineThroughRagContext(
             request_id=request_id,
@@ -1610,7 +1711,15 @@ class AnalysisGraphRunner:
             analysis_type=req.analysis_type, data_mode="nl2sql", status="started"
         ).inc()
         try:
-            ctx = await self._run_nl2sql_pipeline_through_rag(req)
+            stream_request_id = f"anl_{uuid4().hex[:12]}"
+            logger.info(
+                "analysis_nl2sql_stream_pipeline_start request_id=%s analysis_type=%s user_id=%s session_id=%s",
+                stream_request_id,
+                req.analysis_type,
+                req.user_id,
+                req.session_id,
+            )
+            ctx = await self._run_nl2sql_pipeline_through_rag(req, request_id=stream_request_id)
             synthesis_prompt, synthesis_version = self._resolve_stage_template(
                 stage="analysis_synthesis",
                 analysis_type=req.analysis_type,
@@ -2383,30 +2492,45 @@ class AnalysisGraphRunner:
         if req.analysis_type == "overheat_guidance":
             # 与 prompts.yaml · analysis_plan_overheat_guidance 语义对齐（模板缺失时的兜底）
             base = [
-                _PlanTask("q1", "超温事实明细", f"{req.query}，查询超温事件明细与时间分布", mandatory=True),
+                _PlanTask(
+                    "q1",
+                    "超温事实明细",
+                    self._compose_plan_task_question(req.query, "查询超温事件明细与时间分布"),
+                    mandatory=True,
+                ),
                 _PlanTask(
                     "q2",
                     "运行参数关联",
-                    f"{req.query}，查询风门开度、蒸汽流量等运行参数",
+                    self._compose_plan_task_question(req.query, "查询风门开度、蒸汽流量等运行参数"),
                     mandatory=True,
                     dependency_ids=["q1"],
                 ),
                 _PlanTask(
                     "q3",
                     "燃烧器状态",
-                    f"{req.query}，查询燃烧器状态及切换记录",
+                    self._compose_plan_task_question(req.query, "查询燃烧器状态及切换记录"),
                     mandatory=False,
                     dependency_ids=["q1"],
                 ),
             ]
         elif req.analysis_type == "maintenance_strategy":
             base = [
-                _PlanTask("q1", "壁厚测量数据", f"{req.query}，查询壁厚测量结果与趋势", mandatory=True),
-                _PlanTask("q2", "换管历史记录", f"{req.query}，查询换管历史、材质与时间信息", mandatory=True),
+                _PlanTask(
+                    "q1",
+                    "壁厚测量数据",
+                    self._compose_plan_task_question(req.query, "查询壁厚测量结果与趋势"),
+                    mandatory=True,
+                ),
+                _PlanTask(
+                    "q2",
+                    "换管历史记录",
+                    self._compose_plan_task_question(req.query, "查询换管历史、材质与时间信息"),
+                    mandatory=True,
+                ),
                 _PlanTask(
                     "q3",
                     "超温频次统计",
-                    f"{req.query}，按区域统计超温频次",
+                    self._compose_plan_task_question(req.query, "按区域统计超温频次"),
                     mandatory=False,
                     dependency_ids=["q1"],
                 ),
@@ -2416,35 +2540,54 @@ class AnalysisGraphRunner:
                 _PlanTask(
                     "q1",
                     "位置台账与缺陷履历",
-                    f"{req.query}，查询机组设备台账、受热面定位信息及该区域历史缺陷与检修记录",
+                    self._compose_plan_task_question(
+                        req.query, "查询机组设备台账、受热面定位信息及该区域历史缺陷与检修记录"
+                    ),
                     mandatory=True,
                 ),
                 _PlanTask(
                     "q2",
                     "壁温与泄漏关联工况",
-                    f"{req.query}，查询与该区域相关的壁温趋势、超温累计时长及同期负荷与烟气参数摘要",
+                    self._compose_plan_task_question(
+                        req.query, "查询与该区域相关的壁温趋势、超温累计时长及同期负荷与烟气参数摘要"
+                    ),
                     mandatory=True,
                     dependency_ids=["q1"],
                 ),
                 _PlanTask(
                     "q3",
                     "测厚与磨损线索",
-                    f"{req.query}，查询该区域测厚结果、最小壁厚趋势及若有记载的吹灰或烟气走廊相关信息",
+                    self._compose_plan_task_question(
+                        req.query, "查询该区域测厚结果、最小壁厚趋势及若有记载的吹灰或烟气走廊相关信息"
+                    ),
                     mandatory=False,
                     dependency_ids=["q1"],
                 ),
                 _PlanTask(
                     "q4",
                     "告警与同类记录",
-                    f"{req.query}，查询关联告警事件及同类受热面邻近区域的缺陷案例摘要（若有）",
+                    self._compose_plan_task_question(
+                        req.query, "查询关联告警事件及同类受热面邻近区域的缺陷案例摘要（若有）"
+                    ),
                     mandatory=False,
                     dependency_ids=["q1"],
                 ),
             ]
         else:
             base = [
-                _PlanTask("q1", "关键事实数据", f"{req.query}，查询核心事实数据", mandatory=True),
-                _PlanTask("q2", "关联维度数据", f"{req.query}，查询关联维度和补充信息", mandatory=False, dependency_ids=["q1"]),
+                _PlanTask(
+                    "q1",
+                    "关键事实数据",
+                    self._compose_plan_task_question(req.query, "查询核心事实数据"),
+                    mandatory=True,
+                ),
+                _PlanTask(
+                    "q2",
+                    "关联维度数据",
+                    self._compose_plan_task_question(req.query, "查询关联维度和补充信息"),
+                    mandatory=False,
+                    dependency_ids=["q1"],
+                ),
             ]
 
         if hints:
@@ -2454,14 +2597,15 @@ class AnalysisGraphRunner:
                     _PlanTask(
                         item_id=qid,
                         purpose=f"提示补充:{h}",
-                        question=f"{req.query}，补充查询与“{h}”直接相关的数据",
+                        question=self._compose_plan_task_question(req.query, f"补充查询与「{h}」直接相关的数据"),
                         mandatory=False,
                     )
                 )
         if plan_context:
-            guide = "；".join(plan_context[:2])
-            for task in base:
-                task.question = f"{task.question}。请结合以下规则线索：{guide}"
+            guide = self._plan_context_guide_text(plan_context)
+            if guide:
+                for task in base:
+                    task.question = f"{task.question}。请结合以下规则线索：{guide}"
         return base
 
     def _build_data_plan_from_template(self, req: AnalysisNL2SQLRequest, *, plan_context: list[str]) -> list[_PlanTask]:
@@ -2484,11 +2628,12 @@ class AnalysisGraphRunner:
         if not isinstance(raw_items, list):
             return []
         tasks: list[_PlanTask] = []
-        guide = "；".join(plan_context[:2]) if plan_context else ""
+        guide = self._plan_context_guide_text(plan_context) if plan_context else ""
         for idx, item in enumerate(raw_items, start=1):
             if not isinstance(item, dict):
                 continue
-            q = str(item.get("question") or req.query).strip()
+            specific = str(item.get("question") or "").strip()
+            q = self._compose_plan_task_question(req.query, specific)
             if guide:
                 q = f"{q}。请结合以下规则线索：{guide}"
             tasks.append(
@@ -2509,14 +2654,18 @@ class AnalysisGraphRunner:
                 _PlanTask(
                     item_id=f"h{i}",
                     purpose=f"提示补充:{h}",
-                    question=f"{req.query}，补充查询与“{h}”直接相关的数据",
+                    question=self._compose_plan_task_question(req.query, f"补充查询与「{h}」直接相关的数据"),
                     mandatory=False,
                 )
             )
         return tasks
 
     async def _run_single_nl2sql_plan_task(
-        self, req: AnalysisNL2SQLRequest, task: _PlanTask
+        self,
+        req: AnalysisNL2SQLRequest,
+        task: _PlanTask,
+        *,
+        analysis_request_id: str | None = None,
     ) -> tuple[AnalysisNL2SQLCall, dict[str, list[dict]]]:
         """单次 plan 任务：LLM 生成 SQL + 执行（封装于 NL2SQLService.query），最多 2 次尝试。"""
         max_attempts = 2
@@ -2530,6 +2679,8 @@ class AnalysisGraphRunner:
                         session_id=req.session_id,
                         question=task.question,
                         analysis_type=req.analysis_type,
+                        analysis_request_id=analysis_request_id,
+                        plan_item_id=task.item_id,
                     ),
                     record_conversation=False,
                 )
@@ -2550,7 +2701,10 @@ class AnalysisGraphRunner:
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 logger.exception(
-                    "analysis nl2sql task failed item=%s attempt=%s", task.item_id, attempt
+                    "analysis nl2sql task failed item=%s attempt=%s analysis_request_id=%s",
+                    task.item_id,
+                    attempt,
+                    analysis_request_id or "-",
                 )
         err_text = last_error or "nl2sql_query_failed"
         call = AnalysisNL2SQLCall(
@@ -2568,7 +2722,11 @@ class AnalysisGraphRunner:
         return call, {}
 
     async def _execute_data_plan_sequential(
-        self, *, req: AnalysisNL2SQLRequest, tasks: list[_PlanTask]
+        self,
+        *,
+        req: AnalysisNL2SQLRequest,
+        tasks: list[_PlanTask],
+        analysis_request_id: str | None = None,
     ) -> tuple[list[AnalysisNL2SQLCall], dict[str, list[dict]], dict[str, str]]:
         """与并行版语义一致，仅按 plan_tasks 顺序串行调度（并行关闭或单任务时使用）。"""
         calls: list[AnalysisNL2SQLCall] = []
@@ -2594,7 +2752,9 @@ class AnalysisGraphRunner:
                     analysis_type=req.analysis_type, status="skipped"
                 ).inc()
                 continue
-            call, gd = await self._run_single_nl2sql_plan_task(req, task)
+            call, gd = await self._run_single_nl2sql_plan_task(
+                req, task, analysis_request_id=analysis_request_id
+            )
             calls.append(call)
             gathered_data.update(gd)
             if call.status == "success":
@@ -2604,7 +2764,11 @@ class AnalysisGraphRunner:
         return calls, gathered_data, task_status
 
     async def _execute_data_plan(
-        self, *, req: AnalysisNL2SQLRequest, tasks: list[_PlanTask]
+        self,
+        *,
+        req: AnalysisNL2SQLRequest,
+        tasks: list[_PlanTask],
+        analysis_request_id: str | None = None,
     ) -> tuple[list[AnalysisNL2SQLCall], dict[str, list[dict]], dict[str, str], int]:
         """执行 NL2SQL：依赖未满足则 skipped；每项最多 2 次尝试。默认同层无依赖任务并行（含生成 SQL 与查库）。"""
         t_data = perf_counter()
@@ -2612,7 +2776,9 @@ class AnalysisGraphRunner:
         task_by_id = {t.item_id: t for t in tasks}
 
         if not self._analysis_cfg.nl2sql_acquire_parallel_enabled or len(tasks) <= 1:
-            calls, gathered_data, task_status = await self._execute_data_plan_sequential(req=req, tasks=tasks)
+            calls, gathered_data, task_status = await self._execute_data_plan_sequential(
+                req=req, tasks=tasks, analysis_request_id=analysis_request_id
+            )
             duration_s = perf_counter() - t_data
             ANALYSIS_NODE_LATENCY.labels(node="acquire_data", analysis_type=req.analysis_type).observe(duration_s)
             return calls, gathered_data, task_status, int(duration_s * 1000)
@@ -2626,7 +2792,9 @@ class AnalysisGraphRunner:
 
         async def bounded(task: _PlanTask) -> tuple[AnalysisNL2SQLCall, dict[str, list[dict]]]:
             async with sem:
-                return await self._run_single_nl2sql_plan_task(req, task)
+                return await self._run_single_nl2sql_plan_task(
+                    req, task, analysis_request_id=analysis_request_id
+                )
 
         while unfinished:
             runnable: list[_PlanTask] = []
@@ -2640,11 +2808,22 @@ class AnalysisGraphRunner:
                 runnable.append(t)
             if runnable:
                 logger.info(
-                    "analysis acquire_data parallel wave item_ids=%s unfinished_before=%d",
+                    "analysis acquire_data parallel wave item_ids=%s unfinished_before=%d analysis_request_id=%s",
                     [x.item_id for x in runnable],
                     len(unfinished),
+                    analysis_request_id or "-",
                 )
+                t_wave = perf_counter()
                 results = await asyncio.gather(*[bounded(t) for t in runnable])
+                wave_ms = int((perf_counter() - t_wave) * 1000)
+                outcomes = {call.item_id: call.status for call, _ in results}
+                logger.info(
+                    "analysis_nl2sql_acquire_wave_end request_id=%s item_ids=%s wave_ms=%s outcomes=%s",
+                    analysis_request_id or "-",
+                    json.dumps([x.item_id for x in runnable], ensure_ascii=False),
+                    wave_ms,
+                    json.dumps(outcomes, ensure_ascii=False),
+                )
                 for call, gd_part in results:
                     calls.append(call)
                     gathered_data.update(gd_part)

@@ -12,6 +12,14 @@ class NL2SQLQueryRequest(BaseModel):
     session_id: str = Field(..., description="会话唯一标识")
     question: str = Field(..., description="自然语言问题")
     analysis_type: str | None = Field(default=None, description="可选：分析场景类型")
+    analysis_request_id: str | None = Field(
+        default=None,
+        description="可选：综合分析等上层编排的 request_id，用于日志关联",
+    )
+    plan_item_id: str | None = Field(
+        default=None,
+        description="可选：数据计划子任务 item_id（如 q1、q2）",
+    )
 
     @field_validator("user_id")
     @classmethod

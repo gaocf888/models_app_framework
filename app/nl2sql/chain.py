@@ -92,6 +92,9 @@ class NL2SQLChain:
         r"\b(lag|lead|row_number|rank|dense_rank)\s*\(",
         re.IGNORECASE,
     )
+    # DATE_SUB / DATE_ADD 等参数里可含嵌套括号（如 NOW()），用 [^)]* 会截断在第一个 )，把 “, INTERVAL 7 DAY)” 留在 SQL 外导致语法错误。
+    _tidb_date_call_arg = r"(?:[^()]|\([^()]*\))*"
+    _tidb_date_call_rhs = rf"DATE_[A-Z_]+\({_tidb_date_call_arg}\)"
 
     def __init__(
         self,
@@ -799,8 +802,9 @@ class NL2SQLChain:
             c = col.lower().split(".")[-1]
             return c.endswith("time") or c.endswith("date") or c == "ts" or c.endswith("timestamp")
         # 优先改写固定日期区间，避免“历史固定时间”导致 0 行。
+        _dr = NL2SQLChain._tidb_date_call_rhs
         between_pat = re.compile(
-            r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s+BETWEEN\s+('[^']+'|NOW\(\)|CURDATE\(\)|DATE_[A-Z_]+\([^)]*\))\s+AND\s+('[^']+'|NOW\(\)|CURDATE\(\)|DATE_[A-Z_]+\([^)]*\))"
+            rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s+BETWEEN\s+('[^']+'|NOW\(\)|CURDATE\(\)|{_dr})\s+AND\s+('[^']+'|NOW\(\)|CURDATE\(\)|{_dr})"
         )
 
         def _between_repl(m: re.Match[str]) -> str:
@@ -811,14 +815,18 @@ class NL2SQLChain:
             return f"{col} >= {start_expr} AND {col} <= {end_expr}"
 
         rewritten = between_pat.sub(_between_repl, rewritten)
-        ge_pat = re.compile(r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*>=\s*('[^']+'|NOW\(\)|CURDATE\(\)|DATE_[A-Z_]+\([^)]*\))")
+        ge_pat = re.compile(
+            rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*>=\s*('[^']+'|NOW\(\)|CURDATE\(\)|{_dr})"
+        )
         if ge_pat.search(rewritten):
             rewritten = ge_pat.sub(
                 lambda m: f"{m.group(1)} >= {start_expr}" if _is_time_col(m.group(1)) else m.group(0),
                 rewritten,
             )
             notes.append(f"dynamic_time_window_ge:{tag}")
-        le_pat = re.compile(r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*<=\s*('[^']+'|NOW\(\)|CURDATE\(\)|DATE_[A-Z_]+\([^)]*\))")
+        le_pat = re.compile(
+            rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*<=\s*('[^']+'|NOW\(\)|CURDATE\(\)|{_dr})"
+        )
         if le_pat.search(rewritten):
             rewritten = le_pat.sub(
                 lambda m: f"{m.group(1)} <= {end_expr}" if _is_time_col(m.group(1)) else m.group(0),

@@ -99,6 +99,20 @@ def test_rewrite_recent_week_time_window() -> None:
     assert notes
 
 
+def test_rewrite_dynamic_time_window_does_not_corrupt_nested_date_sub() -> None:
+    """DATE_SUB(NOW(), INTERVAL 7 DAY) 含嵌套括号，旧版 ge_pat 会截断并生成非法 SQL。"""
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT 1 FROM monitor_hotarea_temp mht "
+        "WHERE mht.start_time >= DATE_SUB(NOW(), INTERVAL 7 DAY) ORDER BY mht.start_time DESC"
+    )
+    rewritten, notes = chain._rewrite_query_filters(sql, question="请分析最近一周超温情况")
+    assert ", INTERVAL 7 DAY), INTERVAL" not in rewritten
+    assert rewritten.count("INTERVAL 7 DAY") == 1
+    assert "mht.start_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)" in rewritten
+    assert notes
+
+
 def test_rewrite_region_equals_to_like() -> None:
     chain = _build_chain_for_unit()
     sql = "SELECT * FROM monitor_hotarea_temp WHERE area = 'front wall'"

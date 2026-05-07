@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from time import perf_counter
 
 from app.conversation.manager import ConversationManager
 from app.core.logging import get_logger
@@ -39,11 +40,16 @@ class NL2SQLService:
 
         NL2SQL_QUERY_COUNT.inc()
 
+        t_query = perf_counter()
+        arid = req.analysis_request_id or "-"
+        piid = req.plan_item_id or "-"
         logger.info(
-            "NL2SQLService.query start user_id=%s session_id=%s record_conversation=%s",
+            "NL2SQLService.query start user_id=%s session_id=%s record_conversation=%s analysis_request_id=%s plan_item_id=%s",
             req.user_id,
             req.session_id,
             record_conversation,
+            arid,
+            piid,
         )
         sql, vctx = await self._chain.generate_sql_with_validation_context(
             req.question, user_id=req.user_id, analysis_type=req.analysis_type
@@ -56,9 +62,12 @@ class NL2SQLService:
 
         if not (sql or "").strip():
             logger.warning(
-                "NL2SQLService.query empty SQL after chain user_id=%s session_id=%s",
+                "NL2SQLService.query empty SQL after chain user_id=%s session_id=%s duration_ms=%d analysis_request_id=%s plan_item_id=%s",
                 req.user_id,
                 req.session_id,
+                int((perf_counter() - t_query) * 1000),
+                arid,
+                piid,
             )
         while (sql or "").strip():
             if explain_first:
@@ -67,10 +76,12 @@ class NL2SQLService:
                 except Exception as exc_explain:  # noqa: BLE001
                     NL2SQL_QUERY_ERROR_COUNT.inc()
                     logger.exception(
-                        "NL2SQLService.query EXPLAIN failed user_id=%s session_id=%s sql_len=%d",
+                        "NL2SQLService.query EXPLAIN failed user_id=%s session_id=%s sql_len=%d analysis_request_id=%s plan_item_id=%s",
                         req.user_id,
                         req.session_id,
                         len(sql or ""),
+                        arid,
+                        piid,
                     )
                     if refine_on_exec and refine_attempts_left > 0:
                         new_sql = await self._chain.refine_sql_after_executor_error(
@@ -93,19 +104,24 @@ class NL2SQLService:
             try:
                 rows = await self._executor.execute(sql)
                 logger.info(
-                    "NL2SQLService.query execute ok user_id=%s session_id=%s row_count=%d",
+                    "NL2SQLService.query execute ok user_id=%s session_id=%s row_count=%d duration_ms=%d analysis_request_id=%s plan_item_id=%s",
                     req.user_id,
                     req.session_id,
                     len(rows),
+                    int((perf_counter() - t_query) * 1000),
+                    arid,
+                    piid,
                 )
                 break
             except Exception as exc:  # noqa: BLE001
                 NL2SQL_QUERY_ERROR_COUNT.inc()
                 logger.exception(
-                    "NL2SQLService.query execute failed user_id=%s session_id=%s sql_len=%d",
+                    "NL2SQLService.query execute failed user_id=%s session_id=%s sql_len=%d analysis_request_id=%s plan_item_id=%s",
                     req.user_id,
                     req.session_id,
                     len(sql or ""),
+                    arid,
+                    piid,
                 )
                 if refine_on_exec and refine_attempts_left > 0:
                     new_sql = await self._chain.refine_sql_after_executor_error(
