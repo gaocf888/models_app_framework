@@ -51,6 +51,10 @@ class SQLExecutor:
     async def explain(self, sql: str) -> List[dict[str, Any]]:
         """
         执行前 EXPLAIN，用于提前暴露语法错误、未知列等（与 SELECT 同连接语义）。
+
+        TiDB/MySQL：对无效列名、未知表等，EXPLAIN 通常会像执行 SELECT 一样在解析/优化阶段报错，
+        因此可作为「执行前探针」；若方言仅在实际读取数据时才报错，则 EXPLAIN 可能无法覆盖，
+        仍以执行错误分支与 refine 为准。
         """
         s = (sql or "").strip()
         preview = s

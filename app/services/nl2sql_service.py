@@ -72,7 +72,16 @@ class NL2SQLService:
         while (sql or "").strip():
             if explain_first:
                 try:
-                    await self._executor.explain(sql)
+                    explain_rows = await self._executor.explain(sql)
+                    logger.info(
+                        "NL2SQLService.query EXPLAIN ok user_id=%s session_id=%s explain_rows=%d "
+                        "analysis_request_id=%s plan_item_id=%s",
+                        req.user_id,
+                        req.session_id,
+                        len(explain_rows),
+                        arid,
+                        piid,
+                    )
                 except Exception as exc_explain:  # noqa: BLE001
                     NL2SQL_QUERY_ERROR_COUNT.inc()
                     logger.exception(

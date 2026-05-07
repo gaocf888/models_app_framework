@@ -391,54 +391,69 @@ class NL2SQLChain:
                 _text_preview(sql, 0),
                 validation_error,
             )
-            # 可选 Step 4: 在 LangChain 可用时尝试自检与修正
+            # 可选 Step 4: 在 LangChain 可用时尝试自检与修正（可选第二轮：强制清单列 / 强调违规项）
             if self._lc_chat_model is not None:
                 try:
-                    logger.info("NL2SQLChain refine_sql start reason=%s", validation_error)
-                    sql = await self._refine_sql(
-                        question=question,
-                        original_sql=sql,
-                        validation_error=validation_error,
-                    )
-                    sql = self._validator.normalize_sql(sql)
-                    sql, refine_notes = self._rewrite_tidb_compatible_sql(sql)
-                    sql, filter_notes = self._rewrite_query_filters(sql, question=question)
-                    refine_notes.extend(filter_notes)
-                    if refine_notes:
+                    second_refine = os.getenv("NL2SQL_VALIDATION_SECOND_REFINE", "true").lower() == "true"
+                    passes_strict = [False, True] if second_refine else [False]
+                    refined_ok = False
+                    for pass_idx, strict_schema_reminder in enumerate(passes_strict):
                         logger.info(
-                            "NL2SQLChain TiDB rewrite applied in refine_sql: %s",
-                            "; ".join(refine_notes),
+                            "NL2SQLChain refine_sql start pass=%d/%d strict_schema_reminder=%s reason=%s",
+                            pass_idx + 1,
+                            len(passes_strict),
+                            strict_schema_reminder,
+                            validation_error,
                         )
-                    dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
-                    if not dialect_ok:
-                        logger.warning(
-                            "NL2SQLChain refine_sql TiDB dialect invalid sql_preview=%r reason=%s",
-                            _text_preview(sql, 0),
-                            dialect_reason,
+                        sql = await self._refine_sql(
+                            question=question,
+                            original_sql=sql,
+                            validation_error=validation_error,
+                            strict_schema_reminder=strict_schema_reminder,
                         )
-                        return "", validation_ctx
-                    valid, validation_error = self._validate_sql(
-                        sql,
-                        question=question,
-                        allowed_tables=allowed_tables,
-                        allowed_columns=allowed_columns,
-                        enforce_column_whitelist=schema_ok,
-                        table_columns=table_columns_map if schema_ok else None,
-                        join_whitelist=join_whitelist,
-                        entity_rules=entity_rules,
-                    )
-                    if not valid:
+                        sql = self._validator.normalize_sql(sql)
+                        sql, refine_notes = self._rewrite_tidb_compatible_sql(sql)
+                        sql, filter_notes = self._rewrite_query_filters(sql, question=question)
+                        refine_notes.extend(filter_notes)
+                        if refine_notes:
+                            logger.info(
+                                "NL2SQLChain TiDB rewrite applied in refine_sql: %s",
+                                "; ".join(refine_notes),
+                            )
+                        dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
+                        if not dialect_ok:
+                            logger.warning(
+                                "NL2SQLChain refine_sql TiDB dialect invalid sql_preview=%r reason=%s",
+                                _text_preview(sql, 0),
+                                dialect_reason,
+                            )
+                            return "", validation_ctx
+                        valid, validation_error = self._validate_sql(
+                            sql,
+                            question=question,
+                            allowed_tables=allowed_tables,
+                            allowed_columns=allowed_columns,
+                            enforce_column_whitelist=schema_ok,
+                            table_columns=table_columns_map if schema_ok else None,
+                            join_whitelist=join_whitelist,
+                            entity_rules=entity_rules,
+                        )
+                        if valid:
+                            refined_ok = True
+                            logger.info(
+                                "NL2SQLChain refine_sql ok pass=%d sql_len=%d preview=%r",
+                                pass_idx + 1,
+                                len(sql or ""),
+                                _text_preview(sql, 0),
+                            )
+                            break
+                    if not refined_ok:
                         logger.warning(
                             "NL2SQLChain refine_sql still invalid sql_preview=%r reason=%s",
                             _text_preview(sql, 0),
                             validation_error,
                         )
                         return "", validation_ctx
-                    logger.info(
-                        "NL2SQLChain refine_sql ok sql_len=%d preview=%r",
-                        len(sql or ""),
-                        _text_preview(sql, 0),
-                    )
                 except Exception:
                     logger.exception("NL2SQLChain: refine_sql failed, return empty SQL.")
                     return "", validation_ctx
@@ -549,13 +564,21 @@ class NL2SQLChain:
         logger.info("NL2SQLChain planner summary: %s", summary)
         return summary
 
-    async def _refine_sql(self, question: str, original_sql: str, validation_error: str | None = None) -> str:
+    async def _refine_sql(
+        self,
+        question: str,
+        original_sql: str,
+        validation_error: str | None = None,
+        *,
+        strict_schema_reminder: bool = False,
+    ) -> str:
         """
         当初始 SQL 未通过 SQLValidator 校验时的自检与修正步骤。
 
         当前版本：
         - 将原始 SQL 与问题一起交给 LLM，请其生成“更安全、仅含 SELECT 的 SQL”；
-        - 不强依赖特定错误信息，仅作为结构性骨架。
+        - validation_error 中的 unknown tables/columns、binding 失败等应被修正；
+        - strict_schema_reminder=True 时强化：禁止 SELECT *、仅允许清单列、多表别名与列绑定一致。
         """
         from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore[import-not-found]
 
@@ -565,21 +588,41 @@ class NL2SQLChain:
             "请输出一条仅包含安全 SELECT 查询的 SQL，不要包含 DROP/DELETE/UPDATE/INSERT 等写操作。"
             " 输出为单行可执行 SQL：除字符串字面量内部外不要换行或多余缩进。"
             " 若问题涉及锅炉/设备名称与明细记录等多实体，应通过 JOIN 关联台账表与事实表，禁止用 boiler_id='1' 等臆造数字代替「一号锅炉」类名称条件。"
+            " 禁止使用 SELECT *、tbl.* 或别名.*；SELECT 列表中的列须为真实业务列名（不得用星号代替）。"
+            " 多表 JOIN 时：每个表别名或表名后的限定列必须属于该表对应业务含义下的列，禁止张冠李戴。"
             " 当前数据库方言为 TiDB/MySQL："
             "1) 禁止使用 PostgreSQL 语法（例如 INTERVAL '7 days'）；"
             "2) 禁止使用高风险别名（如 load、row_number）；"
             "3) 默认禁止窗口函数与 OVER()/LAG()/LEAD()/ROW_NUMBER()，请改写为普通聚合或直接去除窗口依赖。"
         )
+        if strict_schema_reminder:
+            system += (
+                " 【二次修正·强制】你必须严格消除下列校验错误中的违规标识符："
+                "若提示 unknown tables/columns，则删除或替换为真实存在的表名/列名；"
+                "若提示 column-table binding，则修正别名与列的对应关系，使每个 alias.col 的 col 属于 alias 所指表的列集合；"
+                "若提示 join key not in whitelist，则改用合理的 ON 条件。"
+                " 仍须禁止 SELECT *。"
+            )
+        err = validation_error or "unknown"
+        if strict_schema_reminder:
+            human_content = (
+                f"用户问题: {question}\n"
+                f"待修正 SQL: {original_sql}\n"
+                f"【须消除的校验错误】\n{err}\n"
+                "请逐条对照修正：勿保留违规表名/列名或错误的 alias.col 绑定；禁止 SELECT *。\n"
+                "在保证业务语义的前提下，输出单行仅 SELECT（无 markdown）。"
+            )
+        else:
+            human_content = (
+                f"用户问题: {question}\n"
+                f"初稿 SQL: {original_sql}\n"
+                f"校验失败原因: {err}\n"
+                "请在保证语义合理的前提下，输出一条安全的仅 SELECT 语句（单行，无 markdown）。"
+            )
+
         messages: list[object] = [
             SystemMessage(content=system),
-            HumanMessage(
-                content=(
-                    f"用户问题: {question}\n"
-                    f"初稿 SQL: {original_sql}\n"
-                    f"校验失败原因: {validation_error or 'unknown'}\n"
-                    "请在保证语义合理的前提下，输出一条安全的仅 SELECT 语句（单行，无 markdown）。"
-                )
-            ),
+            HumanMessage(content=human_content),
         ]
         resp = await self._lc_chat_model.ainvoke(messages)  # type: ignore[union-attr]
         content = resp.content if hasattr(resp, "content") else str(resp)

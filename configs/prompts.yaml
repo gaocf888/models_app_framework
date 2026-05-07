@@ -552,6 +552,11 @@ nl2sql:
       【真实表结构】以下块由系统在运行时注入当前连接库中的全部表及字段（占位符）。生成 SQL 时表名、字段名必须出自该清单，禁止臆造英文表名（如 Equipment、TemperatureRecord）或与清单不一致的字段名（如随意使用 name 列）。
       {{NL2SQL_SCHEMA_CATALOG}}
 
+      【列与别名硬约束】
+      1) SELECT 列表：只能出现清单中真实存在的列名（含聚合/表达式内引用的列）；禁止使用 SELECT *、禁止使用 tbl.* 或别名.* 这类星号展开。
+      2) 多表查询：必须为来自不同物理表的列使用「表名或别名」限定（如 a.col、t.col）；每个别名/表名在 catalog 中对应唯一物理表，该前缀后的列名必须属于该物理表在清单中的列集合，禁止用别名引用其它表的列。
+      3) WHERE / ON / GROUP BY / ORDER BY / HAVING 中同理：凡写出限定列 alias.col / table.col 的，列必须属于该限定符对应表的清单列。
+
       【业务提示】锅炉台账在 account_boiler（名称类条件用 boiler_name 等清单中的真实列，禁止把「一号锅炉」写成 boiler_id='1'）；测点/设备台账在 account_static_device 等；超温明细在 monitor_hotarea_temp。问题同时点名锅炉、过热器/设备与超温记录时，必须用 JOIN 把台账与事实表连起来，JOIN 条件优先采用 catalog 中的「FK:本表列->他表.列」提示；若无外键元数据，则仅使用清单中同时出现的 id/name 类列做合法 ON，禁止臆造关联。
 
       【TiDB 方言硬约束】
