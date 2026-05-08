@@ -80,11 +80,16 @@ class VLLMHttpClient(LLMClient):
 
     假定 vLLM 暴露 OpenAI 兼容接口（`/v1/chat/completions`）。
     `LLMModelConfig.endpoint` 可为服务根地址或已带 `/v1` 的 base（见 `openai_chat_completions_url`）。
+
+    不在实例上长期持有单个 ``httpx.AsyncClient``：AsyncClient 绑定创建时所在的事件循环；
+    检修异步任务等工作线程通过 ``asyncio.run()`` 每次新建并关闭循环，复用全局 Client 会导致
+    ``RuntimeError: Event loop is closed``。因此在 ``chat`` / ``stream_chat`` 内按调用创建 Client，
+    由 ``async with`` 保证与当前循环一致并在结束时关闭连接。
     """
 
     def __init__(self, timeout: float = 30.0) -> None:
         self._cfg = get_app_config().llm
-        self._client = httpx.AsyncClient(timeout=timeout)
+        self._default_timeout = timeout
 
     def _get_model_cfg(self, model: str) -> LLMModelConfig:
         if model in self._cfg.models:
@@ -127,20 +132,21 @@ class VLLMHttpClient(LLMClient):
 
         start = time.perf_counter()
         req_timeout = kwargs.get("timeout")
-        resp = await self._client.post(url, json=payload, headers=headers, timeout=req_timeout)
-        duration = time.perf_counter() - start
+        async with httpx.AsyncClient(timeout=self._default_timeout) as client:
+            resp = await client.post(url, json=payload, headers=headers, timeout=req_timeout)
+            duration = time.perf_counter() - start
 
-        LLM_REQUEST_COUNT.labels(model=cfg.model_id).inc()
-        LLM_REQUEST_LATENCY.labels(model=cfg.model_id).observe(duration)
-        if resp.status_code >= 400:
-            logger.error(
-                "vLLM chat HTTP %s url=%s body=%s",
-                resp.status_code,
-                url,
-                (resp.text or "")[:4000],
-            )
-        resp.raise_for_status()
-        data = resp.json()
+            LLM_REQUEST_COUNT.labels(model=cfg.model_id).inc()
+            LLM_REQUEST_LATENCY.labels(model=cfg.model_id).observe(duration)
+            if resp.status_code >= 400:
+                logger.error(
+                    "vLLM chat HTTP %s url=%s body=%s",
+                    resp.status_code,
+                    url,
+                    (resp.text or "")[:4000],
+                )
+            resp.raise_for_status()
+            data = resp.json()
 
         try:
             content = data["choices"][0]["message"]["content"]
@@ -199,27 +205,28 @@ class VLLMHttpClient(LLMClient):
 
         start = time.perf_counter()
         req_timeout = kwargs.get("timeout")
-        async with self._client.stream(
-            "POST", url, json=payload, headers=headers, timeout=req_timeout
-        ) as resp:
-            if resp.status_code >= 400:
-                err_body = (await resp.aread()).decode("utf-8", errors="replace")[:4000]
-                logger.error("vLLM stream_chat HTTP %s url=%s body=%s", resp.status_code, url, err_body)
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                chunk = line[len("data:") :].strip()
-                if chunk == "[DONE]":
-                    break
-                try:
-                    data = json.loads(chunk)
-                    delta = data["choices"][0]["delta"].get("content") or ""
-                    if isinstance(delta, str) and delta:
-                        yield delta
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("failed to parse vLLM stream chunk: %s", exc)
-                    continue
+        async with httpx.AsyncClient(timeout=self._default_timeout) as client:
+            async with client.stream(
+                "POST", url, json=payload, headers=headers, timeout=req_timeout
+            ) as resp:
+                if resp.status_code >= 400:
+                    err_body = (await resp.aread()).decode("utf-8", errors="replace")[:4000]
+                    logger.error("vLLM stream_chat HTTP %s url=%s body=%s", resp.status_code, url, err_body)
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    chunk = line[len("data:") :].strip()
+                    if chunk == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(chunk)
+                        delta = data["choices"][0]["delta"].get("content") or ""
+                        if isinstance(delta, str) and delta:
+                            yield delta
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception("failed to parse vLLM stream chunk: %s", exc)
+                        continue
 
         duration = time.perf_counter() - start
         LLM_REQUEST_COUNT.labels(model=cfg.model_id).inc()
