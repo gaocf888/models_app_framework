@@ -125,7 +125,7 @@ async def run_inspection_extract_async(req: InspectionExtractRequest) -> Inspect
         "出参（200，`InspectionExtractJobStatusResponse`）：\n"
         "- `status`: `pending/running/completed/failed`；\n"
         "- `step`: 当前阶段；\n"
-        "- `metrics`: 分块总数、已完成数、耗时等；\n"
+        "- `metrics`: 含 `chunks_total`/`chunks_done`、`chunks_parse_wall_ms`（全部含表分块 Parse 落盘用时）、`llm_latency_ms`（Parse+classify+repair）等；\n"
         "- `result`: 仅在终态且 `include_result=true` 时返回。"
     ),
     responses={

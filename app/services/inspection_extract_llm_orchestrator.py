@@ -10,6 +10,7 @@ import asyncio
 import json
 import re
 import hashlib
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -137,10 +138,13 @@ class InspectionExtractLlmOrchestrator:
         model: str,
         job_dir: Path,
         after_chunk_saved: Callable[[int, int], Awaitable[None]] | None = None,
+        after_all_parse_chunks_done: Callable[[int], Awaitable[None]] | None = None,
     ) -> list[dict[str, Any]]:
         """
         仅对「含表格」分块做 parse；每块完成后写入 job_dir/chunks/{work_idx}.json，支持断点续跑。
         classify/repair 与同步路径一致；合并前写入 checkpoints/stage1_merged.json。
+
+        after_all_parse_chunks_done：全部 parse 分块已落盘时调用一次，参数为该阶段墙钟毫秒（无含表块时为 0）。
         """
         snippets = parsed_text[:20000]
         llm_timeout_s = float(getattr(self._cfg, "llm_timeout_seconds", 180.0))
@@ -181,6 +185,10 @@ class InspectionExtractLlmOrchestrator:
                 continue
             pending.append((work_idx, chunk))
 
+        parse_phase_t0: float | None = None
+        if total_work > 0:
+            parse_phase_t0 = time.perf_counter()
+
         if pending:
 
             async def _run_one(idx: int, chunk: str) -> tuple[int, list[dict[str, Any]]]:
@@ -210,6 +218,12 @@ class InspectionExtractLlmOrchestrator:
                         return await _run_one(idx, chunk)
 
                 await asyncio.gather(*[_with_sem(i, c) for i, c in pending])
+
+        wall_ms = 0
+        if total_work > 0 and parse_phase_t0 is not None:
+            wall_ms = int((time.perf_counter() - parse_phase_t0) * 1000)
+        if after_all_parse_chunks_done is not None:
+            await after_all_parse_chunks_done(wall_ms)
 
         stage1_records: list[dict[str, Any]] = []
         for work_idx in range(1, total_work + 1):

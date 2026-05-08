@@ -873,6 +873,19 @@ class InspectionExtractJobScheduler:
                 _atomic_write_json(jd / "job_meta.json", m)
             _ = record_count
 
+        async def _after_all_parse_chunks(wall_ms: int) -> None:
+            """全部含表分块 Parse 落盘完成时写入墙钟耗时（与 classify/repair 无关）。"""
+            async with meta_lock:
+                m = _read_meta(jd)
+                if m is None:
+                    return
+                m.setdefault("metrics", {})
+                m["metrics"]["chunks_parse_wall_ms"] = wall_ms
+                m["metrics"]["chunks_done"] = _count_chunk_files(jd)
+                m["metrics"]["chunks_total"] = chunks_total
+                m["updated_at"] = utcnow_iso()
+                _atomic_write_json(jd / "job_meta.json", m)
+
         async with meta_lock:
             m = _read_meta(jd)
             if m:
@@ -896,6 +909,7 @@ class InspectionExtractJobScheduler:
             model=llm_model,
             job_dir=jd,
             after_chunk_saved=_after_chunk,
+            after_all_parse_chunks_done=_after_all_parse_chunks,
         )
         llm_ms = int((time.perf_counter() - llm_t0) * 1000)
 

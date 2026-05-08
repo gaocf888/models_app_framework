@@ -121,7 +121,7 @@ presets:
     max_model_len: 16384
     tensor_parallel_size: 2
     gpu_memory_utilization: 0.8
-    max_num_seqs: 8
+    max_num_seqs: 16
     max_num_batched_tokens: 12288
     enable_prefix_caching: true
     attention-backend: flash_attn

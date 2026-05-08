@@ -146,6 +146,10 @@ class InspectionExtractJobMetrics(BaseModel):
     llm_model: str | None = None
     prompt_version: str | None = None
     parse_latency_ms: int | None = None
+    chunks_parse_wall_ms: int | None = Field(
+        default=None,
+        description="各含表分块 LLM Parse 阶段墙钟毫秒：从开始对未完成块调用 Parse 到全部 chunks/*.json 落盘（不含 classify/repair）；无含表块时为 0",
+    )
     llm_latency_ms: int | None = None
 
 
