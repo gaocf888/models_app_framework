@@ -12,7 +12,15 @@
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
+from typing import Any, Dict, List, NamedTuple, Tuple
+
+from app.services.chatbot_image_utils import (
+    ORIGINAL_IMAGE_BLOCK_MARKER,
+    PROCESSED_IMAGE_BLOCK_MARKER,
+    strip_image_block_from_history,
+)
+
+_LEGACY_IMAGE_MARKER = "\n\n[image_urls]\n"
 
 # 偏「知识/机理/规范」类提问 → 文档 RAG
 _CONCEPTUAL_MARKERS = (
@@ -91,6 +99,119 @@ _STRONG_DATA_RE = re.compile(
     re.I,
 )
 
+# 助手上一轮若为「请补充信息」类固定话术，用于推断任务延续
+_CLARIFY_REPLY_SNIPPET = "请补充更具体的信息"
+
+
+def _raw_has_image_blocks(content: str) -> bool:
+    if not content:
+        return False
+    return any(
+        m in content
+        for m in (
+            _LEGACY_IMAGE_MARKER,
+            ORIGINAL_IMAGE_BLOCK_MARKER,
+            PROCESSED_IMAGE_BLOCK_MARKER,
+        )
+    )
+
+
+def build_intent_context_from_history(
+    messages: List[Dict[str, Any]] | None,
+    *,
+    max_messages: int = 8,
+    max_chars: int = 720,
+    max_line_chars: int = 240,
+) -> Tuple[str, str]:
+    """
+    从历史构造意图用的「可读摘要」与「上一轮任务类型」启发式标签。
+
+    prev_task_type ∈ {unknown, multimodal_qa, text_kb_qa, data_query_thread, after_clarify}
+    """
+    if not messages:
+        return "", "unknown"
+
+    tail = messages[-max(1, max_messages) :]
+    lines: list[str] = []
+    for m in tail:
+        role = str(m.get("role", "user") or "user").lower()
+        raw = m.get("content", "")
+        text = raw if isinstance(raw, str) else str(raw or "")
+        plain = strip_image_block_from_history(text).strip()
+        if not plain and role == "user" and _raw_has_image_blocks(text):
+            plain = "（上轮含图片）"
+        snippet = plain[:max_line_chars] if plain else ""
+        if snippet:
+            lines.append(f"{role}: {snippet}")
+
+    summary = "\n".join(lines).strip()
+    if len(summary) > max_chars:
+        summary = summary[-max_chars:]
+
+    prev_task = _infer_prev_task_type_from_tail(tail)
+    return summary, prev_task
+
+
+def _infer_prev_task_type_from_tail(tail: List[Dict[str, Any]]) -> str:
+    if not tail:
+        return "unknown"
+
+    last_assistant = ""
+    for m in reversed(tail):
+        if str(m.get("role", "")).lower() == "assistant":
+            last_assistant = str(m.get("content", "") or "")
+            break
+    if last_assistant and _CLARIFY_REPLY_SNIPPET in last_assistant:
+        return "after_clarify"
+
+    last_user_raw = ""
+    for m in reversed(tail):
+        if str(m.get("role", "")).lower() == "user":
+            last_user_raw = str(m.get("content", "") or "")
+            break
+    if not last_user_raw:
+        return "unknown"
+    if _raw_has_image_blocks(last_user_raw):
+        return "multimodal_qa"
+    plain_u = strip_image_block_from_history(last_user_raw)
+    if _has_data(plain_u) and not _has_conceptual(plain_u):
+        return "data_query_thread"
+    return "text_kb_qa"
+
+
+def _history_supports_kb_continuation(history_summary: str, prev_task_type: str) -> bool:
+    """是否更像「延续同一咨询线程」而非冷启动短句。"""
+    if prev_task_type in {"multimodal_qa", "text_kb_qa", "after_clarify"}:
+        return True
+    if prev_task_type == "data_query_thread":
+        return False
+    markers = (
+        "缺陷",
+        "图片",
+        "照片",
+        "上图",
+        "这张",
+        "识别",
+        "损伤",
+        "裂纹",
+        "泄漏",
+        "检修",
+        "设备",
+        "炉",
+        "管",
+    )
+    return bool(history_summary) and any(x in history_summary for x in markers)
+
+
+class IntentRuleResult(NamedTuple):
+    """规则层意图输出；含意图用的历史摘要与前一轮任务类型（可观测、可回归）。"""
+
+    intent_label: str
+    intent_reason: str
+    intent_confidence: float
+    history_summary: str
+    prev_task_type: str
+
 
 def _has_conceptual(q: str) -> bool:
     qn = q.replace(" ", "")
@@ -109,40 +230,58 @@ def classify_chatbot_intent(
     *,
     enable_nl2sql_route: bool,
     image_urls: List[str],
-) -> Tuple[str, str, float]:
+    history_messages: List[Dict[str, Any]] | None = None,
+) -> IntentRuleResult:
     """
-    返回 (intent_label, intent_reason, intent_confidence)。
     intent_label ∈ {clarify, data_query, kb_qa}
+
+    history_messages：最近若干轮会话（与 load_history 同源）；用于短句/指代消解与路由，
+    不改变「查库 vs 文档」的主启发式，仅在边界场景结合摘要与前一轮任务类型。
     """
     q = (query or "").strip()
-    if not q:
-        return "clarify", "empty_query", 0.99
+    h_sum, prev_task = build_intent_context_from_history(history_messages)
 
+    def _out(label: str, reason: str, conf: float) -> IntentRuleResult:
+        return IntentRuleResult(label, reason, conf, h_sum, prev_task)
+
+    if not q:
+        return _out("clarify", "empty_query", 0.99)
+
+    # 多模态优先：避免「这个呢」等短句在命中长度阈值前先被判为 clarify，且与 NL2SQL 分流解耦
+    if image_urls:
+        return _out("kb_qa", f"has_images_default_kb_qa|ctx_task={prev_task}", 0.88)
+
+    # 极短纯文本：若历史表明仍在同一客服问答线程，则延续 kb_qa（避免「呢/继续」误触 clarify）
     if len(q) <= 4:
-        return "clarify", "query_too_short", 0.92
+        if (
+            len(q) >= 2
+            and h_sum
+            and prev_task not in ("unknown", "data_query_thread")
+            and _history_supports_kb_continuation(h_sum, prev_task)
+        ):
+            return _out("kb_qa", f"short_followup_continues_thread|ctx_task={prev_task}", 0.76)
+        return _out("clarify", f"query_too_short|ctx_task={prev_task}", 0.92)
 
     for p in _UNCLEAR_PATTERNS:
         if re.search(p, q):
-            return "clarify", "ambiguous_query_pattern", 0.9
-
-    # 多模态：默认走知识问答（避免对图片问题生成 SQL）
-    if image_urls:
-        return "kb_qa", "has_images_default_kb_qa", 0.88
+            if _history_supports_kb_continuation(h_sum, prev_task):
+                return _out("kb_qa", f"ambiguous_pattern_resolved_by_ctx|ctx_task={prev_task}", 0.83)
+            return _out("clarify", f"ambiguous_query_pattern|ctx_task={prev_task}", 0.9)
 
     if not enable_nl2sql_route:
-        return "kb_qa", "nl2sql_route_disabled", 0.85
+        return _out("kb_qa", "nl2sql_route_disabled", 0.85)
 
     conceptual = _has_conceptual(q)
     data = _has_data(q)
 
     if data and not conceptual:
-        return "data_query", "structured_query_heuristic", 0.8
+        return _out("data_query", "structured_query_heuristic", 0.8)
     if conceptual and not data:
-        return "kb_qa", "conceptual_qa_heuristic", 0.82
+        return _out("kb_qa", "conceptual_qa_heuristic", 0.82)
     if data and conceptual:
         # 同时命中时：更偏「解释/原因」的仍走文档
         if any(x in q for x in ("为什么", "原因", "机理", "原理", "如何形成", "如何预防")):
-            return "kb_qa", "mixed_prefers_conceptual", 0.72
-        return "data_query", "mixed_prefers_structured", 0.7
+            return _out("kb_qa", "mixed_prefers_conceptual", 0.72)
+        return _out("data_query", "mixed_prefers_structured", 0.7)
 
-    return "kb_qa", "default_kb_qa", 0.82
+    return _out("kb_qa", "default_kb_qa", 0.82)

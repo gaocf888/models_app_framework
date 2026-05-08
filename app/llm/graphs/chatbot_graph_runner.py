@@ -496,25 +496,39 @@ class ChatbotLangGraphRunner:
             return {"intent_label": "kb_qa", "intent_confidence": 1.0, "intent_reason": "intent_disabled", "status": "intented"}
         q = (state.get("query") or "").strip()
         imgs = [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()]
-        label, reason, conf = classify_chatbot_intent(
+        hist = state.get("history_messages") if state.get("enable_context", True) else None
+        ir = classify_chatbot_intent(
             q,
             enable_nl2sql_route=bool(state.get("enable_nl2sql_route")),
             image_urls=imgs,
+            history_messages=list(hist) if hist else None,
         )
+        label, reason, conf = ir.intent_label, ir.intent_reason, ir.intent_confidence
+        ctx_summary, prev_task = ir.history_summary, ir.prev_task_type
         if label not in self._intent_output_labels:
             reason = f"label_not_enabled:{label}|{reason}"
             label = "kb_qa"
             conf = min(conf, 0.6)
         logger.info(
-            "chatbot.intent decision label=%s reason=%s conf=%.3f enable_nl2sql=%s has_images=%s query_len=%s",
+            "chatbot.intent decision label=%s reason=%s conf=%.3f enable_nl2sql=%s has_images=%s "
+            "query_len=%s prev_task=%s ctx_chars=%s",
             label,
             reason,
             conf,
             bool(state.get("enable_nl2sql_route")),
             bool(imgs),
             len(q),
+            prev_task,
+            len(ctx_summary),
         )
-        return {"intent_label": label, "intent_reason": reason, "intent_confidence": conf, "status": "intented"}
+        return {
+            "intent_label": label,
+            "intent_reason": reason,
+            "intent_confidence": conf,
+            "intent_history_summary": ctx_summary[:1200] if ctx_summary else "",
+            "intent_prev_task_type": prev_task,
+            "status": "intented",
+        }
 
     async def _node_nl2sql_answer(self, state: ChatbotGraphState) -> ChatbotGraphState:
         """结构化问数：NL2SQL + 结果自然语言化（会话写入由 Runner 层统一 persist）。"""

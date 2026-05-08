@@ -44,6 +44,9 @@ class ChatbotGraphState(TypedDict, total=False):
     intent_label: IntentLabel
     intent_confidence: float
     intent_reason: str
+    # 规则层从会话历史抽取（仅供观测/排障；不参与下游强制分支）
+    intent_history_summary: str
+    intent_prev_task_type: str
 
     # ===== 检索域（RAG + C-RAG）=====
     rag_engine: Literal["agentic", "hybrid"]

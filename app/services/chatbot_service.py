@@ -94,11 +94,18 @@ class ChatbotService:
         cfg = self._chatbot_cfg
         intent_labels = {x.strip().lower() for x in (cfg.intent_output_labels or []) if x.strip()}
         enable_nl2sql = bool(req.enable_nl2sql_route) and bool(cfg.nl2sql_route_enabled)
-        ilabel, _, _ = classify_chatbot_intent(
+        hist = (
+            self._conv.get_recent_history(req.user_id, req.session_id, limit=max(1, int(cfg.history_limit)))
+            if req.enable_context
+            else None
+        )
+        ir = classify_chatbot_intent(
             model_req.query,
             enable_nl2sql_route=enable_nl2sql,
             image_urls=[u for u in model_req.image_urls if isinstance(u, str) and u.strip()],
+            history_messages=list(hist) if hist else None,
         )
+        ilabel = ir.intent_label
         if ilabel not in intent_labels:
             ilabel = "kb_qa"
 
@@ -308,11 +315,18 @@ class ChatbotService:
         intent_labels = {x.strip().lower() for x in (cfg.intent_output_labels or []) if x.strip()}
         enable_nl2sql = bool(req.enable_nl2sql_route) and bool(cfg.nl2sql_route_enabled)
         imgs = [u for u in req.image_urls if isinstance(u, str) and u.strip()]
-        ilabel, _, _ = classify_chatbot_intent(
+        hist = (
+            self._conv.get_recent_history(req.user_id, req.session_id, limit=max(1, int(cfg.history_limit)))
+            if req.enable_context
+            else None
+        )
+        ir = classify_chatbot_intent(
             req.query,
             enable_nl2sql_route=enable_nl2sql,
             image_urls=imgs,
+            history_messages=list(hist) if hist else None,
         )
+        ilabel = ir.intent_label
         if ilabel not in intent_labels:
             ilabel = "kb_qa"
         logger.info(
