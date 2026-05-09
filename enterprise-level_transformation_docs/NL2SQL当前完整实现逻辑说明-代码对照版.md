@@ -1,7 +1,7 @@
 # NL2SQL 当前完整实现逻辑说明（代码对照版）
 
 > 本文描述**当前仓库真实代码行为**（而非理想化设计），用于评审、排障与运维交接。  
-> 关键入口：`app/api/nl2sql.py`、`app/services/nl2sql_service.py`、`app/nl2sql/chain.py`、`app/nl2sql/validator.py`、`app/nl2sql/executor.py`；综合分析取数另见 `app/api/analysis.py`、`app/llm/graphs/analysis_graph_runner.py` 中 **`_execute_data_plan`**。
+> 关键入口：`app/api/nl2sql.py`、`app/services/nl2sql_service.py`、`app/nl2sql/chain.py`、`app/nl2sql/validator.py`、`app/nl2sql/executor.py`；生成阶段可选 **L2/L1 SQL 缓存** 见 `app/nl2sql/sql_cache.py`、`app/nl2sql/sql_skeleton.py` 与 **`docs/NL2SQL缓存实现方案.md`**。综合分析取数另见 `app/api/analysis.py`、`app/llm/graphs/analysis_graph_runner.py` 中 **`_execute_data_plan`**。
 
 ---
 
@@ -25,7 +25,7 @@
 
 1. 校验 `user_id`，可选写入会话（用户问题）。
 2. 记指标：`NL2SQL_QUERY_COUNT.inc()`。
-3. 调用 `NL2SQLChain.generate_sql_with_validation_context(question, user_id)`，得到：
+3. 调用 `NL2SQLChain.generate_sql_with_validation_context(question, user_id, ...)`（若启用 **`NL2SQL_CACHE_ENABLED`**：链内在 RAG/LLM **之前**尝试 **L2→L1** 命中已校验 SQL；策略见 **`docs/NL2SQL缓存实现方案.md`**），得到：
    - `sql`：生成 SQL（可能为空）
    - `vctx`：`NL2SQLValidationContext`（允许表列、`schema_ok`、`table_columns`）
 4. 根据开关进入执行闭环：

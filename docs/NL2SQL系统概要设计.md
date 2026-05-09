@@ -17,6 +17,9 @@
 
 > 自然语言问题 → Schema 语义检索（RAG） → Prompt 编排 → LLM 生成候选 SQL → **多层校验与自我修正** → **可选 EXPLAIN 预检** → 数据库执行 → **失败时可执行期 refine（有界重试）** → 结果展示与解释
 
+**可选：生成阶段分层缓存（降低重复/近似问法的 LLM 调用）**  
+部署侧启用 **`NL2SQL_CACHE_ENABLED`**（及可选 **`NL2SQL_L1_CACHE_ENABLED`**）后，`NL2SQLChain` 在 RAG + LLM 之前按 **L2（完整问题文本键）→ L1（时间意图折叠键）** 查找已校验 SQL；命中后仍执行 TiDB/过滤器改写与 **`SQLValidator`**，不绕过安全策略。分层模型、键维度、意图折叠与运维说明见 **`docs/NL2SQL缓存实现方案.md`**。
+
 从系统组件看，划分为三大层：
 
 1. **接入层（API & UI 层，基于 FastAPI 实现）**
@@ -131,6 +134,9 @@
     - **vLLM 等自建推理服务**：通过统一的 HTTP/gRPC 接口调用本地或私有化部署的大模型；
     - 其他符合 OpenAI/兼容协议的通用 LLM 服务。
   - 在此抽象层中统一处理：鉴权配置（API Key、Endpoint）、重试与熔断策略、超时控制、日志与监控埋点，外部调用方只需指定模型标识与参数。
+
+**生成 SQL 缓存（与 Prompt 同链路，可选启用）**  
+见 **`docs/NL2SQL缓存实现方案.md`**：`NL2SQLChain.generate_sql_with_validation_context` 内 **进程内 L2 + L1**，查找顺序 **L2 → L1 → LLM**；**数据源级** `data_source_fp`、`analysis_type`、`plan_item_id`、`schema_fp`、`policy_fp` 参与键；综合分析场景下 `task.question` 由用户 **`req.query`** 与模板子任务拼接而成。
 
 ---
 
