@@ -84,7 +84,7 @@
 | **Schema 元数据管理** | `SchemaMetadataService` 内存维护 `TableSchema` 映射，可从真实 DB 反射刷新，也内置一套 Demo Schema 便于本地调试。 |
 | **NL2SQL 专用 RAG** | `NL2SQLRAGService` 使用 `RetrievalPolicy` 统一路由，在命名空间 `nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples` 上做向量+图事实联合检索，并合并去重结果。 |
 | **Prompt 编排** | `PromptBuilder` 按 NL2SQL 设计文档，将 Schema 片段、业务知识与示例拼装成结构化 Prompt，结合 `PromptTemplateRegistry` 中 scene=`nl2sql` 的模板。 |
-| **SQL 生成链路** | `NL2SQLChain` 将问题 →（可选）规划 `_plan` → **可选 L2→L1 缓存命中** → RAG 检索 → Prompt 构建 → LLM 生成 SQL → **安全 + 白名单 + 列–表绑定 + 实体规则** 与生成期 **`_refine_sql`**；对外 **`generate_sql` / `generate_sql_with_validation_context`** 与执行期 **`refine_sql_after_executor_error`**。 |
+| **SQL 生成链路** | `NL2SQLChain` 将问题 →（可选）规划 `_plan` → **NL2SQL RAG 检索** → **可选 L2→L1 缓存命中** →（未命中）Prompt 构建 → LLM 生成 SQL → **安全 + 白名单 + 列–表绑定 + 实体规则** 与生成期 **`_refine_sql`**；对外 **`generate_sql` / `generate_sql_with_validation_context`** 与执行期 **`refine_sql_after_executor_error`**。 |
 | **生成阶段缓存** | **`NL2SQL_CACHE_ENABLED`** 时：进程内 **L2**（完整问题文本键）+ **L1**（时间意图折叠键，`sql_skeleton.py`）；查找 **L2 → L1 → LLM**，命中后仍走校验与 TiDB/过滤器改写；详见 **`docs/NL2SQL缓存实现方案.md`**。 |
 | **业务实体规则** | `app/nl2sql/entity_rules.py`：环境变量加载 **否定规则**（问题子串 + SQL 正则），在链上 `_validate_sql` 中与 `SQLValidator` 联动。 |
 | **SQL 校验与执行** | `SQLValidator`：只读、白名单、**主查询 FROM 别名下列绑定**（反射 `table→columns`）；`SQLExecutor`：**`explain` + `execute`**，只读查询。 |
@@ -301,8 +301,8 @@ index_qa_examples(snippets: List[str])
 #### 生成阶段缓存（L2 + L1，可选）
 
 - **触发条件**：**`NL2SQL_CACHE_ENABLED=true`**（且应用配置中存在 **`DatabaseConfig`**）；**L1** 另需 **`NL2SQL_L1_CACHE_ENABLED=true`**（默认开启）。配置模型：`app/core/config.py` · **`AnalysisConfig.nl2sql_cache_*`** / **`nl2sql_l1_cache_enabled`**；环境变量见 **`app/app-deploy/.env.example`**（`NL2SQL_CACHE_*`、`NL2SQL_L1_CACHE_ENABLED`）。
-- **代码位置**：**`app/nl2sql/sql_cache.py`**（`get_nl2sql_sql_cache`、`get_nl2sql_l1_cache`，共用 `NL2SQLSqlCache` 实现、两套全局实例）；**`app/nl2sql/sql_skeleton.py`**（L1 意图键、`extract_time_skeleton_from_sql`、`render_sql_time_skeleton`）；集成于 **`app/nl2sql/chain.py`** · **`generate_sql_with_validation_context`**（在 **RAG 检索之前** 尝试命中）。
-- **查找顺序**：**L2 → L1 →** 全量 RAG + LLM。命中后仍执行 **`normalize_sql`、TiDB 改写、`_rewrite_query_filters`、`SQLValidator`**；失败则 **`delete`** 对应条目。
+- **代码位置**：**`app/nl2sql/sql_cache.py`**（`get_nl2sql_sql_cache`、`get_nl2sql_l1_cache`，共用 `NL2SQLSqlCache` 实现、两套全局实例）；**`app/nl2sql/sql_skeleton.py`**（L1：天/周/月/近 N 天等 **`normalize_nl2sql_question_intent`**、`extract_time_skeleton_from_sql`、`render_sql_time_skeleton`）；集成于 **`app/nl2sql/chain.py`** · **`generate_sql_with_validation_context`**（**在 NL2SQL RAG 片段检索与白名单构建之后**再尝试 L2/L1 命中）。
+- **查找顺序**：**NL2SQL RAG → L2 → L1 →**（均未命中）Prompt + LLM。命中后仍执行 **`normalize_sql`、TiDB 改写、`_rewrite_query_filters`、`SQLValidator`**；失败则 **`delete`** 对应条目。
 - **键策略摘要**：**数据源指纹**（`DB_HOST`+`PORT`+`DB_NAME`）、**`analysis_type`**、**`plan_item_id`**（综合分析子任务 **`q1`～`q4`**）、**`schema_fp`**、**`nl2sql_policy_fp`**；**L2** 含 **`normalize_nl2sql_question` 后的完整 `question`**；**L1** 含 **`normalize_nl2sql_question_intent`**（相对日 / 本周·上周 / 本月·上月 / 近 N 天等折叠）。完整说明见 **`docs/NL2SQL缓存实现方案.md`** §4～§七 bis。
 - **观测**：日志 **`NL2SQLChain sql_cache hit`**（L2）、**`sql_l1_cache hit`**（L1）；LangSmith **`metadata.sql_cache`**：`hit` / **`l1_hit`**。
 

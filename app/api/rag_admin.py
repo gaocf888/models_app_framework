@@ -1030,41 +1030,80 @@ async def query_rag(req: QueryRequest) -> QueryRagResponse:
 class Nl2sqlAutoQaItem(BaseModel):
     """NL2SQL 闭环自动写入的向量条目（namespace=nl2sql_qa_examples）。"""
 
-    doc_name: str | None = None
-    ext_id: str | None = None
-    namespace: str | None = None
-    text: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    doc_name: str | None = Field(None, description="文档逻辑名；更新接口 PATCH 的主键")
+    ext_id: str | None = Field(None, description="底层向量存储中的条目 id（若后端提供）")
+    namespace: str | None = Field(None, description="命名空间，系统自动写入固定为 nl2sql_qa_examples")
+    text: str | None = Field(
+        None,
+        description="入库向量对应的完整文本（由 format_nl2sql_qa_embedding_text 拼装：问句摘要 + 可选前缀摘要 + SQL）",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="索引元数据：含 ingest_source、nl2sql_auto_kind、data_source_fp、schema_fp、policy_fp、analysis_type、plan_item_id、question_normalized 等",
+    )
 
 
 class Nl2sqlAutoQaListResponse(BaseModel):
-    ok: bool = True
-    count: int
-    items: list[Nl2sqlAutoQaItem]
+    ok: bool = Field(True, description="是否成功")
+    count: int = Field(..., description="本次返回的条目条数")
+    items: list[Nl2sqlAutoQaItem] = Field(default_factory=list, description="条目列表")
 
 
 class Nl2sqlAutoQaUpdateRequest(BaseModel):
-    doc_name: str = Field(..., description="列表接口返回的 doc_name")
-    question: str = Field(..., description="用户问题全文")
-    sql: str = Field(..., description="替换后的只读 SELECT SQL")
+    doc_name: str = Field(..., description="必填。与 GET 列表返回的 doc_name 一致，指定要更新的系统自动 QA 文档")
+    question: str = Field(..., description="必填。更新后的用户问题全文（写入前会经 compact_nl2sql_feedback_question / normalize 参与向量正文与 doc_name 无关字段）")
+    sql: str = Field(..., description="必填。替换后的只读 SELECT SQL（写入向量正文「校验通过的 SQL」段）")
     prompt_prefix_snapshot: str | None = Field(
-        None, description="可选；写入向量文本中的「预制提示前缀摘要」片段"
+        None,
+        description=(
+            "可选。**预制提示前缀快照**：与 NL2SQL 链路上自动写入时传入的 `system_prefix` 同语义——即 "
+            "resolved 后的 nl2sql 场景 System 模板前缀（可含 {{NL2SQL_SCHEMA_CATALOG}} 替换后的目录摘要等）。"
+            "传入后由 `format_nl2sql_qa_embedding_text` 写入向量正文中的「【预制提示前缀摘要】」段；"
+            "受环境变量 **NL2SQL_QA_EMBED_PREFIX_MAX_CHARS** 截断（默认 0 表示不向量化前缀，仅问句+SQL）。"
+            "运维修正 QA 时通常留空或与自动写入时一致；若需 Few-shot 附带短规则可填精简文本。"
+        ),
     )
     metadata_patch: dict[str, Any] | None = Field(
-        None, description="可选；与现有 metadata 合并（勿删除指纹键除非知晓后果）"
+        None,
+        description=(
+            "可选。与列举到的现有 metadata **浅合并**后重写索引（**勿随意删除** data_source_fp、schema_fp、policy_fp 等指纹键，否则检索过滤会失效）。"
+        ),
     )
+
+
+class Nl2sqlAutoQaPatchResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    doc_name: str = Field(..., description="已更新的文档名，与请求一致")
 
 
 @router.get(
     "/nl2sql-auto-qa",
     summary="列出 NL2SQL 系统自动写入的 QA 向量条目",
     response_model=Nl2sqlAutoQaListResponse,
+    response_description="含条目条数与 nl2sql_qa_examples 命名空间下的文档详情（text、metadata）。",
 )
 async def list_nl2sql_auto_qa(
-    limit: Annotated[int, Query(ge=1, le=5000, description="返回条数上限")] = 200,
+    limit: Annotated[int, Query(ge=1, le=5000, description="返回条数上限，默认 200")] = 200,
 ) -> Nl2sqlAutoQaListResponse:
     """
-    列出 `ingest_source=auto` 且写入 `nl2sql_qa_examples` 的闭环条目（Faiss 全量扫描；其它后端走 metadata 召回）。
+    列出由 NL2SQL 闭环自动写入、命名空间 **`nl2sql_qa_examples`** 下的 QA 条目（`ingest_source=auto`、`nl2sql_auto_kind` 等元数据标识）。
+
+    **路径/Query**
+    - `limit`：可选，默认 200，范围 1～5000；最多返回条数。
+
+    **请求体**：无（GET）。
+
+    **响应体 `Nl2sqlAutoQaListResponse`（200）**
+    - `ok`：固定 true。
+    - `count`：本次返回条数。
+    - `items[]`：每条为 `Nl2sqlAutoQaItem`。
+      - `doc_name` / `ext_id` / `namespace`：索引标识。
+      - `text`：嵌入用拼接正文（问句 + 可选前缀摘要 + SQL），用于排查与对照更新。
+      - `metadata`：指纹与业务标签（`data_source_fp`、`schema_fp`、`policy_fp`、`analysis_type`、`plan_item_id` 等）。
+
+    **存储后端差异**：Faiss 进程内实现可能全量扫描；Elasticsearch / EasySearch 走 metadata 条件召回（见 `list_nl2sql_auto_qa_entries`）。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
     """
     from app.nl2sql.qa_feedback import list_nl2sql_auto_qa_entries
 
@@ -1086,10 +1125,30 @@ async def list_nl2sql_auto_qa(
 @router.patch(
     "/nl2sql-auto-qa",
     summary="更新一条系统自动写入的 NL2SQL QA（同名先删后灌）",
+    response_model=Nl2sqlAutoQaPatchResponse,
+    response_description="更新成功后返回 ok 与 doc_name；未知 doc_name 时 404。",
 )
-async def patch_nl2sql_auto_qa(req: Nl2sqlAutoQaUpdateRequest) -> dict[str, Any]:
+async def patch_nl2sql_auto_qa(req: Nl2sqlAutoQaUpdateRequest) -> Nl2sqlAutoQaPatchResponse:
     """
-    按 `doc_name` 更新闭环 QA：删除 `doc_version=auto_v1` 下同名文档后重新嵌入。
+    按 **`doc_name`** 修订一条系统自动写入的 QA：在 **`nl2sql_qa_examples`** 命名空间、**`doc_version=auto_v1`** 下 **先删后索引**
+    （与自动闭环 `upsert_nl2sql_auto_qa_pair` 一致），重新生成向量正文并可选合并 metadata。
+
+    **路径/Query**：无。
+
+    **`Nl2sqlAutoQaUpdateRequest`（请求体）**
+    - `doc_name`：**必填**。须为先前 **GET `/rag/nl2sql-auto-qa`** 列表中出现的文档名。
+    - `question`：**必填**。更新后的完整问题字符串（写入链路会做 compact/normalize 用于向量文本）。
+    - `sql`：**必填**。替换后的 **只读 SELECT** SQL。
+    - `prompt_prefix_snapshot`：**可选**。与链路上 **`NL2SQLChain`** 成功写入 QA 时传入的 **预制 System 前缀快照**（`system_prefix`，即 resolved 后的 nl2sql 模板内容）同语义；用于拼入向量正文「【预制提示前缀摘要】」。默认部署 **`NL2SQL_QA_EMBED_PREFIX_MAX_CHARS=0`** 时该段会被丢弃，仅 **问句 + SQL** 参与嵌入；若提高该上限且传入非空前缀，可增强 Few-shot 上下文。**运维修正 SQL/问句时多数场景可省略（null）**。
+    - `metadata_patch`：**可选**。与当前条目的 metadata **字典合并**后再入库；勿删除指纹键（`data_source_fp`、`schema_fp`、`policy_fp` 等）除非明确要切断检索过滤。
+
+    **响应体 `Nl2sqlAutoQaPatchResponse`（200）**
+    - `ok`：true。
+    - `doc_name`：与请求一致。
+
+    **错误**
+    - **404**：列表中找不到给定 `doc_name`（非系统自动条目或拼写错误）。
+    - **5xx**：删除/索引失败等，`detail` 为错误信息。
     """
     from app.nl2sql.qa_feedback import update_nl2sql_auto_qa_entry
 
@@ -1108,7 +1167,7 @@ async def patch_nl2sql_auto_qa(req: Nl2sqlAutoQaUpdateRequest) -> dict[str, Any]
     except Exception as e:  # noqa: BLE001
         logger.exception("patch nl2sql-auto-qa failed doc_name=%s", req.doc_name)
         raise HTTPException(status_code=500, detail=f"update failed: {e}") from e
-    return {"ok": True, "doc_name": req.doc_name}
+    return Nl2sqlAutoQaPatchResponse(ok=True, doc_name=req.doc_name)
 
 
 class DatasetMetaResponse(BaseModel):

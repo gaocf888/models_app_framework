@@ -3,6 +3,9 @@
 > 本文档描述本仓库 **当前已实现** 的 NL2SQL 能力：与 **RAG** 并列的 **AI 应用基础能力**；接入形态包括 **独立 HTTP**、**智能客服内嵌**、**综合分析 V2（`run-with-nl2sql` / `run-with-nl2sql-stream`）** 与 **综合分析看图诊断（`run-img-diag` / `run-img-diag-stream`，NL2SQL 并行臂）** 等，底层均复用同一 `NL2SQLService`；并说明 DB 反射与专用 RAG 协同、安全执行与可观测性。  
 > 实现细节与文件映射见 `framework-guide/NL2SQL整体实现技术说明.md`；总体设计见 `docs/NL2SQL系统概要设计.md`；架构位置见 `docs/大小模型应用技术架构与实现方案.md` §1、§4.6。
 
+> 当前NL2SQL实现了按照天、周、月、近几天等维度的缓存机制实现（环境变量中有开关配置），同时实现了对正常生成并校验通过的sql+问题写入 nl2sql_qa_examples命名空间的知识库的实现（支持rag中接口的查询和更新问答对）
+> - 生成sql缓存配置开关：
+> - rag中生成并校验通过sql+问题问答对的查询接口和更新接口：/rag/nl2sql-auto-qa(get)、/rag/nl2sql-auto-qa(patch)
 ---
 
 ## 0. 前提重要说明

@@ -4,13 +4,25 @@
 
 **关联文档**：`docs/NL2SQL系统概要设计.md`（NL2SQL 总体链路）；综合分析数据计划模板见 `configs/prompts.yaml` · `analysis_plan_overheat_guidance`。
 
+### 当前实现摘要（与代码同步）
+
+1. **按时间口径维度的生成期缓存（环境变量开关）**  
+   - **L2**：完整问句键（`normalize_nl2sql_question`），适用于「同一 `question` 字节级一致」的重复问询。  
+   - **L1**：在时间语义上与 **天（相对日）/ ISO 周（本周·上周）/ 月（本月·上月）/ 近 N 天** 等说法对齐：查找键通过 **`normalize_nl2sql_question_intent`** 折叠上述口径；存储值为 **`extract_time_skeleton_from_sql`** 抽出占位后的 SQL 骨架，命中后按当前问句 **`resolve_time_intent`** 再渲染字面量或 `DATE_SUB`。  
+   - **开关**：总开关 **`NL2SQL_CACHE_ENABLED`**；L1 开关 **`NL2SQL_L1_CACHE_ENABLED`**（依赖总开关）；TTL/容量见 **`NL2SQL_CACHE_TTL_SECONDS`**、**`NL2SQL_CACHE_MAX_ENTRIES`**（见 §七 bis、§10.1、`app/app-deploy/.env.example`）。  
+   - **查找顺序（单次 `generate_sql` 内）**：先完成 **NL2SQL 专用 RAG**（schema/biz/qa 片段与白名单上下文），再 **L2 → L1**；命中则 **跳过 Prompt 构建与 LLM**，仍走 TiDB/过滤器改写与 **`SQLValidator`**（见 §七）。
+
+2. **校验通过的 SQL + 问题写入 `nl2sql_qa_examples`（与 L2/L1 并列、独立）**  
+   - 开启 **`NL2SQL_QA_FEEDBACK_ENABLED`** 后，在 **本轮经 LLM 生成且校验通过**（默认 **`NL2SQL_QA_FEEDBACK_ONLY_FRESH_SQL=true`** 时不包含纯 L2/L1 缓存返回路径）时，将压缩后的问句 + SQL 等 **幂等 upsert** 至向量库命名空间 **`nl2sql_qa_examples`**（元数据含数据源/schema/policy 指纹，检索侧可过滤）。  
+   - **运维与 RAG 管理接口**：可通过 **`GET /rag/nl2sql-auto-qa`** 查询系统自动写入条目，**`PATCH /rag/nl2sql-auto-qa`** 按 `doc_name` 删后重建以更新问答内容（见 §七 ter、`app/api/rag_admin.py`）。
+
 ---
 
 ## 一、目标与范围
 
 ### 1.1 目标
 
-- **缩短重复或近似重复问询**下的端到端取数时间：命中缓存路径优先走 **校验 + 执行**，避免或减少 **全长 RAG + 生成 SQL 的大模型调用**。
+- **缩短重复或近似重复问询**下的端到端取数时间：命中 L2/L1 后 **跳过 LLM 生成 SQL**，仍执行 **NL2SQL RAG（片段检索与白名单）**、TiDB/过滤器改写与 **校验后再执行**（首版不因缓存跳过 RAG；减少的是 **大模型写 SQL** 的耗时）。
 - **不牺牲正确性**：任何缓存命中结果必须经过 **既有 SQLValidator / 白名单**（及可选 EXPLAIN）再放入执行。
 - **可演进**：首版可采用 **纯规则命中 + 规则修补**；后续按需叠加 **向量近似召回** 或 **轻量 SQL 补丁 LLM**。
 
@@ -200,7 +212,7 @@ flowchart LR
 
 | 位置 | 职责 |
 |------|------|
-| **`app/nl2sql/chain.py`** · **`generate_sql_with_validation_context`** | **查找顺序**：**L2 → L1 →** RAG/LLM；命中后仍执行 **`normalize_sql`、TiDB 兼容改写、`_rewrite_query_filters`、`_validate_sql`**；失败则 **delete** 对应缓存条目并降级 |
+| **`app/nl2sql/chain.py`** · **`generate_sql_with_validation_context`** | **单线程顺序**：**NL2SQL RAG 检索片段 → 白名单/`validation_ctx` →（若启用缓存）L2 → L1 →**；未命中再走 Prompt + LLM。命中后仍执行 **`normalize_sql`、TiDB 兼容改写、`_rewrite_query_filters`、`_validate_sql`**；失败则 **delete** 对应缓存条目并降级 |
 | **`app/nl2sql/sql_cache.py`** | **`get_nl2sql_sql_cache` / `get_nl2sql_l1_cache`**：两套进程内 **TTL + LRU**（实现类共用 `NL2SQLSqlCache`，存储分区隔离） |
 | **`app/nl2sql/sql_skeleton.py`** | L1：**意图键、`extract_time_skeleton_from_sql`、`render_sql_time_skeleton`** |
 | **`app/services/nl2sql_service.py`** | 传入 **`plan_item_id` / `analysis_type`**（综合分析子任务聚合至此链路） |
@@ -216,7 +228,7 @@ flowchart LR
 |------|------|
 | **总开关** | **`NL2SQL_CACHE_ENABLED=true`** 且 **`get_app_config().db`** 存在时才参与缓存键与后端初始化 |
 | **L1 开关** | **`NL2SQL_L1_CACHE_ENABLED`**（默认 `true`）；关闭后仅保留 L2 |
-| **查找顺序** | **L2 → L1 →** 全量生成 |
+| **查找顺序** | 单次调用内：**NL2SQL RAG 片段检索完成后**再 **L2 → L1**；均未命中则 **Prompt + LLM** |
 | **写入条件** | LLM 路径生成 SQL **且校验通过**后写 L2；骨架抽取成功则写 L1 |
 | **失效** | TTL 过期、LRU 驱逐、命中后校验/方言失败 **`delete`** |
 | **多 worker** | 进程内缓存 **不跨进程**；扩容多副本时缓存命中率为实例本地 |
@@ -234,7 +246,7 @@ flowchart LR
 | **元数据** | `ingest_source=auto`、`nl2sql_auto_kind=nl2sql_system_feedback_v1`、`doc_version=auto_v1`，以及 `data_source_fp` / `schema_fp` / `policy_fp` 等（与 `sql_cache.compute_*` 一致） |
 | **检索过滤** | `NL2SQL_QA_FILTER_ENABLED=true`（默认）时，对 **仅** `nl2sql_qa_examples` 命中的 chunk 校验上述指纹；无指纹的 **历史人工** QA 由 `NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED`（默认 `true`）控制是否仍进入 Prompt |
 | **prefetch** | 过滤会丢掉部分 Top-K，故对 QA 命名空间先放大召回再截断：``NL2SQL_QA_RAG_PREFETCH_MULT``（默认 `4`） |
-| **管理面** | `GET /rag/nl2sql-auto-qa` 列出系统自动写入条目；`PATCH /rag/nl2sql-auto-qa` 按 `doc_name` 删后重建（见 `app/api/rag_admin.py`）。**Elasticsearch / EasySearch** 下列表依赖 `metadata.nl2sql_auto_kind` 等字段检索（见 `ElasticsearchVectorStore.metadata_search`）；进程内 Faiss 则为全量扫描 `_items`。 |
+| **管理面（查询 / 更新问答对）** | **`GET /rag/nl2sql-auto-qa`**：分页列出命名空间 **`nl2sql_qa_examples`** 下系统自动写入的 QA（支持筛选）；**`PATCH /rag/nl2sql-auto-qa`**：按 `doc_name` 指定条目 **删后重建**，用于修正问答文本或 SQL（见 **`app/api/rag_admin.py`**）。底层存储为 **Elasticsearch / EasySearch** 时列表依赖 `metadata.nl2sql_auto_kind` 等字段检索（见 `ElasticsearchVectorStore.metadata_search`）；进程内 Faiss 则为全量扫描 `_items`。 |
 
 **环境变量（另见 `app/app-deploy/.env.example`）**
 
@@ -315,3 +327,4 @@ flowchart LR
 | 2026-05-06 | v0.2 | P0：进程内 L2 + `NL2SQL_CACHE_*` 开关；命中跳过 LLM，仍走规范化与校验 |
 | 2026-05-06 | v0.3 | L1 时间骨架落地；§4.1 区分 L2/L1 键；§七～七 bis 集成点与运维速查；§3.1 已实现形态说明 |
 | 2026-05-06 | v0.4 | §七 ter：QA 向量闭环（`NL2SQL_QA_*`、`qa_feedback.py`、RAG 检索过滤、`/rag/nl2sql-auto-qa`）；§10.1 增补 `NL2SQL_QA_FEEDBACK_ENABLED` |
+| 2026-05-09 | v0.5 | 文首「当前实现摘要」：时间口径（天/周/月/近 N 天）与 L1/L2、环境变量；`nl2sql_qa_examples` 写入与 **`GET`/`PATCH` 管理端**；§七 修正链内顺序（先 NL2SQL RAG，再 L2→L1）；§1.1 澄清命中后仍跑 RAG、仅跳过 LLM |
