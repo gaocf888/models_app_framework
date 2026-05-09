@@ -297,15 +297,16 @@ analysis_plan_overheat_guidance:
           "question": "查询燃烧器投退记录、火检状态、相关设备状态与异常告警，并与超温时段对齐",
           "mandatory": true,
           "dependency_ids": []
-        },
-        {
-          "item_id": "q4",
-          "purpose": "处置与检修历史参考",
-          "question": "查询与目标区域相关的近期处置动作、检修/吹灰记录及效果反馈，作为建议依据",
-          "mandatory": false,
-          "dependency_ids": []
         }
       ]
+# 暂时去除上述 q4（查数生成sql的提示词）
+#        {
+#          "item_id": "q4",
+#          "purpose": "处置与检修历史参考",
+#          "question": "查询与目标区域相关的近期处置动作、检修/吹灰记录及效果反馈，作为建议依据",
+#          "mandatory": false,
+#          "dependency_ids": []
+#        }
 
 
 analysis_plan_maintenance_strategy:
