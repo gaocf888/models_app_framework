@@ -263,7 +263,7 @@ analysis_report_overheat_guidance:
 # =============================================================================
 #
 # 【谁用】_build_data_plan_from_template：content 必须为 JSON 数组；每项字段建议：
-#   - item_id（string，唯一）、purpose、question、mandatory（bool）、dependency_ids（string 数组，引用其他 item_id）
+#   - item_id（string，唯一）、purpose、question、mandatory（bool）、dependency_ids（string 数组，引用其他 item_id，若都是空没有引用，即实现4个q同时并行）
 # 【优先级】相对 LLM plan 模板优先；无模板或 JSON 非法时回退代码内置默认任务再合并。
 # 【扩展】新增分析类型时：增加 analysis_plan_<新 analysis_type> 顶级键，并在 API 模型 AnalysisType 中对齐。
 
@@ -286,21 +286,21 @@ analysis_plan_overheat_guidance:
           "purpose": "运行参数联动分析",
           "question": "围绕超温时段查询风门开度、蒸汽流量、氧量、负荷等关键运行参数及其同时间窗变化",
           "mandatory": true,
-          "dependency_ids": ["q1"]
+          "dependency_ids": []
         },
         {
           "item_id": "q3",
           "purpose": "设备状态与告警佐证",
           "question": "查询燃烧器投退记录、火检状态、相关设备状态与异常告警，并与超温时段对齐",
           "mandatory": true,
-          "dependency_ids": ["q1"]
+          "dependency_ids": []
         },
         {
           "item_id": "q4",
           "purpose": "处置与检修历史参考",
           "question": "查询与目标区域相关的近期处置动作、检修/吹灰记录及效果反馈，作为建议依据",
           "mandatory": false,
-          "dependency_ids": ["q1"]
+          "dependency_ids": []
         }
       ]
 

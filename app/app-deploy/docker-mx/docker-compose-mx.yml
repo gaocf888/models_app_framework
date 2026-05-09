@@ -173,7 +173,8 @@ services:
       RAG_RERANKER_MODEL_PATH: /models/rerank/bge-reranker-large
     volumes:
       - huggingface-cache:/root/.cache/huggingface
-      - app-logs:/workspace/logs
+      # - app-logs:/workspace/logs
+      - ../logs:/workspace/logs
       # 嵌入模型离线挂载
       - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 小模型证据输出（与 configs 中 evidence_dir 为 workspace 相对路径时一致）
