@@ -485,6 +485,10 @@ class AnalysisConfig:
     # acquire_data：无依赖任务并行执行（生成 SQL + 查库仍发生在各 NL2SQLService.query 内）
     nl2sql_acquire_parallel_enabled: bool = True
     nl2sql_acquire_max_parallel: int = 8
+    # NL2SQL：可执行 SQL 快照缓存（L2，进程内 LRU+TTL）；关闭则与未实现缓存前行为一致
+    nl2sql_cache_enabled: bool = False
+    nl2sql_cache_ttl_seconds: int = 3600
+    nl2sql_cache_max_entries: int = 512
     # 规划前 RAG 检索 query 构造：
     # legacy — 与旧版一致：`{analysis_type} {用户 query}`（英文枚举参与向量/关键词/重排）；
     # user_only — 仅用用户 query 做主检索；
@@ -922,6 +926,9 @@ def _load_from_env() -> AppConfig:
         nl2sql_acquire_parallel_enabled=os.getenv("ANALYSIS_NL2SQL_ACQUIRE_PARALLEL_ENABLED", "true").lower()
         == "true",
         nl2sql_acquire_max_parallel=max(1, int(os.getenv("ANALYSIS_NL2SQL_ACQUIRE_MAX_PARALLEL", "8"))),
+        nl2sql_cache_enabled=os.getenv("NL2SQL_CACHE_ENABLED", "false").lower() == "true",
+        nl2sql_cache_ttl_seconds=max(60, int(os.getenv("NL2SQL_CACHE_TTL_SECONDS", "3600"))),
+        nl2sql_cache_max_entries=max(16, int(os.getenv("NL2SQL_CACHE_MAX_ENTRIES", "512"))),
         plan_rag_query_mode=(
             (os.getenv("ANALYSIS_PLAN_RAG_QUERY_MODE", "two_stage") or "two_stage").strip().lower()
         ),
