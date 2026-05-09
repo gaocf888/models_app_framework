@@ -1034,6 +1034,10 @@ class ElasticsearchVectorStore(VectorStore):
                 {"match": {"doc_name": query}},
                 {"match": {"metadata.doc_version": query}},
                 {"match": {"metadata.tenant_id": query}},
+                # NL2SQL 自动 QA 闭环（qa_feedback）写入的元数据；否则 list_nl2sql_auto_qa_entries 用
+                # nl2sql_system_feedback_v1 检索会恒为空（旧逻辑未检索这些字段）。
+                {"match": {"metadata.nl2sql_auto_kind": query}},
+                {"match": {"metadata.ingest_source": query}},
             ],
             "minimum_should_match": 1,
         }

@@ -234,7 +234,7 @@ flowchart LR
 | **元数据** | `ingest_source=auto`、`nl2sql_auto_kind=nl2sql_system_feedback_v1`、`doc_version=auto_v1`，以及 `data_source_fp` / `schema_fp` / `policy_fp` 等（与 `sql_cache.compute_*` 一致） |
 | **检索过滤** | `NL2SQL_QA_FILTER_ENABLED=true`（默认）时，对 **仅** `nl2sql_qa_examples` 命中的 chunk 校验上述指纹；无指纹的 **历史人工** QA 由 `NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED`（默认 `true`）控制是否仍进入 Prompt |
 | **prefetch** | 过滤会丢掉部分 Top-K，故对 QA 命名空间先放大召回再截断：``NL2SQL_QA_RAG_PREFETCH_MULT``（默认 `4`） |
-| **管理面** | `GET /rag/nl2sql-auto-qa` 列出系统自动写入条目；`PATCH /rag/nl2sql-auto-qa` 按 `doc_name` 删后重建（见 `app/api/rag_admin.py`） |
+| **管理面** | `GET /rag/nl2sql-auto-qa` 列出系统自动写入条目；`PATCH /rag/nl2sql-auto-qa` 按 `doc_name` 删后重建（见 `app/api/rag_admin.py`）。**Elasticsearch / EasySearch** 下列表依赖 `metadata.nl2sql_auto_kind` 等字段检索（见 `ElasticsearchVectorStore.metadata_search`）；进程内 Faiss 则为全量扫描 `_items`。 |
 
 **环境变量（另见 `app/app-deploy/.env.example`）**
 
