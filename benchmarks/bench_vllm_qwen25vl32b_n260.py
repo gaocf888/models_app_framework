@@ -362,7 +362,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="vLLM base URL")
     parser.add_argument("--model", default="qwen2.5-vl-32b-instruct", help="model name")
-    parser.add_argument("--prompt", default="你好，做个自我介绍", help="benchmark prompt")
+    parser.add_argument("--prompt", default="请帮我介绍一下锅炉常见故障有哪些？", help="benchmark prompt")
     parser.add_argument("--max-tokens-list", default="32,64,128,256,512", help="comma-separated max_tokens")
     parser.add_argument("--concurrency-list", default="1,2,4,8", help="comma-separated concurrency levels")
     parser.add_argument("--requests-per-worker", type=int, default=3, help="requests each worker sends")

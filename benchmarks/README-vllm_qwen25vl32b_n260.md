@@ -11,7 +11,7 @@
 ```bash
 python3 benchmarks/bench_vllm_qwen25vl32b_n260.py \
   --base-url http://127.0.0.1:8000 \
-  --model qwen2.5-vl-32b-instruct \
+  --model qwen2.5-vl-32b-instruct-awq \
   --max-tokens-list 32,64,128,256,512 \
   --concurrency-list 1,2,4,8 \
   --requests-per-worker 3 \
@@ -24,9 +24,21 @@ python3 benchmarks/bench_vllm_qwen25vl32b_n260.py \
 ```bash
 python3 benchmarks/bench_vllm_qwen25vl32b_n260.py \
   --base-url http://127.0.0.1:8000 \
-  --model qwen2.5-vl-32b-instruct \
+  --model qwen2.5-vl-32b-instruct-awq \
   --max-tokens-list 64,256,512 \
-  --concurrency-list 1,2,4 \
+  --concurrency-list 1,2,4,8,12,16,24,32 \
+  --requests-per-worker 2 \
+  --disable-thinking
+```
+
+极限吞吐测试：
+
+```bash
+python3 benchmarks/bench_vllm_qwen25vl32b_n260.py \
+  --base-url http://127.0.0.1:8000 \
+  --model qwen2.5-vl-32b-instruct-awq \
+  --max-tokens-list 1024,2048,4096,8192 \
+  --concurrency-list 1,4,8,16,24,32,48,64 \
   --requests-per-worker 2 \
   --disable-thinking
 ```
