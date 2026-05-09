@@ -722,20 +722,42 @@ class ElasticsearchVectorStore(VectorStore):
     def _truncate_for_bool_match_query(text: str) -> str:
         """
         `match` 对超长输入会分析出过多词项，bool 子句超过 Lucene `maxClauseCount`（默认 1024），
-        ES 返回 search_phase_execution_exception。综合分析等场景会在检索 query 中夹带大块 DOCX/表格文本，
-        参与 ES match 的字符串必须截断（向量嵌入仍可用完整 query，仅 keyword/metadata 臂受限）。
+        ES 返回 search_phase_execution_exception。仅按「字符数」截断不够：中文/表格密文可能在 3000 字内仍被
+        分析成 >1024 个 term。因此再做「空白分词后的词数上限」以及「无空格长串」的字符上限。
+        （向量嵌入仍可用完整 query；仅 keyword/metadata 臂参与本截断。）
         """
-        max_c = max(256, int(os.getenv("RAG_ES_MATCH_QUERY_MAX_CHARS", "3000")))
+        max_c = max(128, int(os.getenv("RAG_ES_MATCH_QUERY_MAX_CHARS", "1200")))
+        max_terms = max(8, int(os.getenv("RAG_ES_MATCH_QUERY_MAX_TERMS", "150")))
+        dense_cap = max(32, int(os.getenv("RAG_ES_MATCH_QUERY_MAX_DENSE_CHARS", "256")))
         t = (text or "").strip()
-        if len(t) <= max_c:
+        if not t:
             return t
-        logger.warning(
-            "ElasticsearchVectorStore: truncating bool/match query len=%d to max_chars=%d "
-            "(env RAG_ES_MATCH_QUERY_MAX_CHARS)",
-            len(t),
-            max_c,
-        )
-        return t[:max_c]
+        if len(t) > max_c:
+            logger.warning(
+                "ElasticsearchVectorStore: truncating bool/match query len=%d to max_chars=%d "
+                "(env RAG_ES_MATCH_QUERY_MAX_CHARS)",
+                len(t),
+                max_c,
+            )
+            t = t[:max_c]
+        parts = t.split()
+        if len(parts) > max_terms:
+            logger.warning(
+                "ElasticsearchVectorStore: truncating bool/match query term_count=%d to max_terms=%d "
+                "(env RAG_ES_MATCH_QUERY_MAX_TERMS)",
+                len(parts),
+                max_terms,
+            )
+            t = " ".join(parts[:max_terms])
+        elif len(parts) <= 1 and len(t) > dense_cap:
+            logger.warning(
+                "ElasticsearchVectorStore: dense/unspaced query truncating len=%d to dense_cap=%d "
+                "(env RAG_ES_MATCH_QUERY_MAX_DENSE_CHARS)",
+                len(t),
+                dense_cap,
+            )
+            t = t[:dense_cap]
+        return t
 
     @staticmethod
     def _create_client(cfg: ElasticsearchConfig):

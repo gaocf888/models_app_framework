@@ -29,6 +29,39 @@ META_KEY_DATA_SOURCE_FP = "data_source_fp"
 META_KEY_SCHEMA_FP = "schema_fp"
 META_KEY_POLICY_FP = "policy_fp"
 
+# 综合分析会把 plan_context RAG 片段拼在问句后（「请结合以下规则线索：…」）；写入 QA 库时需裁掉，避免
+# 向量正文膨胀、自我递归召回与 ES match clause 爆炸。按最长匹配优先截断。
+_GUIDE_STRIP_MARKERS: tuple[str, ...] = (
+    "请结合以下规则线索",
+    "请结合以下规则",
+)
+
+# 须与 app.llm.graphs.analysis_graph_runner._PLAN_TASK_SCOPE_GUARD_CN 完全一致
+_NL2SQL_PLAN_TASK_SCOPE_GUARD_CN = "若用户未指定机组/区域，则不要在 WHERE 中臆造具体锅炉名或墙别。"
+
+
+def compact_nl2sql_feedback_question(question: str) -> str:
+    """
+    写入 QA / doc_name 前压缩问句：
+    1) 去掉 plan_context 注入的「请结合以下规则线索…」及之后全文；
+    2) 去掉综合分析子任务统一的机组/区域 scope 守卫（与运行时附加文案一致），仅保留「用户原句 + 计划模板子句」主干。
+    不影响指纹过滤（metadata）；语义召回对齐「用户意图 + 子任务描述」。
+    """
+    s = (question or "").strip()
+    if not s:
+        return s
+    cut = len(s)
+    for m in _GUIDE_STRIP_MARKERS:
+        i = s.find(m)
+        if i >= 0:
+            cut = min(cut, i)
+    s = s[:cut].strip()
+    if os.getenv("NL2SQL_QA_FEEDBACK_KEEP_SCOPE_GUARD", "false").lower() != "true":
+        g = _NL2SQL_PLAN_TASK_SCOPE_GUARD_CN
+        if s.endswith(g):
+            s = s[: -len(g)].rstrip()
+    return s
+
 
 @dataclass(frozen=True)
 class NL2SQLQARetrievalContext:
@@ -49,10 +82,10 @@ def build_nl2sql_auto_qa_doc_name(
     plan_item_id: str | None,
     question: str,
 ) -> str:
-    qn = normalize_nl2sql_question(question)
+    q_core = normalize_nl2sql_question(compact_nl2sql_feedback_question(question))
     raw = (
         f"{data_source_fp}\0{schema_fp}\0{policy_fp}\0"
-        f"{(analysis_type or '').strip()}\0{(plan_item_id or '').strip()}\0{qn}"
+        f"{(analysis_type or '').strip()}\0{(plan_item_id or '').strip()}\0{q_core}"
     )
     h = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
     return f"nl2sql_auto_{h}"
@@ -63,19 +96,35 @@ def format_nl2sql_qa_embedding_text(
     question: str,
     sql: str,
     prompt_prefix_snapshot: str | None,
-    max_prefix_chars: int = 6000,
+    max_prefix_chars: int | None = None,
 ) -> str:
-    """写入向量库的单一文本：检索侧用语义匹配「问题 + SQL 模式 + 提示前缀摘要」。"""
+    """
+    写入向量库的单一文本：最小可用集合，优先「紧凑问句 + SQL」语义对齐；
+    预制提示前缀默认不写（易含整库表清单，体积巨大且与 schema_fp 元数据重复）。
+    max_prefix_chars：None 时读取环境变量 NL2SQL_QA_EMBED_PREFIX_MAX_CHARS（默认 0）。
+    """
+    q_compact = normalize_nl2sql_question(compact_nl2sql_feedback_question(question))
+    lim = max_prefix_chars
+    if lim is None:
+        lim = int(os.getenv("NL2SQL_QA_EMBED_PREFIX_MAX_CHARS", "0"))
+    lim = max(0, int(lim))
     prefix = (prompt_prefix_snapshot or "").strip()
-    if len(prefix) > max_prefix_chars:
-        prefix = prefix[: max_prefix_chars - 3] + "..."
+    if lim == 0:
+        prefix = ""
+    elif len(prefix) > lim:
+        prefix = prefix[: max(lim - 3, 0)] + ("..." if lim > 3 else "")
+    sql_lim_env = int(os.getenv("NL2SQL_QA_EMBED_SQL_MAX_CHARS", "16000"))
+    sql_lim = max(256, sql_lim_env)
+    sql_body = (sql or "").strip()
+    if len(sql_body) > sql_lim:
+        sql_body = sql_body[: sql_lim - 3] + "..."
     parts = [
         "【NL2SQL 问答样例·系统自动写入】",
-        f"【用户问题】{question.strip()}",
+        f"【用户问题】{q_compact}",
     ]
     if prefix:
         parts.append(f"【预制提示前缀摘要】\n{prefix}")
-    parts.append(f"【校验通过的 SQL】\n{sql.strip()}")
+    parts.append(f"【校验通过的 SQL】\n{sql_body}")
     return "\n\n".join(parts)
 
 
@@ -160,7 +209,7 @@ def upsert_nl2sql_auto_qa_pair(
         META_KEY_POLICY_FP: policy_fp,
         "analysis_type": (analysis_type or "").strip(),
         "plan_item_id": (plan_item_id or "").strip(),
-        "question_normalized": normalize_nl2sql_question(question),
+        "question_normalized": normalize_nl2sql_question(compact_nl2sql_feedback_question(question)),
     }
     deleted = rag.delete_by_doc_name(
         doc_name,
