@@ -224,6 +224,32 @@ flowchart LR
 
 ---
 
+## 七 ter、NL2SQL QA 向量闭环（`nl2sql_qa_examples` 自动补充 + 检索侧过滤）
+
+与 **L2/L1 进程内缓存**独立：本能力将 **校验通过** 的「用户问题 + 预制提示摘要 + SQL」**写入默认向量库** 的命名空间 **`nl2sql_qa_examples`**，供后续 RAG 作为 Few-shot 样例召回；并默认按 **数据源指纹**、**schema 指纹**（及可选 **policy / analysis_type**）在检索侧过滤，避免 **跨库 / 换表结构** 时误命中历史样例。
+
+| 项目 | 说明 |
+|------|------|
+| **实现位置** | `app/nl2sql/qa_feedback.py`（元数据键、过滤规则、幂等 `upsert`、列表/更新辅助）；`NL2SQLRAGService.retrieve` / `retrieve_chunks` 增加 `nl2sql_qa_context`；`NL2SQLChain` 在 **非 L2/L1 缓存短路径** 的 LLM 成功 + 校验通过后 **异步** `upsert`（`asyncio.to_thread`） |
+| **元数据** | `ingest_source=auto`、`nl2sql_auto_kind=nl2sql_system_feedback_v1`、`doc_version=auto_v1`，以及 `data_source_fp` / `schema_fp` / `policy_fp` 等（与 `sql_cache.compute_*` 一致） |
+| **检索过滤** | `NL2SQL_QA_FILTER_ENABLED=true`（默认）时，对 **仅** `nl2sql_qa_examples` 命中的 chunk 校验上述指纹；无指纹的 **历史人工** QA 由 `NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED`（默认 `true`）控制是否仍进入 Prompt |
+| **prefetch** | 过滤会丢掉部分 Top-K，故对 QA 命名空间先放大召回再截断：``NL2SQL_QA_RAG_PREFETCH_MULT``（默认 `4`） |
+| **管理面** | `GET /rag/nl2sql-auto-qa` 列出系统自动写入条目；`PATCH /rag/nl2sql-auto-qa` 按 `doc_name` 删后重建（见 `app/api/rag_admin.py`） |
+
+**环境变量（另见 `app/app-deploy/.env.example`）**
+
+| 变量 | 含义 | 默认 |
+|------|------|------|
+| `NL2SQL_QA_FEEDBACK_ENABLED` | `true` 时启用成功后的自动写入 | `false` |
+| `NL2SQL_QA_FEEDBACK_ONLY_FRESH_SQL` | `true` 时仅 **本轮走 LLM 生成** 成功后写入（**不**在 L2/L1 缓存直接返回路径写库） | `true` |
+| `NL2SQL_QA_FILTER_ENABLED` | 检索时是否对 QA 命名空间做指纹过滤 | `true` |
+| `NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED` | 无 `data_source_fp` 的旧人工 QA 是否仍保留在上下文中 | `true` |
+| `NL2SQL_QA_RAG_PREFETCH_MULT` | QA 命名空间检索放大系数 | `4` |
+
+配置模型：`app/core/config.py` · `AnalysisConfig.nl2sql_qa_feedback_enabled`（环境变量 `NL2SQL_QA_FEEDBACK_ENABLED`）。
+
+---
+
 ## 八、综合分析 · 超温模板（`analysis_plan_overheat_guidance`）
 
 - 模板见 `configs/prompts.yaml`，子任务 **q1～q4** 的 **`question`** 与用户 **`req.query`** 组合后形成最终 NL2SQL 问题串。  
@@ -257,8 +283,9 @@ flowchart LR
 | `NL2SQL_CACHE_TTL_SECONDS` | 条目 TTL（秒），代码下限 60 | `3600` |
 | `NL2SQL_CACHE_MAX_ENTRIES` | 进程内 LRU 上限，代码下限 16 | `512` |
 | `NL2SQL_L1_CACHE_ENABLED` | 为 `true` 时启用 **L1 时间骨架**（与 L2 共用 TTL/容量；**总开关**仍为 `NL2SQL_CACHE_ENABLED`） | `true` |
+| `NL2SQL_QA_FEEDBACK_ENABLED` | 校验通过后向 **`nl2sql_qa_examples`** 写入自动 QA（与 L2/L1 独立；详见 **§七 ter**） | `false` |
 
-对应配置模型：`app/core/config.py` · `AnalysisConfig.nl2sql_cache_*` / `nl2sql_l1_cache_enabled`。
+对应配置模型：`app/core/config.py` · `AnalysisConfig.nl2sql_cache_*` / `nl2sql_l1_cache_enabled` / **`nl2sql_qa_feedback_enabled`**。
 
 ---
 
@@ -276,6 +303,7 @@ flowchart LR
 | **P0** | L2 SQL 快照 + 规则 Key + 规则修补 + Validator；Redis TTL；配置开关 |
 | **P1** | L1 骨架抽取与渲染；schema/policy 指纹自动化（**已落地首版**：`app/nl2sql/sql_skeleton.py` — 意图键折叠相对日词 + `DATE_SUB`/`'YYYY-MM-DD[ HH:MM:SS]'` 占位与重渲染；与 L2 进程内缓存叠加，lookup 顺序 **L2 → L1 → LLM**） |
 | **P2** | 向量近似召回 Top-K + 人工阈值；可选补丁 LLM |
+| **（并行）QA 闭环** | **`nl2sql_qa_examples` 自动写入 + 检索指纹过滤**（§七 ter），管理接口 **`GET/PATCH /rag/nl2sql-auto-qa`** |
 
 ---
 
@@ -286,3 +314,4 @@ flowchart LR
 | 2026-05-06 | v0.1 | 初稿：分层缓存 + 命中修补 + 集成点与超温模板约束 |
 | 2026-05-06 | v0.2 | P0：进程内 L2 + `NL2SQL_CACHE_*` 开关；命中跳过 LLM，仍走规范化与校验 |
 | 2026-05-06 | v0.3 | L1 时间骨架落地；§4.1 区分 L2/L1 键；§七～七 bis 集成点与运维速查；§3.1 已实现形态说明 |
+| 2026-05-06 | v0.4 | §七 ter：QA 向量闭环（`NL2SQL_QA_*`、`qa_feedback.py`、RAG 检索过滤、`/rag/nl2sql-auto-qa`）；§10.1 增补 `NL2SQL_QA_FEEDBACK_ENABLED` |

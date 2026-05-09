@@ -264,6 +264,8 @@ index_qa_examples(snippets: List[str])
 
 - 检索接口：
   - `retrieve_chunks` / `retrieve`：三命名空间分别检索，`nl2sql_schema` 可使用更大 `top_k`（`NL2SQL_SCHEMA_NAMESPACE_TOP_K`）；合并去重；日志输出 **检索模式、各 namespace 向量/图条数、去重前后总数**。
+  - **`nl2sql_qa_context`（可选）**：当配置 **`NL2SQL_QA_FILTER_ENABLED`**（默认开启）且当前请求已计算 **数据源 / schema 指纹** 时传入，对 **`nl2sql_qa_examples`** 命中按元数据过滤（系统自动写入项必须指纹匹配；无指纹的旧人工 QA 受 **`NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED`** 控制）。QA 命名空间会先 **prefetch**（**`NL2SQL_QA_RAG_PREFETCH_MULT`**）再过滤截断到 **`NL2SQL_RAG_MAX_QA_CHUNKS`**。
+- **QA 向量闭环（可选）**：**`NL2SQL_QA_FEEDBACK_ENABLED=true`** 时，`NL2SQLChain` 在 **本轮 LLM 生成成功且校验通过**（默认不含 L2/L1 缓存直接返回路径）后异步写入 **`nl2sql_qa_examples`**；实现见 **`app/nl2sql/qa_feedback.py`**。运维：**`GET` / `PATCH /rag/nl2sql-auto-qa`**（**`app/api/rag_admin.py`**）。完整说明见 **`docs/NL2SQL缓存实现方案.md`** §七 ter。
 
 > 说明：存在规划摘要时，`rag_query` 为「规划 + 原问题」拼接；DB 反射成功时默认不跑规划，通常即以用户原问题检索。
 
@@ -288,7 +290,7 @@ index_qa_examples(snippets: List[str])
   1. **`_ensure_schema_refreshed_once`**：首次调用 `refresh_from_db()`；失败则打 WARNING，后续依赖 RAG/Demo。  
   2. **`_db_schema_available`**：若仅有 Demo `orders` 视为未接入真实库。  
   3. **（可选）`_plan`**：LangChain 可用 **且** 未满足「禁用规划 + 真实库」时执行；否则跳过。  
-  4. **RAG**：`retrieve(rag_query)`，`rag_query` 含规划摘要时与问题拼接。  
+  4. **RAG**：`retrieve(rag_query, nl2sql_qa_context=…)`（在存在 **`DatabaseConfig`** 时构造 **QA 检索指纹上下文**），`rag_query` 含规划摘要时与问题拼接。  
   5. **白名单 + `table_columns`**：真实库 → 表/列来自反射并构建 **表→列集合**；否则从片段抽取（不做列–表绑定）。  
   6. **实体规则**：`load_entity_rules_from_env()`（可选）。  
   7. **Prompt**：替换 `{{NL2SQL_SCHEMA_CATALOG}}` 或附加 `schema_catalog`；`build` 完整 prompt。  
@@ -303,6 +305,12 @@ index_qa_examples(snippets: List[str])
 - **查找顺序**：**L2 → L1 →** 全量 RAG + LLM。命中后仍执行 **`normalize_sql`、TiDB 改写、`_rewrite_query_filters`、`SQLValidator`**；失败则 **`delete`** 对应条目。
 - **键策略摘要**：**数据源指纹**（`DB_HOST`+`PORT`+`DB_NAME`）、**`analysis_type`**、**`plan_item_id`**（综合分析子任务 **`q1`～`q4`**）、**`schema_fp`**、**`nl2sql_policy_fp`**；**L2** 含 **`normalize_nl2sql_question` 后的完整 `question`**；**L1** 含 **`normalize_nl2sql_question_intent`**（相对日 / 本周·上周 / 本月·上月 / 近 N 天等折叠）。完整说明见 **`docs/NL2SQL缓存实现方案.md`** §4～§七 bis。
 - **观测**：日志 **`NL2SQLChain sql_cache hit`**（L2）、**`sql_l1_cache hit`**（L1）；LangSmith **`metadata.sql_cache`**：`hit` / **`l1_hit`**。
+
+#### QA 样例向量闭环（可选，与 L2/L1 独立）
+
+- **开关**：**`AnalysisConfig.nl2sql_qa_feedback_enabled`**（**`NL2SQL_QA_FEEDBACK_ENABLED`**，默认 `false`）；**仅新鲜 LLM 路径**写入由 **`NL2SQL_QA_FEEDBACK_ONLY_FRESH_SQL`**（默认 `true`）控制。
+- **代码**：**`app/nl2sql/qa_feedback.py`**；链上 **`NL2SQLChain._maybe_upsert_nl2sql_qa_feedback`**（成功后 **`asyncio.to_thread`** 调 **`NL2SQLRAGService.upsert_auto_feedback_qa_pair`**）。
+- **文档**：**`docs/NL2SQL缓存实现方案.md`** §七 ter。
 
 ### 3.5 SQLValidator、entity_rules 与 SQLExecutor
 
@@ -441,7 +449,7 @@ flowchart LR
 
 1. **增强 RAG 与 Schema 语义**：  
    - 将 `SchemaMetadataService` 的结构化信息（表/列/约束）系统性转化为 RAG 文本片段，完善 `nl2sql_schema` 命名空间；  
-   - 为 `nl2sql_biz_knowledge` 与 `nl2sql_qa_examples` 设计管理接口与数据填充流程。
+   - 为 `nl2sql_biz_knowledge` 与人工维护的 `nl2sql_qa_examples` 设计持续的数据填充流程；**系统自动 QA** 已提供 **`GET` / `PATCH /rag/nl2sql-auto-qa`**（见 **`docs/NL2SQL缓存实现方案.md`** §七 ter）。
 2. **细化 Prompt 策略**：  
    - 将不同业务域（如订单、用户、财务）的 NL2SQL Prompt 版本化，并与 `PromptTemplateRegistry` 集成 A/B 测试；  
    - 针对多表复杂问题，引入“显式规划 + 显式 Thought 输出 + SQL 生成”组合策略，提升可解释性。

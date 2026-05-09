@@ -1,7 +1,7 @@
 # NL2SQL 当前完整实现逻辑说明（代码对照版）
 
 > 本文描述**当前仓库真实代码行为**（而非理想化设计），用于评审、排障与运维交接。  
-> 关键入口：`app/api/nl2sql.py`、`app/services/nl2sql_service.py`、`app/nl2sql/chain.py`、`app/nl2sql/validator.py`、`app/nl2sql/executor.py`；生成阶段可选 **L2/L1 SQL 缓存** 见 `app/nl2sql/sql_cache.py`、`app/nl2sql/sql_skeleton.py` 与 **`docs/NL2SQL缓存实现方案.md`**。综合分析取数另见 `app/api/analysis.py`、`app/llm/graphs/analysis_graph_runner.py` 中 **`_execute_data_plan`**。
+> 关键入口：`app/api/nl2sql.py`、`app/services/nl2sql_service.py`、`app/nl2sql/chain.py`、`app/nl2sql/validator.py`、`app/nl2sql/executor.py`；生成阶段可选 **L2/L1 SQL 缓存** 见 `app/nl2sql/sql_cache.py`、`app/nl2sql/sql_skeleton.py` 与 **`docs/NL2SQL缓存实现方案.md`**；可选 **QA 向量闭环**（`nl2sql_qa_examples` 自动写入 + 检索指纹过滤）见 **`app/nl2sql/qa_feedback.py`**、`NL2SQLRAGService.retrieve(..., nl2sql_qa_context=...)` 与 **`docs/NL2SQL缓存实现方案.md`** §七 ter。综合分析取数另见 `app/api/analysis.py`、`app/llm/graphs/analysis_graph_runner.py` 中 **`_execute_data_plan`**。
 
 ---
 
@@ -68,11 +68,19 @@
 - `nl2sql_biz_knowledge`
 - `nl2sql_qa_examples`
 
+对 **`nl2sql_qa_examples`**：若启用 **`NL2SQL_QA_FILTER_ENABLED`**（默认）且当前请求带 **`NL2SQLQARetrievalContext`**（由 **`DB_HOST`/`PORT`/`DB_NAME`** 与反射表名列表推导 **数据源指纹 / schema 指纹**），则对召回 chunk 做 **元数据过滤**（系统自动写入项须指纹一致；无指纹的旧人工 QA 受 **`NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED`** 控制）；并为过滤损失 **`NL2SQL_QA_RAG_PREFETCH_MULT`** 放大 QA 侧 prefetch。
+
 检索条数受以下开关影响：
 - `NL2SQL_SCHEMA_NAMESPACE_TOP_K`
 - `NL2SQL_RAG_MAX_SCHEMA_CHUNKS`
 - `NL2SQL_RAG_MAX_BIZ_CHUNKS`
 - `NL2SQL_RAG_MAX_QA_CHUNKS`
+
+### 3.4 bis 可选：校验通过后写入 QA 向量（`NL2SQL_QA_FEEDBACK_ENABLED`）
+
+- **默认关闭**：环境变量 **`NL2SQL_QA_FEEDBACK_ENABLED`**（配置 **`AnalysisConfig.nl2sql_qa_feedback_enabled`**）。
+- **触发**：**本轮走 LLM 完整生成**且 **`SQLValidator` 等校验通过**后（默认 **`NL2SQL_QA_FEEDBACK_ONLY_FRESH_SQL=true`** 时不含 **L2/L1 缓存直接返回** 路径），**`asyncio.to_thread`** 调用 **`upsert_nl2sql_auto_qa_pair`**，幂等写入 **`nl2sql_qa_examples`**（**`doc_version=auto_v1`**，元数据含 **`ingest_source=auto`** 与指纹）。
+- **运维**：**`GET /rag/nl2sql-auto-qa`**、**`PATCH /rag/nl2sql-auto-qa`**（**`app/api/rag_admin.py`**）。
 
 ### 3.5 白名单、表列映射与规则加载
 

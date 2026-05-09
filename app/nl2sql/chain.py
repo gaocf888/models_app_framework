@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from dataclasses import dataclass
@@ -211,10 +212,41 @@ class NL2SQLChain:
         )
 
         # Step 2: 基于规划结果从 NL2SQL 专用 RAG 检索 Schema/业务知识/样例 Q&A 片段
+        from app.core.config import get_app_config
+        from app.nl2sql.qa_feedback import NL2SQLQARetrievalContext
+        from app.nl2sql.sql_cache import (
+            compute_nl2sql_data_source_fp,
+            compute_nl2sql_policy_fp,
+            compute_schema_fp_from_metadata,
+        )
+
+        app_cfg = get_app_config()
+        cfg_analysis = app_cfg.analysis
+        db_cfg = getattr(app_cfg, "db", None)
+        data_source_fp = ""
+        schema_fp = ""
+        policy_fp = ""
+        nl2sql_qa_ctx: NL2SQLQARetrievalContext | None = None
+        if db_cfg is not None:
+            data_source_fp = compute_nl2sql_data_source_fp(
+                host=db_cfg.host,
+                port=db_cfg.port,
+                database=db_cfg.database,
+            )
+            schema_fp = compute_schema_fp_from_metadata(table_names)
+            policy_fp = compute_nl2sql_policy_fp(analysis_type=analysis_type)
+            if os.getenv("NL2SQL_QA_FILTER_ENABLED", "true").lower() == "true":
+                nl2sql_qa_ctx = NL2SQLQARetrievalContext(
+                    data_source_fp=data_source_fp,
+                    schema_fp=schema_fp,
+                    policy_fp=policy_fp,
+                    analysis_type=analysis_type,
+                )
+
         rag_query = question
         if plan_summary:
             rag_query = f"【NL2SQL 规划】{plan_summary}\n【用户问题】{question}"
-        schema_snippets = self._rag.retrieve(rag_query)
+        schema_snippets = self._rag.retrieve(rag_query, nl2sql_qa_context=nl2sql_qa_ctx)
         rag_hints = parse_nl2sql_schema_snippets(schema_snippets)
         allowed_tables, allowed_columns, schema_ok = self._whitelist_from_schema_and_snippets(schema_snippets)
         table_columns_map = self._table_columns_map() if schema_ok else {}
@@ -250,12 +282,8 @@ class NL2SQLChain:
             schema_ok,
         )
 
-        from app.core.config import get_app_config
         from app.nl2sql.sql_cache import (
             build_nl2sql_sql_cache_key,
-            compute_nl2sql_data_source_fp,
-            compute_nl2sql_policy_fp,
-            compute_schema_fp_from_metadata,
             get_nl2sql_l1_cache,
             get_nl2sql_sql_cache,
         )
@@ -265,19 +293,9 @@ class NL2SQLChain:
             skeleton_payload_from_json,
         )
 
-        app_cfg = get_app_config()
-        cfg_analysis = app_cfg.analysis
-        db_cfg = getattr(app_cfg, "db", None)
+        fresh_sql_generation = False
+
         if cfg_analysis.nl2sql_cache_enabled and db_cfg is not None:
-            data_source_fp = compute_nl2sql_data_source_fp(
-                host=db_cfg.host,
-                port=db_cfg.port,
-                database=db_cfg.database,
-            )
-            schema_fp = compute_schema_fp_from_metadata(
-                [t.name for t in self._schema.list_tables() if t.name]
-            )
-            policy_fp = compute_nl2sql_policy_fp(analysis_type=analysis_type)
             cache_key_for_store = build_nl2sql_sql_cache_key(
                 data_source_fp=data_source_fp,
                 analysis_type=analysis_type,
@@ -486,6 +504,7 @@ class NL2SQLChain:
             len(prompt),
         )
 
+        fresh_sql_generation = True
         if self._lc_chat_model is not None:
             sql = await self._generate_via_langchain(prompt)
         else:
@@ -659,7 +678,59 @@ class NL2SQLChain:
             sql=sql or "",
             enabled=cfg_analysis.nl2sql_cache_enabled and cfg_analysis.nl2sql_l1_cache_enabled,
         )
+        await self._maybe_upsert_nl2sql_qa_feedback(
+            cfg_analysis=cfg_analysis,
+            db_cfg=db_cfg,
+            question=question,
+            sql=sql or "",
+            analysis_type=analysis_type,
+            plan_item_id=plan_item_id,
+            system_prefix_snapshot=system_prefix if system_prefix else None,
+            data_source_fp=data_source_fp,
+            schema_fp=schema_fp,
+            policy_fp=policy_fp,
+            fresh_generation=fresh_sql_generation,
+        )
         return sql, validation_ctx
+
+    async def _maybe_upsert_nl2sql_qa_feedback(
+        self,
+        *,
+        cfg_analysis: Any,
+        db_cfg: Any,
+        question: str,
+        sql: str,
+        analysis_type: str | None,
+        plan_item_id: str | None,
+        system_prefix_snapshot: str | None,
+        data_source_fp: str,
+        schema_fp: str,
+        policy_fp: str,
+        fresh_generation: bool,
+    ) -> None:
+        if not getattr(cfg_analysis, "nl2sql_qa_feedback_enabled", False):
+            return
+        if db_cfg is None or not (data_source_fp and schema_fp):
+            return
+        if not (sql or "").strip():
+            return
+        only_fresh = os.getenv("NL2SQL_QA_FEEDBACK_ONLY_FRESH_SQL", "true").lower() == "true"
+        if only_fresh and not fresh_generation:
+            return
+        try:
+            await asyncio.to_thread(
+                self._rag.upsert_auto_feedback_qa_pair,
+                question=question,
+                sql=sql,
+                data_source_fp=data_source_fp,
+                schema_fp=schema_fp,
+                policy_fp=policy_fp,
+                analysis_type=analysis_type,
+                plan_item_id=plan_item_id,
+                prompt_prefix_snapshot=system_prefix_snapshot,
+            )
+        except Exception:
+            logger.exception("NL2SQLChain: nl2sql QA feedback upsert failed")
 
     @staticmethod
     def _maybe_store_nl2sql_sql_cache(

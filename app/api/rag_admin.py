@@ -1027,6 +1027,90 @@ async def query_rag(req: QueryRequest) -> QueryRagResponse:
         raise HTTPException(status_code=500, detail=f"RAG query failed: {e}") from e
 
 
+class Nl2sqlAutoQaItem(BaseModel):
+    """NL2SQL 闭环自动写入的向量条目（namespace=nl2sql_qa_examples）。"""
+
+    doc_name: str | None = None
+    ext_id: str | None = None
+    namespace: str | None = None
+    text: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Nl2sqlAutoQaListResponse(BaseModel):
+    ok: bool = True
+    count: int
+    items: list[Nl2sqlAutoQaItem]
+
+
+class Nl2sqlAutoQaUpdateRequest(BaseModel):
+    doc_name: str = Field(..., description="列表接口返回的 doc_name")
+    question: str = Field(..., description="用户问题全文")
+    sql: str = Field(..., description="替换后的只读 SELECT SQL")
+    prompt_prefix_snapshot: str | None = Field(
+        None, description="可选；写入向量文本中的「预制提示前缀摘要」片段"
+    )
+    metadata_patch: dict[str, Any] | None = Field(
+        None, description="可选；与现有 metadata 合并（勿删除指纹键除非知晓后果）"
+    )
+
+
+@router.get(
+    "/nl2sql-auto-qa",
+    summary="列出 NL2SQL 系统自动写入的 QA 向量条目",
+    response_model=Nl2sqlAutoQaListResponse,
+)
+async def list_nl2sql_auto_qa(
+    limit: Annotated[int, Query(ge=1, le=5000, description="返回条数上限")] = 200,
+) -> Nl2sqlAutoQaListResponse:
+    """
+    列出 `ingest_source=auto` 且写入 `nl2sql_qa_examples` 的闭环条目（Faiss 全量扫描；其它后端走 metadata 召回）。
+    """
+    from app.nl2sql.qa_feedback import list_nl2sql_auto_qa_entries
+
+    rag = _get_service()._rag_service  # noqa: SLF001
+    rows = list_nl2sql_auto_qa_entries(rag, limit=limit)
+    items = [
+        Nl2sqlAutoQaItem(
+            doc_name=r.get("doc_name"),
+            ext_id=r.get("ext_id"),
+            namespace=r.get("namespace"),
+            text=r.get("text"),
+            metadata=dict(r.get("metadata") or {}),
+        )
+        for r in rows
+    ]
+    return Nl2sqlAutoQaListResponse(count=len(items), items=items)
+
+
+@router.patch(
+    "/nl2sql-auto-qa",
+    summary="更新一条系统自动写入的 NL2SQL QA（同名先删后灌）",
+)
+async def patch_nl2sql_auto_qa(req: Nl2sqlAutoQaUpdateRequest) -> dict[str, Any]:
+    """
+    按 `doc_name` 更新闭环 QA：删除 `doc_version=auto_v1` 下同名文档后重新嵌入。
+    """
+    from app.nl2sql.qa_feedback import update_nl2sql_auto_qa_entry
+
+    rag = _get_service()._rag_service  # noqa: SLF001
+    try:
+        update_nl2sql_auto_qa_entry(
+            rag,
+            doc_name=req.doc_name,
+            question=req.question,
+            sql=req.sql,
+            prompt_prefix_snapshot=req.prompt_prefix_snapshot,
+            metadata_patch=req.metadata_patch,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("patch nl2sql-auto-qa failed doc_name=%s", req.doc_name)
+        raise HTTPException(status_code=500, detail=f"update failed: {e}") from e
+    return {"ok": True, "doc_name": req.doc_name}
+
+
 class DatasetMetaResponse(BaseModel):
     """进程内数据集登记项（非 ES 权威视图）。"""
 

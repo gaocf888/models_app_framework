@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import List
+from typing import TYPE_CHECKING, List
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -9,6 +9,9 @@ from app.graph.query_service import GraphQueryService
 from app.rag.models import RetrievedChunk
 from app.rag.retrieval_policy import RetrievalPolicy
 from app.rag.rag_service import RAGService
+
+if TYPE_CHECKING:
+    from app.nl2sql.qa_feedback import NL2SQLQARetrievalContext
 
 logger = get_logger(__name__)
 
@@ -55,12 +58,45 @@ class NL2SQLRAGService:
         """
         self._rag.index_texts(snippets, namespace=self.NS_QA)
 
-    def retrieve(self, question: str, top_k: int | None = None) -> List[str]:
+    def upsert_auto_feedback_qa_pair(
+        self,
+        *,
+        question: str,
+        sql: str,
+        data_source_fp: str,
+        schema_fp: str,
+        policy_fp: str,
+        analysis_type: str | None,
+        plan_item_id: str | None,
+        prompt_prefix_snapshot: str | None,
+    ) -> str:
+        """系统自动写入闭环：校验通过后调用（幂等）。"""
+        from app.nl2sql.qa_feedback import upsert_nl2sql_auto_qa_pair
+
+        return upsert_nl2sql_auto_qa_pair(
+            self._rag,
+            question=question,
+            sql=sql,
+            data_source_fp=data_source_fp,
+            schema_fp=schema_fp,
+            policy_fp=policy_fp,
+            analysis_type=analysis_type,
+            plan_item_id=plan_item_id,
+            prompt_prefix_snapshot=prompt_prefix_snapshot,
+        )
+
+    def retrieve(
+        self,
+        question: str,
+        top_k: int | None = None,
+        *,
+        nl2sql_qa_context: NL2SQLQARetrievalContext | None = None,
+    ) -> List[str]:
         """
         兼容接口：针对 NL2SQL 查询，从多命名空间联合检索上下文片段（字符串）。
         新链路请优先使用 `retrieve_chunks` 获取标准结构。
         """
-        chunks = self.retrieve_chunks(question, top_k=top_k)
+        chunks = self.retrieve_chunks(question, top_k=top_k, nl2sql_qa_context=nl2sql_qa_context)
         rendered = [self._render_chunk(c) for c in chunks]
         # 去重（保留顺序）
         seen = set()
@@ -76,10 +112,19 @@ class NL2SQLRAGService:
         )
         return unique_results
 
-    def retrieve_chunks(self, question: str, top_k: int | None = None) -> List[RetrievedChunk]:
+    def retrieve_chunks(
+        self,
+        question: str,
+        top_k: int | None = None,
+        *,
+        nl2sql_qa_context: NL2SQLQARetrievalContext | None = None,
+    ) -> List[RetrievedChunk]:
         """
         标准检索接口：返回 RetrievedChunk（含 doc/namespace/section 等元信息）。
+        nl2sql_qa_context：启用时按数据源/schema 指纹过滤 nl2sql_qa_examples 中的系统自动写入片段。
         """
+        from app.nl2sql.qa_feedback import qa_chunk_passes_retrieval_filter
+
         profile = get_app_config().rag.scene_profiles.nl2sql
         top = top_k if top_k is not None else profile.top_k
         schema_ns_top = int(os.getenv("NL2SQL_SCHEMA_NAMESPACE_TOP_K", str(max(top + 6, 12))))
@@ -87,6 +132,7 @@ class NL2SQLRAGService:
         schema_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_SCHEMA_CHUNKS", "10")))
         biz_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_BIZ_CHUNKS", "6")))
         qa_chunk_cap = max(1, int(os.getenv("NL2SQL_RAG_MAX_QA_CHUNKS", "6")))
+        prefetch_mult = max(1, int(os.getenv("NL2SQL_QA_RAG_PREFETCH_MULT", "4")))
         ns_schema = min(schema_ns_top, schema_chunk_cap)
         ns_biz = min(top, biz_chunk_cap)
         ns_qa = min(top, qa_chunk_cap)
@@ -103,13 +149,16 @@ class NL2SQLRAGService:
                 elif ns == self.NS_BIZ:
                     ns_top = ns_biz
                 else:
-                    ns_top = ns_qa
+                    ns_top = min(ns_qa * prefetch_mult, 48) if nl2sql_qa_context is not None else ns_qa
                 chunks = self._rag.retrieve_chunks(
                     query=question,
                     top_k=ns_top,
                     namespace=ns,
                     scene="nl2sql",
                 )
+                if ns == self.NS_QA and nl2sql_qa_context is not None:
+                    chunks = [c for c in chunks if qa_chunk_passes_retrieval_filter(c, nl2sql_qa_context)]
+                    chunks = chunks[:ns_qa]
                 per_ns_vector[ns] = per_ns_vector.get(ns, 0) + len(chunks)
                 results.extend(chunks)
             # 图侧事实按统一策略层决策补充。
@@ -125,7 +174,7 @@ class NL2SQLRAGService:
                 elif ns == self.NS_BIZ:
                     g_top = ns_biz
                 else:
-                    g_top = ns_qa
+                    g_top = min(ns_qa * prefetch_mult, 48) if nl2sql_qa_context is not None else ns_qa
                 gf = graph_facts[:g_top]
                 per_ns_graph[ns] = per_ns_graph.get(ns, 0) + len(gf)
                 for idx, fact in enumerate(gf):

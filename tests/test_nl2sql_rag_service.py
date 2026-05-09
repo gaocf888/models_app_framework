@@ -5,7 +5,7 @@ from app.rag.models import RetrievedChunk
 
 
 class _FakeRAG:
-    def retrieve_chunks(self, query, top_k=None, namespace=None, scene=None):
+    def retrieve_chunks(self, query, top_k=None, namespace=None, scene=None, **kwargs):
         return [
             RetrievedChunk(
                 text=f"vec:{namespace}",
