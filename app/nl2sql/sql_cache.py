@@ -20,6 +20,7 @@ logger = get_logger(__name__)
 _WS_RE = re.compile(r"\s+")
 
 _global_cache: NL2SQLSqlCache | None = None
+_global_l1_cache: NL2SQLSqlCache | None = None
 _global_lock = threading.Lock()
 
 
@@ -34,6 +35,18 @@ def compute_schema_fp_from_metadata(table_names: list[str]) -> str:
     """由当前反射表名列表生成短指纹；表集合变化则指纹变化。"""
     names = sorted({n.strip().lower() for n in table_names if (n or "").strip()})
     raw = ",".join(names)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def compute_nl2sql_data_source_fp(*, host: str, port: int, database: str) -> str:
+    """
+    业务库「数据源」指纹：与 user 无关，用于在相同 DB 上复用 L2 缓存。
+    使用 host + port + database，避免将整段 DB_URL（含凭据）纳入 key 材料。
+    """
+    h = (host or "").strip().lower()
+    d = (database or "").strip().lower()
+    p = int(port) if port is not None else 0
+    raw = f"{h}\0{p}\0{d}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -58,7 +71,7 @@ def compute_nl2sql_policy_fp(*, analysis_type: str | None) -> str:
 
 def build_nl2sql_sql_cache_key(
     *,
-    user_id: str,
+    data_source_fp: str,
     analysis_type: str | None,
     plan_item_id: str | None,
     question: str,
@@ -67,7 +80,7 @@ def build_nl2sql_sql_cache_key(
 ) -> str:
     qn = normalize_nl2sql_question(question)
     raw = (
-        f"{user_id}\0{(analysis_type or '').strip()}\0{(plan_item_id or '').strip()}\0"
+        f"{data_source_fp}\0{(analysis_type or '').strip()}\0{(plan_item_id or '').strip()}\0"
         f"{qn}\0{schema_fp}\0{policy_fp}"
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -134,3 +147,14 @@ def get_nl2sql_sql_cache(*, ttl_seconds: int, max_entries: int) -> NL2SQLSqlCach
         else:
             _global_cache.configure(ttl_seconds=ttl_seconds, max_entries=max_entries)
         return _global_cache
+
+
+def get_nl2sql_l1_cache(*, ttl_seconds: int, max_entries: int) -> NL2SQLSqlCache:
+    """L1 骨架（JSON 字符串）专用 LRU；语义与 L2 相同，存储分区独立。"""
+    global _global_l1_cache
+    with _global_lock:
+        if _global_l1_cache is None:
+            _global_l1_cache = NL2SQLSqlCache(ttl_seconds=ttl_seconds, max_entries=max_entries)
+        else:
+            _global_l1_cache.configure(ttl_seconds=ttl_seconds, max_entries=max_entries)
+        return _global_l1_cache

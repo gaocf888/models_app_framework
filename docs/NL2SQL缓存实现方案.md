@@ -40,7 +40,9 @@
 
 **含义**：与具体字面量无关的「意图级」描述，用于稳定复用。
 
-建议字段（示例，可按实现裁剪）：
+**当前仓库已实现形态（首版）**：并非下述完整 JSON 血缘模型，而是 **`app/nl2sql/sql_skeleton.py`** 中的 **「时间相关 SQL 模板」**：从已通过校验的 SQL 中抽取 `DATE_SUB(CURDATE(), INTERVAL n DAY)` 与单引号日期/日期时间字面量，替换为占位符形成 **payload（version 1 兼容旧条目 / version 2 当前默认）**；L1 **查找键**使用 **`normalize_nl2sql_question_intent`** 折叠中文时间说法（相对日、本周/上周、本月/上月、近 N 天等，见 §4.2），命中后按 **`resolve_time_intent`** 将占位符渲染回新的字面量或 `DATE_SUB`。超出抽取能力（如跨度 >62 天且无法分类、多组不一致 `DATE_SUB` 间隔等）**不写 L1**。完整「表/JOIN 图骨架」可作为后续演进。
+
+建议字段（中长期参考示例，可按实现裁剪）：
 
 ```json
 {
@@ -87,19 +89,25 @@
 
 ### 4.1 键组成（建议）
 
-| 维度 | 说明 |
-|------|------|
-| `tenant_ds_fp` | 租户或数据源指纹（防串库） |
-| `analysis_type` | 如 `overheat_guidance` |
-| `plan_item_id` | 综合分析模板任务 id：`q1`～`q4`（直连 NL2SQL 可为空或 `default`） |
-| `question_norm_fp` | 用户问题与模板子句拼接后 **规范化** 再 **SHA-256**（见 §4.2） |
-| `schema_fp` | 当前白名单 / 反射 catalog 的版本摘要 |
-| `nl2sql_policy_fp` | prompt 版本、table_scope、校验规则集的哈希 |
+**说明**：实际进程内缓存 **不以 Redis 前缀字符串为 Key**，而是对上述维度拼接字符串再做 **SHA-256（hex）**；逻辑上等价于下表。
 
-**存储 Key 示例**：  
-`nl2sql_cache:v1:{tenant_ds_fp}:{analysis_type}:{plan_item_id}:{question_norm_fp}:{schema_fp}:{nl2sql_policy_fp}`
+| 层级 | 维度 | 说明 |
+|------|------|------|
+| **L2** | `data_source_fp` | **业务库数据源指纹**（`DB_HOST` + `DB_PORT` + `DB_NAME`；**不按 user_id 分桶**） |
+| **L2** | `analysis_type` | 如 `overheat_guidance` |
+| **L2** | `plan_item_id` | 综合分析子任务 id：`q1`～`q4`（直连 NL2SQL 可为空） |
+| **L2** | 问题文本 | **`normalize_nl2sql_question(question)`**（空白折叠）后的完整 `question`，参与哈希 |
+| **L2** | `schema_fp` | 反射表名集合摘要 |
+| **L2** | `nl2sql_policy_fp` | Prompt 版本、table_scope、JOIN 白名单、实体规则等环境摘要 |
+| **L1** | 同上 | **`data_source_fp`、`analysis_type`、`plan_item_id`、`schema_fp`、`nl2sql_policy_fp` 与 L2 一致** |
+| **L1** | 意图文本 | **`normalize_nl2sql_question_intent(question)`**（§4.2 意图折叠），与 L2 **不同** |
 
-键过长时可对上述片段再做一层 **SHA-256** 作为 Redis field。
+**存储 Key 示例（逻辑分解）**：  
+`nl2sql_cache:v1:{data_source_fp}:{analysis_type}:{plan_item_id}:{question_norm_fp}:{schema_fp}:{nl2sql_policy_fp}`
+
+其中 **`question_norm_fp`**：L2 为整句规范化文本的哈希；L1 为 **意图折叠后**文本的哈希。
+
+键过长时可对上述片段再做一层 **SHA-256** 作为 Redis field（若未来改为 Redis 存储）。
 
 ### 4.2 问题规范化（纯规则，无 LLM）
 
@@ -113,6 +121,14 @@
 - 可选：**停用词表**、业务同义词表（极保守，避免过度合并）。
 
 规范化后的字符串参与 **`question_norm_fp`**。
+
+**L1 专用意图折叠**（与 L2 整句键独立；实现：`app/nl2sql/sql_skeleton.py` · `normalize_nl2sql_question_intent`）：
+
+- 相对日：`大前天` / `前天` / `昨天` / `昨日` / `今天` / `今日` → `<R>`；
+- `本周` / `这周` / `上周` → 均折叠为 `<ISO_WEEK>`（命中后由 `resolve_time_intent` 按当前问句区分本周 vs 上周并渲染区间）；
+- `本月` → `<MONTH_0>`；`上月` / `上个月` → `<MONTH_-1>`；
+- `近\s*(\d+)\s*天` → `<ROLLING_N:N>`（**N 不同则缓存键不同**）；
+- 问句语义解析优先级（`resolve_time_intent`）：**近 N 天** → **本周/这周/上周** → **本月** → **上月/上个月** → **相对日词**。
 
 ---
 
@@ -174,21 +190,37 @@ flowchart LR
 
 ### 6.3 未命中
 
-- 走现有 **`generate_sql`** 全链路；**成功后**：
-  - **异步**写入 L2（SQL 快照）；
-  - 若骨架抽取模块可用，再写入 L1（骨架）（避免阻塞响应路径）。
+- 走现有 **`generate_sql`** 全链路（RAG + Prompt + LLM）；**校验通过后**：
+  - **同步**写入 **L2**（完整 SQL 文本，进程内 LRU）；
+  - 若 **`extract_time_skeleton_from_sql`** 成功且 **`NL2SQL_L1_CACHE_ENABLED`** 为真，**同步**写入 **L1**（骨架 JSON 字符串，独立 LRU；与文档初稿「异步写」不同，当前实现为同线程写入以避免重复生成路径分支）。
 
 ---
 
-## 七、与现有代码的集成点（建议）
+## 七、与现有代码的集成点（已实现）
 
 | 位置 | 职责 |
 |------|------|
-| **`app/services/nl2sql_service.py`** 或 **`app/nl2sql/chain.py`** 中 **`generate_sql` / `query` 入口向前** | 统一 **lookup → repair → validate**；未命中调用原逻辑 |
-| **`AnalysisGraphRunner._run_single_nl2sql_plan_task`** | 可选：向下传入 **`plan_item_id`**（已有），确保 Key 含 **`q1`～`q4`** |
-| **配置 `app/core/config.py`** | 新增开关：`NL2SQL_CACHE_ENABLED`、`TTL`、`PATCH_LLM_ENABLED` 等 |
+| **`app/nl2sql/chain.py`** · **`generate_sql_with_validation_context`** | **查找顺序**：**L2 → L1 →** RAG/LLM；命中后仍执行 **`normalize_sql`、TiDB 兼容改写、`_rewrite_query_filters`、`_validate_sql`**；失败则 **delete** 对应缓存条目并降级 |
+| **`app/nl2sql/sql_cache.py`** | **`get_nl2sql_sql_cache` / `get_nl2sql_l1_cache`**：两套进程内 **TTL + LRU**（实现类共用 `NL2SQLSqlCache`，存储分区隔离） |
+| **`app/nl2sql/sql_skeleton.py`** | L1：**意图键、`extract_time_skeleton_from_sql`、`render_sql_time_skeleton`** |
+| **`app/services/nl2sql_service.py`** | 传入 **`plan_item_id` / `analysis_type`**（综合分析子任务聚合至此链路） |
+| **`app/llm/graphs/analysis_graph_runner.py`** · **`_run_single_nl2sql_plan_task`** | 组装 **`task.question`**（用户 query + 模板子句），保证 **`plan_item_id`** 参与缓存键 |
 
-**原则**：缓存层对上层透明；**不改变** `AnalysisNL2SQLCall` 对外语义（可在 `attempts` 或扩展字段标记 `cache_hit` 便于观测）。
+**原则**：缓存层对上层透明；**不改变** `AnalysisNL2SQLCall` 对外语义；LangSmith 元数据中 **`sql_cache`**：`hit`（L2）、**`l1_hit`**（L1）。
+
+---
+
+## 七 bis、落地对照摘要（运维速查）
+
+| 项目 | 说明 |
+|------|------|
+| **总开关** | **`NL2SQL_CACHE_ENABLED=true`** 且 **`get_app_config().db`** 存在时才参与缓存键与后端初始化 |
+| **L1 开关** | **`NL2SQL_L1_CACHE_ENABLED`**（默认 `true`）；关闭后仅保留 L2 |
+| **查找顺序** | **L2 → L1 →** 全量生成 |
+| **写入条件** | LLM 路径生成 SQL **且校验通过**后写 L2；骨架抽取成功则写 L1 |
+| **失效** | TTL 过期、LRU 驱逐、命中后校验/方言失败 **`delete`** |
+| **多 worker** | 进程内缓存 **不跨进程**；扩容多副本时缓存命中率为实例本地 |
+| **日志关键字** | `NL2SQLChain sql_cache hit`、`NL2SQLChain sql_l1_cache hit`、`stale_or_invalid evict` |
 
 ---
 
@@ -224,8 +256,9 @@ flowchart LR
 | `NL2SQL_CACHE_ENABLED` | `true` 时启用 L2 SQL 快照缓存；`false` 与未实现前行为一致 | `false` |
 | `NL2SQL_CACHE_TTL_SECONDS` | 条目 TTL（秒），代码下限 60 | `3600` |
 | `NL2SQL_CACHE_MAX_ENTRIES` | 进程内 LRU 上限，代码下限 16 | `512` |
+| `NL2SQL_L1_CACHE_ENABLED` | 为 `true` 时启用 **L1 时间骨架**（与 L2 共用 TTL/容量；**总开关**仍为 `NL2SQL_CACHE_ENABLED`） | `true` |
 
-对应配置模型：`app/core/config.py` · `AnalysisConfig.nl2sql_cache_*`。
+对应配置模型：`app/core/config.py` · `AnalysisConfig.nl2sql_cache_*` / `nl2sql_l1_cache_enabled`。
 
 ---
 
@@ -241,7 +274,7 @@ flowchart LR
 | 阶段 | 内容 |
 |------|------|
 | **P0** | L2 SQL 快照 + 规则 Key + 规则修补 + Validator；Redis TTL；配置开关 |
-| **P1** | L1 骨架抽取与渲染；schema/policy 指纹自动化 |
+| **P1** | L1 骨架抽取与渲染；schema/policy 指纹自动化（**已落地首版**：`app/nl2sql/sql_skeleton.py` — 意图键折叠相对日词 + `DATE_SUB`/`'YYYY-MM-DD[ HH:MM:SS]'` 占位与重渲染；与 L2 进程内缓存叠加，lookup 顺序 **L2 → L1 → LLM**） |
 | **P2** | 向量近似召回 Top-K + 人工阈值；可选补丁 LLM |
 
 ---
@@ -252,3 +285,4 @@ flowchart LR
 |------|------|------|
 | 2026-05-06 | v0.1 | 初稿：分层缓存 + 命中修补 + 集成点与超温模板约束 |
 | 2026-05-06 | v0.2 | P0：进程内 L2 + `NL2SQL_CACHE_*` 开关；命中跳过 LLM，仍走规范化与校验 |
+| 2026-05-06 | v0.3 | L1 时间骨架落地；§4.1 区分 L2/L1 键；§七～七 bis 集成点与运维速查；§3.1 已实现形态说明 |

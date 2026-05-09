@@ -489,6 +489,8 @@ class AnalysisConfig:
     nl2sql_cache_enabled: bool = False
     nl2sql_cache_ttl_seconds: int = 3600
     nl2sql_cache_max_entries: int = 512
+    # NL2SQL：L1 时间骨架缓存（意图键 + SQL 模板占位符）；依赖 NL2SQL_CACHE_ENABLED=true 且本开关为 true 时启用
+    nl2sql_l1_cache_enabled: bool = True
     # 规划前 RAG 检索 query 构造：
     # legacy — 与旧版一致：`{analysis_type} {用户 query}`（英文枚举参与向量/关键词/重排）；
     # user_only — 仅用用户 query 做主检索；
@@ -929,6 +931,7 @@ def _load_from_env() -> AppConfig:
         nl2sql_cache_enabled=os.getenv("NL2SQL_CACHE_ENABLED", "false").lower() == "true",
         nl2sql_cache_ttl_seconds=max(60, int(os.getenv("NL2SQL_CACHE_TTL_SECONDS", "3600"))),
         nl2sql_cache_max_entries=max(16, int(os.getenv("NL2SQL_CACHE_MAX_ENTRIES", "512"))),
+        nl2sql_l1_cache_enabled=os.getenv("NL2SQL_L1_CACHE_ENABLED", "true").lower() == "true",
         plan_rag_query_mode=(
             (os.getenv("ANALYSIS_PLAN_RAG_QUERY_MODE", "two_stage") or "two_stage").strip().lower()
         ),

@@ -174,6 +174,8 @@ class NL2SQLChain:
     ) -> tuple[str, NL2SQLValidationContext]:
         cache_key_for_store: str | None = None
         sql_cache_backend: Any = None
+        l1_cache_key_for_store: str | None = None
+        l1_cache_backend: Any = None
         logger.info(
             "NL2SQLChain.generate_sql start user_id=%s question_len=%d preview=%r",
             user_id,
@@ -251,19 +253,33 @@ class NL2SQLChain:
         from app.core.config import get_app_config
         from app.nl2sql.sql_cache import (
             build_nl2sql_sql_cache_key,
+            compute_nl2sql_data_source_fp,
             compute_nl2sql_policy_fp,
             compute_schema_fp_from_metadata,
+            get_nl2sql_l1_cache,
             get_nl2sql_sql_cache,
         )
+        from app.nl2sql.sql_skeleton import (
+            build_nl2sql_l1_cache_key,
+            render_sql_time_skeleton,
+            skeleton_payload_from_json,
+        )
 
-        cfg_analysis = get_app_config().analysis
-        if cfg_analysis.nl2sql_cache_enabled and (user_id or "").strip():
+        app_cfg = get_app_config()
+        cfg_analysis = app_cfg.analysis
+        db_cfg = getattr(app_cfg, "db", None)
+        if cfg_analysis.nl2sql_cache_enabled and db_cfg is not None:
+            data_source_fp = compute_nl2sql_data_source_fp(
+                host=db_cfg.host,
+                port=db_cfg.port,
+                database=db_cfg.database,
+            )
             schema_fp = compute_schema_fp_from_metadata(
                 [t.name for t in self._schema.list_tables() if t.name]
             )
             policy_fp = compute_nl2sql_policy_fp(analysis_type=analysis_type)
             cache_key_for_store = build_nl2sql_sql_cache_key(
-                user_id=user_id or "",
+                data_source_fp=data_source_fp,
                 analysis_type=analysis_type,
                 plan_item_id=plan_item_id,
                 question=question,
@@ -274,6 +290,19 @@ class NL2SQLChain:
                 ttl_seconds=cfg_analysis.nl2sql_cache_ttl_seconds,
                 max_entries=cfg_analysis.nl2sql_cache_max_entries,
             )
+            if cfg_analysis.nl2sql_l1_cache_enabled:
+                l1_cache_key_for_store = build_nl2sql_l1_cache_key(
+                    data_source_fp=data_source_fp,
+                    analysis_type=analysis_type,
+                    plan_item_id=plan_item_id,
+                    question=question,
+                    schema_fp=schema_fp,
+                    policy_fp=policy_fp,
+                )
+                l1_cache_backend = get_nl2sql_l1_cache(
+                    ttl_seconds=cfg_analysis.nl2sql_cache_ttl_seconds,
+                    max_entries=cfg_analysis.nl2sql_cache_max_entries,
+                )
             cached_sql = sql_cache_backend.get(cache_key_for_store)
             if cached_sql:
                 sql = cached_sql
@@ -300,9 +329,9 @@ class NL2SQLChain:
                     )
                     if valid:
                         logger.info(
-                            "NL2SQLChain sql_cache hit sql_len=%d user_id=%s plan_item_id=%s",
+                            "NL2SQLChain sql_cache hit sql_len=%d data_source_fp=%s plan_item_id=%s",
                             len(sql or ""),
-                            user_id,
+                            data_source_fp,
                             plan_item_id or "-",
                         )
                         self._ls_tracker.log_run(
@@ -328,6 +357,72 @@ class NL2SQLChain:
                     dialect_reason if not dialect_ok else "-",
                 )
                 sql_cache_backend.delete(cache_key_for_store)
+
+            if (
+                cfg_analysis.nl2sql_l1_cache_enabled
+                and l1_cache_backend is not None
+                and l1_cache_key_for_store
+            ):
+                raw_l1 = l1_cache_backend.get(l1_cache_key_for_store)
+                if raw_l1:
+                    payload = skeleton_payload_from_json(raw_l1)
+                    if not isinstance(payload, dict):
+                        l1_cache_backend.delete(l1_cache_key_for_store)
+                    else:
+                        rendered = render_sql_time_skeleton(payload, question)
+                        if rendered:
+                            sql = rendered
+                            sql = self._validator.normalize_sql(sql)
+                            sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
+                            sql, filter_notes = self._rewrite_query_filters(sql, question=question)
+                            rewrite_notes.extend(filter_notes)
+                            if rewrite_notes:
+                                logger.info(
+                                    "NL2SQLChain sql_l1_cache TiDB rewrite applied: %s",
+                                    "; ".join(rewrite_notes),
+                                )
+                            dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
+                            if dialect_ok:
+                                valid, validation_error = self._validate_sql(
+                                    sql,
+                                    question=question,
+                                    allowed_tables=allowed_tables,
+                                    allowed_columns=allowed_columns,
+                                    enforce_column_whitelist=schema_ok,
+                                    table_columns=table_columns_map if schema_ok else None,
+                                    join_whitelist=join_whitelist,
+                                    entity_rules=entity_rules,
+                                )
+                                if valid:
+                                    logger.info(
+                                        "NL2SQLChain sql_l1_cache hit sql_len=%d data_source_fp=%s plan_item_id=%s",
+                                        len(sql or ""),
+                                        data_source_fp,
+                                        plan_item_id or "-",
+                                    )
+                                    self._ls_tracker.log_run(
+                                        name="nl2sql",
+                                        run_type="llm",
+                                        inputs={
+                                            "user_id": user_id,
+                                            "question": question,
+                                        },
+                                        outputs={"sql": sql},
+                                        metadata={"scene": "nl2sql", "sql_cache": "l1_hit"},
+                                    )
+                                    logger.info(
+                                        "NL2SQLChain.generate_sql success sql_len=%d preview=%r",
+                                        len(sql or ""),
+                                        _text_preview(sql, 0),
+                                    )
+                                    return sql, validation_ctx
+                            logger.warning(
+                                "NL2SQLChain sql_l1_cache stale_or_invalid evict preview=%r dialect_ok=%s reason=%s",
+                                _text_preview(sql, 0),
+                                dialect_ok,
+                                dialect_reason if not dialect_ok else "-",
+                            )
+                            l1_cache_backend.delete(l1_cache_key_for_store)
 
         catalog_tables = self._schema.list_tables()
         if scoped_tables:
@@ -558,6 +653,12 @@ class NL2SQLChain:
             sql=sql or "",
             enabled=cfg_analysis.nl2sql_cache_enabled,
         )
+        self._maybe_store_nl2sql_l1_cache(
+            cache_key=l1_cache_key_for_store,
+            backend=l1_cache_backend,
+            sql=sql or "",
+            enabled=cfg_analysis.nl2sql_cache_enabled and cfg_analysis.nl2sql_l1_cache_enabled,
+        )
         return sql, validation_ctx
 
     @staticmethod
@@ -576,6 +677,28 @@ class NL2SQLChain:
             backend.set(cache_key, sql)
         except Exception:
             logger.exception("NL2SQLChain sql_cache set failed")
+
+    @staticmethod
+    def _maybe_store_nl2sql_l1_cache(
+        *,
+        cache_key: str | None,
+        backend: Any,
+        sql: str,
+        enabled: bool,
+    ) -> None:
+        if not enabled or not cache_key or backend is None:
+            return
+        if not (sql or "").strip():
+            return
+        try:
+            from app.nl2sql.sql_skeleton import extract_time_skeleton_from_sql, skeleton_payload_to_json
+
+            payload = extract_time_skeleton_from_sql(sql)
+            if not payload:
+                return
+            backend.set(cache_key, skeleton_payload_to_json(payload))
+        except Exception:
+            logger.exception("NL2SQLChain sql_l1_cache set failed")
 
     async def refine_sql_after_executor_error(
         self,
