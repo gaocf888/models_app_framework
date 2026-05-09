@@ -719,6 +719,25 @@ class ElasticsearchVectorStore(VectorStore):
         self._vector_field_kind: str = "unknown"
 
     @staticmethod
+    def _truncate_for_bool_match_query(text: str) -> str:
+        """
+        `match` 对超长输入会分析出过多词项，bool 子句超过 Lucene `maxClauseCount`（默认 1024），
+        ES 返回 search_phase_execution_exception。综合分析等场景会在检索 query 中夹带大块 DOCX/表格文本，
+        参与 ES match 的字符串必须截断（向量嵌入仍可用完整 query，仅 keyword/metadata 臂受限）。
+        """
+        max_c = max(256, int(os.getenv("RAG_ES_MATCH_QUERY_MAX_CHARS", "3000")))
+        t = (text or "").strip()
+        if len(t) <= max_c:
+            return t
+        logger.warning(
+            "ElasticsearchVectorStore: truncating bool/match query len=%d to max_chars=%d "
+            "(env RAG_ES_MATCH_QUERY_MAX_CHARS)",
+            len(t),
+            max_c,
+        )
+        return t[:max_c]
+
+    @staticmethod
     def _create_client(cfg: ElasticsearchConfig):
         try:
             import elasticsearch as es_module  # type: ignore[import-untyped]
@@ -1014,7 +1033,8 @@ class ElasticsearchVectorStore(VectorStore):
     ) -> List[dict[str, Any]]:
         if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
             return []
-        bool_query: dict[str, Any] = {"must": [{"match": {"text": query}}]}
+        q = self._truncate_for_bool_match_query(query)
+        bool_query: dict[str, Any] = {"must": [{"match": {"text": q}}]}
         if namespace is not None:
             bool_query["filter"] = [{"term": {"namespace": namespace}}]
         body = {"size": k, "query": {"bool": bool_query}}
@@ -1029,15 +1049,16 @@ class ElasticsearchVectorStore(VectorStore):
     ) -> List[dict[str, Any]]:
         if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
             return []
+        q = self._truncate_for_bool_match_query(query)
         bool_query: dict[str, Any] = {
             "should": [
-                {"match": {"doc_name": query}},
-                {"match": {"metadata.doc_version": query}},
-                {"match": {"metadata.tenant_id": query}},
+                {"match": {"doc_name": q}},
+                {"match": {"metadata.doc_version": q}},
+                {"match": {"metadata.tenant_id": q}},
                 # NL2SQL 自动 QA 闭环（qa_feedback）写入的元数据；否则 list_nl2sql_auto_qa_entries 用
                 # nl2sql_system_feedback_v1 检索会恒为空（旧逻辑未检索这些字段）。
-                {"match": {"metadata.nl2sql_auto_kind": query}},
-                {"match": {"metadata.ingest_source": query}},
+                {"match": {"metadata.nl2sql_auto_kind": q}},
+                {"match": {"metadata.ingest_source": q}},
             ],
             "minimum_should_match": 1,
         }
