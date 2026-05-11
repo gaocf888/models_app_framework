@@ -18,6 +18,13 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 _WS_RE = re.compile(r"\s+")
+_CN_PERIOD_RUN = re.compile(r"。{2,}")
+
+# 与 `analysis_graph_runner` 注入的规划前 RAG 附录前缀一致；缓存键须去掉其后可变检索正文，避免永不命中。
+_PLAN_CONTEXT_GUIDE_MARKERS: tuple[str, ...] = (
+    "请结合以下规则线索",
+    "请结合以下规则",
+)
 
 _global_cache: NL2SQLSqlCache | None = None
 _global_l1_cache: NL2SQLSqlCache | None = None
@@ -29,6 +36,26 @@ def normalize_nl2sql_question(text: str) -> str:
     s = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     s = _WS_RE.sub(" ", s)
     return s
+
+
+def strip_plan_context_guide_suffix(text: str) -> str:
+    """
+    去掉综合分析 `plan_context_rag` 拼在问句后的可变附录（自首个「请结合以下规则线索」类标记起截断）。
+
+    L2/L1 缓存键基于此前缀之前的正文（用户原句 + 计划子任务模板句 + scope 守卫），避免因 ES/RAG 写入漂移导致永 miss。
+    """
+    s = (text or "").strip()
+    if not s:
+        return s
+    cut = len(s)
+    for m in _PLAN_CONTEXT_GUIDE_MARKERS:
+        i = s.find(m)
+        if i >= 0:
+            cut = min(cut, i)
+    out = s[:cut].strip()
+    # `…守卫。。请结合…` 截断后易残留重复句读，与无 RAG 的 task.question 对齐以便命中缓存
+    out = _CN_PERIOD_RUN.sub("。", out)
+    return out
 
 
 def compute_schema_fp_from_metadata(table_names: list[str]) -> str:
@@ -78,7 +105,7 @@ def build_nl2sql_sql_cache_key(
     schema_fp: str,
     policy_fp: str,
 ) -> str:
-    qn = normalize_nl2sql_question(question)
+    qn = normalize_nl2sql_question(strip_plan_context_guide_suffix(question))
     raw = (
         f"{data_source_fp}\0{(analysis_type or '').strip()}\0{(plan_item_id or '').strip()}\0"
         f"{qn}\0{schema_fp}\0{policy_fp}"

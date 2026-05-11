@@ -20,6 +20,13 @@ class NL2SQLQueryRequest(BaseModel):
         default=None,
         description="可选：数据计划子任务 item_id（如 q1、q2）",
     )
+    time_intent_text: str | None = Field(
+        default=None,
+        description=(
+            "可选：仅用于动态时间窗等规则从该文本抽取时间语义；未设置时与 question 一致。"
+            "综合分析等场景可设为上层用户原句，避免任务 question 末尾 RAG 附录污染时间抽取。"
+        ),
+    )
 
     @field_validator("user_id")
     @classmethod

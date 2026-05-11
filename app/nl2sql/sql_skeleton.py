@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
-from app.nl2sql.sql_cache import normalize_nl2sql_question
+from app.nl2sql.sql_cache import normalize_nl2sql_question, strip_plan_context_guide_suffix
 
 _DATE_SUB_RX = re.compile(
     r"DATE_SUB\s*\(\s*CURDATE\s*\(\s*\)\s*,\s*INTERVAL\s+(\d+)\s+DAY\s*\)",
@@ -497,7 +497,7 @@ def build_nl2sql_l1_cache_key(
     schema_fp: str,
     policy_fp: str,
 ) -> str:
-    qn = normalize_nl2sql_question_intent(question)
+    qn = normalize_nl2sql_question_intent(strip_plan_context_guide_suffix(question))
     raw = (
         f"{data_source_fp}\0{(analysis_type or '').strip()}\0{(plan_item_id or '').strip()}\0"
         f"{qn}\0{schema_fp}\0{policy_fp}"

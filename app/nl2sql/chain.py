@@ -172,7 +172,13 @@ class NL2SQLChain:
         user_id: str | None = None,
         analysis_type: str | None = None,
         plan_item_id: str | None = None,
+        time_intent_text: str | None = None,
     ) -> tuple[str, NL2SQLValidationContext]:
+        time_src = (
+            time_intent_text.strip()
+            if time_intent_text is not None
+            else question
+        )
         cache_key_for_store: str | None = None
         sql_cache_backend: Any = None
         l1_cache_key_for_store: str | None = None
@@ -326,7 +332,9 @@ class NL2SQLChain:
                 sql = cached_sql
                 sql = self._validator.normalize_sql(sql)
                 sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
-                sql, filter_notes = self._rewrite_query_filters(sql, question=question)
+                sql, filter_notes = self._rewrite_query_filters(
+                    sql, question=question, time_intent_source=time_src
+                )
                 rewrite_notes.extend(filter_notes)
                 if rewrite_notes:
                     logger.info(
@@ -387,12 +395,14 @@ class NL2SQLChain:
                     if not isinstance(payload, dict):
                         l1_cache_backend.delete(l1_cache_key_for_store)
                     else:
-                        rendered = render_sql_time_skeleton(payload, question)
+                        rendered = render_sql_time_skeleton(payload, time_src)
                         if rendered:
                             sql = rendered
                             sql = self._validator.normalize_sql(sql)
                             sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
-                            sql, filter_notes = self._rewrite_query_filters(sql, question=question)
+                            sql, filter_notes = self._rewrite_query_filters(
+                                sql, question=question, time_intent_source=time_src
+                            )
                             rewrite_notes.extend(filter_notes)
                             if rewrite_notes:
                                 logger.info(
@@ -522,7 +532,9 @@ class NL2SQLChain:
         raw_out_len = len(sql or "")
         sql = self._validator.normalize_sql(sql)
         sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
-        sql, filter_notes = self._rewrite_query_filters(sql, question=question)
+        sql, filter_notes = self._rewrite_query_filters(
+            sql, question=question, time_intent_source=time_src
+        )
         rewrite_notes.extend(filter_notes)
         if rewrite_notes:
             logger.info("NL2SQLChain TiDB rewrite applied: %s", "; ".join(rewrite_notes))
@@ -551,7 +563,9 @@ class NL2SQLChain:
                     )
                     sql = self._validator.normalize_sql(sql)
                     sql, refine_notes = self._rewrite_tidb_compatible_sql(sql)
-                    sql, filter_notes = self._rewrite_query_filters(sql, question=question)
+                    sql, filter_notes = self._rewrite_query_filters(
+                        sql, question=question, time_intent_source=time_src
+                    )
                     refine_notes.extend(filter_notes)
                     if refine_notes:
                         logger.info(
@@ -605,7 +619,9 @@ class NL2SQLChain:
                     )
                     sql = self._validator.normalize_sql(sql)
                     sql, refine_notes = self._rewrite_tidb_compatible_sql(sql)
-                    sql, filter_notes = self._rewrite_query_filters(sql, question=question)
+                    sql, filter_notes = self._rewrite_query_filters(
+                        sql, question=question, time_intent_source=time_src
+                    )
                     refine_notes.extend(filter_notes)
                     if refine_notes:
                         logger.info(
@@ -778,6 +794,7 @@ class NL2SQLChain:
         error_message: str,
         *,
         ctx: NL2SQLValidationContext,
+        time_intent_text: str | None = None,
     ) -> str:
         """
         在 EXPLAIN / SELECT 执行失败后，将数据库错误信息喂给 LLM 做有限次修正（需 LangChain）。
@@ -785,6 +802,11 @@ class NL2SQLChain:
         """
         if self._lc_chat_model is None:
             return ""
+        time_src = (
+            time_intent_text.strip()
+            if time_intent_text is not None
+            else question
+        )
         entity_rules = load_entity_rules_from_env()
         try:
             refined = await self._refine_sql(
@@ -794,7 +816,9 @@ class NL2SQLChain:
             )
             refined = self._validator.normalize_sql(refined)
             refined, rewrite_notes = self._rewrite_tidb_compatible_sql(refined)
-            refined, filter_notes = self._rewrite_query_filters(refined, question=question)
+            refined, filter_notes = self._rewrite_query_filters(
+                refined, question=question, time_intent_source=time_src
+            )
             rewrite_notes.extend(filter_notes)
             if rewrite_notes:
                 logger.info(
@@ -994,11 +1018,18 @@ class NL2SQLChain:
     def _contains_window_functions(self, sql: str) -> bool:
         return bool(self._tidb_window_pattern.search(sql) or self._tidb_lag_like_pattern.search(sql))
 
-    def _rewrite_query_filters(self, sql: str, *, question: str) -> tuple[str, list[str]]:
+    def _rewrite_query_filters(
+        self,
+        sql: str,
+        *,
+        question: str,
+        time_intent_source: str | None = None,
+    ) -> tuple[str, list[str]]:
         """P2：优化口径（通用时间语义动态窗 + 区域放宽匹配）。"""
         notes: list[str] = []
         rewritten = sql
-        time_window = self._extract_time_window_from_question(question)
+        time_q = time_intent_source if time_intent_source is not None else question
+        time_window = self._extract_time_window_from_question(time_q)
         if time_window is not None:
             rewritten, time_notes = self._rewrite_dynamic_time_window(
                 rewritten,

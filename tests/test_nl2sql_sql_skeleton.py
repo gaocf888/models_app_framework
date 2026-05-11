@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.nl2sql.sql_cache import build_nl2sql_sql_cache_key
 from app.nl2sql.sql_skeleton import (
     build_nl2sql_l1_cache_key,
     extract_time_skeleton_from_sql,
@@ -110,3 +111,32 @@ def test_extract_quoted_same_day() -> None:
     out = render_sql_time_skeleton(payload, "前天")
     assert out is not None
     assert "00:00:00" in out and "23:59:59" in out
+
+
+def test_l2_cache_key_ignores_plan_context_rag_suffix() -> None:
+    kw = dict(
+        data_source_fp="d" * 32,
+        analysis_type="overheat_guidance",
+        plan_item_id="q1",
+        schema_fp="s" * 32,
+        policy_fp="p" * 32,
+    )
+    core = "分析前天超温。查询超温事件明细。若用户未指定机组/区域，则不要在 WHERE 中臆造具体锅炉名或墙别。"
+    k_a = build_nl2sql_sql_cache_key(**kw, question=f"{core}。请结合以下规则线索：片段A")
+    k_b = build_nl2sql_sql_cache_key(**kw, question=f"{core}。请结合以下规则线索：完全不同的片段B")
+    k_plain = build_nl2sql_sql_cache_key(**kw, question=core)
+    assert k_a == k_b == k_plain
+
+
+def test_l1_cache_key_ignores_plan_context_rag_suffix() -> None:
+    kw = dict(
+        data_source_fp="d" * 32,
+        analysis_type="overheat_guidance",
+        plan_item_id="q2",
+        schema_fp="s" * 32,
+        policy_fp="p" * 32,
+    )
+    core = "分析前天超温。查询运行参数"
+    k_a = build_nl2sql_l1_cache_key(**kw, question=f"{core}。请结合以下规则线索：X")
+    k_b = build_nl2sql_l1_cache_key(**kw, question=f"{core}。请结合以下规则线索：Y")
+    assert k_a == k_b

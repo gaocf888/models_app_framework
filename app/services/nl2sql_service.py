@@ -56,6 +56,7 @@ class NL2SQLService:
             user_id=req.user_id,
             analysis_type=req.analysis_type,
             plan_item_id=req.plan_item_id,
+            time_intent_text=req.time_intent_text,
         )
         rows: list = []
         explain_first = os.getenv("NL2SQL_EXPLAIN_BEFORE_EXECUTE", "false").lower() == "true"
@@ -101,6 +102,7 @@ class NL2SQLService:
                             sql,
                             str(exc_explain),
                             ctx=vctx,
+                            time_intent_text=req.time_intent_text,
                         )
                         if new_sql:
                             sql = new_sql
@@ -141,6 +143,7 @@ class NL2SQLService:
                         sql,
                         str(exc),
                         ctx=vctx,
+                        time_intent_text=req.time_intent_text,
                     )
                     if new_sql:
                         sql = new_sql

@@ -2681,6 +2681,7 @@ class AnalysisGraphRunner:
                         analysis_type=req.analysis_type,
                         analysis_request_id=analysis_request_id,
                         plan_item_id=task.item_id,
+                        time_intent_text=(req.query or "").strip(),
                     ),
                     record_conversation=False,
                 )

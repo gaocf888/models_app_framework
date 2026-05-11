@@ -118,7 +118,7 @@ services:
     volumes:
       - huggingface-cache:/root/.cache/huggingface
       # 应用内部文件日志目录（配合 LOG_FILE=/workspace/logs/app.log）
-      - app-logs:/workspace/logs
+      - ../logs:/workspace/logs
       # 嵌入模型离线挂载
       - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 重排模型离线挂载

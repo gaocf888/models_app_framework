@@ -13,7 +13,7 @@ from typing import Any
 
 from app.core.logging import get_logger
 from app.nl2sql.rag_service import NL2SQLRAGService
-from app.nl2sql.sql_cache import normalize_nl2sql_question
+from app.nl2sql.sql_cache import normalize_nl2sql_question, strip_plan_context_guide_suffix
 from app.rag.models import RetrievedChunk
 from app.rag.rag_service import RAGService
 
@@ -29,13 +29,6 @@ META_KEY_DATA_SOURCE_FP = "data_source_fp"
 META_KEY_SCHEMA_FP = "schema_fp"
 META_KEY_POLICY_FP = "policy_fp"
 
-# 综合分析会把 plan_context RAG 片段拼在问句后（「请结合以下规则线索：…」）；写入 QA 库时需裁掉，避免
-# 向量正文膨胀、自我递归召回与 ES match clause 爆炸。按最长匹配优先截断。
-_GUIDE_STRIP_MARKERS: tuple[str, ...] = (
-    "请结合以下规则线索",
-    "请结合以下规则",
-)
-
 # 须与 app.llm.graphs.analysis_graph_runner._PLAN_TASK_SCOPE_GUARD_CN 完全一致
 _NL2SQL_PLAN_TASK_SCOPE_GUARD_CN = "若用户未指定机组/区域，则不要在 WHERE 中臆造具体锅炉名或墙别。"
 
@@ -47,15 +40,9 @@ def compact_nl2sql_feedback_question(question: str) -> str:
     2) 去掉综合分析子任务统一的机组/区域 scope 守卫（与运行时附加文案一致），仅保留「用户原句 + 计划模板子句」主干。
     不影响指纹过滤（metadata）；语义召回对齐「用户意图 + 子任务描述」。
     """
-    s = (question or "").strip()
+    s = strip_plan_context_guide_suffix(question)
     if not s:
         return s
-    cut = len(s)
-    for m in _GUIDE_STRIP_MARKERS:
-        i = s.find(m)
-        if i >= 0:
-            cut = min(cut, i)
-    s = s[:cut].strip()
     if os.getenv("NL2SQL_QA_FEEDBACK_KEEP_SCOPE_GUARD", "false").lower() != "true":
         g = _NL2SQL_PLAN_TASK_SCOPE_GUARD_CN
         if s.endswith(g):

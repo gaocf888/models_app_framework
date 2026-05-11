@@ -37,6 +37,7 @@ async def nl2sql_query(req: NL2SQLQueryRequest) -> NL2SQLQueryResponse:
 
     Args:
         req (NL2SQLQueryRequest): 必填 `user_id`、`session_id`、`question`。
+            可选 `time_intent_text`：仅用于动态时间窗等从该文本抽取时间语义（未填则等同 `question`）。
 
     Returns:
         NL2SQLQueryResponse: `sql` 为模型生成的语句，`rows` 为查询结果列表（执行失败时行为见服务层与会话记录）。
