@@ -32,11 +32,12 @@ def _estimate_prompt_tokens_upper_bound(prompt_chars: int, *, context_total_toke
     """
     输入 prompt 的 token 数上界（启发式，偏保守）。
 
-    - est_sparse：按 ~2.2 字符/token（Qwen 类中英混合常低于 2.5；实测曾出现 58k 字符≈26k token）；
-    - est_mixed：按 ~2.5 字符/token；
-    - est_dense：按 ~1.5 字符/token（极密 ASCII/符号）；仅在不撑爆窗口上界时与 base 取 max。
+    - est_sparse / est_mixed：约 2.2～2.5 字符/token；
+    - est_dense：约 1.5 字符/token（极密符号）；仅在不撑爆窗口上界时并入；
+    - est_ratio_high：约 1.35 字符/token 量级（表格/中英混杂曾出现 33k 字符≈24.6k token），与 base 取 max；
+      对该分支设 ctx 封顶，避免超长纯 ASCII 把估算顶到超过窗口进而算不出合法 max_tokens。
 
-    说明：旧逻辑在 est_dense 超过 density_ceiling 时退回仅 est_mixed，会对中文偏重文本低估数千 token。
+    说明：VL/表格序列化密度波动大，单靠 2.2～2.5 仍可能低估数千 token。
     """
     c = max(0, prompt_chars)
     ctx = max(2048, int(context_total_tokens))
@@ -46,8 +47,11 @@ def _estimate_prompt_tokens_upper_bound(prompt_chars: int, *, context_total_toke
     base = max(est_sparse, est_mixed)
     density_ceiling = max(4096, (ctx * 85) // 100)
     if est_dense < density_ceiling:
-        return max(base, est_dense)
-    return base
+        base = max(base, est_dense)
+    # ceil(c / 1.35) 量级：(c * 20 + 26) // 27
+    ratio_ceiling = max(2048, ctx - 2048)
+    est_ratio_high = min(max(1, (c * 20 + 26) // 27), ratio_ceiling)
+    return max(base, est_ratio_high)
 
 
 def cap_completion_max_tokens_for_context(
@@ -63,9 +67,9 @@ def cap_completion_max_tokens_for_context(
     slack_cfg = max(64, int(slack_tokens))
 
     est = _estimate_prompt_tokens_upper_bound(prompt_chars, context_total_tokens=ctx)
-    # 单次预留：模板/特殊 token、与服务端 tokenizer 计数偏差（合并为一档，避免 fudge+margin+safety 叠乘）
-    reserve = max(slack_cfg, 512) + 384
-    room = ctx - est - reserve
+    # 单次预留：模板/特殊 token、与服务端计数偏差；+128 与 fencepost 减轻「差 1 token」400
+    reserve = max(slack_cfg, 512) + 384 + 128
+    room = ctx - est - reserve - 1
     if room < _MIN_COMPLETION_TOKENS:
         logger.warning(
             "inspection_extract completion budget exhausted prompt_chars=%s est=%s reserve=%s ctx=%s "

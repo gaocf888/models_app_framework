@@ -59,19 +59,36 @@ def _dedupe_keep_order(items: list[str]) -> list[str]:
     return out
 
 
+def _normalize_font_color_hex(rgb_str: str) -> str | None:
+    """将 run 字体色规范为 6 位大写 hex；无法解析或 AUTO 返回 None。"""
+    s = rgb_str.upper().replace("#", "").strip()
+    if not s or s == "AUTO":
+        return None
+    if len(s) == 8 and s.startswith("FF"):
+        s = s[2:]
+    if len(s) >= 6:
+        return s[-6:]
+    return s if s else None
+
+
+def _is_default_black_font(hex6: str | None) -> bool:
+    """默认黑色（常见 Word 显式 000000）不视为需输出的检修样式。"""
+    return hex6 is None or hex6 == "000000"
+
+
 def _collect_cell_run_color_marks(cell) -> list[str]:
-    """收集单元格内 run 级颜色信息：字体色/高亮/文本底纹。"""
+    """收集单元格内 run 级颜色信息：字体色（非默认黑）/高亮/文本底纹。"""
     marks: list[str] = []
     for p in cell.paragraphs:
         for run in p.runs:
-            # 1) 字体颜色（RGB）
+            # 1) 字体颜色（RGB）：默认黑色 000000 不输出，避免海量重复 token
             try:
                 rgb = run.font.color.rgb if run.font and run.font.color else None
             except Exception:  # noqa: BLE001
                 rgb = None
             if rgb is not None:
-                val = str(rgb).upper().replace("#", "")
-                if val and val != "AUTO":
+                val = _normalize_font_color_hex(str(rgb))
+                if val and not _is_default_black_font(val):
                     marks.append(f"字体={val}")
 
             r_pr = run._r.find(qn("w:rPr"))  # noqa: SLF001
@@ -113,9 +130,12 @@ def serialize_docx_for_inspection_v2(
 ) -> str:
     """
     将 docx 按文档流展开为供 LLM 使用的文本：段落原样，表格按行列输出。
-    颜色标注策略：
-    - 任意颜色（单元格底纹 / 文本底纹 / 字体色 / 高亮）都会附加「颜色标注」；
-    - 命中候选底纹色时额外附加「超标候选」标记（兼容历史行为）。
+    颜色标注策略（默认不写、异常才写，节省 token）：
+    - 命中候选底纹色时附加「超标候选」；
+    - 单元格非白底纹：若非候选底纹（仍属异常底色），在「颜色标注」中输出 ``底纹=``；
+      若为候选底纹，仅以「超标候选」表达，不在「颜色标注」内重复 ``底纹=``；
+    - run 级：高亮（任意非 default/none）、非白文本底纹、**非默认黑色**字体色（000000 省略）；
+    - 仅当上述片段非空时附加对应 ``[颜色标注:...]`` 块。
     """
     path = Path(path)
     doc = Document(str(path))
@@ -142,7 +162,9 @@ def serialize_docx_for_inspection_v2(
                         mark_parts.append(f"[超标候选·底纹={fill}]" if fill else "[超标候选]")
                     color_marks: list[str] = []
                     if fill and fill != "FFFFFF":
-                        color_marks.append(f"底纹={fill}")
+                        # 候选底纹已在「超标候选」中写出，避免同一单元格再重复 底纹= 占用 token
+                        if not _is_candidate_shading(fill, candidate_fills):
+                            color_marks.append(f"底纹={fill}")
                     color_marks.extend(_collect_cell_run_color_marks(cell))
                     color_marks = _dedupe_keep_order(color_marks)
                     if color_marks:

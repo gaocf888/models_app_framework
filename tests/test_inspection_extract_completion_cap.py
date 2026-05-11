@@ -14,11 +14,20 @@ def test_estimate_prefers_dense_when_below_ceiling() -> None:
 
 
 def test_estimate_conservative_when_dense_dominates_window() -> None:
-    # ~61k chars：稠密分支不再退回「偏乐观的 2.5」以免低估中文偏重文本
+    # ~61k chars：含 ratio 高密度上界（封顶后与 base 取 max）
     c = 61442
     est = _estimate_prompt_tokens_upper_bound(c, context_total_tokens=32768)
+    ratio_capped = min((c * 20 + 26) // 27, 32768 - 2048)
     est_sparse = (c * 11 + 21) // 22
-    assert est == max(est_sparse, (c * 10 + 24) // 25)
+    est_mixed = (c * 10 + 24) // 25
+    assert est == max(max(est_sparse, est_mixed), ratio_capped)
+
+
+def test_estimate_covers_dense_short_prompt_regression() -> None:
+    """回归：~34k 字符曾≈24577 token（表格偏重），上界须覆盖。"""
+    c = 33390
+    est = _estimate_prompt_tokens_upper_bound(c, context_total_tokens=32768)
+    assert est >= 24577
 
 
 def test_estimate_covers_qwen_mixed_report_chunk() -> None:
@@ -41,8 +50,8 @@ def test_cap_reduces_parse_budget_near_context_limit() -> None:
     assert capped < 8192
     assert capped >= 64
     est = _estimate_prompt_tokens_upper_bound(c, context_total_tokens=32768)
-    reserve = max(slack, 512) + 384
-    assert est + capped + reserve <= 32768
+    reserve = max(slack, 512) + 384 + 128
+    assert est + capped + reserve + 1 <= 32768
 
 
 def test_cap_leaves_headroom_for_small_prompts() -> None:

@@ -95,6 +95,26 @@ def test_serialize_docx_marks_run_font_color() -> None:
         Path(path).unlink(missing_ok=True)
 
 
+def test_serialize_docx_omits_default_black_font_marker() -> None:
+    """显式默认黑 000000 不输出字体标注（避免与海量默认单元格重复 token）。"""
+    doc = Document()
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.cell(0, 0)
+    p = cell.paragraphs[0]
+    run = p.add_run("3.4")
+    run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+
+    fd, path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    doc.save(path)
+    try:
+        out = serialize_docx_for_inspection_v2(path, candidate_fills=set())
+        assert "字体=000000" not in out
+        assert "颜色标注" not in out
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
 def test_parse_document_v2_returns_docx_v2_route() -> None:
     doc = Document()
     table = doc.add_table(rows=1, cols=1)
