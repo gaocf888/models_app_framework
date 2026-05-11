@@ -1,13 +1,20 @@
 """
 检修 docx V2 序列化文本 → Processing Unit 分块。
 
-按小节标题切分单元，单元内再按长度打包；超大单元按表格块/表行继续切分。
+原则：
+- 同一逻辑表格完整落在单个块中（不跨块拆表）。
+- 含表的块以「表」为单元：紧邻该表上方的正文与该表同块。
+- 不含表的纯文本按 max_chunk_chars 切分。
 """
 
 from __future__ import annotations
 
 import re
 from typing import NamedTuple
+
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 _DOCX_V2_TABLE_PREFIX = "[DOCX_V2_TABLE"
 _ROW_LINE = re.compile(r"^\s*r\d+\s*:")
@@ -70,18 +77,11 @@ def _segment_unit_lines(lines: list[str]) -> list[_Segment]:
     return out
 
 
-def _split_table_by_rows(table_lines: list[str], *, max_rows_per_piece: int) -> list[list[str]]:
-    if not table_lines:
-        return []
-    header = table_lines[0]
-    row_lines = [ln for ln in table_lines[1:] if _ROW_LINE.match(ln.strip())]
-    if not row_lines:
-        return [table_lines]
-    pieces: list[list[str]] = []
-    for k in range(0, len(row_lines), max_rows_per_piece):
-        chunk_rows = row_lines[k : k + max_rows_per_piece]
-        pieces.append([header, *chunk_rows])
-    return pieces
+def _split_oversized_text_piece(text: str, *, budget_chars: int) -> list[str]:
+    """纯文本按固定字符宽切片（仅用于无表块）。"""
+    if len(text) <= budget_chars:
+        return [text]
+    return [text[i : i + budget_chars] for i in range(0, len(text), budget_chars)]
 
 
 def _pack_segments_to_chunks(
@@ -91,53 +91,39 @@ def _pack_segments_to_chunks(
     max_chunk_chars: int,
 ) -> list[str]:
     header = f"[处理单元 heading_path={heading_label}]\n"
-    pieces: list[str] = []
-    max_rows_split = 40
+    body_budget = max(64, max_chunk_chars - len(header))
+    chunks: list[str] = []
+    pending_text_parts: list[str] = []
 
     for seg in segments:
         if seg.kind == "text":
             t = "\n".join(seg.lines).strip()
             if t:
-                pieces.append(t)
+                pending_text_parts.append(t)
             continue
+
         tbl = seg.lines
         if not tbl:
             continue
-        full_text = "\n".join(tbl).strip()
-        if len(header) + len(full_text) + 1 <= max_chunk_chars:
-            pieces.append(full_text)
-            continue
-        for g in _split_table_by_rows(tbl, max_rows_per_piece=max_rows_split):
-            gtxt = "\n".join(g).strip()
-            if len(header) + len(gtxt) + 1 <= max_chunk_chars:
-                pieces.append(gtxt)
-            else:
-                for sub in _split_table_by_rows(g, max_rows_per_piece=max(8, max_rows_split // 4)):
-                    pieces.append("\n".join(sub).strip())
+        prelude = "\n\n".join(pending_text_parts).strip()
+        pending_text_parts.clear()
+        tbl_full = "\n".join(tbl).strip()
+        body = f"{prelude}\n{tbl_full}".strip() if prelude else tbl_full
+        full_chunk = (header + body).rstrip()
+        if len(full_chunk) > max_chunk_chars:
+            logger.warning(
+                "docx_v2 table chunk exceeds max_chunk_chars (atomic table+prelude) len=%s max=%s",
+                len(full_chunk),
+                max_chunk_chars,
+            )
+        chunks.append(full_chunk)
 
-    chunks: list[str] = []
-    cur = header
-    for p in pieces:
-        sep = "" if cur == header else "\n"
-        joined = cur + sep + p
-        if len(joined) <= max_chunk_chars:
-            cur = joined
-            continue
-        if cur != header:
-            chunks.append(cur.rstrip())
-        if len(header + p) <= max_chunk_chars:
-            cur = header + p
-            continue
-        i = 0
-        while i < len(p):
-            room = max_chunk_chars - len(header)
-            frag = p[i : i + room]
-            chunks.append((header + frag).rstrip())
-            i += len(frag)
-        cur = header
+    if pending_text_parts:
+        prelude = "\n\n".join(pending_text_parts).strip()
+        if prelude:
+            for frag in _split_oversized_text_piece(prelude, budget_chars=body_budget):
+                chunks.append((header + frag).rstrip())
 
-    if cur != header:
-        chunks.append(cur.rstrip())
     return [c for c in chunks if c.strip()]
 
 

@@ -11,6 +11,7 @@ from docx.oxml.ns import qn
 from docx.shared import RGBColor
 
 from app.inspection_v2.docx_rich_text import normalize_shading_fill, serialize_docx_for_inspection_v2
+from app.inspection_v2.processing_units import split_docx_v2_by_processing_units
 from app.models.inspection_extract import InspectionExtractRequest
 from app.services.inspection_extract_service import InspectionExtractService
 
@@ -115,6 +116,23 @@ def test_parse_document_v2_returns_docx_v2_route() -> None:
         assert "[DOCX_V2_TABLE" in parsed
     finally:
         Path(path).unlink(missing_ok=True)
+
+
+def test_docx_v2_single_chunk_per_logical_table() -> None:
+    """整表必须在同一 chunk；不因 max_chunk_chars 较小而拆成多块。"""
+    lines = [
+        "1、测试小节标题",
+        "[DOCX_V2_TABLE idx=1 rows=99 cols=2]",
+        "r0: c0='列A' | c1='列B'",
+        "r1: c0='说明' | c1='数值'",
+    ]
+    for i in range(2, 40):
+        lines.append(f"r{i}: c0='位置{i}' | c1='{i}.5'")
+    text = "\n".join(lines)
+    chunks = split_docx_v2_by_processing_units(text, max_chunk_chars=320)
+    table_chunks = [c for c in chunks if "[DOCX_V2_TABLE" in c]
+    assert len(table_chunks) == 1
+    assert table_chunks[0].count("r39:") == 1
 
 
 def test_parse_document_v2_pdf_delegates_to_v1() -> None:
