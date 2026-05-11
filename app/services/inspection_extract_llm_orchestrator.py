@@ -32,19 +32,22 @@ def _estimate_prompt_tokens_upper_bound(prompt_chars: int, *, context_total_toke
     """
     输入 prompt 的 token 数上界（启发式，偏保守）。
 
-    - est_char：按常见中英文混合 ~2.5 字符/token；
-    - est_dense：按偏密编码 ~1.5 字符/token（防止低估导致仍请求过大 max_tokens）。
+    - est_sparse：按 ~2.2 字符/token（Qwen 类中英混合常低于 2.5；实测曾出现 58k 字符≈26k token）；
+    - est_mixed：按 ~2.5 字符/token；
+    - est_dense：按 ~1.5 字符/token（极密 ASCII/符号）；仅在不撑爆窗口上界时与 base 取 max。
 
-    当 est_dense 本身已接近占满上下文时，不再采信 est_dense（否则会过度压低正常长 prompt 的输出预算）。
+    说明：旧逻辑在 est_dense 超过 density_ceiling 时退回仅 est_mixed，会对中文偏重文本低估数千 token。
     """
     c = max(0, prompt_chars)
     ctx = max(2048, int(context_total_tokens))
-    est_char = max(1, (c * 10 + 24) // 25)
+    est_sparse = max(1, (c * 11 + 21) // 22)
+    est_mixed = max(1, (c * 10 + 24) // 25)
     est_dense = max(1, (c * 2 + 2) // 3)
+    base = max(est_sparse, est_mixed)
     density_ceiling = max(4096, (ctx * 85) // 100)
     if est_dense < density_ceiling:
-        return max(est_char, est_dense)
-    return est_char
+        return max(base, est_dense)
+    return base
 
 
 def cap_completion_max_tokens_for_context(
@@ -54,24 +57,22 @@ def cap_completion_max_tokens_for_context(
     context_total_tokens: int,
     slack_tokens: int,
 ) -> int:
-    """保证 input_estimate + capped + margin 不超过 context_total_tokens（启发式）。"""
+    """保证真实 input_tokens + capped 大概率不超过 context（启发式上界）。"""
     ctx = max(2048, int(context_total_tokens))
     req = max(_MIN_COMPLETION_TOKENS, int(requested_max_tokens))
     slack_cfg = max(64, int(slack_tokens))
 
     est = _estimate_prompt_tokens_upper_bound(prompt_chars, context_total_tokens=ctx)
-    fudge = max(slack_cfg, est // 16)
-    margin = max(384, ctx // 128)
-    safety = 768
-    est_adj = est + fudge
-    room = ctx - est_adj - margin - safety
+    # 单次预留：模板/特殊 token、与服务端 tokenizer 计数偏差（合并为一档，避免 fudge+margin+safety 叠乘）
+    reserve = max(slack_cfg, 512) + 384
+    room = ctx - est - reserve
     if room < _MIN_COMPLETION_TOKENS:
         logger.warning(
-            "inspection_extract completion budget exhausted prompt_chars=%s est=%s est_adj=%s ctx=%s "
+            "inspection_extract completion budget exhausted prompt_chars=%s est=%s reserve=%s ctx=%s "
             "(prompt may exceed context; consider smaller parse chunks or higher max-model-len)",
             prompt_chars,
             est,
-            est_adj,
+            reserve,
             ctx,
         )
         capped = _MIN_COMPLETION_TOKENS
@@ -81,13 +82,13 @@ def cap_completion_max_tokens_for_context(
     out = max(_MIN_COMPLETION_TOKENS, capped)
     if out < req:
         logger.info(
-            "inspection_extract capped max_tokens requested=%s capped=%s prompt_chars=%s ctx=%s est=%s est_adj=%s",
+            "inspection_extract capped max_tokens requested=%s capped=%s prompt_chars=%s ctx=%s est=%s reserve=%s",
             req,
             out,
             prompt_chars,
             ctx,
             est,
-            est_adj,
+            reserve,
         )
     return out
 

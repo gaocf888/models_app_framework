@@ -13,26 +13,36 @@ def test_estimate_prefers_dense_when_below_ceiling() -> None:
     assert est >= 24500
 
 
-def test_estimate_ignores_dense_when_would_dominate_context() -> None:
-    # ~61k chars：稠密估算会「占满窗口」，退回按 ~2.5 字符/token，避免无谓压死输出预算
+def test_estimate_conservative_when_dense_dominates_window() -> None:
+    # ~61k chars：稠密分支不再退回「偏乐观的 2.5」以免低估中文偏重文本
     c = 61442
     est = _estimate_prompt_tokens_upper_bound(c, context_total_tokens=32768)
-    assert est == (c * 10 + 24) // 25
+    est_sparse = (c * 11 + 21) // 22
+    assert est == max(est_sparse, (c * 10 + 24) // 25)
+
+
+def test_estimate_covers_qwen_mixed_report_chunk() -> None:
+    """回归：58k 字符≈26k token（~2.25 字符/token），上界须覆盖服务端计数。"""
+    c = 58270
+    est = _estimate_prompt_tokens_upper_bound(c, context_total_tokens=32768)
+    assert est >= 25917
 
 
 def test_cap_reduces_parse_budget_near_context_limit() -> None:
-    """对齐 vLLM：24577 input + 8192 max 会 400；封顶后应显著低于 8192。"""
+    """对齐 vLLM：input + max_tokens 不得超出上下文；封顶须留出 reserve。"""
     c = 61442
+    slack = 768
     capped = cap_completion_max_tokens_for_context(
         prompt_chars=c,
         requested_max_tokens=8192,
         context_total_tokens=32768,
-        slack_tokens=768,
+        slack_tokens=slack,
     )
     assert capped < 8192
     assert capped >= 64
     est = _estimate_prompt_tokens_upper_bound(c, context_total_tokens=32768)
-    assert est + capped + 384 + 768 + 768 <= 32768 + 512  # 允许估算误差一档
+    reserve = max(slack, 512) + 384
+    assert est + capped + reserve <= 32768
 
 
 def test_cap_leaves_headroom_for_small_prompts() -> None:
