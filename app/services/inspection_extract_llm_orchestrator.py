@@ -25,6 +25,72 @@ from app.models.inspection_extract import InspectionExtractRequest
 
 logger = get_logger(__name__)
 
+_MIN_COMPLETION_TOKENS = 64
+
+
+def _estimate_prompt_tokens_upper_bound(prompt_chars: int, *, context_total_tokens: int) -> int:
+    """
+    输入 prompt 的 token 数上界（启发式，偏保守）。
+
+    - est_char：按常见中英文混合 ~2.5 字符/token；
+    - est_dense：按偏密编码 ~1.5 字符/token（防止低估导致仍请求过大 max_tokens）。
+
+    当 est_dense 本身已接近占满上下文时，不再采信 est_dense（否则会过度压低正常长 prompt 的输出预算）。
+    """
+    c = max(0, prompt_chars)
+    ctx = max(2048, int(context_total_tokens))
+    est_char = max(1, (c * 10 + 24) // 25)
+    est_dense = max(1, (c * 2 + 2) // 3)
+    density_ceiling = max(4096, (ctx * 85) // 100)
+    if est_dense < density_ceiling:
+        return max(est_char, est_dense)
+    return est_char
+
+
+def cap_completion_max_tokens_for_context(
+    *,
+    prompt_chars: int,
+    requested_max_tokens: int,
+    context_total_tokens: int,
+    slack_tokens: int,
+) -> int:
+    """保证 input_estimate + capped + margin 不超过 context_total_tokens（启发式）。"""
+    ctx = max(2048, int(context_total_tokens))
+    req = max(_MIN_COMPLETION_TOKENS, int(requested_max_tokens))
+    slack_cfg = max(64, int(slack_tokens))
+
+    est = _estimate_prompt_tokens_upper_bound(prompt_chars, context_total_tokens=ctx)
+    fudge = max(slack_cfg, est // 16)
+    margin = max(384, ctx // 128)
+    safety = 768
+    est_adj = est + fudge
+    room = ctx - est_adj - margin - safety
+    if room < _MIN_COMPLETION_TOKENS:
+        logger.warning(
+            "inspection_extract completion budget exhausted prompt_chars=%s est=%s est_adj=%s ctx=%s "
+            "(prompt may exceed context; consider smaller parse chunks or higher max-model-len)",
+            prompt_chars,
+            est,
+            est_adj,
+            ctx,
+        )
+        capped = _MIN_COMPLETION_TOKENS
+    else:
+        capped = min(req, room)
+
+    out = max(_MIN_COMPLETION_TOKENS, capped)
+    if out < req:
+        logger.info(
+            "inspection_extract capped max_tokens requested=%s capped=%s prompt_chars=%s ctx=%s est=%s est_adj=%s",
+            req,
+            out,
+            prompt_chars,
+            ctx,
+            est,
+            est_adj,
+        )
+    return out
+
 
 class InspectionExtractLlmOrchestrator:
     def __init__(
@@ -37,6 +103,16 @@ class InspectionExtractLlmOrchestrator:
         self._llm = llm
         self._prompts = prompts
         self._cfg = cfg
+
+    def _budget_max_tokens(self, *, prompt: str, requested_max_tokens: int) -> int:
+        ctx = int(getattr(self._cfg, "llm_context_total_tokens", 32768))
+        slack = int(getattr(self._cfg, "llm_completion_budget_slack_tokens", 768))
+        return cap_completion_max_tokens_for_context(
+            prompt_chars=len(prompt or ""),
+            requested_max_tokens=requested_max_tokens,
+            context_total_tokens=ctx,
+            slack_tokens=slack,
+        )
 
     async def run_llm_extraction(
         self,
@@ -339,7 +415,10 @@ class InspectionExtractLlmOrchestrator:
                 model=model,
                 prompt=classify_prompt,
                 timeout=llm_timeout_s,
-                max_tokens=int(getattr(self._cfg, "llm_max_tokens_classify", 1024)),
+                max_tokens=self._budget_max_tokens(
+                    prompt=classify_prompt,
+                    requested_max_tokens=int(getattr(self._cfg, "llm_max_tokens_classify", 1024)),
+                ),
             )
             self._log_llm_raw(stage=f"classify[{bidx}/{len(classify_batches)}]", raw=classify_result)
             stage2 = _extract_json_like(classify_result)
@@ -381,7 +460,10 @@ class InspectionExtractLlmOrchestrator:
                 model=model,
                 prompt=repair_prompt,
                 timeout=llm_timeout_s,
-                max_tokens=int(getattr(self._cfg, "llm_max_tokens_repair", 768)),
+                max_tokens=self._budget_max_tokens(
+                    prompt=repair_prompt,
+                    requested_max_tokens=int(getattr(self._cfg, "llm_max_tokens_repair", 768)),
+                ),
             )
             self._log_llm_raw(stage="repair", raw=repaired_result)
             stage3 = _extract_json_like(repaired_result)
@@ -443,7 +525,10 @@ class InspectionExtractLlmOrchestrator:
                 model=model,
                 prompt=parse_prompt,
                 timeout=llm_timeout_s,
-                max_tokens=int(getattr(self._cfg, "llm_max_tokens_parse", 1024)),
+                max_tokens=self._budget_max_tokens(
+                    prompt=parse_prompt,
+                    requested_max_tokens=int(getattr(self._cfg, "llm_max_tokens_parse", 1024)),
+                ),
             )
             self._log_llm_raw(stage=f"parse[{idx}/{total}]-try{attempt+1}", raw=parse_result)
             stage1 = _extract_json_like(parse_result)

@@ -541,6 +541,10 @@ class InspectionExtractConfig:
     prompt_version: str = "v1"
     model_name: str | None = None
     llm_timeout_seconds: float = 180.0
+    # 与 vLLM --max-model-len 对齐；用于动态压低 max_tokens，避免 input+max_tokens 超出上下文
+    llm_context_total_tokens: int = 32768
+    # 在启发式 prompt token 估算之上追加的余量（特殊 token、模板等）
+    llm_completion_budget_slack_tokens: int = 768
     llm_max_tokens_parse: int = 1024
     llm_max_tokens_classify: int = 1024
     llm_max_tokens_repair: int = 768
@@ -972,6 +976,8 @@ def _load_from_env() -> AppConfig:
         prompt_version=(os.getenv("INSPECT_EXTRACT_PROMPT_VERSION", "v1") or "v1").strip(),
         model_name=(os.getenv("INSPECT_EXTRACT_MODEL_NAME") or "").strip() or None,
         llm_timeout_seconds=max(10.0, float(os.getenv("INSPECT_EXTRACT_LLM_TIMEOUT_SECONDS", "180"))),
+        llm_context_total_tokens=max(2048, int(os.getenv("INSPECT_EXTRACT_LLM_CONTEXT_TOKENS", "32768"))),
+        llm_completion_budget_slack_tokens=max(64, int(os.getenv("INSPECT_EXTRACT_LLM_COMPLETION_SLACK_TOKENS", "768"))),
         llm_max_tokens_parse=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_PARSE", "1024"))),
         llm_max_tokens_classify=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_CLASSIFY", "1024"))),
         llm_max_tokens_repair=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_REPAIR", "768"))),
