@@ -541,6 +541,8 @@ class InspectionExtractConfig:
     prompt_version: str = "v1"
     model_name: str | None = None
     llm_timeout_seconds: float = 300.0
+    # 检修 Parse / Classify / Repair 调用 chat 时显式传入，覆盖同模型在 LLMModelConfig 中的默认 temperature
+    llm_temperature: float = 0.3
     # 与 vLLM --max-model-len 对齐；用于动态压低 max_tokens，避免 input+max_tokens 超出上下文
     llm_context_total_tokens: int = 32768
     # 在启发式 prompt token 估算之上追加的余量（特殊 token、模板等）
@@ -976,6 +978,7 @@ def _load_from_env() -> AppConfig:
         prompt_version=(os.getenv("INSPECT_EXTRACT_PROMPT_VERSION", "v1") or "v1").strip(),
         model_name=(os.getenv("INSPECT_EXTRACT_MODEL_NAME") or "").strip() or None,
         llm_timeout_seconds=max(10.0, float(os.getenv("INSPECT_EXTRACT_LLM_TIMEOUT_SECONDS", "300"))),
+        llm_temperature=max(0.0, min(2.0, float(os.getenv("INSPECT_EXTRACT_LLM_TEMPERATURE", "0.3")))),
         llm_context_total_tokens=max(2048, int(os.getenv("INSPECT_EXTRACT_LLM_CONTEXT_TOKENS", "32768"))),
         llm_completion_budget_slack_tokens=max(64, int(os.getenv("INSPECT_EXTRACT_LLM_COMPLETION_SLACK_TOKENS", "768"))),
         llm_max_tokens_parse=max(128, int(os.getenv("INSPECT_EXTRACT_LLM_MAX_TOKENS_PARSE", "1024"))),

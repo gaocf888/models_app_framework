@@ -143,6 +143,7 @@ class InspectionExtractLlmOrchestrator:
             user=user,
             requested_max_tokens=requested_max_tokens,
         )
+        temperature = float(getattr(self._cfg, "llm_temperature", 0.3))
         return await self._llm.chat(
             model=model,
             messages=[
@@ -151,6 +152,7 @@ class InspectionExtractLlmOrchestrator:
             ],
             timeout=llm_timeout_s,
             max_tokens=max_tokens,
+            temperature=temperature,
         )
 
     async def run_llm_extraction(
