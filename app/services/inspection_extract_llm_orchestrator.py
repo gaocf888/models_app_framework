@@ -216,9 +216,15 @@ class InspectionExtractLlmOrchestrator:
                     )
                     return idx, recs
 
-            stage1_results = await asyncio.gather(
-                *[_run_with_sem(idx, chunk) for idx, chunk in enumerate(chunks, start=1)]
+            stage1_results_raw = await asyncio.gather(
+                *[_run_with_sem(idx, chunk) for idx, chunk in enumerate(chunks, start=1)],
+                return_exceptions=True,
             )
+            stage1_results: list[tuple[int, list[dict[str, Any]]]] = []
+            for r in stage1_results_raw:
+                if isinstance(r, BaseException):
+                    raise r
+                stage1_results.append(r)
 
         stage1_records: list[dict[str, Any]] = []
         for _, recs in sorted(stage1_results, key=lambda x: x[0]):
@@ -326,7 +332,15 @@ class InspectionExtractLlmOrchestrator:
                     async with sem:
                         return await _run_one(idx, chunk)
 
-                await asyncio.gather(*[_with_sem(i, c) for i, c in pending])
+                results_raw = await asyncio.gather(
+                    *[_with_sem(i, c) for i, c in pending],
+                    return_exceptions=True,
+                )
+                results: list[tuple[int, list[dict[str, Any]]]] = []
+                for r in results_raw:
+                    if isinstance(r, BaseException):
+                        raise r
+                    results.append(r)
 
         wall_ms = 0
         if total_work > 0 and parse_phase_t0 is not None:
