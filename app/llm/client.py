@@ -132,8 +132,16 @@ class VLLMHttpClient(LLMClient):
 
         start = time.perf_counter()
         req_timeout = kwargs.get("timeout")
-        async with httpx.AsyncClient(timeout=self._default_timeout) as client:
-            resp = await client.post(url, json=payload, headers=headers, timeout=req_timeout)
+        read_budget = max(1.0, float(req_timeout) if req_timeout is not None else float(self._default_timeout))
+        # 单 float 在部分 httpx 版本对各阶段语义易混；显式拉长 read/pool，覆盖排队+首包+大 JSON 体
+        htt_timeout = httpx.Timeout(
+            connect=min(60.0, read_budget),
+            read=read_budget,
+            write=min(read_budget, 600.0),
+            pool=read_budget,
+        )
+        async with httpx.AsyncClient(timeout=htt_timeout) as client:
+            resp = await client.post(url, json=payload, headers=headers, timeout=htt_timeout)
             duration = time.perf_counter() - start
 
             LLM_REQUEST_COUNT.labels(model=cfg.model_id).inc()
@@ -205,9 +213,16 @@ class VLLMHttpClient(LLMClient):
 
         start = time.perf_counter()
         req_timeout = kwargs.get("timeout")
-        async with httpx.AsyncClient(timeout=self._default_timeout) as client:
+        read_budget = max(1.0, float(req_timeout) if req_timeout is not None else float(self._default_timeout))
+        htt_timeout = httpx.Timeout(
+            connect=min(60.0, read_budget),
+            read=read_budget,
+            write=min(read_budget, 600.0),
+            pool=read_budget,
+        )
+        async with httpx.AsyncClient(timeout=htt_timeout) as client:
             async with client.stream(
-                "POST", url, json=payload, headers=headers, timeout=req_timeout
+                "POST", url, json=payload, headers=headers, timeout=htt_timeout
             ) as resp:
                 if resp.status_code >= 400:
                     err_body = (await resp.aread()).decode("utf-8", errors="replace")[:4000]
