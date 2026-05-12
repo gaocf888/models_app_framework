@@ -26,6 +26,8 @@ from app.models.inspection_extract import InspectionExtractRequest
 logger = get_logger(__name__)
 
 _MIN_COMPLETION_TOKENS = 64
+# chat 模板对 system/user 的额外字符（启发式计入 _budget_max_tokens，略放大以免低估）
+_CHAT_MESSAGES_SLO_CHARS = 64
 
 
 def _estimate_prompt_tokens_upper_bound(prompt_chars: int, *, context_total_tokens: int) -> int:
@@ -109,14 +111,40 @@ class InspectionExtractLlmOrchestrator:
         self._prompts = prompts
         self._cfg = cfg
 
-    def _budget_max_tokens(self, *, prompt: str, requested_max_tokens: int) -> int:
+    def _budget_max_tokens(self, *, system: str, user: str, requested_max_tokens: int) -> int:
         ctx = int(getattr(self._cfg, "llm_context_total_tokens", 32768))
         slack = int(getattr(self._cfg, "llm_completion_budget_slack_tokens", 768))
+        prompt_chars = len(system or "") + len(user or "") + _CHAT_MESSAGES_SLO_CHARS
         return cap_completion_max_tokens_for_context(
-            prompt_chars=len(prompt or ""),
+            prompt_chars=prompt_chars,
             requested_max_tokens=requested_max_tokens,
             context_total_tokens=ctx,
             slack_tokens=slack,
+        )
+
+    async def _inspection_llm_chat(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        llm_timeout_s: float,
+        requested_max_tokens: int,
+    ) -> str:
+        """检修专用：固定指令走 system，可变数据走 user；直接调用 chat，不改 VLLMHttpClient。"""
+        max_tokens = self._budget_max_tokens(
+            system=system,
+            user=user,
+            requested_max_tokens=requested_max_tokens,
+        )
+        return await self._llm.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            timeout=llm_timeout_s,
+            max_tokens=max_tokens,
         )
 
     async def run_llm_extraction(
@@ -396,34 +424,35 @@ class InspectionExtractLlmOrchestrator:
             cls_bs = max(8, int(getattr(self._cfg, "v2_classify_batch_size", 40)))
         classify_batches = _batch_records(stage1_records, batch_size=cls_bs)
         logger.info("【检修提取】Classify阶段批次数=%s", len(classify_batches))
+        classify_system = (
+            f"{classify_tpl}\n\n"
+            "请仅输出 JSON。顶层对象包含 records 数组。\n"
+            "检测类型只能是：测厚/缺陷。\n"
+            "缺陷类型只能是：高温腐蚀、磨损、结渣、蠕变、管道变形、表面吹损、氧化皮堆积、机械损伤。\n"
+            "是否换管只能是：是/否。"
+        )
         for bidx, batch in enumerate(classify_batches, start=1):
-            classify_prompt = (
-                f"{classify_tpl}\n\n"
-                "请仅输出 JSON。顶层对象包含 records 数组。\n"
-                "检测类型只能是：测厚/缺陷。\n"
-                "缺陷类型只能是：高温腐蚀、磨损、结渣、蠕变、管道变形、表面吹损、氧化皮堆积、机械损伤。\n"
-                "是否换管只能是：是/否。\n"
+            classify_user = (
                 f"候选记录(JSON)：{json.dumps(batch, ensure_ascii=False)}\n"
                 f"文档摘要：{snippets[:4000]}"
             )
+            prompt_total_chars = len(classify_system) + len(classify_user) + _CHAT_MESSAGES_SLO_CHARS
             logger.info(
                 "inspection_extract llm stage=classify batch=%s/%s model=%s records_in=%s prompt_chars=%s timeout_s=%.1f",
                 bidx,
                 len(classify_batches),
                 model,
                 len(batch),
-                len(classify_prompt),
+                prompt_total_chars,
                 llm_timeout_s,
             )
             logger.info("【检修提取】开始分类批次 %s/%s，输入记录=%s", bidx, len(classify_batches), len(batch))
-            classify_result = await self._llm.generate(
+            classify_result = await self._inspection_llm_chat(
                 model=model,
-                prompt=classify_prompt,
-                timeout=llm_timeout_s,
-                max_tokens=self._budget_max_tokens(
-                    prompt=classify_prompt,
-                    requested_max_tokens=int(getattr(self._cfg, "llm_max_tokens_classify", 1024)),
-                ),
+                system=classify_system,
+                user=classify_user,
+                llm_timeout_s=llm_timeout_s,
+                requested_max_tokens=int(getattr(self._cfg, "llm_max_tokens_classify", 1024)),
             )
             self._log_llm_raw(stage=f"classify[{bidx}/{len(classify_batches)}]", raw=classify_result)
             stage2 = _extract_json_like(classify_result)
@@ -445,30 +474,29 @@ class InspectionExtractLlmOrchestrator:
 
         retries = max(0, int(self._cfg.max_repair_retries))
         candidate_records = stage2_records
+        repair_system = (
+            f"{repair_tpl}\n\n"
+            "请仅输出 JSON。顶层对象包含 records 数组。\n"
+            "修复项：字段缺失、枚举非法、数字格式错误。无法修复时保留 warnings。"
+        )
         for _ in range(retries + 1):
             repair_input = candidate_records
-            repair_prompt = (
-                f"{repair_tpl}\n\n"
-                "请仅输出 JSON。顶层对象包含 records 数组。\n"
-                "修复项：字段缺失、枚举非法、数字格式错误。无法修复时保留 warnings。\n"
-                f"待修复记录(JSON)：{json.dumps(repair_input, ensure_ascii=False)}"
-            )
+            repair_user = f"待修复记录(JSON)：{json.dumps(repair_input, ensure_ascii=False)}"
+            prompt_total_chars = len(repair_system) + len(repair_user) + _CHAT_MESSAGES_SLO_CHARS
             logger.info(
                 "inspection_extract llm stage=repair model=%s records_in=%s prompt_chars=%s timeout_s=%.1f",
                 model,
                 len(repair_input),
-                len(repair_prompt),
+                prompt_total_chars,
                 llm_timeout_s,
             )
             logger.info("【检修提取】开始Repair阶段，输入记录=%s", len(repair_input))
-            repaired_result = await self._llm.generate(
+            repaired_result = await self._inspection_llm_chat(
                 model=model,
-                prompt=repair_prompt,
-                timeout=llm_timeout_s,
-                max_tokens=self._budget_max_tokens(
-                    prompt=repair_prompt,
-                    requested_max_tokens=int(getattr(self._cfg, "llm_max_tokens_repair", 768)),
-                ),
+                system=repair_system,
+                user=repair_user,
+                llm_timeout_s=llm_timeout_s,
+                requested_max_tokens=int(getattr(self._cfg, "llm_max_tokens_repair", 768)),
             )
             self._log_llm_raw(stage="repair", raw=repaired_result)
             stage3 = _extract_json_like(repaired_result)
@@ -509,31 +537,31 @@ class InspectionExtractLlmOrchestrator:
             chunk_meta["chunk_sha1"],
             chunk_meta["preview"],
         )
+        parse_system = (
+            f"{parse_tpl}\n\n"
+            "优先输出 NDJSON（每行一个 JSON 对象，不加 markdown 代码块）。\n"
+            "每个对象应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管、evidence、warnings。\n"
+            "其中 evidence 为空时填 null；warnings 为空时填 []。\n"
+            "若你无法输出 NDJSON，则回退输出 JSON：{\"records\":[...]}。\n"
+            "用户消息中将给出当前文档分块正文，请仅基于该分块抽取。"
+        )
         for attempt in range(parse_chunk_retry + 1):
-            parse_prompt = (
-                f"{parse_tpl}\n\n"
-                "优先输出 NDJSON（每行一个 JSON 对象，不加 markdown 代码块）。\n"
-                "每个对象应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管、evidence、warnings。\n"
-                "其中 evidence 为空时填 null；warnings 为空时填 []。\n"
-                "若你无法输出 NDJSON，则回退输出 JSON：{\"records\":[...]}。\n"
-                f"文档分块如下（第{idx}/{total}块）：\n{chunk}"
-            )
+            parse_user = f"文档分块如下（第{idx}/{total}块）：\n{chunk}"
+            prompt_total_chars = len(parse_system) + len(parse_user) + _CHAT_MESSAGES_SLO_CHARS
             logger.info(
                 "inspection_extract llm stage=parse chunk=%s/%s model=%s prompt_chars=%s timeout_s=%.1f",
                 idx,
                 total,
                 model,
-                len(parse_prompt),
+                prompt_total_chars,
                 llm_timeout_s,
             )
-            parse_result = await self._llm.generate(
+            parse_result = await self._inspection_llm_chat(
                 model=model,
-                prompt=parse_prompt,
-                timeout=llm_timeout_s,
-                max_tokens=self._budget_max_tokens(
-                    prompt=parse_prompt,
-                    requested_max_tokens=int(getattr(self._cfg, "llm_max_tokens_parse", 1024)),
-                ),
+                system=parse_system,
+                user=parse_user,
+                llm_timeout_s=llm_timeout_s,
+                requested_max_tokens=int(getattr(self._cfg, "llm_max_tokens_parse", 1024)),
             )
             self._log_llm_raw(stage=f"parse[{idx}/{total}]-try{attempt+1}", raw=parse_result)
             stage1 = _extract_json_like(parse_result)

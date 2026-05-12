@@ -65,6 +65,14 @@ class _FakeLLM:
         self._idx = min(self._idx + 1, len(self._responses) - 1)
         return out
 
+    async def chat(self, model: str, messages: list, **kwargs: object) -> str:  # noqa: ARG002
+        parts: list[str] = []
+        for m in messages:
+            if isinstance(m, dict) and m.get("content") is not None:
+                parts.append(str(m["content"]))
+        joined = "\n".join(parts)
+        return await self.generate(model, joined, **kwargs)
+
 
 def test_extract_from_document_returns_structured_rows() -> None:
     svc = InspectionExtractService(llm_client=_FakeLLM())  # type: ignore[arg-type]
