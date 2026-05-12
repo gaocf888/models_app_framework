@@ -104,6 +104,8 @@ class IngestionJobQueue:
             if not job_id:
                 break
             moved += 1
+            # 旧 worker 已不存在，释放遗留 lease，否则新进程永远无法 acquire_lease
+            self.release_lease(str(job_id))
         if moved > 0:
             logger.warning("ingestion queue startup recovery: requeued processing jobs=%s", moved)
         return moved
@@ -135,6 +137,34 @@ class IngestionJobQueue:
             self._redis.delete(key)
         except Exception:  # noqa: BLE001
             logger.warning("ingestion queue release lease failed job_id=%s", job_id, exc_info=True)
+
+    def purge_job_queue_state(self, job_id: str) -> None:
+        """
+        从 pending / processing / queued_set 移除 job_id，并清除 lease。
+        用于磁盘任务目录已丢失等孤儿队列项，避免无限重试与 lease 自锁。
+        """
+        if not self.enabled:
+            return
+        assert self._redis is not None
+        jid = str(job_id)
+        self._redis.lrem(self._pending_key, 0, jid)
+        self._redis.lrem(self._processing_key, 0, jid)
+        self._redis.srem(self._queued_set_key, jid)
+        self.release_lease(jid)
+
+    def list_pending_job_ids_unique(self) -> list[str]:
+        if not self.enabled:
+            return []
+        assert self._redis is not None
+        raw = self._redis.lrange(self._pending_key, 0, -1)
+        return list(dict.fromkeys(str(x) for x in raw if x))
+
+    def list_processing_job_ids_unique(self) -> list[str]:
+        if not self.enabled:
+            return []
+        assert self._redis is not None
+        raw = self._redis.lrange(self._processing_key, 0, -1)
+        return list(dict.fromkeys(str(x) for x in raw if x))
 
     def sleep_briefly(self, seconds: float = 0.5) -> None:
         time.sleep(max(0.01, seconds))

@@ -652,6 +652,9 @@ class InspectionExtractJobScheduler:
         self._max_workers = max(1, int(getattr(cfg, "async_queue_workers", 2)))
         self._stop_event = threading.Event()
         self._worker_threads: list[threading.Thread] = []
+        # 必须先完成 Redis/磁盘恢复再启动 worker，否则会出现抢 lease、孤儿任务与恢复逻辑并发
+        self._startup_recovery_completed = False
+        self.recover_pending_on_startup()
         self._start_workers()
         if self._queue.enabled:
             logger.info(
@@ -697,8 +700,22 @@ class InspectionExtractJobScheduler:
                     continue
                 try:
                     jd = self._job_dir(job_id)
+                    if not jd.is_dir():
+                        logger.warning(
+                            "inspection_extract redis job has no job directory; ack orphan job_id=%s",
+                            job_id,
+                        )
+                        self._queue.ack(job_id)
+                        continue
                     meta = _read_meta(jd)
-                    if meta and meta.get("status") in {"completed", "failed"}:
+                    if meta is None:
+                        logger.warning(
+                            "inspection_extract redis job missing job_meta.json; ack orphan job_id=%s",
+                            job_id,
+                        )
+                        self._queue.ack(job_id)
+                        continue
+                    if meta.get("status") in {"completed", "failed"}:
                         self._queue.ack(job_id)
                         continue
                     asyncio.run(self._run_job_guarded(job_id))
@@ -755,6 +772,8 @@ class InspectionExtractJobScheduler:
         return job_id
 
     def recover_pending_on_startup(self) -> None:
+        if getattr(self, "_startup_recovery_completed", False):
+            return
         if self._queue.enabled:
             moved = self._queue.requeue_processing_on_startup()
             if moved > 0:
@@ -801,6 +820,37 @@ class InspectionExtractJobScheduler:
                 requeued,
                 self._queue.enabled,
             )
+
+        pruned = self._prune_redis_queue_orphans_without_jobdir()
+        if pruned > 0:
+            logger.warning(
+                "inspection_extract startup pruned redis orphan jobs (no job dir on disk) count=%s",
+                pruned,
+            )
+
+        self._startup_recovery_completed = True
+
+    def _prune_redis_queue_orphans_without_jobdir(self) -> int:
+        """
+        移除 Redis 中存在但本地无 job_meta 的 job_id（常见于重启后换卷/清空异步目录）。
+        """
+        if not self._queue.enabled:
+            return 0
+        pruned = 0
+        seen: set[str] = set()
+        for jid in self._queue.list_pending_job_ids_unique() + self._queue.list_processing_job_ids_unique():
+            if jid in seen:
+                continue
+            seen.add(jid)
+            meta_path = self._job_dir(jid) / "job_meta.json"
+            if not meta_path.is_file():
+                self._queue.purge_job_queue_state(jid)
+                pruned += 1
+                logger.warning(
+                    "inspection_extract pruned orphan redis job_id=%s (missing job_meta under async_jobs_state_dir)",
+                    jid,
+                )
+        return pruned
 
     async def _run_job_guarded(self, job_id: str) -> None:
         try:
