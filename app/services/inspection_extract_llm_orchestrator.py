@@ -26,6 +26,12 @@ from app.models.inspection_extract import InspectionExtractRequest
 logger = get_logger(__name__)
 
 _MIN_COMPLETION_TOKENS = 64
+
+
+class InspectionExtractJobCancelled(Exception):
+    """用户请求取消检修异步任务；在 LLM 分块等检查点抛出，由 JobScheduler 协作处理。"""
+
+
 # chat 模板对 system/user 的额外字符（启发式计入 _budget_max_tokens，略放大以免低估）
 _CHAT_MESSAGES_SLO_CHARS = 64
 
@@ -241,6 +247,7 @@ class InspectionExtractLlmOrchestrator:
             classify_tpl=classify_tpl,
             repair_tpl=repair_tpl,
             stage1_records=stage1_records,
+            should_cancel=None,
         )
 
     async def run_llm_extraction_with_job_directory(
@@ -254,6 +261,7 @@ class InspectionExtractLlmOrchestrator:
         job_dir: Path,
         after_chunk_saved: Callable[[int, int], Awaitable[None]] | None = None,
         after_all_parse_chunks_done: Callable[[int], Awaitable[None]] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> list[dict[str, Any]]:
         """
         仅对「含表格」分块做 parse；每块完成后写入 job_dir/chunks/{work_idx}.json，支持断点续跑。
@@ -305,6 +313,8 @@ class InspectionExtractLlmOrchestrator:
             parse_phase_t0 = time.perf_counter()
 
         if pending:
+            if should_cancel and should_cancel():
+                raise InspectionExtractJobCancelled()
 
             async def _run_one(idx: int, chunk: str) -> tuple[int, list[dict[str, Any]]]:
                 recs = await self._parse_one_chunk(
@@ -324,12 +334,18 @@ class InspectionExtractLlmOrchestrator:
 
             if parse_concurrency <= 1:
                 for idx, ch in pending:
+                    if should_cancel and should_cancel():
+                        raise InspectionExtractJobCancelled()
                     await _run_one(idx, ch)
             else:
                 sem = asyncio.Semaphore(parse_concurrency)
 
                 async def _with_sem(idx: int, chunk: str) -> tuple[int, list[dict[str, Any]]]:
+                    if should_cancel and should_cancel():
+                        raise InspectionExtractJobCancelled()
                     async with sem:
+                        if should_cancel and should_cancel():
+                            raise InspectionExtractJobCancelled()
                         return await _run_one(idx, chunk)
 
                 results_raw = await asyncio.gather(
@@ -383,6 +399,9 @@ class InspectionExtractLlmOrchestrator:
             {"records": stage1_records, "parse_route": parse_route, "snippets_len": len(snippets)},
         )
 
+        if should_cancel and should_cancel():
+            raise InspectionExtractJobCancelled()
+
         return await self._finalize_after_stage1_merge(
             req,
             parsed_text,
@@ -392,6 +411,7 @@ class InspectionExtractLlmOrchestrator:
             classify_tpl=classify_tpl,
             repair_tpl=repair_tpl,
             stage1_records=stage1_records,
+            should_cancel=should_cancel,
         )
 
     async def _finalize_after_stage1_merge(
@@ -405,6 +425,7 @@ class InspectionExtractLlmOrchestrator:
         classify_tpl: str,
         repair_tpl: str,
         stage1_records: list[dict[str, Any]],
+        should_cancel: Callable[[], bool] | None = None,
     ) -> list[dict[str, Any]]:
         snippets = parsed_text[:20000]
         llm_timeout_s = float(getattr(self._cfg, "llm_timeout_seconds", 180.0))
@@ -427,6 +448,9 @@ class InspectionExtractLlmOrchestrator:
             logger.warning("【检修提取】Parse阶段无记录，流程提前结束")
             return []
 
+        if should_cancel and should_cancel():
+            raise InspectionExtractJobCancelled()
+
         if _records_have_full_schema(stage1_records):
             logger.info("inspection_extract llm skip_classify_parse_already_full records=%s", len(stage1_records))
             logger.info("【检修提取】Parse结果字段完整，跳过Classify阶段")
@@ -446,6 +470,8 @@ class InspectionExtractLlmOrchestrator:
             "是否换管只能是：是/否。"
         )
         for bidx, batch in enumerate(classify_batches, start=1):
+            if should_cancel and should_cancel():
+                raise InspectionExtractJobCancelled()
             classify_user = (
                 f"候选记录(JSON)：{json.dumps(batch, ensure_ascii=False)}\n"
                 f"文档摘要：{snippets[:4000]}"
@@ -494,6 +520,8 @@ class InspectionExtractLlmOrchestrator:
             "修复项：字段缺失、枚举非法、数字格式错误。无法修复时保留 warnings。"
         )
         for _ in range(retries + 1):
+            if should_cancel and should_cancel():
+                raise InspectionExtractJobCancelled()
             repair_input = candidate_records
             repair_user = f"待修复记录(JSON)：{json.dumps(repair_input, ensure_ascii=False)}"
             prompt_total_chars = len(repair_system) + len(repair_user) + _CHAT_MESSAGES_SLO_CHARS

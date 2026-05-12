@@ -137,6 +137,18 @@ class InspectionExtractAsyncSubmitResponse(BaseModel):
     job_status_path: str = Field(..., description="GET 状态相对路径，如 /inspection-extract/jobs/{job_id}")
 
 
+class InspectionExtractCancelResponse(BaseModel):
+    """DELETE /inspection-extract/jobs/{job_id} 取消异步任务。"""
+
+    ok: bool = Field(..., description="是否受理取消请求（已终态或不存在时为 false）")
+    job_id: str = Field(..., description="任务 ID")
+    outcome: str = Field(
+        ...,
+        description="cancel_accepted | already_terminal | not_found",
+    )
+    message: str = Field(default="", description="说明")
+
+
 class InspectionExtractJobMetrics(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -155,7 +167,7 @@ class InspectionExtractJobMetrics(BaseModel):
 
 class InspectionExtractJobStatusResponse(BaseModel):
     job_id: str
-    status: str = Field(..., description="pending | running | completed | failed")
+    status: str = Field(..., description="pending | running | cancelling | cancelled | completed | failed")
     step: str = Field(..., description="当前阶段：parsing_doc | llm_parse | post_process | done 等")
     created_at: str
     updated_at: str

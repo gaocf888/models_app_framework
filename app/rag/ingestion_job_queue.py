@@ -28,6 +28,7 @@ class IngestionJobQueue:
         self._processing_key = f"{key_prefix}:processing"
         self._queued_set_key = f"{key_prefix}:queued_set"
         self._lease_key_prefix = f"{key_prefix}:lease"
+        self._cancel_key_prefix = f"{key_prefix}:cancel"
         self._owner = f"{socket.gethostname()}:{os.getpid()}:{threading.get_ident()}"
         self._redis = None
         self._enabled = False
@@ -168,3 +169,28 @@ class IngestionJobQueue:
 
     def sleep_briefly(self, seconds: float = 0.5) -> None:
         time.sleep(max(0.01, seconds))
+
+    def set_cancel_signal(self, job_id: str, ttl_s: int = 7200) -> None:
+        """多副本下取消请求可仅写 Redis，worker 轮询该键。"""
+        if not self.enabled:
+            return
+        assert self._redis is not None
+        key = f"{self._cancel_key_prefix}:{job_id}"
+        self._redis.set(key, "1", ex=max(60, int(ttl_s)))
+
+    def is_cancel_signaled(self, job_id: str) -> bool:
+        if not self.enabled:
+            return False
+        assert self._redis is not None
+        key = f"{self._cancel_key_prefix}:{job_id}"
+        return bool(self._redis.exists(key))
+
+    def clear_cancel_signal(self, job_id: str) -> None:
+        if not self.enabled:
+            return
+        assert self._redis is not None
+        key = f"{self._cancel_key_prefix}:{job_id}"
+        try:
+            self._redis.delete(key)
+        except Exception:  # noqa: BLE001
+            logger.warning("ingestion queue clear cancel signal failed job_id=%s", job_id, exc_info=True)

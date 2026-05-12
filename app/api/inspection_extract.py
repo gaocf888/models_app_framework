@@ -6,6 +6,7 @@ from __future__ import annotations
 设计要点：
 - 同步：`POST /inspection-extract/run`，一次请求返回完整结构化结果；
 - 异步：`POST /inspection-extract/run/async` 提交任务，随后轮询任务状态并按块读取 parse 结果；
+- 取消：`DELETE /inspection-extract/jobs/{job_id}` 协作取消未终态任务；
 - 上传：`POST /inspection-extract/upload`，将本地文件上传到 MinIO 后返回可访问 URL。
 
 鉴权：
@@ -17,6 +18,7 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
 from app.models.inspection_extract import (
     InspectionExtractAsyncSubmitResponse,
+    InspectionExtractCancelResponse,
     InspectionExtractChunkListResponse,
     InspectionExtractChunkRecordsResponse,
     InspectionExtractJobStatusResponse,
@@ -107,6 +109,26 @@ async def run_inspection_extract(req: InspectionExtractRequest) -> InspectionExt
 )
 async def run_inspection_extract_async(req: InspectionExtractRequest) -> InspectionExtractAsyncSubmitResponse:
     return service.submit_async_job(req)
+
+
+@router.delete(
+    "/jobs/{job_id}",
+    response_model=InspectionExtractCancelResponse,
+    summary="取消异步检修解析任务",
+    description=(
+        "对已提交的 `job_id` 请求取消：\n\n"
+        "- 若任务仍在 **pending**（未进入 running），将从 Redis 队列移除并立即标记 **cancelled**；\n"
+        "- 若已在 **running**，写入协作取消标记，worker 在分块/classify/repair 边界停止；\n"
+        "  已进入的单次 LLM HTTP 请求仍可能直至超时结束。\n\n"
+        "多副本部署时建议配置 **REDIS_URL**（取消信号会写入 Redis），异步任务目录建议共享卷。\n\n"
+        "终态 `completed` / `failed` / `cancelled` 再次调用返回 `already_terminal`。"
+    ),
+    responses={
+        200: {"description": "受理结果见 `InspectionExtractCancelResponse`。"},
+    },
+)
+async def delete_inspection_extract_job(job_id: str) -> InspectionExtractCancelResponse:
+    return service.cancel_async_job(job_id)
 
 
 @router.get(

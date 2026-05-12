@@ -31,6 +31,7 @@ from app.models.inspection_extract import (
     DefectType,
     DetectionType,
     InspectionExtractAsyncSubmitResponse,
+    InspectionExtractCancelResponse,
     InspectionExtractChunkListItem,
     InspectionExtractChunkListResponse,
     InspectionExtractChunkRecordsResponse,
@@ -49,7 +50,10 @@ from app.rag.models import utcnow_iso
 from app.rag.document_pipeline.parsers import DocumentParser
 from app.rag.mineru_ingest import prepare_pdf_document_for_pipeline
 from app.rag.models import DocumentSource
-from app.services.inspection_extract_llm_orchestrator import InspectionExtractLlmOrchestrator
+from app.services.inspection_extract_llm_orchestrator import (
+    InspectionExtractJobCancelled,
+    InspectionExtractLlmOrchestrator,
+)
 
 logger = get_logger(__name__)
 
@@ -57,6 +61,8 @@ try:
     from minio import Minio
 except Exception:  # noqa: BLE001
     Minio = None  # type: ignore[assignment]
+
+INSPECTION_JOB_CANCEL_MARKER = "cancel_requested"
 
 
 class InspectionExtractService:
@@ -635,6 +641,9 @@ class InspectionExtractService:
     def get_job_chunk_records(self, job_id: str, work_idx: int) -> InspectionExtractChunkRecordsResponse | None:
         return self.job_scheduler.get_chunk_payload(job_id, work_idx)
 
+    def cancel_async_job(self, job_id: str) -> InspectionExtractCancelResponse:
+        return self.job_scheduler.cancel_job(job_id)
+
 
 class InspectionExtractJobScheduler:
     """
@@ -743,6 +752,102 @@ class InspectionExtractJobScheduler:
 
     def _job_dir(self, job_id: str) -> Path:
         return self._root / job_id
+
+    def _is_cancel_requested(self, jd: Path, job_id: str) -> bool:
+        if (jd / INSPECTION_JOB_CANCEL_MARKER).is_file():
+            return True
+        return self._queue.is_cancel_signaled(job_id)
+
+    def _finalize_terminal_cancelled(self, jd: Path, message: str) -> None:
+        meta = _read_meta(jd)
+        if not meta:
+            return
+        if str(meta.get("status") or "").lower() in {"completed", "failed", "cancelled"}:
+            return
+        meta["status"] = "cancelled"
+        meta["step"] = "done"
+        meta["finished_at"] = utcnow_iso()
+        meta["updated_at"] = utcnow_iso()
+        meta["error_code"] = "E_USER_CANCELLED"
+        meta["error_message"] = (message or "cancelled")[:2000]
+        _atomic_write_json(jd / "job_meta.json", meta)
+        fr = jd / "final_response.json"
+        if not fr.is_file():
+            fr.write_text(
+                json.dumps({"ok": False, "error": "cancelled"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        jid = str(meta.get("job_id") or jd.name)
+        self._queue.clear_cancel_signal(jid)
+        try:
+            (jd / INSPECTION_JOB_CANCEL_MARKER).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def cancel_job(self, job_id: str) -> InspectionExtractCancelResponse:
+        job_id = (job_id or "").strip()
+        if not job_id:
+            return InspectionExtractCancelResponse(
+                ok=False, job_id=job_id, outcome="not_found", message="empty job_id"
+            )
+        jd = self._job_dir(job_id)
+        meta = _read_meta(jd)
+        if meta is None:
+            return InspectionExtractCancelResponse(
+                ok=False, job_id=job_id, outcome="not_found", message="job not found"
+            )
+        st = str(meta.get("status") or "").lower()
+        if st in {"completed", "failed", "cancelled"}:
+            return InspectionExtractCancelResponse(
+                ok=False, job_id=job_id, outcome="already_terminal", message=st
+            )
+        marker = jd / INSPECTION_JOB_CANCEL_MARKER
+        try:
+            marker.write_text(utcnow_iso(), encoding="utf-8")
+        except OSError:
+            logger.warning("inspection_extract cancel write marker failed job_id=%s", job_id, exc_info=True)
+        self._queue.set_cancel_signal(job_id)
+        if self._queue.enabled:
+            self._queue.purge_job_queue_state(job_id)
+        meta2 = _read_meta(jd) or meta
+        st_after = str(meta2.get("status") or "").lower()
+        if st_after == "pending":
+            meta2["status"] = "cancelled"
+            meta2["step"] = "cancelled_before_run"
+            meta2["finished_at"] = utcnow_iso()
+            meta2["updated_at"] = utcnow_iso()
+            meta2["error_code"] = "E_USER_CANCELLED"
+            meta2["error_message"] = "Cancelled while pending (removed from queue)."
+            _atomic_write_json(jd / "job_meta.json", meta2)
+            self._queue.clear_cancel_signal(job_id)
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+            fr = jd / "final_response.json"
+            if not fr.is_file():
+                fr.write_text(
+                    json.dumps({"ok": False, "error": "cancelled"}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            logger.info("inspection_extract cancel immediate (still pending after purge) job_id=%s", job_id)
+            return InspectionExtractCancelResponse(
+                ok=True,
+                job_id=job_id,
+                outcome="cancel_accepted",
+                message="任务尚未进入 running，已从队列移除并标记为 cancelled。",
+            )
+        meta2["status"] = "cancelling"
+        meta2["step"] = "user_cancel_requested"
+        meta2["updated_at"] = utcnow_iso()
+        _atomic_write_json(jd / "job_meta.json", meta2)
+        logger.info("inspection_extract cancel requested (running) job_id=%s", job_id)
+        return InspectionExtractCancelResponse(
+            ok=True,
+            job_id=job_id,
+            outcome="cancel_accepted",
+            message="已请求取消；worker 将在当前分块/阶段完成后停止。单次 LLM 进行中可能直至超时结束。",
+        )
 
     def submit_new_job(self, req: InspectionExtractRequest) -> str:
         job_id = uuid.uuid4().hex
@@ -855,11 +960,15 @@ class InspectionExtractJobScheduler:
     async def _run_job_guarded(self, job_id: str) -> None:
         try:
             await self._run_job(job_id)
+        except InspectionExtractJobCancelled:
+            logger.info("inspection_extract job cooperative cancel job_id=%s", job_id)
+            jd = self._job_dir(job_id)
+            self._finalize_terminal_cancelled(jd, "Cancelled during execution (user requested).")
         except Exception as exc:  # noqa: BLE001
             logger.exception("inspection_extract async job crashed job_id=%s", job_id)
             jd = self._job_dir(job_id)
             meta = _read_meta(jd)
-            if meta and meta.get("status") not in {"completed", "failed"}:
+            if meta and meta.get("status") not in {"completed", "failed", "cancelled"}:
                 meta["status"] = "failed"
                 meta["step"] = "error"
                 meta["error_code"] = type(exc).__name__
@@ -873,11 +982,24 @@ class InspectionExtractJobScheduler:
         jd = self._job_dir(job_id)
         if not jd.is_dir():
             return
+        meta0 = _read_meta(jd)
+        if meta0 is None:
+            return
+        st0 = str(meta0.get("status") or "").lower()
+        if st0 in {"completed", "failed", "cancelled"}:
+            return
+        if st0 == "cancelling" or self._is_cancel_requested(jd, job_id):
+            self._finalize_terminal_cancelled(jd, "Cancelled before job execution continued.")
+            return
+
         async with meta_lock:
             meta = _read_meta(jd)
             if meta is None:
                 return
-            if meta.get("status") in {"completed", "failed"}:
+            if str(meta.get("status") or "").lower() in {"completed", "failed", "cancelled"}:
+                return
+            if self._is_cancel_requested(jd, job_id):
+                self._finalize_terminal_cancelled(jd, "Cancelled before entering running state.")
                 return
             meta["status"] = "running"
             meta["step"] = "parsing_doc"
@@ -898,6 +1020,9 @@ class InspectionExtractJobScheduler:
             parsed_text, parse_route = self._svc._parse_document(req)
         parse_ms = int((time.perf_counter() - parse_t0) * 1000)
         (jd / "parsed_text.txt").write_text(parsed_text, encoding="utf-8")
+
+        if self._is_cancel_requested(jd, job_id):
+            raise InspectionExtractJobCancelled()
 
         max_chars = 6000
         pr = (parse_route or "text").strip().lower()
@@ -950,6 +1075,9 @@ class InspectionExtractJobScheduler:
                 m["updated_at"] = utcnow_iso()
                 _atomic_write_json(jd / "job_meta.json", m)
 
+        if self._is_cancel_requested(jd, job_id):
+            raise InspectionExtractJobCancelled()
+
         llm_t0 = time.perf_counter()
         raw_records = await self._svc._llm_orch.run_llm_extraction_with_job_directory(
             req,
@@ -960,6 +1088,7 @@ class InspectionExtractJobScheduler:
             job_dir=jd,
             after_chunk_saved=_after_chunk,
             after_all_parse_chunks_done=_after_all_parse_chunks,
+            should_cancel=lambda: self._is_cancel_requested(jd, job_id),
         )
         llm_ms = int((time.perf_counter() - llm_t0) * 1000)
 

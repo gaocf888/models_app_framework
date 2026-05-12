@@ -13,6 +13,7 @@ from fastapi import UploadFile
 from app.api import inspection_extract as api
 from app.models.inspection_extract import (
     DetectionType,
+    InspectionExtractCancelResponse,
     InspectionExtractRequest,
     InspectionExtractResponse,
     InspectionExtractTrace,
@@ -73,4 +74,18 @@ def test_inspection_upload_route_calls_service() -> None:
     assert out.ok is True
     assert out.source_type == "docx"
     mocked.assert_awaited_once()
+
+
+def test_inspection_extract_delete_job_route_calls_service() -> None:
+    fake = InspectionExtractCancelResponse(
+        ok=True,
+        job_id="abc123",
+        outcome="cancel_accepted",
+        message="ok",
+    )
+    with patch.object(api.service, "cancel_async_job", return_value=fake) as mocked:
+        out = asyncio.run(api.delete_inspection_extract_job("abc123"))
+    assert out.ok is True
+    assert out.outcome == "cancel_accepted"
+    mocked.assert_called_once_with("abc123")
 
