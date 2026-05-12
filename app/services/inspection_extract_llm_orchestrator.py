@@ -612,12 +612,15 @@ class InspectionExtractLlmOrchestrator:
             logger.info("inspection_extract parse payload_type=%s", type(stage1).__name__ if stage1 is not None else "None")
             records_i = _extract_records(stage1)
             parse_format = "json"
+            salvage_records_count = 0
             if not records_i:
                 records_i = _extract_records_from_ndjson(parse_result)
                 if records_i:
                     parse_format = "ndjson"
             if not records_i:
-                records_i = _salvage_records_from_truncated_json(parse_result)
+                salvaged = _salvage_records_from_truncated_json(parse_result)
+                salvage_records_count = len(salvaged)
+                records_i = salvaged
                 if records_i:
                     parse_format = "json_salvage"
             records_i = _ensure_debug_fields(records_i)
@@ -629,10 +632,24 @@ class InspectionExtractLlmOrchestrator:
             if records_i:
                 logger.info("【检修提取】分块 %s/%s 解析成功，记录数=%s，尝试次数=%s", idx, total, len(records_i), attempt + 1)
                 break
-            if attempt < parse_chunk_retry:
-                logger.warning("【检修提取】分块 %s/%s 解析失败，开始重试 第 %s 次", idx, total, attempt + 1)
-        if not records_i:
-            logger.warning("【检修提取】分块 %s/%s 最终解析失败，已跳过该分块", idx, total)
+            diag = _format_parse_extraction_failure_diag(
+                idx=idx,
+                total=total,
+                raw=parse_result or "",
+                stage1=stage1,
+                chunk_meta=chunk_meta,
+                salvage_records_count=salvage_records_count,
+            )
+            will_retry = attempt < parse_chunk_retry
+            logger.warning(
+                "【检修提取】分块 %s/%s 解析失败 try=%s/%s%s | %s",
+                idx,
+                total,
+                attempt + 1,
+                parse_chunk_retry + 1,
+                "，将重试" if will_retry else "，该分块已跳过（无更多重试）",
+                diag,
+            )
         return records_i
 
     def _get_prompt_content(self, *, scene: str, user_id: str, version: str) -> str:
@@ -734,6 +751,98 @@ def _ensure_debug_fields(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             y["warnings"] = [str(w)]
         out.append(y)
     return out
+
+
+def _ndjson_diag_stats(raw: str) -> dict[str, int]:
+    """供 parse 失败诊断：NDJSON 形态行里有多少能通过 json、有多少像业务行。"""
+    text = _strip_markdown_fence(raw)
+    if not text:
+        return {"ndjson_braced_lines": 0, "ndjson_json_ok_lines": 0, "ndjson_accepted_inspection_rows": 0}
+    braced = json_ok = accepted = 0
+    for ln in text.splitlines():
+        s = ln.strip().rstrip(",")
+        if not s.startswith("{") or not s.endswith("}"):
+            continue
+        braced += 1
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError:
+            continue
+        json_ok += 1
+        if isinstance(obj, dict) and _looks_like_inspection_record_row(obj):
+            accepted += 1
+    return {
+        "ndjson_braced_lines": braced,
+        "ndjson_json_ok_lines": json_ok,
+        "ndjson_accepted_inspection_rows": accepted,
+    }
+
+
+def _format_parse_extraction_failure_diag(
+    *,
+    idx: int,
+    total: int,
+    raw: str,
+    stage1: dict[str, Any] | list[Any] | None,
+    chunk_meta: dict[str, Any],
+    salvage_records_count: int,
+) -> str:
+    """
+    当 JSON / NDJSON / salvage 均未得到记录时，输出一段可检索的诊断文本（避免整段贴满日志）。
+    """
+    body = raw or ""
+    stripped = body.strip()
+    nd = _ndjson_diag_stats(body)
+    preview = stripped.replace("\r", " ").replace("\n", "\\n")
+    if len(preview) > 480:
+        preview = preview[:480] + f"...<trunc len={len(stripped)}>"
+
+    payload_kind = type(stage1).__name__ if stage1 is not None else "None"
+    top_list_len: int | None = None
+    dict_keys: str | None = None
+    records_field_len: int | None = None
+    elem_types: str | None = None
+    if isinstance(stage1, list):
+        top_list_len = len(stage1)
+        if stage1:
+            elem_types = ",".join(type(x).__name__ for x in stage1[:8])
+            if len(stage1) > 8:
+                elem_types += ",..."
+    elif isinstance(stage1, dict):
+        dict_keys = ",".join(sorted(stage1.keys()))[:400]
+        rows = stage1.get("records")
+        if isinstance(rows, list):
+            records_field_len = len(rows)
+            if rows:
+                elem_types = ",".join(type(x).__name__ for x in rows[:8])
+                if len(rows) > 8:
+                    elem_types += ",..."
+
+    has_records_anchor = '"records"' in body or "'records'" in body
+
+    parts: list[str] = [
+        f"inspection_extract parse_failure_diag chunk={idx}/{total}",
+        f"response_chars={len(body)} stripped_empty={not bool(stripped)}",
+        f"payload_type={payload_kind}",
+    ]
+    if top_list_len is not None:
+        parts.append(f"top_level_list_len={top_list_len} top_level_elem_types={elem_types or '-'}")
+    if dict_keys is not None:
+        parts.append(f"dict_keys_sample={dict_keys}")
+    if records_field_len is not None:
+        parts.append(f"records_field_len={records_field_len} records_elem_types={elem_types or '-'}")
+    parts.append(
+        "ndjson_stats="
+        f"braced_lines={nd['ndjson_braced_lines']} json_ok_lines={nd['ndjson_json_ok_lines']} "
+        f"accepted_inspection_rows={nd['ndjson_accepted_inspection_rows']}"
+    )
+    parts.append(f"salvage_records_count={salvage_records_count} has_records_string_anchor={has_records_anchor}")
+    parts.append(
+        f"chunk_meta heading_path={chunk_meta.get('heading_path')} table_blocks={chunk_meta.get('table_blocks')} "
+        f"chunk_sha1={chunk_meta.get('chunk_sha1')}"
+    )
+    parts.append(f"response_preview={preview or '<empty>'}")
+    return " | ".join(parts)
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
