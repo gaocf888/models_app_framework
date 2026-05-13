@@ -12,7 +12,7 @@ Python 依赖拆分为 `service/requirements-base.txt`（无 Paddle）、`requir
 
 - `Dockerfile.cpu`：Python 3.11 bookworm + CPU Paddle
 - `Dockerfile.gpu.nvidia`：`nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04` + Python 3.11 + `paddlepaddle-gpu`（cu118 官方索引）
-- `Dockerfile.gpu.mthreads`：`ARG BASE_IMAGE` 默认沐曦 MACA 推理栈镜像 + `paddlepaddle` + `paddle-metax-gpu`（可 `--build-arg METAX_PADDLE_GPU=0` 退回 CPU 版 paddle 2.6）
+- `Dockerfile.gpu.mthreads`：`ARG BASE_IMAGE` 默认 **沐曦 `maca/paddle:2.6.0-…-py310-kylinv10-arm64`**（与 `docker login cr.metax-tech.com` 拉取的推理底镜像一致；路径含 `maca/paddle:` 时构建**跳过**飞桨/沐曦插件 pip）。x86 请改用仓库内 **amd64** 对应 tag。
 - `docker-compose.yml` / `docker-compose.cpu.yml`：CPU 编排（`Dockerfile.cpu`）
 - `docker-compose.gpu.nvidia.yml` / `docker-compose.gpu.mthreads.yml`：**独立完整** GPU 编排（各自含 `Dockerfile.gpu.*`、端口、卷、健康检查与网络），**不要**再与 `docker-compose.yml` 双文件合并，以免误读或合并顺序导致仍指向 CPU Dockerfile
 - `docker/entrypoint.sh`：初始化缓存与输出目录
@@ -45,7 +45,7 @@ curl -sS http://127.0.0.1:8010/health
 
 ### GPU · 沐曦（Metax）
 
-前置：宿主机 MACA 驱动正常；**默认基础镜像**为沐曦官方 **`paddle-metax:…-py310-ubuntu22.04-amd64`**（飞桨文档推荐，镜像内已含飞桨+沐曦插件，**不再**依赖 pip 安装 `paddle-metax-gpu`）。若你坚持使用 **`vllm-metax`（多为 Python 3.12）**，请设置 **`PADDLE_LAYOUT_METAX_PADDLE_GPU=0`**，否则构建会按 Dockerfile 主动失败并提示原因。现场允许 `privileged` + `/dev` 透传（与 `vllm-deploy/docker/docker-compose.mthreads.yml` 相同安全边界）。
+前置：宿主机为 **ARM64 + 麒麟 Kylin V10**（与默认底镜像 tag 一致）且 MACA 正常；默认 **`maca/paddle:2.6.0-…-arm64`** 已含飞桨与 MACA，构建不再 pip `paddle-metax-gpu`。**x86_64** 环境请将 `PADDLE_LAYOUT_MT_BASE_IMAGE` 改为沐曦仓库中 **amd64** 的 `maca/paddle` 或 `paddle-metax` 标签。若坚持用 **`vllm-metax`（Python 3.12）**，请设 **`PADDLE_LAYOUT_METAX_PADDLE_GPU=0`**。现场允许 `privileged` + `/dev` 透传。
 
 ```bash
 cd paddleocr-layout-deploy
@@ -85,7 +85,7 @@ curl -sS http://127.0.0.1:8010/health
 | 首请求极慢 | PaddleOCR 懒加载；预热可打一次小图 `/v1/layout-ocr` |
 | 大文件拒绝 | 调 `PADDLE_LAYOUT_MAX_UPLOAD_MB` 与主应用 `INSPECT_EXTRACT_V0_LAYOUT_OCR_MAX_UPLOAD_MB` 对齐 |
 | 英伟达 GPU 不可用 | 检查 `nvidia-smi` 与 compose 是否带 `-f docker-compose.gpu.nvidia.yml`；环境变量 `NVIDIA_VISIBLE_DEVICES` |
-| 沐曦 `paddle-metax-gpu` pip 报 **No matching distribution**（nightly/maca 仍无包） | 多见于 **Python 3.12** 基础镜像（如 `vllm-metax`）：`paddle-metax-gpu` 当前 pip 主要针对 **cp310/cp311**。**处理**：① 默认已改用官方 **`paddle-metax:…-py310-ubuntu22.04-amd64`** 基础镜像（镜像内已带沐曦飞桨，构建时**跳过**插件 pip）；② 或保留 vllm 镜像时设 **`PADDLE_LAYOUT_METAX_PADDLE_GPU=0`** 仅装 CPU paddle 2.6。 |
+| 沐曦 `paddle-metax-gpu` pip 报 **No matching distribution** | 多见于 **Python 3.12** 或 **maca 索引无对应 cp**。**处理**：使用默认 **`maca/paddle:2.6.0-…-py310-…-arm64`**（或 x86 的 **amd64** 同源 tag），构建会识别 `maca/paddle:` 并**跳过**飞桨 pip；或设 **`METAX_PADDLE_GPU=0`** 仅 CPU paddle。 |
 | 回滚 | 固定镜像 tag；主应用关闭 `INSPECT_EXTRACT_V0_ENABLED` 即切断调用 |
 
 ## 6. 安全与 CVE

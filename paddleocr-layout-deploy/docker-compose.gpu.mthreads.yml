@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: Dockerfile.gpu.mthreads
       args:
-        BASE_IMAGE: ${PADDLE_LAYOUT_MT_BASE_IMAGE:-cr.metax-tech.com/public-ai-release/maca/paddle-metax:3.3.0-maca.ai3.3.0.10-py310-ubuntu22.04-amd64}
+        BASE_IMAGE: ${PADDLE_LAYOUT_MT_BASE_IMAGE:-cr.metax-tech.com/public-ai-release/maca/paddle:2.6.0-maca.ai3.7.0.6-py310-kylinv10-arm64}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         METAX_PADDLE_GPU: ${PADDLE_LAYOUT_METAX_PADDLE_GPU:-1}
         PADDLE_METAX_CHANNEL: ${PADDLE_LAYOUT_METAX_CHANNEL:-nightly}

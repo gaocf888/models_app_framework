@@ -2,17 +2,18 @@
 # 编排对齐 vllm-deploy/docker/docker-compose.mthreads.yml：privileged + 挂载 /dev + MX_VISIBLE_DEVICES
 # 飞桨沐曦安装见：https://www.paddlepaddle.org.cn/documentation/docs/zh/hardware_support/metax/install_cn.html
 #
-# 重要：paddle-metax-gpu 的 pip 包主要面向 Python 3.10/3.11；在 vllm-metax 等 **Python 3.12** 基础镜像上
-# nightly/maca 常出现「No matching distribution」。默认使用沐曦官方 **paddle-metax … py310** 基础镜像（镜像内已含飞桨+沐曦插件）。
-ARG BASE_IMAGE=cr.metax-tech.com/public-ai-release/maca/paddle-metax:3.3.0-maca.ai3.3.0.10-py310-ubuntu22.04-amd64
+# 默认底镜像：沐曦仓库 **maca/paddle:2.6.0-…-py310-kylinv10-arm64**（已含飞桨 2.6 + MACA 栈，无需再 pip paddle-metax-gpu）。
+# 若底镜像名为 `paddle-metax` 或路径含 `maca/paddle:`，构建将 **跳过** 飞桨/沐曦插件的 pip 安装。
+# 若在 vllm-metax（Python 3.12）上自行 pip 沐曦插件，会因无 cp312 wheel 失败——请改用本默认底镜像或设 METAX_PADDLE_GPU=0。
+ARG BASE_IMAGE=cr.metax-tech.com/public-ai-release/maca/paddle:2.6.0-maca.ai3.7.0.6-py310-kylinv10-arm64
 FROM ${BASE_IMAGE}
 
 # 供 RUN 中判断是否跳过飞桨 pip（须与 build-arg 同名再声明一次）
 ARG BASE_IMAGE
 
 ARG PIP_INDEX_URL=
-# 1=启用沐曦 GPU 飞桨：若 BASE_IMAGE 为官方 paddle-metax（推荐），则跳过 pip 装包；否则尝试 pip 安装插件
-# 0=仅 paddlepaddle 2.6 CPU（无沐曦 GPU 加速，可用于 vllm-metax py312 等仅跑通 HTTP 的场景）
+# 1=使用沐曦 GPU 飞桨：底镜像为官方 paddle-metax / maca/paddle（已集成）时跳过飞桨 pip；否则在 py310/311 上尝试 pip 安装插件
+# 0=强制 pip 安装 paddlepaddle 2.6 CPU（无沐曦 GPU；可用于 py312 底镜像仅跑通 HTTP）
 ARG METAX_PADDLE_GPU=1
 # 官方文档：nightly + --pre；stable 走固定版本（仅当 pip 解释器为 py310/311 时 maca 索引才可能有包）
 # nightly | stable
@@ -45,7 +46,7 @@ WORKDIR /app
 
 COPY service/requirements-base.txt service/requirements-paddleocr.txt /app/service/
 
-# 优先 python3.10（与官方 paddle-metax 镜像一致），否则退化为 python3 / python
+# 优先 python3.10（与 maca/paddle、paddle-metax 镜像一致），否则退化为 python3 / python
 RUN PY="$(command -v python3.10 || command -v python3 || command -v python)" && echo "Using ${PY}" && "${PY}" --version
 
 RUN set -eux; \
@@ -53,15 +54,15 @@ RUN set -eux; \
     PY_MINOR="$("${PY}" -c 'import sys; print(sys.version_info[1])')"; \
     IMG="${BASE_IMAGE:-}"; \
     SKIP_PIP=0; \
-    if echo "${IMG}" | grep -qiE "paddle-metax"; then SKIP_PIP=1; fi; \
+    if echo "${IMG}" | grep -qiE "paddle-metax|maca/paddle:"; then SKIP_PIP=1; fi; \
     if [ "${METAX_PADDLE_GPU}" != "1" ]; then \
       "${PY}" -m pip install --no-cache-dir "paddlepaddle>=2.6.0,<2.7.0" --default-timeout=600 --retries=20; \
     elif [ "${SKIP_PIP}" = "1" ]; then \
-      echo "Metax: BASE_IMAGE looks like official paddle-metax; skipping pip install of paddlepaddle/paddle-metax-gpu."; \
+      echo "Metax: BASE_IMAGE is prebuilt (paddle-metax or maca/paddle); skipping pip install of paddlepaddle/paddle-metax-gpu."; \
       "${PY}" -c "import paddle; print('paddle ok', getattr(paddle, '__version__', '?'))"; \
     elif [ "${PY_MINOR}" -ge 12 ]; then \
-      echo "ERROR: METAX_PADDLE_GPU=1 but Python is 3.${PY_MINOR}+. paddle-metax-gpu pip wheels are not available for Python 3.12+." >&2; \
-      echo "Fix: use BASE_IMAGE=cr.metax-tech.com/public-ai-release/maca/paddle-metax:...-py310-... (see Paddle Metax install doc), OR set METAX_PADDLE_GPU=0 for CPU paddle 2.6." >&2; \
+      echo "ERROR: METAX_PADDLE_GPU=1 but Python is 3.${PY_MINOR}+. paddle-metax-gpu has no cp312+ wheels." >&2; \
+      echo "Fix: use BASE_IMAGE=.../maca/paddle:...-py310-...-arm64|amd64 or .../paddle-metax:...-py310-..., OR set METAX_PADDLE_GPU=0." >&2; \
       exit 1; \
     elif [ "${PADDLE_METAX_CHANNEL}" = "stable" ]; then \
       "${PY}" -m pip install --no-cache-dir "paddlepaddle==${PADDLE_CPU_METAX_VER}" -i "${PADDLE_CPU_INDEX_STABLE}" \
