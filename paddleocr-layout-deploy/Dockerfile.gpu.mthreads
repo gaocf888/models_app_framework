@@ -1,0 +1,70 @@
+# 检修 V0 · 沐曦（Metax / MACA）GPU 侧车
+# 编排对齐 vllm-deploy/docker/docker-compose.mthreads.yml：privileged + 挂载 /dev + MX_VISIBLE_DEVICES
+# 飞桨沐曦安装见：https://www.paddlepaddle.org.cn/documentation/docs/zh/hardware_support/metax/install_cn.html
+ARG BASE_IMAGE=cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.17.0-maca.ai3.5.3.307-torch2.8-py312-kylinv11-amd64
+FROM ${BASE_IMAGE}
+
+ARG PIP_INDEX_URL=
+# 1=安装 paddlepaddle（cpu 包）+ paddle-metax-gpu（沐曦加速）；0=仅 CPU 版 paddlepaddle 2.6（兼容旧栈，无沐曦 GPU 加速）
+ARG METAX_PADDLE_GPU=1
+ARG PADDLE_CPU_METAX_VER=3.3.0
+ARG PADDLE_METAX_GPU_VER=3.3.0
+ARG PADDLE_CPU_INDEX=https://www.paddlepaddle.org.cn/packages/stable/cpu/
+ARG PADDLE_MACA_INDEX=https://www.paddlepaddle.org.cn/packages/stable/maca/
+
+ENV PYTHONUNBUFFERED=1 \
+    PADDLEOCR_HOME=/io/.paddleocr \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH=/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+USER root
+
+RUN if command -v apt-get >/dev/null 2>&1; then \
+      apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends poppler-utils curl \
+      && rm -rf /var/lib/apt/lists/*; \
+    elif command -v yum >/dev/null 2>&1; then \
+      yum install -y poppler-utils curl && yum clean all; \
+    elif command -v dnf >/dev/null 2>&1; then \
+      dnf install -y poppler-utils curl && dnf clean all; \
+    fi
+
+WORKDIR /app
+
+COPY service/requirements-base.txt service/requirements-paddleocr.txt /app/service/
+
+RUN PY="$(command -v python || command -v python3)" && echo "Using ${PY}" && "${PY}" --version
+
+RUN PY="$(command -v python || command -v python3)" && \
+    if [ "${METAX_PADDLE_GPU}" = "1" ]; then \
+      "${PY}" -m pip install --no-cache-dir "paddlepaddle==${PADDLE_CPU_METAX_VER}" -i "${PADDLE_CPU_INDEX}" \
+        --default-timeout=600 --retries=20 && \
+      "${PY}" -m pip install --no-cache-dir "paddle-metax-gpu==${PADDLE_METAX_GPU_VER}" -i "${PADDLE_MACA_INDEX}" \
+        --default-timeout=600 --retries=20 ; \
+    else \
+      "${PY}" -m pip install --no-cache-dir "paddlepaddle>=2.6.0,<2.7.0" --default-timeout=600 --retries=20 ; \
+    fi
+
+RUN PY="$(command -v python || command -v python3)" && \
+    if [ -n "${PIP_INDEX_URL}" ]; then \
+      "${PY}" -m pip install --no-cache-dir -i "${PIP_INDEX_URL}" -r /app/service/requirements-base.txt ; \
+    else \
+      "${PY}" -m pip install --no-cache-dir -r /app/service/requirements-base.txt ; \
+    fi
+
+RUN PY="$(command -v python || command -v python3)" && \
+    if [ -n "${PIP_INDEX_URL}" ]; then \
+      "${PY}" -m pip install --no-cache-dir -i "${PIP_INDEX_URL}" -r /app/service/requirements-paddleocr.txt ; \
+    else \
+      "${PY}" -m pip install --no-cache-dir -r /app/service/requirements-paddleocr.txt ; \
+    fi
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh 2>/dev/null || true && chmod +x /entrypoint.sh
+
+COPY service /app/service
+WORKDIR /app/service
+
+EXPOSE 8000
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "75"]

@@ -1,0 +1,23 @@
+# 英伟达 GPU：与 mineru-deploy/docker-compose.gpu.yml 一致使用 `gpus: all`；
+# 卡选择请用 NVIDIA_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES。
+# 使用方式（在 paddleocr-layout-deploy 目录）：
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.nvidia.yml up -d --build
+services:
+  paddleocr-layout-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu.nvidia
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PADDLE_GPU_VERSION: ${PADDLE_LAYOUT_NV_PADDLE_GPU_VERSION:-2.6.2}
+        PADDLE_WHEEL_INDEX: ${PADDLE_LAYOUT_NV_WHEEL_INDEX:-https://www.paddlepaddle.org.cn/packages/stable/cu118/}
+    image: ${PADDLE_LAYOUT_GPU_NV_IMAGE:-paddleocr-layout-api:cu118-gpu}
+    gpus: all
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PADDLE_LAYOUT_MAX_UPLOAD_MB=${PADDLE_LAYOUT_MAX_UPLOAD_MB:-32}
+      - PADDLE_LAYOUT_USE_GPU=1
+      - PADDLE_LAYOUT_ENGINE_SEMVER=${PADDLE_LAYOUT_ENGINE_SEMVER:-0.1.0}
+      - PADDLEOCR_HOME=/io/.paddleocr
+      - NVIDIA_VISIBLE_DEVICES=${PADDLE_LAYOUT_NVIDIA_VISIBLE_DEVICES:-all}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}

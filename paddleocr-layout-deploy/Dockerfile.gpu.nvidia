@@ -1,0 +1,58 @@
+# 检修 V0 · PaddleOCR GPU（英伟达 CUDA）
+# 设备与编排对齐 mineru-deploy：Compose 使用 `gpus: all`，卡隔离用 NVIDIA_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES。
+# 飞桨 wheel 索引见：https://www.paddlepaddle.org.cn/install/quick?docurl=/documentation/docs/zh/install/pip/linux-pip.html
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+ARG PADDLE_GPU_VERSION=2.6.2
+ARG PADDLE_WHEEL_INDEX=https://www.paddlepaddle.org.cn/packages/stable/cu118/
+ARG PIP_INDEX_URL=
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PADDLEOCR_HOME=/io/.paddleocr \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    curl \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-dev python3.11-venv \
+    poppler-utils libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11 \
+    && python3.11 -m pip install --upgrade pip setuptools wheel
+
+WORKDIR /app
+
+# 先装飞桨 GPU，再装业务依赖与 PaddleOCR（paddleocr 依赖 paddle 已就绪）
+RUN python3.11 -m pip install "paddlepaddle-gpu==${PADDLE_GPU_VERSION}" -f "${PADDLE_WHEEL_INDEX}" \
+    --default-timeout=600 --retries=20
+
+COPY service/requirements-base.txt service/requirements-paddleocr.txt /app/service/
+RUN if [ -n "${PIP_INDEX_URL}" ]; then \
+      python3.11 -m pip install -i "${PIP_INDEX_URL}" -r /app/service/requirements-base.txt; \
+    else \
+      python3.11 -m pip install -r /app/service/requirements-base.txt; \
+    fi \
+    && if [ -n "${PIP_INDEX_URL}" ]; then \
+      python3.11 -m pip install -i "${PIP_INDEX_URL}" -r /app/service/requirements-paddleocr.txt; \
+    else \
+      python3.11 -m pip install -r /app/service/requirements-paddleocr.txt; \
+    fi
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh 2>/dev/null || true && chmod +x /entrypoint.sh
+
+COPY service /app/service
+WORKDIR /app/service
+
+RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python && ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+
+ENV PATH="/usr/local/bin:${PATH}"
+
+EXPOSE 8000
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "75"]

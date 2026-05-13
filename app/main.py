@@ -81,6 +81,14 @@ def create_app() -> FastAPI:
                 "须携带 `Authorization: Bearer <SERVICE_API_KEY>`。"
             ),
         },
+        {
+            "name": "inspection-extract-v0",
+            "description": (
+                "检修报告结构化提取 V0：LangGraph 编排 + 版面 OCR 侧车（paddleocr-layout-api），"
+                "单阶段 LLM；异步队列与现网隔离（Redis 前缀 `inspection:extract:v0:jobs`）。"
+                "须携带 `Authorization: Bearer <SERVICE_API_KEY>`；总开关 `INSPECT_EXTRACT_V0_ENABLED`。"
+            ),
+        },
     ]
 
     app = FastAPI(title="AI App Platform", version="1.0.0", openapi_tags=tags_metadata)
@@ -159,6 +167,15 @@ def create_app() -> FastAPI:
         tags=["inspection-extract"],
         dependencies=_auth,
     )
+    if cfg.inspection_extract_v0.enabled:
+        from app.api import inspection_extract_v0
+
+        app.include_router(
+            inspection_extract_v0.router,
+            prefix="/inspection-extract-v0",
+            tags=["inspection-extract-v0"],
+            dependencies=_auth,
+        )
     app.include_router(
         rag_admin.router,
         prefix="/rag",
@@ -177,6 +194,10 @@ def create_app() -> FastAPI:
         # Ensure durable ingestion workers are ready immediately after boot.
         rag_admin.warmup_rag_admin_components()
         inspection_extract.service.recover_async_jobs_on_startup()
+        if cfg.inspection_extract_v0.enabled:
+            from app.api import inspection_extract_v0
+
+            inspection_extract_v0.service.recover_async_jobs_on_startup()
 
     @app.on_event("shutdown")
     async def _shutdown_components() -> None:
@@ -185,6 +206,13 @@ def create_app() -> FastAPI:
             inspection_extract.service.job_scheduler.shutdown_workers()
         except Exception:
             pass
+        if cfg.inspection_extract_v0.enabled:
+            try:
+                from app.api import inspection_extract_v0
+
+                inspection_extract_v0.service.job_scheduler.shutdown_workers()
+            except Exception:
+                pass
 
     @app.get("/metrics")
     async def metrics() -> PlainTextResponse:

@@ -1,0 +1,38 @@
+# 默认 CPU 编排；GPU 请叠加：
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.nvidia.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.mthreads.yml up -d --build
+services:
+  paddleocr-layout-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+    image: ${PADDLE_LAYOUT_CPU_IMAGE:-paddleocr-layout-api:py311-cpu}
+    container_name: ${PADDLE_LAYOUT_CONTAINER_NAME:-paddleocr-layout-api}
+    restart: unless-stopped
+    ports:
+      - "${PADDLE_LAYOUT_PORT:-8010}:8000"
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PADDLE_LAYOUT_MAX_UPLOAD_MB=${PADDLE_LAYOUT_MAX_UPLOAD_MB:-32}
+      - PADDLE_LAYOUT_USE_GPU=0
+      - PADDLE_LAYOUT_ENGINE_SEMVER=${PADDLE_LAYOUT_ENGINE_SEMVER:-0.1.0}
+      - PADDLEOCR_HOME=/io/.paddleocr
+    volumes:
+      - ${PADDLE_LAYOUT_MODELS_HOST_PATH:-./data/paddle_layout_models}:/models:ro
+      - ${PADDLE_LAYOUT_IO_HOST_PATH:-./data/paddle_layout_io}:/io
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - paddle-layout-net
+    cpus: ${PADDLE_LAYOUT_CPU_LIMIT:-4.0}
+    mem_limit: ${PADDLE_LAYOUT_MEM_LIMIT:-16g}
+
+networks:
+  paddle-layout-net:
+    name: ${PADDLE_LAYOUT_NETWORK_NAME:-paddle-layout-stack}
+    driver: bridge

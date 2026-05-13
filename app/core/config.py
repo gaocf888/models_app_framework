@@ -572,6 +572,28 @@ class InspectionExtractConfig:
 
 
 @dataclass
+class InspectionExtractV0Config:
+    """
+    检修报告结构化提取 V0（LangGraph + 版面 OCR 侧车）。
+    """
+
+    enabled: bool = False
+    strict_default: bool = False
+    prompt_version: str = "v2"
+    model_name: str | None = None
+    llm_timeout_seconds: float = 300.0
+    llm_temperature: float = 0.3
+    llm_max_tokens_extract: int = 4096
+    layout_ocr_endpoint: str = "http://127.0.0.1:8010"
+    layout_ocr_timeout_seconds: float = 300.0
+    layout_ocr_max_upload_mb: int = 32
+    max_pdf_pages_preprocess: int = 5
+    # LangGraph Sqlite checkpoint 置于 job 子目录时的文件名
+    langgraph_checkpoint_filename: str = "langgraph_checkpoint.sqlite"
+    async_queue_workers: int = 2
+
+
+@dataclass
 class AppConfig:
     """
     应用全局配置。
@@ -586,6 +608,7 @@ class AppConfig:
     chatbot: ChatbotConfig = field(default_factory=ChatbotConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     inspection_extract: InspectionExtractConfig = field(default_factory=InspectionExtractConfig)
+    inspection_extract_v0: InspectionExtractV0Config = field(default_factory=InspectionExtractV0Config)
 
 
 @dataclass
@@ -999,6 +1022,24 @@ def _load_from_env() -> AppConfig:
         async_queue_workers=max(1, int(os.getenv("INSPECT_EXTRACT_ASYNC_QUEUE_WORKERS", "2"))),
     )
 
+    inspection_extract_v0_cfg = InspectionExtractV0Config(
+        enabled=os.getenv("INSPECT_EXTRACT_V0_ENABLED", "false").lower() == "true",
+        strict_default=os.getenv("INSPECT_EXTRACT_V0_STRICT_DEFAULT", "false").lower() == "true",
+        prompt_version=(os.getenv("INSPECT_EXTRACT_V0_PROMPT_VERSION", "v2") or "v2").strip(),
+        model_name=(os.getenv("INSPECT_EXTRACT_V0_MODEL_NAME") or "").strip() or None,
+        llm_timeout_seconds=max(10.0, float(os.getenv("INSPECT_EXTRACT_V0_LLM_TIMEOUT_SECONDS", "300"))),
+        llm_temperature=max(0.0, min(2.0, float(os.getenv("INSPECT_EXTRACT_V0_LLM_TEMPERATURE", "0.3")))),
+        llm_max_tokens_extract=max(256, int(os.getenv("INSPECT_EXTRACT_V0_LLM_MAX_TOKENS_EXTRACT", "4096"))),
+        layout_ocr_endpoint=(os.getenv("INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT", "http://127.0.0.1:8010") or "http://127.0.0.1:8010").rstrip("/"),
+        layout_ocr_timeout_seconds=max(10.0, float(os.getenv("INSPECT_EXTRACT_V0_LAYOUT_OCR_TIMEOUT_SECONDS", "300"))),
+        layout_ocr_max_upload_mb=max(1, int(os.getenv("INSPECT_EXTRACT_V0_LAYOUT_OCR_MAX_UPLOAD_MB", "32"))),
+        max_pdf_pages_preprocess=max(1, min(50, int(os.getenv("INSPECT_EXTRACT_V0_MAX_PDF_PAGES", "5")))),
+        langgraph_checkpoint_filename=(
+            os.getenv("INSPECT_EXTRACT_V0_LANGGRAPH_CHECKPOINT_FILE", "langgraph_checkpoint.sqlite") or "langgraph_checkpoint.sqlite"
+        ).strip(),
+        async_queue_workers=max(1, int(os.getenv("INSPECT_EXTRACT_V0_ASYNC_QUEUE_WORKERS", "2"))),
+    )
+
     cfg = AppConfig(
         env=env,
         llm=llm_cfg,
@@ -1008,6 +1049,7 @@ def _load_from_env() -> AppConfig:
         chatbot=chatbot_cfg,
         analysis=analysis_cfg,
         inspection_extract=inspection_extract_cfg,
+        inspection_extract_v0=inspection_extract_v0_cfg,
     )
     # 动态附加 db 字段，避免破坏现有 AppConfig 初始化调用点
     setattr(cfg, "db", db_cfg)

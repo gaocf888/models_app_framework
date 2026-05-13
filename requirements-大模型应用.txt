@@ -7,6 +7,7 @@
 
 # === 基础 Web 框架与运行环境 ===
 fastapi>=0.110.0          # Web API 框架，用于暴露 /llm/infer、/chatbot/chat、/analysis/run-with-payload、/analysis/run-with-nl2sql、/nl2sql/query 等接口
+python-multipart>=0.0.9  # FastAPI multipart/form-data（上传、/inspection-extract*/upload 等）
 uvicorn[standard]>=0.27.0 # ASGI 服务器，开发/部署时运行 FastAPI 应用
 pydantic>=2.6.0           # 数据模型与请求/响应校验（ChatRequest、AnalysisInput、NL2SQL 请求等）
 python-dotenv>=1.0.0      # 从 .env 文件加载配置，便于本地/测试环境管理环境变量
@@ -35,6 +36,7 @@ langchain-community>=0.2.0    # LangChain 社区模块，包含 Neo4jGraph 等 G
 langchain>=0.2.0          # 通用 RAG/NL2SQL/Agentic Workflow 编排能力（Chains/Tools 等）
 langchain-openai>=0.1.0   # 如需直接调用 OpenAI / Azure OpenAI，可通过本包集成到 LangChain
 langgraph>=0.2.0          # 企业级状态图编排（Chatbot LangGraph 工作流）
+langgraph-checkpoint-sqlite>=2.0.0  # 检修 V0 等：按任务目录 Sqlite 断点（AsyncSqliteSaver）
 langsmith>=0.1.0          # LangSmith 追踪 SDK（通过 LangSmithTracker 接入）
 pypdf>=4.3.0              # PDF 文档解析（DocumentPipeline 支持 file path 输入）
 python-docx>=1.1.2        # DOCX 文档解析（DocumentPipeline 支持 file path 输入）

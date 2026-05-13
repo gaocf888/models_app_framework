@@ -1,0 +1,37 @@
+# 检修 V0 · PaddleOCR + 版面/表格能力（CPU）
+# 参照 mineru-deploy：模型与缓存走挂载卷，镜像内仅运行时与轻量依赖
+FROM python:3.11-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    poppler-utils \
+    curl \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ARG PIP_INDEX_URL=
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# requirements.txt 内含 -r，路径相对于本文件所在目录（service/）
+COPY service/requirements.txt service/requirements-base.txt service/requirements-paddle-cpu.txt \
+     service/requirements-paddleocr.txt /app/service/
+RUN if [ -n "$PIP_INDEX_URL" ]; then \
+      pip install -i "$PIP_INDEX_URL" -r /app/service/requirements.txt; \
+    else \
+      pip install -r /app/service/requirements.txt; \
+    fi
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+COPY service /app/service
+WORKDIR /app/service
+
+ENV PYTHONUNBUFFERED=1 \
+    PADDLEOCR_HOME=/io/.paddleocr
+
+EXPOSE 8000
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "75"]

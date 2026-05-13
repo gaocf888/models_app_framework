@@ -1,0 +1,8 @@
+# 与 Paddle 安装解耦：不含 paddleocr（须在安装 Paddle 之后再装 requirements-paddleocr.txt）
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+numpy>=1.24.0,<2.0
+opencv-python-headless>=4.8.0
+pillow>=10.0.0
+pdf2image>=1.17.0

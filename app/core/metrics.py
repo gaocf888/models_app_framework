@@ -170,3 +170,25 @@ INSPECT_EXTRACT_VALIDATION_FAIL_COUNT = Counter(
     "Total validation failures in extracted records",
 )
 
+# 检修报告结构化提取 V0（/inspection-extract-v0）：与现网指标前缀隔离。
+INSPECT_EXTRACT_V0_REQUEST_COUNT = Counter(
+    "inspect_extract_v0_requests_total",
+    "Total inspection extract v0 requests",
+    ["status"],
+)
+
+INSPECT_EXTRACT_V0_PARSE_LATENCY = Histogram(
+    "inspect_extract_v0_parse_latency_seconds",
+    "Inspection extract v0 preprocess+layout+irt wall time in seconds",
+)
+
+INSPECT_EXTRACT_V0_LLM_LATENCY = Histogram(
+    "inspect_extract_v0_llm_latency_seconds",
+    "Inspection extract v0 single-stage LLM latency in seconds",
+)
+
+INSPECT_EXTRACT_V0_RECORD_COUNT = Counter(
+    "inspect_extract_v0_records_total",
+    "Total structured records extracted by v0 pipeline",
+)
+

@@ -1,0 +1,2 @@
+# CPU 版 Paddle（默认 CPU 镜像）
+paddlepaddle>=2.6.0,<2.7.0

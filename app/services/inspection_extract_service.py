@@ -724,6 +724,13 @@ class InspectionExtractJobScheduler:
                         )
                         self._queue.ack(job_id)
                         continue
+                    if str(meta.get("pipeline") or "") == "v0":
+                        logger.warning(
+                            "inspection_extract legacy worker skipping v0 pipeline job_id=%s (use v0 queue)",
+                            job_id,
+                        )
+                        self._queue.ack(job_id)
+                        continue
                     if meta.get("status") in {"completed", "failed"}:
                         self._queue.ack(job_id)
                         continue
@@ -897,6 +904,8 @@ class InspectionExtractJobScheduler:
                 meta = json.loads(mp.read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001
                 continue
+            if str(meta.get("pipeline") or "") == "v0":
+                continue
             jid = str(meta.get("job_id") or sub.name)
             st = str(meta.get("status") or "").lower()
             if st == "running":
@@ -984,6 +993,9 @@ class InspectionExtractJobScheduler:
             return
         meta0 = _read_meta(jd)
         if meta0 is None:
+            return
+        if str(meta0.get("pipeline") or "") == "v0":
+            logger.warning("inspection_extract legacy _run_job skipped v0 pipeline job_id=%s", job_id)
             return
         st0 = str(meta0.get("status") or "").lower()
         if st0 in {"completed", "failed", "cancelled"}:

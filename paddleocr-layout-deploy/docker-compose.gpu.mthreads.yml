@@ -1,0 +1,27 @@
+# 沐曦（Metax / MACA）GPU：与 vllm-deploy/docker/docker-compose.mthreads.yml 一致使用 privileged + /dev + MX_VISIBLE_DEVICES。
+# 使用方式：
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.mthreads.yml up -d --build
+services:
+  paddleocr-layout-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu.mthreads
+      args:
+        BASE_IMAGE: ${PADDLE_LAYOUT_MT_BASE_IMAGE:-cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.17.0-maca.ai3.5.3.307-torch2.8-py312-kylinv11-amd64}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        METAX_PADDLE_GPU: ${PADDLE_LAYOUT_METAX_PADDLE_GPU:-1}
+        PADDLE_CPU_METAX_VER: ${PADDLE_LAYOUT_METAX_CPU_PADDLE_VER:-3.3.0}
+        PADDLE_METAX_GPU_VER: ${PADDLE_LAYOUT_METAX_GPU_VER:-3.3.0}
+    image: ${PADDLE_LAYOUT_GPU_MT_IMAGE:-paddleocr-layout-api:metax-gpu}
+    privileged: true
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PADDLE_LAYOUT_MAX_UPLOAD_MB=${PADDLE_LAYOUT_MAX_UPLOAD_MB:-32}
+      - PADDLE_LAYOUT_USE_GPU=1
+      - PADDLE_LAYOUT_ENGINE_SEMVER=${PADDLE_LAYOUT_ENGINE_SEMVER:-0.1.0}
+      - PADDLEOCR_HOME=/io/.paddleocr
+      - MX_VISIBLE_DEVICES=${MX_VISIBLE_DEVICES:-0}
+    volumes:
+      - ${PADDLE_LAYOUT_MODELS_HOST_PATH:-./data/paddle_layout_models}:/models:ro
+      - ${PADDLE_LAYOUT_IO_HOST_PATH:-./data/paddle_layout_io}:/io
+      - /dev:/dev
