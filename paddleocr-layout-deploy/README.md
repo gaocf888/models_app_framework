@@ -87,6 +87,7 @@ curl -sS http://127.0.0.1:8010/health
 
 | 场景 | 处理 |
 |------|------|
+| **`ImportError: libGL.so.1`**（`import cv2`） | 精简 Debian 镜像未装 OpenCV 依赖的 **Mesa GL**。CPU 镜像已 apt 安装 **`libgl1`**、**`libglib2.0-0`**；请 **`docker compose ... build --no-cache`** 重建。 |
 | **`/usr/bin/env: 'bash\r': No such file or directory`** | `docker/entrypoint.sh` 为 **Windows CRLF** 行尾，Linux 无法解析 shebang。**处理**：`git pull` 后 **`docker compose ... build --no-cache`**（`Dockerfile.cpu` 已在构建时 `sed` 去 `\r`）；本地仓库可保留 **`paddleocr-layout-deploy/.gitattributes`** 强制 `docker/*.sh` 为 LF。 |
 | 构建拉取底镜像失败（`hub-mirror.c.163.com` **no such host** / `failed to do request`） | 多为宿主机 **`registry-mirrors`** 劫持 `docker.io`。**本仓库默认**已用 **`docker.m.daocloud.io/library/python:3.11-bookworm`** 作 CPU 底镜像；若仍失败：① 修正 **`/etc/docker/daemon.json`** 并重启 Docker；② 在 `.env` 设 **`PADDLE_LAYOUT_CPU_BASE_IMAGE`** 为贵司 Harbor 等可达地址；③ 海外环境可显式设为 **`python:3.11-bookworm`**（直连 Docker Hub）。 |
 | `docker compose ... down` 提示 **Network paddle-layout-stack is still in use** | 仍有其他容器挂在该网络上（常见：`models-app` 通过 external 网络连接侧车）。**处理**：先停相关栈，或 **`docker network inspect paddle-layout-stack`** 查看占用者；勿强行删正在使用的网络。 |

@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
     python3.11 python3.11-dev python3.11-venv \
-    poppler-utils libgomp1 libreoffice-writer-nogui \
+    poppler-utils libgomp1 libreoffice-writer-nogui libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11 \
