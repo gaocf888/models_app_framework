@@ -95,6 +95,45 @@ def test_serialize_docx_marks_run_font_color() -> None:
         Path(path).unlink(missing_ok=True)
 
 
+def test_serialize_docx_collapses_uniform_title_row() -> None:
+    """跨列表题被复制到每列时，首行折叠为一条，避免 r0 每列重复长标题。"""
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    title = "高再入口蠕胀数据测量（51×4mm）"
+    for j in range(3):
+        table.cell(0, j).text = title
+    table.cell(1, 0).text = "x"
+    table.cell(1, 1).text = "y"
+    table.cell(1, 2).text = "z"
+    fd, path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    doc.save(path)
+    try:
+        out = serialize_docx_for_inspection_v2(path, candidate_fills=set())
+        assert "重复表题×3" in out
+        assert out.count(title) == 1
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def test_serialize_docx_corner_root_row_annotation() -> None:
+    """斜线表角「根数+排数」同格时补充横纵语义，便于与管号列/行号列对齐。"""
+    doc = Document()
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "根数 排数"
+    table.cell(0, 1).text = "1"
+    fd, path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    doc.save(path)
+    try:
+        out = serialize_docx_for_inspection_v2(path, candidate_fills=set())
+        assert "[表角:" in out
+        assert "横向表头=根数" in out
+        assert "纵向表头=排数" in out
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
 def test_serialize_docx_omits_default_black_font_marker() -> None:
     """显式默认黑 000000 不输出字体标注（避免与海量默认单元格重复 token）。"""
     doc = Document()

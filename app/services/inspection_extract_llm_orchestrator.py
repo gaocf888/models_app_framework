@@ -632,6 +632,13 @@ class InspectionExtractLlmOrchestrator:
             if records_i:
                 logger.info("【检修提取】分块 %s/%s 解析成功，记录数=%s，尝试次数=%s", idx, total, len(records_i), attempt + 1)
                 break
+            self._log_parse_fail_llm_raw(
+                idx=idx,
+                total=total,
+                attempt=attempt,
+                parse_chunk_retry=parse_chunk_retry,
+                raw=parse_result or "",
+            )
             diag = _format_parse_extraction_failure_diag(
                 idx=idx,
                 total=total,
@@ -724,6 +731,36 @@ class InspectionExtractLlmOrchestrator:
         if len(text) > limit:
             clipped += f"\n...<truncated {len(text) - limit} chars>"
         logger.info("inspection_extract parse normalized_records stage=%s payload=\n%s", stage, clipped)
+
+    def _log_parse_fail_llm_raw(
+        self,
+        *,
+        idx: int,
+        total: int,
+        attempt: int,
+        parse_chunk_retry: int,
+        raw: str,
+    ) -> None:
+        """
+        分块 parse 未得到任何记录时，打印本次 LLM 原始返回，便于对照诊断。
+        长度上限：max(16k, min(200k, log_llm_raw_max_chars * 8))，避免单条日志过大。
+        """
+        body = raw or ""
+        base = max(200, int(getattr(self._cfg, "log_llm_raw_max_chars", 2000)))
+        limit = max(16_000, min(200_000, base * 8))
+        clipped = body[:limit]
+        trunc = ""
+        if len(body) > limit:
+            trunc = f"\n...<truncated {len(body) - limit} chars, total={len(body)}>"
+        marker = f"[检修提取][分块 {idx}/{total}][parse_try {attempt + 1}/{parse_chunk_retry + 1}]"
+        logger.warning(
+            "%s LLM解析失败-原始返回 total_chars=%s logged_chars=%s\n%s%s",
+            marker,
+            len(body),
+            len(clipped),
+            clipped,
+            trunc,
+        )
 
 
 def _batch_records(records: list[dict[str, Any]], *, batch_size: int) -> list[list[dict[str, Any]]]:

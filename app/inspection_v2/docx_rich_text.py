@@ -123,6 +123,119 @@ def _escape_cell_text(s: str) -> str:
     return t.replace("'", "''")
 
 
+def _cell_vmerge_kind(cell) -> str | None:
+    """
+    Word 纵向合并：restart 为合并首格；无 val 的 vMerge 表示续格（与上一行同列合并）。
+    """
+    tc_pr = cell._tc.find(qn("w:tcPr"))
+    if tc_pr is None:
+        return None
+    vm = tc_pr.find(qn("w:vMerge"))
+    if vm is None:
+        return None
+    val = (vm.get(qn("w:val")) or "").strip().lower()
+    if val == "restart":
+        return "restart"
+    return "continue"
+
+
+def _row_is_uniform_non_empty_text(row) -> tuple[bool, str]:
+    """是否每一格文本（strip 后）完全相同且非空（常见于跨列表题被 Word 复制到每格）。"""
+    if not row.cells:
+        return False, ""
+    texts = [(c.text or "").strip() for c in row.cells]
+    t0 = texts[0]
+    if not t0:
+        return False, ""
+    return all(x == t0 for x in texts), t0
+
+
+def _annotate_corner_root_row_header(text: str) -> str:
+    """
+    斜线表角常见为「根数」「排数」挤在同一格；补充轴向语义，便于 LLM 与横纵表头对齐。
+    """
+    t = (text or "").strip()
+    if "根数" in t and "排数" in t:
+        return (
+            "[表角:横向表头=根数(管号列);纵向表头=排数(行号列);"
+            "右侧数字为管号/根数，下方数据行左列为排数/行号] "
+            + t
+        )
+    return t
+
+
+def _serialize_one_table_v2(tbl: Table, table_idx: int, candidate_fills: set[str]) -> list[str]:
+    """单表序列化为 DOCX_V2 行列表（含合并/表角/纵向合并提示）。"""
+    nrows = len(tbl.rows)
+    ncols = max((len(r.cells) for r in tbl.rows), default=0)
+    lines: list[str] = [f"[DOCX_V2_TABLE idx={table_idx} rows={nrows} cols={ncols}]"]
+    for ri, row in enumerate(tbl.rows):
+        # 首行跨列表题：各格文本相同（Word 常复制到每列），折叠为一格描述，省 token 且避免误导 LLM
+        if ri == 0 and len(row.cells) > 1:
+            uniform, ut = _row_is_uniform_non_empty_text(row)
+            if uniform:
+                cell0 = row.cells[0]
+                fill = _cell_shd_fill(cell0)
+                mark_parts: list[str] = []
+                if _is_candidate_shading(fill, candidate_fills):
+                    mark_parts.append(f"[超标候选·底纹={fill}]" if fill else "[超标候选]")
+                color_marks: list[str] = []
+                if fill and fill != "FFFFFF":
+                    if not _is_candidate_shading(fill, candidate_fills):
+                        color_marks.append(f"底纹={fill}")
+                color_marks.extend(_collect_cell_run_color_marks(cell0))
+                color_marks = _dedupe_keep_order(color_marks)
+                if color_marks:
+                    mark_parts.append(f"[颜色标注:{','.join(color_marks)}]")
+                n = len(row.cells)
+                lines.append(
+                    f"r{ri}: c0..c{n - 1}='{_escape_cell_text(ut)}'[重复表题×{n}]{''.join(mark_parts)}"
+                )
+                continue
+
+        parts: list[str] = []
+        ci = 0
+        ncells = len(row.cells)
+        while ci < ncells:
+            cell = row.cells[ci]
+            hspan = 1
+            while ci + hspan < ncells and row.cells[ci + hspan]._tc is cell._tc:
+                hspan += 1
+            cell_text = (cell.text or "").strip()
+            vm = _cell_vmerge_kind(cell)
+            if vm == "continue" and cell_text:
+                cell_text = f"{cell_text}[vmerge续=与上格同列合并]"
+            elif vm == "continue" and not cell_text:
+                cell_text = "[vmerge续=与上格同列合并]"
+            if hspan == 1:
+                cell_text = _annotate_corner_root_row_header(cell_text)
+
+            fill = _cell_shd_fill(cell)
+            mark_parts = []
+            if _is_candidate_shading(fill, candidate_fills):
+                mark_parts.append(f"[超标候选·底纹={fill}]" if fill else "[超标候选]")
+            color_marks = []
+            if fill and fill != "FFFFFF":
+                if not _is_candidate_shading(fill, candidate_fills):
+                    color_marks.append(f"底纹={fill}")
+            color_marks.extend(_collect_cell_run_color_marks(cell))
+            color_marks = _dedupe_keep_order(color_marks)
+            if color_marks:
+                mark_parts.append(f"[颜色标注:{','.join(color_marks)}]")
+
+            if hspan == 1:
+                col_key = f"c{ci}"
+                htag = ""
+            else:
+                col_key = f"c{ci}-c{ci + hspan - 1}"
+                htag = f"[hmerge×{hspan}]"
+            parts.append(f"{col_key}='{_escape_cell_text(cell_text)}'{htag}{''.join(mark_parts)}")
+            ci += hspan
+        lines.append(f"r{ri}: " + " | ".join(parts))
+    lines.append("")
+    return lines
+
+
 def serialize_docx_for_inspection_v2(
     path: str | Path,
     *,
@@ -149,27 +262,5 @@ def serialize_docx_for_inspection_v2(
         else:
             table_idx += 1
             tbl: Table = block
-            nrows = len(tbl.rows)
-            ncols = max((len(r.cells) for r in tbl.rows), default=0)
-            out.append(f"[DOCX_V2_TABLE idx={table_idx} rows={nrows} cols={ncols}]")
-            for ri, row in enumerate(tbl.rows):
-                parts: list[str] = []
-                for ci, cell in enumerate(row.cells):
-                    cell_text = (cell.text or "").strip()
-                    fill = _cell_shd_fill(cell)
-                    mark_parts: list[str] = []
-                    if _is_candidate_shading(fill, candidate_fills):
-                        mark_parts.append(f"[超标候选·底纹={fill}]" if fill else "[超标候选]")
-                    color_marks: list[str] = []
-                    if fill and fill != "FFFFFF":
-                        # 候选底纹已在「超标候选」中写出，避免同一单元格再重复 底纹= 占用 token
-                        if not _is_candidate_shading(fill, candidate_fills):
-                            color_marks.append(f"底纹={fill}")
-                    color_marks.extend(_collect_cell_run_color_marks(cell))
-                    color_marks = _dedupe_keep_order(color_marks)
-                    if color_marks:
-                        mark_parts.append(f"[颜色标注:{','.join(color_marks)}]")
-                    parts.append(f"c{ci}='{_escape_cell_text(cell_text)}'{''.join(mark_parts)}")
-                out.append(f"r{ri}: " + " | ".join(parts))
-            out.append("")
+            out.extend(_serialize_one_table_v2(tbl, table_idx, candidate_fills))
     return "\n".join(out).strip() + ("\n" if out else "")
