@@ -1,6 +1,6 @@
-# 沐曦（Metax / MACA）GPU：与 vllm-deploy/docker/docker-compose.mthreads.yml 一致使用 privileged + /dev + MX_VISIBLE_DEVICES。
-# 使用方式：
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.mthreads.yml up -d --build
+# 沐曦（Metax）GPU 独立编排（勿与 docker-compose.yml 叠加，避免误读为仍用 Dockerfile.cpu）。
+# 与 vllm-deploy/docker/docker-compose.mthreads.yml 一致：privileged + /dev + MX_VISIBLE_DEVICES。
+# 使用：docker compose -f docker-compose.gpu.mthreads.yml up -d --build
 services:
   paddleocr-layout-api:
     build:
@@ -13,6 +13,10 @@ services:
         PADDLE_CPU_METAX_VER: ${PADDLE_LAYOUT_METAX_CPU_PADDLE_VER:-3.3.0}
         PADDLE_METAX_GPU_VER: ${PADDLE_LAYOUT_METAX_GPU_VER:-3.3.0}
     image: ${PADDLE_LAYOUT_GPU_MT_IMAGE:-paddleocr-layout-api:metax-gpu}
+    container_name: ${PADDLE_LAYOUT_CONTAINER_NAME:-paddleocr-layout-api}
+    restart: unless-stopped
+    ports:
+      - "${PADDLE_LAYOUT_PORT:-8010}:8000"
     privileged: true
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -25,3 +29,17 @@ services:
       - ${PADDLE_LAYOUT_MODELS_HOST_PATH:-./data/paddle_layout_models}:/models:ro
       - ${PADDLE_LAYOUT_IO_HOST_PATH:-./data/paddle_layout_io}:/io
       - /dev:/dev
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - paddle-layout-net
+    cpus: ${PADDLE_LAYOUT_CPU_LIMIT:-4.0}
+    mem_limit: ${PADDLE_LAYOUT_MEM_LIMIT:-16g}
+
+networks:
+  paddle-layout-net:
+    name: ${PADDLE_LAYOUT_NETWORK_NAME:-paddle-layout-stack}
+    driver: bridge

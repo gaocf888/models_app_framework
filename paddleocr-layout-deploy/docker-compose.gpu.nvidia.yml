@@ -1,7 +1,6 @@
-# 英伟达 GPU：与 mineru-deploy/docker-compose.gpu.yml 一致使用 `gpus: all`；
-# 卡选择请用 NVIDIA_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES。
-# 使用方式（在 paddleocr-layout-deploy 目录）：
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.nvidia.yml up -d --build
+# 英伟达 GPU 独立编排（勿与 docker-compose.yml 叠加，避免误读为仍用 Dockerfile.cpu）。
+# 与 mineru-deploy/docker-compose.gpu.yml 一致使用 gpus:all；卡选择见 NVIDIA_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES。
+# 使用：docker compose -f docker-compose.gpu.nvidia.yml up -d --build
 services:
   paddleocr-layout-api:
     build:
@@ -12,7 +11,10 @@ services:
         PADDLE_GPU_VERSION: ${PADDLE_LAYOUT_NV_PADDLE_GPU_VERSION:-2.6.2}
         PADDLE_WHEEL_INDEX: ${PADDLE_LAYOUT_NV_WHEEL_INDEX:-https://www.paddlepaddle.org.cn/packages/stable/cu118/}
     image: ${PADDLE_LAYOUT_GPU_NV_IMAGE:-paddleocr-layout-api:cu118-gpu}
-    gpus: all
+    container_name: ${PADDLE_LAYOUT_CONTAINER_NAME:-paddleocr-layout-api}
+    restart: unless-stopped
+    ports:
+      - "${PADDLE_LAYOUT_PORT:-8010}:8000"
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - PADDLE_LAYOUT_MAX_UPLOAD_MB=${PADDLE_LAYOUT_MAX_UPLOAD_MB:-32}
@@ -21,3 +23,21 @@ services:
       - PADDLEOCR_HOME=/io/.paddleocr
       - NVIDIA_VISIBLE_DEVICES=${PADDLE_LAYOUT_NVIDIA_VISIBLE_DEVICES:-all}
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    volumes:
+      - ${PADDLE_LAYOUT_MODELS_HOST_PATH:-./data/paddle_layout_models}:/models:ro
+      - ${PADDLE_LAYOUT_IO_HOST_PATH:-./data/paddle_layout_io}:/io
+    gpus: all
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - paddle-layout-net
+    cpus: ${PADDLE_LAYOUT_CPU_LIMIT:-4.0}
+    mem_limit: ${PADDLE_LAYOUT_MEM_LIMIT:-16g}
+
+networks:
+  paddle-layout-net:
+    name: ${PADDLE_LAYOUT_NETWORK_NAME:-paddle-layout-stack}
+    driver: bridge

@@ -1,6 +1,5 @@
-# 默认 CPU 编排；GPU 请叠加：
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.nvidia.yml up -d --build
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.mthreads.yml up -d --build
+# 默认 CPU 编排（Dockerfile.cpu）。
+# GPU 请使用独立文件，勿与本文件叠加：docker-compose.gpu.nvidia.yml / docker-compose.gpu.mthreads.yml（见 README）。
 services:
   paddleocr-layout-api:
     build:

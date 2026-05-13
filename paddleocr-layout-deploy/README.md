@@ -13,8 +13,8 @@ Python 依赖拆分为 `service/requirements-base.txt`（无 Paddle）、`requir
 - `Dockerfile.cpu`：Python 3.11 bookworm + CPU Paddle
 - `Dockerfile.gpu.nvidia`：`nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04` + Python 3.11 + `paddlepaddle-gpu`（cu118 官方索引）
 - `Dockerfile.gpu.mthreads`：`ARG BASE_IMAGE` 默认沐曦 MACA 推理栈镜像 + `paddlepaddle` + `paddle-metax-gpu`（可 `--build-arg METAX_PADDLE_GPU=0` 退回 CPU 版 paddle 2.6）
-- `docker-compose.yml` / `docker-compose.cpu.yml`：CPU 编排
-- `docker-compose.gpu.nvidia.yml` / `docker-compose.gpu.mthreads.yml`：GPU 编排覆盖层（须与 `docker-compose.yml` **双文件**合并启动）
+- `docker-compose.yml` / `docker-compose.cpu.yml`：CPU 编排（`Dockerfile.cpu`）
+- `docker-compose.gpu.nvidia.yml` / `docker-compose.gpu.mthreads.yml`：**独立完整** GPU 编排（各自含 `Dockerfile.gpu.*`、端口、卷、健康检查与网络），**不要**再与 `docker-compose.yml` 双文件合并，以免误读或合并顺序导致仍指向 CPU Dockerfile
 - `docker/entrypoint.sh`：初始化缓存与输出目录
 - `service/main.py`：FastAPI（`/health`、`/v1/layout-ocr`、`/docs`）；`PADDLE_LAYOUT_USE_GPU=1` 时 `PaddleOCR(..., use_gpu=True)`
 - `.env.example`：含 CPU / NVIDIA / 沐曦相关变量说明
@@ -39,7 +39,7 @@ curl -sS http://127.0.0.1:8010/health
 cd paddleocr-layout-deploy
 cp .env.example .env
 # 按需修改 PADDLE_LAYOUT_NV_*、PADDLE_LAYOUT_NVIDIA_VISIBLE_DEVICES、CUDA_VISIBLE_DEVICES
-docker compose -f docker-compose.yml -f docker-compose.gpu.nvidia.yml up -d --build
+docker compose -f docker-compose.gpu.nvidia.yml up -d --build
 curl -sS http://127.0.0.1:8010/health
 ```
 
@@ -51,7 +51,7 @@ curl -sS http://127.0.0.1:8010/health
 cd paddleocr-layout-deploy
 cp .env.example .env
 # 设置 PADDLE_LAYOUT_MT_BASE_IMAGE、MX_VISIBLE_DEVICES、PADDLE_LAYOUT_METAX_* 等
-docker compose -f docker-compose.yml -f docker-compose.gpu.mthreads.yml up -d --build
+docker compose -f docker-compose.gpu.mthreads.yml up -d --build
 curl -sS http://127.0.0.1:8010/health
 ```
 
