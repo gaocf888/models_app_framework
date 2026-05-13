@@ -1,6 +1,9 @@
 # 检修 V0 · PaddleOCR + 版面/表格能力（CPU）
 # 参照 mineru-deploy：模型与缓存走挂载卷，镜像内仅运行时与轻量依赖
-FROM python:3.11-bookworm
+# 底镜像默认 docker.io/library/python:3.11-bookworm。若宿主机 Docker 配置了失效的 registry-mirrors（如 hub-mirror.c.163.com DNS 失败），
+# 请 build-arg 覆盖为可达镜像，例如：PADDLE_LAYOUT_CPU_BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-bookworm
+ARG BASE_IMAGE=python:3.11-bookworm
+FROM ${BASE_IMAGE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
