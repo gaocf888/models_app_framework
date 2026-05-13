@@ -10,6 +10,7 @@ services:
         BASE_IMAGE: ${PADDLE_LAYOUT_MT_BASE_IMAGE:-cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.17.0-maca.ai3.5.3.307-torch2.8-py312-kylinv11-amd64}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         METAX_PADDLE_GPU: ${PADDLE_LAYOUT_METAX_PADDLE_GPU:-1}
+        PADDLE_METAX_CHANNEL: ${PADDLE_LAYOUT_METAX_CHANNEL:-nightly}
         PADDLE_CPU_METAX_VER: ${PADDLE_LAYOUT_METAX_CPU_PADDLE_VER:-3.3.0}
         PADDLE_METAX_GPU_VER: ${PADDLE_LAYOUT_METAX_GPU_VER:-3.3.0}
     image: ${PADDLE_LAYOUT_GPU_MT_IMAGE:-paddleocr-layout-api:metax-gpu}

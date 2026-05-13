@@ -5,12 +5,18 @@ ARG BASE_IMAGE=cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.17.0-maca.a
 FROM ${BASE_IMAGE}
 
 ARG PIP_INDEX_URL=
-# 1=安装 paddlepaddle（cpu 包）+ paddle-metax-gpu（沐曦加速）；0=仅 CPU 版 paddlepaddle 2.6（兼容旧栈，无沐曦 GPU 加速）
+# 1=先装飞桨 CPU 包再装 paddle-metax-gpu（沐曦插件）；0=仅 paddlepaddle 2.6 CPU（无沐曦 GPU 加速）
 ARG METAX_PADDLE_GPU=1
+# 官方文档（曦云 C500）使用 nightly + --pre；stable/maca 索引常无 wheel，会导致 pip「No matching distribution」
+# nightly | stable
+ARG PADDLE_METAX_CHANNEL=nightly
+# 仅当 PADDLE_METAX_CHANNEL=stable 时使用下列版本与 stable 索引
 ARG PADDLE_CPU_METAX_VER=3.3.0
 ARG PADDLE_METAX_GPU_VER=3.3.0
-ARG PADDLE_CPU_INDEX=https://www.paddlepaddle.org.cn/packages/stable/cpu/
-ARG PADDLE_MACA_INDEX=https://www.paddlepaddle.org.cn/packages/stable/maca/
+ARG PADDLE_CPU_INDEX_NIGHTLY=https://www.paddlepaddle.org.cn/packages/nightly/cpu/
+ARG PADDLE_MACA_INDEX_NIGHTLY=https://www.paddlepaddle.org.cn/packages/nightly/maca/
+ARG PADDLE_CPU_INDEX_STABLE=https://www.paddlepaddle.org.cn/packages/stable/cpu/
+ARG PADDLE_MACA_INDEX_STABLE=https://www.paddlepaddle.org.cn/packages/stable/maca/
 
 ENV PYTHONUNBUFFERED=1 \
     PADDLEOCR_HOME=/io/.paddleocr \
@@ -37,10 +43,17 @@ RUN PY="$(command -v python || command -v python3)" && echo "Using ${PY}" && "${
 
 RUN PY="$(command -v python || command -v python3)" && \
     if [ "${METAX_PADDLE_GPU}" = "1" ]; then \
-      "${PY}" -m pip install --no-cache-dir "paddlepaddle==${PADDLE_CPU_METAX_VER}" -i "${PADDLE_CPU_INDEX}" \
-        --default-timeout=600 --retries=20 && \
-      "${PY}" -m pip install --no-cache-dir "paddle-metax-gpu==${PADDLE_METAX_GPU_VER}" -i "${PADDLE_MACA_INDEX}" \
-        --default-timeout=600 --retries=20 ; \
+      if [ "${PADDLE_METAX_CHANNEL}" = "stable" ]; then \
+        "${PY}" -m pip install --no-cache-dir "paddlepaddle==${PADDLE_CPU_METAX_VER}" -i "${PADDLE_CPU_INDEX_STABLE}" \
+          --default-timeout=600 --retries=20 && \
+        "${PY}" -m pip install --no-cache-dir "paddle-metax-gpu==${PADDLE_METAX_GPU_VER}" -i "${PADDLE_MACA_INDEX_STABLE}" \
+          --default-timeout=600 --retries=20 ; \
+      else \
+        "${PY}" -m pip install --no-cache-dir --pre paddlepaddle -i "${PADDLE_CPU_INDEX_NIGHTLY}" \
+          --default-timeout=600 --retries=20 && \
+        "${PY}" -m pip install --no-cache-dir --pre paddle-metax-gpu -i "${PADDLE_MACA_INDEX_NIGHTLY}" \
+          --default-timeout=600 --retries=20 ; \
+      fi ; \
     else \
       "${PY}" -m pip install --no-cache-dir "paddlepaddle>=2.6.0,<2.7.0" --default-timeout=600 --retries=20 ; \
     fi

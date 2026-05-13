@@ -4,7 +4,7 @@
 
 - **CPU**：`Dockerfile.cpu` + `docker-compose.yml` / `docker-compose.cpu.yml`
 - **GPU · 英伟达**：`Dockerfile.gpu.nvidia` + `docker-compose.gpu.nvidia.yml`（`gpus: all`，与 `mineru-deploy/docker-compose.gpu.yml` 一致）
-- **GPU · 沐曦（Metax / MACA）**：`Dockerfile.gpu.mthreads` + `docker-compose.gpu.mthreads.yml`（`privileged: true` + 挂载 `/dev` + `MX_VISIBLE_DEVICES`，与 `vllm-deploy/docker/docker-compose.mthreads.yml` 一致）
+- **GPU · 沐曦（Metax / MACA）**：`Dockerfile.gpu.mthreads` + `docker-compose.gpu.mthreads.yml`（`privileged: true` + 挂载 `/dev` + `MX_VISIBLE_DEVICES`，与 `vllm-deploy/docker/docker-compose.mthreads.yml` 一致）。**曦思 N260** 与曦云 C 系列同属沐曦 **MACA** 栈，本路径依赖 MACA 运行时 + 飞桨 `paddle-metax-gpu`（与飞桨文档「曦云 C500」示例为同一软件路径；具体算力卡型号由宿主机驱动/MACA 版本决定，见下文「沐曦硬件」）。
 
 Python 依赖拆分为 `service/requirements-base.txt`（无 Paddle）、`requirements-paddle-cpu.txt`（CPU 镜像用）、`requirements-paddleocr.txt`（PaddleOCR，须在 Paddle 安装之后）；`requirements.txt` 为 CPU 聚合入口。
 
@@ -55,7 +55,15 @@ docker compose -f docker-compose.gpu.mthreads.yml up -d --build
 curl -sS http://127.0.0.1:8010/health
 ```
 
-**说明**：沐曦路径默认按飞桨文档安装 `paddlepaddle==3.3.0`（cpu 索引包）+ `paddle-metax-gpu==3.3.0`（maca 索引）。若与现场 Python 版本或 wheel 不匹配，请调整构建参数或改用 `METAX_PADDLE_GPU=0` 仅装 paddle 2.6 CPU 包（无沐曦 GPU 加速，便于先打通链路）。
+### 沐曦硬件：曦思 **N260** 与当前编排是否一致
+
+| 维度 | 结论 |
+|------|------|
+| **产品线** | N260 属沐曦 **曦思 N 系列**；仓库内 README / 飞桨官方安装页常以 **曦云 C500** 命名，指的是「MACA 上的飞桨插件」示例，**不是**只支持 C500、不支持 N260。 |
+| **与本仓库 Compose/Dockerfile** | **一致**：均要求宿主机为沐曦 **MACA** 环境、`MX_VISIBLE_DEVICES`、容器内安装 **`paddlepaddle` + `paddle-metax-gpu`**（默认 **nightly + `--pre`**）。与卡型号是 C500 还是 **N260** 无冲突——由 **MACA 驱动/运行时** 识别具体 GPU。 |
+| **建议自检** | 宿主机 `mx-smi`（或厂商等价命令）能识别 N260；`PADDLE_LAYOUT_MT_BASE_IMAGE` 使用与现场 **MACA 主版本** 匹配的官方镜像（与 `vllm-deploy` 同源即可）；若飞桨 nightly wheel 与现场 Python/GLIBC 不兼容，再按飞桨文档改用源码编译或厂商定制 wheel。 |
+
+**说明**：沐曦 GPU 路径在镜像构建阶段使用 **`PADDLE_LAYOUT_METAX_CHANNEL=nightly`**（默认）时执行：`pip install --pre paddlepaddle -i .../nightly/cpu/` 与 `pip install --pre paddle-metax-gpu -i .../nightly/maca/`（与[飞桨沐曦安装文档](https://www.paddlepaddle.org.cn/documentation/docs/zh/hardware_support/metax/install_cn.html)一致）。`stable/maca` 常无 `paddle-metax-gpu` 的 pip 包。若仅需先跑通 HTTP 链路，可设 `PADDLE_LAYOUT_METAX_PADDLE_GPU=0` 使用 paddle 2.6 CPU 包（无沐曦 GPU 加速）。
 
 ## 3. 与主应用对接
 
@@ -77,7 +85,7 @@ curl -sS http://127.0.0.1:8010/health
 | 首请求极慢 | PaddleOCR 懒加载；预热可打一次小图 `/v1/layout-ocr` |
 | 大文件拒绝 | 调 `PADDLE_LAYOUT_MAX_UPLOAD_MB` 与主应用 `INSPECT_EXTRACT_V0_LAYOUT_OCR_MAX_UPLOAD_MB` 对齐 |
 | 英伟达 GPU 不可用 | 检查 `nvidia-smi` 与 compose 是否带 `-f docker-compose.gpu.nvidia.yml`；环境变量 `NVIDIA_VISIBLE_DEVICES` |
-| 沐曦容器起不来 | 核对 `BASE_IMAGE` 拉取权限；`paddle-metax-gpu` 版本与飞桨文档一致；必要时 `METAX_PADDLE_GPU=0` 先跑 CPU paddle |
+| 沐曦 `paddle-metax-gpu` pip 报 **No matching distribution** | 默认已改为 **nightly + `--pre`**（与[飞桨沐曦安装文档](https://www.paddlepaddle.org.cn/documentation/docs/zh/hardware_support/metax/install_cn.html)一致）；勿再用 `stable/maca` 强装。仍失败时设 `PADDLE_LAYOUT_METAX_PADDLE_GPU=0` 先跑 CPU 版 paddle 2.6，或按文档源码编译 `PaddleCustomDevice/backends/metax_gpu`。 |
 | 回滚 | 固定镜像 tag；主应用关闭 `INSPECT_EXTRACT_V0_ENABLED` 即切断调用 |
 
 ## 6. 安全与 CVE
