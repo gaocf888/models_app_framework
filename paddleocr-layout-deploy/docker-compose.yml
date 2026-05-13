@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile.cpu
       args:
-        BASE_IMAGE: ${PADDLE_LAYOUT_CPU_BASE_IMAGE:-python:3.11-bookworm}
+        BASE_IMAGE: ${PADDLE_LAYOUT_CPU_BASE_IMAGE:-docker.m.daocloud.io/library/python:3.11-bookworm}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
     image: ${PADDLE_LAYOUT_CPU_IMAGE:-paddleocr-layout-api:py311-cpu}
     container_name: ${PADDLE_LAYOUT_CONTAINER_NAME:-paddleocr-layout-api}

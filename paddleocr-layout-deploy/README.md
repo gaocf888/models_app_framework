@@ -10,7 +10,7 @@ Python 依赖拆分为 `service/requirements-base.txt`（无 Paddle）、`requir
 
 ## 1. 目录结构
 
-- `Dockerfile.cpu`：`ARG BASE_IMAGE` 默认 **`python:3.11-bookworm`**（Docker Hub）；compose 通过 **`PADDLE_LAYOUT_CPU_BASE_IMAGE`** 传入构建。内网或 **registry-mirrors** 指向失效域名时见 README「构建拉取失败」。
+- `Dockerfile.cpu`：`ARG BASE_IMAGE` 默认 **`docker.m.daocloud.io/library/python:3.11-bookworm`**（绕过常见失效的 `docker.io` → `hub-mirror.c.163.com` 配置）；compose 通过 **`PADDLE_LAYOUT_CPU_BASE_IMAGE`** 覆盖；海外可设为 **`python:3.11-bookworm`**。
 - `Dockerfile.gpu.nvidia`：`nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04` + Python 3.11 + `paddlepaddle-gpu`（cu118 官方索引）
 - `Dockerfile.gpu.mthreads`：`ARG BASE_IMAGE` 默认 **沐曦 `maca/paddle:2.6.0-…-py310-kylinv11-amd64`**（麒麟 Kylin V11 + x86_64；`docker login cr.metax-tech.com` 后拉取；路径含 `maca/paddle:` 时构建**跳过**飞桨/沐曦插件 pip）。ARM64 现场请覆盖为仓库内 **arm64** 对应 tag。
 - `docker-compose.yml` / `docker-compose.cpu.yml`：CPU 编排（`Dockerfile.cpu`）
@@ -27,8 +27,7 @@ Python 依赖拆分为 `service/requirements-base.txt`（无 Paddle）、`requir
 cd paddleocr-layout-deploy
 cp .env.example .env
 # 编辑 .env：设置 PADDLE_LAYOUT_MODELS_HOST_PATH / PADDLE_LAYOUT_IO_HOST_PATH
-# 若构建阶段拉取 python:3.11-bookworm 失败（如 hub-mirror.c.163.com DNS 不可解析），在 .env 中设置：
-# PADDLE_LAYOUT_CPU_BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-bookworm
+# 若 DaoCloud 不可达，在 .env 中改为贵司可达的 python:3.11-bookworm 镜像源
 docker compose -f docker-compose.cpu.yml up -d --build
 curl -sS http://127.0.0.1:8010/health
 ```
@@ -88,7 +87,7 @@ curl -sS http://127.0.0.1:8010/health
 
 | 场景 | 处理 |
 |------|------|
-| 构建拉取 **`python:3.11-bookworm`** 失败（`hub-mirror.c.163.com` **no such host** / `failed to do request`） | 宿主机 **`/etc/docker/daemon.json`** 的 **`registry-mirrors`** 将 `docker.io` 指到**已下线或 DNS 不可达**的镜像站。**处理**：① 删除或更换为可用镜像加速（并 `systemctl restart docker`）；② **不改 daemon** 时在 `.env` 设 **`PADDLE_LAYOUT_CPU_BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-bookworm`**（或贵司 Harbor 已同步的同等镜像）后重新 `docker compose ... --build`。 |
+| 构建拉取底镜像失败（`hub-mirror.c.163.com` **no such host** / `failed to do request`） | 多为宿主机 **`registry-mirrors`** 劫持 `docker.io`。**本仓库默认**已用 **`docker.m.daocloud.io/library/python:3.11-bookworm`** 作 CPU 底镜像；若仍失败：① 修正 **`/etc/docker/daemon.json`** 并重启 Docker；② 在 `.env` 设 **`PADDLE_LAYOUT_CPU_BASE_IMAGE`** 为贵司 Harbor 等可达地址；③ 海外环境可显式设为 **`python:3.11-bookworm`**（直连 Docker Hub）。 |
 | `docker compose ... down` 提示 **Network paddle-layout-stack is still in use** | 仍有其他容器挂在该网络上（常见：`models-app` 通过 external 网络连接侧车）。**处理**：先停相关栈，或 **`docker network inspect paddle-layout-stack`** 查看占用者；勿强行删正在使用的网络。 |
 | 首请求极慢 | PaddleOCR 懒加载；**PP-Structure 首次还会拉版面/表格模型**。预热可各打一次小图 `/v1/layout-ocr`；若无需表格可设 `PADDLE_LAYOUT_ENABLE_TABLE_STRUCTURE=0` |
 | 大文件拒绝 | 调 `PADDLE_LAYOUT_MAX_UPLOAD_MB` 与主应用 `INSPECT_EXTRACT_V0_LAYOUT_OCR_MAX_UPLOAD_MB` 对齐 |

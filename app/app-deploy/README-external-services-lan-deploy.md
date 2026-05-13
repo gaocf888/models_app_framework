@@ -5,6 +5,7 @@
 - `vllm-deploy`
 - `rag_db-deploy`
 - `mineru-deploy`
+- **`paddleocr-layout-deploy`**（检修结构化 V0 · PaddleOCR 版面侧车，可选）
 
 目标：结构简单、步骤明确，支持“有网服务器构建 -> 局域网服务器导入启动”。
 在线业务值班排障请参考：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
@@ -19,7 +20,7 @@
   - `.env` 配置
   - 模型目录（宿主机挂载）
   - 数据目录/卷（特别是 EasySearch）
-  - 外部网络（如 `mineru-stack`）
+  - 外部网络（如 `mineru-stack`、**`paddle-layout-stack`**）
 
 ---
 
@@ -30,6 +31,7 @@
 | vLLM | `vllm-deploy/` | 导入镜像 + 准备模型目录（`MODEL_PATH`） |
 | EasySearch | `rag_db-deploy/` | 导入镜像 + 数据卷/索引迁移（如需保留历史数据） |
 | MinerU | `mineru-deploy/` | 导入镜像 + 模型目录（`MINERU_MODELS_HOST_PATH`）+ 共享 IO 目录（`MINERU_IO_HOST_PATH`） |
+| **Paddle 版面侧车** | **`paddleocr-layout-deploy/`** | 导入镜像 + 模型目录（`PADDLE_LAYOUT_MODELS_HOST_PATH`）+ IO（`PADDLE_LAYOUT_IO_HOST_PATH`）；与主应用 **`PADDLE_LAYOUT_DOCKER_NETWORK`** 对齐 |
 
 ---
 
@@ -69,6 +71,17 @@ docker save -o easysearch.tar infiniflow/easysearch:latest
 
 > EasySearch 实际镜像名请以 `rag_db-deploy` compose 文件为准。
 
+### 3.4 Paddle 版面侧车（检修 V0，CPU 示例）
+
+```bash
+cd ../../paddleocr-layout-deploy
+cp .env.example .env
+docker compose -f docker-compose.cpu.yml build
+docker save -o paddleocr-layout-cpu.tar paddleocr-layout-api:py311-cpu
+```
+
+> 镜像名以 `.env` 中 **`PADDLE_LAYOUT_CPU_IMAGE`** 为准；GPU 版见该目录 **`docker-compose.gpu.nvidia.yml`** / **`docker-compose.gpu.mthreads.yml`**。
+
 ---
 
 ## 4. 局域网服务器：导入与准备
@@ -79,6 +92,7 @@ docker save -o easysearch.tar infiniflow/easysearch:latest
 docker load -i vllm-service-latest.tar
 docker load -i mineru-cpu.tar
 docker load -i easysearch.tar
+docker load -i paddleocr-layout-cpu.tar
 ```
 
 ### 4.2 准备目录（必须）
@@ -95,12 +109,17 @@ mkdir -p /aidata/models/reranker/bge-reranker-large
 mkdir -p /aidata/mineru/models
 mkdir -p /aidata/mineru/io
 
+# Paddle 版面侧车模型与 IO（示例，与 paddleocr-layout-deploy/.env.example 一致）
+mkdir -p /aidata/paddle_layout/models
+mkdir -p /aidata/paddle_layout/io
+
 ```
 
 ### 4.3 准备 external 网络（建议先建）
 
 ```bash
 docker network create mineru-stack || true
+docker network create paddle-layout-stack || true
 ```
 
 ---
@@ -110,7 +129,8 @@ docker network create mineru-stack || true
 1. `rag_db-deploy`（EasySearch）
 2. `vllm-deploy`
 3. `mineru-deploy`（若启用）
-4. `app/app-deploy`
+4. **`paddleocr-layout-deploy`**（若启用检修 V0 版面侧车）
+5. `app/app-deploy`
 
 ---
 
@@ -159,12 +179,33 @@ RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
 MODEL_PATH=/aidata/models/llm
 ```
 
+### 6.3 app 与 Paddle 版面侧车（检修 V0，可选）
+
+`app/app-deploy/.env`（与 **`paddleocr-layout-deploy/.env`** 中 **`PADDLE_LAYOUT_NETWORK_NAME`** 一致）：
+
+```env
+INSPECT_EXTRACT_V0_ENABLED=true
+INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT=http://paddleocr-layout-api:8000
+PADDLE_LAYOUT_DOCKER_NETWORK=paddle-layout-stack
+```
+
+`paddleocr-layout-deploy/.env`：
+
+```env
+PADDLE_LAYOUT_NETWORK_NAME=paddle-layout-stack
+PADDLE_LAYOUT_MODELS_HOST_PATH=/aidata/paddle_layout/models
+PADDLE_LAYOUT_IO_HOST_PATH=/aidata/paddle_layout/io
+```
+
+侧车详细变量见 **`paddleocr-layout-deploy/.env.example`** 与 **`enterprise-level_transformation_docs/企业级检修报告结构化提取V0版本实现和使用说明.md`**。
+
 ---
 
 ## 7. 数据与模型迁移说明
 
 - `vllm-deploy`：通常迁移模型目录即可；镜像只包含服务与依赖。
 - `mineru-deploy`：模型目录和 IO 目录都要迁移/保留。
+- **`paddleocr-layout-deploy`**：模型目录（`PADDLE_LAYOUT_MODELS_HOST_PATH`）与 IO（`PADDLE_LAYOUT_IO_HOST_PATH`）建议一并迁移；详见该目录 README。
 - `rag_db-deploy`：
   - 若只要空库，导入镜像后直接启动即可；
   - 若要保留历史索引，需迁移数据卷或做快照恢复（按 `rag_db-deploy` 文档）。
@@ -182,6 +223,9 @@ curl -s http://127.0.0.1:8000/health
 # MinerU
 curl -s http://127.0.0.1:8009/health
 
+# Paddle 版面侧车（端口以 compose 映射为准，默认 8010）
+curl -sS http://127.0.0.1:8010/health
+
 # app
 curl -s http://127.0.0.1:8083/health/
 ```
@@ -190,6 +234,7 @@ curl -s http://127.0.0.1:8083/health/
 
 ```bash
 docker network create mineru-stack
+docker network create paddle-layout-stack
 ```
 
 ---
@@ -208,3 +253,8 @@ docker network create mineru-stack
   - 检查 `MINERU_BASE_URL` 是否为 `http://mineru-api:8000`（不是宿主机端口）。
   - 检查 `MINERU_DOCKER_NETWORK` 与 `MINERU_NETWORK_NAME` 是否同名。
 
+- **`Network paddle-layout-stack declared as external, but could not be found`**
+  - 处理：`docker network create paddle-layout-stack`，或先启动 **`paddleocr-layout-deploy`** compose 以创建该网络。
+
+- app 解析 **`paddleocr-layout-api` 失败**（`Name or service not known`）
+  - 检查 **`PADDLE_LAYOUT_DOCKER_NETWORK`** 是否与侧车 **`PADDLE_LAYOUT_NETWORK_NAME`** 一致，且 **`models-app` 已加入该 external 网络**；`INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT` 须为 **`http://paddleocr-layout-api:8000`**（勿在容器内用宿主机 `127.0.0.1:8010`）。

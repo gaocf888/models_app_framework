@@ -2,7 +2,7 @@
 
 > 本文是 `README.md` 的**精简版**，重点面向「应用配置 + 生产/测试环境部署」，不讨论代码开发细节。  
 > 若需要完整说明（包括治理策略、GPU profile 细节、运维检查清单），请阅读同目录 `README.md`。
-> 若为局域网/离线环境部署外挂服务（vLLM、EasySearch、MinerU），请阅读：`README-external-services-lan-deploy.md`。
+> 若为局域网/离线环境部署外挂服务（vLLM、EasySearch、MinerU、**检修 V0 版面侧车 paddleocr-layout-deploy**），请阅读：`README-external-services-lan-deploy.md`。
 > 值班排障请阅读：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
 
 > 文档分工建议：  
@@ -20,18 +20,19 @@
 
 ## 1. 组件与依赖概览
 
-上线智能客服 / 综合分析 / 检修报告结构化提取 / 通用 LLM API 时，通常需要以下容器：
+上线智能客服 / 综合分析 / 检修报告结构化提取（现网 **`/inspection-extract`** 与可选 V0 **`/inspection-extract-v0`**）/ 通用 LLM API 时，通常需要以下容器：
 
 | 能力 | 目录 | 说明 |
 |------|------|------|
 | 大模型推理（vLLM） | `vllm-deploy/` | 提供 OpenAI 兼容 `/v1/chat/completions` |
 | RAG 向量 + 全文库 | `rag_db-deploy/` | EasySearch，存储知识库文档 |
 | PDF 扫描解析（可选） | `mineru-deploy/` | 提供 `mineru-api`（扫描件 PDF 转 Markdown） |
+| **版面 OCR 侧车（可选，检修 V0）** | **`paddleocr-layout-deploy/`** | **`paddleocr-layout-api`**；主应用 **`INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT`**；须与 **`models-app`** 同 Docker 网络（`PADDLE_LAYOUT_DOCKER_NETWORK`） |
 | 图数据库（可选 GraphRAG） | `graphrag_db-deploy/` | Neo4j，当前聊天默认仍以向量 RAG 为主 |
-| 应用 API | `app/app-deploy/` | FastAPI 服务，暴露 `/chatbot/*`、`/llm/*`、`/analysis/*`、`/inspection-extract/*` 等 |
+| 应用 API | `app/app-deploy/` | FastAPI 服务，暴露 `/chatbot/*`、`/llm/*`、`/analysis/*`、`/inspection-extract/*`、**`/inspection-extract-v0/*`** 等 |
 | 会话存储 | `app/app-deploy/` 内置 Redis | 存储会话历史，可通过 `REDIS_URL` 切换到外部 Redis |
 
-部署顺序推荐：**EasySearch → vLLM →（可选）MinerU →（可选 Neo4j）→ 应用栈**。
+部署顺序推荐：**EasySearch → vLLM →（可选）MinerU →（可选）`paddleocr-layout-deploy` →（可选 Neo4j）→ 应用栈**。
 
 ---
 
@@ -425,6 +426,10 @@ curl -s -X POST "http://127.0.0.1:${APP_PORT:-8083}/inspection-extract/run" \
 - `summary` 包含 `total/defect_count/replace_count`；
 - `trace.parse_route` 可见 `docx`、`pdf_text` 或 `mineru`。
 
+### 4.1.2 检修 V0（`/inspection-extract-v0/*`，可选）
+
+前置：**`INSPECT_EXTRACT_V0_ENABLED=true`**；版面 OCR 需 **`paddleocr-layout-deploy`** 已启动且与主应用同网（见 **`enterprise-level_transformation_docs/企业级检修报告结构化提取V0版本实现和使用说明.md`**）。路由与现网镜像：`upload` → `run` 或 `run/async` → `GET jobs/{id}`。
+
 ### 4.2 `/chatbot/chat` 测试（兼容接口）
 
 ```bash
@@ -491,7 +496,8 @@ docker compose down
 
 - 需要完整参数与治理策略时：`app/app-deploy/README.md`。  
 - 智能客服链路设计：`framework-guide/智能客服整体实现技术说明.md`。  
-- 检修报告结构化提取：`framework-guide/报告解析企业级实现方案.md`、`enterprise-level_transformation_docs/企业级检修报告结构化提取实现和使用说明.md`。  
+- 检修报告结构化提取（现网）：`framework-guide/报告解析企业级实现方案.md`、`enterprise-level_transformation_docs/企业级检修报告结构化提取实现和使用说明.md`。  
+- **检修 V0 + 版面侧车**：`framework-guide/报告解析企业级实现方案V0.md`、`enterprise-level_transformation_docs/企业级检修报告结构化提取V0版本实现和使用说明.md`、`paddleocr-layout-deploy/README.md`。  
 - RAG / GraphRAG 细节：`framework-guide/RAG整体实现技术说明.md`。  
 - 底座数据库部署：`rag_db-deploy/README.md`、`graphrag_db-deploy/README.md`。  
 - 大模型服务部署：`vllm-deploy/README.md`。\n

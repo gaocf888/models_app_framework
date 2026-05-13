@@ -2,7 +2,7 @@
 
 本目录提供 **FastAPI 应用层** 的容器化部署，与仓库内 **`vllm-deploy/`**、**`rag_db-deploy/`** 对接。本文档说明**如何配置、如何启动、两种运行形态（默认 / 小模型 GPU）的差异与排错**。
 
-> 局域网/离线部署外挂服务（vLLM、EasySearch、MinerU）请配合阅读：`README-external-services-lan-deploy.md`。  
+> 局域网/离线部署外挂服务（vLLM、EasySearch、MinerU、**检修 V0 版面侧车 paddleocr-layout-deploy**）请配合阅读：`README-external-services-lan-deploy.md`。  
 > 值班排障请配合阅读：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
 
 **目录**
@@ -36,7 +36,7 @@
 |------|----------|
 | 快速上线（最少步骤） | `README-simple-deploy.md` |
 | 完整部署与参数说明（本文件） | `README.md` |
-| 局域网/离线外挂服务（vLLM/EasySearch/MinerU） | `README-external-services-lan-deploy.md` |
+| 局域网/离线外挂服务（vLLM/EasySearch/MinerU/**Paddle 版面侧车**） | `README-external-services-lan-deploy.md` |
 | 值班排障（当前先覆盖智能客服） | `deploy-docs/online-services-oncall-runbook.md` |
 
 ---
@@ -48,6 +48,7 @@
 | 大模型推理（vLLM） | `vllm-deploy/` | OpenAI 兼容 HTTP；应用通过 `LLM_DEFAULT_ENDPOINT` 访问 |
 | 向量 + 全文检索 | `rag_db-deploy/`（EasySearch） | 应用通过 `RAG_ES_*` 连接 |
 | 扫描 PDF 解析（可选） | `mineru-deploy/` | 提供 `mineru-api`，用于扫描件 PDF 转 Markdown |
+| 检修结构化 V0 · 版面 OCR（可选） | **`paddleocr-layout-deploy/`** | 独立 **`paddleocr-layout-api`**；主应用 **`INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT`**；与 **`models-app`** 同 Docker 网络（`PADDLE_LAYOUT_DOCKER_NETWORK` / `paddle-layout-stack`） |
 | 会话与上下文 | 本 compose 的 **Redis** | `REDIS_URL` 必须指向本栈中的 `redis` 服务名 |
 | 应用 HTTP API | **models-app**（默认）或 **models-app-gpu**（profile） | 见下文端口与 profile 说明 |
 
@@ -93,7 +94,8 @@
    - EasySearch：`rag_db-deploy`，默认容器 **`rag-easysearch`**，默认外部网络 **`ai-stack`**。  
    - vLLM：`vllm-deploy`（推荐 `deploy.sh` 启动），默认容器 **`vllm-service`**；外部网络常为 **`docker_vllm-network`**（以实际 `docker network ls` 为准）。  
    - MinerU（可选）：`mineru-deploy`，默认容器 **`mineru-api`**，默认外部网络 **`mineru-stack`**。  
-3. 在宿主机执行 **`docker network ls`**，若名称与上表不一致，在 `.env` 中修改 **`VLLM_DOCKER_NETWORK`**、**`RAG_DOCKER_NETWORK`**、**`MINERU_DOCKER_NETWORK`**。  
+   - 检修 V0 版面侧车（可选）：**`paddleocr-layout-deploy/`**，默认容器 **`paddleocr-layout-api`**，默认外部网络 **`paddle-layout-stack`**（与 **`PADDLE_LAYOUT_NETWORK_NAME`** / **`PADDLE_LAYOUT_DOCKER_NETWORK`** 一致）。  
+3. 在宿主机执行 **`docker network ls`**，若名称与上表不一致，在 `.env` 中修改 **`VLLM_DOCKER_NETWORK`**、**`RAG_DOCKER_NETWORK`**、**`MINERU_DOCKER_NETWORK`**、**`PADDLE_LAYOUT_DOCKER_NETWORK`**。  
 4. **Linux**：EasySearch 若报 `vm.max_map_count`，按 `rag_db-deploy/README.md` 在宿主机调内核参数。  
 5. **小模型 GPU**：宿主机安装 **NVIDIA 驱动**；Docker 使用 **NVIDIA Container Toolkit**；Windows 下 **Docker Desktop（WSL2）** 需在设置中启用 **GPU**，否则 `gpus: all` 无效。
 
@@ -166,6 +168,17 @@ cd ../../mineru-deploy
 cp .env.example .env                           # 首次
 docker network create mineru-stack || true     # external 网络不存在时先创建一次
 docker compose --env-file .env -f docker-compose.cpu.yml up -d
+```
+
+### 2.4 检修 V0 版面侧车（可选，`paddleocr-layout-deploy`）
+
+启用 **`INSPECT_EXTRACT_V0_ENABLED`** 且 docx/pdf 走版面 OCR 时，需先起侧车，并保证 **`PADDLE_LAYOUT_DOCKER_NETWORK`** 与侧车网络同名（默认 **`paddle-layout-stack`**）。详见 **`paddleocr-layout-deploy/README.md`** 与 **`enterprise-level_transformation_docs/企业级检修报告结构化提取V0版本实现和使用说明.md`**。
+
+```bash
+cd ../../paddleocr-layout-deploy
+cp .env.example .env
+docker network create paddle-layout-stack || true   # 若尚未由本 compose 创建
+docker compose -f docker-compose.cpu.yml up -d --build   # 或 docker-compose.yml；沐曦/英伟达见该目录 GPU compose
 ```
 
 ### 步骤 3：启动本栈（Redis + models-app）
@@ -451,6 +464,8 @@ docker compose --profile small-model-gpu down
 |------|--------|
 | 应用连不上 vLLM / EasySearch | `docker network ls` 与 `.env` 中 `*_DOCKER_NETWORK` 是否一致；对端容器是否在同一网络。 |
 | 应用连不上 MinerU | `MINERU_ENABLED` 是否开启；`MINERU_BASE_URL` 是否为 `http://mineru-api:8000`；`MINERU_DOCKER_NETWORK` 是否存在并与 mineru-deploy 一致。 |
+| 检修 V0 报 **`layout_ocr` 503** / **`DOCX_TO_PDF_UNAVAILABLE`** | 侧车未起或镜像内无 LibreOffice：见 **`paddleocr-layout-deploy/README.md`**；主应用可设 **`INSPECT_EXTRACT_V0_DOCX_USE_LAYOUT_OCR=false`** 临时绕过 docx 侧车；**`INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT`** 须为 **`http://paddleocr-layout-api:8000`**（同网）。 |
+| **`Name or service not known`（paddleocr-layout-api）** | **`PADDLE_LAYOUT_DOCKER_NETWORK`** 与侧车 **`PADDLE_LAYOUT_NETWORK_NAME`** 不一致，或 **`models-app` 未加入 external 网络**。 |
 | `Connection refused` 使用 `127.0.0.1` 访问对端服务 | 在容器内 `127.0.0.1` 是自身，应改用 **`vllm-service` / `rag-easysearch`**。 |
 | EasySearch TLS / 401 | HTTPS + `RAG_ES_VERIFY_CERTS`；用户名密码与库一致。 |
 | GPU 容器 `cuda: False` | 宿主机 Toolkit / Docker GPU 设置；`nvidia-smi` 在宿主机是否正常。 |
@@ -482,6 +497,7 @@ docker compose --profile small-model-gpu down
 | B1 | EasySearch 已运行 | `docker ps` 见 `rag-easysearch`（或实际容器名）；健康检查通过 | ☐ |
 | B2 | vLLM 已运行 | `docker ps` 见 `vllm-service`；宿主机或同网络可访问推理端口 | ☐ |
 | B3 | MinerU（可选）已运行 | `docker ps` 见 `mineru-api`；`/health` 可访问；网络 `mineru-stack` 可见 | ☐ |
+| B3b | Paddle 版面侧车（可选，检修 V0） | `docker ps` 见 `paddleocr-layout-api`；宿主机 `8010/health` 可访问；网络 **`paddle-layout-stack`** 与 **`PADDLE_LAYOUT_DOCKER_NETWORK`** 一致 | ☐ |
 | B4 | 业务 MySQL（若用 NL2SQL 等） | 宿主机或网络内可连；账号与 `DB_URL` / `DB_*` 一致 | ☐ |
 
 ### C. `app/app-deploy` 配置（`.env`）
@@ -496,7 +512,8 @@ docker compose --profile small-model-gpu down
 | C6 | `REDIS_URL` | 指向本 compose 内 `redis`（如 `redis://redis:6379/0`） | ☐ |
 | C7 | `DB_URL` 或 `DB_*` | 密码特殊字符已 URL 编码或按 `config.py` 规则配置；库可达 | ☐ |
 | C8 | `MINERU_*`（可选） | 启用 MinerU 时，`MINERU_BASE_URL`、`MINERU_IO_CONTAINER_PATH`、`MINERU_MAX_CONCURRENT` 已按部署设定 | ☐ |
-| C9 | `VLLM_DOCKER_NETWORK` / `RAG_DOCKER_NETWORK` / `MINERU_DOCKER_NETWORK` | 与 `docker network ls` 中外部网络名一致 | ☐ |
+| C8b | **`INSPECT_EXTRACT_V0_*`**（可选） | 启用检修 V0 时，`INSPECT_EXTRACT_V0_ENABLED=true`，**`INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT=http://paddleocr-layout-api:8000`**，且 **`PADDLE_LAYOUT_DOCKER_NETWORK`** 已配置 | ☐ |
+| C9 | `VLLM_DOCKER_NETWORK` / `RAG_DOCKER_NETWORK` / `MINERU_DOCKER_NETWORK` / **`PADDLE_LAYOUT_DOCKER_NETWORK`** | 与 `docker network ls` 中外部网络名一致（启用侧车时 **`paddle-layout-stack`** 须存在） | ☐ |
 | C10 | `APP_PORT`（及 `APP_PORT_GPU` 若启用） | 与宿主机防火墙、上游反代、无端口冲突 | ☐ |
 
 ### D. 可选：小模型 GPU profile（`--profile small-model-gpu`）
@@ -513,7 +530,7 @@ docker compose --profile small-model-gpu down
 
 | 序号 | 检查项 | 说明 / 通过标准 | 结果 |
 |:----:|--------|------------------|:----:|
-| E1 | 启动顺序已遵守 | `rag_db-deploy` → `vllm-deploy` → （可选）`mineru-deploy` → `app/app-deploy` | ☐ |
+| E1 | 启动顺序已遵守 | `rag_db-deploy` → `vllm-deploy` → （可选）`mineru-deploy` → （可选）**`paddleocr-layout-deploy`** → `app/app-deploy` | ☐ |
 | E2 | 容器均为 Up | `docker compose ps`（本目录）无反复重启 | ☐ |
 | E3 | 健康检查 | `curl` 访问 `/health/` 返回 `ok`（端口按 `APP_PORT` / `APP_PORT_GPU`） | ☐ |
 | E4 | 指标 | `GET /metrics` 可访问（Prometheus 文本） | ☐ |
@@ -538,6 +555,11 @@ docker compose --profile small-model-gpu down
 | `memory-bank/01-architecture.md` | 分层架构与在线/训练角色 |
 | `framework-guide/数据持久化与容器部署说明.md` | Redis / ES / DB / 挂载约定 |
 | `framework-guide/框架架构与调用链路总览.md` | API 前缀与调用链 |
+| `framework-guide/报告解析企业级实现方案.md` | 现网检修解析（`/inspection-extract`）主方案 |
+| `framework-guide/报告解析企业级实现方案V0.md` | 检修 V0 设计级方案 |
+| `enterprise-level_transformation_docs/企业级检修报告结构化提取实现和使用说明.md` | 现网检修企业级使用说明 |
+| **`enterprise-level_transformation_docs/企业级检修报告结构化提取V0版本实现和使用说明.md`** | **V0 + `paddleocr-layout-deploy` 部署与排障** |
+| **`paddleocr-layout-deploy/README.md`** | **版面侧车** CPU / 英伟达 / 沐曦编排与 LibreOffice |
 | `rag_db-deploy/README.md` | EasySearch |
 | `vllm-deploy/README.md` | vLLM |
 
