@@ -1,16 +1,22 @@
 # 检修 V0 · 沐曦（Metax / MACA）GPU 侧车
 # 编排对齐 vllm-deploy/docker/docker-compose.mthreads.yml：privileged + 挂载 /dev + MX_VISIBLE_DEVICES
 # 飞桨沐曦安装见：https://www.paddlepaddle.org.cn/documentation/docs/zh/hardware_support/metax/install_cn.html
-ARG BASE_IMAGE=cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.17.0-maca.ai3.5.3.307-torch2.8-py312-kylinv11-amd64
+#
+# 重要：paddle-metax-gpu 的 pip 包主要面向 Python 3.10/3.11；在 vllm-metax 等 **Python 3.12** 基础镜像上
+# nightly/maca 常出现「No matching distribution」。默认使用沐曦官方 **paddle-metax … py310** 基础镜像（镜像内已含飞桨+沐曦插件）。
+ARG BASE_IMAGE=cr.metax-tech.com/public-ai-release/maca/paddle-metax:3.3.0-maca.ai3.3.0.10-py310-ubuntu22.04-amd64
 FROM ${BASE_IMAGE}
 
+# 供 RUN 中判断是否跳过飞桨 pip（须与 build-arg 同名再声明一次）
+ARG BASE_IMAGE
+
 ARG PIP_INDEX_URL=
-# 1=先装飞桨 CPU 包再装 paddle-metax-gpu（沐曦插件）；0=仅 paddlepaddle 2.6 CPU（无沐曦 GPU 加速）
+# 1=启用沐曦 GPU 飞桨：若 BASE_IMAGE 为官方 paddle-metax（推荐），则跳过 pip 装包；否则尝试 pip 安装插件
+# 0=仅 paddlepaddle 2.6 CPU（无沐曦 GPU 加速，可用于 vllm-metax py312 等仅跑通 HTTP 的场景）
 ARG METAX_PADDLE_GPU=1
-# 官方文档（曦云 C500）使用 nightly + --pre；stable/maca 索引常无 wheel，会导致 pip「No matching distribution」
+# 官方文档：nightly + --pre；stable 走固定版本（仅当 pip 解释器为 py310/311 时 maca 索引才可能有包）
 # nightly | stable
 ARG PADDLE_METAX_CHANNEL=nightly
-# 仅当 PADDLE_METAX_CHANNEL=stable 时使用下列版本与 stable 索引
 ARG PADDLE_CPU_METAX_VER=3.3.0
 ARG PADDLE_METAX_GPU_VER=3.3.0
 ARG PADDLE_CPU_INDEX_NIGHTLY=https://www.paddlepaddle.org.cn/packages/nightly/cpu/
@@ -39,38 +45,52 @@ WORKDIR /app
 
 COPY service/requirements-base.txt service/requirements-paddleocr.txt /app/service/
 
-RUN PY="$(command -v python || command -v python3)" && echo "Using ${PY}" && "${PY}" --version
+# 优先 python3.10（与官方 paddle-metax 镜像一致），否则退化为 python3 / python
+RUN PY="$(command -v python3.10 || command -v python3 || command -v python)" && echo "Using ${PY}" && "${PY}" --version
 
-RUN PY="$(command -v python || command -v python3)" && \
-    if [ "${METAX_PADDLE_GPU}" = "1" ]; then \
-      if [ "${PADDLE_METAX_CHANNEL}" = "stable" ]; then \
-        "${PY}" -m pip install --no-cache-dir "paddlepaddle==${PADDLE_CPU_METAX_VER}" -i "${PADDLE_CPU_INDEX_STABLE}" \
-          --default-timeout=600 --retries=20 && \
-        "${PY}" -m pip install --no-cache-dir "paddle-metax-gpu==${PADDLE_METAX_GPU_VER}" -i "${PADDLE_MACA_INDEX_STABLE}" \
-          --default-timeout=600 --retries=20 ; \
-      else \
-        "${PY}" -m pip install --no-cache-dir --pre paddlepaddle -i "${PADDLE_CPU_INDEX_NIGHTLY}" \
-          --default-timeout=600 --retries=20 && \
-        "${PY}" -m pip install --no-cache-dir --pre paddle-metax-gpu -i "${PADDLE_MACA_INDEX_NIGHTLY}" \
-          --default-timeout=600 --retries=20 ; \
-      fi ; \
+RUN set -eux; \
+    PY="$(command -v python3.10 || command -v python3 || command -v python)"; \
+    PY_MINOR="$("${PY}" -c 'import sys; print(sys.version_info[1])')"; \
+    IMG="${BASE_IMAGE:-}"; \
+    SKIP_PIP=0; \
+    if echo "${IMG}" | grep -qiE "paddle-metax"; then SKIP_PIP=1; fi; \
+    if [ "${METAX_PADDLE_GPU}" != "1" ]; then \
+      "${PY}" -m pip install --no-cache-dir "paddlepaddle>=2.6.0,<2.7.0" --default-timeout=600 --retries=20; \
+    elif [ "${SKIP_PIP}" = "1" ]; then \
+      echo "Metax: BASE_IMAGE looks like official paddle-metax; skipping pip install of paddlepaddle/paddle-metax-gpu."; \
+      "${PY}" -c "import paddle; print('paddle ok', getattr(paddle, '__version__', '?'))"; \
+    elif [ "${PY_MINOR}" -ge 12 ]; then \
+      echo "ERROR: METAX_PADDLE_GPU=1 but Python is 3.${PY_MINOR}+. paddle-metax-gpu pip wheels are not available for Python 3.12+." >&2; \
+      echo "Fix: use BASE_IMAGE=cr.metax-tech.com/public-ai-release/maca/paddle-metax:...-py310-... (see Paddle Metax install doc), OR set METAX_PADDLE_GPU=0 for CPU paddle 2.6." >&2; \
+      exit 1; \
+    elif [ "${PADDLE_METAX_CHANNEL}" = "stable" ]; then \
+      "${PY}" -m pip install --no-cache-dir "paddlepaddle==${PADDLE_CPU_METAX_VER}" -i "${PADDLE_CPU_INDEX_STABLE}" \
+        --default-timeout=600 --retries=20; \
+      "${PY}" -m pip install --no-cache-dir "paddle-metax-gpu==${PADDLE_METAX_GPU_VER}" -i "${PADDLE_MACA_INDEX_STABLE}" \
+        --default-timeout=600 --retries=20; \
     else \
-      "${PY}" -m pip install --no-cache-dir "paddlepaddle>=2.6.0,<2.7.0" --default-timeout=600 --retries=20 ; \
+      "${PY}" -m pip install --no-cache-dir --pre paddlepaddle -i "${PADDLE_CPU_INDEX_NIGHTLY}" \
+        --default-timeout=600 --retries=20; \
+      "${PY}" -m pip install --no-cache-dir --pre paddle-metax-gpu -i "${PADDLE_MACA_INDEX_NIGHTLY}" \
+        --default-timeout=600 --retries=20; \
     fi
 
-RUN PY="$(command -v python || command -v python3)" && \
+RUN PY="$(command -v python3.10 || command -v python3 || command -v python)" && \
     if [ -n "${PIP_INDEX_URL}" ]; then \
       "${PY}" -m pip install --no-cache-dir -i "${PIP_INDEX_URL}" -r /app/service/requirements-base.txt ; \
     else \
       "${PY}" -m pip install --no-cache-dir -r /app/service/requirements-base.txt ; \
     fi
 
-RUN PY="$(command -v python || command -v python3)" && \
+RUN PY="$(command -v python3.10 || command -v python3 || command -v python)" && \
     if [ -n "${PIP_INDEX_URL}" ]; then \
       "${PY}" -m pip install --no-cache-dir -i "${PIP_INDEX_URL}" -r /app/service/requirements-paddleocr.txt ; \
     else \
       "${PY}" -m pip install --no-cache-dir -r /app/service/requirements-paddleocr.txt ; \
     fi
+
+# 固定服务入口解释器，避免 py310/py3/conda 混用导致 CMD 找不到 uvicorn
+RUN PY="$(command -v python3.10 || command -v python3 || command -v python)" && ln -sf "${PY}" /usr/local/bin/paddle-layout-python
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh 2>/dev/null || true && chmod +x /entrypoint.sh
@@ -80,4 +100,4 @@ WORKDIR /app/service
 
 EXPOSE 8000
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "75"]
+CMD ["/usr/local/bin/paddle-layout-python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "75"]
