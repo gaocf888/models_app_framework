@@ -118,7 +118,7 @@
     <h1>检修报告结构化提取 V0 · 异步测试</h1>
     <p class="sub">
       路由前缀 <code>/inspection-extract-v0</code>（须 <code>INSPECT_EXTRACT_V0_ENABLED=true</code> 并重启；未开启时接口返回 <strong>503</strong> 及 <code>detail</code> 说明，而非 404）。
-      流程：<code>upload</code> → <code>POST …/run/async</code> → 轮询 <code>GET …/jobs/{job_id}</code>；
+      流程：<code>upload</code> → <code>POST …/run/async</code> → 轮询 <code>GET …/jobs/{job_id}?include_result=…</code>（为 <code>false</code> 时 <code>result</code> 恒为 <code>null</code> 属正常；本页在 <code>completed</code> 后会再请求 <code>true</code> 以展示完整结果）。
       分块：<code>GET …/chunks</code>、<code>GET …/chunks/{work_idx}</code>（V0 单段任务 <code>work_idx</code> 恒为 <code>1</code>）。
       请求头 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。
       现网多段异步见 <a href="inspection-extract-async.html" style="color:#5eead4;">inspection-extract-async.html</a>。
@@ -292,24 +292,39 @@
     fetchJobOnce();
   }
 
+  async function fetchJobStatusRaw(includeResult) {
+    const url =
+      baseUrl() +
+      PREFIX +
+      "/jobs/" +
+      encodeURIComponent(currentJobId) +
+      "?include_result=" +
+      (includeResult ? "true" : "false");
+    const resp = await fetch(url, {
+      method: "GET",
+      headers: authHeaders({ Accept: "application/json" }),
+      credentials: "omit",
+    });
+    const out = await readJsonSafe(resp);
+    if (!resp.ok) {
+      throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 2000));
+    }
+    return out;
+  }
+
   async function fetchJobOnce() {
     if (!currentJobId) return;
     showErr("");
     try {
-      const url =
-        baseUrl() +
-        PREFIX +
-        "/jobs/" +
-        encodeURIComponent(currentJobId) +
-        "?include_result=false";
-      const resp = await fetch(url, {
-        method: "GET",
-        headers: authHeaders({ Accept: "application/json" }),
-        credentials: "omit",
-      });
-      const out = await readJsonSafe(resp);
-      if (!resp.ok) {
-        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 2000));
+      let out = await fetchJobStatusRaw(false);
+      const st0 = (out.json && out.json.status) || "";
+      if (st0 === "completed") {
+        try {
+          const full = await fetchJobStatusRaw(true);
+          if (full.json) out = full;
+        } catch (_) {
+          /* 保留轻量响应 */
+        }
       }
       $("jobStatus").textContent = pretty(out.json || out.raw);
       const st = (out.json && out.json.status) || "";

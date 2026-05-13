@@ -134,7 +134,7 @@ python3 -m http.server 8765
 |------|------|
 | POST | `/inspection-extract-v0/upload` |
 | POST | `/inspection-extract-v0/run/async` |
-| GET | `/inspection-extract-v0/jobs/{job_id}` |
+| GET | `/inspection-extract-v0/jobs/{job_id}`（Query：`include_result`；为 `false` 时 `result` 为 `null`） |
 | DELETE | `/inspection-extract-v0/jobs/{job_id}`（取消） |
 | GET | `/inspection-extract-v0/jobs/{job_id}/chunks` |
 | GET | `/inspection-extract-v0/jobs/{job_id}/chunks/{work_idx}` |
@@ -145,6 +145,8 @@ V0 单段异步任务 **`work_idx` 一般为 `1`**；`strict` 可不传，走 `I
 
 - 路径前缀 **`/inspection-extract-v0`**，Redis 队列前缀与现网隔离（`inspection:extract:v0:jobs`）
 - 响应中含 V0 **trace / metrics**（版面引擎、解析路由等），详见 OpenAPI `/docs`
+- **`GET …/jobs/{job_id}`**：`include_result=false`（默认轻量轮询）时 **`result` 字段为 `null` 是接口设计**；需完整结构化结果时请 `include_result=true`。静态页在任务 **`completed`** 后会自动再拉一次含 `result` 的响应。
+- 若日志出现 **`langgraph invoke failed … unable to open database file`**：LangGraph 在任务目录下创建 SQLite checkpoint 失败时会 **回退顺序执行**，一般不影响最终结果；持久化排查请确认 `INSPECT_EXTRACT_ASYNC_JOBS_DIR` 所在卷对进程 **可写**、非只读挂载。
 
 ---
 

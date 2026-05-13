@@ -588,6 +588,8 @@ class InspectionExtractV0Config:
     layout_ocr_timeout_seconds: float = 300.0
     layout_ocr_max_upload_mb: int = 32
     max_pdf_pages_preprocess: int = 5
+    # doc/docx 是否调用版面侧车（侧车内 LibreOffice 转 PDF 后走 PaddleOCR）；false 则仅原生解析 + 文本 IRT
+    docx_use_layout_ocr: bool = True
     # LangGraph Sqlite checkpoint 置于 job 子目录时的文件名
     langgraph_checkpoint_filename: str = "langgraph_checkpoint.sqlite"
     async_queue_workers: int = 2
@@ -1034,6 +1036,7 @@ def _load_from_env() -> AppConfig:
         layout_ocr_timeout_seconds=max(10.0, float(os.getenv("INSPECT_EXTRACT_V0_LAYOUT_OCR_TIMEOUT_SECONDS", "300"))),
         layout_ocr_max_upload_mb=max(1, int(os.getenv("INSPECT_EXTRACT_V0_LAYOUT_OCR_MAX_UPLOAD_MB", "32"))),
         max_pdf_pages_preprocess=max(1, min(50, int(os.getenv("INSPECT_EXTRACT_V0_MAX_PDF_PAGES", "5")))),
+        docx_use_layout_ocr=os.getenv("INSPECT_EXTRACT_V0_DOCX_USE_LAYOUT_OCR", "true").lower() in ("1", "true", "yes", "on"),
         langgraph_checkpoint_filename=(
             os.getenv("INSPECT_EXTRACT_V0_LANGGRAPH_CHECKPOINT_FILE", "langgraph_checkpoint.sqlite") or "langgraph_checkpoint.sqlite"
         ).strip(),

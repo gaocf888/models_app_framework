@@ -6,10 +6,12 @@ PaddleOCR 版面+OCR HTTP 服务（检修 V0 专用侧车）。
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -17,6 +19,8 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 from pdf2image import convert_from_bytes
 from PIL import Image
+
+from docx_to_pdf import docx_bytes_to_pdf_bytes
 
 ENGINE_NAME = "paddleocr-layout-api"
 ENGINE_SEMVER = os.getenv("PADDLE_LAYOUT_ENGINE_SEMVER", "0.1.0")
@@ -115,7 +119,7 @@ def health() -> dict[str, str]:
 
 @app.post("/v1/layout-ocr")
 async def layout_ocr(
-    file: UploadFile = File(..., description="PDF 或 PNG/JPEG 图像"),
+    file: UploadFile = File(..., description="PDF、DOC/DOCX（经 LibreOffice 转 PDF）或 PNG/JPEG 图像"),
     max_pages: int = Query(5, ge=1, le=50, description="PDF 最大渲染页数"),
 ) -> dict[str, Any]:
     max_body = int(os.getenv("PADDLE_LAYOUT_MAX_UPLOAD_MB", "32")) * 1024 * 1024
@@ -129,6 +133,16 @@ async def layout_ocr(
         )
     name = (file.filename or "").lower()
     try:
+        if name.endswith((".docx", ".doc")):
+            orig_name = file.filename or "source.docx"
+            try:
+                body = await asyncio.to_thread(docx_bytes_to_pdf_bytes, body, orig_name)
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"error": {"code": "DOCX_TO_PDF_UNAVAILABLE", "message": str(exc)[:2000]}},
+                ) from exc
+            name = (Path(orig_name).stem + ".pdf").lower()
         if name.endswith(".pdf") or body[:4] == b"%PDF":
             images = convert_from_bytes(body, first_page=1, last_page=max_pages, fmt="png")
             if not images:

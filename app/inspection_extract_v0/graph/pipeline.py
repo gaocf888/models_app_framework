@@ -186,24 +186,39 @@ async def node_layout_ocr(state: InspectionExtractV0State) -> dict[str, Any]:
     if _should_cancel():
         raise InspectionExtractJobCancelled()
     st = (state["request"].get("source_type") or "text").lower()
-    if st != "pdf":
-        return {
-            "layout_payload": None,
-            "stage_ms": _merge_stage_ms(state, "layout_ocr", 0),
-            "ocr_engine": None,
-            "layout_engine": None,
-            "layout_api_version": None,
-        }
-    t0 = time.perf_counter()
     v0cfg = get_app_config().inspection_extract_v0
+
+    empty = {
+        "layout_payload": None,
+        "stage_ms": _merge_stage_ms(state, "layout_ocr", 0),
+        "ocr_engine": None,
+        "layout_engine": None,
+        "layout_api_version": None,
+    }
+
+    want_layout = st == "pdf" or (st in {"doc", "docx"} and v0cfg.docx_use_layout_ocr)
+    if not want_layout:
+        return empty
+
+    t0 = time.perf_counter()
     path = Path(state["local_input_path"])
     data = path.read_bytes()
     client = LayoutOcrClient(v0cfg)
-    payload = await client.layout_ocr_pdf_or_image(
-        file_bytes=data,
-        filename=path.name,
-        max_pages=v0cfg.max_pdf_pages_preprocess,
-    )
+    try:
+        payload = await client.layout_ocr_document(
+            file_bytes=data,
+            filename=path.name,
+            max_pages=v0cfg.max_pdf_pages_preprocess,
+        )
+    except LayoutOcrError as exc:
+        logger.warning(
+            "inspection_extract_v0 layout_ocr failed source=%s file=%s err=%s",
+            st,
+            path.name,
+            exc,
+        )
+        return empty
+
     ms = int((time.perf_counter() - t0) * 1000)
     return {
         "layout_payload": payload,
@@ -219,10 +234,14 @@ async def node_build_irt(state: InspectionExtractV0State) -> dict[str, Any]:
         raise InspectionExtractJobCancelled()
     t0 = time.perf_counter()
     pr = str(state.get("parse_route") or "irt_text_fallback")
+    st_req = (state["request"].get("source_type") or "text").lower()
+    lp = state.get("layout_payload")
+    use_layout = isinstance(lp, dict) and bool(lp) and isinstance(lp.get("blocks"), list)
     review_flags: list[str] = []
     low_conf = False
-    if pr == "irt_pdf_ocr" and isinstance(state.get("layout_payload"), dict):
-        lp = state["layout_payload"] or {}
+    out_pr = pr
+
+    if use_layout:
         blocks_in = lp.get("blocks") if isinstance(lp.get("blocks"), list) else []
         blocks: list[IrtBlockModel] = []
         for i, b in enumerate(blocks_in):
@@ -245,8 +264,12 @@ async def node_build_irt(state: InspectionExtractV0State) -> dict[str, Any]:
             )
         pages = lp.get("pages") if isinstance(lp.get("pages"), list) else []
         tables = lp.get("tables") if isinstance(lp.get("tables"), list) else []
+        if st_req == "pdf":
+            out_pr = "irt_pdf_ocr"
+        elif st_req in {"doc", "docx"}:
+            out_pr = "irt_docx_layout_ocr"
         doc = IrtDocument(
-            parse_route=pr,
+            parse_route=out_pr,
             engine_version=str(lp.get("engine_version") or "") or None,
             ocr_engine=str(lp.get("ocr_engine") or "") or None,
             layout_engine=str(lp.get("layout_engine") or "") or None,
@@ -276,8 +299,9 @@ async def node_build_irt(state: InspectionExtractV0State) -> dict[str, Any]:
     return {
         "irt": irt_dict,
         "stage_ms": _merge_stage_ms(state, "build_irt", ms),
-        "low_confidence": low_conf if pr == "irt_pdf_ocr" else False,
+        "low_confidence": low_conf if use_layout else False,
         "review_flags": list(sorted(set(review_flags))),
+        "parse_route": out_pr,
     }
 
 

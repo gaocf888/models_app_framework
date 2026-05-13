@@ -5,6 +5,8 @@
 # 默认底镜像：沐曦仓库 **maca/paddle:2.6.0-…-py310-kylinv11-amd64**（麒麟 Kylin V11 + x86_64；已含飞桨 2.6 + MACA，无需再 pip paddle-metax-gpu）。
 # ARM64 现场可改用沐曦 **`…-kylinv10-arm64`** 等 tag，并设 `BASE_IMAGE` / `PADDLE_LAYOUT_MT_BASE_IMAGE`；底镜像架构须与宿主机一致，否则首条 RUN 会出现 **exec format error**。
 # 若底镜像名为 `paddle-metax` 或路径含 `maca/paddle:`，构建将 **跳过** 飞桨/沐曦插件的 pip 安装。
+# 若需 DOCX→PDF（检修 V0 docx 走版面 OCR）：在 **yum/dnf** 基础镜像中请自行预装 LibreOffice（`soffice` 在 PATH），
+# 或改用 Dockerfile.cpu / Dockerfile.gpu.nvidia（已含 libreoffice-writer-nogui）。
 # 若在 vllm-metax（Python 3.12）上自行 pip 沐曦插件，会因无 cp312 wheel 失败——请改用本默认底镜像或设 METAX_PADDLE_GPU=0。
 ARG BASE_IMAGE=cr.metax-tech.com/public-ai-release/maca/paddle:2.6.0-maca.ai3.7.0.6-py310-kylinv11-amd64
 FROM ${BASE_IMAGE}

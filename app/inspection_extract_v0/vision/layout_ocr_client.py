@@ -2,7 +2,7 @@
 检修 V0：调用 paddleocr-layout-api 的生产级 HTTP 客户端。
 
 - GET /health：可配置次数的幂等重试（仅连接/5xx/超时）；
-- POST /v1/layout-ocr：单次请求超时 + 总超时与 httpx 对齐；4xx/5xx/JSON 解析失败映射为应用内异常。
+- POST /v1/layout-ocr：单次请求超时 + 总超时与 httpx 对齐；4xx/5xx/JSON 解析失败映射为应用内异常。上传体支持 **PDF、DOC/DOCX（侧车内 LibreOffice 转 PDF）、PNG/JPEG**。
 """
 
 from __future__ import annotations
@@ -71,7 +71,8 @@ class LayoutOcrClient:
         logger.warning("inspection_extract_v0 layout_ocr_health failed err=%s", last_exc)
         raise LayoutOcrTransportError(str(last_exc or "health_check_failed")) from last_exc
 
-    async def layout_ocr_pdf_or_image(self, *, file_bytes: bytes, filename: str, max_pages: int) -> dict[str, Any]:
+    async def layout_ocr_document(self, *, file_bytes: bytes, filename: str, max_pages: int) -> dict[str, Any]:
+        """POST /v1/layout-ocr：支持 PDF、DOC/DOCX（侧车转 PDF）、PNG/JPEG。"""
         if len(file_bytes) > self._max_upload_bytes:
             raise LayoutOcrApiError(
                 f"upload exceeds INSPECT_EXTRACT_V0_LAYOUT_OCR_MAX_UPLOAD_MB ({self._max_upload_bytes} bytes cap)"
@@ -80,7 +81,11 @@ class LayoutOcrClient:
         params = {"max_pages": max(1, min(50, int(max_pages)))}
         mime = "application/pdf"
         lower = (filename or "").lower()
-        if lower.endswith((".png",)):
+        if lower.endswith(".docx"):
+            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        elif lower.endswith(".doc"):
+            mime = "application/msword"
+        elif lower.endswith((".png",)):
             mime = "image/png"
         elif lower.endswith((".jpg", ".jpeg")):
             mime = "image/jpeg"
@@ -120,3 +125,7 @@ class LayoutOcrClient:
             len(data.get("pages") or []) if isinstance(data.get("pages"), list) else 0,
         )
         return data
+
+    async def layout_ocr_pdf_or_image(self, *, file_bytes: bytes, filename: str, max_pages: int) -> dict[str, Any]:
+        """兼容旧名；与 :meth:`layout_ocr_document` 相同。"""
+        return await self.layout_ocr_document(file_bytes=file_bytes, filename=filename, max_pages=max_pages)

@@ -74,7 +74,7 @@ curl -sS http://127.0.0.1:8010/health
 ## 4. OpenAPI 契约
 
 - `GET /health`：存活探针；返回 `status`、`engine`、`version`。
-- `POST /v1/layout-ocr`：`multipart/form-data` 上传 PDF 或图像；Query `max_pages` 限制 PDF 渲染页数。
+- `POST /v1/layout-ocr`：`multipart/form-data` 上传 **PDF、DOC/DOCX、PNG/JPEG**。DOC/DOCX 在容器内由 **LibreOffice headless** 转为 PDF 后再 `pdf2image` + PaddleOCR（`Dockerfile.cpu` / `Dockerfile.gpu.nvidia` 已装 `libreoffice-writer-nogui`；沐曦 yum 底镜像需自行保证 `soffice` 可用）。Query `max_pages` 限制 PDF 渲染页数。
 - 响应 JSON 含 `engine_version`、`ocr_engine`、`layout_engine`、`pages`、`blocks`；`tables` 当前为空数组（PP-Structure 表结构后续接入）。
 
 ## 5. 运维 Runbook（摘要）
@@ -87,6 +87,7 @@ curl -sS http://127.0.0.1:8010/health
 | 英伟达 GPU 不可用 | 检查 `nvidia-smi` 与 compose 是否带 `-f docker-compose.gpu.nvidia.yml`；环境变量 `NVIDIA_VISIBLE_DEVICES` |
 | 构建 **`exec format error`**（`/bin/sh`） | **底镜像 CPU 架构与宿主机不一致**（例如在 x86 上用了 **`-arm64`** tag）。**处理**：使用默认 **`kylinv11-amd64`**，或按架构改 `PADDLE_LAYOUT_MT_BASE_IMAGE`。 |
 | 沐曦 `paddle-metax-gpu` pip 报 **No matching distribution** | 多见于 **Python 3.12** 或 **maca 索引无对应 cp**。**处理**：使用预装飞桨的 **`maca/paddle:`** 或 **`paddle-metax`** 官方底镜像（构建会**跳过**飞桨 pip）；或设 **`METAX_PADDLE_GPU=0`** 仅 CPU paddle。 |
+| DOCX 返回 **503 / DOCX_TO_PDF_UNAVAILABLE** | 侧车内未找到 **LibreOffice** 或转换失败。**处理**：在镜像中安装 `soffice`（见上节 Dockerfile）；麒麟 yum 底镜像请自建含 LO 的基础层或改用 CPU/NVIDIA Dockerfile 路线。 |
 | 回滚 | 固定镜像 tag；主应用关闭 `INSPECT_EXTRACT_V0_ENABLED` 即切断调用 |
 
 ## 6. 安全与 CVE
