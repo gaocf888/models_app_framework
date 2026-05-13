@@ -21,6 +21,7 @@ from pdf2image import convert_from_bytes
 from PIL import Image
 
 from docx_to_pdf import docx_bytes_to_pdf_bytes
+from paddle_env import apply_paddle_runtime_flags, paddle_infer_kw
 from table_structure import extract_tables_from_page
 
 ENGINE_NAME = "paddleocr-layout-api"
@@ -35,15 +36,24 @@ _ocr_singleton: Any = None
 def _get_ocr() -> Any:
     global _ocr_singleton
     if _ocr_singleton is None:
+        apply_paddle_runtime_flags()
         from paddleocr import PaddleOCR
 
         logger.info("initializing PaddleOCR (lazy, first request may be slow)")
-        _ocr_singleton = PaddleOCR(
-            use_angle_cls=True,
-            lang="ch",
-            show_log=False,
-            use_gpu=os.getenv("PADDLE_LAYOUT_USE_GPU", "0").lower() in ("1", "true", "yes"),
-        )
+        use_gpu = os.getenv("PADDLE_LAYOUT_USE_GPU", "0").lower() in ("1", "true", "yes")
+        kw: dict[str, Any] = {
+            "use_angle_cls": True,
+            "lang": "ch",
+            "show_log": False,
+            "use_gpu": use_gpu,
+            **paddle_infer_kw(),
+        }
+        try:
+            _ocr_singleton = PaddleOCR(**kw)
+        except TypeError:
+            kw.pop("ir_optim", None)
+            kw.pop("enable_mkldnn", None)
+            _ocr_singleton = PaddleOCR(**kw)
     return _ocr_singleton
 
 

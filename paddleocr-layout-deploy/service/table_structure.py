@@ -16,6 +16,8 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from paddle_env import apply_paddle_runtime_flags, paddle_infer_kw
+
 logger = logging.getLogger("paddle_layout_api")
 
 _pp_lock = threading.Lock()
@@ -84,17 +86,25 @@ def _ensure_pp_structure(*, use_gpu: bool) -> Any | None:
         if _pp_engine is not None:
             return _pp_engine
         try:
+            apply_paddle_runtime_flags()
             from paddleocr import PPStructure  # type: ignore[import-untyped]
 
             logger.info("initializing PPStructure (layout+table, lazy; first call may download weights)")
-            _pp_engine = PPStructure(
-                show_log=False,
-                use_gpu=use_gpu,
-                lang="ch",
-                layout=True,
-                table=True,
-                ocr=True,
-            )
+            kw: dict[str, Any] = {
+                "show_log": False,
+                "use_gpu": use_gpu,
+                "lang": "ch",
+                "layout": True,
+                "table": True,
+                "ocr": True,
+                **paddle_infer_kw(),
+            }
+            try:
+                _pp_engine = PPStructure(**kw)
+            except TypeError:
+                kw.pop("ir_optim", None)
+                kw.pop("enable_mkldnn", None)
+                _pp_engine = PPStructure(**kw)
             return _pp_engine
         except Exception:  # noqa: BLE001
             logger.exception("PPStructure initialization failed; tables will be empty")
