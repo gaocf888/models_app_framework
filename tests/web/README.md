@@ -20,6 +20,7 @@ python3 -m http.server 8765
 | [chatbot-stream.html](chatbot-stream.html) | 智能客服：`POST /chatbot/chat/stream`（SSE） |
 | [inspection-extract.html](inspection-extract.html) | 检修提取 **同步**：`upload` + `POST /inspection-extract/run` |
 | [inspection-extract-async.html](inspection-extract-async.html) | 检修提取 **异步**：`run/async` + 任务轮询与分块 |
+| [inspection-extract-v0-async.html](inspection-extract-v0-async.html) | 检修提取 **V0 异步**（LangGraph + 版面 OCR）：`/inspection-extract-v0/*` |
 | [analysis-img-diag.html](analysis-img-diag-stream.html) | 综合分析 **看图诊断（流式）**：`POST /analysis/img-diag/upload` + `POST /analysis/run-img-diag-stream`（SSE，与超温流式页同构） |
 | [analysis-nl2sql-overheat-stream.html](analysis-nl2sql-overheat-stream.html) | 综合分析 **NL2SQL 流式 synthesis**（超温等）：`POST /analysis/run-with-nl2sql-stream`（SSE） |
 
@@ -112,6 +113,38 @@ python3 -m http.server 8765
 提交异步任务后轮询状态至 `completed` / `failed`；可按 `work_idx` 拉取分块 parse 结果，避免一次加载超大 JSON。
 
 轮询间隔建议 ≥ 2s，减轻服务端压力。
+
+---
+
+## 3.5 `inspection-extract-v0-async.html`（检修 V0 · 异步）
+
+### 3.5.1 前置条件
+
+- 后端 **`INSPECT_EXTRACT_V0_ENABLED=true`** 并已重启（未开启时请求返回 **503** + `detail`，不再误报 404）
+- MinIO 与现网一致（`POST …/upload`）
+- 版面 OCR 侧车、LLM 等按 V0 部署文档就绪
+
+### 3.5.2 访问示例
+
+[http://127.0.0.1:8765/inspection-extract-v0-async.html](http://127.0.0.1:8765/inspection-extract-v0-async.html)
+
+### 3.5.3 接口速查
+
+| 方法 | 路径 |
+|------|------|
+| POST | `/inspection-extract-v0/upload` |
+| POST | `/inspection-extract-v0/run/async` |
+| GET | `/inspection-extract-v0/jobs/{job_id}` |
+| DELETE | `/inspection-extract-v0/jobs/{job_id}`（取消） |
+| GET | `/inspection-extract-v0/jobs/{job_id}/chunks` |
+| GET | `/inspection-extract-v0/jobs/{job_id}/chunks/{work_idx}` |
+
+V0 单段异步任务 **`work_idx` 一般为 `1`**；`strict` 可不传，走 `INSPECT_EXTRACT_V0_STRICT_DEFAULT`。
+
+### 3.5.4 与现网异步页差异
+
+- 路径前缀 **`/inspection-extract-v0`**，Redis 队列前缀与现网隔离（`inspection:extract:v0:jobs`）
+- 响应中含 V0 **trace / metrics**（版面引擎、解析路由等），详见 OpenAPI `/docs`
 
 ---
 

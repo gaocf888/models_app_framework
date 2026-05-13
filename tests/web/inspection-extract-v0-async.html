@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>检修报告异步提取测试 · /inspection-extract/run/async</title>
+  <title>检修 V0 异步提取测试 · /inspection-extract-v0</title>
   <style>
     :root {
       --bg: #0f1419;
@@ -11,8 +11,8 @@
       --border: #2d3a4d;
       --text: #e6edf3;
       --muted: #8b9cb3;
-      --accent: #8b5cf6;
-      --accent-hover: #7c3aed;
+      --accent: #14b8a6;
+      --accent-hover: #0d9488;
       --ok: #22c55e;
       --err: #f87171;
     }
@@ -82,6 +82,8 @@
     button.primary { background: var(--accent); color: #fff; }
     button.primary:hover:not(:disabled) { background: var(--accent-hover); }
     button.secondary { background: var(--border); color: var(--text); }
+    button.danger { background: #7f1d1d; color: #fecaca; }
+    button.danger:hover:not(:disabled) { background: #991b1b; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     .out {
       border: 1px solid var(--border);
@@ -113,11 +115,13 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>检修报告异步结构化提取测试</h1>
+    <h1>检修报告结构化提取 V0 · 异步测试</h1>
     <p class="sub">
-      流程：<code>upload</code> → <code>POST /inspection-extract/run/async</code> 得到 <code>job_id</code> → 轮询
-      <code>GET /inspection-extract/jobs/{job_id}</code>；可按块查看 <code>GET .../chunks</code>、<code>GET .../chunks/{work_idx}</code>。
-      请求头 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。同步接口见 <a href="inspection-extract.html" style="color:#a78bfa;">inspection-extract.html</a>；检修 V0（LangGraph+版面 OCR）见 <a href="inspection-extract-v0-async.html" style="color:#a78bfa;">inspection-extract-v0-async.html</a>。
+      路由前缀 <code>/inspection-extract-v0</code>（须 <code>INSPECT_EXTRACT_V0_ENABLED=true</code> 并重启；未开启时接口返回 <strong>503</strong> 及 <code>detail</code> 说明，而非 404）。
+      流程：<code>upload</code> → <code>POST …/run/async</code> → 轮询 <code>GET …/jobs/{job_id}</code>；
+      分块：<code>GET …/chunks</code>、<code>GET …/chunks/{work_idx}</code>（V0 单段任务 <code>work_idx</code> 恒为 <code>1</code>）。
+      请求头 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。
+      现网多段异步见 <a href="inspection-extract-async.html" style="color:#5eead4;">inspection-extract-async.html</a>。
     </p>
 
     <div class="grid">
@@ -130,17 +134,17 @@
       </fieldset>
 
       <fieldset>
-        <legend>会话参数（与 /run 相同）</legend>
+        <legend>会话参数</legend>
         <label>user_id</label>
-        <input type="text" id="userId" value="u_web_inspect_async" autocomplete="off" />
+        <input type="text" id="userId" value="u_web_inspect_v0_async" autocomplete="off" />
         <label>session_id</label>
-        <input type="text" id="sessionId" value="u_web_inspect_async_s_001" autocomplete="off" />
+        <input type="text" id="sessionId" value="u_web_inspect_v0_async_s_001" autocomplete="off" />
       </fieldset>
 
       <fieldset class="full">
-        <legend>上传本地文件 -> MinIO</legend>
+        <legend>上传本地文件 → MinIO</legend>
         <label>选择报告文件</label>
-        <input type="file" id="fileInput" accept=".doc,.docx,.pdf,.md,.txt" />
+        <input type="file" id="fileInput" accept=".doc,.docx,.pdf,.md,.txt,.html" />
         <div class="actions">
           <button type="button" class="primary" id="btnUpload">1) 上传文件</button>
           <button type="button" class="secondary" id="btnUseUpload" disabled>填充 content / source_type</button>
@@ -152,21 +156,31 @@
         <label>source_type</label>
         <select id="sourceType">
           <option value="docx">docx</option>
+          <option value="doc">doc</option>
           <option value="pdf">pdf</option>
           <option value="markdown">markdown</option>
+          <option value="md">md</option>
           <option value="text">text</option>
+          <option value="txt">txt</option>
           <option value="html">html</option>
         </select>
         <label>content（MinIO URL）</label>
         <textarea id="content" rows="3" placeholder="https://..."></textarea>
+        <label>doc_name（可选）</label>
+        <input type="text" id="docName" placeholder="报告文件名，便于日志展示" autocomplete="off" />
       </fieldset>
 
       <fieldset>
         <legend>可选</legend>
-        <label>prompt_version</label>
-        <input type="text" id="promptVersion" placeholder="v1" />
+        <label>prompt_version（可选，对应 inspection_extract_v0_extract 模板）</label>
+        <input type="text" id="promptVersion" placeholder="如 v2" />
+        <label>strict（不传则走服务端 INSPECT_EXTRACT_V0_STRICT_DEFAULT）</label>
+        <select id="strictMode">
+          <option value="">默认（请求体不含 strict）</option>
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
         <div class="row">
-          <label><input type="checkbox" id="strict" /> strict</label>
           <label><input type="checkbox" id="returnEvidence" checked /> return_evidence</label>
         </div>
         <label>轮询间隔（毫秒）</label>
@@ -178,6 +192,8 @@
       <button type="button" class="primary" id="btnSubmitAsync">2) 提交异步任务 run/async</button>
       <button type="button" class="secondary" id="btnPollOnce">手动拉取任务状态</button>
       <button type="button" class="secondary" id="btnChunks">刷新分块列表</button>
+      <button type="button" class="secondary" id="btnChunkDetail">加载 work_idx 分块</button>
+      <button type="button" class="danger" id="btnCancelJob">取消任务 DELETE</button>
       <button type="button" class="secondary" id="btnStopPoll">停止轮询</button>
       <button type="button" class="secondary" id="btnClear">清空输出</button>
     </div>
@@ -200,21 +216,21 @@
       <div id="status">就绪</div>
       <h2>upload 响应</h2>
       <div id="uploadResult">（尚未上传）</div>
-      <h2 style="margin-top: 1rem;">任务状态 GET /jobs/{job_id}</h2>
+      <h2 style="margin-top: 1rem;">任务状态 GET /inspection-extract-v0/jobs/{job_id}</h2>
       <div id="jobStatus">（尚未提交或拉取）</div>
-      <h2 style="margin-top: 1rem;">分块列表 GET /jobs/{job_id}/chunks</h2>
+      <h2 style="margin-top: 1rem;">分块列表 GET …/chunks</h2>
       <div id="chunksOut">（未刷新）</div>
-      <h2 style="margin-top: 1rem;">选中分块详情 GET /chunks/{work_idx}</h2>
-      <label style="margin-top:0.5rem;display:inline-block;">work_idx</label>
+      <h2 style="margin-top: 1rem;">分块详情 GET …/chunks/{work_idx}</h2>
+      <label style="margin-top:0.5rem;display:inline-block;">work_idx（V0 一般为 1）</label>
       <input type="number" id="workIdx" min="1" value="1" style="max-width:120px;display:inline-block;margin-left:0.5rem;" />
-      <button type="button" class="secondary" id="btnChunkDetail" style="margin-left:0.5rem;">加载该块</button>
-      <div id="chunkDetail" style="margin-top:0.5rem;">（未加载）</div>
+      <div id="chunkDetail" style="margin-top:0.5rem;">（未加载，可先点「加载 work_idx 分块」）</div>
       <div id="err" class="err" hidden></div>
     </div>
   </div>
 
   <script>
 (function () {
+  const PREFIX = "/inspection-extract-v0";
   const $ = (id) => document.getElementById(id);
 
   let lastUpload = null;
@@ -282,7 +298,8 @@
     try {
       const url =
         baseUrl() +
-        "/inspection-extract/jobs/" +
+        PREFIX +
+        "/jobs/" +
         encodeURIComponent(currentJobId) +
         "?include_result=false";
       const resp = await fetch(url, {
@@ -296,11 +313,15 @@
       }
       $("jobStatus").textContent = pretty(out.json || out.raw);
       const st = (out.json && out.json.status) || "";
-      if (st === "completed" || st === "failed") {
+      if (st === "completed" || st === "failed" || st === "cancelled") {
         stopPolling();
-        setStatus(st === "completed" ? "任务已完成（已停止轮询）" : "任务失败（已停止轮询）", st === "completed");
         if (st === "completed") {
+          setStatus("任务已完成（已停止轮询）", true);
           await fetchChunksOnce();
+        } else if (st === "failed") {
+          setStatus("任务失败（已停止轮询）", false);
+        } else {
+          setStatus("任务已取消（已停止轮询）", false);
         }
       } else {
         setStatus("运行中… status=" + st);
@@ -319,10 +340,7 @@
     }
     try {
       const resp = await fetch(
-        baseUrl() +
-          "/inspection-extract/jobs/" +
-          encodeURIComponent(currentJobId) +
-          "/chunks",
+        baseUrl() + PREFIX + "/jobs/" + encodeURIComponent(currentJobId) + "/chunks",
         {
           method: "GET",
           headers: authHeaders({ Accept: "application/json" }),
@@ -339,6 +357,24 @@
     }
   }
 
+  function buildRunBody() {
+    const body = {
+      user_id: $("userId").value.trim(),
+      session_id: $("sessionId").value.trim(),
+      source_type: $("sourceType").value,
+      content: $("content").value.trim(),
+      return_evidence: $("returnEvidence").checked,
+    };
+    const sm = $("strictMode").value;
+    if (sm === "true") body.strict = true;
+    else if (sm === "false") body.strict = false;
+    const pv = $("promptVersion").value.trim();
+    if (pv) body.prompt_version = pv;
+    const dn = $("docName").value.trim();
+    if (dn) body.doc_name = dn;
+    return body;
+  }
+
   $("btnUpload").addEventListener("click", async () => {
     showErr("");
     const file = $("fileInput").files && $("fileInput").files[0];
@@ -351,7 +387,7 @@
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const resp = await fetch(baseUrl() + "/inspection-extract/upload", {
+      const resp = await fetch(baseUrl() + PREFIX + "/upload", {
         method: "POST",
         headers: authHeaders(),
         body: fd,
@@ -385,19 +421,10 @@
     stopPolling();
     setStatus("提交异步任务…");
     $("btnSubmitAsync").disabled = true;
-    const body = {
-      user_id: $("userId").value.trim(),
-      session_id: $("sessionId").value.trim(),
-      source_type: $("sourceType").value,
-      content: $("content").value.trim(),
-      strict: $("strict").checked,
-      return_evidence: $("returnEvidence").checked,
-    };
-    const pv = $("promptVersion").value.trim();
-    if (pv) body.prompt_version = pv;
+    const body = buildRunBody();
 
     try {
-      const resp = await fetch(baseUrl() + "/inspection-extract/run/async", {
+      const resp = await fetch(baseUrl() + PREFIX + "/run/async", {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json", Accept: "application/json" }),
         body: JSON.stringify(body),
@@ -445,6 +472,33 @@
 
   $("btnChunks").addEventListener("click", fetchChunksOnce);
 
+  $("btnCancelJob").addEventListener("click", async () => {
+    if (!currentJobId) {
+      showErr("暂无 job_id");
+      return;
+    }
+    showErr("");
+    try {
+      const resp = await fetch(
+        baseUrl() + PREFIX + "/jobs/" + encodeURIComponent(currentJobId),
+        {
+          method: "DELETE",
+          headers: authHeaders({ Accept: "application/json" }),
+          credentials: "omit",
+        }
+      );
+      const out = await readJsonSafe(resp);
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 2000));
+      }
+      $("jobStatus").textContent = pretty(out.json || out.raw) + "\n\n（取消响应见上；可手动拉取状态确认）";
+      setStatus("已发送取消请求", true);
+      await fetchJobOnce();
+    } catch (e) {
+      showErr(String(e.message || e));
+    }
+  });
+
   $("btnStopPoll").addEventListener("click", () => {
     stopPolling();
     setStatus("已停止轮询");
@@ -460,7 +514,8 @@
     try {
       const resp = await fetch(
         baseUrl() +
-          "/inspection-extract/jobs/" +
+          PREFIX +
+          "/jobs/" +
           encodeURIComponent(currentJobId) +
           "/chunks/" +
           w,
@@ -488,7 +543,7 @@
     $("uploadResult").textContent = "（尚未上传）";
     $("jobStatus").textContent = "（尚未提交或拉取）";
     $("chunksOut").textContent = "（未刷新）";
-    $("chunkDetail").textContent = "（未加载）";
+    $("chunkDetail").textContent = "（未加载，可先点「加载 work_idx 分块」）";
     showErr("");
     setStatus("已清空");
     lastUpload = null;

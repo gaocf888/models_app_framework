@@ -3,11 +3,13 @@ from __future__ import annotations
 """
 检修报告结构化提取 V0（LangGraph + 版面 OCR 侧车）。
 
-路由前缀 `/inspection-extract-v0`；仅当 `INSPECT_EXTRACT_V0_ENABLED=true` 时由 `main.py` 挂载。
+路由前缀 `/inspection-extract-v0`，**始终挂载**；未开启时依赖返回 **503**（避免误以为是路径错误导致 404）。
+业务与异步队列仅在 `INSPECT_EXTRACT_V0_ENABLED=true` 时于启动阶段初始化。
 """
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
+from app.core.config import get_app_config
 from app.models.inspection_extract_v0 import (
     InspectionExtractV0AsyncSubmitResponse,
     InspectionExtractV0CancelResponse,
@@ -20,7 +22,17 @@ from app.models.inspection_extract_v0 import (
 )
 from app.services.inspection_extract_v0_service import InspectionExtractV0Service
 
-router = APIRouter()
+
+def require_inspection_extract_v0_enabled() -> None:
+    """未开启 V0 时拒绝业务请求（503），与「未挂载路由 → 404」区分，便于联调。"""
+    if not get_app_config().inspection_extract_v0.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="INSPECT_EXTRACT_V0_ENABLED is not true; set it to true and restart to use /inspection-extract-v0/*.",
+        )
+
+
+router = APIRouter(dependencies=[Depends(require_inspection_extract_v0_enabled)])
 service = InspectionExtractV0Service()
 
 

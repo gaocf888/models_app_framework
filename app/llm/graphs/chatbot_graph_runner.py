@@ -17,6 +17,7 @@ from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
 
 from .chatbot_follow_up import build_suggested_questions
+from .chatbot_rag_citations import chunks_to_rag_citations
 from .chatbot_graph_state import ChatbotGraphState
 from .chatbot_intent_rules import classify_chatbot_intent
 from .chatbot_nl2sql_answer import summarize_nl2sql_with_llm
@@ -362,6 +363,7 @@ class ChatbotLangGraphRunner:
             "client_prompt_version": (str(req.prompt_version).strip() if req.prompt_version else None),
             "history_limit": self._history_limit,
             "context_snippets": [],
+            "rag_citations": [],
             "retrieval_score": 0.0,
             "retrieval_attempts": 0,
             "intent_label": "kb_qa",
@@ -601,13 +603,16 @@ class ChatbotLangGraphRunner:
     async def _node_kb_retrieve(self, state: ChatbotGraphState) -> ChatbotGraphState:
         if not state.get("enable_rag", True):
             # 显式关闭 RAG：不检索、分数归零、used_rag=false。
-            return {"context_snippets": [], "used_rag": False, "retrieval_score": 0.0}
+            return {"context_snippets": [], "used_rag": False, "retrieval_score": 0.0, "rag_citations": []}
 
         attempts = int(state.get("retrieval_attempts", 0)) + 1
         engine = str(state.get("rag_engine") or "hybrid")
         query = str(state.get("query") or "")
         snippets: List[str] = []
-        used_agentic = False
+        citations: List[Dict[str, Any]] = []
+        graph_active = bool(
+            get_app_config().rag.graph.enabled and getattr(self._hybrid_rag, "_graph_query", None) is not None
+        )
 
         try:
             if engine == "agentic":
@@ -622,14 +627,33 @@ class ChatbotLangGraphRunner:
                     mode=RAGMode.AGENTIC,
                 )
                 snippets = res.context_snippets or []
-                used_agentic = bool(res.used_agentic)
+                if res.chunks:
+                    citations = chunks_to_rag_citations(list(res.chunks))
+                elif snippets:
+                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(query, scene="chatbot"))
             else:
-                snippets = self._hybrid_rag.retrieve(query)
+                if not graph_active:
+                    chunks = self._rag.retrieve_chunks(query, scene="chatbot")
+                    snippets = [c.text for c in chunks if c.text]
+                    citations = chunks_to_rag_citations(chunks)
+                else:
+                    snippets = self._hybrid_rag.retrieve(query)
+                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(query, scene="chatbot"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("kb_retrieve failed on engine=%s, fallback=%s err=%s", engine, self._rag_fallback, exc)
             if engine != self._rag_fallback and self._rag_fallback == "hybrid":
                 snippets = self._hybrid_rag.retrieve(query)
                 engine = "hybrid"
+                graph_active = bool(
+                    get_app_config().rag.graph.enabled
+                    and getattr(self._hybrid_rag, "_graph_query", None) is not None
+                )
+                if not graph_active:
+                    chunks = self._rag.retrieve_chunks(query, scene="chatbot")
+                    snippets = [c.text for c in chunks if c.text]
+                    citations = chunks_to_rag_citations(chunks)
+                else:
+                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(query, scene="chatbot"))
 
         # 轻量质量分（首版）：
         # 命中条数越多分越高。后续可以替换为“分数+覆盖率”混合评分，
@@ -637,6 +661,7 @@ class ChatbotLangGraphRunner:
         score = min(1.0, float(len(snippets)) / 6.0) if snippets else 0.0
         return {
             "context_snippets": snippets,
+            "rag_citations": citations,
             "used_rag": len(snippets) > 0,
             "retrieval_attempts": attempts,
             "retrieval_score": score,
@@ -886,6 +911,7 @@ class ChatbotLangGraphRunner:
             "used_nl2sql": bool(state.get("used_nl2sql", False)),
             "nl2sql_sql": (state.get("nl2sql_sql") or "") if state.get("used_nl2sql") else None,
             "suggested_questions": list(state.get("suggested_questions") or []),
+            "rag_citations": list(state.get("rag_citations") or []),
             "processed_image_urls": [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
             "original_image_urls": [u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()],
             "stream_id": stream_id,

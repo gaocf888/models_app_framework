@@ -87,6 +87,7 @@ def create_app() -> FastAPI:
                 "检修报告结构化提取 V0：LangGraph 编排 + 版面 OCR 侧车（paddleocr-layout-api），"
                 "单阶段 LLM；异步队列与现网隔离（Redis 前缀 `inspection:extract:v0:jobs`）。"
                 "须携带 `Authorization: Bearer <SERVICE_API_KEY>`；总开关 `INSPECT_EXTRACT_V0_ENABLED`。"
+                "路由始终存在；未开启时请求返回 **503** 与说明（非 404）。"
             ),
         },
     ]
@@ -126,7 +127,7 @@ def create_app() -> FastAPI:
     async def health_api_prefix() -> dict:
         return {"status": "ok"}
 
-    from app.api import analysis, chatbot, inspection_extract, llm_inference, nl2sql, rag_admin, small_model, train_admin
+    from app.api import analysis, chatbot, inspection_extract, inspection_extract_v0, llm_inference, nl2sql, rag_admin, small_model, train_admin
 
     _auth = [Depends(require_service_api_key)]
 
@@ -167,15 +168,12 @@ def create_app() -> FastAPI:
         tags=["inspection-extract"],
         dependencies=_auth,
     )
-    if cfg.inspection_extract_v0.enabled:
-        from app.api import inspection_extract_v0
-
-        app.include_router(
-            inspection_extract_v0.router,
-            prefix="/inspection-extract-v0",
-            tags=["inspection-extract-v0"],
-            dependencies=_auth,
-        )
+    app.include_router(
+        inspection_extract_v0.router,
+        prefix="/inspection-extract-v0",
+        tags=["inspection-extract-v0"],
+        dependencies=_auth,
+    )
     app.include_router(
         rag_admin.router,
         prefix="/rag",
@@ -195,8 +193,6 @@ def create_app() -> FastAPI:
         rag_admin.warmup_rag_admin_components()
         inspection_extract.service.recover_async_jobs_on_startup()
         if cfg.inspection_extract_v0.enabled:
-            from app.api import inspection_extract_v0
-
             inspection_extract_v0.service.recover_async_jobs_on_startup()
 
     @app.on_event("shutdown")
@@ -208,8 +204,6 @@ def create_app() -> FastAPI:
             pass
         if cfg.inspection_extract_v0.enabled:
             try:
-                from app.api import inspection_extract_v0
-
                 inspection_extract_v0.service.job_scheduler.shutdown_workers()
             except Exception:
                 pass

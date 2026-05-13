@@ -242,6 +242,13 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="注入到提示词前的检索片段文本列表（与 /rag/query 的 snippets 同源业务数据，封装形态不同）",
     )
+    rag_citations: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "本轮向量知识库引用的结构化来源列表（namespace、doc_name、doc_version 等）；"
+            "与流式结束 SSE `meta.rag_citations` 对齐；无检索或非向量片段时为空。"
+        ),
+    )
 
 
 class ChatStreamStopRequest(BaseModel):

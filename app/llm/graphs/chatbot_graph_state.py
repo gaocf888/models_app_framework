@@ -51,6 +51,8 @@ class ChatbotGraphState(TypedDict, total=False):
     # ===== 检索域（RAG + C-RAG）=====
     rag_engine: Literal["agentic", "hybrid"]
     context_snippets: List[str]
+    # 与本轮注入模型的向量片段对应的结构化引用（SSE finished.meta.rag_citations）
+    rag_citations: List[Dict[str, Any]]
     retrieval_score: float
     retrieval_attempts: int
 

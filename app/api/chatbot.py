@@ -121,7 +121,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             每条事件为 `data: ` + JSON + 换行 + 空行（符合 SSE 事件分隔约定），JSON 形态包括：
             - `{"started": true, "stream_id": "..."}`：流式已建立，可用于 `/chat/stop` 中断；
             - `{"delta": "...", "finished": false}`：增量文本；
-            - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag`、`used_nl2sql`、`intent_label`、`suggested_questions`、`nl2sql_sql` 等；
+            - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag`、`used_nl2sql`、`intent_label`、`suggested_questions`、`rag_citations`（向量库引用：namespace/doc_name/doc_version 等）、`nl2sql_sql` 等；
             - `{"error": "...", "finished": true}`：异常时错误事件。
 
     Raises:

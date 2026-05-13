@@ -12,6 +12,7 @@ from app.llm.client import VLLMHttpClient
 from app.llm.graphs import ChatbotLangGraphRunner
 from app.llm.graphs.chatbot_follow_up import build_suggested_questions
 from app.llm.graphs.chatbot_intent_rules import classify_chatbot_intent
+from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_citations
 from app.llm.graphs.chatbot_nl2sql_answer import summarize_nl2sql_with_llm
 from app.llm.graphs.chatbot_similar_cases import (
     FaultCaseGateInput,
@@ -81,6 +82,21 @@ class ChatbotService:
         except ImportError:
             logger.warning("ChatbotService: LangChain not available, fallback to simple implementation.")
 
+    def _rag_context_and_citations(self, query: str, enable_rag: bool) -> tuple[list[str], list[dict[str, Any]]]:
+        """与 LangGraph `kb_retrieve` 对齐：无图时单查 chunks；图混合时 snippets 含图事实，引用仅向量库。"""
+        if not enable_rag:
+            return [], []
+        graph_active = bool(
+            get_app_config().rag.graph.enabled
+            and getattr(self._hybrid_rag, "_graph_query", None) is not None
+        )
+        if not graph_active:
+            chunks = self._rag.retrieve_chunks(query, scene="chatbot")
+            return [c.text for c in chunks if c.text], chunks_to_rag_citations(chunks)
+        snippets = self._hybrid_rag.retrieve(query)
+        vec = self._rag.retrieve_chunks(query, scene="chatbot")
+        return snippets, chunks_to_rag_citations(vec)
+
     async def chat(self, req: ChatRequest) -> ChatResponse:
         original_image_urls = self._clean_image_urls(req.image_urls)
         req = await self._preprocess_request_images(req)
@@ -138,6 +154,7 @@ class ChatbotService:
                 intent_label=ilabel,
                 suggested_questions=suggested,
                 context_snippets=[],
+                rag_citations=[],
             )
 
         if ilabel == "clarify":
@@ -164,9 +181,11 @@ class ChatbotService:
                 intent_label=ilabel,
                 suggested_questions=suggested_clarify,
                 context_snippets=[],
+                rag_citations=[],
             )
 
         # 优先使用 LangChain ChatbotChain（若可用）
+        rag_citations: list[dict[str, Any]] = []
         if self._chain is not None:
             answer = await self._chain.run(
                 user_id=req.user_id,
@@ -180,11 +199,8 @@ class ChatbotService:
             used_rag = req.enable_rag
             context_snippets = []
         else:
-            context_snippets = []
-            used_rag = False
-            if req.enable_rag:
-                context_snippets = self._hybrid_rag.retrieve(model_req.query)
-                used_rag = len(context_snippets) > 0
+            context_snippets, rag_citations = self._rag_context_and_citations(model_req.query, req.enable_rag)
+            used_rag = len(context_snippets) > 0
 
             history = []
             if req.enable_context:
@@ -225,6 +241,7 @@ class ChatbotService:
             intent_label=ilabel,
             suggested_questions=suggested_out,
             context_snippets=context_snippets,
+            rag_citations=rag_citations,
         )
 
     async def stream_chat(self, req: ChatRequest) -> AsyncIterator[str]:
@@ -385,6 +402,7 @@ class ChatbotService:
                     "fault_detect_confidence": 0.0,
                     "need_similar_cases": False,
                     "suggested_questions": suggested,
+                    "rag_citations": [],
                     "processed_image_urls": imgs,
                     "stream_id": stream_id,
                 },
@@ -431,17 +449,14 @@ class ChatbotService:
                     "fault_detect_confidence": 0.0,
                     "need_similar_cases": False,
                     "suggested_questions": suggested_cl,
+                    "rag_citations": [],
                     "processed_image_urls": imgs,
                     "stream_id": stream_id,
                 },
             }
             return
 
-        context_snippets: list[str] = []
-        if req.enable_rag:
-            context_snippets = self._hybrid_rag.retrieve(req.query)
-
-        history: list[dict] = []
+        context_snippets, rag_citations = self._rag_context_and_citations(req.query, req.enable_rag)
         if req.enable_context:
             history = self._conv.get_recent_history(
                 req.user_id,
@@ -478,6 +493,7 @@ class ChatbotService:
                         "fault_detect_confidence": gate_conf,
                         "need_similar_cases": need_cases,
                         "suggested_questions": [],
+                        "rag_citations": rag_citations,
                         "processed_image_urls": imgs,
                         "stream_id": stream_id,
                     },
@@ -553,6 +569,7 @@ class ChatbotService:
                 "fault_detect_confidence": gate_conf,
                 "need_similar_cases": need_cases,
                 "suggested_questions": suggested_out,
+                "rag_citations": rag_citations,
                 "processed_image_urls": imgs,
                 "stream_id": stream_id,
             },
