@@ -21,6 +21,7 @@ from pdf2image import convert_from_bytes
 from PIL import Image
 
 from docx_to_pdf import docx_bytes_to_pdf_bytes
+from table_structure import extract_tables_from_page
 
 ENGINE_NAME = "paddleocr-layout-api"
 ENGINE_SEMVER = os.getenv("PADDLE_LAYOUT_ENGINE_SEMVER", "0.1.0")
@@ -87,28 +88,49 @@ def _ocr_image_to_blocks(img: Image.Image, page_no: int) -> tuple[list[dict[str,
 
 def _build_response_from_images(images: list[Image.Image]) -> dict[str, Any]:
     all_blocks: list[dict[str, Any]] = []
+    all_tables: list[dict[str, Any]] = []
     pages: list[dict[str, Any]] = []
     total_ocr_ms = 0
+    total_structure_ms = 0
+    use_gpu = os.getenv("PADDLE_LAYOUT_USE_GPU", "0").lower() in ("1", "true", "yes")
+    enable_table_structure = os.getenv("PADDLE_LAYOUT_ENABLE_TABLE_STRUCTURE", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     for i, img in enumerate(images, start=1):
         blocks, dt_ms, w, h = _ocr_image_to_blocks(img, i)
         total_ocr_ms += dt_ms
-        pages.append({"page_no": i, "width": w, "height": h, "ocr_latency_ms": dt_ms})
+        page_entry: dict[str, Any] = {"page_no": i, "width": w, "height": h, "ocr_latency_ms": dt_ms}
+        if enable_table_structure:
+            tbs, st_ms = extract_tables_from_page(img, page_no=i, use_gpu=use_gpu)
+            total_structure_ms += st_ms
+            page_entry["structure_table_ms"] = st_ms
+            all_tables.extend(tbs)
+        pages.append(page_entry)
         all_blocks.extend(blocks)
+    layout_engine = "paddleocr-det-rec"
+    if enable_table_structure and all_tables:
+        layout_engine = "paddleocr-det-rec+pp-structure-table"
+    metrics: dict[str, Any] = {"ocr_total_ms": total_ocr_ms, "page_count": len(pages)}
+    if enable_table_structure:
+        metrics["structure_table_total_ms"] = total_structure_ms
+        metrics["table_count"] = len(all_tables)
     return {
         "engine_version": f"{ENGINE_NAME}/{ENGINE_SEMVER}",
         "ocr_engine": "paddleocr",
-        "layout_engine": "paddleocr-det-rec",
+        "layout_engine": layout_engine,
         "pages": pages,
         "blocks": all_blocks,
-        "tables": [],
-        "metrics": {"ocr_total_ms": total_ocr_ms, "page_count": len(pages)},
+        "tables": all_tables,
+        "metrics": metrics,
     }
 
 
 app = FastAPI(
     title="Paddle Layout + OCR API",
     version=ENGINE_SEMVER,
-    description="检修报告 V0：PaddleOCR 文本检测+识别；表格结构化后续可接入 PP-Structure 管线。",
+    description="检修报告 V0：PaddleOCR 行级检测+识别；PP-Structure 版面内表格识别（`tables`：html + rows）。",
 )
 
 

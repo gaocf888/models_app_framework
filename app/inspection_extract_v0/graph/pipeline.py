@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import os
@@ -19,12 +20,16 @@ from pydantic import BaseModel, Field
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
+from app.inspection_extract_v0.irt_table_chunks import build_llm_work_items
 from app.inspection_extract_v0.vision.layout_ocr_client import LayoutOcrClient, LayoutOcrError
 from app.llm.client import VLLMHttpClient
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.models.inspection_extract import InspectionExtractRequest
 from app.models.inspection_extract_v0 import InspectionExtractV0Request
-from app.services.inspection_extract_llm_orchestrator import InspectionExtractJobCancelled
+from app.services.inspection_extract_llm_orchestrator import (
+    InspectionExtractJobCancelled,
+    cap_completion_max_tokens_for_context,
+)
 from app.services.inspection_extract_service import InspectionExtractService
 
 logger = get_logger(__name__)
@@ -113,6 +118,63 @@ class InspectionExtractV0State(TypedDict, total=False):
     validated_records: list[dict[str, Any]]
     validated_summary: dict[str, Any]
     validated_warnings: list[str]
+    llm_chunk_outputs: list[dict[str, Any]]
+    llm_chunks_total: int
+
+
+def _v0_budget_max_tokens(*, system: str, user: str, requested_max_tokens: int) -> int:
+    ix = get_app_config().inspection_extract
+    prompt_chars = len(system or "") + len(user or "") + 64
+    return cap_completion_max_tokens_for_context(
+        prompt_chars=prompt_chars,
+        requested_max_tokens=max(256, int(requested_max_tokens)),
+        context_total_tokens=max(2048, int(getattr(ix, "llm_context_total_tokens", 32768))),
+        slack_tokens=max(64, int(getattr(ix, "llm_completion_budget_slack_tokens", 768))),
+    )
+
+
+async def _v0_llm_one_chunk(
+    *,
+    work_idx: int,
+    user_body: str,
+    system: str,
+    model: str,
+    llm: VLLMHttpClient,
+    v0cfg: Any,
+) -> tuple[int, str, list[dict[str, Any]]]:
+    last_err: Exception | None = None
+    for attempt in range(2):
+        if _should_cancel():
+            raise InspectionExtractJobCancelled()
+        ub = user_body
+        if attempt > 0:
+            ub = user_body + "\n\n请严格只输出 JSON，顶层必须含 records 数组。"
+        max_tok = _v0_budget_max_tokens(
+            system=system,
+            user=ub,
+            requested_max_tokens=int(v0cfg.llm_max_tokens_extract),
+        )
+        try:
+            raw = await llm.chat(
+                model,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": ub},
+                ],
+                max_tokens=max_tok,
+                temperature=float(v0cfg.llm_temperature),
+                timeout=float(v0cfg.llm_timeout_seconds),
+            )
+            recs = _parse_llm_records_json(raw)
+            return work_idx, raw, recs
+        except InspectionExtractJobCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            if attempt == 0:
+                continue
+            raise
+    raise last_err or RuntimeError("llm_extract_failed")
 
 
 def _merge_stage_ms(state: InspectionExtractV0State, key: str, ms: int) -> dict[str, int]:
@@ -325,53 +387,88 @@ async def node_llm_extract(state: InspectionExtractV0State) -> dict[str, Any]:
     if tpl is None:
         raise RuntimeError("missing prompt template scene=inspection_extract_v0_extract")
     irt = state.get("irt") or {}
-    blocks = irt.get("blocks") if isinstance(irt.get("blocks"), list) else []
-    slim_blocks = blocks[:80] if len(blocks) > 80 else blocks
-    irt_slim = {**irt, "blocks": slim_blocks}
-    snippet = (state.get("parsed_text") or "")[:6000]
-    user_body = (
-        "【IRT】\n"
-        + json.dumps(irt_slim, ensure_ascii=False)[:24000]
-        + "\n\n【原文片段】\n"
-        + snippet
+    system = tpl.content
+    work_items = build_llm_work_items(
+        irt,
+        state.get("parsed_text") or "",
+        max_blocks_per_chunk=max(80, int(v0cfg.llm_table_chunk_max_blocks)),
     )
+    n_chunks = len(work_items)
     llm = VLLMHttpClient(timeout=float(v0cfg.llm_timeout_seconds))
     model = v0cfg.model_name or get_app_config().llm.default_model
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": tpl.content},
-        {"role": "user", "content": user_body},
-    ]
-    last_err: Exception | None = None
+    concurrency = max(1, int(v0cfg.llm_table_chunk_concurrency))
+
+    chunk_out: list[dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
     raw = ""
-    for attempt in range(2):
-        try:
-            raw = await llm.chat(
-                model,
-                messages,
-                max_tokens=int(v0cfg.llm_max_tokens_extract),
-                temperature=float(v0cfg.llm_temperature),
-                timeout=float(v0cfg.llm_timeout_seconds),
+
+    if n_chunks <= 1:
+        wi = work_items[0]
+        _idx, raw, records = await _v0_llm_one_chunk(
+            work_idx=int(wi["work_idx"]),
+            user_body=str(wi["user_body"]),
+            system=system,
+            model=model,
+            llm=llm,
+            v0cfg=v0cfg,
+        )
+        chunk_out = [{"work_idx": int(wi["work_idx"]), "raw": raw, "records": records, "table_id": wi.get("table_id")}]
+    elif concurrency <= 1:
+        raw_parts: list[str] = []
+        for wi in work_items:
+            idx, r_raw, recs = await _v0_llm_one_chunk(
+                work_idx=int(wi["work_idx"]),
+                user_body=str(wi["user_body"]),
+                system=system,
+                model=model,
+                llm=llm,
+                v0cfg=v0cfg,
             )
-            records = _parse_llm_records_json(raw)
-            ms = int((time.perf_counter() - t0) * 1000)
-            return {
-                "llm_raw": raw,
-                "raw_records": records,
-                "stage_ms": _merge_stage_ms(state, "llm", ms),
-            }
-        except Exception as exc:  # noqa: BLE001
-            last_err = exc
-            if attempt == 0:
-                messages = [
-                    {"role": "system", "content": tpl.content},
-                    {
-                        "role": "user",
-                        "content": user_body + "\n\n请严格只输出 JSON，顶层必须含 records 数组。",
-                    },
-                ]
-                continue
-            raise
-    raise last_err or RuntimeError("llm_extract_failed")
+            tid = wi.get("table_id")
+            tid_s = str(tid) if tid is not None else None
+            raw_parts.append(f"<!-- work_idx={idx} table_id={tid_s} -->\n{r_raw}")
+            records.extend(recs)
+            chunk_out.append({"work_idx": idx, "raw": r_raw, "records": recs, "table_id": tid_s})
+        raw = "\n\n".join(raw_parts)
+    else:
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _run(wi: dict[str, Any]) -> tuple[int, str, list[dict[str, Any]], str | None]:
+            async with sem:
+                idx, r_raw, recs = await _v0_llm_one_chunk(
+                    work_idx=int(wi["work_idx"]),
+                    user_body=str(wi["user_body"]),
+                    system=system,
+                    model=model,
+                    llm=llm,
+                    v0cfg=v0cfg,
+                )
+                tid = wi.get("table_id")
+                tid_s = str(tid) if tid is not None else None
+                return idx, r_raw, recs, tid_s
+
+        gathered = await asyncio.gather(*[_run(wi) for wi in work_items], return_exceptions=True)
+        parts: list[tuple[int, str, list[dict[str, Any]], str | None]] = []
+        for r in gathered:
+            if isinstance(r, BaseException):
+                raise r
+            parts.append(r)  # type: ignore[arg-type]
+        parts.sort(key=lambda x: x[0])
+        raw_parts2: list[str] = []
+        for idx, r_raw, recs, tid in parts:
+            raw_parts2.append(f"<!-- work_idx={idx} table_id={tid} -->\n{r_raw}")
+            records.extend(recs)
+            chunk_out.append({"work_idx": idx, "raw": r_raw, "records": recs, "table_id": tid})
+        raw = "\n\n".join(raw_parts2)
+
+    ms = int((time.perf_counter() - t0) * 1000)
+    return {
+        "llm_raw": raw,
+        "raw_records": records,
+        "llm_chunk_outputs": chunk_out,
+        "llm_chunks_total": n_chunks,
+        "stage_ms": _merge_stage_ms(state, "llm", ms),
+    }
 
 
 async def node_validate(state: InspectionExtractV0State) -> dict[str, Any]:

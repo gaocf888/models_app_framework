@@ -76,15 +76,18 @@ curl -sS http://127.0.0.1:8010/health
 ## 4. OpenAPI 契约
 
 - `GET /health`：存活探针；返回 `status`、`engine`、`version`。
-- `POST /v1/layout-ocr`：`multipart/form-data` 上传 **PDF、DOC/DOCX、PNG/JPEG**。DOC/DOCX 在容器内由 **LibreOffice headless** 转为 PDF 后再 `pdf2image` + PaddleOCR（`Dockerfile.cpu` / `Dockerfile.gpu.nvidia` 已装 `libreoffice-writer-nogui`；沐曦 yum 底镜像需自行保证 `soffice` 可用）。Query `max_pages` 限制 PDF 渲染页数。
-- 响应 JSON 含 `engine_version`、`ocr_engine`、`layout_engine`、`pages`、`blocks`；`tables` 当前为空数组（PP-Structure 表结构后续接入）。
+- `POST /v1/layout-ocr`：`multipart/form-data` 上传 **PDF、DOC/DOCX、PNG/JPEG**。DOC/DOCX 在容器内由 **LibreOffice headless** 转为 PDF 后再 `pdf2image` + **行级 PaddleOCR**（`blocks`）+ 可选 **PP-Structure 表格**（`tables`）。`Dockerfile.cpu` / `Dockerfile.gpu.nvidia` 已装 `libreoffice-writer-nogui`；沐曦 yum 底镜像需自行保证 `soffice` 可用。Query `max_pages` 限制 PDF 渲染页数。
+- 响应 JSON：`engine_version`、`ocr_engine`、`layout_engine`、`pages`、`blocks`、**`tables`**、`metrics`。
+  - **`blocks`**：检测框 + 行级识别文本（与原先一致）。
+  - **`tables`**：版面中识别为 `table` 的区域。每项含 `table_id`、`page_no`、`bbox`（页内像素框）、`html`（表格结构 HTML）、**`rows`**（由 HTML 解析的二维字符串矩阵）、`n_rows` / `n_cols`、`cell_bbox`。未检出表格时为空数组。
+  - **`PADDLE_LAYOUT_ENABLE_TABLE_STRUCTURE`**（默认 `1`）：`0`/`false` 时关闭表格分支（仅行级 OCR，更快）。PP-Structure 首请求可能下载版面/表格权重，明显慢于仅 OCR。
 
 ## 5. 运维 Runbook（摘要）
 
 | 场景 | 处理 |
 |------|------|
 | 容器 OOM | 调低 `PADDLE_LAYOUT_MEM_LIMIT` 或缩小 `max_pages`；GPU 版可换更小模型或降低并发 |
-| 首请求极慢 | PaddleOCR 懒加载；预热可打一次小图 `/v1/layout-ocr` |
+| 首请求极慢 | PaddleOCR 懒加载；**PP-Structure 首次还会拉版面/表格模型**。预热可各打一次小图 `/v1/layout-ocr`；若无需表格可设 `PADDLE_LAYOUT_ENABLE_TABLE_STRUCTURE=0` |
 | 大文件拒绝 | 调 `PADDLE_LAYOUT_MAX_UPLOAD_MB` 与主应用 `INSPECT_EXTRACT_V0_LAYOUT_OCR_MAX_UPLOAD_MB` 对齐 |
 | 英伟达 GPU 不可用 | 检查 `nvidia-smi` 与 compose 是否带 `-f docker-compose.gpu.nvidia.yml`；环境变量 `NVIDIA_VISIBLE_DEVICES` |
 | 构建 **`exec format error`**（`/bin/sh`） | **底镜像 CPU 架构与宿主机不一致**（例如在 x86 上用了 **`-arm64`** tag）。**处理**：使用默认 **`kylinv11-amd64`**，或按架构改 `PADDLE_LAYOUT_MT_BASE_IMAGE`。 |

@@ -105,8 +105,8 @@ class InspectionExtractV0JobMetrics(BaseModel):
     layout_engine: str | None = None
     layout_api_version: str | None = None
     langgraph_thread_id: str | None = None
-    chunks_total: int | None = Field(default=1, description="V0 单段任务固定 1")
-    chunks_done: int | None = Field(default=0, description="完成时 1")
+    chunks_total: int | None = Field(default=1, description="LLM 分块数：无表为 1，多表为表数量")
+    chunks_done: int | None = Field(default=0, description="完成时与 chunks_total 一致")
 
 
 class InspectionExtractV0JobStatusResponse(BaseModel):
@@ -124,7 +124,7 @@ class InspectionExtractV0JobStatusResponse(BaseModel):
 
 class InspectionExtractV0ChunkListItem(BaseModel):
     work_idx: int
-    status: str = Field(..., description="V0 单段完成时为 done")
+    status: str = Field(..., description="done | pending（与现网检修异步分块语义一致）")
     record_count: int = 0
 
 

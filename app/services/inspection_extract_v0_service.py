@@ -17,6 +17,7 @@ from app.core.metrics import (
     INSPECT_EXTRACT_V0_REQUEST_COUNT,
 )
 from app.inspection_extract_v0.graph.pipeline import run_inspection_extract_v0_graph
+from app.inspection_extract_v0.irt_table_chunks import count_llm_table_chunks
 from app.models.inspection_extract import InspectionRecord, InspectionSummary
 from app.models.inspection_extract_v0 import (
     InspectionExtractV0AsyncSubmitResponse,
@@ -39,6 +40,7 @@ from app.services.inspection_extract_service import (
     INSPECTION_JOB_CANCEL_MARKER,
     InspectionExtractService,
     _atomic_write_json,
+    _max_chunk_index,
     _read_meta,
 )
 
@@ -350,7 +352,7 @@ class InspectionExtractV0JobScheduler:
             "finished_at": None,
             "error_code": None,
             "error_message": None,
-            "metrics": {"pipeline": "v0", "chunks_total": 1, "chunks_done": 0},
+            "metrics": {"pipeline": "v0", "chunks_total": 0, "chunks_done": 0},
             "langgraph_thread_id": job_id,
         }
         _atomic_write_json(jd / "job_meta.json", meta)
@@ -459,6 +461,7 @@ class InspectionExtractV0JobScheduler:
         resp = self._svc._graph_result_to_response(fin, req=req)
         sm = fin.get("stage_ms") or {}
         parse_wall_ms = int(sm.get("preprocess", 0)) + int(sm.get("layout_ocr", 0)) + int(sm.get("build_irt", 0))
+        n_chunks = max(1, int(fin.get("llm_chunks_total") or 1))
         metrics = InspectionExtractV0JobMetrics(
             pipeline="v0",
             parse_route=str(fin.get("parse_route") or ""),
@@ -471,8 +474,8 @@ class InspectionExtractV0JobScheduler:
             layout_engine=fin.get("layout_engine"),
             layout_api_version=fin.get("layout_api_version"),
             langgraph_thread_id=job_id,
-            chunks_total=1,
-            chunks_done=1,
+            chunks_total=n_chunks,
+            chunks_done=n_chunks,
         )
         meta = _read_meta(jd) or {}
         meta["status"] = "completed"
@@ -484,8 +487,28 @@ class InspectionExtractV0JobScheduler:
         (jd / "final_response.json").write_text(resp.model_dump_json(), encoding="utf-8")
         ch = jd / "chunks"
         ch.mkdir(parents=True, exist_ok=True)
-        rec_dump = [r.model_dump(mode="json", by_alias=True) for r in resp.records]
-        (ch / "1.json").write_text(json.dumps({"records": rec_dump}, ensure_ascii=False), encoding="utf-8")
+        chunk_outputs = fin.get("llm_chunk_outputs")
+        if isinstance(chunk_outputs, list) and chunk_outputs:
+            for co in chunk_outputs:
+                if not isinstance(co, dict):
+                    continue
+                try:
+                    wi = int(co.get("work_idx") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if wi < 1:
+                    continue
+                recs = co.get("records") if isinstance(co.get("records"), list) else []
+                payload = {
+                    "work_idx": wi,
+                    "table_id": co.get("table_id"),
+                    "records": recs,
+                    "raw_fragment": str(co.get("raw") or "")[:8000],
+                }
+                (ch / f"{wi}.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        else:
+            rec_dump = [r.model_dump(mode="json", by_alias=True) for r in resp.records]
+            (ch / "1.json").write_text(json.dumps({"records": rec_dump}, ensure_ascii=False), encoding="utf-8")
         INSPECT_EXTRACT_V0_PARSE_LATENCY.observe(parse_wall_ms / 1000.0)
         INSPECT_EXTRACT_V0_LLM_LATENCY.observe(int(sm.get("llm", 0)) / 1000.0)
         INSPECT_EXTRACT_V0_RECORD_COUNT.inc(len(resp.records))
@@ -524,30 +547,39 @@ class InspectionExtractV0JobScheduler:
         meta = _read_meta(jd)
         if meta is None or str(meta.get("pipeline") or "") != "v0":
             return None
-        fp = jd / "chunks" / "1.json"
-        if fp.is_file():
-            try:
-                data = json.loads(fp.read_text(encoding="utf-8"))
-                recs = data.get("records") if isinstance(data, dict) else None
-                n = len(recs) if isinstance(recs, list) else 0
-            except Exception:  # noqa: BLE001
-                n = 0
-            return InspectionExtractV0ChunkListResponse(
-                job_id=job_id, chunks=[InspectionExtractV0ChunkListItem(work_idx=1, status="done", record_count=n)]
-            )
-        st = str(meta.get("status") or "").lower()
-        item_st = "pending" if st in {"pending", "running", "cancelling"} else "pending"
-        return InspectionExtractV0ChunkListResponse(
-            job_id=job_id, chunks=[InspectionExtractV0ChunkListItem(work_idx=1, status=item_st, record_count=0)]
-        )
+        total = int((meta.get("metrics") or {}).get("chunks_total") or 0)
+        if total <= 0:
+            it = jd / "artifacts" / "irt.json"
+            if it.is_file():
+                try:
+                    irt = json.loads(it.read_text(encoding="utf-8"))
+                    total = count_llm_table_chunks(irt)
+                except Exception:  # noqa: BLE001
+                    total = 1
+            else:
+                total = 1
+        items: list[InspectionExtractV0ChunkListItem] = []
+        for w in range(1, max(total, _max_chunk_index(jd)) + 1):
+            fp = jd / "chunks" / f"{w}.json"
+            if fp.is_file():
+                try:
+                    data = json.loads(fp.read_text(encoding="utf-8"))
+                    recs = data.get("records") if isinstance(data, dict) else None
+                    n = len(recs) if isinstance(recs, list) else 0
+                except Exception:  # noqa: BLE001
+                    n = 0
+                items.append(InspectionExtractV0ChunkListItem(work_idx=w, status="done", record_count=n))
+            else:
+                items.append(InspectionExtractV0ChunkListItem(work_idx=w, status="pending", record_count=0))
+        return InspectionExtractV0ChunkListResponse(job_id=job_id, chunks=items)
 
     def get_chunk_payload(self, job_id: str, work_idx: int) -> InspectionExtractV0ChunkRecordsResponse | None:
-        if work_idx != 1:
+        if work_idx < 1:
             return None
         jd = self._job_dir(job_id)
         if not jd.is_dir() or _read_meta(jd) is None:
             return None
-        fp = jd / "chunks" / "1.json"
+        fp = jd / "chunks" / f"{work_idx}.json"
         if not fp.is_file():
             return None
         try:
@@ -565,4 +597,4 @@ class InspectionExtractV0JobScheduler:
             y.pop("evidence", None)
             y.pop("warnings", None)
             public_rows.append(y)
-        return InspectionExtractV0ChunkRecordsResponse(job_id=job_id, work_idx=1, records=public_rows)
+        return InspectionExtractV0ChunkRecordsResponse(job_id=job_id, work_idx=work_idx, records=public_rows)

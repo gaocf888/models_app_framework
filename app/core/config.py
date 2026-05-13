@@ -590,6 +590,10 @@ class InspectionExtractV0Config:
     max_pdf_pages_preprocess: int = 5
     # doc/docx 是否调用版面侧车（侧车内 LibreOffice 转 PDF 后走 PaddleOCR）；false 则仅原生解析 + 文本 IRT
     docx_use_layout_ocr: bool = True
+    # IRT 中含多张表时 LLM 按表分块并行（无表或单块时退化为一次调用）；1 表示顺序多表
+    llm_table_chunk_concurrency: int = 4
+    # 每个表块内最多携带多少条 OCR blocks（同页且与表 bbox 重叠）
+    llm_table_chunk_max_blocks: int = 120
     # 是否启用 LangGraph Sqlite 检查点（每任务 job 目录下 langgraph_checkpoint.sqlite）；false 时用内存态 ainvoke，与顺序回退语义一致且无 Sqlite 文件依赖
     langgraph_use_sqlite_checkpoint: bool = False
     # LangGraph Sqlite checkpoint 置于 job 子目录时的文件名（仅 langgraph_use_sqlite_checkpoint=true 时创建）
@@ -1039,6 +1043,8 @@ def _load_from_env() -> AppConfig:
         layout_ocr_max_upload_mb=max(1, int(os.getenv("INSPECT_EXTRACT_V0_LAYOUT_OCR_MAX_UPLOAD_MB", "32"))),
         max_pdf_pages_preprocess=max(1, min(50, int(os.getenv("INSPECT_EXTRACT_V0_MAX_PDF_PAGES", "5")))),
         docx_use_layout_ocr=os.getenv("INSPECT_EXTRACT_V0_DOCX_USE_LAYOUT_OCR", "true").lower() in ("1", "true", "yes", "on"),
+        llm_table_chunk_concurrency=max(1, int(os.getenv("INSPECT_EXTRACT_V0_LLM_TABLE_CHUNK_CONCURRENCY", "4"))),
+        llm_table_chunk_max_blocks=max(80, int(os.getenv("INSPECT_EXTRACT_V0_LLM_TABLE_CHUNK_MAX_BLOCKS", "120"))),
         langgraph_use_sqlite_checkpoint=os.getenv("INSPECT_EXTRACT_V0_LANGGRAPH_USE_SQLITE", "false").lower() in ("1", "true", "yes", "on"),
         langgraph_checkpoint_filename=(
             os.getenv("INSPECT_EXTRACT_V0_LANGGRAPH_CHECKPOINT_FILE", "langgraph_checkpoint.sqlite") or "langgraph_checkpoint.sqlite"

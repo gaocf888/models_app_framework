@@ -82,7 +82,7 @@ async def get_inspection_extract_v0_job(
     return data
 
 
-@router.get("/jobs/{job_id}/chunks", response_model=InspectionExtractV0ChunkListResponse, summary="V0 单段任务分块列表")
+@router.get("/jobs/{job_id}/chunks", response_model=InspectionExtractV0ChunkListResponse, summary="V0 分块列表（按表时多块）")
 async def list_inspection_extract_v0_job_chunks(job_id: str) -> InspectionExtractV0ChunkListResponse:
     data = service.list_job_chunks(job_id)
     if data is None:
@@ -93,7 +93,7 @@ async def list_inspection_extract_v0_job_chunks(job_id: str) -> InspectionExtrac
 @router.get(
     "/jobs/{job_id}/chunks/{work_idx}",
     response_model=InspectionExtractV0ChunkRecordsResponse,
-    summary="读取 V0 单段记录（work_idx 恒为 1）",
+    summary="读取 V0 某分块的 LLM 原始 records（按表分块时 work_idx 为 1..N）",
 )
 async def get_inspection_extract_v0_job_chunk(job_id: str, work_idx: int) -> InspectionExtractV0ChunkRecordsResponse:
     data = service.get_job_chunk_records(job_id, work_idx)

@@ -119,7 +119,7 @@
     <p class="sub">
       路由前缀 <code>/inspection-extract-v0</code>（须 <code>INSPECT_EXTRACT_V0_ENABLED=true</code> 并重启；未开启时接口返回 <strong>503</strong> 及 <code>detail</code> 说明，而非 404）。
       流程：<code>upload</code> → <code>POST …/run/async</code> → 轮询 <code>GET …/jobs/{job_id}?include_result=…</code>（为 <code>false</code> 时 <code>result</code> 恒为 <code>null</code> 属正常；本页在 <code>completed</code> 后会再请求 <code>true</code> 以展示完整结果）。
-      分块：<code>GET …/chunks</code>、<code>GET …/chunks/{work_idx}</code>（V0 单段任务 <code>work_idx</code> 恒为 <code>1</code>）。
+      分块：<code>GET …/chunks</code>、<code>GET …/chunks/{work_idx}</code>。IRT 中含多张表时按表并行 LLM，<code>work_idx</code> 为 <code>1..N</code>（无表或单表仍为 1）；运行中可根据 <code>artifacts/irt.json</code> 中 <code>tables</code> 长度预估块数。
       请求头 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。
       现网多段异步见 <a href="inspection-extract-async.html" style="color:#5eead4;">inspection-extract-async.html</a>。
     </p>
@@ -221,7 +221,7 @@
       <h2 style="margin-top: 1rem;">分块列表 GET …/chunks</h2>
       <div id="chunksOut">（未刷新）</div>
       <h2 style="margin-top: 1rem;">分块详情 GET …/chunks/{work_idx}</h2>
-      <label style="margin-top:0.5rem;display:inline-block;">work_idx（V0 一般为 1）</label>
+      <label style="margin-top:0.5rem;display:inline-block;">work_idx（按表分块时为 1..N；单块为 1）</label>
       <input type="number" id="workIdx" min="1" value="1" style="max-width:120px;display:inline-block;margin-left:0.5rem;" />
       <div id="chunkDetail" style="margin-top:0.5rem;">（未加载，可先点「加载 work_idx 分块」）</div>
       <div id="err" class="err" hidden></div>
