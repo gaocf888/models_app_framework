@@ -69,7 +69,7 @@ curl -sS http://127.0.0.1:8010/health
 
 主应用环境变量（见 `app/app-deploy/.env.example`）：
 
-- `INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT`：侧车根地址，例如 `http://127.0.0.1:8010` 或 compose 内 `http://paddleocr-layout-api:8000`。
+- `INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT`：侧车根地址。**主应用跑在 Docker 内**时须写 `http://paddleocr-layout-api:8000`（服务名 + 容器内端口）；`8010` 仅为宿主机映射。**须与侧车在同一 Docker 网络**：侧车 compose 会创建 `PADDLE_LAYOUT_NETWORK_NAME`（默认 `paddle-layout-stack`）；`app/app-deploy/docker-compose.yml` 已将 `models-app` 挂到同名 external 网络 `PADDLE_LAYOUT_DOCKER_NETWORK`，否则主应用解析 `paddleocr-layout-api` 会报 **Name or service not known**。仅当主应用与侧车都在宿主机进程、侧车映射 `8010→8000` 时，才可用 `http://127.0.0.1:8010`。
 
 ## 4. OpenAPI 契约
 

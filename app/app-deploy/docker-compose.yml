@@ -12,6 +12,9 @@
 #   3) MinerU：mineru-deploy/docker-compose-mx.yml（独立栈，与 rag/vllm 同级）
 #      - 默认容器名：mineru-api（见 mineru-deploy/.env）
 #      - 默认外部网络名：mineru-stack（与 mineru-deploy/.env 中 MINERU_NETWORK_NAME 一致）
+#   4) Paddle 版面侧车（检修 V0）：paddleocr-layout-deploy/docker-compose*.yml
+#      - 默认容器名：paddleocr-layout-api；网络名 paddle-layout-stack（与 PADDLE_LAYOUT_NETWORK_NAME 一致）
+#      - models-app 须经 PADDLE_LAYOUT_DOCKER_NETWORK 加入该 external 网络，否则 INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT 主机名无法解析
 #
 # 【本文件使用的 .env 变量 · 由 Docker Compose 在宿主机解析】
 #   APP_PORT              → models-app 宿主机端口（默认 8083）
@@ -19,6 +22,7 @@
 #   VLLM_DOCKER_NETWORK   → external 网络名，须已存在
 #   RAG_DOCKER_NETWORK    → external 网络名，须已存在
 #   MINERU_DOCKER_NETWORK → external 网络名，须已存在（连接 mineru-api）
+#   PADDLE_LAYOUT_DOCKER_NETWORK → external 网络名，须已存在（连接 paddleocr-layout-api；与 paddleocr-layout-deploy 中网络名一致）
 #   GRAPH_DOCKER_NETWORK  → external 网络名，用于连接 Neo4j（GraphRAG）
 #   EMBEDDING_MODELS_HOST_PATH
 #                         → 宿主机嵌入模型根目录（默认 /aidata/models/embeddings）
@@ -36,7 +40,8 @@
 #   - 不要将密钥提交到 Git；生产可用密钥管理替换 env_file。
 #
 # 【启动顺序建议】
-#   rag_db-deploy → vllm-deploy（deploy.sh）→ mineru-deploy（若启用）→ 本目录 docker compose
+#   rag_db-deploy → vllm-deploy（deploy.sh）→ mineru-deploy（若启用）→ paddleocr-layout-deploy（若启用检修 V0 版面侧车）→ 本目录 docker compose
+#   未部署侧车时：docker network create paddle-layout-stack（占位，否则 compose 因 external 网络不存在而失败）
 #
 # =============================================================================
 
@@ -105,6 +110,7 @@ services:
       vllm-external: {}
       rag-external: {}
       mineru-external: {}
+      paddle-layout-external: {}
       # 暂未部署Neo4j，对应网络注释掉
       # graph-external: {}
     volumes:
@@ -153,6 +159,7 @@ services:
       vllm-external: {}
       rag-external: {}
       mineru-external: {}
+      paddle-layout-external: {}
       # 暂未部署Neo4j，对应网络注释掉
       # graph-external: {}
     # 说明：原本使用 compose 的 `gpus: all` 字段声明 GPU 需求，
@@ -191,6 +198,10 @@ networks:
   # 与 mineru-api 互通（须已存在；由 mineru-deploy 创建）
   mineru-external:
     name: ${MINERU_DOCKER_NETWORK:-mineru-stack}
+    external: true
+  # 与 paddleocr-layout-api 互通（须已存在；由 paddleocr-layout-deploy 创建，默认名 paddle-layout-stack）
+  paddle-layout-external:
+    name: ${PADDLE_LAYOUT_DOCKER_NETWORK:-paddle-layout-stack}
     external: true
   # 与 Neo4j（GraphRAG）互通（可选；启用 GRAPH_RAG_ENABLED 时建议加入）
   # 暂未部署Neo4j，对应网络注释掉
