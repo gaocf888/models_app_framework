@@ -55,6 +55,8 @@ docker compose -f docker-compose.gpu.mthreads.yml up -d --build
 curl -sS http://127.0.0.1:8010/health
 ```
 
+**DOCX→PDF**：`Dockerfile.gpu.mthreads` 构建阶段会在 yum/dnf/apt 上尝试安装 LibreOffice（`libreoffice-headless` 等）。若构建失败或运行时仍报 `DOCX_TO_PDF_UNAVAILABLE`，说明底镜像源内无对应包，需在 Dockerfile 中换可用 repo 或现场预装 `soffice` 后再构建侧车镜像。
+
 ### 沐曦硬件：曦思 **N260** 与当前编排是否一致
 
 | 维度 | 结论 |
