@@ -92,10 +92,37 @@ curl -sS http://127.0.0.1:8010/health
 | 英伟达 GPU 不可用 | 检查 `nvidia-smi` 与 compose 是否带 `-f docker-compose.gpu.nvidia.yml`；环境变量 `NVIDIA_VISIBLE_DEVICES` |
 | 构建 **`exec format error`**（`/bin/sh`） | **底镜像 CPU 架构与宿主机不一致**（例如在 x86 上用了 **`-arm64`** tag）。**处理**：使用默认 **`kylinv11-amd64`**，或按架构改 `PADDLE_LAYOUT_MT_BASE_IMAGE`。 |
 | 沐曦 `paddle-metax-gpu` pip 报 **No matching distribution** | 多见于 **Python 3.12** 或 **maca 索引无对应 cp**。**处理**：使用预装飞桨的 **`maca/paddle:`** 或 **`paddle-metax`** 官方底镜像（构建会**跳过**飞桨 pip）；或设 **`METAX_PADDLE_GPU=0`** 仅 CPU paddle。 |
-| DOCX 返回 **503 / DOCX_TO_PDF_UNAVAILABLE** | 侧车内未找到 **LibreOffice** 或转换失败。**处理**：在镜像中安装 `soffice`（见上节 Dockerfile）；麒麟 yum 底镜像请自建含 LO 的基础层或改用 CPU/NVIDIA Dockerfile 路线。 |
+| DOCX 返回 **503 / DOCX_TO_PDF_UNAVAILABLE** | 侧车内 **`soffice`/`libreoffice` 不在 PATH**（日志与响应里 `DOCX_TO_PDF_UNAVAILABLE`）。**常见原因**：**麒麟 Kylin 默认 yum/dnf 源里没有** Fedora 式包名 `libreoffice-headless` 等，`Dockerfile.gpu.mthreads` 构建阶段会尽力安装但**可能装不上**，镜像仍能构建，**运行时** docx 转 PDF 失败。**处理**（择一）：① 换 **`Dockerfile.cpu` / `Dockerfile.gpu.nvidia`**（apt 已装 `libreoffice-writer-nogui`）跑侧车；② **构建参数**使用**非麒麟官方源**安装 LO（见 **§5.2**）；③ 在 Dockerfile 中 **COPY 官方 LibreOffice 便携包** 并 `ENV PATH=/opt/libreoffice/program:$PATH`；④ 主应用 **`INSPECT_EXTRACT_V0_DOCX_USE_LAYOUT_OCR=false`**，docx 不走侧车。 |
 | 回滚 | 固定镜像 tag；主应用关闭 `INSPECT_EXTRACT_V0_ENABLED` 即切断调用 |
 
-## 6. 安全与 CVE
+### 5.1 麒麟（沐曦镜像）与 LibreOffice 说明
+
+- **构建成功 ≠ 已装 LO**：`Dockerfile.gpu.mthreads` 在 yum/dnf 上若源内无匹配包，会打印 **WARN** 并继续构建；是否具备 `soffice` 以**容器内 `command -v soffice`** 为准。  
+- **验证**：`docker compose exec paddleocr-layout-api sh -lc 'command -v soffice || command -v libreoffice; ls /usr/lib64/libreoffice/program/soffice 2>/dev/null'` 无输出即未安装。  
+- **与表格 PP-Structure 无关**：缺 LO 时 docx 在转 PDF 之前即失败；表格识别是后续步骤。
+
+### 5.2 使用国内 / 第三方源安装 LibreOffice（`Dockerfile.gpu.mthreads` 构建参数）
+
+可在 **`docker compose -f docker-compose.gpu.mthreads.yml build`** 时通过环境变量传入（已映射到 `build.args`），或 `docker build --build-arg ...`：
+
+| 构建参数 / compose 变量 | 含义 |
+|-------------------------|------|
+| `PADDLE_LAYOUT_LO_BUILTIN_CHINA_EPEL` | **`1`（默认）**：未设置 `LO_REPO_URL` 时，将镜像内 **`docker/epel-china-el7.repo` / `epel-china-el8.repo`**（阿里云 EPEL 镜像）复制到 `/etc/yum.repos.d/paddle-layout-builtin-epel.repo`，按 `rpm -E '%{rhel}'` 在 **7** 与其余（按 **8** 源）间选择；**`0`** 则关闭，仅用麒麟官方源或下方自定义 URL。**注意**：底镜像若为 RHEL 9 等而仍用 el8 EPEL，可能与 glibc/RPM 依赖不完全一致，此时应关闭内置或提供匹配的 `LO_REPO_URL`。 |
+| `PADDLE_LAYOUT_LO_REPO_URL` | 可 `curl` 的 **`.repo` 文件 URL**（写入 `/etc/yum.repos.d/paddle-layout-lo.repo` 后 `yum/dnf makecache`）。**若设置，则不再启用内置阿里云 EPEL**（由该文件全权提供额外源）。用于接入贵司制品库、Rocky/Alma 兼容源、厂商镜像站等（**需自行评估与麒麟 glibc 的 RPM 兼容性**）。 |
+| `PADDLE_LAYOUT_LO_YUM_PACKAGES` | **空格分隔**的包名；在追加 repo / 内置 EPEL 之后执行 **一次** `yum install -y` / `dnf install -y` 装齐（默认：`libreoffice-headless libreoffice-langpack-zh-Hans`）。 |
+| `PADDLE_LAYOUT_LO_RPM_URLS` | **空格分隔**的 RPM **直链**，依次 `curl` 下载后 `rpm -ivh --nodeps`，失败则再试 `yum/dnf install` 该本地文件。适合离线制品单包或依赖链已手工排好。 |
+| `PADDLE_LAYOUT_LO_YUM_NOGPGCHECK` | 设为 **`1`** 时，`yum`/`dnf install` 追加 **`--nogpgcheck`**（仅当第三方 repo 无签名且现场明确接受风险时使用）。 |
+
+`.env` 示例片段（勿提交真实内网 URL 到公仓）：
+
+```bash
+PADDLE_LAYOUT_LO_BUILTIN_CHINA_EPEL=1
+# 若需完全自建源，可设 BUILTIN=0 并指定：
+# PADDLE_LAYOUT_LO_REPO_URL=https://artifacts.example.com/yum/libreoffice-el8.repo
+PADDLE_LAYOUT_LO_YUM_PACKAGES=libreoffice-headless libreoffice-langpack-zh-Hans
+# 或仅用 RPM：
+# PADDLE_LAYOUT_LO_RPM_URLS=https://artifacts.example.com/rpms/libreoffice-core-7.x.rpm
+```
 
 - 发布前对镜像执行 **Trivy / Grype** 等 CVE 扫描，将报告结论与基线镜像版本记录在发布 PR。
 - 生产环境建议仅集群内网访问该服务；**沐曦 compose 使用 privileged + 全量 `/dev`**，仅部署在受信节点，并按厂商安全基线收敛设备挂载（若现场规范要求）。

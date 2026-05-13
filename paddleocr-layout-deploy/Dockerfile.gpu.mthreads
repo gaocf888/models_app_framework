@@ -5,13 +5,27 @@
 # 默认底镜像：沐曦仓库 **maca/paddle:2.6.0-…-py310-kylinv11-amd64**（麒麟 Kylin V11 + x86_64；已含飞桨 2.6 + MACA，无需再 pip paddle-metax-gpu）。
 # ARM64 现场可改用沐曦 **`…-kylinv10-arm64`** 等 tag，并设 `BASE_IMAGE` / `PADDLE_LAYOUT_MT_BASE_IMAGE`；底镜像架构须与宿主机一致，否则首条 RUN 会出现 **exec format error**。
 # 若底镜像名为 `paddle-metax` 或路径含 `maca/paddle:`，构建将 **跳过** 飞桨/沐曦插件的 pip 安装。
-# DOCX→PDF：下方 RUN 在 apt 上装 libreoffice-writer-nogui；在 yum/dnf（麒麟等）上**尽力**安装 LO 常见 RPM 名，**源里无包时构建仍成功**，运行时 DOCX 会 503，需现场换源、换底镜像或把 soffice 打进镜像。
+# DOCX→PDF：apt 分支装官方包；yum/dnf 分支先可选**第三方 repo / 指定 RPM**，再回退麒麟常见包名；均无则 WARN 构建仍过。
+# 构建参数（compose 里对应 PADDLE_LAYOUT_LO_*）：`PADDLE_LAYOUT_LO_REPO_URL` 指向可 curl 的 `.repo`（优先于内置源）；
+# 未设置 URL 且 `PADDLE_LAYOUT_LO_BUILTIN_CHINA_EPEL=1`（默认）时复制镜像内 `docker/epel-china-el*.repo`（阿里云 EPEL）；
+# `PADDLE_LAYOUT_LO_YUM_PACKAGES` 空格分隔包名（一次 yum/dnf 装齐）；`PADDLE_LAYOUT_LO_RPM_URLS` 空格分隔 RPM 直链。
 # 若在 vllm-metax（Python 3.12）上自行 pip 沐曦插件，会因无 cp312 wheel 失败——请改用本默认底镜像或设 METAX_PADDLE_GPU=0。
 ARG BASE_IMAGE=cr.metax-tech.com/public-ai-release/maca/paddle:2.6.0-maca.ai3.7.0.6-py310-kylinv11-amd64
 FROM ${BASE_IMAGE}
 
 # 供 RUN 中判断是否跳过飞桨 pip（须与 build-arg 同名再声明一次）
 ARG BASE_IMAGE
+
+# 可选：麒麟官方源无 LibreOffice 时追加 yum 源；默认可启用**内置阿里云 EPEL**（见 docker/epel-china-el*.repo）
+ARG PADDLE_LAYOUT_LO_REPO_URL=
+# 1（默认）：未设置 LO_REPO_URL 时复制内置阿里云 EPEL repo；0：不启用内置源（仅用麒麟源或下方 URL）
+ARG PADDLE_LAYOUT_LO_BUILTIN_CHINA_EPEL=1
+# 空格分隔；默认一次安装 EPEL 常见包：无界面套件 + 简体中文语言包（可按现场改包名）
+ARG PADDLE_LAYOUT_LO_YUM_PACKAGES="libreoffice-headless libreoffice-langpack-zh-Hans"
+# 空格分隔 RPM 直链
+ARG PADDLE_LAYOUT_LO_RPM_URLS=
+# 1 时 yum/dnf install 追加 --nogpgcheck
+ARG PADDLE_LAYOUT_LO_YUM_NOGPGCHECK=0
 
 ARG PIP_INDEX_URL=
 # 1=使用沐曦 GPU 飞桨：底镜像为官方 paddle-metax / maca/paddle（已集成）时跳过飞桨 pip；否则在 py310/311 上尝试 pip 安装插件
@@ -35,27 +49,93 @@ ENV PYTHONUNBUFFERED=1 \
 
 USER root
 
+COPY docker/epel-china-el8.repo docker/epel-china-el7.repo /tmp/
+
 RUN if command -v apt-get >/dev/null 2>&1; then \
       apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         poppler-utils curl libreoffice-writer-nogui \
       && rm -rf /var/lib/apt/lists/*; \
     elif command -v yum >/dev/null 2>&1; then \
       yum install -y poppler-utils curl && \
+      LO_REPO="${PADDLE_LAYOUT_LO_REPO_URL}" && LO_PKGS="${PADDLE_LAYOUT_LO_YUM_PACKAGES}" && LO_RPMS="${PADDLE_LAYOUT_LO_RPM_URLS}" && \
+      BUILTIN="${PADDLE_LAYOUT_LO_BUILTIN_CHINA_EPEL:-1}" && \
+      NOGPG="" && if [ "${PADDLE_LAYOUT_LO_YUM_NOGPGCHECK}" = "1" ]; then NOGPG="--nogpgcheck"; fi && \
+      if [ -n "$LO_REPO" ]; then \
+        echo "[paddle-layout] LO: adding repo from PADDLE_LAYOUT_LO_REPO_URL" && \
+        curl -fsSL "$LO_REPO" -o /etc/yum.repos.d/paddle-layout-lo.repo && \
+        ( yum makecache fast 2>/dev/null || yum makecache 2>/dev/null || true ); \
+      elif [ "$BUILTIN" != "0" ] && [ "$BUILTIN" != "false" ] && [ "$BUILTIN" != "no" ]; then \
+        RV="$(rpm -E '%{rhel}' 2>/dev/null)" && \
+        case "$RV" in 7|8|9) ;; *) RV=8 ;; esac && \
+        if [ "$RV" = "7" ]; then \
+          echo "[paddle-layout] LO: builtin Aliyun EPEL 7 (rhel=$RV)" && \
+          cp /tmp/epel-china-el7.repo /etc/yum.repos.d/paddle-layout-builtin-epel.repo; \
+        else \
+          echo "[paddle-layout] LO: builtin Aliyun EPEL 8 (rhel=$RV)" && \
+          cp /tmp/epel-china-el8.repo /etc/yum.repos.d/paddle-layout-builtin-epel.repo; \
+        fi && \
+        ( yum makecache fast 2>/dev/null || yum makecache 2>/dev/null || true ); \
+      fi && \
+      if [ -n "$LO_PKGS" ]; then \
+        echo "[paddle-layout] LO: yum install -y $NOGPG $LO_PKGS" && \
+        yum install -y $NOGPG $LO_PKGS 2>/dev/null || true; \
+      fi && \
+      if [ -n "$LO_RPMS" ]; then \
+        idx=0; for u in $LO_RPMS; do \
+          idx=$((idx+1)); f="/tmp/paddle_lo_${idx}.rpm"; \
+          echo "[paddle-layout] LO: fetching RPM $u" && curl -fsSL "$u" -o "$f" && \
+          ( rpm -ivh --nodeps "$f" 2>/dev/null || yum install -y $NOGPG "$f" 2>/dev/null || true ) && rm -f "$f"; \
+          command -v soffice >/dev/null 2>&1 && break; \
+          command -v libreoffice >/dev/null 2>&1 && break; \
+        done; \
+      fi && \
       ( for pkg in libreoffice-headless libreoffice-writer libreoffice libreoffice-core libreoffice-langpack-zh-Hans; do \
-          if yum install -y "$pkg" 2>/dev/null; then echo "[paddle-layout] yum installed $pkg"; break; fi; \
+          if yum install -y $NOGPG "$pkg" 2>/dev/null; then echo "[paddle-layout] yum installed $pkg"; break; fi; \
         done; \
         true ) && \
       ( command -v soffice >/dev/null 2>&1 || command -v libreoffice >/dev/null 2>&1 \
-        || echo "[paddle-layout] WARN: no LibreOffice in PATH (Kylin repos often omit LO); DOCX→PDF unavailable until you add RPM repo or layer soffice." ) && \
+        || echo "[paddle-layout] WARN: no LibreOffice in PATH (Kylin repos often omit LO); set LO_REPO_URL / LO_RPM_URLS or disable builtin if EPEL mismatches)." ) && \
       yum clean all; \
     elif command -v dnf >/dev/null 2>&1; then \
       dnf install -y poppler-utils curl && \
+      LO_REPO="${PADDLE_LAYOUT_LO_REPO_URL}" && LO_PKGS="${PADDLE_LAYOUT_LO_YUM_PACKAGES}" && LO_RPMS="${PADDLE_LAYOUT_LO_RPM_URLS}" && \
+      BUILTIN="${PADDLE_LAYOUT_LO_BUILTIN_CHINA_EPEL:-1}" && \
+      NOGPG="" && if [ "${PADDLE_LAYOUT_LO_YUM_NOGPGCHECK}" = "1" ]; then NOGPG="--nogpgcheck"; fi && \
+      if [ -n "$LO_REPO" ]; then \
+        echo "[paddle-layout] LO: adding repo from PADDLE_LAYOUT_LO_REPO_URL" && \
+        curl -fsSL "$LO_REPO" -o /etc/yum.repos.d/paddle-layout-lo.repo && \
+        ( dnf makecache 2>/dev/null || true ); \
+      elif [ "$BUILTIN" != "0" ] && [ "$BUILTIN" != "false" ] && [ "$BUILTIN" != "no" ]; then \
+        RV="$(rpm -E '%{rhel}' 2>/dev/null)" && \
+        case "$RV" in 7|8|9) ;; *) RV=8 ;; esac && \
+        if [ "$RV" = "7" ]; then \
+          echo "[paddle-layout] LO: builtin Aliyun EPEL 7 (rhel=$RV)" && \
+          cp /tmp/epel-china-el7.repo /etc/yum.repos.d/paddle-layout-builtin-epel.repo; \
+        else \
+          echo "[paddle-layout] LO: builtin Aliyun EPEL 8 (rhel=$RV)" && \
+          cp /tmp/epel-china-el8.repo /etc/yum.repos.d/paddle-layout-builtin-epel.repo; \
+        fi && \
+        ( dnf makecache 2>/dev/null || true ); \
+      fi && \
+      if [ -n "$LO_PKGS" ]; then \
+        echo "[paddle-layout] LO: dnf install -y $NOGPG $LO_PKGS" && \
+        dnf install -y $NOGPG $LO_PKGS 2>/dev/null || true; \
+      fi && \
+      if [ -n "$LO_RPMS" ]; then \
+        idx=0; for u in $LO_RPMS; do \
+          idx=$((idx+1)); f="/tmp/paddle_lo_${idx}.rpm"; \
+          echo "[paddle-layout] LO: fetching RPM $u" && curl -fsSL "$u" -o "$f" && \
+          ( rpm -ivh --nodeps "$f" 2>/dev/null || dnf install -y $NOGPG "$f" 2>/dev/null || true ) && rm -f "$f"; \
+          command -v soffice >/dev/null 2>&1 && break; \
+          command -v libreoffice >/dev/null 2>&1 && break; \
+        done; \
+      fi && \
       ( for pkg in libreoffice-headless libreoffice-writer libreoffice libreoffice-core libreoffice-langpack-zh-Hans; do \
-          if dnf install -y "$pkg" 2>/dev/null; then echo "[paddle-layout] dnf installed $pkg"; break; fi; \
+          if dnf install -y $NOGPG "$pkg" 2>/dev/null; then echo "[paddle-layout] dnf installed $pkg"; break; fi; \
         done; \
         true ) && \
       ( command -v soffice >/dev/null 2>&1 || command -v libreoffice >/dev/null 2>&1 \
-        || echo "[paddle-layout] WARN: no LibreOffice in PATH; DOCX→PDF unavailable until vendor LO is installed." ) && \
+        || echo "[paddle-layout] WARN: no LibreOffice in PATH; set LO_* build-args or use CPU Dockerfile." ) && \
       dnf clean all; \
     fi
 

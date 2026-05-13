@@ -1,0 +1,8 @@
+# 国内镜像：阿里云 EPEL 7（与 RHEL7 / 部分老麒麟兼容）
+[paddle-layout-epel-china]
+name=EPEL 7 Aliyun (paddle-layout LO)
+baseurl=https://mirrors.aliyun.com/epel/7/$basearch
+enabled=1
+gpgcheck=1
+gpgkey=https://mirrors.aliyun.com/epel/RPM-GPG-KEY-EPEL-7
+skip_if_unavailable=1

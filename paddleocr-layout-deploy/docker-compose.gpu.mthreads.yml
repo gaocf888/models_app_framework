@@ -13,6 +13,13 @@ services:
         PADDLE_METAX_CHANNEL: ${PADDLE_LAYOUT_METAX_CHANNEL:-nightly}
         PADDLE_CPU_METAX_VER: ${PADDLE_LAYOUT_METAX_CPU_PADDLE_VER:-3.3.0}
         PADDLE_METAX_GPU_VER: ${PADDLE_LAYOUT_METAX_GPU_VER:-3.3.0}
+        # 麒麟默认源常无 LO：默认启用内置阿里云 EPEL + 默认包名；可改 LO_REPO_URL / RPM 等（见 README §5.2）
+        # 未设 LO_REPO_URL 时默认启用镜像内阿里云 EPEL .repo（docker/epel-china-el*.repo）；可设 0 关闭
+        PADDLE_LAYOUT_LO_BUILTIN_CHINA_EPEL: ${PADDLE_LAYOUT_LO_BUILTIN_CHINA_EPEL:-1}
+        PADDLE_LAYOUT_LO_REPO_URL: ${PADDLE_LAYOUT_LO_REPO_URL:-}
+        PADDLE_LAYOUT_LO_YUM_PACKAGES: ${PADDLE_LAYOUT_LO_YUM_PACKAGES:-"libreoffice-headless libreoffice-langpack-zh-Hans"}
+        PADDLE_LAYOUT_LO_RPM_URLS: ${PADDLE_LAYOUT_LO_RPM_URLS:-}
+        PADDLE_LAYOUT_LO_YUM_NOGPGCHECK: ${PADDLE_LAYOUT_LO_YUM_NOGPGCHECK:-0}
     image: ${PADDLE_LAYOUT_GPU_MT_IMAGE:-paddleocr-layout-api:metax-gpu}
     container_name: ${PADDLE_LAYOUT_CONTAINER_NAME:-paddleocr-layout-api}
     restart: unless-stopped

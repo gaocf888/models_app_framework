@@ -1,0 +1,9 @@
+# 国内镜像：阿里云 EPEL 8（与 RHEL8 / 多数麒麟 V10+ 兼容；用于拉取 libreoffice-headless 等）
+# 若与底镜像发行版不匹配，构建参数 PADDLE_LAYOUT_LO_BUILTIN_CHINA_EPEL=0 关闭，或改用 el7 文件 / 自建源
+[paddle-layout-epel-china]
+name=EPEL 8 Aliyun (paddle-layout LO)
+baseurl=https://mirrors.aliyun.com/epel/8/Everything/$basearch
+enabled=1
+gpgcheck=1
+gpgkey=https://mirrors.aliyun.com/epel/RPM-GPG-KEY-EPEL-8
+skip_if_unavailable=1
