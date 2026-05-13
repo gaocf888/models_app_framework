@@ -10,6 +10,7 @@ import contextvars
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Callable, TypedDict
@@ -128,10 +129,17 @@ async def node_ingest(state: InspectionExtractV0State) -> dict[str, Any]:
     content = (req.content or "").strip()
     st = (req.source_type or "text").lower()
     tmp: Path | None = None
+    jd = Path(state["job_dir"])
+    jd.mkdir(parents=True, exist_ok=True)
+    ingest_dir = jd / "ingest"
+    ingest_dir.mkdir(parents=True, exist_ok=True)
     try:
         if InspectionExtractService._looks_like_http_url(content) and st in {"pdf", "doc", "docx"}:
             tmp = InspectionExtractService._download_to_temp_file(content=content, source_type=st)
-            local_path = str(tmp.resolve())
+            suffix = tmp.suffix if tmp.suffix else (".pdf" if st == "pdf" else ".docx")
+            dest = ingest_dir / f"source{suffix}"
+            shutil.copy2(tmp, dest)
+            local_path = str(dest.resolve())
         else:
             local_path = content
         p = Path(local_path)
@@ -431,16 +439,27 @@ async def run_inspection_extract_v0_graph(
     should_cancel: Callable[[], bool],
 ) -> dict[str, Any]:
     token = set_cancel_predicate(should_cancel)
+    jd_path = Path(job_dir)
+    jd_path.mkdir(parents=True, exist_ok=True)
     initial: InspectionExtractV0State = {
         "job_id": job_id,
-        "job_dir": str(job_dir.resolve()),
+        "job_dir": str(jd_path.resolve()),
         "request": request.model_dump(mode="json"),
         "stage_ms": {},
         "review_flags": [],
     }
     try:
         v0cfg = get_app_config().inspection_extract_v0
-        ck_path = job_dir / v0cfg.langgraph_checkpoint_filename
+        ck_path = jd_path / v0cfg.langgraph_checkpoint_filename
+        config: dict[str, Any] = {"configurable": {"thread_id": job_id}}
+
+        if not v0cfg.langgraph_use_sqlite_checkpoint:
+            graph = _build_graph_compiled(None)
+            final_state = await graph.ainvoke(initial, config)  # type: ignore[misc]
+            if isinstance(final_state, dict):
+                return final_state
+            return dict(final_state)
+
         try:
             from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # type: ignore[import-not-found]
         except Exception as exc:  # noqa: BLE001
@@ -453,7 +472,6 @@ async def run_inspection_extract_v0_graph(
         try:
             async with AsyncSqliteSaver.from_conn_string(db_uri) as saver:  # type: ignore[attr-defined]
                 graph = _build_graph_compiled(saver)
-                config: dict[str, Any] = {"configurable": {"thread_id": job_id}}
                 final_state = await graph.ainvoke(initial, config)  # type: ignore[attr-defined]
                 if isinstance(final_state, dict):
                     return final_state
