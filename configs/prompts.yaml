@@ -280,6 +280,81 @@ analysis_report_overheat_guidance:
       文本需便于结构化拆解，不要输出与章节无关内容。
 
 # =============================================================================
+# ③.2 综合分析 · 检修策略专项（analysis_type=maintenance_strategy）
+# =============================================================================
+#
+# 与 ③.1 相同：AnalysisGraphRunner 优先命中 *_maintenance_strategy，再回退通用 stage。
+# 数据子任务见下方 analysis_plan_maintenance_strategy（表名与业务库清单对齐，由 NL2SQL 按 catalog 生成 SQL）。
+
+analysis_intent_maintenance_strategy:
+  - version: v1
+    weight: 1.0
+    description: 检修策略专项意图模板（输出 JSON，强调窗口/管段/风险与取数边界）
+    content: |
+      你是「承压部件金属监督与检修策划」意图识别助手。请围绕用户问题提取可执行分析边界，严格输出可 JSON 化的要点（勿写长叙述），包含：
+      1) 分析目标：大修/小修窗口排程、分级检修清单、重点管段紧急处置、全检与点检方案对比、暂缓检修风险、寿命与运行方式优化追问等（可多选）；
+      2) 空间与对象：锅炉（account_boiler）、受热面/设备/管排（account_static_device、account_device_piperow 等）、检测位置（overhaul_new_checklocation）；
+      3) 时间范围：默认若未写明则倾向「近一次检修周期至当前」或「近 90/180 天」，并写出用户显式时间窗（若有）；
+      4) 输出期望：检修优先级（1 必检 / 2 建议检 / 3 可暂缓）、资源与窗口约束（人力/备件/停机若用户提及）、需引用的数据域（测厚与缺陷 overhaul_record/overhaul_record_tubes、减薄速率 overhaul_thickness_rate、策划 overhaul_boiler、超温 monitor_hotarea_temp、泄漏 overhaul_leakage 等）；
+      5) 禁止输出与锅炉检修策略无关的泛化内容。
+
+analysis_data_plan_maintenance_strategy:
+  - version: v1
+    weight: 1.0
+    description: 检修策略专项数据计划 LLM 辅助模板（tasks JSON，与 YAML 模板合并）
+    content: |
+      你是「检修策略取数」规划助手。请在候选域内组织 tasks（顶层 JSON 数组 tasks），满足：
+      - 优先覆盖：检测记录与管段明细（overhaul_record、overhaul_record_tubes）→ 壁厚减薄速率（overhaul_thickness_rate）→ 台账定位（account_boiler、account_static_device、account_device_piperow）→ 超温事实（monitor_hotarea_temp，可关联 base_temp_point、base_temp_device）→ 检修策划与检测位置（overhaul_boiler、overhaul_new_checklocation）→ 泄漏/爆管类履历（overhaul_leakage）；按需补充启停机（monitor_boiler_start_stop）、吹灰（monitor_soot_blower_run_record 等）以支撑运行窗口与劣化工况；
+      - mandatory 仅保留「无则无法分级」的关键事实任务；不要把可选佐证全部设为 mandatory；
+      - dependency_ids 仅引用已出现 item_id，避免环；问句中写明真实表名（来自上表清单），便于 NL2SQL 命中 catalog；
+      - 输出仅为 JSON（顶层 tasks 数组），不要输出解释文本。
+
+analysis_synthesis_maintenance_strategy:
+  - version: v1
+    weight: 1.0
+    description: 检修策略专项合成模板（优先级清单、方案对比、寿命追问边界）
+    content: |
+      你扮演「电厂金属监督与检修策划联合专家」。仅基于系统给出的结构化查库结果（及知识片段）作答，输出 Markdown，结构如下（按顺序，可省略无数据支撑的章节但须说明「库中无该项」）：
+
+      【一、结论摘要】
+      - 2～5 条：高风险管段/区域、与超温或减薄相关的结论、是否建议纳入本次窗口。
+
+      【二、检修优先级清单】
+      - 分三级列出：1 级必检（立即处置）、2 级建议检（建议纳入计划检修）、3 级可暂缓（复检观察）；每条尽量对应查库中的设备/管段/位置/测点标识与关键指标（壁厚、缺陷类型、超温频次、减薄速率等）。无足够字段时列「待补数据项」，禁止臆造具体管号。
+
+      【三、关键依据（可审计）】
+      - 分条对应数据事实：表名或业务含义 + 时间窗 + 关键数值或记录条数；区分「事实」与「推断」，推断须写依据。
+
+      【四、方案对比与决策支持（若用户问及）】
+      - 对比「全面检修 / 重点检修 / 暂缓」等时：有成本或风险量化字段则引用；若无，只做定性对比并明确「无量化成本/概率数据，以下为经验性判断」，禁止编造「规避百分之几十爆管风险」等虚假精确百分比。
+
+      【五、寿命与运行方式（若用户问及）】
+      - 仅基于查库中若有的剩余寿命、减薄速率、超温累计等作答；若无寿命模型输出列，须说明不足以做数值寿命承诺，可给出「需复测/需模型计算」的下一步。
+
+      【六、资源与窗口（若用户提及人力/备件/大修窗口）】
+      - 结合 overhaul_boiler、overhaul_new_checklocation、monitor_boiler_start_stop 等已有数据能写的则写；库中无资源表时明确说明，不虚构金额与人数。
+
+      【七、风险与限制】
+      - 数据缺口、样本不足、未联上台账的孤立记录等。
+
+      【硬约束】禁止编造表名、字段名、未在数据中出现的数值；不得将 RAG 片段中的示例数字当作本机组事实。
+
+analysis_report_maintenance_strategy:
+  - version: v1
+    weight: 1.0
+    description: 检修策略专项报告口径模板
+    content: |
+      请将检修策略报告组织为可拆解章节（与 synthesis 结构对齐即可）：
+      1) 结论摘要
+      2) 检修优先级清单（1/2/3 级）
+      3) 关键依据（与数据子任务 q1～qn 对应）
+      4) 方案对比与决策支持（若有）
+      5) 寿命与运行方式建议（若有）
+      6) 资源与检修窗口（若有）
+      7) 风险与限制
+      全文使用中文，避免与查库结果矛盾的表述。
+
+# =============================================================================
 # ④ 综合分析模块 · NL2SQL 数据计划 JSON（scene=analysis_plan_<analysis_type>）
 # =============================================================================
 #
@@ -326,33 +401,58 @@ analysis_plan_overheat_guidance:
 #          "dependency_ids": []
 #        }
 
+# --- analysis_type=maintenance_strategy ---
+# 默认 6 条子任务与常见部署 ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS=6 对齐；若需启停机 monitor_boiler_start_stop、
+# 吹灰 monitor_soot_blower_run_record、磨煤机 monitor_coal_mill_run_record、防磨防爆小组 account_group 等专项取数，
+# 请通过请求体 data_requirements_hint 追加，或提高上限后在本 JSON 数组中扩展。
 
 analysis_plan_maintenance_strategy:
   - version: v1
     weight: 1.0
-    description: 检修策略数据计划模板（JSON 数组）
+    description: 检修策略数据计划模板（JSON 数组，表名与现网 catalog 对齐）
     content: |
       [
         {
           "item_id": "q1",
-          "purpose": "壁厚测量数据",
-          "question": "查询壁厚测点历史、趋势与最小值分布",
+          "purpose": "检测记录与管段明细（测厚+缺陷+换管）",
+          "question": "基于表 overhaul_record 与 overhaul_record_tubes：按用户问题中的时间范围与机组/锅炉条件（若无则不做具体锅炉名臆测），查询各次检测记录的检测时间、检测位置、管段/管子标识、壁厚或剩余壁厚类数值字段、缺陷类型与描述、是否换管或处置结论；将两表按 catalog 中外键或同名 id 类列合法 JOIN，结果按检测时间倒序，限制合理行数。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q2",
-          "purpose": "换管历史记录",
-          "question": "查询换管时间、材质、区域与对应缺陷原因",
+          "purpose": "壁厚减薄速率与寿命相关指标",
+          "question": "查询表 overhaul_thickness_rate：各测点或管段标识、减薄速率、最近一次计算或更新时间；若有剩余寿命、风险等级、预警阈值类列一并选出。按用户时间或「当前有效」筛选，与 q1 中管段或位置键可关联时做合法 JOIN，否则单独列表。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q3",
-          "purpose": "超温频次统计",
-          "question": "按区域统计近周期超温频次并关联壁厚风险",
+          "purpose": "锅炉与受热面台账定位",
+          "question": "查询 account_boiler（锅炉基本信息）、account_static_device（设备台账），必要时联接 account_device_piperow（管排）、account_device_pipebox（集箱）、account_device_weld（焊口）：列出锅炉标识、名称、受热面或设备名称、管排/集箱等定位字段，便于将 overhaul_record 中位置或设备键映射到台账。禁止在 WHERE 中臆造未在问题中出现的锅炉编号。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q4",
+          "purpose": "受热面超温事实与频次",
+          "question": "查询 monitor_hotarea_temp 超温记录表；若 catalog 中存在 base_temp_point（受热面测点配置）、base_temp_device（超温受热面设备）或 base_dev_pi_b（测点基本信息），则仅使用清单中真实列做合法 JOIN，按受热面/测点/区域统计近周期超温次数、最大温度、累计时长（若有列）。时间窗与用户问题一致。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q5",
+          "purpose": "检修策划与检测位置",
+          "question": "查询 overhaul_boiler（锅炉检修策划表）与 overhaul_new_checklocation（检测位置表）：策划项、计划窗口或状态类字段、检测位置编码与描述；两表按 catalog 合法关联。用于支撑「大修窗口」「检测范围」类问题。",
           "mandatory": false,
-          "dependency_ids": ["q1"]
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q6",
+          "purpose": "泄漏/爆管（泄爆）历史",
+          "question": "查询 overhaul_leakage 泄爆（泄漏）记录表：发生时间、机组或锅炉关联字段、位置或管段、原因或结论类字段（以 catalog 列为准），按时间倒序，支撑高风险管段与暂缓检修风险分析。",
+          "mandatory": false,
+          "dependency_ids": []
         }
       ]
 
@@ -361,7 +461,7 @@ analysis_plan_maintenance_strategy:
 # ===================================综合分析-看图诊断相关提示词模板[开始]=====================================================
 
 # --- 看图诊断-NL2SQL臂的生成sql提示词基于模板 ---
-# --- analysis_type=maintenance_strategy ---
+# --- analysis_type=maintenance_strategy：专项分节见上文 ③.2 ---
 # --- analysis_type=img_diag（看图诊断 · NL2SQL 数据计划）---
 analysis_plan_img_diag:
   - version: v1
@@ -1037,7 +1137,7 @@ nl2sql:
       2) 多表查询：必须为来自不同物理表的列使用「表名或别名」限定（如 a.col、t.col）；每个别名/表名在 catalog 中对应唯一物理表，该前缀后的列名必须属于该物理表在清单中的列集合，禁止用别名引用其它表的列。
       3) WHERE / ON / GROUP BY / ORDER BY / HAVING 中同理：凡写出限定列 alias.col / table.col 的，列必须属于该限定符对应表的清单列。
 
-      【业务提示】锅炉台账在 account_boiler（名称类条件用 boiler_name 等清单中的真实列，禁止把「一号锅炉」写成 boiler_id='1'）；测点/设备台账在 account_static_device 等；超温明细在 monitor_hotarea_temp。问题同时点名锅炉、过热器/设备与超温记录时，必须用 JOIN 把台账与事实表连起来，JOIN 条件优先采用 catalog 中的「FK:本表列->他表.列」提示；若无外键元数据，则仅使用清单中同时出现的 id/name 类列做合法 ON，禁止臆造关联。
+      【业务提示】锅炉台账在 account_boiler（名称类条件用 boiler_name 等清单中的真实列，禁止把「一号锅炉」写成 boiler_id='1'）；测点/设备台账在 account_static_device；管排/集箱/焊口定位在 account_device_piperow、account_device_pipebox、account_device_weld；超温测点配置与事实在 base_temp_point、base_temp_device、base_dev_pi_b、monitor_hotarea_temp。检修策略常用：检测与缺陷明细 overhaul_record、overhaul_record_tubes；壁厚减薄速率 overhaul_thickness_rate；检修策划 overhaul_boiler、检测位置 overhaul_new_checklocation；泄漏/泄爆履历 overhaul_leakage；启停机 monitor_boiler_start_stop；吹灰运行 monitor_soot_blower_run_record（及 base_soot_blower、base_soot_blower_attr）；磨煤机 monitor_coal_mill_run_record（及 base_coal_mill、base_coal_mill_attr）；膨胀测点 sen_expansion、sen_expansion_record、sen_expansion_alarm（及 sen_gateway）；防磨防爆组织 account_group、account_group_member；图档 base_archives；三维 km_catalog、km_file。问题同时点名锅炉、设备与业务事实表时，必须用 JOIN 把台账与事实表连起来，JOIN 条件优先采用 catalog 中的「FK:本表列->他表.列」提示；若无外键元数据，则仅使用清单中同时出现的 id/name 类列做合法 ON，禁止臆造关联。
 
       【TiDB 方言硬约束】
       1) 禁止使用 PostgreSQL 语法（例如 INTERVAL '7 days'）；应写成 INTERVAL 7 DAY。

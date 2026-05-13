@@ -28,7 +28,7 @@ RUN if [ -n "$PIP_INDEX_URL" ]; then \
     fi
 
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh 2>/dev/null || true && chmod +x /entrypoint.sh
 
 COPY service /app/service
 WORKDIR /app/service

@@ -1,0 +1,2 @@
+# Windows 检出时避免 shell 脚本 CRLF，防止 Linux 容器内 shebang 变成 bash\r
+docker/*.sh text eol=lf
