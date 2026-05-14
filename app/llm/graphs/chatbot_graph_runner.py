@@ -21,7 +21,11 @@ from .chatbot_graph_state import ChatbotGraphState
 from .chatbot_intent_rules import classify_chatbot_intent
 from .chatbot_nl2sql_answer import summarize_nl2sql_with_llm
 from .chatbot_rag_citations import chunks_to_rag_citations
-from .chatbot_retrieval_query import build_retrieval_query_for_chatbot, format_rag_snippets_system_block
+from .chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
+from .chatbot_dialogue_anchor import build_dialogue_anchor_block
+from .chatbot_anaphora_detect import classify_anaphora_rules
+from .chatbot_anaphora_llm import maybe_apply_coref_llm
+from .chatbot_anaphora_store import get_anaphora_slots, slot_bullets_list, update_anaphora_slots_after_assistant
 from .chatbot_similar_cases import (
     FaultCaseGateInput,
     format_similar_cases_block,
@@ -96,7 +100,17 @@ class ChatbotLangGraphRunner:
         self._suggested_questions_enabled = bool(cfg.suggested_questions_enabled)
         self._suggested_questions_max = max(1, min(10, int(cfg.suggested_questions_max)))
 
-        self._nl2sql = NL2SQLService(conv_manager=conv_manager)
+        self._anaphora_config_path = cfg.anaphora_config_path
+        self._anaphora_retrieval_fusion = bool(cfg.anaphora_retrieval_fusion_enabled)
+        self._anaphora_fusion_max_chars = max(800, int(cfg.anaphora_fusion_max_chars))
+        self._anaphora_anchor_enabled = bool(cfg.anaphora_anchor_block_enabled)
+        self._anaphora_anchor_max_chars = max(400, int(cfg.anaphora_anchor_max_chars))
+        self._anaphora_slots_enabled = bool(cfg.anaphora_slots_enabled)
+        self._anaphora_slots_max_bullets = max(2, min(20, int(cfg.anaphora_slots_max_bullets)))
+        self._anaphora_llm_gate = bool(cfg.anaphora_llm_gate_enabled)
+        self._anaphora_llm_timeout = float(cfg.anaphora_llm_timeout_sec)
+        self._anaphora_llm_model = cfg.anaphora_llm_model
+        self._anaphora_expose_meta = bool(cfg.anaphora_expose_meta)
 
         self._graph = None
         if self._graph_enabled:
@@ -602,21 +616,76 @@ class ChatbotLangGraphRunner:
         return {"rag_engine": engine}
 
     async def _node_kb_retrieve(self, state: ChatbotGraphState) -> ChatbotGraphState:
-        if not state.get("enable_rag", True):
-            # 显式关闭 RAG：不检索、分数归零、used_rag=false。
-            return {"context_snippets": [], "used_rag": False, "retrieval_score": 0.0, "rag_citations": []}
-
-        attempts = int(state.get("retrieval_attempts", 0)) + 1
-        engine = str(state.get("rag_engine") or "hybrid")
         query = str(state.get("query") or "")
         hist = list(state.get("history_messages") or [])
-        rag_query = build_retrieval_query_for_chatbot(query, hist)
+        enable_ctx = bool(state.get("enable_context", True))
+
+        slot_bullets: List[str] = []
+        if self._anaphora_slots_enabled:
+            slots = get_anaphora_slots(state["user_id"], state["session_id"])
+            slot_bullets = slot_bullets_list(slots)
+
+        rule = classify_anaphora_rules(
+            query,
+            hist,
+            enable_context=enable_ctx,
+            config_path=self._anaphora_config_path,
+        )
+        final_type, src = rule.anaphora_type, "rule"
+        if self._anaphora_llm_gate:
+            final_type, src = await maybe_apply_coref_llm(
+                self._llm,
+                user_id=state["user_id"],
+                session_id=state["session_id"],
+                query=query,
+                history_messages=hist,
+                rule=rule,
+                enable_context=enable_ctx,
+                llm_gate_enabled=True,
+                config_path=self._anaphora_config_path,
+                model_name=self._anaphora_llm_model,
+                timeout_sec=self._anaphora_llm_timeout,
+            )
+
+        rag_query, _, eff_type = build_retrieval_query_with_anaphora(
+            query,
+            hist,
+            enable_context=enable_ctx,
+            fusion_enabled=self._anaphora_retrieval_fusion,
+            fusion_max_chars=self._anaphora_fusion_max_chars,
+            config_path=self._anaphora_config_path,
+            anaphora_type=final_type,
+            rule_result=rule,
+        )
+        anaphora_patch: ChatbotGraphState = {
+            "anaphora_type": eff_type,
+            "anaphora_rule_type": rule.anaphora_type,
+            "anaphora_confidence": float(rule.confidence),
+            "anaphora_score_gap": float(rule.score_gap),
+            "anaphora_source": src,
+            "anaphora_slot_bullets": list(slot_bullets),
+        }
         if rag_query != query:
             logger.info(
-                "chatbot.kb_retrieve retrieval_query_augmented conf_short=1 query_len=%s rag_q_len=%s",
+                "chatbot.kb_retrieve retrieval_query_augmented anaphora=%s eff=%s src=%s query_len=%s rag_q_len=%s",
+                rule.anaphora_type,
+                eff_type,
+                src,
                 len(query),
                 len(rag_query),
             )
+
+        if not state.get("enable_rag", True):
+            return {
+                "context_snippets": [],
+                "used_rag": False,
+                "retrieval_score": 0.0,
+                "rag_citations": [],
+                **anaphora_patch,
+            }
+
+        attempts = int(state.get("retrieval_attempts", 0)) + 1
+        engine = str(state.get("rag_engine") or "hybrid")
         snippets: List[str] = []
         citations: List[Dict[str, Any]] = []
         graph_active = bool(
@@ -676,6 +745,7 @@ class ChatbotLangGraphRunner:
             "retrieval_score": score,
             "rag_engine": engine,
             "status": "retrieved",
+            **anaphora_patch,
         }
 
     async def _node_kb_quality_check(self, state: ChatbotGraphState) -> ChatbotGraphState:
@@ -701,6 +771,19 @@ class ChatbotLangGraphRunner:
         sp = str(state.get("system_prompt") or "").strip()
         if sp:
             system_chunks.append(sp)
+        anchor_block_out = ""
+        if self._anaphora_anchor_enabled:
+            anchor = build_dialogue_anchor_block(
+                list(state.get("history_messages") or []),
+                str(state.get("query") or ""),
+                str(state.get("anaphora_type") or "none"),
+                config_path=self._anaphora_config_path,
+                max_chars=self._anaphora_anchor_max_chars,
+                slot_bullets=state.get("anaphora_slot_bullets") or [],
+            )
+            if anchor:
+                system_chunks.append(anchor)
+                anchor_block_out = anchor
         snippets = state.get("context_snippets") or []
         if snippets:
             system_chunks.append(format_rag_snippets_system_block(list(snippets)))
@@ -727,7 +810,10 @@ class ChatbotLangGraphRunner:
             messages.append({"role": "user", "content": blocks})
         else:
             messages.append({"role": "user", "content": query})
-        return {"llm_messages": messages}
+        out: ChatbotGraphState = {"llm_messages": messages}
+        if anchor_block_out:
+            out["anaphora_anchor_block"] = anchor_block_out
+        return out
 
     async def _node_clarify_build_response(self, state: ChatbotGraphState) -> ChatbotGraphState:
         # 首版澄清话术保持稳定输出，后续可替换为模板化/模型化澄清。
@@ -820,6 +906,22 @@ class ChatbotLangGraphRunner:
         if answer:
             content = answer if not is_partial else f"[partial] {answer}"
             self._conv.append_assistant_message(req.user_id, req.session_id, content)
+            if (
+                not is_partial
+                and self._anaphora_slots_enabled
+                and (answer or "").strip()
+                and not state.get("used_nl2sql")
+            ):
+                try:
+                    update_anaphora_slots_after_assistant(
+                        req.user_id,
+                        req.session_id,
+                        answer,
+                        last_user_anaphora_type=(str(state.get("anaphora_type") or "").strip() or None),
+                        max_bullets=self._anaphora_slots_max_bullets,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("anaphora slots update failed: %s", exc)
             if not is_partial and self._outline_store is not None and self._outline_store.enabled:
                 self._schedule_outline_index(req.user_id, req.session_id, content)
         state["answer_text"] = answer
@@ -917,6 +1019,19 @@ class ChatbotLangGraphRunner:
             "processed_image_urls": [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
             "original_image_urls": [u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()],
             "stream_id": stream_id,
+            **self._anaphora_meta_extras(state),
+        }
+
+    def _anaphora_meta_extras(self, state: ChatbotGraphState) -> Dict[str, Any]:
+        if not self._anaphora_expose_meta:
+            return {}
+        ab = state.get("anaphora_anchor_block") or ""
+        return {
+            "anaphora_type": state.get("anaphora_type"),
+            "anaphora_rule_type": state.get("anaphora_rule_type"),
+            "anaphora_confidence": state.get("anaphora_confidence"),
+            "anaphora_source": state.get("anaphora_source"),
+            "anaphora_anchor_block_len": len(ab) if isinstance(ab, str) else 0,
         }
 
     async def _is_cancelled(self, req: ChatRequest, stream_id: str | None, cancel_checker: Any | None) -> bool:

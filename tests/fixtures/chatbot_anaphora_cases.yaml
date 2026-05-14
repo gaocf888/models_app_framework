@@ -1,0 +1,10 @@
+# 评测/回归用例骨架（§4.4）：规则路径期望 anaphora_type（§3.2 封闭编码）。
+# CI 可只跑单测解析本文件；夜间可加 LLM-as-judge。
+version: 1
+cases:
+  - id: pair_compare_diff
+    query: 这两者的区别是什么
+    expect_anaphora_type: pair_compare
+  - id: ordinal_second
+    query: 第二点展开说说
+    expect_anaphora_type: ordinal

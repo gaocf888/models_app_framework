@@ -439,6 +439,18 @@ class ChatbotConfig:
     reference_lookback_turns: int = 8
     outline_es_enabled: bool = True
     outline_es_index: str = "conversation_outline_v1"
+    # --- 指代消解 P0～P3（见 docs/智能客服上下文理指代实现优化方案-20260514.md §4）---
+    anaphora_config_path: str | None = None
+    anaphora_retrieval_fusion_enabled: bool = True
+    anaphora_fusion_max_chars: int = 2800
+    anaphora_anchor_block_enabled: bool = False
+    anaphora_anchor_max_chars: int = 1200
+    anaphora_slots_enabled: bool = False
+    anaphora_slots_max_bullets: int = 8
+    anaphora_llm_gate_enabled: bool = False
+    anaphora_llm_timeout_sec: float = 4.0
+    anaphora_llm_model: str | None = None
+    anaphora_expose_meta: bool = False
 
 
 @dataclass
@@ -924,6 +936,17 @@ def _load_from_env() -> AppConfig:
         reference_lookback_turns=max(1, min(50, int(os.getenv("CHATBOT_REFERENCE_LOOKBACK_TURNS", "8")))),
         outline_es_enabled=os.getenv("CHATBOT_OUTLINE_ES_ENABLED", "true").lower() == "true",
         outline_es_index=(os.getenv("CHATBOT_OUTLINE_ES_INDEX", "conversation_outline_v1") or "conversation_outline_v1").strip(),
+        anaphora_config_path=(os.getenv("CHATBOT_ANAPHORA_CONFIG_PATH") or "").strip() or None,
+        anaphora_retrieval_fusion_enabled=os.getenv("CHATBOT_ANAPHORA_RETRIEVAL_FUSION_ENABLED", "true").lower() == "true",
+        anaphora_fusion_max_chars=max(800, int(os.getenv("CHATBOT_ANAPHORA_FUSION_MAX_CHARS", "2800"))),
+        anaphora_anchor_block_enabled=os.getenv("CHATBOT_ANAPHORA_ANCHOR_BLOCK_ENABLED", "false").lower() == "true",
+        anaphora_anchor_max_chars=max(400, int(os.getenv("CHATBOT_ANCHOR_BLOCK_MAX_CHARS", "1200"))),
+        anaphora_slots_enabled=os.getenv("CHATBOT_ANAPHORA_SLOTS_ENABLED", "false").lower() == "true",
+        anaphora_slots_max_bullets=max(2, min(20, int(os.getenv("CHATBOT_ANAPHORA_SLOTS_MAX_BULLETS", "8")))),
+        anaphora_llm_gate_enabled=os.getenv("CHATBOT_ANAPHORA_LLM_GATE_ENABLED", "false").lower() == "true",
+        anaphora_llm_timeout_sec=max(0.5, float(os.getenv("CHATBOT_ANAPHORA_LLM_TIMEOUT_SEC", "4"))),
+        anaphora_llm_model=(os.getenv("CHATBOT_ANAPHORA_LLM_MODEL") or "").strip() or None,
+        anaphora_expose_meta=os.getenv("CHATBOT_ANAPHORA_EXPOSE_META", "false").lower() == "true",
     )
     analysis_cfg = AnalysisConfig(
         default_report_template=(os.getenv("ANALYSIS_DEFAULT_REPORT_TEMPLATE", "standard") or "standard").strip(),

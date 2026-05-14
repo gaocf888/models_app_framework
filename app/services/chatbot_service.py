@@ -13,7 +13,10 @@ from app.llm.graphs import ChatbotLangGraphRunner
 from app.llm.graphs.chatbot_follow_up import build_suggested_questions
 from app.llm.graphs.chatbot_intent_rules import classify_chatbot_intent
 from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_citations
-from app.llm.graphs.chatbot_retrieval_query import build_retrieval_query_for_chatbot, format_rag_snippets_system_block
+from app.llm.graphs.chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
+from app.llm.graphs.chatbot_anaphora_detect import classify_anaphora_rules
+from app.llm.graphs.chatbot_dialogue_anchor import build_dialogue_anchor_block
+from app.llm.graphs.chatbot_anaphora_store import get_anaphora_slots, slot_bullets_list, update_anaphora_slots_after_assistant
 from app.llm.graphs.chatbot_nl2sql_answer import summarize_nl2sql_with_llm
 from app.llm.graphs.chatbot_similar_cases import (
     FaultCaseGateInput,
@@ -89,21 +92,65 @@ class ChatbotService:
         enable_rag: bool,
         *,
         history: list[dict] | None = None,
-    ) -> tuple[list[str], list[dict[str, Any]]]:
-        """与 LangGraph `kb_retrieve` 对齐：无图时单查 chunks；图混合时 snippets 含图事实，引用仅向量库。"""
+        user_id: str | None = None,
+        session_id: str | None = None,
+        enable_context: bool = True,
+    ) -> tuple[list[str], list[dict[str, Any]], str, list[str]]:
+        """与 LangGraph `kb_retrieve` 对齐；额外返回规则层 `anaphora_type` 与槽位 bullets（供锚块/落槽）。"""
         if not enable_rag:
-            return [], []
-        rag_q = build_retrieval_query_for_chatbot(query, history or [])
+            return [], [], "none", []
+        cfg = self._chatbot_cfg
+        hist = list(history or [])
+        slot_bullets: list[str] = []
+        if user_id and session_id and cfg.anaphora_slots_enabled:
+            slot_bullets = slot_bullets_list(get_anaphora_slots(user_id, session_id))
+        rule = classify_anaphora_rules(
+            query,
+            hist,
+            enable_context=enable_context,
+            config_path=cfg.anaphora_config_path,
+        )
+        rag_q, _, _ = build_retrieval_query_with_anaphora(
+            query,
+            hist,
+            enable_context=enable_context,
+            fusion_enabled=cfg.anaphora_retrieval_fusion_enabled,
+            fusion_max_chars=cfg.anaphora_fusion_max_chars,
+            config_path=cfg.anaphora_config_path,
+            anaphora_type=rule.anaphora_type,
+            rule_result=rule,
+        )
         graph_active = bool(
             get_app_config().rag.graph.enabled
             and getattr(self._hybrid_rag, "_graph_query", None) is not None
         )
         if not graph_active:
             chunks = self._rag.retrieve_chunks(rag_q, scene="chatbot")
-            return [c.text for c in chunks if c.text], chunks_to_rag_citations(chunks)
+            return [c.text for c in chunks if c.text], chunks_to_rag_citations(chunks), rule.anaphora_type, slot_bullets
         snippets = self._hybrid_rag.retrieve(rag_q)
         vec = self._rag.retrieve_chunks(rag_q, scene="chatbot")
-        return snippets, chunks_to_rag_citations(vec)
+        return snippets, chunks_to_rag_citations(vec), rule.anaphora_type, slot_bullets
+
+    def _maybe_update_anaphora_slots(
+        self,
+        user_id: str,
+        session_id: str,
+        assistant_text: str,
+        last_user_anaphora_type: str | None,
+    ) -> None:
+        cfg = self._chatbot_cfg
+        if not cfg.anaphora_slots_enabled or not (assistant_text or "").strip():
+            return
+        try:
+            update_anaphora_slots_after_assistant(
+                user_id,
+                session_id,
+                assistant_text,
+                last_user_anaphora_type=(last_user_anaphora_type or "").strip() or None,
+                max_bullets=cfg.anaphora_slots_max_bullets,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("anaphora slots update (legacy) failed: %s", exc)
 
     async def chat(self, req: ChatRequest) -> ChatResponse:
         original_image_urls = self._clean_image_urls(req.image_urls)
@@ -194,6 +241,7 @@ class ChatbotService:
 
         # 优先使用 LangChain ChatbotChain（若可用）
         rag_citations: list[dict[str, Any]] = []
+        anaphora_type_for_slots: str | None = None
         if self._chain is not None:
             answer = await self._chain.run(
                 user_id=req.user_id,
@@ -208,15 +256,26 @@ class ChatbotService:
             context_snippets = []
         else:
             hist_list = list(hist) if hist else []
-            context_snippets, rag_citations = self._rag_context_and_citations(
-                model_req.query, req.enable_rag, history=hist_list
+            context_snippets, rag_citations, anaphora_type, slot_bullets = self._rag_context_and_citations(
+                model_req.query,
+                req.enable_rag,
+                history=hist_list,
+                user_id=req.user_id,
+                session_id=req.session_id,
+                enable_context=req.enable_context,
             )
             used_rag = len(context_snippets) > 0
 
             history = hist_list
 
             # 使用统一 LLM 客户端生成回答（多模态 message）
-            messages = self._build_llm_messages(req=model_req, history=history, context_snippets=context_snippets)
+            messages = self._build_llm_messages(
+                req=model_req,
+                history=history,
+                context_snippets=context_snippets,
+                anaphora_type=anaphora_type,
+                anaphora_slot_bullets=slot_bullets,
+            )
 
             try:
                 answer = await self._llm.chat(model=None, messages=messages)  # type: ignore[arg-type]
@@ -226,6 +285,7 @@ class ChatbotService:
                 if used_rag:
                     base += f"（已检索到 {len(context_snippets)} 条上下文片段用于参考）"
                 answer = base
+            anaphora_type_for_slots = anaphora_type
 
         suggested_out: list[str] = []
         if cfg.suggested_questions_enabled:
@@ -240,6 +300,7 @@ class ChatbotService:
 
         self._append_user_with_images(req, original_image_urls=original_image_urls)
         self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+        self._maybe_update_anaphora_slots(req.user_id, req.session_id, answer, anaphora_type_for_slots)
         self._schedule_outline_index(req.user_id, req.session_id)
 
         return ChatResponse(
@@ -471,15 +532,29 @@ class ChatbotService:
                 req.session_id,
                 limit=max(1, int(self._chatbot_cfg.history_limit)),
             )
-        context_snippets, rag_citations = self._rag_context_and_citations(
-            req.query, req.enable_rag, history=history
+        context_snippets, rag_citations, anaphora_type, slot_bullets = self._rag_context_and_citations(
+            req.query,
+            req.enable_rag,
+            history=history,
+            user_id=req.user_id,
+            session_id=req.session_id,
+            enable_context=req.enable_context,
         )
 
-        messages = self._build_llm_messages(req=req, history=history, context_snippets=context_snippets)
+        messages = self._build_llm_messages(
+            req=req,
+            history=history,
+            context_snippets=context_snippets,
+            anaphora_type=anaphora_type,
+            anaphora_slot_bullets=slot_bullets,
+        )
         parts: list[str] = []
         gate_sources: list[str] = []
         gate_conf = 0.0
         need_cases = False
+        legacy_ana_meta: Dict[str, Any] = {}
+        if cfg.anaphora_expose_meta:
+            legacy_ana_meta = {"anaphora_type": anaphora_type, "anaphora_source": "rule"}
         async for delta in self._llm.stream_chat(model=None, messages=messages):  # type: ignore[arg-type]
             if await self._is_stream_cancelled(req, stream_id):
                 partial = "".join(parts).strip()
@@ -507,6 +582,7 @@ class ChatbotService:
                         "rag_citations": rag_citations,
                         "processed_image_urls": imgs,
                         "stream_id": stream_id,
+                        **legacy_ana_meta,
                     },
                 }
                 return
@@ -561,6 +637,7 @@ class ChatbotService:
         self._append_user_with_images(persist_req, original_image_urls=original_image_urls)
         if full:
             self._conv.append_assistant_message(req.user_id, req.session_id, full)
+            self._maybe_update_anaphora_slots(req.user_id, req.session_id, full, anaphora_type)
             self._schedule_outline_index(req.user_id, req.session_id)
         yield {
             "type": "finished",
@@ -583,6 +660,7 @@ class ChatbotService:
                 "rag_citations": rag_citations,
                 "processed_image_urls": imgs,
                 "stream_id": stream_id,
+                **legacy_ana_meta,
             },
         }
 
@@ -591,6 +669,9 @@ class ChatbotService:
         req: ChatRequest,
         history: list[dict],
         context_snippets: list[str],
+        *,
+        anaphora_type: str | None = None,
+        anaphora_slot_bullets: list[str] | None = None,
     ) -> list[Dict[str, Any]]:
         """
         构建发送给 vLLM/OpenAI 兼容接口的 messages。
@@ -612,6 +693,18 @@ class ChatbotService:
         system_chunks: list[str] = []
         if tpl and tpl.content:
             system_chunks.append(tpl.content)
+        at = (anaphora_type or "").strip()
+        if cfg.anaphora_anchor_block_enabled and at and at != "none":
+            anchor = build_dialogue_anchor_block(
+                history,
+                req.query,
+                at,
+                config_path=cfg.anaphora_config_path,
+                max_chars=cfg.anaphora_anchor_max_chars,
+                slot_bullets=anaphora_slot_bullets or [],
+            )
+            if anchor:
+                system_chunks.append(anchor)
         if context_snippets:
             system_chunks.append(format_rag_snippets_system_block(context_snippets))
         for h in history:

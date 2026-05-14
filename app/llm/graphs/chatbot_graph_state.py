@@ -48,6 +48,18 @@ class ChatbotGraphState(TypedDict, total=False):
     intent_history_summary: str
     intent_prev_task_type: str
 
+    # ===== 多轮历史（load_history）=====
+    history_messages: List[Dict[str, Any]]
+
+    # ===== 指代消解（§3.2，P0～P3）=====
+    anaphora_type: str
+    anaphora_rule_type: str
+    anaphora_confidence: float
+    anaphora_score_gap: float
+    anaphora_source: str
+    anaphora_anchor_block: str
+    anaphora_slot_bullets: List[str]
+
     # ===== 检索域（RAG + C-RAG）=====
     rag_engine: Literal["agentic", "hybrid"]
     context_snippets: List[str]

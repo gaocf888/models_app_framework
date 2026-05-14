@@ -1,7 +1,7 @@
 """
-智能客服：确认类短句的检索 query 增强（与会话历史尾部融合）。
+智能客服：指代类短句的检索 query 增强（与会话历史尾部融合，§4.1 P0）。
 
-用于 kb_retrieve / legacy 流式，避免「你确定吗」等短句单独打向量导致弱召回。
+与 `build_retrieval_query_with_anaphora` / `format_rag_snippets_system_block` 对齐 LangGraph 与 Legacy。
 """
 
 from __future__ import annotations
@@ -9,16 +9,20 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
+from app.llm.graphs.chatbot_anaphora_config import get_anaphora_runtime_config
+from app.llm.graphs.chatbot_anaphora_detect import AnaphoraRuleResult, classify_anaphora_rules, should_fuse_retrieval_for_type
+from app.llm.graphs.chatbot_anaphora_types import AnaphoraType
 from app.services.chatbot_image_utils import strip_image_block_from_history
 
 _MAX_USER_TAIL = 520
 _MAX_ASSISTANT_TAIL = 900
-_MAX_TOTAL_RAG_QUERY = 2800
+_DEFAULT_TOTAL_RAG_QUERY = 2800
 
 
 def is_confirmation_short_query(query: str) -> bool:
     """
     极短追问 / 元话语确认：命中则尝试用「上轮 user + assistant」增强检索 query。
+    （保留兼容单测与旧日志口径；与规则层 meta_confirm 判定大体一致。）
     """
     q = (query or "").strip().replace(" ", "").replace("\n", "")
     if len(q) > 36:
@@ -70,31 +74,63 @@ def _last_user_and_assistant_texts(history_messages: List[Dict[str, Any]]) -> tu
     return last_u, last_a
 
 
-def build_retrieval_query_for_chatbot(
+def build_retrieval_query_with_anaphora(
     query: str,
     history_messages: List[Dict[str, Any]] | None,
-) -> str:
+    *,
+    enable_context: bool = True,
+    fusion_enabled: bool = True,
+    fusion_max_chars: int | None = None,
+    config_path: str | None = None,
+    anaphora_type: str | None = None,
+    rule_result: AnaphoraRuleResult | None = None,
+) -> tuple[str, AnaphoraRuleResult, str]:
     """
-    默认返回原 query；确认类短句且历史非空时，拼接「上轮 user + assistant」摘要供向量/混合检索。
+    :return: (rag_query, rule_result, effective_anaphora_type 用于融合与日志)
+    effective 优先使用显式传入的 anaphora_type（如 P3 回写）。
     """
     q = (query or "").strip()
     hist = list(history_messages or [])
-    if not is_confirmation_short_query(q) or not hist:
-        return q
+    rr = rule_result or classify_anaphora_rules(q, hist, enable_context=enable_context, config_path=config_path)
+    eff = (anaphora_type or rr.anaphora_type or AnaphoraType.NONE.value).strip()
+    arc = get_anaphora_runtime_config(config_path)
+    cap = int(fusion_max_chars) if fusion_max_chars is not None else _DEFAULT_TOTAL_RAG_QUERY
+    cap = max(500, cap)
+
+    if not fusion_enabled or not enable_context or not hist:
+        return q, rr, eff
+    if eff == AnaphoraType.NONE.value or not should_fuse_retrieval_for_type(eff, arc):
+        return q, rr, eff
+
     u_tail, a_tail = _last_user_and_assistant_texts(hist)
     if not u_tail and not a_tail:
-        return q
+        return q, rr, eff
     u_show = u_tail[:_MAX_USER_TAIL] if u_tail else "（无文本）"
     a_show = a_tail[:_MAX_ASSISTANT_TAIL] if a_tail else "（无文本）"
     fused = (
         "【检索会话衔接】以下摘取自上一轮对话，用于召回与本轮短追问相关的知识，非用户本轮原话全文。\n"
+        f"【指代类型】{eff}\n"
         f"上轮用户：{u_show}\n"
         f"上轮助手：{a_show}\n"
         f"【本轮用户原话】{q}"
     )
-    if len(fused) > _MAX_TOTAL_RAG_QUERY:
-        return fused[:_MAX_TOTAL_RAG_QUERY]
-    return fused
+    if len(fused) > cap:
+        fused = fused[:cap]
+    return fused, rr, eff
+
+
+def build_retrieval_query_for_chatbot(
+    query: str,
+    history_messages: List[Dict[str, Any]] | None,
+    **kwargs: Any,
+) -> str:
+    """
+    默认返回原 query；§3.2 中 P0 为「是」的类型且历史非空时，拼接「上轮 user + assistant」摘要供向量/混合检索。
+
+    接受可选关键字参数，与 `build_retrieval_query_with_anaphora` 对齐（供 Legacy / 图内统一调用）。
+    """
+    rag_q, _, _ = build_retrieval_query_with_anaphora(query, history_messages, **kwargs)
+    return rag_q
 
 
 def format_rag_snippets_system_block(context_snippets: List[str]) -> str:

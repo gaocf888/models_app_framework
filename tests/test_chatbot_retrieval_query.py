@@ -20,6 +20,8 @@ def test_build_retrieval_fusion():
     ]
     out = build_retrieval_query_for_chatbot("你确定吗？", hist)
     assert "【检索会话衔接】" in out
+    assert "【指代类型】" in out
+    assert "meta_confirm" in out
     assert "上轮用户" in out
     assert "上轮助手" in out
     assert "你确定吗？" in out

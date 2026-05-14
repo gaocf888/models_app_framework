@@ -192,3 +192,24 @@ INSPECT_EXTRACT_V0_RECORD_COUNT = Counter(
     "Total structured records extracted by v0 pipeline",
 )
 
+# 智能客服指代（P3 Coref 窄触发 + 缓存观测，见 docs/智能客服上下文理指代实现优化方案）
+ANAPHORA_LLM_CALL_COUNT = Counter(
+    "anaphora_llm_calls_total",
+    "Total chatbot anaphora coref LLM invocations",
+)
+
+ANAPHORA_LLM_FALLBACK_COUNT = Counter(
+    "anaphora_llm_fallback_total",
+    "Total chatbot anaphora coref LLM fallbacks (timeout/invalid JSON/schema)",
+)
+
+ANAPHORA_COREF_CACHE_HIT_COUNT = Counter(
+    "anaphora_coref_cache_hit_total",
+    "Total chatbot anaphora coref cache hits",
+)
+
+ANAPHORA_COREF_CACHE_MISS_COUNT = Counter(
+    "anaphora_coref_cache_miss_total",
+    "Total chatbot anaphora coref cache misses",
+)
+

@@ -1,0 +1,125 @@
+# 智能客服指代清单（§3.2 / §4.5）— 关键词与阶段开关可运维迭代。
+# schema_version：本文件结构版本；槽位 JSON 另有独立 schema_version（见代码常量）。
+schema_version: 1
+
+thresholds:
+  single_entity_max_chars: 40
+  ellipsis_max_chars: 16
+  meta_confirm_max_chars: 36
+
+types:
+  - code: none
+    display_name: 无特殊指代
+    keywords: []
+    regex: []
+    p0_retrieval_fusion: false
+    p1_anchor_block: false
+  - code: meta_confirm
+    display_name: 元话语确认/质疑
+    keywords:
+      - 确定吗
+      - 您确定吗
+      - 你确定吗
+      - 确定么
+      - 确定嘛
+      - 真的吗
+      - 真吗
+      - 靠谱吗
+      - 有依据吗
+      - 对吗
+      - 对不对
+      - 是不是
+      - 肯定吗
+      - 没错吧
+      - 是吧
+    regex:
+      - '^(你|您)?确定[吗嘛么]?[?？]?$'
+    p0_retrieval_fusion: true
+    p1_anchor_block: true
+  - code: pair_compare
+    display_name: 双对象对比
+    keywords:
+      - 两者
+      - 二者
+      - 两个
+      - 区别
+      - 差异
+      - 不同
+      - 对比
+      - 异同
+      - 相比
+      - 哪个更
+      - 哪一种
+    regex: []
+    p0_retrieval_fusion: true
+    p1_anchor_block: true
+  - code: ordinal
+    display_name: 序位/分点指代
+    keywords:
+      - 前者
+      - 后者
+      - 上面两点
+      - 前一条
+      - 后一条
+      - 其一
+      - 其二
+      - 第一点
+      - 第二点
+      - 第三点
+      - 第四点
+      - 第五点
+    regex:
+      - '第[一二三四五六七八九十百千万零〇0-9]+[点、条]'
+    p0_retrieval_fusion: true
+    p1_anchor_block: true
+  - code: single_entity
+    display_name: 单实体回指
+    keywords:
+      - 它
+      - 这个
+      - 那个
+      - 该
+      - 此
+      - 上述
+      - 前面说的
+    regex:
+      - '^(它|这个|那个|该|此|上述|前面说的)'
+    p0_retrieval_fusion: false
+    p1_anchor_block: false
+  - code: ellipsis
+    display_name: 省略主语/主题延续
+    keywords:
+      - 怎么办
+      - 怎么处理
+      - 为什么
+      - 原因
+      - 后果
+      - 影响
+    regex: []
+    p0_retrieval_fusion: true
+    p1_anchor_block: true
+  - code: continuation
+    display_name: 显式展开/续写
+    keywords:
+      - 详细
+      - 展开
+      - 继续说
+      - 补充
+      - 还有吗
+      - 再说说
+      - 具体点
+    regex:
+      - '展开.*[第点数]'
+    p0_retrieval_fusion: true
+    p1_anchor_block: true
+
+# §4.4.1 窄触发 + §4.4.2 缓存（P3）
+p3:
+  tau: 0.72
+  delta: 0.08
+  disambiguation_types:
+    - single_entity
+    - ellipsis
+  coref_cache_ttl_sec: 120
+  assistant_tail_hash_chars: 800
+  query_normalize_lowercase: false
