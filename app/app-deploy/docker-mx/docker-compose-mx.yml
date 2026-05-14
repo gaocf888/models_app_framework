@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # 【外部依赖 · 须先于本文件启动】
-#   1) EasySearch：rag_db-deploy/docker-compose.easysearch.yml
+#   1) EasySearch：rag_db-deploy/docker-compose.easysearch_bak0.yml
 #      - 默认容器名：rag-easysearch
 #      - 默认外部网络名：ai-stack（与 rag_db-deploy/.env 中 EASYSEARCH_NETWORK 一致）
 #   2) vLLM：vllm-deploy/docker/docker-compose-mx.yml（推荐从 vllm-deploy 根目录执行 deploy.sh）
@@ -34,6 +34,10 @@
 #                         → 注入 models-app-gpu 容器 NVIDIA_VISIBLE_DEVICES（默认 all）
 #   MINERU_IO_HOST_PATH   → 与 mineru-deploy 的 MINERU_IO_HOST_PATH 使用同一宿主机目录；
 #                         → 挂载到应用容器 /workspace/mineru-io；未设置时用占位卷 mineru-io-dummy
+#   REDIS_DATA_HOST_PATH / MINIO_DATA_HOST_PATH
+#                         → Redis、MinIO 数据目录宿主机路径（bind）；默认见 .env.example
+#   SESSION_STORAGE_HOST_PATH / INSPECT_EXTRACT_JOBS_HOST_PATH / RAG_FAISS_DATA_HOST_PATH
+#                         → 会话对象存储备份、检修异步任务、FAISS 宿主机路径；与 .env 内容器路径一致
 #
 # 【配置策略】
 #   - 业务相关变量（LLM/RAG/DB/REDIS 等）在 .env 中配置，经 env_file 注入容器，由 app/core/config.py 读取。
@@ -59,7 +63,7 @@ services:
     networks:
       - app-internal
     volumes:
-      - redis-data:/data
+      - ${REDIS_DATA_HOST_PATH:-/aidata/data/redis_data}:/data
     # AOF：容器重建后会话数据可恢复（仍建议生产使用独立高可用 Redis）
     command: ["redis-server", "--appendonly", "yes"]
     healthcheck:
@@ -80,7 +84,7 @@ services:
       - "${MINIO_PORT:-9000}:9000"
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
-      - minio-data:/data
+      - ${MINIO_DATA_HOST_PATH:-/aidata/data/minio_data}:/data
     networks:
       app-internal: {}
       vllm-external: {}
@@ -123,8 +127,11 @@ services:
       # graph-external: {}
     volumes:
       - huggingface-cache:/root/.cache/huggingface
-      # 应用内部文件日志目录（配合 LOG_FILE=/workspace/logs/app.log）
+      # 应用日志（宿主机为与 docker-compose.yml 中 ./logs 相同的 app-deploy/logs）
       - ../logs:/workspace/logs
+      - ${SESSION_STORAGE_HOST_PATH:-/aidata/data/session_storage}:/workspace/data/conversation_archive
+      - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
+      - ${RAG_FAISS_DATA_HOST_PATH:-/aidata/data/faiss_data}:/workspace/data/faiss
       # 嵌入模型离线挂载
       - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 重排模型离线挂载
@@ -180,8 +187,10 @@ services:
       RAG_RERANKER_MODEL_PATH: /models/rerank/bge-reranker-large
     volumes:
       - huggingface-cache:/root/.cache/huggingface
-      # - app-logs:/workspace/logs
       - ../logs:/workspace/logs
+      - ${SESSION_STORAGE_HOST_PATH:-/aidata/data/session_storage}:/workspace/data/conversation_archive
+      - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
+      - ${RAG_FAISS_DATA_HOST_PATH:-/aidata/data/faiss_data}:/workspace/data/faiss
       # 嵌入模型离线挂载
       - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 小模型证据输出（与 configs 中 evidence_dir 为 workspace 相对路径时一致）
@@ -220,10 +229,7 @@ networks:
 #    external: true
 
 volumes:
-  redis-data: {}
   huggingface-cache: {}
-  app-logs: {}
-  minio-data: {}
   small-model-data: {}
   # 占位卷：未配置 SMALL_MODEL_WEIGHTS_HOST_PATH 时避免 compose 报错；无真实权重，生产请务必配置宿主机路径
   small-model-weights-dummy:

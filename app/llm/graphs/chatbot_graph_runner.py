@@ -17,10 +17,11 @@ from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
 
 from .chatbot_follow_up import build_suggested_questions
-from .chatbot_rag_citations import chunks_to_rag_citations
 from .chatbot_graph_state import ChatbotGraphState
 from .chatbot_intent_rules import classify_chatbot_intent
 from .chatbot_nl2sql_answer import summarize_nl2sql_with_llm
+from .chatbot_rag_citations import chunks_to_rag_citations
+from .chatbot_retrieval_query import build_retrieval_query_for_chatbot, format_rag_snippets_system_block
 from .chatbot_similar_cases import (
     FaultCaseGateInput,
     format_similar_cases_block,
@@ -608,6 +609,14 @@ class ChatbotLangGraphRunner:
         attempts = int(state.get("retrieval_attempts", 0)) + 1
         engine = str(state.get("rag_engine") or "hybrid")
         query = str(state.get("query") or "")
+        hist = list(state.get("history_messages") or [])
+        rag_query = build_retrieval_query_for_chatbot(query, hist)
+        if rag_query != query:
+            logger.info(
+                "chatbot.kb_retrieve retrieval_query_augmented conf_short=1 query_len=%s rag_q_len=%s",
+                len(query),
+                len(rag_query),
+            )
         snippets: List[str] = []
         citations: List[Dict[str, Any]] = []
         graph_active = bool(
@@ -622,7 +631,7 @@ class ChatbotLangGraphRunner:
                     scene="chatbot",
                 )
                 res = await self._agentic_rag.retrieve(
-                    query=query,
+                    query=rag_query,
                     ctx=ctx,
                     mode=RAGMode.AGENTIC,
                 )
@@ -630,30 +639,30 @@ class ChatbotLangGraphRunner:
                 if res.chunks:
                     citations = chunks_to_rag_citations(list(res.chunks))
                 elif snippets:
-                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(query, scene="chatbot"))
+                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(rag_query, scene="chatbot"))
             else:
                 if not graph_active:
-                    chunks = self._rag.retrieve_chunks(query, scene="chatbot")
+                    chunks = self._rag.retrieve_chunks(rag_query, scene="chatbot")
                     snippets = [c.text for c in chunks if c.text]
                     citations = chunks_to_rag_citations(chunks)
                 else:
-                    snippets = self._hybrid_rag.retrieve(query)
-                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(query, scene="chatbot"))
+                    snippets = self._hybrid_rag.retrieve(rag_query)
+                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(rag_query, scene="chatbot"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("kb_retrieve failed on engine=%s, fallback=%s err=%s", engine, self._rag_fallback, exc)
             if engine != self._rag_fallback and self._rag_fallback == "hybrid":
-                snippets = self._hybrid_rag.retrieve(query)
+                snippets = self._hybrid_rag.retrieve(rag_query)
                 engine = "hybrid"
                 graph_active = bool(
                     get_app_config().rag.graph.enabled
                     and getattr(self._hybrid_rag, "_graph_query", None) is not None
                 )
                 if not graph_active:
-                    chunks = self._rag.retrieve_chunks(query, scene="chatbot")
+                    chunks = self._rag.retrieve_chunks(rag_query, scene="chatbot")
                     snippets = [c.text for c in chunks if c.text]
                     citations = chunks_to_rag_citations(chunks)
                 else:
-                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(query, scene="chatbot"))
+                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(rag_query, scene="chatbot"))
 
         # 轻量质量分（首版）：
         # 命中条数越多分越高。后续可以替换为“分数+覆盖率”混合评分，
@@ -694,14 +703,7 @@ class ChatbotLangGraphRunner:
             system_chunks.append(sp)
         snippets = state.get("context_snippets") or []
         if snippets:
-            ctx = "\n".join(f"- {c}" for c in snippets)
-            system_chunks.append(
-                "以下为检索得到的知识片段（列表顺序仅为检索结果顺序，与用户所指会话中的小节、主题或「第N点」"
-                "均无对应关系，禁止用片段顺序顶替会话内容）。用户泛指上文（如「上述现场排查/检修建议」）时，"
-                "请先在对话历史中按语义对齐助手较近一轮的相关段落再展开；仅当用户明确说「第N点/条」时再对齐编号。"
-                "再以片段补充条文或机理。\n"
-                f"{ctx}"
-            )
+            system_chunks.append(format_rag_snippets_system_block(list(snippets)))
         for h in state.get("history_messages") or []:
             role = (h.get("role", "user") or "user")
             role_l = str(role).lower()

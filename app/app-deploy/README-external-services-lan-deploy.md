@@ -65,7 +65,7 @@ docker save -o mineru-cpu.tar mineru-cpu:py311
 ```bash
 cd ../rag_db-deploy
 cp .env.example .env
-docker compose -f docker-compose.easysearch.yml --env-file .env pull
+docker compose -f docker-compose.easysearch_bak0.yml --env-file .env pull
 docker save -o easysearch.tar infiniflow/easysearch:latest
 ```
 

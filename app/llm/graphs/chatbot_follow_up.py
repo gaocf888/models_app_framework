@@ -1,5 +1,5 @@
 """
-智能客服：回答后的关联问题推荐（规则 + RAG 片段延伸 + LLM 补全）。
+智能客服：回答后的关联问题推荐（规则 + LLM 补全）。
 
 合并策略：去重、截断长度、总量受配置上限约束。
 """
@@ -68,23 +68,6 @@ def _rule_based_suggestions(query: str, max_n: int) -> list[str]:
     return out
 
 
-def _snippet_seeds(snippets: List[str], max_n: int) -> list[str]:
-    if max_n <= 0 or not snippets:
-        return []
-    seeds: list[str] = []
-    for s in snippets[:3]:
-        line = (s or "").strip().split("\n", 1)[0].strip()
-        line = re.sub(r"\s+", " ", line)
-        if len(line) > 80:
-            line = line[:77] + "…"
-        if len(line) < 12:
-            continue
-        seeds.append(f"结合知识库：{line} 还可以了解什么？")
-        if len(seeds) >= max_n:
-            break
-    return seeds
-
-
 def _parse_llm_questions(text: str) -> list[str]:
     text = (text or "").strip()
     if not text:
@@ -123,9 +106,6 @@ async def build_suggested_questions(
 
     rule_n = 3 if intent_label != "clarify" else 1
     collected.extend(_rule_based_suggestions(query, rule_n))
-
-    snip_n = 2 if intent_label == "kb_qa" else 1
-    collected.extend(_snippet_seeds(context_snippets, snip_n))
 
     # 去重（保序）
     seen: set[str] = set()

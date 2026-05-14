@@ -13,6 +13,7 @@ from app.llm.graphs import ChatbotLangGraphRunner
 from app.llm.graphs.chatbot_follow_up import build_suggested_questions
 from app.llm.graphs.chatbot_intent_rules import classify_chatbot_intent
 from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_citations
+from app.llm.graphs.chatbot_retrieval_query import build_retrieval_query_for_chatbot, format_rag_snippets_system_block
 from app.llm.graphs.chatbot_nl2sql_answer import summarize_nl2sql_with_llm
 from app.llm.graphs.chatbot_similar_cases import (
     FaultCaseGateInput,
@@ -82,19 +83,26 @@ class ChatbotService:
         except ImportError:
             logger.warning("ChatbotService: LangChain not available, fallback to simple implementation.")
 
-    def _rag_context_and_citations(self, query: str, enable_rag: bool) -> tuple[list[str], list[dict[str, Any]]]:
+    def _rag_context_and_citations(
+        self,
+        query: str,
+        enable_rag: bool,
+        *,
+        history: list[dict] | None = None,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
         """与 LangGraph `kb_retrieve` 对齐：无图时单查 chunks；图混合时 snippets 含图事实，引用仅向量库。"""
         if not enable_rag:
             return [], []
+        rag_q = build_retrieval_query_for_chatbot(query, history or [])
         graph_active = bool(
             get_app_config().rag.graph.enabled
             and getattr(self._hybrid_rag, "_graph_query", None) is not None
         )
         if not graph_active:
-            chunks = self._rag.retrieve_chunks(query, scene="chatbot")
+            chunks = self._rag.retrieve_chunks(rag_q, scene="chatbot")
             return [c.text for c in chunks if c.text], chunks_to_rag_citations(chunks)
-        snippets = self._hybrid_rag.retrieve(query)
-        vec = self._rag.retrieve_chunks(query, scene="chatbot")
+        snippets = self._hybrid_rag.retrieve(rag_q)
+        vec = self._rag.retrieve_chunks(rag_q, scene="chatbot")
         return snippets, chunks_to_rag_citations(vec)
 
     async def chat(self, req: ChatRequest) -> ChatResponse:
@@ -199,13 +207,13 @@ class ChatbotService:
             used_rag = req.enable_rag
             context_snippets = []
         else:
-            context_snippets, rag_citations = self._rag_context_and_citations(model_req.query, req.enable_rag)
+            hist_list = list(hist) if hist else []
+            context_snippets, rag_citations = self._rag_context_and_citations(
+                model_req.query, req.enable_rag, history=hist_list
+            )
             used_rag = len(context_snippets) > 0
 
-            history = []
-            if req.enable_context:
-                history = self._conv.get_recent_history(req.user_id, req.session_id)
-                logger.info("chat history size=%s", len(history))
+            history = hist_list
 
             # 使用统一 LLM 客户端生成回答（多模态 message）
             messages = self._build_llm_messages(req=model_req, history=history, context_snippets=context_snippets)
@@ -456,13 +464,16 @@ class ChatbotService:
             }
             return
 
-        context_snippets, rag_citations = self._rag_context_and_citations(req.query, req.enable_rag)
+        history: list[dict] = []
         if req.enable_context:
             history = self._conv.get_recent_history(
                 req.user_id,
                 req.session_id,
                 limit=max(1, int(self._chatbot_cfg.history_limit)),
             )
+        context_snippets, rag_citations = self._rag_context_and_citations(
+            req.query, req.enable_rag, history=history
+        )
 
         messages = self._build_llm_messages(req=req, history=history, context_snippets=context_snippets)
         parts: list[str] = []
@@ -602,14 +613,7 @@ class ChatbotService:
         if tpl and tpl.content:
             system_chunks.append(tpl.content)
         if context_snippets:
-            ctx = "\n".join(f"- {c}" for c in context_snippets)
-            system_chunks.append(
-                "以下为检索得到的知识片段（列表顺序仅为检索结果顺序，与用户所指会话中的小节、主题或「第N点」"
-                "均无对应关系，禁止用片段顺序顶替会话内容）。用户泛指上文（如「上述现场排查/检修建议」）时，"
-                "请先在对话历史中按语义对齐助手较近一轮的相关段落再展开；仅当用户明确说「第N点/条」时再对齐编号。"
-                "再以片段补充条文或机理。\n"
-                f"{ctx}"
-            )
+            system_chunks.append(format_rag_snippets_system_block(context_snippets))
         for h in history:
             role = (h.get("role", "user") or "user").lower()
             raw_c = h.get("content", "")

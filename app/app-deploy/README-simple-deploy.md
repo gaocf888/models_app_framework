@@ -213,7 +213,7 @@ LOG_FILE_COMPRESS=true
 - `LOG_FILE_ENABLED=false` 时，仅 stdout。  
 - `LOG_FILE_ENABLED=true` 时，stdout + 文件双写。  
 - 轮转触发后会生成 `app.log.1.gz`、`app.log.2.gz` ...（当 `LOG_FILE_COMPRESS=true`）。  
-- compose 已挂载 `/workspace/logs` 到命名卷 `app-logs`，容器重建后日志仍可保留。
+- compose 将 `/workspace/logs` bind 到 **app-deploy/logs**（`docker-compose.yml` 为 `./logs`，`docker-mx/docker-compose-mx.yml` 为 `../logs`，宿主机目录一致），容器重建后日志仍保留在宿主机。
 
 ### 2.9 模型离线使用
 > 整个项目中包括 嵌入模型、重排序模型、mineru模型
@@ -323,7 +323,7 @@ LOG_FILE_COMPRESS=true
 # EasySearch
 cd rag_db-deploy
 cp .env.example .env          # 首次
-docker compose -f docker-compose.easysearch.yml --env-file .env up -d
+docker compose -f docker-compose.easysearch_bak0.yml --env-file .env up -d
 
 # vLLM
 cd ../vllm-deploy

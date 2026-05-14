@@ -25,10 +25,15 @@ services:
         soft: 65536
         hard: 65536
     volumes:
-      - ${EASYSEARCH_DATA_VOLUME}:/app/easysearch/data
-      # 不挂载 easysearch.yml：使用镜像默认配置与证书，避免宿主机 yml 与容器内 TLS 文件不一致导致反复启动失败。
-      # 若需自定义：再增加挂载行，并须同时持久化同目录的 instance.crt / instance.key / ca.crt 等。
-      # - ./easysearch/config/easysearch.yml:/app/easysearch/config/easysearch.yml:ro
+      - ${EASYSEARCH_DATA}:/app/easysearch/data
+      # 不挂载 easysearch_bak0.yml：使用镜像内 easysearch_bak0.yml；TLS 证书（instance.crt 等）通常由镜像入口在启动前生成，
+      # 或需按 README「TLS / instance.crt」一节执行 initialize。勿用「仅含 yml 的空目录」挂载整个 config，否则会盖住证书。
+      # 若自定义 yml：建议挂载整个已初始化的 config 目录，并持久化 instance.crt / instance.key / ca.crt 等。
+      - ./easysearch/config/easysearch_bak0.yml:/app/easysearch/config/easysearch_bak0.yml:ro
+      - ./easysearch/config/instance.crt:/app/easysearch/config/instance.crt:ro
+      - ./easysearch/config/instance.key:/app/easysearch/config/instance.key:ro
+      - ./easysearch/config/ca.crt:/app/easysearch/config/ca.crt:ro
+      - ./easysearch/config/ca.key:/app/easysearch/config/ca.key:ro
       - ./easysearch/init:/opt/easysearch/init:ro
     ports:
       - "${EASYSEARCH_PORT}:9200"

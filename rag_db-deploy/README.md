@@ -6,7 +6,7 @@
 
 - `docker-compose.easysearch.yml`：EasySearch 单节点 Docker 编排文件。
 - `.env.example`：部署变量模板（容器侧）。
-- `easysearch/config/easysearch.yml`：数据库配置**参考示例**（默认不挂载进容器；编排使用镜像内建配置即可稳定 `down`/`up`）。
+- `easysearch/config/easysearch.yml`：数据库配置**参考示例**（默认不挂载进容器；运行时使用镜像内 `easysearch.yml`。**注意**：官方镜像静态层里往往没有预先打包的 `instance.crt` 等，TLS 材料由容器入口脚本首次生成，或需执行 `bin/initialize.sh`，见下文「TLS / instance.crt」。）
 - `easysearch/init/01-init-rag-indexes.sh`：初始化脚本（可选），用于创建 RAG 索引和别名。
 - `project-env/rag-es.env.example`：项目侧环境变量模板（应用服务读取）。
 
@@ -137,3 +137,14 @@ docker exec rag-easysearch sh /opt/easysearch/init/01-init-rag-indexes.sh
   然后修改文件名和里面的个性配置（比如集群名称），然后再把上述docker-compose中的注释掉的放开注释
   然后重启docker-compose（使用上述 第一步方式）
   ```
+
+- **Q：执行 `docker run --rm --entrypoint ls … /app/easysearch/config/` 看不到 `instance.crt` / `instance.key` / `ca.crt`，说明镜像坏了吗？**  
+  A：**不一定。**`--entrypoint ls` 会**完全替换**镜像默认的 `ENTRYPOINT`/`CMD`，不会执行官方在「正常启动」前做的初始化逻辑。很多情况下证书是在**容器按默认入口启动时**才写入 `config/` 的，因此用 `ls` 扫静态文件系统看不到这些文件是常见现象。不要用这种方式判断「镜像里有没有证书」。若要确认，应使用默认入口启动一次临时容器（不要改 `entrypoint`），再在运行中的容器里执行 `ls /app/easysearch/config/`（或 `docker inspect` 查看镜像的 `Entrypoint`/`Cmd`）。
+
+- **Q：启动仍报 `Unable to read …/instance.crt`（Security 插件 / `security.ssl.transport.cert_file`）？**  
+  A：说明在 **Java 进程启动时** `config/` 下仍没有可读的这些文件。常见原因：  
+  1. 曾把**宿主机空目录或只有 yml 的目录**挂载到 `/app/easysearch/config`，盖住了入口本应生成的文件；  
+  2. 权限不足（官方文档：容器内 `easysearch` 用户 uid **602**，持久化目录需 `chown 602:602`）；  
+  3. 所用镜像/标签与官方行为不一致。  
+  **处理**：先检查 compose 是否挂载了整个 `./easysearch/config` 且其中缺少证书；若有，去掉该挂载或按 [INFINI Docker 文档](https://docs.infinilabs.com/easysearch/main/docs/deployment/install-guide/docker/) 先把镜像内 `config` 拷到宿主机并补齐初始化。  
+  **关于 `initialize.sh`**：与 [快速开始](https://docs.infinilabs.com/easysearch/main/docs/quick-start/) 一致，证书与初始状态可由 `/app/easysearch/bin/initialize.sh`（常见带 `-s`）生成；**必须对「运行时会挂载的同一个 `config` 目录」执行**，否则证书写在临时容器层里，下一次 `compose up` 仍然缺文件。当前 `docker-compose.easysearch.yml` 若**未**挂载 `config` 卷，一般应依赖镜像**默认入口**在启动前写入；若入口未执行或失败，可改为官方推荐的三卷模式（`data` + `config` + `logs`），先对宿主机/命名卷中的 `config` 执行文档中的拷贝与初始化，再启动服务。脚本路径若不同，可先 `docker run --rm infinilabs/easysearch:2.1.1 ls /app/easysearch/bin` 确认。

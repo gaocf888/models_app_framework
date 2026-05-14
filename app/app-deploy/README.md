@@ -156,7 +156,7 @@ cp .env.example .env
 ```bash
 # 2.1 EasySearch（在仓库 rag_db-deploy 目录，按该目录 README 准备 .env）
 cd rag_db-deploy
-docker compose -f docker-compose.easysearch.yml --env-file .env up -d
+docker compose -f docker-compose.easysearch_bak0.yml --env-file .env up -d
 
 # 2.2 vLLM
 cd ../vllm-deploy
@@ -292,7 +292,10 @@ docker compose --profile small-model-gpu up -d --build
 
 | 卷名 / 挂载源 | 挂载到 | 用途 |
 |---------------|--------|------|
-| `redis-data` | Redis 容器 `/data` | 会话/AOF 持久化（Redis 自身） |
+| `${REDIS_DATA_HOST_PATH}`（默认 `/aidata/data/redis_data`） | Redis 容器 `/data` | 会话/AOF 持久化（Redis 自身） |
+| `${MINIO_DATA_HOST_PATH}`（默认 `/aidata/data/minio_data`） | MinIO 容器 `/data` | MinIO 对象数据 |
+| `./logs` 或 `../logs`（与 compose 文件位置对应，均为 **app-deploy/logs**） | 应用 `/workspace/logs` | 应用文件日志（`LOG_FILE`） |
+| `${SESSION_STORAGE_HOST_PATH}` 等 | 应用 `/workspace/data/...` | 会话对象存储备份、检修任务、FAISS；见 `.env.example` |
 | `huggingface-cache` | 应用容器 `/root/.cache/huggingface` | 嵌入/下载模型缓存，减少重复拉取 |
 | `small-model-data` | **仅 models-app-gpu** `/workspace/data/small_model_evidence` | 小模型证据片段等可写数据 |
 | `SMALL_MODEL_WEIGHTS_HOST_PATH` → `/workspace/models/small:ro` | **仅 models-app-gpu** | 只读权重；未设置时用占位卷 **`small-model-weights-dummy`**（空卷，仅开发联调 compose） |

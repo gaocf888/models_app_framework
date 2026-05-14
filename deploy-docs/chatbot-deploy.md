@@ -15,7 +15,7 @@
 # 1) EasySearch
 cd rag_db-deploy
 cp .env.example .env
-docker compose -f docker-compose.easysearch.yml --env-file .env up -d
+docker compose -f docker-compose.easysearch_bak0.yml --env-file .env up -d
 
 # 2) vLLM
 cd ../vllm-deploy
@@ -129,7 +129,7 @@ cp .env.example .env
 
 ```bash
 cd rag_db-deploy
-docker compose -f docker-compose.easysearch.yml --env-file .env up -d
+docker compose -f docker-compose.easysearch_bak0.yml --env-file .env up -d
 ```
 
 检查：
