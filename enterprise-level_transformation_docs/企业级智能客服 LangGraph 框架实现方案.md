@@ -11,7 +11,7 @@
 
 - 编排与执行分离：LangGraph 负责状态流转，LLM/RAG/会话仍用现有服务。
 - 兼容优先：请求/响应协议尽量不变，支持灰度发布与一键回退。
-- 结构先行：先完整建图（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；结束 `meta` 含 **`suggested_questions`**（规则预设表 + 复用本轮 `context_snippets` 的首行种子 + 可选 LLM JSON 补全；**不为关联问题单独做二次向量检索**）。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。
+- 结构先行：先完整建图（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；结束 `meta` 含 **`suggested_questions`**（规则预设表 + 复用本轮 `context_snippets` 的首行种子 + 可选 LLM JSON 补全；**不为关联问题单独做二次向量检索**）。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**上下文指代消解（P0～P3）**见本文 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。
 - 可观测优先：接入 LangSmith，节点级记录耗时、路由、重试与失败原因。
 
 ## 3. 总体架构
@@ -24,6 +24,10 @@
 - `ChatbotService`（`chatbot_service.py`）：图开关、异常回退 Legacy、会话与 Runner 共用 `ConversationManager`。
 - `ChatbotImagePreprocessor`（`chatbot_image_preprocessor.py`）：在 `ChatbotService` 入口前对 `image_urls` 做缩放/压缩并落盘为本地静态 URL（默认 `/chatbot/media`），降低多模态上下文与传输开销。
 - `ChatbotOutlineStore`（`chatbot_outline.py`）：回答后异步提取“第N点”结构化索引，写 Redis 热层（可选 EasySearch 冷层）；在新一轮对“上文第N点”请求做旁路引用增强，不改变主链路。
+- **上下文指代消解（P0～P3）**：规则判型 + 检索 query 与历史融合（P0）、可选对话锚块（P1）、会话槽位（P2）、灰区 Coref 小模型 + 短时缓存（P3，默认关）；清单与开关见 **`configs/chatbot_anaphora.yaml`**，设计见 **`docs/智能客服上下文理指代实现优化方案-20260514.md`**，编排落点见 **第 15 节**。
+  - 对话锚：提取上一轮会话摘要（上轮回答时异步完成），放入本轮system提示词中
+  - 槽位：提取上一轮会话要点数组（上轮回答时异步完成），放入本轮system提示词中
+  - Coref缓存：对指代信息进行缓存
 - `ChatbotLangGraphRunner`（`chatbot_graph_runner.py`）：`StateGraph` 编译与执行、**图后**流式生成、相似案例追加、**关联问题** `_fill_suggested_questions`、落库。
 - LangGraph：状态机（模板、历史、意图、故障门控、**按意图分支**、RAG/C-RAG 或 NL2SQL、`finalize`）。
 - `HybridRAGService` / `AgenticRAGService`：主链路检索；相似案例为 Runner 层**二次** `retrieve(namespace=…)`。
@@ -143,11 +147,11 @@ flowchart TB
     R1 -->|clarify| NC["clarify_build_response"]
     R1 -->|data_query| NSQ["nl2sql_answer\nNL2SQLService.query record_conversation=False\n+ chatbot_nl2sql_answer.summarize_nl2sql_with_llm"]
     R1 -->|kb_qa| N4["select_rag_engine"]
-    N4 --> N5["kb_retrieve\nAgenticRAG / HybridRAG"]
+    N4 --> N5["kb_retrieve\nAgentic/Hybrid + 指代P0/P3"]
     N5 --> N6["kb_quality_check"]
     N6 --> R2{"_route_after_quality_check C-RAG"}
     R2 -->|retry| N7["kb_rewrite_query"] --> N5
-    R2 -->|build| N8["kb_build_messages"]
+    R2 -->|build| N8["kb_build_messages\n模板+RAG+可选锚块P1"]
     R2 -->|clarify| NC
     R1 -.->|unsafe 等占位\n默认意图不产出| NP["unsafe_guard / handoff / smalltalk"]
     NP -.-> NF["finalize"]
@@ -187,6 +191,7 @@ flowchart TB
 | NL2SQL 服务 | `app/services/nl2sql_service.py` | `query(..., record_conversation=)` |
 | SQL 结果成文 | `app/llm/graphs/chatbot_nl2sql_answer.py` | `summarize_nl2sql_with_llm` |
 | 关联问题 | `app/llm/graphs/chatbot_follow_up.py` | `build_suggested_questions` |
+| 指代消解（P0～P3） | `chatbot_retrieval_query.py`、`chatbot_anaphora_*.py`、`chatbot_dialogue_anchor.py` | 见 **第 15 节** |
 | 提示词 | `app/llm/prompt_registry.py` + `configs/prompts.yaml` | `get_template(..., default_version=)` |
 
 说明（与代码一致）：
@@ -209,6 +214,7 @@ flowchart TB
 - NL2SQL 域：`used_nl2sql`、`nl2sql_sql`
 - 相似案例域：`need_similar_cases`、`case_rag_query`、`fault_detect_sources`、`fault_detect_confidence`、`similar_cases_appended`
 - 关联问题域：`suggested_questions`（Runner 写入，进 `meta`）
+- 指代域（`kb_qa` 检索链）：`anaphora_type`、`anaphora_rule_type`、`anaphora_confidence`、`anaphora_score_gap`、`anaphora_source`、`anaphora_slot_bullets`、`anaphora_anchor_block`（可选；观测项见 `CHATBOT_ANAPHORA_EXPOSE_META`）
 - 生成域：`llm_messages`、`answer_parts`、`answer_text`
 - 控制域：`status`、`error`、`terminate_reason`
 
@@ -228,9 +234,9 @@ flowchart TB
 5. **条件路由** `_route_by_intent`（非独立节点）。
 6. `nl2sql_answer`：`NL2SQLService` + `summarize_nl2sql_with_llm`（`data_query`）。
 7. `select_rag_engine`：`agentic` / `hybrid`（`kb_qa`）。
-8. `kb_retrieve`：`HybridRAGService` / `AgenticRAGService`。
+8. `kb_retrieve`：`HybridRAGService` / `AgenticRAGService`；**并入**指代规则检测、可选 Coref LLM（P3）、检索 query 与上轮摘要融合（P0）、读会话槽位（P2，开关开启时）。
 9. `kb_quality_check` + `kb_rewrite_query`：C-RAG。
-10. `kb_build_messages`：组装 `llm_messages`。
+10. `kb_build_messages`：组装 `llm_messages`（system：模板 → **可选对话锚块（P1）** → RAG 导语与片段）。
 11. `clarify_build_response`：固定或模板澄清话术。
 12. `unsafe_guard` / `handoff_human` / `smalltalk_generate`：占位，默认意图不命中。
 13. `finalize`：收敛状态。
@@ -240,7 +246,7 @@ flowchart TB
 14. `llm_stream_generate`：`VLLMHttpClient.stream_chat`（有 `llm_messages` 时）。
 15. 相似案例追加：`_maybe_similar_cases_extra`。
 16. 关联问题：`_fill_suggested_questions` → `build_suggested_questions`。
-17. `persist`：`_persist_success` / 断连 `_persist_disconnect`。
+17. `persist`：`_persist_success` / 断连 `_persist_disconnect`（成功落库 assistant 后可更新指代槽位 P2）。
 
 实现状态：
 
@@ -410,6 +416,7 @@ flowchart TB
 - `CHATBOT_CHECKPOINT_BACKEND=none|memory|redis`
 - `CHATBOT_CHECKPOINT_REDIS_URL=...`（redis backend 时）
 - `CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph`
+- **指代消解（可选）**：`CHATBOT_ANAPHORA_RETRIEVAL_FUSION_ENABLED`（P0，默认开）、`CHATBOT_ANAPHORA_CONFIG_PATH`、`CHATBOT_ANAPHORA_FUSION_MAX_CHARS`；`CHATBOT_ANAPHORA_ANCHOR_BLOCK_ENABLED` / `CHATBOT_ANCHOR_BLOCK_MAX_CHARS`（P1）；`CHATBOT_ANAPHORA_SLOTS_*`（P2）；`CHATBOT_ANAPHORA_LLM_GATE_ENABLED` / `CHATBOT_ANAPHORA_LLM_TIMEOUT_SEC` / `CHATBOT_ANAPHORA_LLM_MODEL`（P3）；`CHATBOT_ANAPHORA_EXPOSE_META`（是否在 `finished.meta` 附带观测字段）。详见 **第 15 节**。
 - `CONV_ARCHIVE_ENABLED=true`
 - `CONV_QUERY_FALLBACK_COLD=true`
 - `CONV_ARCHIVE_ES_INDEX=conversation_messages_v1`
@@ -419,7 +426,7 @@ flowchart TB
 
 说明：通过开关支持灰度与回滚，不需要改 API。
 
-**相似案例 / 故障域扩展**相关配置见 **第 14 节**（与本节并列，独立成节便于评审与迭代）。
+**相似案例 / 故障域扩展**相关配置见 **第 14 节**；**上下文指代消解**见 **第 15 节**。
 
 ## 10. 发布、灰度与回滚
 
@@ -437,6 +444,7 @@ flowchart TB
 - NL2SQL 失败或空结果率（`data_query` 场景）
 - SSE 错误率、客户端断开率
 - 会话读写失败率、部分落库比例
+- **指代（可选）**：`anaphora_llm_calls_total`、Coref 缓存 hit/miss（见 **第 15 节**）
 
 回滚策略：
 
@@ -454,6 +462,7 @@ flowchart TB
 - 本期主流量意图：**`kb_qa`**、**`clarify`**、**`data_query`**（由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制）。
 - `unsafe` / `handoff_human` / `smalltalk` 节点占位，默认不命中。
 - 关联问题**不**单独二次向量检索（见 `framework-guide/智能客服整体实现技术说明.md` §7）。
+- **指代消解 P3（Coref LLM）**默认关闭；开启时以 **LangGraph `kb_retrieve` 路径** 为主实现，Legacy 非流式/流式与图在 **P0/P1/P2** 上对齐；**LangChain `ChatbotChain` 非流式路径**未接入同一套指代链（见 **第 15 节**）。
 - 鉴权绑定后续在接口层统一接入。
 
 ## 12. 验收标准（最小可上线）
@@ -476,6 +485,7 @@ flowchart TB
 6. 会话跨轮记忆（同 `user_id+session_id`）与隔离（不同 session）。
 7. A/B 模板稳定分流一致性。
 8. `agentic` 主模式与 `hybrid` 回退模式。
+9. **指代消解（可选）**：弱指代下检索 query 融合、锚块、槽位与 `CHATBOT_ANAPHORA_EXPOSE_META`（见 **第 15 节**）。
 
 通过标准：
 
@@ -562,3 +572,61 @@ flowchart TB
 3. 修改 `CHATBOT_SIMILAR_CASE_NAMESPACE` 后，检索仅命中对应 namespace 数据。
 4. `clarify` 路径与不启用扩展时，无案例块；Legacy 与 Graph 行为一致。
 
+## 15. 上下文指代消解（Anaphora / Coref，P0～P3）
+
+**目标**：对「对比 / 序位 / 元话语确认 / 省略续写」等弱自立说法，稳定绑定**上一轮对话**与检索，减少 RAG 噪声与泛泛澄清；与 **结构化索引旁路**（`ChatbotOutlineStore`）互补：前者偏「第N点」引用解析，本节偏**短句指代与检索增强**。
+
+**原则**：类型编码单一事实源 **`configs/chatbot_anaphora.yaml`**（与 `app/llm/graphs/chatbot_anaphora_types.py` 封闭枚举一致）；规则可灰度；P3 非每轮必经。
+
+### 15.0 槽位、对话锚与清单（概念对齐，与实现对齐）
+
+1. **槽位（跨轮持久化）**：在 **上一轮助手消息已写入会话（assistant 落库）之后**，用规则从 **该条 assistant 全文**抽取要点数组（如 `last_assistant_bullets`），写入 **按 `user_id + session_id` 维度的会话槽位**；生产上优先落在 **Redis**（无 Redis 时为进程内字典，多 worker 不共享），并带与会话一致的过期策略。实现上是 **落库钩子上的同步写入**，**不是**单独一条「异步摘要任务」（勿与 `ChatbotOutlineStore` 回答后异步建「第 N 点」索引相混）。
+
+2. **对话锚（本轮即时生成、写入 system）**：在本轮组装发给模型的 **system** 时，在 **业务模板之后、RAG 块之前**，按需插入一段 **「对话锚·仅供推理」** 固定格式文本；其中的 **编号要点列表优先使用上一轮已写入的槽位 bullets**；若槽位不可用或未开启，则 **退回**为从 **当前历史里最近一条 assistant** 再按同一套规则抽取要点后生成。**对话锚是本轮生成并注入的 system 子块；槽位是它优先消费的、跨轮保存的要点来源，二者不是同一件事**（不把槽位 JSON 整包塞进模型，只把已校验的要点与引导句写入锚块文案）。
+
+3. **指代清单与「基本消解」**：由 **`configs/chatbot_anaphora.yaml` 的封闭类型 + 规则**得到本轮 **`anaphora_type`**，在开关允许下驱动 **检索 query 与上轮摘要融合（P0）** 以及 **是否生成上述对话锚（P1）**；灰区可再经 **P3 Coref 小模型** 修正类型。**此处的「消解」侧重路由、检索与 prompt 约束下的绑定**，与学术上完整共指消解或「仅等于清单匹配」不是同一概念；**「上文第 N 点」类结构化引用**另有 **Outline 旁路**（`CHATBOT_OUTLINE_*`），与槽位/锚块链并列互补。
+
+### 15.1 处理流水线（与图一致）
+
+```mermaid
+flowchart LR
+  H[load_history] --> R[kb_retrieve]
+  R --> R0[读槽 P2\n可选]
+  R --> R1[规则判型 P0]
+  R --> R2{窄触发?\nP3 开关}
+  R2 -->|是| R3[Coref LLM\n或缓存命中]
+  R2 -->|否| R4[规则类型]
+  R3 --> R5[融合检索 query\n上轮摘要+指代行]
+  R4 --> R5
+  R5 --> Q[kb_quality / C-RAG]
+  Q --> B[kb_build_messages]
+  B --> B1[system:\n模板]
+  B1 --> B2[可选对话锚 P1]
+  B2 --> B3[RAG 块]
+  B3 --> L[VLLM 流式主答]
+  L --> P[persist]
+  P --> P2[更新槽位 P2\n失效 Coref 缓存]
+```
+
+**文字要点**：
+
+1. **P0**：`classify_anaphora_rules` → `build_retrieval_query_with_anaphora`：弱指代命中且允许融合时，检索 query 拼接上轮 user/assistant 摘要，并带调试行 **`【指代类型】<code>`**（§3.2 编码）。
+2. **P1**：`build_dialogue_anchor_block`：按 yaml 的 `p1_anchor_block` 在 **RAG 块之前**注入「对话锚·仅供推理」要点列表（优先用 P2 槽位 bullets）。
+3. **P2**：`conv:anaphora:{user_id}:{session_id}` 存 `last_assistant_bullets` 等；落库 assistant 后更新；Redis 优先，无 Redis 为进程内（多 worker 不共享）。
+4. **P3**：`maybe_apply_coref_llm` — 仅灰区（置信 / 分差阈值见 yaml `p3`）调用一次 JSON 分类；结果校验后回写类型供 P0/P1；**短时缓存** + 落库后 **按会话失效**；**不做**与主答「思考」并行（见专项方案 §4.4.3）。
+
+### 15.2 代码落点（速查）
+
+| 能力 | 路径 |
+|------|------|
+| 清单与加载 | `configs/chatbot_anaphora.yaml`、`chatbot_anaphora_config.py` |
+| 规则检测 | `chatbot_anaphora_detect.py` |
+| 检索融合 | `chatbot_retrieval_query.py` |
+| 对话锚 | `chatbot_dialogue_anchor.py` |
+| 槽位与 Coref 缓存 | `chatbot_anaphora_store.py` |
+| Coref LLM | `chatbot_anaphora_llm.py` |
+| 图内接线 | `chatbot_graph_runner.py`（`_node_kb_retrieve`、`_node_kb_build_messages`、`_persist_success`、`_build_finished_meta`） |
+| Legacy 对齐 | `chatbot_service.py`（`_rag_context_and_citations`、`_build_llm_messages`、流式落库） |
+| 观测 | `app/core/metrics.py`（`anaphora_*` Counter）；`CHATBOT_ANAPHORA_EXPOSE_META` 控制 `meta` 扩展字段 |
+
+**专项设计与评测口径**：`docs/智能客服上下文理指代实现优化方案-20260514.md`；单测与 fixture：`tests/test_chatbot_anaphora.py`、`tests/fixtures/chatbot_anaphora_cases.yaml`。

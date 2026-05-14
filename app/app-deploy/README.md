@@ -140,6 +140,7 @@ cp .env.example .env
 - `MAX_GRAPH_LATENCY_MS=60000`
 - `CHATBOT_CHECKPOINT_BACKEND=none`
 - `CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph`
+- **上下文指代（可选）**：`CHATBOT_ANAPHORA_*`（检索融合 P0、锚块 P1、槽位 P2、Coref P3）；说明见 `enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` **第 15 节**。
 
 说明：`CHATBOT_HISTORY_LIMIT` 控制“单轮读取历史条数”，`CONV_MAX_HISTORY_MESSAGES` 控制“会话总保留上限”；建议两者同时配置。
 
