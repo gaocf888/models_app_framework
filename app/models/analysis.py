@@ -52,7 +52,14 @@ class AnalysisResult(BaseModel):
     context_snippets: List[str] = Field(default_factory=list, description="检索到的文本上下文片段摘要")
 
 
-AnalysisType = Literal["overheat_guidance", "maintenance_strategy", "custom", "img_diag"]
+AnalysisType = Literal[
+    "overheat_guidance",
+    "maintenance_strategy",
+    "four_tube_health_interpretation",
+    "leakage_burst_analysis",
+    "custom",
+    "img_diag",
+]
 DataMode = Literal["payload", "nl2sql", "img_diag"]
 
 

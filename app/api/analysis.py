@@ -72,7 +72,7 @@ async def run_analysis_with_payload(data: AnalysisPayloadRequest) -> AnalysisV2R
     **请求体 `AnalysisPayloadRequest`（Schema 为准，以下为速查）**
     - `user_id`：**必填**。后台用户标识；须通过 `validate_user_id` 规则。
     - `session_id`：**必填**。会话标识；须通过 `validate_session_id` 规则。
-    - `analysis_type`：**必填**。`overheat_guidance` | `maintenance_strategy` | `custom`，用于 Prompt / 计划模板分流。
+    - `analysis_type`：**必填**。`overheat_guidance` | `maintenance_strategy` | `four_tube_health_interpretation` | `leakage_burst_analysis` | `custom`，用于 Prompt / 计划模板分流。
     - `query`：**必填**。分析需求的自然语言描述。
     - `payload`：可选，默认 `{}`。调用方提供的结构化分析输入（表、指标等），直接进入质量门与合成阶段。
     - `options`：可选，默认各字段见模型。含 `enable_rag`、`enable_context`、`report_style`、`report_template`、
@@ -108,7 +108,8 @@ async def run_analysis_with_nl2sql(data: AnalysisNL2SQLRequest) -> AnalysisV2Res
     **请求体 `AnalysisNL2SQLRequest`（Schema 为准，以下为速查）**
     - `user_id`：**必填**。与 NL2SQL 子调用及会话写入一致。
     - `session_id`：**必填**。
-    - `analysis_type`：**必填**。影响 `configs/prompts.yaml` 中 `analysis_plan_<type>` 与内置默认取数任务。
+    - `analysis_type`：**必填**。影响 `configs/prompts.yaml` 中 `analysis_plan_<type>` 与内置默认取数任务；取值含
+      `overheat_guidance`、`maintenance_strategy`、`four_tube_health_interpretation`、`leakage_burst_analysis`、`custom` 等（与 OpenAPI Schema 一致）。
     - `query`：**必填**。总体分析需求描述。
     - `data_requirements_hint`：可选，默认 `[]`。额外数据维度提示，编排器会合并为补充查询任务（非强制项）。
     - `options`：可选。`max_nl2sql_calls`（单次允许子查询条数上限）、`max_rows_per_query`（每子查询截断行数）、
@@ -136,6 +137,8 @@ async def run_analysis_with_nl2sql_stream(data: AnalysisNL2SQLRequest) -> Stream
     """
     与 **`/run-with-nl2sql`** 相同鉴权、请求体与**前半段业务链路**（规划 RAG → 取数 → 质量门 → 业务 RAG），
     **synthesis 阶段**改为 **vLLM 流式输出** summary（标准 Markdown 文本增量）。
+    **`analysis_type` 与同步入口一致**（含 `overheat_guidance`、`maintenance_strategy`、`four_tube_health_interpretation`、`leakage_burst_analysis`、`custom` 等），
+    模板仍由 `configs/prompts.yaml` 中 `analysis_plan_<type>` 与各 `analysis_*_<type>` 分流。
 
     **响应**：`text/event-stream`（SSE），每条 `data: {json}\\n\\n`：
     - `event: meta`：含 `request_id`、`plan_id`、`analysis_type`、`orchestrator=sequential_stream` 等；
@@ -280,7 +283,9 @@ async def list_analysis_traces(
     offset: Annotated[int, Query(description="偏移量，默认 0", ge=0)] = 0,
     analysis_type: Annotated[
         str | None,
-        Query(description="可选。按分析类型过滤，如 overheat_guidance、maintenance_strategy、custom、img_diag。"),
+        Query(
+            description="可选。按分析类型过滤，如 overheat_guidance、maintenance_strategy、four_tube_health_interpretation、leakage_burst_analysis、custom、img_diag。"
+        ),
     ] = None,
     data_mode: Annotated[
         str | None,

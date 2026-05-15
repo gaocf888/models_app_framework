@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>综合分析 · 全专项 NL2SQL 流式测试 · /analysis/run-with-nl2sql-stream</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --answer: #f0f4f8;
+      --meta: #22c55e;
+      --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1000px; margin: 0 auto; padding: 1.25rem 1rem 2rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin-bottom: 1.25rem; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+    }
+    @media (min-width: 780px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+      .grid .full { grid-column: 1 / -1; }
+    }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      margin: 0;
+      padding: 0.75rem 1rem 1rem;
+    }
+    legend { padding: 0 0.35rem; color: var(--muted); font-size: 0.8rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"],
+    input[type="url"],
+    input[type="password"],
+    input[type="number"],
+    textarea,
+    select {
+      width: 100%;
+      margin-top: 0.2rem;
+      padding: 0.45rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    textarea { min-height: 4rem; resize: vertical; font-family: inherit; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; align-items: center; margin-top: 0.5rem; }
+    .row label { display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--text); font-size: 0.875rem; }
+    .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+    button {
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button.primary { background: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.secondary { background: var(--border); color: var(--text); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .out {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      min-height: 220px;
+      padding: 1rem;
+    }
+    .out h2 { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.5rem; font-weight: 500; }
+    #answer {
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--answer);
+      font-size: 0.95rem;
+      min-height: 4rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #0d1117;
+      padding: 0.75rem;
+    }
+    #status { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
+    #meta, #eventLog {
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.75rem;
+      color: var(--meta);
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #eventLog {
+      color: var(--muted);
+      max-height: 160px;
+      overflow: auto;
+      font-family: ui-monospace, Consolas, monospace;
+    }
+    .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
+    code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    .hint { font-size: 0.75rem; color: var(--muted); margin-top: 0.35rem; }
+    .type-desc {
+      margin-top: 0.5rem;
+      padding: 0.5rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .type-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-top: 0.5rem;
+    }
+    .type-pills button {
+      padding: 0.25rem 0.55rem;
+      font-size: 0.72rem;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>综合分析 · 全专项 NL2SQL 流式 synthesis</h1>
+    <p class="sub">
+      调用 <code>POST /analysis/run-with-nl2sql-stream</code>（<code>text/event-stream</code>）。
+      支持专项：<code>overheat_guidance</code>、<code>maintenance_strategy</code>、
+      <code>four_tube_health_interpretation</code>、<code>leakage_burst_analysis</code>。
+      取数与质量门仍为同步阻塞；仅结论阶段以 SSE 增量下发 Markdown 源码。
+      完整 <code>structured_report</code> 在服务端异步组装并写日志 / trace，可用
+      <code>GET /analysis/traces/{request_id}</code> 查询（<code>request_id</code> 见首帧 <code>meta</code>）。
+      超温专项专用页见 <a href="analysis-nl2sql-overheat-stream.html" style="color:var(--accent)">analysis-nl2sql-overheat-stream.html</a>。
+      需后端 CORS 放行本页来源；鉴权 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。
+    </p>
+
+    <div class="grid">
+      <fieldset>
+        <legend>连接与服务密钥</legend>
+        <label>API 根地址（不含路径尾斜杠）</label>
+        <input type="url" id="baseUrl" value="http://127.0.0.1:8083" autocomplete="off" />
+        <label>Service API Key（可空，仅关闭鉴权时可用）</label>
+        <input type="password" id="apiKey" placeholder="留空或粘贴密钥" autocomplete="off" />
+      </fieldset>
+
+      <fieldset>
+        <legend>会话</legend>
+        <label>user_id</label>
+        <input type="text" id="userId" value="u_web_analysis_nl2sql_stream" autocomplete="off" />
+        <label>session_id</label>
+        <input type="text" id="sessionId" value="u_web_analysis_nl2sql_stream_s_001" autocomplete="off" />
+      </fieldset>
+
+      <fieldset class="full">
+        <legend>分析请求（AnalysisNL2SQLRequest）</legend>
+        <label>analysis_type（综合分析专项）</label>
+        <select id="analysisType">
+          <option value="overheat_guidance">overheat_guidance（超温分析）</option>
+          <option value="maintenance_strategy">maintenance_strategy（检修策略）</option>
+          <option value="four_tube_health_interpretation">four_tube_health_interpretation（四管健康报告智能解读）</option>
+          <option value="leakage_burst_analysis">leakage_burst_analysis（泄爆分析）</option>
+        </select>
+        <div id="typeDesc" class="type-desc"></div>
+        <div class="type-pills" id="typePills"></div>
+        <label>query（分析需求描述）</label>
+        <textarea id="query" rows="4" placeholder="选择专项后点击「填入示例 query」，或自行输入。"></textarea>
+        <p class="hint">
+          <button type="button" class="secondary" id="btnFillDemo" style="padding:0.2rem 0.5rem;font-size:0.75rem;">填入当前专项示例 query</button>
+        </p>
+        <label>data_requirements_hint（可选，每行一条，空则 []）</label>
+        <textarea id="dataHints" rows="2" placeholder="留空或逐行填写补充取数提示"></textarea>
+      </fieldset>
+
+      <fieldset>
+        <legend>options</legend>
+        <div class="row">
+          <label><input type="checkbox" id="enableRag" checked /> enable_rag</label>
+          <label><input type="checkbox" id="enableContext" checked /> enable_context</label>
+          <label><input type="checkbox" id="strict" /> strict</label>
+        </div>
+        <label>max_nl2sql_calls（空则服务端默认）</label>
+        <input type="number" id="maxNl2sql" placeholder="6" min="1" max="20" />
+      </fieldset>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="primary" id="btnSend">开始流式分析</button>
+      <button type="button" class="secondary" id="btnAbort" disabled>中断请求</button>
+      <button type="button" class="secondary" id="btnClear">清空输出</button>
+    </div>
+
+    <div class="out" style="margin-top: 1rem;">
+      <div id="status">就绪</div>
+      <h2>summary（Markdown 增量拼接，非渲染后 HTML）</h2>
+      <div id="answer"></div>
+      <h2 style="margin-top:1rem;">末帧与 meta</h2>
+      <div id="meta">（尚未开始）</div>
+      <h2 style="margin-top:1rem;">事件 trace（调试用）</h2>
+      <div id="eventLog"></div>
+      <div id="err" class="err" hidden></div>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  const TYPE_CONFIG = {
+    overheat_guidance: {
+      label: "超温分析",
+      desc: "受热面超温事件复盘、运行参数关联与处置建议。模板：analysis_plan_overheat_guidance。",
+      demo:
+        "请对 1 号炉水冷壁相关测点最近 7 天的超温情况进行综合分析：是否存在持续超温、主要区域、可行的运行调整建议。",
+    },
+    maintenance_strategy: {
+      label: "检修策略",
+      desc: "基于测厚、缺陷、超温与检修策划，输出分级检修清单与窗口建议。模板：analysis_plan_maintenance_strategy。",
+      demo:
+        "针对 2 号炉计划小修窗口，请给出水冷壁与高温过热器的检修优先级清单（必检/建议检/可暂缓），并说明关键依据。",
+    },
+    four_tube_health_interpretation: {
+      label: "四管健康报告智能解读",
+      desc: "将健康指数、风险等级、剩余寿命等结果解读为运行简报与检修建议书。模板：analysis_plan_four_tube_health_interpretation。",
+      demo:
+        "生成简洁版周简报：解读本期 2 号炉四管整体健康指数与风险等级，重点说明高温过热器 B 侧高风险管段原因及本周巡检要点。",
+    },
+    leakage_burst_analysis: {
+      label: "泄爆分析",
+      desc: "围绕泄漏/爆管履历、同区域测厚缺陷与泄爆前超温，做原因复盘与防控建议。模板：analysis_plan_leakage_burst_analysis。",
+      demo:
+        "分析 2 号炉水冷壁近一年泄爆与泄漏事件原因，归纳高发区域，并给出运行防控与扩检建议。",
+    },
+  };
+
+  const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
+  const headers = () => {
+    const h = { "Content-Type": "application/json", Accept: "text/event-stream" };
+    const k = $("apiKey").value.trim();
+    if (k) h["Authorization"] = "Bearer " + k;
+    return h;
+  };
+
+  function currentType() {
+    return $("analysisType").value;
+  }
+
+  function renderTypeUi() {
+    const t = currentType();
+    const cfg = TYPE_CONFIG[t] || { label: t, desc: "", demo: "" };
+    $("typeDesc").textContent = cfg.desc || "（无专项说明）";
+    const pills = $("typePills");
+    pills.innerHTML = "";
+    Object.keys(TYPE_CONFIG).forEach((key) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "secondary";
+      btn.textContent = TYPE_CONFIG[key].label;
+      if (key === t) btn.style.outline = "1px solid var(--accent)";
+      btn.addEventListener("click", () => {
+        $("analysisType").value = key;
+        renderTypeUi();
+      });
+      pills.appendChild(btn);
+    });
+  }
+
+  $("analysisType").addEventListener("change", renderTypeUi);
+  renderTypeUi();
+
+  $("btnFillDemo").addEventListener("click", () => {
+    const cfg = TYPE_CONFIG[currentType()];
+    if (cfg && cfg.demo) $("query").value = cfg.demo;
+  });
+
+  function buildBody() {
+    const options = {
+      enable_rag: $("enableRag").checked,
+      enable_context: $("enableContext").checked,
+      strict: $("strict").checked,
+    };
+    const maxNl = $("maxNl2sql").value.trim();
+    if (maxNl !== "") {
+      const n = parseInt(maxNl, 10);
+      if (Number.isFinite(n) && n >= 1 && n <= 20) options.max_nl2sql_calls = n;
+    }
+    const hints = $("dataHints").value
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return {
+      user_id: $("userId").value.trim(),
+      session_id: $("sessionId").value.trim(),
+      analysis_type: currentType(),
+      query: $("query").value,
+      data_requirements_hint: hints,
+      options,
+    };
+  }
+
+  let abortCtrl = null;
+
+  function appendStatus(t) {
+    $("status").textContent = t;
+  }
+
+  function showErr(msg) {
+    const el = $("err");
+    if (!msg) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.hidden = false;
+    el.textContent = msg;
+  }
+
+  function logEvent(line) {
+    const el = $("eventLog");
+    const ts = new Date().toISOString().slice(11, 23);
+    el.textContent += "[" + ts + "] " + line + "\n";
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function setBusy(b) {
+    $("btnSend").disabled = b;
+    $("btnAbort").disabled = !b;
+  }
+
+  $("btnClear").addEventListener("click", () => {
+    $("answer").textContent = "";
+    $("meta").textContent = "（尚未开始）";
+    $("eventLog").textContent = "";
+    showErr("");
+    appendStatus("已清空");
+    setBusy(false);
+    abortCtrl = null;
+  });
+
+  $("btnAbort").addEventListener("click", () => {
+    if (abortCtrl) abortCtrl.abort();
+  });
+
+  async function readSseStream(response, onEvent) {
+    const reader = response.body.getReader();
+    const dec = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const raw = buffer.slice(0, idx).trimEnd();
+        buffer = buffer.slice(idx + 2);
+        const lines = raw.split("\n").map((l) => l.trimEnd());
+        const dataLines = lines.filter((l) => l.startsWith("data:"));
+        if (!dataLines.length) continue;
+        const payload = dataLines
+          .map((l) => (l.startsWith("data:") ? l.slice(5).trimStart() : l))
+          .join("\n");
+        let obj;
+        try {
+          obj = JSON.parse(payload);
+        } catch (e) {
+          onEvent({ parseError: true, raw: payload, error: String(e) });
+          continue;
+        }
+        onEvent(obj);
+      }
+    }
+    const tail = buffer.trim();
+    if (tail) {
+      const dataLines = tail.split("\n").filter((l) => l.startsWith("data:"));
+      if (dataLines.length) {
+        const payload = dataLines.map((l) => l.slice(5).trimStart()).join("\n");
+        try {
+          onEvent(JSON.parse(payload));
+        } catch (e) {
+          onEvent({ parseError: true, raw: payload, error: String(e) });
+        }
+      }
+    }
+  }
+
+  $("btnSend").addEventListener("click", async () => {
+    showErr("");
+    $("answer").textContent = "";
+    $("meta").textContent = "…";
+    $("eventLog").textContent = "";
+    const uid = $("userId").value.trim();
+    const sid = $("sessionId").value.trim();
+    const q = $("query").value.trim();
+    const at = currentType();
+    const atLabel = (TYPE_CONFIG[at] && TYPE_CONFIG[at].label) || at;
+    if (!uid || !sid || !q) {
+      showErr("请填写 user_id、session_id、query。");
+      return;
+    }
+
+    abortCtrl = new AbortController();
+    setBusy(true);
+    appendStatus("连接中 [" + atLabel + "]（取数与 RAG 阶段可能较长，首包前请耐心等待）…");
+    let answerText = "";
+
+    const url = baseUrl() + "/analysis/run-with-nl2sql-stream";
+
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(buildBody()),
+        signal: abortCtrl.signal,
+        credentials: "omit",
+      });
+
+      if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error("HTTP " + resp.status + "\n" + t.slice(0, 4000));
+      }
+
+      const ct = (resp.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("text/event-stream") && !ct.includes("event-stream")) {
+        appendStatus("警告: Content-Type 非 text/event-stream: " + ct);
+      }
+
+      await readSseStream(resp, (ev) => {
+        if (ev.parseError) {
+          showErr("SSE JSON 解析失败: " + ev.error + "\n片段: " + (ev.raw || "").slice(0, 500));
+          logEvent("parse_error");
+          return;
+        }
+        const kind = ev.event;
+        logEvent(kind || "?");
+
+        if (kind === "meta") {
+          $("meta").textContent =
+            "analysis_type: " +
+            at +
+            " (" +
+            atLabel +
+            ")\nrequest_id: " +
+            (ev.request_id || "") +
+            "\nplan_id: " +
+            (ev.plan_id || "") +
+            "\norchestrator: " +
+            (ev.orchestrator || "") +
+            "\n" +
+            JSON.stringify(ev.template_versions || {}, null, 2);
+          appendStatus("已连接 [" + atLabel + "]，流式 synthesis 中…");
+          return;
+        }
+        if (kind === "summary_delta" && ev.text != null) {
+          answerText += ev.text;
+          $("answer").textContent = answerText;
+          appendStatus("生成中… 已收字符 " + answerText.length);
+          return;
+        }
+        if (kind === "summary_complete") {
+          const tail =
+            "chars: " +
+            (ev.chars != null ? ev.chars : answerText.length) +
+            "  synthesis_ms: " +
+            (ev.synthesis_ms != null ? ev.synthesis_ms : "—") +
+            "\nrequest_id: " +
+            (ev.request_id || "");
+          $("meta").textContent = ($("meta").textContent || "") + "\n\n--- summary_complete ---\n" + tail;
+          appendStatus("summary 流结束，结构化结果后台处理中");
+          return;
+        }
+        if (kind === "structured_async_enqueued") {
+          $("meta").textContent =
+            ($("meta").textContent || "") +
+            "\n\n--- structured_async_enqueued ---\nrequest_id: " +
+            (ev.request_id || "");
+          appendStatus("完成（完整 JSON 已排队；见服务端日志与 trace）");
+          return;
+        }
+      });
+    } catch (e) {
+      if (e.name === "AbortError") {
+        appendStatus("已中断");
+        logEvent("aborted");
+      } else {
+        showErr(String(e.message || e));
+        appendStatus("失败");
+      }
+    } finally {
+      setBusy(false);
+      abortCtrl = null;
+    }
+  });
+})();
+  </script>
+</body>
+</html>

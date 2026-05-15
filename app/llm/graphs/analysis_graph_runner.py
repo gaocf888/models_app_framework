@@ -62,6 +62,8 @@ logger = get_logger(__name__)
 _PLAN_RAG_ANALYSIS_TYPE_CN: dict[str, str] = {
     "overheat_guidance": "超温分析",
     "maintenance_strategy": "检修策略分析",
+    "four_tube_health_interpretation": "四管健康报告智能解读",
+    "leakage_burst_analysis": "泄爆分析",
     "img_diag": "看图诊断",
 }
 
@@ -1942,6 +1944,48 @@ class AnalysisGraphRunner:
                     "action": "对二级监测区（3-4mm 且高超温频次）执行周级复测与趋势追踪。",
                 },
             ]
+        if analysis_type == "four_tube_health_interpretation":
+            return [
+                {
+                    "priority": 1,
+                    "category": "inspection",
+                    "owner": "运行值长",
+                    "eta": "本周",
+                    "trigger": "high_risk_zone",
+                    "rationale": "解读结论中高风险集中区域应提高巡检频次并控制壁温波动。",
+                    "action": "按简报所列高风险受热面/管段安排加密壁温监视与飞灰走廊巡查。",
+                },
+                {
+                    "priority": 2,
+                    "category": "maintenance",
+                    "owner": "检修班组",
+                    "eta": "窗口内",
+                    "trigger": "thinning_or_defect",
+                    "rationale": "减薄或缺陷与寿命/风险解读一致时，检修侧应测厚复核或分级处置。",
+                    "action": "对建议书中的必换/必检项执行测厚复核与备件准备，轻微项纳入下次小修复查。",
+                },
+            ]
+        if analysis_type == "leakage_burst_analysis":
+            return [
+                {
+                    "priority": 1,
+                    "category": "inspection",
+                    "owner": "检修班组",
+                    "eta": "immediate",
+                    "trigger": "leak_or_burst_event",
+                    "rationale": "泄爆/泄漏后应优先扩大同区域与同类型管段排查并留存证据。",
+                    "action": "对事件相邻排管开展宏观检查与测厚抽检，核对最小壁厚与缺口形态并拍照归档。",
+                },
+                {
+                    "priority": 2,
+                    "category": "operation_adjustment",
+                    "owner": "运行专工",
+                    "eta": "24h",
+                    "trigger": "pre_event_overheat",
+                    "rationale": "泄爆前若存在超温或热偏差，应复核运行边界以防同类复发。",
+                    "action": "核查事发区域壁温轨迹、配风与负荷波动，必要时优化燃烧配风并加强该区域壁温监视。",
+                },
+            ]
         if analysis_type == "img_diag":
             return [
                 {
@@ -2290,6 +2334,11 @@ class AnalysisGraphRunner:
             return ["time", "temperature", "zone"]
         if analysis_type == "maintenance_strategy":
             return ["time", "thickness", "zone"]
+        if analysis_type == "four_tube_health_interpretation":
+            # 健康指数/风险等多为业务结果表字段，列名差异大；质量门仅强约束时间类锚点
+            return ["time"]
+        if analysis_type == "leakage_burst_analysis":
+            return ["time", "zone"]
         return ["time"]
 
     @staticmethod
@@ -2533,6 +2582,76 @@ class AnalysisGraphRunner:
                     self._compose_plan_task_question(req.query, "按区域统计超温频次"),
                     mandatory=False,
                     dependency_ids=["q1"],
+                ),
+            ]
+        elif req.analysis_type == "four_tube_health_interpretation":
+            # 与 prompts.yaml · analysis_plan_four_tube_health_interpretation 语义对齐（模板缺失时的兜底）
+            base = [
+                _PlanTask(
+                    "q1",
+                    "四管健康评估结果",
+                    self._compose_plan_task_question(
+                        req.query,
+                        "查询四管或受热面健康评估结果：健康指数/评分、风险等级、剩余寿命或寿命区间、评估时间、管段或受热面定位字段（仅使用 catalog 中真实表与列）",
+                    ),
+                    mandatory=True,
+                ),
+                _PlanTask(
+                    "q2",
+                    "测厚与减薄速率",
+                    self._compose_plan_task_question(
+                        req.query, "查询 overhaul_thickness_rate、overhaul_record 与 overhaul_record_tubes 中的壁厚、减薄速率与缺陷摘要"
+                    ),
+                    mandatory=True,
+                ),
+                _PlanTask(
+                    "q3",
+                    "超温与运行劣化佐证",
+                    self._compose_plan_task_question(
+                        req.query, "查询 monitor_hotarea_temp 及可关联的 base_temp_point/base_temp_device 的超温频次与极值"
+                    ),
+                    mandatory=False,
+                ),
+                _PlanTask(
+                    "q4",
+                    "泄爆泄漏履历",
+                    self._compose_plan_task_question(req.query, "查询 overhaul_leakage 同类位置历史泄漏或爆管记录摘要"),
+                    mandatory=False,
+                ),
+            ]
+        elif req.analysis_type == "leakage_burst_analysis":
+            # 与 prompts.yaml · analysis_plan_leakage_burst_analysis 语义对齐（模板缺失时的兜底）
+            base = [
+                _PlanTask(
+                    "q1",
+                    "泄爆/泄漏履历",
+                    self._compose_plan_task_question(
+                        req.query,
+                        "查询 overhaul_leakage 泄爆或泄漏记录：发生时间、位置或管段、原因或结论类字段（以 catalog 列为准）",
+                    ),
+                    mandatory=True,
+                ),
+                _PlanTask(
+                    "q2",
+                    "同区域测厚与缺陷",
+                    self._compose_plan_task_question(
+                        req.query, "查询 overhaul_record 与 overhaul_record_tubes 中相关位置测厚、缺陷与换管处置摘要"
+                    ),
+                    mandatory=True,
+                ),
+                _PlanTask(
+                    "q3",
+                    "泄爆前超温佐证",
+                    self._compose_plan_task_question(
+                        req.query, "查询 monitor_hotarea_temp 及可关联测点配置的超温频次与极值"
+                    ),
+                    mandatory=True,
+                ),
+                _PlanTask(
+                    "q4",
+                    "减薄速率",
+                    self._compose_plan_task_question(req.query, "查询 overhaul_thickness_rate 减薄速率与寿命相关指标"),
+                    mandatory=False,
                 ),
             ]
         elif req.analysis_type == "img_diag":

@@ -9,7 +9,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
-AnalysisType = Literal["overheat_guidance", "maintenance_strategy", "custom", "img_diag"]
+AnalysisType = Literal[
+    "overheat_guidance",
+    "maintenance_strategy",
+    "four_tube_health_interpretation",
+    "leakage_burst_analysis",
+    "custom",
+    "img_diag",
+]
 DataMode = Literal["payload", "nl2sql", "img_diag"]
 
 
