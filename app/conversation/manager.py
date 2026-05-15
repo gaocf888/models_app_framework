@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from app.conversation.archive_store import get_archive_store
 from app.conversation.ids import validate_pair, validate_user_id
@@ -33,10 +33,16 @@ class ConversationManager:
         self._store.append_message(u, s, role="user", content=content)
         self._archive_message(u, s, role="user", content=content)
 
-    def append_assistant_message(self, user_id: str, session_id: str, content: str) -> None:
+    def append_assistant_message(
+        self,
+        user_id: str,
+        session_id: str,
+        content: str,
+        rag_citations: List[Dict[str, Any]] | None = None,
+    ) -> None:
         u, s = validate_pair(user_id, session_id)
-        self._store.append_message(u, s, role="assistant", content=content)
-        self._archive_message(u, s, role="assistant", content=content)
+        self._store.append_message(u, s, role="assistant", content=content, rag_citations=rag_citations)
+        self._archive_message(u, s, role="assistant", content=content, rag_citations=rag_citations)
 
     def get_recent_history(self, user_id: str, session_id: str, limit: int = 20) -> List[dict]:
         u, s = validate_pair(user_id, session_id)
@@ -54,7 +60,8 @@ class ConversationManager:
             return hot
         merged: list[dict] = []
         seen: set[str] = set()
-        for m in (cold + hot):
+        # 热层在前：同 message_id 时保留 Redis 上更完整的字段（如 rag_citations），冷层归档可能缺省。
+        for m in (hot + cold):
             role = str(m.get("role", ""))
             content = str(m.get("content", ""))
             ts_raw = m.get("ts")
@@ -62,7 +69,11 @@ class ConversationManager:
             if k in seen:
                 continue
             seen.add(k)
-            merged.append({"role": role, "content": content, "ts": ts_raw})
+            row: Dict[str, Any] = {"role": role, "content": content, "ts": ts_raw}
+            rc = m.get("rag_citations")
+            if isinstance(rc, list):
+                row["rag_citations"] = rc
+            merged.append(row)
         merged.sort(key=lambda x: float(x.get("ts") or 0.0))
         if limit is None:
             return merged
@@ -164,7 +175,15 @@ class ConversationManager:
         page = merged[offset : offset + limit]
         return page, total
 
-    def _archive_message(self, user_id: str, session_id: str, *, role: str, content: str) -> None:
+    def _archive_message(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        role: str,
+        content: str,
+        rag_citations: List[Dict[str, Any]] | None = None,
+    ) -> None:
         arch = get_archive_store()
         if not arch.enabled:
             return
@@ -172,6 +191,9 @@ class ConversationManager:
             snap = self._store.get_session_title_snapshot(user_id, session_id)
             history = self._store.get_recent_history(user_id, session_id, limit=1)
             ts = history[-1].get("ts") if history else None
+            meta: Dict[str, Any] = {}
+            if rag_citations is not None:
+                meta["rag_citations"] = rag_citations
             arch.archive_message(
                 user_id=user_id,
                 session_id=session_id,
@@ -180,7 +202,7 @@ class ConversationManager:
                 ts=ts,
                 title=str(snap.get("title") or ""),
                 title_source=str(snap.get("title_source") or "off"),
-                meta={},
+                meta=meta,
             )
         except Exception:
             # 归档失败不影响在线会话主路径。

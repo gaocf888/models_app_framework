@@ -200,7 +200,7 @@ class ChatbotService:
                     max_total=cfg.suggested_questions_max,
                 )
             self._append_user_with_images(req, original_image_urls=original_image_urls)
-            self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            self._conv.append_assistant_message(req.user_id, req.session_id, answer, rag_citations=[])
             self._schedule_outline_index(req.user_id, req.session_id)
             return ChatResponse(
                 answer=answer,
@@ -227,7 +227,7 @@ class ChatbotService:
                     max_total=min(3, cfg.suggested_questions_max),
                 )
             self._append_user_with_images(req, original_image_urls=original_image_urls)
-            self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            self._conv.append_assistant_message(req.user_id, req.session_id, answer, rag_citations=[])
             self._schedule_outline_index(req.user_id, req.session_id)
             return ChatResponse(
                 answer=answer,
@@ -299,7 +299,7 @@ class ChatbotService:
             )
 
         self._append_user_with_images(req, original_image_urls=original_image_urls)
-        self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+        self._conv.append_assistant_message(req.user_id, req.session_id, answer, rag_citations=rag_citations)
         self._maybe_update_anaphora_slots(req.user_id, req.session_id, answer, anaphora_type_for_slots)
         self._schedule_outline_index(req.user_id, req.session_id)
 
@@ -438,20 +438,12 @@ class ChatbotService:
                 sql=nresp.sql,
                 rows=list(nresp.rows or []),
             )
+            # data_query：不在 finished.meta 中下发关联问句（与 LangGraph 路径一致，且不调用推荐问 LLM）。
             suggested: list[str] = []
-            if cfg.suggested_questions_enabled:
-                suggested = await build_suggested_questions(
-                    query=req.query,
-                    answer=answer,
-                    context_snippets=[],
-                    intent_label="data_query",
-                    llm_client=self._llm,
-                    max_total=cfg.suggested_questions_max,
-                )
             if answer:
                 yield {"type": "delta", "delta": answer}
             self._append_user_with_images(persist_req, original_image_urls=original_image_urls)
-            self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            self._conv.append_assistant_message(req.user_id, req.session_id, answer, rag_citations=[])
             self._schedule_outline_index(req.user_id, req.session_id)
             yield {
                 "type": "finished",
@@ -498,7 +490,7 @@ class ChatbotService:
                 )
             yield {"type": "delta", "delta": answer}
             self._append_user_with_images(persist_req, original_image_urls=original_image_urls)
-            self._conv.append_assistant_message(req.user_id, req.session_id, answer)
+            self._conv.append_assistant_message(req.user_id, req.session_id, answer, rag_citations=[])
             self._schedule_outline_index(req.user_id, req.session_id)
             yield {
                 "type": "finished",
@@ -563,7 +555,9 @@ class ChatbotService:
                 partial = "".join(parts).strip()
                 self._append_user_with_images(persist_req, original_image_urls=original_image_urls)
                 if self._chatbot_cfg.persist_partial_on_disconnect and partial:
-                    self._conv.append_assistant_message(req.user_id, req.session_id, f"[partial] {partial}")
+                    self._conv.append_assistant_message(
+                        req.user_id, req.session_id, f"[partial] {partial}", rag_citations=rag_citations
+                    )
                 yield {
                     "type": "finished",
                     "meta": {
@@ -639,7 +633,7 @@ class ChatbotService:
             )
         self._append_user_with_images(persist_req, original_image_urls=original_image_urls)
         if full:
-            self._conv.append_assistant_message(req.user_id, req.session_id, full)
+            self._conv.append_assistant_message(req.user_id, req.session_id, full, rag_citations=rag_citations)
             self._maybe_update_anaphora_slots(req.user_id, req.session_id, full, anaphora_type)
             self._schedule_outline_index(req.user_id, req.session_id)
         yield {

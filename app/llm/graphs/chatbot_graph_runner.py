@@ -938,7 +938,11 @@ class ChatbotLangGraphRunner:
         )
         if answer:
             content = answer if not is_partial else f"[partial] {answer}"
-            self._conv.append_assistant_message(req.user_id, req.session_id, content)
+            rc_list = state.get("rag_citations")
+            rag_kw: list[dict[str, Any]] | None = (
+                [x for x in rc_list if isinstance(x, dict)] if isinstance(rc_list, list) else None
+            )
+            self._conv.append_assistant_message(req.user_id, req.session_id, content, rag_citations=rag_kw)
             if (
                 not is_partial
                 and self._anaphora_slots_enabled
@@ -1011,10 +1015,20 @@ class ChatbotLangGraphRunner:
             ),
         )
         if self._persist_partial and partial:
-            self._conv.append_assistant_message(req.user_id, req.session_id, f"[partial] {partial}")
+            rc_list = state.get("rag_citations")
+            rag_kw: list[dict[str, Any]] | None = (
+                [x for x in rc_list if isinstance(x, dict)] if isinstance(rc_list, list) else None
+            )
+            self._conv.append_assistant_message(
+                req.user_id, req.session_id, f"[partial] {partial}", rag_citations=rag_kw
+            )
 
     async def _fill_suggested_questions(self, state: ChatbotGraphState, req: ChatRequest, answer_text: str) -> None:
         if not self._suggested_questions_enabled:
+            state["suggested_questions"] = []
+            return
+        # 数据查询（NL2SQL）不在 meta 中下发关联问句，也不调用推荐问 LLM。
+        if state.get("used_nl2sql") or state.get("intent_label") == "data_query":
             state["suggested_questions"] = []
             return
         sq = await build_suggested_questions(
@@ -1032,6 +1046,9 @@ class ChatbotLangGraphRunner:
         # 1) SSE 最后一帧给前端；
         # 2) LangSmith outputs 聚合。
         # 字段名应尽量保持稳定，避免下游解析兼容性问题。
+        is_data_query = bool(state.get("used_nl2sql")) or state.get("intent_label") == "data_query"
+        suggested = [] if is_data_query else list(state.get("suggested_questions") or [])
+        citations = [] if is_data_query else list(state.get("rag_citations") or [])
         return {
             "used_rag": bool(state.get("used_rag", False)),
             "intent_label": state.get("intent_label"),
@@ -1048,8 +1065,8 @@ class ChatbotLangGraphRunner:
             "need_similar_cases": bool(state.get("need_similar_cases")),
             "used_nl2sql": bool(state.get("used_nl2sql", False)),
             "nl2sql_sql": (state.get("nl2sql_sql") or "") if state.get("used_nl2sql") else None,
-            "suggested_questions": list(state.get("suggested_questions") or []),
-            "rag_citations": list(state.get("rag_citations") or []),
+            "suggested_questions": suggested,
+            "rag_citations": citations,
             "processed_image_urls": [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
             "original_image_urls": [u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()],
             "stream_id": stream_id,

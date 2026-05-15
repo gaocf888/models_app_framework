@@ -80,11 +80,22 @@ class ConversationStore:
                 meta["title"] = ""
                 meta["title_source"] = "off"
 
-    def append_message(self, user_id: str, session_id: str, role: str, content: str) -> None:
+    def append_message(
+        self,
+        user_id: str,
+        session_id: str,
+        role: str,
+        content: str,
+        *,
+        rag_citations: List[Dict[str, Any]] | None = None,
+    ) -> None:
         key = (user_id, session_id)
         messages = self._data.setdefault(key, [])
         now = time.time()
-        messages.append({"role": role, "content": content, "ts": now})
+        rec: Dict[str, Any] = {"role": role, "content": content, "ts": now}
+        if rag_citations is not None:
+            rec["rag_citations"] = rag_citations
+        messages.append(rec)
         self._last_updated[key] = now
         # 历史裁剪：只保留最近 _max_history 条
         if len(messages) > self._max_history:
@@ -385,16 +396,24 @@ class RedisConversationStore(ConversationStore):
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._thread.start()
 
-    async def _append_message_async(self, user_id: str, session_id: str, role: str, content: str) -> None:
+    async def _append_message_async(
+        self,
+        user_id: str,
+        session_id: str,
+        role: str,
+        content: str,
+        *,
+        rag_citations: List[Dict[str, Any]] | None = None,
+    ) -> None:
         if self._redis is None:
-            return super().append_message(user_id, session_id, role, content)
+            return super().append_message(user_id, session_id, role, content, rag_citations=rag_citations)
         key = f"{self._key_prefix}{user_id}:{session_id}"
         now = time.time()
         now_ms = int(now * 1000)
-        payload = json.dumps(
-            {"role": role, "content": content, "ts": now},
-            ensure_ascii=False,
-        )
+        entry: Dict[str, Any] = {"role": role, "content": content, "ts": now}
+        if rag_citations is not None:
+            entry["rag_citations"] = rag_citations
+        payload = json.dumps(entry, ensure_ascii=False)
         await self._redis.rpush(key, payload)
         if self._ttl_seconds > 0:
             await self._redis.expire(key, self._ttl_seconds)
@@ -443,16 +462,24 @@ class RedisConversationStore(ConversationStore):
         if self._ttl_seconds > 0:
             await self._redis.expire(meta_key, self._ttl_seconds)
 
-    def append_message(self, user_id: str, session_id: str, role: str, content: str) -> None:  # type: ignore[override]
+    def append_message(  # type: ignore[override]
+        self,
+        user_id: str,
+        session_id: str,
+        role: str,
+        content: str,
+        *,
+        rag_citations: List[Dict[str, Any]] | None = None,
+    ) -> None:
         """
         为了兼容当前同步接口，这里在有 Redis 时使用 fire-and-forget 的方式调度异步写入；
         若没有 Redis 或导入失败，则退回到内存实现。
         """
         if self._redis is None or self._loop is None:
-            return super().append_message(user_id, session_id, role, content)
+            return super().append_message(user_id, session_id, role, content, rag_citations=rag_citations)
         # 将异步写入调度到专用事件循环线程，fire-and-forget
         fut = asyncio.run_coroutine_threadsafe(
-            self._append_message_async(user_id, session_id, role, content),
+            self._append_message_async(user_id, session_id, role, content, rag_citations=rag_citations),
             self._loop,
         )
         wait_s = _redis_append_wait_seconds()
@@ -490,13 +517,15 @@ class RedisConversationStore(ConversationStore):
             if isinstance(obj, dict) and obj.get("role") is not None:
                 c = obj.get("content", "")
                 if c is not None and str(c).strip():
-                    out.append(
-                        {
-                            "role": str(obj["role"]),
-                            "content": c if isinstance(c, str) else str(c),
-                            "ts": obj.get("ts"),
-                        }
-                    )
+                    row: Dict[str, Any] = {
+                        "role": str(obj["role"]),
+                        "content": c if isinstance(c, str) else str(c),
+                        "ts": obj.get("ts"),
+                    }
+                    rc = obj.get("rag_citations")
+                    if isinstance(rc, list):
+                        row["rag_citations"] = rc
+                    out.append(row)
         return out
 
     def get_recent_history(self, user_id: str, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:  # type: ignore[override]
@@ -527,13 +556,15 @@ class RedisConversationStore(ConversationStore):
             if isinstance(obj, dict) and obj.get("role") is not None:
                 c = obj.get("content", "")
                 if c is not None and str(c).strip():
-                    out.append(
-                        {
-                            "role": str(obj["role"]),
-                            "content": c if isinstance(c, str) else str(c),
-                            "ts": obj.get("ts"),
-                        }
-                    )
+                    row = {
+                        "role": str(obj["role"]),
+                        "content": c if isinstance(c, str) else str(c),
+                        "ts": obj.get("ts"),
+                    }
+                    rc = obj.get("rag_citations")
+                    if isinstance(rc, list):
+                        row["rag_citations"] = rc
+                    out.append(row)
         return out
 
     async def _get_messages_async(self, user_id: str, session_id: str, n: int) -> List[Dict[str, Any]]:
@@ -709,13 +740,15 @@ class RedisConversationStore(ConversationStore):
             if isinstance(obj, dict) and obj.get("role") is not None:
                 c = obj.get("content", "")
                 if c is not None and str(c).strip():
-                    items.append(
-                        {
-                            "role": str(obj["role"]),
-                            "content": c if isinstance(c, str) else str(c),
-                            "ts": obj.get("ts"),
-                        }
-                    )
+                    row: Dict[str, Any] = {
+                        "role": str(obj["role"]),
+                        "content": c if isinstance(c, str) else str(c),
+                        "ts": obj.get("ts"),
+                    }
+                    rc = obj.get("rag_citations")
+                    if isinstance(rc, list):
+                        row["rag_citations"] = rc
+                    items.append(row)
         new_items: List[Dict[str, Any]] = []
         found = False
         for obj in items:
@@ -739,10 +772,11 @@ class RedisConversationStore(ConversationStore):
         pipe = self._redis.pipeline(transaction=True)
         pipe.delete(key)
         for obj in new_items:
-            payload = json.dumps(
-                {"role": obj["role"], "content": obj["content"], "ts": obj["ts"]},
-                ensure_ascii=False,
-            )
+            body: Dict[str, Any] = {"role": obj["role"], "content": obj["content"], "ts": obj["ts"]}
+            rc = obj.get("rag_citations")
+            if isinstance(rc, list):
+                body["rag_citations"] = rc
+            payload = json.dumps(body, ensure_ascii=False)
             pipe.rpush(key, payload)
         if self._ttl_seconds > 0:
             pipe.expire(key, self._ttl_seconds)

@@ -117,6 +117,13 @@ class SessionMessageItem(BaseModel):
         default_factory=list,
         description="预处理后用于模型推理的图片链接（仅 user 消息可能有值）",
     )
+    rag_citations: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "知识来源引用（与流式 finished.meta.rag_citations 同形；含 original_content_url 等）。"
+            "非 RAG/非 assistant 路径为空列表。"
+        ),
+    )
     ts: float | None = Field(None, description="写入时时间戳（秒，可能为空）")
 
 

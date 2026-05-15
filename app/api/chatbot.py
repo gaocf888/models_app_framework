@@ -19,7 +19,7 @@ from __future__ import annotations
     - 与业务层一致，使用 `(user_id, session_id)` 唯一确定一条对话线；`session_id` 由调用方生成并维护。
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -53,6 +53,15 @@ service = ChatbotService(conv_manager=_shared_conv)
 _conv_admin = _shared_conv
 
 
+def _session_message_rag_citations(raw: Any) -> list[dict[str, Any]]:
+    """将存储中的 rag_citations 规范为 dict 列表（与 SSE finished.meta 一致）。"""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for it in raw:
+        if isinstance(it, dict):
+            out.append(dict(it))
+    return out
 def _delete_messages_by_ids(user_id: str, session_id: str, message_ids: list[str]) -> SessionMessageDeleteResponse:
     mids = [str(x or "").strip().lower() for x in (message_ids or []) if str(x or "").strip()]
     if not mids:
@@ -121,7 +130,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             每条事件为 `data: ` + JSON + 换行 + 空行（符合 SSE 事件分隔约定），JSON 形态包括：
             - `{"started": true, "stream_id": "..."}`：流式已建立，可用于 `/chat/stop` 中断；
             - `{"delta": "...", "finished": false}`：增量文本；
-            - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag`、`used_nl2sql`、`intent_label`、`suggested_questions`、`rag_citations`（向量库引用：namespace/doc_name/doc_version 等）、`nl2sql_sql` 等；
+            - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag`、`used_nl2sql`、`nl2sql_sql`（仅 NL2SQL 路径有值，否则为 null）、`intent_label`、`suggested_questions`、`rag_citations`（向量库引用：namespace/doc_name/doc_version/`original_content_url`（有则含摄入原始 URL）等）等；
             - `{"error": "...", "finished": true}`：异常时错误事件。
 
     Raises:
@@ -233,7 +242,8 @@ async def get_session_messages(
         limit (int | None): 可选，限制返回条数上限（仍不超过服务端配置的全局上限）。
 
     Returns:
-        SessionMessagesResponse: `title`/`title_source` 与 `GET /sessions` 列表同源；`messages` 按时间顺序。
+        SessionMessagesResponse: `title`/`title_source` 与 `GET /sessions` 列表同源；`messages` 按时间顺序；
+        助手消息在 RAG 路径下可含 `rag_citations`（与流式 `finished.meta.rag_citations` 同形，含 `original_content_url` 等）。
 
     Raises:
         HTTPException: 本函数不直接抛出；参数校验失败时 422。
@@ -259,6 +269,7 @@ async def get_session_messages(
                 image_urls=image_urls,
                 original_image_urls=original_image_urls,
                 processed_image_urls=processed_image_urls,
+                rag_citations=_session_message_rag_citations(m.get("rag_citations")),
                 ts=m.get("ts"),
             )
         )

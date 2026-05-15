@@ -17,6 +17,7 @@ class _FakeIngestionService:
         namespace=None,
         doc_name=None,
         replace_if_exists=True,
+        **kwargs,
     ):
         if doc_name and "fail" in doc_name:
             raise RuntimeError("forced failure")

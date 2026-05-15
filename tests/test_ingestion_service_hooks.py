@@ -51,6 +51,29 @@ class TestIngestionServiceHooks(unittest.TestCase):
         self.assertEqual("v2", call.get("doc_version"))
         self.assertTrue(call.get("replace_if_exists"))
 
+    def test_ingest_texts_passes_chunk_metadatas_to_store(self):
+        prov = _FakeStoreProvider()
+        svc = RAGIngestionService(
+            embedding_service=_FakeEmbeddingService(),
+            store_provider=prov,
+            graph_ingestion=None,
+        )
+        svc.ingest_texts(
+            dataset_id="ds1",
+            texts=["hello"],
+            namespace="ns1",
+            doc_name="doc_a",
+            doc_version="v1",
+            replace_if_exists=True,
+            metadatas=[{"source_uri": "https://example.com/a.pdf", "chunk_index": 0}],
+            run_post_hook=False,
+        )
+        items = getattr(prov.store, "_items", [])
+        self.assertEqual(1, len(items))
+        meta = (items[0].get("metadata") or {}) if isinstance(items[0], dict) else {}
+        self.assertEqual("https://example.com/a.pdf", meta.get("source_uri"))
+        self.assertEqual("v1", meta.get("doc_version"))
+
     def test_delete_by_doc_name_calls_graph_cleanup(self):
         graph = _FakeGraphIngestion()
         svc = RAGIngestionService(

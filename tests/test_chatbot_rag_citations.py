@@ -35,6 +35,20 @@ def test_chunks_to_rag_citations_shape():
     assert cites[0]["score"] == 0.91
 
 
+def test_chunks_to_rag_citations_original_content_url_from_metadata():
+    chunks = [
+        RetrievedChunk(
+            text="正文片段",
+            doc_name="规程",
+            namespace="ns",
+            chunk_id="x1",
+            metadata={"source_uri": "https://cdn.example.com/doc.pdf"},
+        )
+    ]
+    cites = chunks_to_rag_citations(chunks)
+    assert cites[0].get("original_content_url") == "https://cdn.example.com/doc.pdf"
+
+
 def test_chunks_to_rag_citations_empty():
     assert chunks_to_rag_citations(None) == []
     assert chunks_to_rag_citations([]) == []

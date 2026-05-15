@@ -368,6 +368,7 @@ class IngestionOrchestrator:
 
                 self._set_job_step(job, "index")
                 t1 = time.perf_counter()
+                chunk_metadatas = [{**(doc.metadata or {}), **(c.metadata or {})} for c in chunks]
                 try:
                     self._ingestion.ingest_texts(
                         dataset_id=doc.dataset_id,
@@ -379,9 +380,10 @@ class IngestionOrchestrator:
                         doc_version=doc.doc_version,
                         tenant_id=doc.tenant_id,
                         run_post_hook=False,
+                        metadatas=chunk_metadatas,
                     )
                 except TypeError:
-                    # 兼容旧版 ingestion service mock（无 doc_version/tenant_id 参数）
+                    # 兼容旧版 ingestion service mock（无 doc_version/tenant_id/metadatas 参数）
                     self._ingestion.ingest_texts(
                         dataset_id=doc.dataset_id,
                         texts=[c.text for c in chunks],

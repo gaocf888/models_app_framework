@@ -380,13 +380,17 @@ class ConversationArchiveStore:
             out: List[Dict[str, Any]] = []
             for h in hits:
                 src = h.get("_source") or {}
-                out.append(
-                    {
-                        "role": str(src.get("role") or ""),
-                        "content": str(src.get("content") or ""),
-                        "ts": float(src.get("ts_ms", 0)) / 1000.0 if src.get("ts_ms") is not None else None,
-                    }
-                )
+                row: Dict[str, Any] = {
+                    "role": str(src.get("role") or ""),
+                    "content": str(src.get("content") or ""),
+                    "ts": float(src.get("ts_ms", 0)) / 1000.0 if src.get("ts_ms") is not None else None,
+                }
+                meta = src.get("meta")
+                if isinstance(meta, dict):
+                    rc = meta.get("rag_citations")
+                    if isinstance(rc, list):
+                        row["rag_citations"] = rc
+                out.append(row)
             return out
         except Exception as exc:  # noqa: BLE001
             logger.error("ConversationArchiveStore list_messages failed: %s", exc)

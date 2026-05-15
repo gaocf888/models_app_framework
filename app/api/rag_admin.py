@@ -888,6 +888,7 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
                 tmp_fetched.unlink(missing_ok=True)
         if not chunks:
             raise ValueError("no chunks generated after processing")
+        chunk_metadatas = [{**(doc.metadata or {}), **(c.metadata or {})} for c in chunks]
         _get_service().ingest_texts(
             dataset_id=req.dataset_id,
             texts=[c.text for c in chunks],
@@ -895,6 +896,7 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
             namespace=req.namespace,
             doc_name=req.doc_name,
             replace_if_exists=True,
+            metadatas=chunk_metadatas,
         )
         return UpsertDocumentResponse(
             ok=True, doc_name=req.doc_name, chunk_count=len(chunks), stats=stats

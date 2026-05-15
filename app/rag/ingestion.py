@@ -14,7 +14,7 @@ RAG 知识摄入服务（RAGIngestionService）。
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -70,9 +70,14 @@ class RAGIngestionService:
         doc_version: str = "v1",
         tenant_id: str | None = None,
         run_post_hook: bool = True,
+        metadatas: List[dict[str, Any] | None] | None = None,
     ) -> None:
         """
         将一批文本摄入 RAG 知识库（向量+全文），并登记为指定数据集。
+
+        Args:
+            metadatas: 与 ``texts`` 等长的逐条元数据（如切块 ``source_uri``、``chunk_id``、
+                ``content_fetched_from_url`` 等）。未传时仅写入 ``doc_version`` / ``tenant_id``（兼容旧调用）。
         """
         store = self._store_provider.get_default_store()
         effective_doc_name = doc_name or dataset_id
@@ -88,7 +93,18 @@ class RAGIngestionService:
                 )
 
         embs = self._embedding_service.embed_texts(texts)
-        metas = [{"doc_version": doc_version, "tenant_id": tenant_id} for _ in texts]
+        if metadatas is not None:
+            if len(metadatas) != len(texts):
+                raise ValueError("metadatas length must match texts when metadatas is provided")
+            metas: List[dict[str, Any]] = []
+            for i in range(len(texts)):
+                row = dict(metadatas[i] or {})
+                row["doc_version"] = doc_version
+                if tenant_id is not None:
+                    row["tenant_id"] = tenant_id
+                metas.append(row)
+        else:
+            metas = [{"doc_version": doc_version, "tenant_id": tenant_id} for _ in texts]
         store.add_texts(
             texts,
             embeddings=embs,
