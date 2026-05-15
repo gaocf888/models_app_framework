@@ -555,7 +555,10 @@ class ChatbotService:
         legacy_ana_meta: Dict[str, Any] = {}
         if cfg.anaphora_expose_meta:
             legacy_ana_meta = {"anaphora_type": anaphora_type, "anaphora_source": "rule"}
-        async for delta in self._llm.stream_chat(model=None, messages=messages):  # type: ignore[arg-type]
+        stream_kw: Dict[str, Any] = {}
+        if self._chatbot_cfg.main_llm_temperature is not None:
+            stream_kw["temperature"] = float(self._chatbot_cfg.main_llm_temperature)
+        async for delta in self._llm.stream_chat(model=None, messages=messages, **stream_kw):  # type: ignore[arg-type]
             if await self._is_stream_cancelled(req, stream_id):
                 partial = "".join(parts).strip()
                 self._append_user_with_images(persist_req, original_image_urls=original_image_urls)

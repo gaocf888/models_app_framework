@@ -405,6 +405,9 @@ class ChatbotConfig:
     fault_min_confidence: float = 0.5
     # 结构化问数走 NL2SQL（意图 data_query），与文档 RAG（kb_qa）分流
     nl2sql_route_enabled: bool = True
+    # 主问答流式 LLM 的 sampling temperature（环境变量 CHATBOT_MAIN_LLM_TEMPERATURE）。
+    # None 表示不在请求中覆盖，沿用 LLMModelConfig.temperature；仅作用于主答 stream_chat，不影响指代/相似案例等硬编码子调用。
+    main_llm_temperature: float | None = None
     # 未传 prompt_version 时使用的客服模板版本（与 configs/prompts.yaml 中 chatbot.version 对齐）
     default_prompt_version: str = "boiler_v1"
     # 回答结束后关联问题推荐（规则 + 片段 + LLM）
@@ -710,6 +713,15 @@ def _load_from_env() -> AppConfig:
         raw = os.getenv(name, default_csv)
         return [x.strip() for x in raw.split(",") if x.strip()]
 
+    def _optional_clamped_temperature(name: str) -> float | None:
+        raw = os.getenv(name)
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        if not s:
+            return None
+        return max(0.0, min(2.0, float(s)))
+
     graph_strategy = GraphHybridStrategyConfig(
         mode=os.getenv("GRAPH_RAG_MODE", "vector").lower(),
         vector_weight=float(os.getenv("GRAPH_RAG_VECTOR_WEIGHT", "0.6")),
@@ -913,6 +925,7 @@ def _load_from_env() -> AppConfig:
         fault_detect_mode=(os.getenv("CHATBOT_FAULT_DETECT_MODE", "hybrid") or "hybrid").lower(),
         fault_min_confidence=max(0.0, min(1.0, float(os.getenv("CHATBOT_FAULT_MIN_CONFIDENCE", "0.5")))),
         nl2sql_route_enabled=os.getenv("CHATBOT_NL2SQL_ROUTE_ENABLED", "true").lower() == "true",
+        main_llm_temperature=_optional_clamped_temperature("CHATBOT_MAIN_LLM_TEMPERATURE"),
         default_prompt_version=(os.getenv("CHATBOT_PROMPT_DEFAULT_VERSION", "boiler_v1") or "boiler_v1").strip(),
         suggested_questions_enabled=os.getenv("CHATBOT_SUGGESTED_QUESTIONS_ENABLED", "true").lower() == "true",
         suggested_questions_max=max(1, min(10, int(os.getenv("CHATBOT_SUGGESTED_QUESTIONS_MAX", "5")))),

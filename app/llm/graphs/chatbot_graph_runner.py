@@ -96,6 +96,7 @@ class ChatbotLangGraphRunner:
         self._fault_detect_mode = (cfg.fault_detect_mode or "hybrid").lower()
         self._fault_min_confidence = max(0.0, min(1.0, float(cfg.fault_min_confidence)))
         self._nl2sql_route_enabled_cfg = bool(cfg.nl2sql_route_enabled)
+        self._main_llm_temperature = cfg.main_llm_temperature
         self._default_prompt_version = (cfg.default_prompt_version or "boiler_v1").strip()
         self._suggested_questions_enabled = bool(cfg.suggested_questions_enabled)
         self._suggested_questions_max = max(1, min(10, int(cfg.suggested_questions_max)))
@@ -301,18 +302,50 @@ class ChatbotLangGraphRunner:
                 return
 
             parts: List[str] = []
-            async for delta in self._llm.stream_chat(model=None, messages=llm_messages):  # type: ignore[arg-type]
-                if await self._is_cancelled(req, stream_id, cancel_checker):
-                    partial = "".join(parts).strip()
-                    self._persist_disconnect(state, req, partial)
-                    state["status"] = "aborted"
-                    state["terminate_reason"] = "user_cancelled"
-                    yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
-                    return
-                self._ensure_within_latency(start_ts)
-                parts.append(delta)
-                state["answer_parts"] = list(parts)
-                yield {"type": "delta", "delta": delta}
+            stream_kw: Dict[str, Any] = {}
+            if self._main_llm_temperature is not None:
+                stream_kw["temperature"] = float(self._main_llm_temperature)
+            try:
+                async for delta in self._llm.stream_chat(model=None, messages=llm_messages, **stream_kw):  # type: ignore[arg-type]
+                    if await self._is_cancelled(req, stream_id, cancel_checker):
+                        partial = "".join(parts).strip()
+                        self._persist_disconnect(state, req, partial)
+                        state["status"] = "aborted"
+                        state["terminate_reason"] = "user_cancelled"
+                        yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
+                        return
+                    self._ensure_within_latency(start_ts)
+                    parts.append(delta)
+                    state["answer_parts"] = list(parts)
+                    yield {"type": "delta", "delta": delta}
+            except TimeoutError as exc:
+                # 与 MAX_GRAPH_LATENCY_MS 同源：总耗时（图+RAG+流式）超预算。
+                # 若已向前端输出过 delta，再抛给上层会触发 legacy 全量重跑，表现为「停几秒后又答一遍」且会话里可能重复 user。
+                if "latency budget exceeded" not in str(exc):
+                    raise
+                partial = "".join(parts).strip()
+                logger.warning(
+                    "chatbot.stream stopped by latency budget: partial_chars=%s budget_ms=%s",
+                    len(partial),
+                    self._max_graph_latency_ms,
+                )
+                state["terminate_reason"] = "latency_budget_exceeded"
+                state["similar_cases_appended"] = False
+                if partial:
+                    await self._fill_suggested_questions(state, req, partial)
+                    self._persist_success(
+                        state,
+                        req,
+                        partial,
+                        is_partial=True,
+                        terminate_reason="latency_budget_exceeded",
+                    )
+                else:
+                    await self._fill_suggested_questions(state, req, "")
+                    state["status"] = "failed"
+                    self._persist_failure(state, req)
+                yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
+                return
 
             answer = "".join(parts).strip()
             extra = self._maybe_similar_cases_extra(state)
@@ -1007,6 +1040,7 @@ class ChatbotLangGraphRunner:
             "status": state.get("status"),
             "duration_ms": int((time.perf_counter() - start_ts) * 1000),
             "terminate_reason": state.get("terminate_reason"),
+            "is_partial": bool(state.get("is_partial", False)),
             "similar_cases_appended": bool(state.get("similar_cases_appended")),
             "similar_case_namespace": self._similar_case_namespace if state.get("similar_cases_appended") else None,
             "fault_detect_sources": list(state.get("fault_detect_sources") or []),
