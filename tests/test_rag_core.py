@@ -1,6 +1,6 @@
 import unittest
 
-from app.rag.rag_service import RAGService
+from app.rag.rag_service import RAGService, _hit_namespace_allowed, _normalize_excluded_namespaces
 from app.rag.vector_store import InMemoryVectorStore
 
 
@@ -45,6 +45,20 @@ class TestRAGCore(unittest.TestCase):
         remains = store.keyword_search("content", k=5, namespace="ns1")
         self.assertEqual(1, len(remains))
         self.assertEqual("v2", remains[0].get("metadata", {}).get("doc_version"))
+
+    def test_normalize_excluded_namespaces(self):
+        excluded = _normalize_excluded_namespaces(
+            ["nl2sql_schema", "nl2sql_biz_knowledge", "nl2sql_qa_examples"]
+        )
+        self.assertEqual(
+            excluded,
+            {"nl2sql_schema", "nl2sql_biz_knowledge", "nl2sql_qa_examples"},
+        )
+
+    def test_hit_namespace_allowed_respects_exclude_set(self):
+        excluded = _normalize_excluded_namespaces(["nl2sql_schema"]) or set()
+        self.assertFalse(_hit_namespace_allowed({"namespace": "nl2sql_schema"}, excluded))
+        self.assertTrue(_hit_namespace_allowed({"namespace": "global"}, excluded))
 
 
 if __name__ == "__main__":

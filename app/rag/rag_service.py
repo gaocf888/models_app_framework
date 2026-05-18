@@ -4,7 +4,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Sequence
+from typing import List, Sequence, Set
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -21,6 +21,18 @@ from app.rag.models import RetrievedChunk
 from app.rag.vector_store import VectorStoreProvider
 
 logger = get_logger(__name__)
+
+
+def _normalize_excluded_namespaces(exclude_namespaces: Sequence[str] | None) -> Set[str] | None:
+    if not exclude_namespaces:
+        return None
+    out = {str(n).strip() for n in exclude_namespaces if n is not None and str(n).strip()}
+    return out or None
+
+
+def _hit_namespace_allowed(hit: dict, excluded: Set[str]) -> bool:
+    ns = str(hit.get("namespace") or "").strip()
+    return ns not in excluded
 
 
 def _cross_encoder_device_repr(reranker: object) -> str:
@@ -163,6 +175,7 @@ class RAGService:
         use_hybrid: bool | None = None,
         scene: str | None = None,
         rerank_query: str | None = None,
+        exclude_namespaces: Sequence[str] | None = None,
     ) -> List[RetrievedChunk]:
         """
         执行检索并返回标准 RetrievedChunk 列表（设计稿 §E 统一检索输出）。
@@ -170,10 +183,13 @@ class RAGService:
         - query：用于向量嵌入与关键词/元数据召回（主检索句）。
         - rerank_query：若传入且在 hybrid 开启且 CrossEncoder 可用时，仅用于最后重排；
           用于「召回用用户原句、重排时再拼场景标签」等两阶段策略。
+        - exclude_namespaces：检索结果中剔除这些 namespace（会放大内部召回规模再过滤截断）。
         """
         RAG_QUERY_COUNT.inc()
         profile = self._get_scene_profile(scene)
-        k = top_k or (profile.top_k if profile is not None else self._cfg.top_k)
+        k_out = top_k or (profile.top_k if profile is not None else self._cfg.top_k)
+        excluded = _normalize_excluded_namespaces(exclude_namespaces)
+        k = min(max(k_out * 4, 32), 64) if excluded else k_out
         pv = self._cfg.ingestion.pipeline_version
         store = self._store_provider.get_default_store()
         q_emb = self._embedding_service.embed_text(query)
@@ -182,6 +198,8 @@ class RAGService:
         if not hybrid_enabled:
             RAG_SEMANTIC_RECALL_COUNT.inc()
             hits = store.similarity_search_by_vector(q_emb, k=k, namespace=namespace)
+            if excluded:
+                hits = [h for h in hits if _hit_namespace_allowed(h, excluded)]
         else:
             sem_top = profile.semantic_top_k if profile is not None else self._cfg.hybrid.semantic_top_k
             kw_top = profile.keyword_top_k if profile is not None else self._cfg.hybrid.keyword_top_k
@@ -198,6 +216,10 @@ class RAGService:
                 semantic_hits = f_sem.result()
                 keyword_hits = f_kw.result()
                 metadata_hits = f_md.result() if f_md is not None else []
+            if excluded:
+                semantic_hits = [h for h in semantic_hits if _hit_namespace_allowed(h, excluded)]
+                keyword_hits = [h for h in keyword_hits if _hit_namespace_allowed(h, excluded)]
+                metadata_hits = [h for h in metadata_hits if _hit_namespace_allowed(h, excluded)]
             RAG_SEMANTIC_RECALL_COUNT.inc()
             RAG_KEYWORD_RECALL_COUNT.inc()
             if metadata_enabled:
@@ -212,14 +234,14 @@ class RAGService:
             rerank_top_n = max(rerank_base, k)
             candidates = fused[:rerank_top_n]
             rr_q = rerank_query if (rerank_query is not None and str(rerank_query).strip()) else query
-            hits = self._rerank(query=rr_q, hits=candidates)[:k]
+            hits = self._rerank(query=rr_q, hits=candidates)[:k_out]
 
         out: List[RetrievedChunk] = []
         for h in hits:
             if not h.get("text"):
                 continue
             out.append(self._hit_to_chunk(h, pv))
-            if len(out) >= k:
+            if len(out) >= k_out:
                 break
         return out
 
@@ -231,6 +253,7 @@ class RAGService:
         use_hybrid: bool | None = None,
         scene: str | None = None,
         rerank_query: str | None = None,
+        exclude_namespaces: Sequence[str] | None = None,
     ) -> List[str]:
         """
         执行检索并返回候选上下文文本列表。
@@ -249,6 +272,7 @@ class RAGService:
             use_hybrid=use_hybrid,
             scene=scene,
             rerank_query=rerank_query,
+            exclude_namespaces=exclude_namespaces,
         )
         return [c.text for c in chunks if c.text]
 

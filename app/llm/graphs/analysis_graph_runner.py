@@ -203,6 +203,7 @@ class AnalysisGraphRunner:
         top_k: int,
         scene: str = "analysis",
         rerank_query: str | None = None,
+        exclude_namespaces: frozenset[str] | None = None,
     ) -> tuple[list[str], list[dict[str, Any]], list[RetrievedChunk]]:
         """
         统一 RAG 检索输出：
@@ -213,16 +214,16 @@ class AnalysisGraphRunner:
         # 优先使用 retrieve_chunks（可拿到 doc_id/score），否则回退 retrieve_context 文本检索。
         rag_svc = getattr(self._hybrid_rag, "_rag_service", None)
         if rag_svc is not None and hasattr(rag_svc, "retrieve_chunks"):
-            chunks = list(
-                rag_svc.retrieve_chunks(
-                    query=query,
-                    top_k=top_k,
-                    namespace=namespace,
-                    scene=scene,
-                    rerank_query=rerank_query,
-                )
-                or []
-            )
+            retrieve_kw: dict[str, Any] = {
+                "query": query,
+                "top_k": top_k,
+                "namespace": namespace,
+                "scene": scene,
+                "rerank_query": rerank_query,
+            }
+            if exclude_namespaces:
+                retrieve_kw["exclude_namespaces"] = sorted(exclude_namespaces)
+            chunks = list(rag_svc.retrieve_chunks(**retrieve_kw) or [])
             snippets = [getattr(c, "text", "") for c in chunks if getattr(c, "text", "")]
             sources = [
                 {
@@ -2631,13 +2632,14 @@ class AnalysisGraphRunner:
     def _retrieve_business_rag(
         self, query: str, analysis_type: str
     ) -> tuple[list[str], list[dict[str, Any]], list[RetrievedChunk]]:
-        """结论前业务 RAG：全局 namespace，scene=analysis。"""
+        """结论前业务 RAG：全库检索但排除 nl2sql_* 命名空间，scene=analysis。"""
         try:
             return self._retrieve_rag_with_sources(
                 query=f"{analysis_type} {query}",
                 namespace=None,
                 top_k=8,
                 scene="analysis",
+                exclude_namespaces=_ANALYSIS_RAG_CITATIONS_EXCLUDED_NAMESPACES,
             )
         except Exception:  # noqa: BLE001
             logger.exception("analysis business rag retrieve failed")
