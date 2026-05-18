@@ -41,13 +41,11 @@
 # -----------------------------------------------------------------------------
 #
 #   ① 智能客服（chatbot）— 与综合分析独立，见 CHATBOT_PROMPT_DEFAULT_VERSION
-#   ② 综合分析 — 兜底（analysis）、分阶段 LLM（analysis_intent / analysis_data_plan / analysis_synthesis / analysis_report）、NL2SQL 数据计划 JSON（analysis_plan_*）— 与 LLM 计划合并，模板 item_id 优先
-#   ③ 看图诊断
-#   ④ 检修报告结构化解析
+#   ② 综合分析 · 兜底（analysis）— 各 stage 解析失败或未配置时的最后回退
+#   ③ 综合分析 · 分阶段 LLM（analysis_intent / analysis_data_plan / analysis_synthesis / analysis_report）
+#   ④ 综合分析 · NL2SQL 数据计划 JSON（analysis_plan_*）— 与 LLM 计划合并，模板 item_id 优先
 #   ⑤ NL2SQL 主链路（nl2sql）— 单次问数 SQL 前缀，与 ④ 编排不同、勿混淆
-
-
-
+#
 # =============================================================================
 # ① 智能客服模块（scene="chatbot"）
 # =============================================================================
@@ -55,7 +53,7 @@
 # 【谁用】ChatbotGraphRunner、chatbot_chain、ChatbotService；RAG ctx.scene=chatbot。
 # 【默认版本】环境变量 CHATBOT_PROMPT_DEFAULT_VERSION（默认 boiler_v1）；请求体可传 prompt_version 覆盖。
 # 【扩展】新增 version 条目并调 weight；勿改 scene 键名 chatbot。
-#
+
 # --- boiler_v1：领域分层模板（生产推荐默认）---
 chatbot:
   - version: boiler_v1
@@ -138,17 +136,11 @@ chatbot:
       若用户指向会话上文（含主题用语或「上述…」），请先按语义对齐对话历史中助手较近的相关表述；用户明确提到「第N…」时再对齐编号。知识片段用于补充依据，勿将检索片段顺序与会话内容混淆。
       当用户仅使用短句质疑或确认（如「确定吗」「你确定吗」「真的吗」「靠谱吗」「有依据吗」等），且对话历史中存在上一轮助手回答时，默认视为对该回答的确认/质疑：先概括上一轮结论 1～2 句，再说明依据来自检索片段还是推断；禁止在已有上一轮助手内容时，再说「没有具体上下文」类套话。
 
-
-
 # ===================================通用综合分析 相关提示词模板[开始]===========================================================
 # 目前主要应用与 超温分析和检修策略，当前通用综合分析 是 看图诊断的三臂并行中的其中一个臂(NL2SQL臂)
 # =============================================================================
-# ② 综合分析模块（scene="analysis"）
+# ② 综合分析模块 · 兜底 scene（scene="analysis"）
 # =============================================================================
-# ---------------------------------------------------------------------
-# ②.1 综合分析模块 · 二级兜底 scene（scene="analysis"）
-#    ②.2和②.3均没有配置时的兜底提示词模板
-# ---------------------------------------------------------------------
 #
 # 【谁用】AnalysisGraphRunner._resolve_stage_template：当
 #   analysis_<stage>_<analysis_type> 与 analysis_<stage> 均未配置或 content 为空时，回退到本 scene。
@@ -170,10 +162,9 @@ analysis:
       你是一名高级分析师，请以“结论、依据、建议”的结构输出分析结果。
 
 
-# ---------------------------------------------------------------------
-# ②.2 综合分析模块 · 分阶段 LLM . 一级兜底（仅 nl2sql 路径；payload 不调用意图/计划 LLM）
-#    ②.3 没有配置时的兜底提示词模板
-# ---------------------------------------------------------------------
+# =============================================================================
+# ③ 综合分析模块 · 分阶段 LLM（仅 nl2sql 路径；payload 不调用意图/计划 LLM）
+# =============================================================================
 #
 # 【开关】ANALYSIS_NL2SQL_LLM_PLANNER_ENABLED=false 时，图节点仍执行但走空输出/仅用模板，
 #         详见 analysis_graph_runner._lg_nl2sql_intent_llm / _lg_nl2sql_plan_llm_merge。
@@ -222,18 +213,14 @@ analysis_report:
     description: 综合分析报告结构模板
     content: |
       你是一名报告生成助手。请按“结论摘要、关键依据、可执行建议、风险与限制”组织输出，文本需便于结构化拆解。
-      
 
-# ---------------------------------------------------------------------
-# ②.3 综合分析模块 · 分阶段 LLM . 生产环境实际使用模板
-# 当前通用综合分析，支持的专项分析类型：超温分析(overheat_guidance)、检修策略(maintenance_strategy)、四管健康报告智能解读(four_tube_health_interpretation)、泄爆分析(leakage_burst_analysis)，下面针对这几种场景分别单独配置模板
-# 针对综合分析各专项分析，主编排流程包括的提示词模板(以超温分析为例)：该流程编排相关提示词(综合分析流程编排相关模板，即当前 ②.3 ) + NL2SQL 数据计划模板(下面 ②.4-1/4-2/4-3/4-4 中analysis_plan_overheat_guidance/)
-# ---------------------------------------------------------------------
+##############################################################################################################################################################
+# - 针对综合分析各专项分析，主编排流程包括的提示词模板(以超温分析为例)：该流程编排相关提示词(综合分析流程编排相关模板) + NL2SQL 数据计划模板(下面④中analysis_plan_overheat_guidance)
+#  当前通用综合分析，支持的专项分析类型：超温分析(overheat_guidance)、检修策略(maintenance_strategy)、四管健康报告智能解读(four_tube_health_interpretation)、泄爆分析(leakage_burst_analysis)
 
-
-# ************************************************************
-# ②.3-1 综合分析 · 分阶段编排 . 超温专项独立区域（analysis_type=overheat_guidance）
-# ************************************************************
+# =============================================================================
+# ③.1 综合分析 · 超温专项独立区域（analysis_type=overheat_guidance）
+# =============================================================================
 #
 # 说明：
 # - 该区域用于覆盖通用 stage 模板，命名采用 <stage>_overheat_guidance；
@@ -325,11 +312,11 @@ analysis_report_overheat_guidance:
       5) 风险与限制
       文本需便于结构化拆解，不要输出与章节无关内容。
 
-# ************************************************************
-# ②.3-2 综合分析 · 分阶段编排 . 检修策略专项（analysis_type=maintenance_strategy）
-# ************************************************************
+# =============================================================================
+# ③.2 综合分析 · 检修策略专项（analysis_type=maintenance_strategy）
+# =============================================================================
 #
-# 与 ②.3-1 相同：AnalysisGraphRunner 优先命中 *_maintenance_strategy，再回退通用 stage。
+# 与 ③.1 相同：AnalysisGraphRunner 优先命中 *_maintenance_strategy，再回退通用 stage。
 # 数据子任务见下方 analysis_plan_maintenance_strategy（表名与业务库清单对齐，由 NL2SQL 按 catalog 生成 SQL）。
 
 analysis_intent_maintenance_strategy:
@@ -400,13 +387,13 @@ analysis_report_maintenance_strategy:
       7) 风险与限制
       全文使用中文，避免与查库结果矛盾的表述。
 
-# ************************************************************
-# ②.3-3 综合分析 · 分阶段编排 . 四管健康报告智能解读（analysis_type=four_tube_health_interpretation）
-# ************************************************************
+# =============================================================================
+# ③.3 综合分析 · 四管健康报告智能解读（analysis_type=four_tube_health_interpretation）
+# =============================================================================
 #
 # 目标：将系统已产出的四管健康指数、风险等级、剩余寿命等结构化结果，结合测厚/超温/缺陷等佐证数据，
 # 生成为运行人员与检修班组可读的「运行简报」「检修建议书」类解读；支持用户指定篇幅、受众与侧重点。
-# 与 ②.3-1 / ②.3-2 相同：Runner 优先命中本区 *_four_tube_health_interpretation，再回退通用 stage；取数见 analysis_plan_four_tube_health_interpretation。
+# 与 ③.1 / ③.2 相同：Runner 优先命中本区 *_four_tube_health_interpretation，再回退通用 stage；取数见 analysis_plan_four_tube_health_interpretation。
 # 说明：历次报告 AI 对比、Word/PDF 导出可后续单独建设；本专项 synthesis 可对「若用户携带两次评估时间窗」做趋势口径说明，无数据则明确不写对比结论。
 
 analysis_intent_four_tube_health_interpretation:
@@ -470,13 +457,12 @@ analysis_report_four_tube_health_interpretation:
       4) 风险与限制
       全文中文，不与查库结果矛盾。
 
-
-# ************************************************************
-# ②.3-4 综合分析 · 分阶段编排 . 泄爆分析（analysis_type=leakage_burst_analysis）
-# ************************************************************
+# =============================================================================
+# ③.4 综合分析 · 泄爆分析（analysis_type=leakage_burst_analysis）
+# =============================================================================
 #
 # 目标：围绕锅炉受热面泄漏、爆管等泄爆类事件，结合履历、测厚、超温与台账数据做原因复盘与防控建议。
-# 与 ②.3-1～②.3-3 相同：Runner 优先命中 *_leakage_burst_analysis，再回退通用 stage；取数见 analysis_plan_leakage_burst_analysis。
+# 与 ③.1～③.3 相同：Runner 优先命中 *_leakage_burst_analysis，再回退通用 stage；取数见 analysis_plan_leakage_burst_analysis。
 
 analysis_intent_leakage_burst_analysis:
   - version: v1
@@ -544,19 +530,18 @@ analysis_report_leakage_burst_analysis:
       5) 处置与防控建议
       6) 风险与限制
       文本需便于结构化拆解，不要输出与章节无关内容。
-      
 
-# ---------------------------------------------------------------------
-# ②.4 综合分析模块 · NL2SQL 数据计划 JSON（scene=analysis_plan_<analysis_type>）
-# 当前通用综合分析，支持的专项分析类型：超温分析(overheat_guidance)、检修策略(maintenance_strategy)、四管健康报告智能解读(four_tube_health_interpretation)、泄爆分析(leakage_burst_analysis)，下面针对这几种场景分别单独配置模板
-# ---------------------------------------------------------------------
-#
+# =============================================================================
+# ④ 综合分析模块 · NL2SQL 数据计划 JSON（scene=analysis_plan_<analysis_type>）
+# =============================================================================
+# 针对 超温分析、检修策略、泄爆分析、四管健康报告智能解读
+
 # 【谁用】_build_data_plan_from_template：content 必须为 JSON 数组；每项字段建议：
 #   - item_id（string，唯一）、purpose、question、mandatory（bool）、dependency_ids（string 数组，引用其他 item_id，若都是空没有引用，即实现4个q同时并行）
 # 【优先级】相对 LLM plan 模板优先；无模板或 JSON 非法时回退代码内置默认任务再合并。
 # 【扩展】新增分析类型时：增加 analysis_plan_<新 analysis_type> 顶级键，并在 API 模型 AnalysisType（app/models/analysis.py）中对齐。
 
-# --- ②.4-1 综合分析模块 · NL2SQL 数据计划 . 超温分析   analysis_type=overheat_guidance ---
+# --- analysis_type=overheat_guidance ---
 analysis_plan_overheat_guidance:
   - version: v1
     weight: 1.0
@@ -594,8 +579,7 @@ analysis_plan_overheat_guidance:
 #          "dependency_ids": []
 #        }
 
-
-# --- ②.4-2 综合分析模块 · NL2SQL 数据计划 . 检修策略   analysis_type=maintenance_strategy ---
+# --- analysis_type=maintenance_strategy ---
 # 默认 6 条子任务与常见部署 ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS=6 对齐；若需启停机 monitor_boiler_start_stop、
 # 吹灰 monitor_soot_blower_run_record、磨煤机 monitor_coal_mill_run_record、防磨防爆小组 account_group 等专项取数，
 # 请通过请求体 data_requirements_hint 追加，或提高上限后在本 JSON 数组中扩展。
@@ -650,7 +634,7 @@ analysis_plan_maintenance_strategy:
         }
       ]
 
-# --- ②.4-3 综合分析模块 · NL2SQL 数据计划 . 四管健康解读   analysis_type=four_tube_health_interpretation ---
+# --- analysis_type=four_tube_health_interpretation ---
 # 与常见 ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS=6 对齐；健康指数/风险/寿命以 catalog 中业务结果表为准（名称可能是视图或专题表）。
 analysis_plan_four_tube_health_interpretation:
   - version: v1
@@ -702,7 +686,7 @@ analysis_plan_four_tube_health_interpretation:
         }
       ]
 
-# --- ②.4-4 综合分析模块 · NL2SQL 数据计划 . 泄爆分析   analysis_type=leakage_burst_analysis ---
+# --- analysis_type=leakage_burst_analysis ---
 # 默认 6 条子任务与常见部署 ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS=6 对齐；表名以 catalog 为准（overhaul_leakage 为泄爆履历主表）。
 analysis_plan_leakage_burst_analysis:
   - version: v1
@@ -756,19 +740,48 @@ analysis_plan_leakage_burst_analysis:
 
 # ===================================通用综合分析 相关提示词模板[结束]===========================================================
 
-
-# ===================================看图诊断相关提示词模板[开始]===============================================================
-# =============================================================================
-# ③ 看图诊断模块（scene=""）
+# ===================================看图诊断相关提示词模板[开始]=====================================================
 # 看图诊断是基于综合分析通用版的NL2SQL臂(数据计划并行)基础上，又实现了同NL2SQL臂并行的视觉臂和RAG臂
-# 所以看图诊断的提示词模板，除了与综合分析一致的 分阶段编排 、NL2SQL数据计划 之外，还包括 视觉臂 提示词（RAG臂不需要提示词）
-# =============================================================================
+
 # --- 看图诊断-NL2SQL臂的生成sql提示词基于模板 ---
+# --- analysis_type=maintenance_strategy：专项分节见上文 ③.2 ---
 # --- analysis_type=img_diag（看图诊断 · NL2SQL 数据计划）---
-#
-# ************************************************************
-# ③.1 综合分析 · 分阶段编排 （analysis_type=img_diag）
-# ************************************************************
+analysis_plan_img_diag:
+  - version: v1
+    weight: 1.0
+    description: 看图诊断数据计划（占位符 {unit_id} {location} {location_struct} 运行时代码替换）
+    content: |
+      [
+        {
+          "item_id": "q1",
+          "purpose": "台账与缺陷履历",
+          "question": "机组标识为 {unit_id}，泄漏/拍照位置为 {location}（结构化:{location_struct}）。查询该区域设备台账、历史缺陷与检修记录摘要",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2",
+          "purpose": "壁温与运行工况",
+          "question": "机组标识为 {unit_id}，位置 {location}。查询该区域近期壁温轨迹、超温累计时长（若有字段）、同期负荷与氧量等运行工况摘要",
+          "mandatory": true,
+          "dependency_ids": ["q1"]
+        },
+        {
+          "item_id": "q3",
+          "purpose": "测厚与磨损线索",
+          "question": "机组标识为 {unit_id}，位置 {location}。查询该区域测厚记录、最小壁厚趋势及若有记载的吹灰或烟气走廊相关信息",
+          "mandatory": false,
+          "dependency_ids": ["q1"]
+        },
+        {
+          "item_id": "q4",
+          "purpose": "告警与同类记录",
+          "question": "机组标识为 {unit_id}，位置 {location}。查询关联告警事件及同类受热面邻近区域的缺陷案例摘要（若有）",
+          "mandatory": false,
+          "dependency_ids": ["q1"]
+        }
+      ]
+
 # --- 看图诊断 意图识别 提示词模板 --
 analysis_intent_img_diag:
   - version: v1
@@ -816,49 +829,6 @@ analysis_report_img_diag:
       报告须对应小节：可能原因、证据链、检查建议、处置建议、免责声明。
       证据链必须三类标签齐备（若无某类证据则说明原因）。
 
-# ************************************************************
-# ③.2 综合分析 · NL2SQL数据计划 （analysis_type=img_diag）
-# ************************************************************
-analysis_plan_img_diag:
-  - version: v1
-    weight: 1.0
-    description: 看图诊断数据计划（占位符 {unit_id} {location} {location_struct} 运行时代码替换）
-    content: |
-      [
-        {
-          "item_id": "q1",
-          "purpose": "台账与缺陷履历",
-          "question": "机组标识为 {unit_id}，泄漏/拍照位置为 {location}（结构化:{location_struct}）。查询该区域设备台账、历史缺陷与检修记录摘要",
-          "mandatory": true,
-          "dependency_ids": []
-        },
-        {
-          "item_id": "q2",
-          "purpose": "壁温与运行工况",
-          "question": "机组标识为 {unit_id}，位置 {location}。查询该区域近期壁温轨迹、超温累计时长（若有字段）、同期负荷与氧量等运行工况摘要",
-          "mandatory": true,
-          "dependency_ids": ["q1"]
-        },
-        {
-          "item_id": "q3",
-          "purpose": "测厚与磨损线索",
-          "question": "机组标识为 {unit_id}，位置 {location}。查询该区域测厚记录、最小壁厚趋势及若有记载的吹灰或烟气走廊相关信息",
-          "mandatory": false,
-          "dependency_ids": ["q1"]
-        },
-        {
-          "item_id": "q4",
-          "purpose": "告警与同类记录",
-          "question": "机组标识为 {unit_id}，位置 {location}。查询关联告警事件及同类受热面邻近区域的缺陷案例摘要（若有）",
-          "mandatory": false,
-          "dependency_ids": ["q1"]
-        }
-      ]
-
-
-# ************************************************************
-# ③.3 综合分析 · 视觉臂 （）
-# ************************************************************
 # --- 看图诊断 视觉臂 提示词模板 --
 analysis_img_diag_vision:
   - version: v1
@@ -874,7 +844,8 @@ analysis_img_diag_vision:
         "notes": "简短客观描述",
         "confidence_notes": "可见度或遮挡等因素说明"
       }
-# ===================================看图诊断相关提示词模板[结束]===============================================================
+
+# ===================================综合分析-看图诊断相关提示词模板[结束]=====================================================
 
 # --- analysis_type=custom（按需复制上结构并改 item_id/question；无则走代码内置默认）---
 # analysis_plan_custom:
@@ -884,16 +855,17 @@ analysis_img_diag_vision:
 #     content: |
 #       []
 
-
-# ===================================检修报告结构化提取相关提示词模板[开始]===============================================================
 # =============================================================================
-# ④ 检修报告结构化提取（scene=inspection_extract*）
+# ④.1 检修报告结构化提取（scene=inspection_extract*）
+# =============================================================================
+#
 # 使用方：app/services/inspection_extract_service.py
 # - inspection_extract：通用兜底
 # - inspection_extract_parse：初始候选抽取（位置/行号/管号/壁厚/证据）
 # - inspection_extract_classify：分类判定（检测类型/缺陷类型/是否换管）
 # - inspection_extract_repair：结构修复（字段、枚举、类型）
-# =============================================================================
+
+# ===================================检修报告结构化提取相关提示词模板[开始]=====================================================
 
 inspection_extract:
   - version: v1
@@ -1414,17 +1386,18 @@ inspection_extract_v0_extract:
       - 每条 record：检测位置、行号、管号非空字符串；壁厚为数字；检测类型与缺陷类型、是否换管三者逻辑自洽。
       - records 条数应与 IRT 中可解析的「编号+壁厚」对数量**大致匹配**，明显偏少时在 warnings 写「可能漏抽」。
 
-# ===================================检修报告结构化提取相关提示词模板[开始]===============================================================
+# ===================================检修报告结构化提取相关提示词模板[结束]=====================================================
 
 
-# ===================================NL2SQL主链路相关提示词模板[开始]===============================================================
+# ===================================NL2SQL相关提示词模板[开始]=============================================================
 # =============================================================================
 # ⑤ NL2SQL 主链路模块（scene="nl2sql"）
+# =============================================================================
+#
 # 【谁用】app/nl2sql/chain.py 加载 SQL 生成前缀；与 ④「综合分析数据计划」不是同一调用链。
 # 【版本选择】环境变量 NL2SQL_PROMPT_DEFAULT_VERSION（见 app/app-deploy/.env.example）。
 # 【占位符】v2 含 {{NL2SQL_SCHEMA_CATALOG}}，由运行时注入当前库表结构。
-# =============================================================================
-#
+
 nl2sql:
   # --- v1：通用只读 SELECT 前缀 ---
   - version: v1
@@ -1460,4 +1433,4 @@ nl2sql:
 
       【输出形式】除字符串字面量内部外，整条 SQL 输出为单行紧凑语句，不要换行与装饰性缩进。
 
-# ===================================NL2SQL主链路相关提示词模板[结束]===============================================================
+# ===================================NL2SQL相关提示词模板[结束]=============================================================
