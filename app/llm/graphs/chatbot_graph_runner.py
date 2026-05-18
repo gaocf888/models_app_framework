@@ -20,7 +20,7 @@ from .chatbot_follow_up import build_suggested_questions
 from .chatbot_graph_state import ChatbotGraphState
 from .chatbot_intent_rules import classify_chatbot_intent
 from .chatbot_nl2sql_answer import summarize_nl2sql_with_llm
-from .chatbot_rag_citations import chunks_to_rag_citations
+from .chatbot_rag_citations import chunks_to_rag_citations, filter_rag_citation_dicts
 from .chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
 from .chatbot_dialogue_anchor import build_dialogue_anchor_block
 from .chatbot_anaphora_detect import classify_anaphora_rules
@@ -1048,7 +1048,11 @@ class ChatbotLangGraphRunner:
         # 字段名应尽量保持稳定，避免下游解析兼容性问题。
         is_data_query = bool(state.get("used_nl2sql")) or state.get("intent_label") == "data_query"
         suggested = [] if is_data_query else list(state.get("suggested_questions") or [])
-        citations = [] if is_data_query else list(state.get("rag_citations") or [])
+        citations = (
+            []
+            if is_data_query
+            else filter_rag_citation_dicts(list(state.get("rag_citations") or []))
+        )
         return {
             "used_rag": bool(state.get("used_rag", False)),
             "intent_label": state.get("intent_label"),

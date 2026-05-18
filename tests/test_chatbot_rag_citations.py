@@ -49,6 +49,18 @@ def test_chunks_to_rag_citations_original_content_url_from_metadata():
     assert cites[0].get("original_content_url") == "https://cdn.example.com/doc.pdf"
 
 
+def test_chunks_to_rag_citations_excludes_nl2sql_namespaces():
+    chunks = [
+        RetrievedChunk(text="schema ddl", namespace="nl2sql_schema", doc_name="t1", chunk_id="s1"),
+        RetrievedChunk(text="biz rule", namespace="nl2sql_biz_knowledge", doc_name="b1", chunk_id="b1"),
+        RetrievedChunk(text="qa ex", namespace="nl2sql_qa_examples", doc_name="q1", chunk_id="q1"),
+        RetrievedChunk(text="锅炉知识", namespace="boiler_knowledge", doc_name="手册", chunk_id="k1"),
+    ]
+    cites = chunks_to_rag_citations(chunks)
+    assert len(cites) == 1
+    assert cites[0]["namespace"] == "boiler_knowledge"
+
+
 def test_chunks_to_rag_citations_empty():
     assert chunks_to_rag_citations(None) == []
     assert chunks_to_rag_citations([]) == []

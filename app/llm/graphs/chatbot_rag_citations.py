@@ -11,6 +11,41 @@ from typing import Any, Dict, List
 
 from app.rag.models import RetrievedChunk
 
+# 智能客服 finished.meta.rag_citations：不展示 NL2SQL 库表/业务/QA 知识库片段
+RAG_CITATIONS_EXCLUDED_NAMESPACES = frozenset(
+    {"nl2sql_schema", "nl2sql_biz_knowledge", "nl2sql_qa_examples"}
+)
+
+
+def rag_citation_namespace_allowed(
+    namespace: str | None,
+    *,
+    excluded: frozenset[str] = RAG_CITATIONS_EXCLUDED_NAMESPACES,
+) -> bool:
+    if not excluded:
+        return True
+    ns = (namespace or "").strip()
+    return ns not in excluded
+
+
+def filter_rag_citation_dicts(
+    citations: List[Dict[str, Any]] | None,
+    *,
+    excluded: frozenset[str] = RAG_CITATIONS_EXCLUDED_NAMESPACES,
+) -> List[Dict[str, Any]]:
+    """从已组装的 citation dict 列表中剔除指定 namespace（供结束帧二次过滤）。"""
+    if not citations:
+        return []
+    return [
+        c
+        for c in citations
+        if isinstance(c, dict)
+        and rag_citation_namespace_allowed(
+            str(c.get("namespace") or "") if c.get("namespace") is not None else None,
+            excluded=excluded,
+        )
+    ]
+
 
 def _original_content_url_from_chunk_metadata(meta: Any) -> str | None:
     """
@@ -46,13 +81,19 @@ def _original_content_url_from_chunk_metadata(meta: Any) -> str | None:
     return None
 
 
-def chunks_to_rag_citations(chunks: List[RetrievedChunk] | None, *, max_items: int = 24) -> List[Dict[str, Any]]:
+def chunks_to_rag_citations(
+    chunks: List[RetrievedChunk] | None,
+    *,
+    max_items: int = 24,
+    exclude_namespaces: frozenset[str] | None = RAG_CITATIONS_EXCLUDED_NAMESPACES,
+) -> List[Dict[str, Any]]:
     """
     将 `RetrievedChunk` 转为可 JSON 序列化的 dict 列表（用于 `finished.meta.rag_citations`）。
 
     - 按 (namespace, doc_name, chunk_id, text 前缀) 去重，保留首次出现顺序；
     - `text_preview` 为片段摘要，避免 meta 过大；
-    - 若 chunk 的 metadata 中含摄入原始 URL（见 `_original_content_url_from_chunk_metadata`），则增加 `original_content_url`。
+    - 若 chunk 的 metadata 中含摄入原始 URL（见 `_original_content_url_from_chunk_metadata`），则增加 `original_content_url`；
+    - 默认排除 ``nl2sql_schema`` / ``nl2sql_biz_knowledge`` / ``nl2sql_qa_examples``（传 ``exclude_namespaces=()`` 可关闭）。
     """
     if not chunks:
         return []
@@ -61,6 +102,10 @@ def chunks_to_rag_citations(chunks: List[RetrievedChunk] | None, *, max_items: i
     out: List[Dict[str, Any]] = []
     for c in chunks:
         if not c:
+            continue
+        if exclude_namespaces is not None and not rag_citation_namespace_allowed(
+            getattr(c, "namespace", None), excluded=exclude_namespaces
+        ):
             continue
         tx = (c.text or "").strip()
         if not tx:

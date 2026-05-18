@@ -43,6 +43,7 @@ from app.models.chatbot import (
     SessionTitlePatchRequest,
     SessionTitlePatchResponse,
 )
+from app.llm.graphs.chatbot_rag_citations import filter_rag_citation_dicts
 from app.services.chatbot_service import ChatbotService
 from app.services.chatbot_image_utils import split_message_content_and_images
 
@@ -54,14 +55,14 @@ _conv_admin = _shared_conv
 
 
 def _session_message_rag_citations(raw: Any) -> list[dict[str, Any]]:
-    """将存储中的 rag_citations 规范为 dict 列表（与 SSE finished.meta 一致）。"""
+    """将存储中的 rag_citations 规范为 dict 列表（与 SSE finished.meta 一致，并剔除 NL2SQL 库表知识库）。"""
     if not isinstance(raw, list):
         return []
     out: list[dict[str, Any]] = []
     for it in raw:
         if isinstance(it, dict):
             out.append(dict(it))
-    return out
+    return filter_rag_citation_dicts(out)
 def _delete_messages_by_ids(user_id: str, session_id: str, message_ids: list[str]) -> SessionMessageDeleteResponse:
     mids = [str(x or "").strip().lower() for x in (message_ids or []) if str(x or "").strip()]
     if not mids:
