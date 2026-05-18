@@ -144,6 +144,7 @@ async def run_analysis_with_nl2sql_stream(data: AnalysisNL2SQLRequest) -> Stream
     - `event: meta`：含 `request_id`、`plan_id`、`analysis_type`、`orchestrator=sequential_stream` 等；
     - 多条 `summary_delta`：增量文本；
     - `summary_complete`：流结束元数据（`chars`、`synthesis_ms`）；
+    - `finished`：结束帧，`meta` 含 `rag_citations`（与智能客服同形，含 `original_content_url` 等；**不含** `nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples` 库表知识片段，避免与 acquire_data 内 NL2SQL RAG 重复展示）、`used_rag` / `used_plan_rag` / `used_business_rag`；
     - `structured_async_enqueued`：已排队后台组装与 trace 持久化。
 
     完整 **`AnalysisV2Result`（含 `structured_report`）** 在流结束后**异步**构建，与同步接口结构一致；

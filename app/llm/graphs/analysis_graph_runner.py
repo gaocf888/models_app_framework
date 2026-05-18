@@ -52,7 +52,9 @@ from app.models.analysis_nl2sql_llm import (
     extract_json_object_from_llm_text,
 )
 from app.models.nl2sql import NL2SQLQueryRequest
+from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_citations
 from app.rag.hybrid_rag_service import HybridRAGService
+from app.rag.models import RetrievedChunk
 from app.services.analysis_stream_hooks import dispatch_analysis_nl2sql_stream_structured
 from app.services.nl2sql_service import NL2SQLService
 
@@ -71,6 +73,10 @@ _PLAN_RAG_ANALYSIS_TYPE_CN: dict[str, str] = {
 _PLAN_TASK_SCOPE_GUARD_CN = "若用户未指定机组/区域，则不要在 WHERE 中臆造具体锅炉名或墙别。"
 # 规划前 RAG：写入「请结合以下规则线索」的条数（命名空间间轮询取值）
 _PLAN_GUIDE_MAX_SNIPPETS = 4
+# finished.meta.rag_citations：不展示 NL2SQL 取数链路的库表/QA 命名空间（与 acquire_data 内 RAG 一致）
+_ANALYSIS_RAG_CITATIONS_EXCLUDED_NAMESPACES = frozenset(
+    {"nl2sql_schema", "nl2sql_biz_knowledge", "nl2sql_qa_examples"}
+)
 
 
 @dataclass
@@ -97,7 +103,10 @@ class _Nl2SqlPipelineThroughRagContext:
     context_snippets: list[str]
     plan_rag_sources: list[dict[str, Any]]
     biz_rag_sources: list[dict[str, Any]]
+    rag_citations: list[dict[str, Any]]
     used_rag: bool
+    used_plan_rag: bool
+    used_business_rag: bool
     intent_version: str
     data_plan_version: str
     planner_warnings: list[str]
@@ -147,6 +156,45 @@ class AnalysisGraphRunner:
         doc_id = meta.get("doc_id") or meta.get("document_id") or getattr(chunk, "chunk_id", None) or getattr(chunk, "doc_name", None)
         return str(doc_id) if doc_id is not None else ""
 
+    @staticmethod
+    def _analysis_rag_citation_namespace_allowed(namespace: str | None) -> bool:
+        ns = (namespace or "").strip()
+        return ns not in _ANALYSIS_RAG_CITATIONS_EXCLUDED_NAMESPACES
+
+    @classmethod
+    def _filter_analysis_rag_citation_chunks(
+        cls, chunks: list[RetrievedChunk] | None
+    ) -> list[RetrievedChunk]:
+        if not chunks:
+            return []
+        return [c for c in chunks if cls._analysis_rag_citation_namespace_allowed(getattr(c, "namespace", None))]
+
+    @classmethod
+    def _build_analysis_rag_citations(
+        cls,
+        *,
+        plan_chunks: list[RetrievedChunk] | None = None,
+        business_chunks: list[RetrievedChunk] | None = None,
+        max_items: int = 32,
+    ) -> list[dict[str, Any]]:
+        """
+        合并规划前 + 业务 RAG 分片，转为与智能客服一致的 rag_citations（含 original_content_url）。
+
+        排除 nl2sql_schema / nl2sql_biz_knowledge / nl2sql_qa_examples，避免 acquire_data 内
+        NL2SQL RAG 与库表知识库片段出现在结束帧；plan_context 若命中上述命名空间亦不在 citations 展示。
+        """
+        merged: list[RetrievedChunk] = []
+        merged.extend(cls._filter_analysis_rag_citation_chunks(plan_chunks))
+        merged.extend(cls._filter_analysis_rag_citation_chunks(business_chunks))
+        cites = chunks_to_rag_citations(merged, max_items=max_items)
+        return [
+            c
+            for c in cites
+            if cls._analysis_rag_citation_namespace_allowed(
+                str(c.get("namespace") or "") if c.get("namespace") is not None else None
+            )
+        ]
+
     def _retrieve_rag_with_sources(
         self,
         *,
@@ -155,21 +203,25 @@ class AnalysisGraphRunner:
         top_k: int,
         scene: str = "analysis",
         rerank_query: str | None = None,
-    ) -> tuple[list[str], list[dict[str, Any]]]:
+    ) -> tuple[list[str], list[dict[str, Any]], list[RetrievedChunk]]:
         """
         统一 RAG 检索输出：
         - snippets: 供 LLM 使用的文本片段；
-        - sources: 审计证据（namespace/doc_id/score）。
+        - sources: 审计证据（namespace/doc_id/score）；
+        - chunks: 原始分片（用于 rag_citations）。
         """
         # 优先使用 retrieve_chunks（可拿到 doc_id/score），否则回退 retrieve_context 文本检索。
         rag_svc = getattr(self._hybrid_rag, "_rag_service", None)
         if rag_svc is not None and hasattr(rag_svc, "retrieve_chunks"):
-            chunks = rag_svc.retrieve_chunks(
-                query=query,
-                top_k=top_k,
-                namespace=namespace,
-                scene=scene,
-                rerank_query=rerank_query,
+            chunks = list(
+                rag_svc.retrieve_chunks(
+                    query=query,
+                    top_k=top_k,
+                    namespace=namespace,
+                    scene=scene,
+                    rerank_query=rerank_query,
+                )
+                or []
             )
             snippets = [getattr(c, "text", "") for c in chunks if getattr(c, "text", "")]
             sources = [
@@ -180,13 +232,13 @@ class AnalysisGraphRunner:
                 }
                 for c in chunks
             ]
-            return snippets, sources
+            return snippets, sources, chunks
         try:
             snippets = self._hybrid_rag.retrieve(query, namespace=namespace, top_k=top_k)
         except TypeError:
             snippets = self._hybrid_rag.retrieve(query, namespace=namespace)
         sources = [{"namespace": namespace or "global", "doc_id": "", "score": None} for _ in snippets]
-        return list(snippets), sources
+        return list(snippets), sources, []
 
     @staticmethod
     def _plan_task_to_dict(t: _PlanTask) -> dict[str, Any]:
@@ -613,13 +665,15 @@ class AnalysisGraphRunner:
         used_rag = False
         if req.options.enable_rag:
             t_rag = perf_counter()
-            context_snippets, rag_sources = self._retrieve_business_rag(req.query, at)
+            context_snippets, rag_sources, biz_chunks = self._retrieve_business_rag(req.query, at)
             used_rag = len(context_snippets) > 0
+            rag_citations = self._build_analysis_rag_citations(business_chunks=biz_chunks)
             ms = int((perf_counter() - t_rag) * 1000)
             ANALYSIS_NODE_LATENCY.labels(node="rag_enrichment", analysis_type=at).observe(perf_counter() - t_rag)
             return {
                 "context_snippets": context_snippets,
                 "rag_sources": rag_sources,
+                "rag_citations": rag_citations,
                 "used_rag": used_rag,
                 "node_latency_ms": self._merge_latency(state, "rag_enrichment", ms),
                 "node_status": self._merge_status(state, "rag_enrichment", "success"),
@@ -627,6 +681,7 @@ class AnalysisGraphRunner:
         return {
             "context_snippets": [],
             "rag_sources": [],
+            "rag_citations": [],
             "used_rag": False,
             "node_latency_ms": self._merge_latency(state, "rag_enrichment", 0),
             "node_status": self._merge_status(state, "rag_enrichment", "success"),
@@ -734,6 +789,7 @@ class AnalysisGraphRunner:
         evidence = AnalysisEvidence(
             used_rag=used_rag,
             rag_sources=rag_sources[:32],
+            rag_citations=list(state.get("rag_citations") or []),
             nl2sql_calls=[],
             data_coverage={
                 "mode": "payload",
@@ -799,12 +855,15 @@ class AnalysisGraphRunner:
         req = AnalysisNL2SQLRequest.model_validate(state["nl2sql_request"])
         at = req.analysis_type
         t0 = perf_counter()
-        plan_context, plan_rag_sources = self._retrieve_plan_rag(req.query, at, req.options.enable_rag)
+        plan_context, plan_rag_sources, plan_rag_chunks = self._retrieve_plan_rag(
+            req.query, at, req.options.enable_rag
+        )
         ms = int((perf_counter() - t0) * 1000)
         ANALYSIS_NODE_LATENCY.labels(node="plan_context_rag", analysis_type=at).observe(perf_counter() - t0)
         return {
             "plan_context": plan_context,
             "plan_rag_sources": plan_rag_sources,
+            "plan_rag_chunks": plan_rag_chunks,
             "planner_warnings": list(state.get("planner_warnings") or []),
             "node_latency_ms": self._merge_latency(state, "plan_context_rag", ms),
             "node_status": self._merge_status(state, "plan_context_rag", "success"),
@@ -933,24 +992,36 @@ class AnalysisGraphRunner:
         used_rag = False
         if req.options.enable_rag:
             t_rag = perf_counter()
-            context_snippets, biz_rag_sources = self._retrieve_business_rag(req.query, at)
-            used_rag = len(context_snippets) > 0
+            context_snippets, biz_rag_sources, biz_rag_chunks = self._retrieve_business_rag(req.query, at)
+            used_business_rag = len(context_snippets) > 0
             ms = int((perf_counter() - t_rag) * 1000)
             ANALYSIS_NODE_LATENCY.labels(node="rag_enrichment", analysis_type=at).observe(perf_counter() - t_rag)
             plan_src = list(state.get("plan_rag_sources") or [])
+            plan_chunks = list(state.get("plan_rag_chunks") or [])
             merged_sources = (plan_src + biz_rag_sources)[:64]
+            rag_citations = self._build_analysis_rag_citations(
+                plan_chunks=cast(list[RetrievedChunk], plan_chunks),
+                business_chunks=biz_rag_chunks,
+            )
+            used_rag = bool(plan_src) or used_business_rag
             return {
                 "context_snippets": context_snippets,
                 "rag_sources": merged_sources,
+                "rag_citations": rag_citations,
                 "used_rag": used_rag,
                 "node_latency_ms": self._merge_latency(state, "rag_enrichment", ms),
                 "node_status": self._merge_status(state, "rag_enrichment", "success"),
             }
         plan_src = list(state.get("plan_rag_sources") or [])
+        plan_chunks = list(state.get("plan_rag_chunks") or [])
+        rag_citations = self._build_analysis_rag_citations(
+            plan_chunks=cast(list[RetrievedChunk], plan_chunks),
+        )
         return {
             "context_snippets": [],
             "rag_sources": plan_src[:64],
-            "used_rag": False,
+            "rag_citations": rag_citations,
+            "used_rag": bool(plan_src),
             "node_latency_ms": self._merge_latency(state, "rag_enrichment", 0),
             "node_status": self._merge_status(state, "rag_enrichment", "success"),
         }
@@ -1038,6 +1109,7 @@ class AnalysisGraphRunner:
         evidence = AnalysisEvidence(
             used_rag=used_rag,
             rag_sources=rag_sources_state[:64],
+            rag_citations=list(state.get("rag_citations") or []),
             nl2sql_calls=calls,
             data_coverage={
                 "mode": "nl2sql",
@@ -1153,12 +1225,15 @@ class AnalysisGraphRunner:
         used_rag = False
         if req.options.enable_rag:
             t_rag = perf_counter()
-            context_snippets, rag_sources = self._retrieve_business_rag(req.query, req.analysis_type)
+            context_snippets, rag_sources, biz_chunks = self._retrieve_business_rag(req.query, req.analysis_type)
             used_rag = len(context_snippets) > 0
+            rag_citations = self._build_analysis_rag_citations(business_chunks=biz_chunks)
             self._mark_node(node_latency_ms, node_status, "rag_enrichment", t_rag, ok=True)
             ANALYSIS_NODE_LATENCY.labels(node="rag_enrichment", analysis_type=req.analysis_type).observe(
                 (perf_counter() - t_rag)
             )
+        else:
+            rag_citations = []
 
         t_quality = perf_counter()
         quality_report = self._evaluate_payload_quality(req.payload, req.analysis_type)
@@ -1229,6 +1304,7 @@ class AnalysisGraphRunner:
         evidence = AnalysisEvidence(
             used_rag=used_rag,
             rag_sources=rag_sources[:32],
+            rag_citations=rag_citations,
             nl2sql_calls=[],
             data_coverage={
                 "mode": "payload",
@@ -1318,7 +1394,9 @@ class AnalysisGraphRunner:
         self._conv.append_user_message(req.user_id, req.session_id, req.query)
 
         t_pc = perf_counter()
-        plan_context, plan_rag_sources = self._retrieve_plan_rag(req.query, req.analysis_type, req.options.enable_rag)
+        plan_context, plan_rag_sources, plan_rag_chunks = self._retrieve_plan_rag(
+            req.query, req.analysis_type, req.options.enable_rag
+        )
         node_latency_ms["plan_context_rag"] = int((perf_counter() - t_pc) * 1000)
         node_status["plan_context_rag"] = "success"
 
@@ -1393,15 +1471,25 @@ class AnalysisGraphRunner:
 
         context_snippets: list[str] = []
         biz_rag_sources: list[dict[str, Any]] = []
-        used_rag = False
+        biz_rag_chunks: list[RetrievedChunk] = []
+        used_business_rag = False
         if req.options.enable_rag:
             t_rag = perf_counter()
-            context_snippets, biz_rag_sources = self._retrieve_business_rag(req.query, req.analysis_type)
-            used_rag = len(context_snippets) > 0
+            context_snippets, biz_rag_sources, biz_rag_chunks = self._retrieve_business_rag(
+                req.query, req.analysis_type
+            )
+            used_business_rag = len(context_snippets) > 0
             self._mark_node(node_latency_ms, node_status, "rag_enrichment", t_rag, ok=True)
             ANALYSIS_NODE_LATENCY.labels(node="rag_enrichment", analysis_type=req.analysis_type).observe(
                 (perf_counter() - t_rag)
             )
+
+        used_plan_rag = bool(plan_rag_sources)
+        used_rag = used_plan_rag or used_business_rag
+        rag_citations = self._build_analysis_rag_citations(
+            plan_chunks=plan_rag_chunks if req.options.enable_rag else None,
+            business_chunks=biz_rag_chunks if req.options.enable_rag else None,
+        )
 
         pipeline_ms = int((perf_counter() - t_pipeline) * 1000)
         logger.info(
@@ -1443,7 +1531,10 @@ class AnalysisGraphRunner:
             context_snippets=context_snippets,
             plan_rag_sources=plan_rag_sources,
             biz_rag_sources=biz_rag_sources,
+            rag_citations=rag_citations,
             used_rag=used_rag,
+            used_plan_rag=used_plan_rag,
+            used_business_rag=used_business_rag,
             intent_version=intent_version,
             data_plan_version=data_plan_version,
             planner_warnings=planner_warnings,
@@ -1510,6 +1601,7 @@ class AnalysisGraphRunner:
         quality_report = ctx.quality_report
         plan_rag_sources = ctx.plan_rag_sources
         biz_rag_sources = ctx.biz_rag_sources
+        rag_citations = ctx.rag_citations
         used_rag = ctx.used_rag
         intent_version = ctx.intent_version
         data_plan_version = ctx.data_plan_version
@@ -1544,6 +1636,7 @@ class AnalysisGraphRunner:
         evidence = AnalysisEvidence(
             used_rag=used_rag,
             rag_sources=(plan_rag_sources + biz_rag_sources)[:64],
+            rag_citations=rag_citations,
             nl2sql_calls=nl2sql_calls,
             data_coverage={
                 "mode": "nl2sql",
@@ -1778,6 +1871,20 @@ class AnalysisGraphRunner:
                 "request_id": ctx.request_id,
                 "chars": len(summary),
                 "synthesis_ms": synthesis_ms,
+            }
+
+            yield {
+                "event": "finished",
+                "meta": {
+                    "request_id": ctx.request_id,
+                    "plan_id": ctx.plan_id,
+                    "analysis_type": req.analysis_type,
+                    "data_mode": "nl2sql",
+                    "used_rag": ctx.used_rag,
+                    "used_plan_rag": ctx.used_plan_rag,
+                    "used_business_rag": ctx.used_business_rag,
+                    "rag_citations": ctx.rag_citations,
+                },
             }
 
             asyncio.create_task(
@@ -2494,17 +2601,18 @@ class AnalysisGraphRunner:
 
     def _retrieve_plan_rag(
         self, query: str, analysis_type: str, enable_rag: bool
-    ) -> tuple[list[str], list[dict[str, Any]]]:
+    ) -> tuple[list[str], list[dict[str, Any]], list[RetrievedChunk]]:
         """规划前 RAG：逐 nl2sql_* 命名空间检索，scene 固定为 nl2sql。"""
         if not enable_rag:
-            return [], []
+            return [], [], []
         recall_q, rerank_q = self._plan_rag_recall_rerank_queries(query, analysis_type)
         namespaces = ["nl2sql_schema", "nl2sql_biz_knowledge", "nl2sql_qa_examples"]
         results: list[str] = []
         sources: list[dict[str, Any]] = []
+        chunks: list[RetrievedChunk] = []
         for ns in namespaces:
             try:
-                parts, src = self._retrieve_rag_with_sources(
+                parts, src, ns_chunks = self._retrieve_rag_with_sources(
                     query=recall_q,
                     namespace=ns,
                     top_k=3,
@@ -2517,9 +2625,12 @@ class AnalysisGraphRunner:
             if parts:
                 results.extend(parts[:3])
                 sources.extend(src[:3])
-        return results[:9], sources[:9]
+                chunks.extend(ns_chunks[:3])
+        return results[:9], sources[:9], chunks
 
-    def _retrieve_business_rag(self, query: str, analysis_type: str) -> tuple[list[str], list[dict[str, Any]]]:
+    def _retrieve_business_rag(
+        self, query: str, analysis_type: str
+    ) -> tuple[list[str], list[dict[str, Any]], list[RetrievedChunk]]:
         """结论前业务 RAG：全局 namespace，scene=analysis。"""
         try:
             return self._retrieve_rag_with_sources(
@@ -2530,7 +2641,7 @@ class AnalysisGraphRunner:
             )
         except Exception:  # noqa: BLE001
             logger.exception("analysis business rag retrieve failed")
-            return [], []
+            return [], [], []
 
     def _build_data_plan(self, req: AnalysisNL2SQLRequest, *, plan_context: list[str]) -> list[_PlanTask]:
         """数据计划：先 YAML 模板 `analysis_plan_<type>`；为空时用代码内置默认任务，再拼 data_requirements_hint 与 plan_context 引导。"""

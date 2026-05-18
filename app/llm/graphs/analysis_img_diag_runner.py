@@ -57,7 +57,10 @@ class _ImgDiagPack:
     plan_rag_sources: list[dict[str, Any]]
     quality_report: dict[str, Any]
     merged_rag_sources: list[dict[str, Any]]
+    rag_citations: list[dict[str, Any]]
     used_rag: bool
+    used_plan_rag: bool
+    used_business_rag: bool
     planning_ctx: str | None
     synthesis_prompt: str
     synthesis_version: str
@@ -186,24 +189,26 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 logger.warning("img_diag vision lane failed: %s", exc)
                 return {"vision_lane_error": str(exc)}, 0, "failed"
 
-        async def rag_safe() -> tuple[list[str], list[dict[str, Any]], int, str]:
+        async def rag_safe() -> tuple[list[str], list[dict[str, Any]], list[Any], int, str]:
             if not req.options.enable_rag:
-                return [], [], 0, "skipped"
+                return [], [], [], 0, "skipped"
             t0 = perf_counter()
             try:
-                snippets, sources = await asyncio.wait_for(
-                    asyncio.to_thread(lambda: self._retrieve_business_rag(self.business_rag_query(req), "img_diag")),
+                snippets, sources, chunks = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        lambda: self._retrieve_business_rag(self.business_rag_query(req), "img_diag")
+                    ),
                     timeout=lane_timeout,
                 )
                 ms = int((perf_counter() - t0) * 1000)
-                return list(snippets), list(sources), ms, "success"
+                return list(snippets), list(sources), list(chunks), ms, "success"
             except asyncio.TimeoutError:
                 degrade.append("img_diag_business_rag_timeout")
-                return [], [], int(lane_timeout * 1000), "timeout"
+                return [], [], [], int(lane_timeout * 1000), "timeout"
             except Exception as exc:  # noqa: BLE001
                 degrade.append("img_diag_business_rag_failed")
                 logger.warning("img_diag business rag failed: %s", exc)
-                return [], [], int((perf_counter() - t0) * 1000), "failed"
+                return [], [], [], int((perf_counter() - t0) * 1000), "failed"
 
         async def nl_safe() -> tuple[dict[str, Any], str]:
             try:
@@ -248,7 +253,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         v_pack, r_pack, nl_pack = await asyncio.gather(vision_coro, rag_coro, nl_coro)
 
         vision_data, vision_ms, vision_status = v_pack
-        biz_snippets, biz_sources, rag_ms, rag_status = r_pack
+        biz_snippets, biz_sources, biz_chunks, rag_ms, rag_status = r_pack
         nl_state, nl_status = nl_pack
 
         parallel_trace = {
@@ -265,10 +270,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         raw_tasks = list(nl_state.get("plan_tasks") or [])
         planned_calls = sum(1 for x in raw_tasks if isinstance(x, dict))
         plan_rag_sources = list(nl_state.get("plan_rag_sources") or [])
+        plan_rag_chunks = list(nl_state.get("plan_rag_chunks") or [])
         quality_report = cast(dict[str, Any], nl_state.get("quality_report") or {})
 
         merged_rag_sources = (plan_rag_sources + biz_sources)[:64]
-        used_rag = len(biz_snippets) > 0 or len(plan_rag_sources) > 0
+        used_business_rag = len(biz_snippets) > 0
+        used_plan_rag = len(plan_rag_sources) > 0
+        used_rag = used_business_rag or used_plan_rag
+        rag_citations = self._build_analysis_rag_citations(
+            plan_chunks=plan_rag_chunks if req.options.enable_rag else None,
+            business_chunks=biz_chunks if req.options.enable_rag else None,
+        )
 
         planning_ctx_parts = list(nl_state.get("plan_context") or [])
         if self._analysis_cfg.nl2sql_llm_planner_enabled:
@@ -320,7 +332,10 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             plan_rag_sources=plan_rag_sources,
             quality_report=quality_report,
             merged_rag_sources=merged_rag_sources,
+            rag_citations=rag_citations,
             used_rag=used_rag,
+            used_plan_rag=used_plan_rag,
+            used_business_rag=used_business_rag,
             planning_ctx=planning_ctx,
             synthesis_prompt=synthesis_prompt,
             synthesis_version=synthesis_version,
@@ -373,6 +388,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         evidence = AnalysisEvidence(
             used_rag=pack.used_rag,
             rag_sources=pack.merged_rag_sources,
+            rag_citations=pack.rag_citations,
             nl2sql_calls=pack.calls,
             data_coverage=data_cov,
             vision_findings=pack.vision_data,
@@ -503,6 +519,20 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 "request_id": request_id,
                 "chars": len(summary),
                 "synthesis_ms": synthesis_ms,
+            }
+
+            yield {
+                "event": "finished",
+                "meta": {
+                    "request_id": request_id,
+                    "plan_id": plan_id,
+                    "analysis_type": "img_diag",
+                    "data_mode": "img_diag",
+                    "used_rag": pack.used_rag,
+                    "used_plan_rag": pack.used_plan_rag,
+                    "used_business_rag": pack.used_business_rag,
+                    "rag_citations": pack.rag_citations,
+                },
             }
 
             asyncio.create_task(
