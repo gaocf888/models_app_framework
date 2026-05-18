@@ -1,0 +1,41 @@
+"""综合分析 rag_citations 构建（与智能客服字段对齐）。"""
+
+from __future__ import annotations
+
+from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
+from app.rag.models import RetrievedChunk
+
+
+def test_build_analysis_rag_citations_includes_original_content_url() -> None:
+    chunk = RetrievedChunk(
+        text="超温记录表示例",
+        doc_name="overheat_guide.docx",
+        namespace="global",
+        chunk_id="c1",
+        score=0.9,
+        metadata={"content_fetched_from_url": "https://cdn.example.com/overheat_guide.docx"},
+    )
+    cites = AnalysisGraphRunner._build_analysis_rag_citations(business_chunks=[chunk])
+    assert len(cites) == 1
+    assert cites[0]["doc_name"] == "overheat_guide.docx"
+    assert cites[0]["original_content_url"] == "https://cdn.example.com/overheat_guide.docx"
+
+
+def test_build_analysis_rag_citations_merges_plan_and_business() -> None:
+    p = RetrievedChunk(text="plan", doc_name="p1", namespace="nl2sql_schema")
+    b = RetrievedChunk(text="biz", doc_name="b1", namespace="global")
+    cites = AnalysisGraphRunner._build_analysis_rag_citations(plan_chunks=[p], business_chunks=[b])
+    assert len(cites) == 1
+    assert cites[0]["doc_name"] == "b1"
+    assert cites[0]["namespace"] == "global"
+
+
+def test_build_analysis_rag_citations_excludes_nl2sql_db_namespaces() -> None:
+    schema = RetrievedChunk(text="t", doc_name="s1", namespace="nl2sql_schema")
+    biz = RetrievedChunk(text="b", doc_name="b1", namespace="nl2sql_biz_knowledge")
+    qa = RetrievedChunk(text="q", doc_name="q1", namespace="nl2sql_qa_examples")
+    cites = AnalysisGraphRunner._build_analysis_rag_citations(
+        plan_chunks=[schema, biz],
+        business_chunks=[qa],
+    )
+    assert cites == []
