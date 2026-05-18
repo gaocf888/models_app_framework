@@ -13,6 +13,7 @@ from app.core.logging import setup_logging
 from app.core.metrics import REQUEST_COUNT, REQUEST_LATENCY
 from app.auth.dependencies import require_service_api_key
 from app.api import healthcheck
+from app.api.request_logging import register_api_request_logging
 from app.conversation.ids import ConversationIdValidationError
 
 
@@ -225,6 +226,11 @@ def create_app() -> FastAPI:
         REQUEST_LATENCY.labels(method=request.method, path=request.url.path).observe(duration)
 
         return response
+
+    register_api_request_logging(
+        app,
+        skip_path_prefixes=(media_path.rstrip("/"),),
+    )
 
     def custom_openapi():
         if app.openapi_schema:
