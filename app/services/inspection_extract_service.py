@@ -85,6 +85,9 @@ class InspectionExtractService:
         self._job_sched: InspectionExtractJobScheduler | None = None
 
     async def upload_file(self, *, file_name: str, content: bytes, content_type: str | None = None) -> InspectionUploadResponse:
+        from app.inspection_extract.legacy_doc_guard import assert_upload_not_legacy_doc
+
+        assert_upload_not_legacy_doc(file_name=file_name, content=content)
         if self._minio is None:
             raise RuntimeError("minio client is not available, check MinIO dependency and config")
         source_type = self._guess_source_type_from_name(file_name)
@@ -428,7 +431,7 @@ class InspectionExtractService:
     def _guess_source_type_from_name(file_name: str) -> str:
         suffix = Path(file_name).suffix.lower()
         if suffix in {".doc", ".docx"}:
-            return "docx"
+            return "docx" if suffix == ".docx" else "doc"
         if suffix == ".pdf":
             return "pdf"
         if suffix in {".md", ".markdown"}:

@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from app.core.config import get_app_config
+from app.inspection_extract.legacy_doc_guard import LEGACY_DOC_UPLOAD_MESSAGE, LegacyWordDocNotSupportedError
 from app.models.inspection_extract_v0 import (
     InspectionExtractV0AsyncSubmitResponse,
     InspectionExtractV0CancelResponse,
@@ -41,7 +42,19 @@ async def upload_inspection_report_v0(file: UploadFile = File(...)) -> Inspectio
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="empty file upload")
-    return await service.upload_file(file_name=file.filename or "inspection_report.bin", content=data, content_type=file.content_type)
+    try:
+        return await service.upload_file(file_name=file.filename or "inspection_report.bin", content=data, content_type=file.content_type)
+    except LegacyWordDocNotSupportedError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "code": "LEGACY_DOC_NOT_SUPPORTED",
+                    "message": LEGACY_DOC_UPLOAD_MESSAGE,
+                    "file_name": exc.file_name or (file.filename or ""),
+                }
+            },
+        ) from exc
 
 
 @router.post(

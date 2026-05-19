@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
+from app.inspection_extract.legacy_doc_guard import LEGACY_DOC_UPLOAD_MESSAGE, LegacyWordDocNotSupportedError
 from app.models.inspection_extract import (
     InspectionExtractAsyncSubmitResponse,
     InspectionExtractCancelResponse,
@@ -43,18 +44,31 @@ service = InspectionExtractService()
         "出参（200）：\n"
         "- `InspectionUploadResponse`: 包含 `url`、`object_name`、`source_type`、`bucket`。\n\n"
         "常见错误：\n"
-        "- `400`: 文件为空（`empty file upload`）。"
+        "- `400`: 文件为空（`empty file upload`）。\n"
+        "- `400`: 上传了老式 `.doc` 文件（`LEGACY_DOC_NOT_SUPPORTED`），请另存为 `.docx` 后重试。"
     ),
     responses={
         200: {"description": "上传成功，返回 MinIO 预签名 URL。"},
-        400: {"description": "文件为空或上传请求无效。"},
+        400: {"description": "文件为空、为老式 .doc，或上传请求无效。"},
     },
 )
 async def upload_inspection_report(file: UploadFile = File(...)) -> InspectionUploadResponse:
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="empty file upload")
-    return await service.upload_file(file_name=file.filename or "inspection_report.bin", content=data, content_type=file.content_type)
+    try:
+        return await service.upload_file(file_name=file.filename or "inspection_report.bin", content=data, content_type=file.content_type)
+    except LegacyWordDocNotSupportedError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "code": "LEGACY_DOC_NOT_SUPPORTED",
+                    "message": LEGACY_DOC_UPLOAD_MESSAGE,
+                    "file_name": exc.file_name or (file.filename or ""),
+                }
+            },
+        ) from exc
 
 
 @router.post(
