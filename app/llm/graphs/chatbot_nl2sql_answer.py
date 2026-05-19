@@ -73,7 +73,7 @@ async def summarize_nl2sql_with_llm(
     sql: str,
     rows: List[dict],
 ) -> str:
-    """智能客服 NL2SQL 结果整理：有数据时仅 Markdown 表（可带行数说明）；无 SQL/无行等保持原用户文案逻辑。"""
+    """智能客服 NL2SQL 结果整理：有数据时仅 Markdown 表；无行/无 SQL 时仅用户文案（SQL 由 SSE finished.meta.nl2sql_sql 下发，不写进 delta）。"""
     _ = llm_client  # 保留参数以兼容既有调用方；有数据路径不再调用 LLM。
 
     sql = (sql or "").strip()
@@ -94,7 +94,6 @@ async def summarize_nl2sql_with_llm(
         )
         return (
             "查询已执行，当前条件下没有返回数据行。\n\n"
-            f"```sql\n{sql}\n```\n\n"
             "若预期应有数据，请检查筛选条件或确认业务库是否已同步。"
         )
 
