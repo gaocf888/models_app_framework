@@ -242,8 +242,10 @@ flowchart LR
 
 | 项目 | 说明 |
 |------|------|
-| **实现位置** | `app/nl2sql/qa_feedback.py`（元数据键、过滤规则、幂等 `upsert`、列表/更新辅助）；`NL2SQLRAGService.retrieve` / `retrieve_chunks` 增加 `nl2sql_qa_context`；`NL2SQLChain` 在 **非 L2/L1 缓存短路径** 的 LLM 成功 + 校验通过后 **异步** `upsert`（`asyncio.to_thread`） |
-| **元数据** | `ingest_source=auto`、`nl2sql_auto_kind=nl2sql_system_feedback_v1`、`doc_version=auto_v1`，以及 `data_source_fp` / `schema_fp` / `policy_fp` 等（与 `sql_cache.compute_*` 一致） |
+| **实现位置** | `app/nl2sql/qa_feedback.py`（元数据键、过滤规则、按四元组首次写入、列表/更新辅助）；`NL2SQLRAGService.retrieve` / `retrieve_chunks` 增加 `nl2sql_qa_context`；`NL2SQLChain` 在 **非 L2/L1 缓存短路径** 的 LLM 成功 + 校验通过后 **异步** 写入（`asyncio.to_thread`） |
+| **写入范围** | 仅当 **`analysis_type` 与 `plan_item_id` 均非空**（综合分析 q1～q4 等）；直连 `POST /nl2sql/query` 未传 `plan_item_id` 或 `analysis_type` 为空时 **不写入** |
+| **去重** | `doc_name` 由 **`(namespace, ingest_source, analysis_type, plan_item_id)`** 确定性哈希；**已存在则跳过**（不覆盖、不删后写） |
+| **元数据** | `ingest_source=auto`、`nl2sql_auto_kind=nl2sql_system_feedback_v1`、`doc_version=auto_v1`，以及 `data_source_fp` / `schema_fp` / `policy_fp` / `dedup_key` 等（与 `sql_cache.compute_*` 一致） |
 | **检索过滤** | `NL2SQL_QA_FILTER_ENABLED=true`（默认）时，对 **仅** `nl2sql_qa_examples` 命中的 chunk 校验上述指纹；无指纹的 **历史人工** QA 由 `NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED`（默认 `true`）控制是否仍进入 Prompt |
 | **prefetch** | 过滤会丢掉部分 Top-K，故对 QA 命名空间先放大召回再截断：``NL2SQL_QA_RAG_PREFETCH_MULT``（默认 `4`） |
 | **管理面（查询 / 更新问答对）** | **`GET /rag/nl2sql-auto-qa`**：分页列出命名空间 **`nl2sql_qa_examples`** 下系统自动写入的 QA（支持筛选）；**`PATCH /rag/nl2sql-auto-qa`**：按 `doc_name` 指定条目 **删后重建**，用于修正问答文本或 SQL（见 **`app/api/rag_admin.py`**）。底层存储为 **Elasticsearch / EasySearch** 时列表依赖 `metadata.nl2sql_auto_kind` 等字段检索（见 `ElasticsearchVectorStore.metadata_search`）；进程内 Faiss 则为全量扫描 `_items`。 |

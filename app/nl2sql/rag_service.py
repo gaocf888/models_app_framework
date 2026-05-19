@@ -69,8 +69,8 @@ class NL2SQLRAGService:
         analysis_type: str | None,
         plan_item_id: str | None,
         prompt_prefix_snapshot: str | None,
-    ) -> str:
-        """系统自动写入闭环：校验通过后调用（幂等）。"""
+    ) -> str | None:
+        """系统自动写入闭环：校验通过后调用；四元组已存在则跳过，返回 None。"""
         from app.nl2sql.qa_feedback import upsert_nl2sql_auto_qa_pair
 
         return upsert_nl2sql_auto_qa_pair(

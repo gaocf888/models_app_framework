@@ -733,6 +733,16 @@ class NL2SQLChain:
         only_fresh = os.getenv("NL2SQL_QA_FEEDBACK_ONLY_FRESH_SQL", "true").lower() == "true"
         if only_fresh and not fresh_generation:
             return
+        from app.nl2sql.qa_feedback import analysis_accepts_auto_qa_feedback
+
+        if not analysis_accepts_auto_qa_feedback(analysis_type, plan_item_id):
+            logger.debug(
+                "NL2SQLChain: QA feedback skipped (requires analysis_type + plan_item_id) "
+                "analysis_type=%r plan_item_id=%r",
+                analysis_type,
+                plan_item_id,
+            )
+            return
         try:
             await asyncio.to_thread(
                 self._rag.upsert_auto_feedback_qa_pair,

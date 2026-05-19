@@ -28,6 +28,8 @@ INGEST_SOURCE_AUTO = "auto"
 META_KEY_DATA_SOURCE_FP = "data_source_fp"
 META_KEY_SCHEMA_FP = "schema_fp"
 META_KEY_POLICY_FP = "policy_fp"
+META_KEY_DEDUP_NAMESPACE = "dedup_namespace"
+META_KEY_DEDUP_INGEST_SOURCE = "dedup_ingest_source"
 
 # 须与 app.llm.graphs.analysis_graph_runner._PLAN_TASK_SCOPE_GUARD_CN 完全一致
 _NL2SQL_PLAN_TASK_SCOPE_GUARD_CN = "若用户未指定机组/区域，则不要在 WHERE 中臆造具体锅炉名或墙别。"
@@ -60,22 +62,71 @@ class NL2SQLQARetrievalContext:
     analysis_type: str | None = None
 
 
+def build_nl2sql_auto_qa_dedup_key(
+    *,
+    namespace: str,
+    ingest_source: str,
+    analysis_type: str,
+    plan_item_id: str,
+) -> str:
+    """四元组去重键（明文，供 metadata 与运维排查）。"""
+    return (
+        f"{(namespace or '').strip()}\0{(ingest_source or '').strip()}\0"
+        f"{(analysis_type or '').strip()}\0{(plan_item_id or '').strip()}"
+    )
+
+
 def build_nl2sql_auto_qa_doc_name(
     *,
-    data_source_fp: str,
-    schema_fp: str,
-    policy_fp: str,
-    analysis_type: str | None,
-    plan_item_id: str | None,
-    question: str,
+    namespace: str = NL2SQLRAGService.NS_QA,
+    ingest_source: str = INGEST_SOURCE_AUTO,
+    analysis_type: str,
+    plan_item_id: str,
 ) -> str:
-    q_core = normalize_nl2sql_question(compact_nl2sql_feedback_question(question))
-    raw = (
-        f"{data_source_fp}\0{schema_fp}\0{policy_fp}\0"
-        f"{(analysis_type or '').strip()}\0{(plan_item_id or '').strip()}\0{q_core}"
+    """由 (namespace, ingest_source, analysis_type, plan_item_id) 确定性生成 doc_name。"""
+    raw = build_nl2sql_auto_qa_dedup_key(
+        namespace=namespace,
+        ingest_source=ingest_source,
+        analysis_type=analysis_type,
+        plan_item_id=plan_item_id,
     )
     h = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
     return f"nl2sql_auto_{h}"
+
+
+def analysis_accepts_auto_qa_feedback(
+    analysis_type: str | None,
+    plan_item_id: str | None,
+) -> bool:
+    """
+    仅综合分析数据计划子任务（analysis_type + plan_item_id 均非空）允许自动写入。
+    直连 POST /nl2sql/query 未传 plan_item_id 或 analysis_type 为空时不写入。
+    """
+    return bool((analysis_type or "").strip() and (plan_item_id or "").strip())
+
+
+def nl2sql_auto_qa_doc_exists(
+    rag: RAGService,
+    *,
+    doc_name: str,
+    namespace: str = NL2SQLRAGService.NS_QA,
+    doc_version: str = NL2SQL_QA_DOC_VERSION_AUTO,
+) -> bool:
+    """向量库中是否已有该 doc_name（同 namespace + doc_version）。"""
+    store = rag._store_provider.get_default_store()  # noqa: SLF001
+    list_fn = getattr(store, "list_chunk_texts_for_document", None)
+    if callable(list_fn):
+        return bool(
+            list_fn(
+                doc_name,
+                namespace=namespace,
+                doc_version=doc_version,
+            )
+        )
+    for entry in list_nl2sql_auto_qa_entries(rag, limit=5000):
+        if entry.get("doc_name") == doc_name:
+            return True
+    return False
 
 
 def format_nl2sql_qa_embedding_text(
@@ -169,53 +220,75 @@ def upsert_nl2sql_auto_qa_pair(
     analysis_type: str | None,
     plan_item_id: str | None,
     prompt_prefix_snapshot: str | None,
-) -> str:
+) -> str | None:
     """
-    幂等写入：先按 doc_name + doc_version 删除再索引单 chunk。
-    返回 doc_name。
+    按四元组 (namespace, ingest_source, analysis_type, plan_item_id) 仅首次写入。
+    已存在则跳过（不覆盖）；不满足综合分析子任务条件时不写入。
+    返回 doc_name；跳过或拒绝时返回 None。
     """
+    if not analysis_accepts_auto_qa_feedback(analysis_type, plan_item_id):
+        logger.debug(
+            "NL2SQL QA feedback skipped: missing analysis_type or plan_item_id "
+            "analysis_type=%r plan_item_id=%r",
+            analysis_type,
+            plan_item_id,
+        )
+        return None
+
+    at = (analysis_type or "").strip()
+    pid = (plan_item_id or "").strip()
+    ns = NL2SQLRAGService.NS_QA
+    src = INGEST_SOURCE_AUTO
+    doc_name = build_nl2sql_auto_qa_doc_name(
+        namespace=ns,
+        ingest_source=src,
+        analysis_type=at,
+        plan_item_id=pid,
+    )
+    if nl2sql_auto_qa_doc_exists(rag, doc_name=doc_name, namespace=ns):
+        logger.info(
+            "NL2SQL QA feedback skipped existing doc_name=%s dedup=%s",
+            doc_name,
+            build_nl2sql_auto_qa_dedup_key(
+                namespace=ns, ingest_source=src, analysis_type=at, plan_item_id=pid
+            ),
+        )
+        return None
+
     text = format_nl2sql_qa_embedding_text(
         question=question,
         sql=sql,
         prompt_prefix_snapshot=prompt_prefix_snapshot,
     )
-    doc_name = build_nl2sql_auto_qa_doc_name(
-        data_source_fp=data_source_fp,
-        schema_fp=schema_fp,
-        policy_fp=policy_fp,
-        analysis_type=analysis_type,
-        plan_item_id=plan_item_id,
-        question=question,
-    )
     meta = {
         "doc_version": NL2SQL_QA_DOC_VERSION_AUTO,
-        META_KEY_INGEST_SOURCE: INGEST_SOURCE_AUTO,
+        META_KEY_INGEST_SOURCE: src,
         META_KEY_AUTO_KIND: NL2SQL_QA_AUTO_KIND,
+        META_KEY_DEDUP_NAMESPACE: ns,
+        META_KEY_DEDUP_INGEST_SOURCE: src,
         META_KEY_DATA_SOURCE_FP: data_source_fp,
         META_KEY_SCHEMA_FP: schema_fp,
         META_KEY_POLICY_FP: policy_fp,
-        "analysis_type": (analysis_type or "").strip(),
-        "plan_item_id": (plan_item_id or "").strip(),
+        "analysis_type": at,
+        "plan_item_id": pid,
+        "dedup_key": build_nl2sql_auto_qa_dedup_key(
+            namespace=ns, ingest_source=src, analysis_type=at, plan_item_id=pid
+        ),
         "question_normalized": normalize_nl2sql_question(compact_nl2sql_feedback_question(question)),
     }
-    deleted = rag.delete_by_doc_name(
-        doc_name,
-        namespace=NL2SQLRAGService.NS_QA,
-        doc_version=NL2SQL_QA_DOC_VERSION_AUTO,
-    )
-    if deleted:
-        logger.debug("NL2SQL QA feedback replaced doc_name=%s deleted=%d", doc_name, deleted)
     rag.index_texts(
         [text],
-        namespace=NL2SQLRAGService.NS_QA,
+        namespace=ns,
         doc_name=doc_name,
         ids=[doc_name],
         metadatas=[meta],
     )
     logger.info(
-        "NL2SQL QA feedback indexed doc_name=%s ns=%s",
+        "NL2SQL QA feedback indexed doc_name=%s ns=%s analysis_type=%s plan_item_id=%s",
         doc_name,
-        NL2SQLRAGService.NS_QA,
+        ns,
+        at,
+        pid,
     )
     return doc_name
 

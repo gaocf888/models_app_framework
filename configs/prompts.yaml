@@ -571,7 +571,7 @@ analysis_plan_overheat_guidance:
         {
           "item_id": "q0",
           "purpose": "超温汇总事实基线",
-          "question": "查询超温事件汇总、锅炉名称、超温测试点数量，并按时间排序",
+          "question": "按照锅炉名称查询超温汇总，包括锅炉名称、超温测试点数量，并按时间排序",
           "mandatory": true,
           "dependency_ids": []
         },
