@@ -70,6 +70,7 @@ class ChatbotLangGraphRunner:
         self._llm = llm_client
         self._prompts = prompt_registry
         self._outline_store = outline_store
+        self._nl2sql = NL2SQLService(conv_manager=self._conv)
         self._ls = LangSmithTracker()
 
         cfg = get_app_config().chatbot

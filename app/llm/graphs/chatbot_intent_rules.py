@@ -251,8 +251,8 @@ def classify_chatbot_intent(
     if image_urls:
         return _out("kb_qa", f"has_images_default_kb_qa|ctx_task={prev_task}", 0.88)
 
-    # 极短纯文本：若历史表明仍在同一客服问答线程，则延续 kb_qa（避免「呢/继续」误触 clarify）
-    if len(q) <= 4:
+    # 极短纯文本（≤2 字）：若历史表明仍在同一客服问答线程，则延续 kb_qa（避免「呢/继续」误触 clarify）
+    if len(q) <= 2:
         if (
             len(q) >= 2
             and h_sum

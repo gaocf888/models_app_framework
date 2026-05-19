@@ -57,7 +57,7 @@ def test_short_followup_continues_kb_with_multimodal_history():
         {"role": "assistant", "content": "从图像特征看可能是疲劳裂纹，建议结合运行记录复核。"},
     ]
     r = classify_chatbot_intent(
-        "这个呢",
+        "你呢",
         enable_nl2sql_route=True,
         image_urls=[],
         history_messages=hist,
