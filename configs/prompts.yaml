@@ -323,8 +323,12 @@ analysis_synthesis_overheat_guidance:
         2.  **短期排查**：针对【管排级汇总】中问题突出的管排，建议在下次停炉时进行重点测厚（测壁厚）。
         3.  **运行调整**：如果发现负荷（MW）与超温强相关，建议运行人员调整燃烧配风或降低该区域热负荷。
       
-      六、风险与限制
-      - 说明：当前仅基于超温数据，未关联历史泄爆记录（overhual_leakage）或测厚数据（overhaul_thickness_rate）。若数据量过少（如<5条），请说明不足以支持结论。
+      六、附录：支撑分析的汇总数据
+      - **表1：各受热面超温统计（按总超时秒数排序）**  [在此处插入 上述 设备级汇总 聚合数据表格]
+      - **表2：重点管排超温明细**  [在此处插入 上述 管排级汇总 聚合数据表格]
+      - **表3：超温严重等级分布**  [在此处插入 上述 严重度分级 聚合数据表格]
+      - **表4：极端高温单点记录**  [在此处插入 上述 Top 20 极值 聚合数据表格]
+      
       
       【硬约束】
       - 禁止编造数值。所有结论必须引用上述 4 组聚合数据中的具体字段（如 `highest_temp`, `piperow_name`）。
@@ -610,22 +614,24 @@ analysis_plan_overheat_guidance:
           "question": "找出超温最严重的前 20 条记录（Top 20）。需要展示锅炉名称、受热面名称、测点名称、最高温度、限值、超时秒数、触发时的负荷(MW) 以及设备描述的前 20 个字符，结果请按最高温度从高到低排序",
           "mandatory": true,
           "dependency_ids": []
-        },
-        {
-          "item_id": "q5",
-          "purpose": "运行参数联动分析",
-          "question": "围绕超温时段查询风门开度、蒸汽流量、氧量、负荷等关键运行参数及其同时间窗变化",
-          "mandatory": true,
-          "dependency_ids": []
-        },
-        {
-          "item_id": "q6",
-          "purpose": "设备状态与告警佐证",
-          "question": "查询燃烧器投退记录、火检状态、相关设备状态与异常告警，并与超温时段对齐",
-          "mandatory": true,
-          "dependency_ids": []
         }
       ]
+
+# 上述 q5、q6暂时注释掉
+#        {
+#          "item_id": "q5",
+#          "purpose": "运行参数联动分析",
+#          "question": "围绕超温时段查询风门开度、蒸汽流量、氧量、负荷等关键运行参数及其同时间窗变化",
+#          "mandatory": true,
+#          "dependency_ids": []
+#        },
+#        {
+#          "item_id": "q6",
+#          "purpose": "设备状态与告警佐证",
+#          "question": "查询燃烧器投退记录、火检状态、相关设备状态与异常告警，并与超温时段对齐",
+#          "mandatory": true,
+#          "dependency_ids": []
+#        }
 
 # --- ②.4-2 综合分析模块 · NL2SQL 数据计划 . 检修策略   analysis_type=maintenance_strategy ---
 # 默认 6 条子任务与常见部署 ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS=6 对齐；若需启停机 monitor_boiler_start_stop、
