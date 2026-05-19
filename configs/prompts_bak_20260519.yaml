@@ -330,6 +330,45 @@ analysis_synthesis_overheat_guidance:
       - 禁止编造数值。所有结论必须引用上述 4 组聚合数据中的具体字段（如 `highest_temp`, `piperow_name`）。
       - 如果输入数据为空（无超温记录），请直接输出：“昨日无超温报警记录，设备运行正常。”
 
+  - version: v2
+    weight: 1.0
+    description: 超温专项结论模板（强调事实-归因-建议-风险）
+    content: |
+      你是电站锅炉超温专项分析师。请基于系统给出的事实数据与知识片段，输出“可审计、可执行”的分析结论：
+
+      【输出结构（按顺序）】
+      一、结论摘要
+      - 用 2-4 条结论说明：是否存在持续超温、主要集中区域/设备、影响程度。
+      
+      二、超温明细统计
+      - 按天统计超温测点信息
+      - 统计字段及顺序：测点名称、测点号、超限开始时间、超限结束时间、最高温度、超限持续时长、负荷、主汽压力
+      - 日期时间格式："yyyy-mm-dd HH:MM:ss"
+
+      三、超温汇总统计
+      - 按天统计超温设备(锅炉)信息
+      - 统计字段及顺序：锅炉名称、超温测试点数量
+      - 日期时间格式："yyyy-mm-dd HH:MM:ss"
+
+      四、关键依据
+      - 逐条引用数据事实（时间窗、测点/区域、温度或频次变化、参数联动信号）；
+      - 明确“事实”与“推断”边界，推断必须写出依据来源。
+
+      五、可能原因与置信度
+      - 至少给出 2 类原因（运行参数偏移、设备状态异常、工况扰动等）；
+      - 每条原因给出高/中/低置信度并说明理由。
+
+      六、处置建议（可执行）
+      - 按“立即（2h）/短期（24h）/持续跟踪（7d）”给出动作；
+      - 动作需包含责任角色、触发条件或观察指标。
+
+      七、风险与限制
+      - 说明数据缺口、样本不足、口径不一致等限制，避免过度结论。
+
+      【硬约束】
+      - 禁止编造数值、字段、表名、设备状态；
+      - 若证据不足，必须明确“不足以支持”的结论。
+
 analysis_report_overheat_guidance:
   - version: v1
     weight: 1.0
@@ -626,6 +665,50 @@ analysis_plan_overheat_guidance:
           "dependency_ids": []
         }
       ]
+
+  - version: v2
+    weight: 1.0
+    description: 超温专项数据计划模板（JSON 数组，事实-参数-状态闭环）
+    content: |
+      [
+        {
+          "item_id": "q0",
+          "purpose": "超温汇总事实基线",
+          "question": "按照锅炉名称查询超温汇总，包括锅炉名称、超温测试点数量，并按时间排序",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q1",
+          "purpose": "超温明细事实基线",
+          "question": "查询超温事件明细、发生时段、持续时长、最高温度、区域/测点分布，并按时间排序",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2",
+          "purpose": "运行参数联动分析",
+          "question": "围绕超温时段查询风门开度、蒸汽流量、氧量、负荷等关键运行参数及其同时间窗变化",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q3",
+          "purpose": "设备状态与告警佐证",
+          "question": "查询燃烧器投退记录、火检状态、相关设备状态与异常告警，并与超温时段对齐",
+          "mandatory": true,
+          "dependency_ids": []
+        }
+      ]
+# 暂时去除上述 q4（查数生成sql的提示词）
+#        {
+#          "item_id": "q4",
+#          "purpose": "处置与检修历史参考",
+#          "question": "查询与目标区域相关的近期处置动作、检修/吹灰记录及效果反馈，作为建议依据",
+#          "mandatory": false,
+#          "dependency_ids": []
+#        }
+
 
 # --- ②.4-2 综合分析模块 · NL2SQL 数据计划 . 检修策略   analysis_type=maintenance_strategy ---
 # 默认 6 条子任务与常见部署 ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS=6 对齐；若需启停机 monitor_boiler_start_stop、
