@@ -220,6 +220,7 @@ class VLLMHttpClient(LLMClient):
             write=min(read_budget, 600.0),
             pool=read_budget,
         )
+        stream_finish_reason: str | None = None
         async with httpx.AsyncClient(timeout=htt_timeout) as client:
             async with client.stream(
                 "POST", url, json=payload, headers=headers, timeout=htt_timeout
@@ -236,12 +237,24 @@ class VLLMHttpClient(LLMClient):
                         break
                     try:
                         data = json.loads(chunk)
-                        delta = data["choices"][0]["delta"].get("content") or ""
+                        choice0 = data["choices"][0]
+                        fr = choice0.get("finish_reason")
+                        if fr:
+                            stream_finish_reason = str(fr)
+                        delta = choice0.get("delta", {}).get("content") or ""
                         if isinstance(delta, str) and delta:
                             yield delta
                     except Exception as exc:  # noqa: BLE001
                         logger.exception("failed to parse vLLM stream chunk: %s", exc)
                         continue
+
+        if stream_finish_reason == "length":
+            logger.warning(
+                "vLLM stream_chat stopped: finish_reason=length model=%s max_tokens=%s "
+                "(raise ANALYSIS_SYNTHESIS_MAX_TOKENS if synthesis report truncated)",
+                cfg.model_id,
+                payload.get("max_tokens"),
+            )
 
         duration = time.perf_counter() - start
         LLM_REQUEST_COUNT.labels(model=cfg.model_id).inc()
