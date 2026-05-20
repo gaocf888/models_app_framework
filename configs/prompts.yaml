@@ -373,55 +373,71 @@ analysis_data_plan_maintenance_strategy:
     description: 检修策略专项数据计划 LLM 辅助模板（tasks JSON，与 YAML 模板合并）
     content: |
       你是「检修策略取数」规划助手。请在候选域内组织 tasks（顶层 JSON 数组 tasks），满足：
-      - 优先覆盖：检测记录与管段明细（overhaul_record、overhaul_record_tubes）→ 壁厚减薄速率（overhaul_thickness_rate）→ 台账定位（account_boiler、account_static_device、account_device_piperow）→ 超温事实（monitor_hotarea_temp，可关联 base_temp_point、base_temp_device）→ 检修策划与检测位置（overhaul_boiler、overhaul_new_checklocation）→ 泄漏/爆管类履历（overhaul_leakage）；按需补充启停机（monitor_boiler_start_stop）、吹灰（monitor_soot_blower_run_record 等）以支撑运行窗口与劣化工况；
-      - mandatory 仅保留「无则无法分级」的关键事实任务；不要把可选佐证全部设为 mandatory；
+      - **一律以汇总/聚合 SQL 为主**（GROUP BY 设备/管段/区域/风险等级等），禁止拉取大篇幅明细流水；可参考 analysis_plan_overheat_guidance 的汇总问法；
+      - 优先覆盖：测厚与换管汇总（overhaul_record、overhaul_record_tubes，可关联 account_* 台账）→ 历史缺陷汇总 → 超温事件汇总（monitor_hotarea_temp，可关联 base_temp_point、base_temp_device）→ 超温/泄爆时段运行参数与设备状态汇总（燃烧器投退、火检、告警、风门/蒸汽流量/氧量/负荷等，以 catalog 真实表为准）→ 泄爆汇总（overhaul_leakage）→ 风险寿命与检修策划汇总（overhaul_thickness_rate、overhaul_boiler、overhaul_new_checklocation）；按需补充 monitor_boiler_start_stop 等启停窗口汇总；
+      - mandatory 仅保留「无则无法分级检修优先级」的关键汇总任务；不要把可选佐证全部设为 mandatory；
       - dependency_ids 仅引用已出现 item_id，避免环；问句中写明真实表名（来自上表清单），便于 NL2SQL 命中 catalog；
       - 输出仅为 JSON（顶层 tasks 数组），不要输出解释文本。
 
 analysis_synthesis_maintenance_strategy:
   - version: v1
     weight: 1.0
-    description: 检修策略专项合成模板（优先级清单、方案对比、寿命追问边界）
+    description: 检修策略专项合成（风险寿命评估 + 分级检修清单 + 方案对比，非长报告体）
     content: |
-      你扮演「电厂金属监督与检修策划联合专家」。仅基于系统给出的结构化查库结果（及知识片段）作答，输出 Markdown，结构如下（按顺序，可省略无数据支撑的章节但须说明「库中无该项」）：
+      你是电站锅炉「金属监督与检修策划」专家。请**仅**基于系统提供的检修策略查库结果（**q1～q5**，与 analysis_plan_maintenance_strategy 一致）与**知识库片段（RAG）**，输出可执行的检修决策，不要写成超温分析式的长篇诊断报告。
 
-      【一、结论摘要】
-      - 2～5 条：高风险管段/区域、与超温或减薄相关的结论、是否建议纳入本次窗口。
+      【输入与依据】
+      你将接收经 NL2SQL 取回的汇总/关联结果（对应数据计划 **q1～q5**），以及可选的 RAG 知识片段。分析与附录表格**必须基于这些结果的全量返回行**（在上下文允许范围内），不得用臆造明细替代：
+      1. **测厚与换管数据聚合（q1）**：受热面缺陷记录关联设备名称、管排位置、规格材质、管径、原始壁厚；按设备与位置汇总的最新测厚（测量壁厚、减薄速率）及换管状态。
+      2. **历史遗留问题汇总（q2）**：锅炉、受热面位置（排/管）、问题现象描述、处置维修方法、问题产生时间、当前处理状态等历史遗留缺陷清单（汇总/列表形态）。
+      3. **超温与运行参数关联（q3）**：壁温超限事件的超温区域、测点位置、发生/结束时间、持续时长、最高温度；及超温时段内关键运行参数（如负荷、主汽压力、氧量等，以 catalog 列为准）。
+      4. **泄爆与运行参数关联（q4）**：泄爆发生时间、位置（设备、排、管）、原因分析与处理方法；泄爆前关键运行参数（如压力、温度等，以 catalog 列为准）。依赖 q3 时仅作同周期佐证引用。
+      5. **综合时间轴关联（q5）**：按时间倒序合并展示的超温事件、泄爆事件、换管操作等同屏时间轴，用于判断某区域在超温/泄爆前后是否存在换管或历史缺陷叠加。
 
-      【二、检修优先级清单】
-      - 分三级列出：1 级必检（立即处置）、2 级建议检（建议纳入计划检修）、3 级可暂缓（复检观察）；每条尽量对应查库中的设备/管段/位置/测点标识与关键指标（壁厚、缺陷类型、超温频次、减薄速率等）。无足够字段时列「待补数据项」，禁止臆造具体管号。
+      - **RAG**：用于分级判据、规范口径、方案比选；不得用 RAG 示例数值替代本机组事实。
+      - **风险与寿命**：优先使用 q1 中的测量壁厚、减薄速率及 catalog 中若有的风险等级/剩余寿命列；无模型列时不得编造数值寿命。
 
-      【三、关键依据（可审计）】
-      - 分条对应数据事实：表名或业务含义 + 时间窗 + 关键数值或记录条数；区分「事实」与「推断」，推断须写依据。
+      【输出结构】按顺序输出 Markdown：
 
-      【四、方案对比与决策支持（若用户问及）】
-      - 对比「全面检修 / 重点检修 / 暂缓」等时：有成本或风险量化字段则引用；若无，只做定性对比并明确「无量化成本/概率数据，以下为经验性判断」，禁止编造「规避百分之几十爆管风险」等虚假精确百分比。
+      ## 一、风险与寿命评估
+      - 基于 **q1**（壁厚、减薄速率及若有的风险等级/剩余寿命字段）列出风险偏高或寿命偏短的管段/区域（设备名、管排、位置以数据为准）。
+      - **高风险区域**：综合 q1、q2（未闭环遗留缺陷）、q3（超温）、q4（泄爆）、q5（时间轴上的事件叠加）识别；至少 2 条须写明依据来源（如「q1 减薄速率」「q4 泄爆记录」）。
+      - 无寿命/风险模型列时说明「不足以做数值寿命承诺」，禁止编造剩余年限。
 
-      【五、寿命与运行方式（若用户问及）】
-      - 仅基于查库中若有的剩余寿命、减薄速率、超温累计等作答；若无寿命模型输出列，须说明不足以做数值寿命承诺，可给出「需复测/需模型计算」的下一步。
+      ## 二、检修策略
+      **2.1 分三级输出（与 RAG 分级原则对齐，但以本机组汇总数据为主）：
+        - **1 级必检**：立即处置（如：剩余寿命/壁厚达预警、重复泄爆或严重超温区域、未闭环重大缺陷等）。
+        - **2 级建议检**：建议纳入计划检修（中度减薄、间歇超温、建议扩检等）。
+        - **3 级可暂缓**：复检观察（趋势平稳、无新增缺陷、超温/泄爆未叠加等）。
+        - 每条须包含：对象标识（设备/管段/位置）+ 关键指标 + **依据来源**（如「依据 q1 最小壁厚 xx」「依据 q3 超温次数 xx」）；无足够字段时列「待补数据项」，**禁止臆造具体管号**。
 
-      【六、资源与窗口（若用户提及人力/备件/大修窗口）】
-      - 结合 overhaul_boiler、overhaul_new_checklocation、monitor_boiler_start_stop 等已有数据能写的则写；库中无资源表时明确说明，不虚构金额与人数。
+      **2.2 方案对比**（默认给出；用户未点名时也做简要对比）
+        - 对「全面检修 / 重点检修 / 暂缓或维持运行」等 2～3 种可行方案，分别列出**优点、缺点、适用条件**。
+        - 有量化字段则引用；无则定性说明，并注明「无量化成本/概率数据」；禁止编造精确风险下降百分比。
+      
+      ## 三、附录：支撑分析的汇总数据
+      - **表1：测厚与换管数据聚合（q1）** [插入 q1 全量返回表格]
+      - **表2：历史遗留问题汇总（q2）** [插入 q2 全量返回表格]
+      - **表3：超温与运行参数关联（q3）** [插入 q3 全量返回表格]
+      - **表4：泄爆与运行参数关联（q4）** [插入 q4 全量返回表格]
+      - **表5：综合时间轴关联（q5）** [插入 q5 全量返回表格]
+      - 某组为空时，对应表注明「库中无该项数据」。
 
-      【七、风险与限制】
-      - 数据缺口、样本不足、未联上台账的孤立记录等。
-
-      【硬约束】禁止编造表名、字段名、未在数据中出现的数值；不得将 RAG 片段中的示例数字当作本机组事实。
+      【硬约束】
+      - 禁止编造表名、字段、未在 q1～q5 中出现的数值；禁止用示意表或假数据填表。
+      - 不要单独输出与上述结构无关的长篇诊断、资源人力章节；数据不足时在对应条目下简要说明。
+      - 若 q1 与 q2～q4 关键佐证均为空：输出「当前无足够数据支撑风险分级与检修策略，请补充测厚、缺陷或超温/泄爆数据后重试。」
 
 analysis_report_maintenance_strategy:
   - version: v1
     weight: 1.0
-    description: 检修策略专项报告口径模板
+    description: 检修策略专项报告口径模板（与 synthesis 结构对齐）
     content: |
-      请将检修策略报告组织为可拆解章节（与 synthesis 结构对齐即可）：
-      1) 结论摘要
-      2) 检修优先级清单（1/2/3 级）
-      3) 关键依据（与数据子任务 q1～qn 对应）
-      4) 方案对比与决策支持（若有）
-      5) 寿命与运行方式建议（若有）
-      6) 资源与检修窗口（若有）
-      7) 风险与限制
-      全文使用中文，避免与查库结果矛盾的表述。
+      请将检修策略输出组织为可拆解章节（与 synthesis 一致）：
+      1) 风险与寿命评估
+      2) 检修策略（必检/建议检/可暂缓 + 方案优缺点对比）
+      3) 附录（q1～q5 支撑数据表）
+      全文中文，不与查库结果矛盾。
 
 # ************************************************************
 # ②.3-3 综合分析 · 分阶段编排 . 四管健康报告智能解读（analysis_type=four_tube_health_interpretation）
@@ -635,55 +651,48 @@ analysis_plan_overheat_guidance:
 #        }
 
 # --- ②.4-2 综合分析模块 · NL2SQL 数据计划 . 检修策略   analysis_type=maintenance_strategy ---
-# 默认 6 条子任务与常见部署 ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS=6 对齐；若需启停机 monitor_boiler_start_stop、
-# 吹灰 monitor_soot_blower_run_record、磨煤机 monitor_coal_mill_run_record、防磨防爆小组 account_group 等专项取数，
-# 请通过请求体 data_requirements_hint 追加，或提高上限后在本 JSON 数组中扩展。
+# 默认 5 条子任务（q1～q5），与 analysis_synthesis_maintenance_strategy 输入/附录一一对应；
+# 与常见部署 ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS=6 对齐。若需风险模型专表、启停机 monitor_boiler_start_stop、
+# 吹灰 monitor_soot_blower_run_record 等，请通过 data_requirements_hint 追加或提高上限后扩展。
 
 analysis_plan_maintenance_strategy:
   - version: v1
     weight: 1.0
-    description: 检修策略数据计划模板（JSON 数组，表名与现网 catalog 对齐）
+    description: 检修策略数据计划模板（JSON 数组，汇总取数，与 synthesis q1～q6 对齐）
     content: |
       [
         {
           "item_id": "q1",
-          "purpose": "检测记录与管段明细（测厚+缺陷+换管）",
-          "question": "基于表 overhaul_record 与 overhaul_record_tubes：按用户问题中的时间范围与机组/锅炉条件（若无则不做具体锅炉名臆测），查询各次检测记录的检测时间、检测位置、管段/管子标识、壁厚或剩余壁厚类数值字段、缺陷类型与描述、是否换管或处置结论；将两表按 catalog 中外键或同名 id 类列合法 JOIN，结果按检测时间倒序，限制合理行数。",
+          "purpose": "测厚与换管数据聚合",
+          "question": "请查询所有受热面缺陷记录，关联显示设备名称、管排位置、规格材质、管径、原始壁厚，以及最新的测厚数据（测量壁厚、减薄速率）和换管状态，并按设备和位置进行汇总。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q2",
-          "purpose": "壁厚减薄速率与寿命相关指标",
-          "question": "查询表 overhaul_thickness_rate：各测点或管段标识、减薄速率、最近一次计算或更新时间；若有剩余寿命、风险等级、预警阈值类列一并选出。按用户时间或「当前有效」筛选，与 q1 中管段或位置键可关联时做合法 JOIN，否则单独列表。",
+          "purpose": "历史遗留问题（缺陷）汇总",
+          "question": "请列出锅炉系统中所有历史遗留缺陷的详细清单，包括所属锅炉、受热面位置（排/管）、问题现象描述、具体的处置维修方法、问题产生时间以及当前处理状态。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q3",
-          "purpose": "锅炉与受热面台账定位",
-          "question": "查询 account_boiler（锅炉基本信息）、account_static_device（设备台账），必要时联接 account_device_piperow（管排）、account_device_pipebox（集箱）、account_device_weld（焊口）：列出锅炉标识、名称、受热面或设备名称、管排/集箱等定位字段，便于将 overhaul_record 中位置或设备键映射到台账。禁止在 WHERE 中臆造未在问题中出现的锅炉编号。",
+          "purpose": "超温数据与运行参数关联分析",
+          "question": "请查询所有壁温超限事件的详细记录，展示超温区域、测点位置、发生与结束时间、持续时长及最高温度，并尝试关联提取超温时段内的关键运行参数（如负荷、主汽压力、氧量），以便分析超温原因",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q4",
-          "purpose": "受热面超温事实与频次",
-          "question": "查询 monitor_hotarea_temp 超温记录表；若 catalog 中存在 base_temp_point（受热面测点配置）、base_temp_device（超温受热面设备）或 base_dev_pi_b（测点基本信息），则仅使用清单中真实列做合法 JOIN，按受热面/测点/区域统计近周期超温次数、最大温度、累计时长（若有列）。时间窗与用户问题一致。",
-          "mandatory": true,
-          "dependency_ids": []
+          "purpose": "泄爆数据与运行参数关联",
+          "question": "请查询锅炉泄爆记录，列出泄爆发生的时间、具体位置（设备、排、管）、原因分析及处理方法，并关联显示泄爆发生前的关键运行参数（如压力、温度），以评估设备状态对泄爆的影响。",
+          "mandatory": false,
+          "dependency_ids": ["q3"]
         },
         {
           "item_id": "q5",
-          "purpose": "检修策划与检测位置",
-          "question": "查询 overhaul_boiler（锅炉检修策划表）与 overhaul_new_checklocation（检测位置表）：策划项、计划窗口或状态类字段、检测位置编码与描述；两表按 catalog 合法关联。用于支撑「大修窗口」「检测范围」类问题。",
-          "mandatory": false,
-          "dependency_ids": []
-        },
-        {
-          "item_id": "q6",
-          "purpose": "泄漏/爆管（泄爆）历史",
-          "question": "查询 overhaul_leakage 泄爆（泄漏）记录表：发生时间、机组或锅炉关联字段、位置或管段、原因或结论类字段（以 catalog 列为准），按时间倒序，支撑高风险管段与暂缓检修风险分析。",
+          "purpose": "综合时间轴关联视图 (核心关联逻辑)",
+          "question": "请生成一个综合的时间轴视图，将锅炉的“超温事件”、“泄爆事件”和“换管操作”合并显示，并按时间倒序排列。用于直观查看在某次泄爆或超温前后，该区域是否进行过换管维修或存在历史缺陷",
           "mandatory": false,
           "dependency_ids": []
         }
