@@ -30,7 +30,7 @@ class TestAnalysisPhase1Runner(unittest.TestCase):
     def test_payload_mode_returns_structured_result(self):
         conv = MagicMock()
         llm = MagicMock()
-        llm.generate = AsyncMock(return_value="这是 payload 模式测试结论。")
+        llm.chat = AsyncMock(return_value="这是 payload 模式测试结论。")
         runner = AnalysisGraphRunner(
             conv_manager=conv,
             llm_client=llm,
@@ -73,9 +73,8 @@ class TestAnalysisPhase1Runner(unittest.TestCase):
     def test_nl2sql_mode_records_calls(self):
         conv = MagicMock()
         llm = MagicMock()
-        llm.generate = AsyncMock(
-            side_effect=[_INTENT_JSON, _PLAN_EMPTY_JSON, "这是 nl2sql 模式测试结论。"]
-        )
+        llm.generate = AsyncMock(side_effect=[_INTENT_JSON, _PLAN_EMPTY_JSON])
+        llm.chat = AsyncMock(return_value="这是 nl2sql 模式测试结论。")
         nl2sql = MagicMock()
         nl2sql.query = AsyncMock(
             return_value=SimpleNamespace(
@@ -113,14 +112,14 @@ class TestAnalysisPhase1Runner(unittest.TestCase):
         self.assertGreaterEqual(len(result.evidence.rag_sources), 1)
         self.assertIn("graph_nodes", result.trace.execution_summary)
         self.assertEqual(5, nl2sql.query.await_count)
-        self.assertEqual(3, llm.generate.await_count)
+        self.assertEqual(2, llm.generate.await_count)
+        self.assertEqual(1, llm.chat.await_count)
 
     def test_nl2sql_dependency_failure_triggers_skip(self):
         conv = MagicMock()
         llm = MagicMock()
-        llm.generate = AsyncMock(
-            side_effect=[_INTENT_JSON, _PLAN_EMPTY_JSON, "这是依赖失败测试结论。"]
-        )
+        llm.generate = AsyncMock(side_effect=[_INTENT_JSON, _PLAN_EMPTY_JSON])
+        llm.chat = AsyncMock(return_value="这是依赖失败测试结论。")
         nl2sql = MagicMock()
         # 所有 NL2SQL 调用都失败，验证依赖项被 skipped
         nl2sql.query = AsyncMock(side_effect=RuntimeError("db temporary error"))
@@ -145,7 +144,80 @@ class TestAnalysisPhase1Runner(unittest.TestCase):
         quality = result.evidence.data_coverage["data_quality_report"]
         self.assertGreaterEqual(quality["mandatory_failed"], 1)
         self.assertIn("mandatory_steps_failed", result.trace.degrade_reasons)
-        self.assertEqual(3, llm.generate.await_count)
+        self.assertEqual(2, llm.generate.await_count)
+        self.assertEqual(1, llm.chat.await_count)
+
+    def test_build_summary_messages_uses_system_role(self):
+        runner = AnalysisGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=MagicMock(),
+            prompt_registry=_FakePromptRegistry(),
+            hybrid_rag=_FakeHybridRAG(),
+            nl2sql_service=MagicMock(),
+        )
+        messages = runner._build_summary_messages(
+            query="请分析昨日超温",
+            analysis_type="overheat_guidance",
+            data_mode="nl2sql",
+            data_blob={"q1": [{"temp": 620}]},
+            context_snippets=["规程片段"],
+            system_prompt="你是超温专家。\n【输出结构】一、结论摘要",
+            planning_context='{"goals":["复盘"]}',
+        )
+        self.assertEqual(2, len(messages))
+        self.assertEqual("system", messages[0]["role"])
+        self.assertEqual("user", messages[1]["role"])
+        self.assertIn("超温专家", messages[0]["content"])
+        self.assertIn("请分析昨日超温", messages[1]["content"])
+        self.assertIn("q1", messages[1]["content"])
+        self.assertIn("规程片段", messages[1]["content"])
+        self.assertNotIn("核心结论", messages[1]["content"])
+
+    def test_build_summary_user_content_respects_gathered_json_max_chars(self):
+        runner = AnalysisGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=MagicMock(),
+            prompt_registry=_FakePromptRegistry(),
+            hybrid_rag=_FakeHybridRAG(),
+            nl2sql_service=MagicMock(),
+        )
+        runner._analysis_cfg.synthesis_gathered_json_max_chars = 1000
+        big_blob = {"q1": [{"x": "y" * 2000}]}
+        user_content = runner._build_summary_user_content(
+            query="q",
+            analysis_type="overheat_guidance",
+            data_mode="nl2sql",
+            data_blob=big_blob,
+            context_snippets=[],
+        )
+        marker = "数据摘要(JSON截断):"
+        idx = user_content.index(marker) + len(marker)
+        json_part = user_content[idx:].split("\nRAG参考片段:")[0].strip()
+        self.assertEqual(1000, len(json_part))
+
+    def test_generate_summary_passes_synthesis_max_tokens(self):
+        llm = MagicMock()
+        llm.chat = AsyncMock(return_value="结论")
+        runner = AnalysisGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=llm,
+            prompt_registry=_FakePromptRegistry(),
+            hybrid_rag=_FakeHybridRAG(),
+            nl2sql_service=MagicMock(),
+        )
+        runner._analysis_cfg.synthesis_max_tokens = 3072
+        asyncio.run(
+            runner._generate_summary(
+                query="请分析",
+                analysis_type="overheat_guidance",
+                data_mode="nl2sql",
+                data_blob={},
+                context_snippets=[],
+                system_prompt="你是专家",
+            )
+        )
+        llm.chat.assert_awaited_once()
+        self.assertEqual(3072, llm.chat.await_args.kwargs.get("max_tokens"))
 
     def test_data_plan_template_extension_without_runner_change(self):
         class _TemplatePromptRegistry:

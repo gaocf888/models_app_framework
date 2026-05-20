@@ -472,6 +472,10 @@ class AnalysisConfig:
     default_max_rows_per_query: int = 2000
     default_max_suggestions: int = 8
     synthesis_timeout_seconds: float = 90.0
+    # synthesis user 消息中 gathered_data JSON 最大字符数（整包 json.dumps 后截断）
+    synthesis_gathered_json_max_chars: int = 16000
+    # synthesis LLM 输出 max_tokens（六章+附录多表时 3072 易触顶截断；见 ANALYSIS_SYNTHESIS_MAX_TOKENS）
+    synthesis_max_tokens: int = 8192
     strict_by_default: bool = False
     trace_backend: str = "redis"  # redis | memory
     trace_ttl_minutes: int = 1440
@@ -969,6 +973,10 @@ def _load_from_env() -> AppConfig:
         default_max_rows_per_query=max(50, int(os.getenv("ANALYSIS_DEFAULT_MAX_ROWS_PER_QUERY", "2000"))),
         default_max_suggestions=max(1, min(20, int(os.getenv("ANALYSIS_DEFAULT_MAX_SUGGESTIONS", "8")))),
         synthesis_timeout_seconds=max(5.0, float(os.getenv("ANALYSIS_SYNTHESIS_TIMEOUT_SECONDS", "90"))),
+        synthesis_gathered_json_max_chars=max(
+            1000, int(os.getenv("ANALYSIS_SYNTHESIS_GATHERED_JSON_MAX_CHARS", "16000"))
+        ),
+        synthesis_max_tokens=max(256, int(os.getenv("ANALYSIS_SYNTHESIS_MAX_TOKENS", "8192"))),
         strict_by_default=os.getenv("ANALYSIS_STRICT_BY_DEFAULT", "false").lower() == "true",
         trace_backend=(os.getenv("ANALYSIS_TRACE_BACKEND", "redis") or "redis").strip().lower(),
         trace_ttl_minutes=max(10, int(os.getenv("ANALYSIS_TRACE_TTL_MINUTES", "1440"))),

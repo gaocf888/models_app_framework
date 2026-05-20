@@ -1702,7 +1702,36 @@ class AnalysisGraphRunner:
             trace=trace,
         )
 
-    def _build_summary_prompt(
+    def _build_summary_user_content(
+        self,
+        *,
+        query: str,
+        analysis_type: str,
+        data_mode: str,
+        data_blob: dict,
+        context_snippets: list[str],
+        planning_context: str | None = None,
+    ) -> str:
+        """synthesis 的 user 消息：本轮事实数据、RAG 与可选规划意图（不含预制 system 模板）。"""
+        max_chars = int(self._analysis_cfg.synthesis_gathered_json_max_chars)
+        data_preview = json.dumps(
+            data_blob,
+            ensure_ascii=False,
+            default=self._json_fallback,
+        )[:max_chars]
+        rag_text = "\n".join(f"- {s}" for s in context_snippets[:8])
+        pc = (planning_context or "").strip()
+        planning_block = f"\n分阶段规划意图(结构化要点):\n{pc[:2000]}\n" if pc else ""
+        return (
+            f"分析类型: {analysis_type}\n"
+            f"数据来源模式: {data_mode}\n"
+            f"用户问题: {query}\n"
+            f"{planning_block}"
+            f"数据摘要(JSON截断): {data_preview}\n"
+            f"RAG参考片段:\n{rag_text}"
+        ).strip()
+
+    def _build_summary_messages(
         self,
         *,
         query: str,
@@ -1712,26 +1741,23 @@ class AnalysisGraphRunner:
         context_snippets: list[str],
         system_prompt: str,
         planning_context: str | None = None,
-    ) -> str:
-        """与 `_generate_summary` / 流式 synthesis 共用同一提示词拼接逻辑。"""
-        data_preview = json.dumps(
-            data_blob,
-            ensure_ascii=False,
-            default=self._json_fallback,
-        )[:4000]
-        rag_text = "\n".join(f"- {s}" for s in context_snippets[:8])
-        pc = (planning_context or "").strip()
-        planning_block = f"\n分阶段规划意图(结构化要点):\n{pc[:2000]}\n" if pc else ""
-        return (
-            f"{system_prompt}\n\n"
-            f"分析类型: {analysis_type}\n"
-            f"数据来源模式: {data_mode}\n"
-            f"用户问题: {query}\n"
-            f"{planning_block}"
-            f"数据摘要(JSON截断): {data_preview}\n"
-            f"RAG参考片段:\n{rag_text}\n\n"
-            "请输出：1) 核心结论；2) 关键依据；3) 可执行建议。"
+    ) -> list[dict[str, str]]:
+        """与 `_generate_summary` / 流式 synthesis 共用：system=预制模板，user=事实与 RAG。"""
+        system_content = (system_prompt or "").strip() or (
+            "你是一名综合分析助手，请基于事实数据给出结论和建议。"
         )
+        user_content = self._build_summary_user_content(
+            query=query,
+            analysis_type=analysis_type,
+            data_mode=data_mode,
+            data_blob=data_blob,
+            context_snippets=context_snippets,
+            planning_context=planning_context,
+        )
+        return [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ]
 
     async def _generate_summary(
         self,
@@ -1745,7 +1771,7 @@ class AnalysisGraphRunner:
         planning_context: str | None = None,
     ) -> str:
         """单次 LLM 调用生成分析摘要；失败时返回固定降级文案。"""
-        prompt = self._build_summary_prompt(
+        messages = self._build_summary_messages(
             query=query,
             analysis_type=analysis_type,
             data_mode=data_mode,
@@ -1755,10 +1781,11 @@ class AnalysisGraphRunner:
             planning_context=planning_context,
         )
         try:
-            summary = await self._llm.generate(  # type: ignore[arg-type]
+            summary = await self._llm.chat(  # type: ignore[arg-type]
                 model=None,
-                prompt=prompt,
+                messages=messages,
                 timeout=self._analysis_cfg.synthesis_timeout_seconds,
+                max_tokens=self._analysis_cfg.synthesis_max_tokens,
             )
             return summary
         except Exception:  # noqa: BLE001
@@ -1777,7 +1804,7 @@ class AnalysisGraphRunner:
         planning_context: str | None = None,
     ) -> AsyncIterator[str]:
         """流式生成 summary（Markdown 文本增量），提示词与非流式 synthesis 一致。"""
-        prompt = self._build_summary_prompt(
+        messages = self._build_summary_messages(
             query=query,
             analysis_type=analysis_type,
             data_mode=data_mode,
@@ -1786,10 +1813,11 @@ class AnalysisGraphRunner:
             system_prompt=system_prompt,
             planning_context=planning_context,
         )
-        async for chunk in self._llm.stream_generate(  # type: ignore[union-attr]
+        async for chunk in self._llm.stream_chat(  # type: ignore[union-attr]
             model=None,
-            prompt=prompt,
+            messages=messages,
             timeout=float(self._analysis_cfg.synthesis_timeout_seconds),
+            max_tokens=self._analysis_cfg.synthesis_max_tokens,
         ):
             yield chunk
 
