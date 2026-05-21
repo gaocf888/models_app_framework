@@ -93,6 +93,11 @@
       font-size: 0.95rem;
       min-height: 3rem;
     }
+    #answer .katex-display {
+      margin: 0.75rem 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
     #status { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
     #meta {
       margin-top: 1rem;
@@ -108,6 +113,7 @@
     .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
     code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
   </style>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous" />
 </head>
 <body>
   <div class="wrap">
@@ -172,7 +178,7 @@
 
     <div class="out" style="margin-top: 1rem;">
       <div id="status">就绪</div>
-      <h2>回答（delta 拼接）</h2>
+      <h2>回答（delta 拼接；仅渲染 LaTeX 公式，Markdown 保持原文）</h2>
       <div id="answer"></div>
       <div id="err" class="err" hidden></div>
       <h2 style="margin-top:1rem;">结束帧 meta</h2>
@@ -180,9 +186,50 @@
     </div>
   </div>
 
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
   <script>
 (function () {
   const $ = (id) => document.getElementById(id);
+
+  /** 与模型输出一致：行内 \\(...\\)、块级 \\[...\\]；不解析 Markdown。 */
+  const KATEX_RENDER_OPTS = {
+    delimiters: [
+      { left: "\\[", right: "\\]", display: true },
+      { left: "\\(", right: "\\)", display: false },
+    ],
+    throwOnError: false,
+    errorColor: "#f87171",
+  };
+
+  let renderMathTimer = null;
+
+  function renderAnswerPlainWithMath(text) {
+    const el = $("answer");
+    el.textContent = text;
+    if (typeof renderMathInElement !== "function") return;
+    try {
+      renderMathInElement(el, KATEX_RENDER_OPTS);
+    } catch (e) {
+      console.warn("KaTeX render failed:", e);
+    }
+  }
+
+  function scheduleRenderAnswer(text) {
+    if (renderMathTimer) clearTimeout(renderMathTimer);
+    renderMathTimer = setTimeout(() => {
+      renderMathTimer = null;
+      renderAnswerPlainWithMath(text);
+    }, 120);
+  }
+
+  function flushRenderAnswer(text) {
+    if (renderMathTimer) {
+      clearTimeout(renderMathTimer);
+      renderMathTimer = null;
+    }
+    renderAnswerPlainWithMath(text);
+  }
 
   const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
   const headers = () => {
@@ -364,11 +411,12 @@
         }
         if (ev.delta != null && ev.finished === false) {
           answerText += ev.delta;
-          $("answer").textContent = answerText;
+          scheduleRenderAnswer(answerText);
           appendStatus("生成中… 已收字符 " + answerText.length);
           return;
         }
         if (ev.finished === true) {
+          flushRenderAnswer(answerText);
           $("meta").textContent = JSON.stringify(ev.meta || {}, null, 2);
           appendStatus("完成");
           return;
