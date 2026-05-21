@@ -186,28 +186,42 @@
     </div>
   </div>
 
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
+  <!-- 勿用 defer：须在本页脚本运行前加载完成 -->
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
   <script>
 (function () {
   const $ = (id) => document.getElementById(id);
 
-  /** 与模型输出一致：行内 \\(...\\)、块级 \\[...\\]；不解析 Markdown。 */
+  /**
+   * 仅渲染公式，不解析 Markdown。定界符顺序：长的 display 优先。
+   * 模型常见输出：$$...$$（块级）、\\(...\\)（行内）、\\[...\\]（块级）。
+   */
   const KATEX_RENDER_OPTS = {
     delimiters: [
+      { left: "$$", right: "$$", display: true },
       { left: "\\[", right: "\\]", display: true },
       { left: "\\(", right: "\\)", display: false },
+      { left: "$", right: "$", display: false },
     ],
     throwOnError: false,
+    strict: false,
     errorColor: "#f87171",
   };
 
   let renderMathTimer = null;
+  let katexReady = typeof renderMathInElement === "function";
 
   function renderAnswerPlainWithMath(text) {
     const el = $("answer");
     el.textContent = text;
-    if (typeof renderMathInElement !== "function") return;
+    if (!katexReady) {
+      if (typeof renderMathInElement === "function") {
+        katexReady = true;
+      } else {
+        return;
+      }
+    }
     try {
       renderMathInElement(el, KATEX_RENDER_OPTS);
     } catch (e) {
@@ -435,6 +449,12 @@
       abortCtrl = null;
     }
   });
+
+  if (katexReady) {
+    appendStatus("就绪（已加载 KaTeX：$$、\\\\( \\\\)、\\\\[ \\\\]）");
+  } else {
+    appendStatus("就绪（警告：KaTeX 未加载，公式为原文；请检查 jsDelivr 或 Ctrl+F5 强刷）");
+  }
 })();
   </script>
 </body>
