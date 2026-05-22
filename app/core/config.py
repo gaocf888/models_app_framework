@@ -476,6 +476,31 @@ class AnalysisConfig:
     synthesis_gathered_json_max_chars: int = 16000
     # synthesis LLM 输出 max_tokens（六章+附录多表时 3072 易触顶截断；见 ANALYSIS_SYNTHESIS_MAX_TOKENS）
     synthesis_max_tokens: int = 8192
+    # synthesis 策略：v1=单次整篇 LLM；v2=多槽位（见 docs/综合分析优化版本实现方案(v2版本).md）
+    synthesis_strategy: str = "v1"
+    synthesis_strategy_overheat_guidance: str | None = None
+    synthesis_strategy_maintenance_strategy: str | None = None
+    synthesis_strategy_four_tube_health_interpretation: str | None = None
+    synthesis_strategy_leakage_burst_analysis: str | None = None
+    synthesis_strategy_custom: str | None = None
+    # plan/synthesis 模板版本：全局默认 + 按 analysis_type 覆盖（见 ANALYSIS_*_TEMPLATE_VERSION_*）
+    plan_template_version: str | None = None
+    plan_template_version_overheat_guidance: str | None = None
+    plan_template_version_maintenance_strategy: str | None = None
+    plan_template_version_four_tube_health_interpretation: str | None = None
+    plan_template_version_leakage_burst_analysis: str | None = None
+    plan_template_version_custom: str | None = None
+    synthesis_template_version: str | None = None
+    synthesis_template_version_overheat_guidance: str | None = None
+    synthesis_template_version_maintenance_strategy: str | None = None
+    synthesis_template_version_four_tube_health_interpretation: str | None = None
+    synthesis_template_version_leakage_burst_analysis: str | None = None
+    synthesis_template_version_custom: str | None = None
+    synthesis_v2_max_parallel_llm: int = 3
+    synthesis_v2_segment_max_tokens: int = 4096
+    synthesis_v2_table_max_rows: int = 80
+    synthesis_v2_enable_structured_sse_events: bool = True
+    synthesis_v2_stream_live_first: bool = True
     strict_by_default: bool = False
     trace_backend: str = "redis"  # redis | memory
     trace_ttl_minutes: int = 1440
@@ -977,6 +1002,63 @@ def _load_from_env() -> AppConfig:
             1000, int(os.getenv("ANALYSIS_SYNTHESIS_GATHERED_JSON_MAX_CHARS", "16000"))
         ),
         synthesis_max_tokens=max(256, int(os.getenv("ANALYSIS_SYNTHESIS_MAX_TOKENS", "8192"))),
+        synthesis_strategy=(
+            (os.getenv("ANALYSIS_SYNTHESIS_STRATEGY", "v1") or "v1").strip().lower()
+        ),
+        synthesis_strategy_overheat_guidance=_env_synthesis_strategy_type("OVERHEAT_GUIDANCE"),
+        synthesis_strategy_maintenance_strategy=_env_synthesis_strategy_type("MAINTENANCE_STRATEGY"),
+        synthesis_strategy_four_tube_health_interpretation=_env_synthesis_strategy_type(
+            "FOUR_TUBE_HEALTH_INTERPRETATION"
+        ),
+        synthesis_strategy_leakage_burst_analysis=_env_synthesis_strategy_type("LEAKAGE_BURST_ANALYSIS"),
+        synthesis_strategy_custom=_env_synthesis_strategy_type("CUSTOM"),
+        plan_template_version=_env_analysis_template_version_global("ANALYSIS_PLAN_TEMPLATE_VERSION"),
+        plan_template_version_overheat_guidance=_env_analysis_template_version_type(
+            "PLAN", "OVERHEAT_GUIDANCE"
+        ),
+        plan_template_version_maintenance_strategy=_env_analysis_template_version_type(
+            "PLAN", "MAINTENANCE_STRATEGY"
+        ),
+        plan_template_version_four_tube_health_interpretation=_env_analysis_template_version_type(
+            "PLAN", "FOUR_TUBE_HEALTH_INTERPRETATION"
+        ),
+        plan_template_version_leakage_burst_analysis=_env_analysis_template_version_type(
+            "PLAN", "LEAKAGE_BURST_ANALYSIS"
+        ),
+        plan_template_version_custom=_env_analysis_template_version_type("PLAN", "CUSTOM"),
+        synthesis_template_version=_env_analysis_template_version_global(
+            "ANALYSIS_SYNTHESIS_TEMPLATE_VERSION"
+        ),
+        synthesis_template_version_overheat_guidance=_env_analysis_template_version_type(
+            "SYNTHESIS", "OVERHEAT_GUIDANCE"
+        ),
+        synthesis_template_version_maintenance_strategy=_env_analysis_template_version_type(
+            "SYNTHESIS", "MAINTENANCE_STRATEGY"
+        ),
+        synthesis_template_version_four_tube_health_interpretation=_env_analysis_template_version_type(
+            "SYNTHESIS", "FOUR_TUBE_HEALTH_INTERPRETATION"
+        ),
+        synthesis_template_version_leakage_burst_analysis=_env_analysis_template_version_type(
+            "SYNTHESIS", "LEAKAGE_BURST_ANALYSIS"
+        ),
+        synthesis_template_version_custom=_env_analysis_template_version_type("SYNTHESIS", "CUSTOM"),
+        synthesis_v2_max_parallel_llm=max(
+            1, int(os.getenv("ANALYSIS_SYNTHESIS_V2_MAX_PARALLEL_LLM", "3"))
+        ),
+        synthesis_v2_segment_max_tokens=max(
+            256, int(os.getenv("ANALYSIS_SYNTHESIS_V2_SEGMENT_MAX_TOKENS", "4096"))
+        ),
+        synthesis_v2_table_max_rows=max(
+            1, int(os.getenv("ANALYSIS_SYNTHESIS_V2_TABLE_MAX_ROWS", "80"))
+        ),
+        synthesis_v2_enable_structured_sse_events=os.getenv(
+            "ANALYSIS_SYNTHESIS_V2_ENABLE_STRUCTURED_SSE", "true"
+        ).lower()
+        != "false",
+        synthesis_v2_stream_live_first=os.getenv(
+            "ANALYSIS_SYNTHESIS_V2_STREAM_LIVE_FIRST", "true"
+        ).lower()
+        != "false",
         strict_by_default=os.getenv("ANALYSIS_STRICT_BY_DEFAULT", "false").lower() == "true",
         trace_backend=(os.getenv("ANALYSIS_TRACE_BACKEND", "redis") or "redis").strip().lower(),
         trace_ttl_minutes=max(10, int(os.getenv("ANALYSIS_TRACE_TTL_MINUTES", "1440"))),
@@ -1110,6 +1192,28 @@ def _load_from_env() -> AppConfig:
     # 动态附加 db 字段，避免破坏现有 AppConfig 初始化调用点
     setattr(cfg, "db", db_cfg)
     return cfg
+
+
+def _env_synthesis_strategy_type(env_suffix: str) -> str | None:
+    """解析 ANALYSIS_SYNTHESIS_STRATEGY_<SUFFIX>，仅接受 v1/v2。"""
+    raw = (os.getenv(f"ANALYSIS_SYNTHESIS_STRATEGY_{env_suffix}") or "").strip().lower()
+    return raw if raw in ("v1", "v2") else None
+
+
+def _env_analysis_template_version_global(env_name: str) -> str | None:
+    """解析全局模板版本环境变量（如 ANALYSIS_PLAN_TEMPLATE_VERSION）。"""
+    raw = (os.getenv(env_name) or "").strip()
+    return raw or None
+
+
+def _env_analysis_template_version_type(kind: str, env_suffix: str) -> str | None:
+    """
+    解析按专项的模板版本：ANALYSIS_PLAN_TEMPLATE_VERSION_<SUFFIX> 或
+    ANALYSIS_SYNTHESIS_TEMPLATE_VERSION_<SUFFIX>。
+    """
+    prefix = "ANALYSIS_PLAN_TEMPLATE_VERSION" if kind == "PLAN" else "ANALYSIS_SYNTHESIS_TEMPLATE_VERSION"
+    raw = (os.getenv(f"{prefix}_{env_suffix}") or "").strip()
+    return raw or None
 
 
 @lru_cache(maxsize=1)

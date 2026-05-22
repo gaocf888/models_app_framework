@@ -56,6 +56,7 @@ class NL2SQLService:
             user_id=req.user_id,
             analysis_type=req.analysis_type,
             plan_item_id=req.plan_item_id,
+            plan_template_version=req.plan_template_version,
             time_intent_text=req.time_intent_text,
         )
         rows: list = []

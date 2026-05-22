@@ -265,7 +265,7 @@ index_qa_examples(snippets: List[str])
 - 检索接口：
   - `retrieve_chunks` / `retrieve`：三命名空间分别检索，`nl2sql_schema` 可使用更大 `top_k`（`NL2SQL_SCHEMA_NAMESPACE_TOP_K`）；合并去重；日志输出 **检索模式、各 namespace 向量/图条数、去重前后总数**。
   - **`nl2sql_qa_context`（可选）**：当配置 **`NL2SQL_QA_FILTER_ENABLED`**（默认开启）且当前请求已计算 **数据源 / schema 指纹** 时传入，对 **`nl2sql_qa_examples`** 命中按元数据过滤（系统自动写入项必须指纹匹配；无指纹的旧人工 QA 受 **`NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED`** 控制）。QA 命名空间会先 **prefetch**（**`NL2SQL_QA_RAG_PREFETCH_MULT`**）再过滤截断到 **`NL2SQL_RAG_MAX_QA_CHUNKS`**。
-- **QA 向量闭环（可选）**：**`NL2SQL_QA_FEEDBACK_ENABLED=true`** 时，`NL2SQLChain` 在 **本轮 LLM 生成成功且校验通过**（默认不含 L2/L1 缓存直接返回路径）后异步写入 **`nl2sql_qa_examples`**；实现见 **`app/nl2sql/qa_feedback.py`**。运维：**`GET` / `PATCH /rag/nl2sql-auto-qa`**（**`app/api/rag_admin.py`**）。完整说明见 **`docs/NL2SQL缓存实现方案.md`** §七 ter。
+- **QA 向量闭环（可选）**：**`NL2SQL_QA_FEEDBACK_ENABLED=true`** 时，校验通过后写入 **`nl2sql_qa_examples`**；去重 **五元组**（含 **`plan_template_version`**，与综合分析 plan 模板 v1/v2 对齐）。运维：**`GET /rag/nl2sql-auto-qa`**（支持按类型/q*/plan 版本筛选）、**`PATCH /rag/nl2sql-auto-qa`**。见 **`docs/NL2SQL缓存实现方案.md`** §七 ter。
 
 > 说明：存在规划摘要时，`rag_query` 为「规划 + 原问题」拼接；DB 反射成功时默认不跑规划，通常即以用户原问题检索。
 

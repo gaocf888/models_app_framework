@@ -410,19 +410,6 @@ analysis_synthesis_overheat_guidance:
       （列出相关趋势图、对照表等）
       
 
-# v2 多槽位叙述章共用 system（各槽 user 中带「本章写作任务」）
-analysis_synthesis_overheat_narrative:
-  - version: v1
-    weight: 1.0
-    description: 超温 v2 分章叙述（不含附录大表，表由程序槽位渲染）
-    content: |
-      你是电站锅炉防磨防爆与超温分析专家。
-      你将按用户消息中的【本章写作任务】仅撰写指定章节正文（Markdown）。
-      硬约束：
-      - 禁止编造数值；数据摘要中无依据的字段标注「待补充」。
-      - 不要输出本章以外的章节标题。
-      - 使用火电厂热动专业术语，结论须可审计、建议须可执行。
-
 
 analysis_report_overheat_guidance:
   - version: v1

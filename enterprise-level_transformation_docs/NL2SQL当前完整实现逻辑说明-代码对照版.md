@@ -79,8 +79,10 @@
 ### 3.4 bis 可选：校验通过后写入 QA 向量（`NL2SQL_QA_FEEDBACK_ENABLED`）
 
 - **默认关闭**：环境变量 **`NL2SQL_QA_FEEDBACK_ENABLED`**（配置 **`AnalysisConfig.nl2sql_qa_feedback_enabled`**）。
-- **触发**：**本轮走 LLM 完整生成**且 **`SQLValidator` 等校验通过**后（默认 **`NL2SQL_QA_FEEDBACK_ONLY_FRESH_SQL=true`** 时不含 **L2/L1 缓存直接返回** 路径），**`asyncio.to_thread`** 调用 **`upsert_nl2sql_auto_qa_pair`**，幂等写入 **`nl2sql_qa_examples`**（**`doc_version=auto_v1`**，元数据含 **`ingest_source=auto`** 与指纹）。
-- **运维**：**`GET /rag/nl2sql-auto-qa`**、**`PATCH /rag/nl2sql-auto-qa`**（**`app/api/rag_admin.py`**）。
+- **触发**：**本轮走 LLM 完整生成**且校验通过后（默认不含 L2/L1 缓存直返路径），**`asyncio.to_thread`** → **`upsert_nl2sql_auto_qa_pair`**。
+- **去重五元组**：`(namespace, ingest_source, analysis_type, plan_item_id, plan_template_version)` → 确定性 `doc_name`；**已存在则跳过**（不覆盖）。`plan_template_version` 由综合分析 **`NL2SQLQueryRequest`** 传入，与 **`analysis_plan_*`** 模板 v1/v2 一致（同 q* 在 plan v1/v2 下可各存一条 QA）。
+- **向量库 `doc_version=auto_v1`**：技术字段，**不参与**业务去重。
+- **运维**：**`GET /rag/nl2sql-auto-qa`**（Query 可筛 `analysis_type` / `plan_item_id` / `plan_template_version`）、**`PATCH /rag/nl2sql-auto-qa`**（按 `doc_name` 改问句/SQL；勿 patch 五元组换槽位）。
 
 ### 3.5 白名单、表列映射与规则加载
 

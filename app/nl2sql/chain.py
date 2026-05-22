@@ -172,6 +172,7 @@ class NL2SQLChain:
         user_id: str | None = None,
         analysis_type: str | None = None,
         plan_item_id: str | None = None,
+        plan_template_version: str | None = None,
         time_intent_text: str | None = None,
     ) -> tuple[str, NL2SQLValidationContext]:
         time_src = (
@@ -247,6 +248,7 @@ class NL2SQLChain:
                     schema_fp=schema_fp,
                     policy_fp=policy_fp,
                     analysis_type=analysis_type,
+                    plan_template_version=plan_template_version,
                 )
 
         rag_query = question
@@ -701,6 +703,7 @@ class NL2SQLChain:
             sql=sql or "",
             analysis_type=analysis_type,
             plan_item_id=plan_item_id,
+            plan_template_version=plan_template_version,
             system_prefix_snapshot=system_prefix if system_prefix else None,
             data_source_fp=data_source_fp,
             schema_fp=schema_fp,
@@ -718,6 +721,7 @@ class NL2SQLChain:
         sql: str,
         analysis_type: str | None,
         plan_item_id: str | None,
+        plan_template_version: str | None,
         system_prefix_snapshot: str | None,
         data_source_fp: str,
         schema_fp: str,
@@ -753,6 +757,7 @@ class NL2SQLChain:
                 policy_fp=policy_fp,
                 analysis_type=analysis_type,
                 plan_item_id=plan_item_id,
+                plan_template_version=plan_template_version,
                 prompt_prefix_snapshot=system_prefix_snapshot,
             )
         except Exception:

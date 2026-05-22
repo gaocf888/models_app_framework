@@ -57,6 +57,10 @@ from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.models import RetrievedChunk
 from app.services.analysis_stream_hooks import dispatch_analysis_nl2sql_stream_structured
 from app.services.nl2sql_service import NL2SQLService
+from app.llm.graphs.analysis_synthesis_v2 import (
+    AnalysisSynthesisV2Engine,
+    synthesis_v2_registry_available,
+)
 
 logger = get_logger(__name__)
 
@@ -109,11 +113,27 @@ class _Nl2SqlPipelineThroughRagContext:
     used_business_rag: bool
     intent_version: str
     data_plan_version: str
+    plan_template_version: str
     planner_warnings: list[str]
     intent_obj: AnalysisIntentLLMOutput
     node_latency_ms: dict[str, int]
     node_status: dict[str, str]
     degrade_reasons: list[str]
+
+
+@dataclass
+class _SynthesisRunOutcome:
+    """单次 synthesis 执行结果（v1 或 v2）。"""
+
+    summary: str
+    synthesis_version: str
+    strategy_configured: str
+    strategy_effective: str
+    strategy_fallback_reason: str | None = None
+    v2_tables: list[dict[str, Any]] = field(default_factory=list)
+    v2_charts: list[dict[str, Any]] = field(default_factory=list)
+    v2_sections: list[dict[str, Any]] = field(default_factory=list)
+    slot_trace: list[dict[str, Any]] = field(default_factory=list)
 
 
 class AnalysisGraphRunner:
@@ -713,8 +733,7 @@ class AnalysisGraphRunner:
         req = AnalysisPayloadRequest.model_validate(state["payload_request"])
         at = req.analysis_type
         t_syn = perf_counter()
-        synthesis_prompt, synthesis_version = self._resolve_stage_template(
-            stage="analysis_synthesis",
+        synthesis_prompt, synthesis_version = self._resolve_synthesis_stage_template(
             analysis_type=at,
             user_id=req.user_id,
             default_text="你是一名综合分析助手，请基于事实数据给出结论和建议。",
@@ -740,14 +759,18 @@ class AnalysisGraphRunner:
         _ = (_intent_prompt, _data_plan_prompt, _report_prompt)
         context_snippets = list(state.get("context_snippets") or [])
         quality_report = cast(dict[str, Any], state.get("quality_report") or {})
-        summary = await self._generate_summary(
+        syn_outcome = await self._execute_synthesis(
             query=req.query,
             analysis_type=at,
             data_mode="payload",
             data_blob=req.payload,
             context_snippets=context_snippets,
             system_prompt=synthesis_prompt,
+            chart_mode=req.options.chart_mode,
+            user_id=req.user_id,
         )
+        summary = syn_outcome.summary
+        synthesis_version = syn_outcome.synthesis_version
         suggestions = self._build_suggestions(summary, at, req.options.max_suggestions)
         structured_report = self._build_structured_report(
             summary=summary,
@@ -762,6 +785,10 @@ class AnalysisGraphRunner:
                 "completeness": quality_report.get("completeness", 0.0),
                 "records": self._extract_records_from_payload(req.payload),
             },
+            v2_tables=syn_outcome.v2_tables,
+            v2_charts=syn_outcome.v2_charts,
+            v2_sections=syn_outcome.v2_sections,
+            synthesis_strategy_effective=syn_outcome.strategy_effective,
         )
         ms = int((perf_counter() - t_syn) * 1000)
         ANALYSIS_NODE_LATENCY.labels(node="synthesis", analysis_type=at).observe(perf_counter() - t_syn)
@@ -774,6 +801,8 @@ class AnalysisGraphRunner:
                 "data_plan": data_plan_version,
                 "synthesis": synthesis_version,
                 "report": report_version,
+                "synthesis_strategy": syn_outcome.strategy_configured,
+                "synthesis_strategy_effective": syn_outcome.strategy_effective,
             },
             "node_latency_ms": self._merge_latency(state, "synthesis", ms),
             "node_status": self._merge_status(state, "synthesis", "success"),
@@ -1031,8 +1060,7 @@ class AnalysisGraphRunner:
         req = AnalysisNL2SQLRequest.model_validate(state["nl2sql_request"])
         at = req.analysis_type
         t_syn = perf_counter()
-        synthesis_prompt, synthesis_version = self._resolve_stage_template(
-            stage="analysis_synthesis",
+        synthesis_prompt, synthesis_version = self._resolve_synthesis_stage_template(
             analysis_type=at,
             user_id=req.user_id,
             default_text="你是一名综合分析助手，请基于事实数据给出结论和建议。",
@@ -1055,7 +1083,7 @@ class AnalysisGraphRunner:
             ir = state.get("intent_llm_result")
             if isinstance(ir, dict):
                 planning_ctx = json.dumps(ir, ensure_ascii=False)
-        summary = await self._generate_summary(
+        syn_outcome = await self._execute_synthesis(
             query=req.query,
             analysis_type=at,
             data_mode="nl2sql",
@@ -1063,7 +1091,10 @@ class AnalysisGraphRunner:
             context_snippets=context_snippets,
             system_prompt=synthesis_prompt,
             planning_context=planning_ctx,
+            chart_mode=req.options.chart_mode,
+            user_id=req.user_id,
         )
+        summary = syn_outcome.summary
         suggestions = self._build_suggestions(summary, at, req.options.max_suggestions)
         quality_report = cast(dict[str, Any], state.get("quality_report") or {})
         structured_report = self._build_structured_report(
@@ -1081,6 +1112,10 @@ class AnalysisGraphRunner:
                 "skipped_calls": sum(1 for c in calls if c.status == "skipped"),
                 "records": self._extract_records_from_gathered(gathered_data),
             },
+            v2_tables=syn_outcome.v2_tables,
+            v2_charts=syn_outcome.v2_charts,
+            v2_sections=syn_outcome.v2_sections,
+            synthesis_strategy_effective=syn_outcome.strategy_effective,
         )
         ms = int((perf_counter() - t_syn) * 1000)
         ANALYSIS_NODE_LATENCY.labels(node="synthesis", analysis_type=at).observe(perf_counter() - t_syn)
@@ -1088,7 +1123,7 @@ class AnalysisGraphRunner:
             "summary": summary,
             "structured_report": structured_report,
             "suggestions": suggestions,
-            "synthesis_version": synthesis_version,
+            "synthesis_version": syn_outcome.synthesis_version,
             "report_version": report_version,
             "node_latency_ms": self._merge_latency(state, "synthesis", ms),
             "node_status": self._merge_status(state, "synthesis", "success"),
@@ -1249,8 +1284,7 @@ class AnalysisGraphRunner:
             raise ValueError("strict mode enabled: payload quality is insufficient for analysis")
 
         t_syn = perf_counter()
-        synthesis_prompt, synthesis_version = self._resolve_stage_template(
-            stage="analysis_synthesis",
+        synthesis_prompt, synthesis_version = self._resolve_synthesis_stage_template(
             analysis_type=req.analysis_type,
             user_id=req.user_id,
             default_text="你是一名综合分析助手，请基于事实数据给出结论和建议。",
@@ -1273,14 +1307,18 @@ class AnalysisGraphRunner:
             user_id=req.user_id,
             default_text="请输出结构化报告，包含结论、依据、建议。",
         )
-        summary = await self._generate_summary(
+        syn_outcome = await self._execute_synthesis(
             query=req.query,
             analysis_type=req.analysis_type,
             data_mode="payload",
             data_blob=req.payload,
             context_snippets=context_snippets,
             system_prompt=synthesis_prompt,
+            chart_mode=req.options.chart_mode,
+            user_id=req.user_id,
         )
+        summary = syn_outcome.summary
+        synthesis_version = syn_outcome.synthesis_version
         suggestions = self._build_suggestions(summary, req.analysis_type, req.options.max_suggestions)
         structured_report = self._build_structured_report(
             summary=summary,
@@ -1295,6 +1333,10 @@ class AnalysisGraphRunner:
                 "completeness": quality_report.get("completeness", 0.0),
                 "records": self._extract_records_from_payload(req.payload),
             },
+            v2_tables=syn_outcome.v2_tables,
+            v2_charts=syn_outcome.v2_charts,
+            v2_sections=syn_outcome.v2_sections,
+            synthesis_strategy_effective=syn_outcome.strategy_effective,
         )
         self._mark_node(node_latency_ms, node_status, "synthesis", t_syn, ok=True)
         ANALYSIS_NODE_LATENCY.labels(node="synthesis", analysis_type=req.analysis_type).observe(
@@ -1321,12 +1363,16 @@ class AnalysisGraphRunner:
                 "data_plan": data_plan_version,
                 "synthesis": synthesis_version,
                 "report": report_version,
+                "synthesis_strategy": syn_outcome.strategy_configured,
+                "synthesis_strategy_effective": syn_outcome.strategy_effective,
             },
             execution_summary={
                 "analysis_type": req.analysis_type,
                 "data_mode": "payload",
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "used_rag": used_rag,
+                "synthesis_strategy": syn_outcome.strategy_configured,
+                "synthesis_strategy_effective": syn_outcome.strategy_effective,
                 "orchestrator": "sequential",
                 "graph_nodes": [
                     "normalize_request",
@@ -1438,8 +1484,12 @@ class AnalysisGraphRunner:
         node_latency_ms["plan_llm"] = int((perf_counter() - t_pl) * 1000)
         node_status["plan_llm"] = "success"
 
+        plan_template_version = self._resolve_plan_template_version_label(req)
         nl2sql_calls, gathered_data, task_status, acquire_latency_ms = await self._execute_data_plan(
-            req=req, tasks=tasks, analysis_request_id=request_id
+            req=req,
+            tasks=tasks,
+            analysis_request_id=request_id,
+            plan_template_version=plan_template_version,
         )
         node_latency_ms["acquire_data"] = acquire_latency_ms
         node_status["acquire_data"] = "success"
@@ -1538,6 +1588,7 @@ class AnalysisGraphRunner:
             used_business_rag=used_business_rag,
             intent_version=intent_version,
             data_plan_version=data_plan_version,
+            plan_template_version=plan_template_version,
             planner_warnings=planner_warnings,
             intent_obj=intent_obj,
             node_latency_ms=node_latency_ms,
@@ -1550,8 +1601,7 @@ class AnalysisGraphRunner:
         ctx = await self._run_nl2sql_pipeline_through_rag(req)
 
         t_syn = perf_counter()
-        synthesis_prompt, synthesis_version = self._resolve_stage_template(
-            stage="analysis_synthesis",
+        synthesis_prompt, synthesis_version = self._resolve_synthesis_stage_template(
             analysis_type=req.analysis_type,
             user_id=req.user_id,
             default_text="你是一名综合分析助手，请基于事实数据给出结论和建议。",
@@ -1565,7 +1615,7 @@ class AnalysisGraphRunner:
         planning_ctx: str | None = None
         if self._analysis_cfg.nl2sql_llm_planner_enabled:
             planning_ctx = json.dumps(ctx.intent_obj.model_dump(mode="json"), ensure_ascii=False)
-        summary = await self._generate_summary(
+        syn_outcome = await self._execute_synthesis(
             query=req.query,
             analysis_type=req.analysis_type,
             data_mode="nl2sql",
@@ -1573,14 +1623,17 @@ class AnalysisGraphRunner:
             context_snippets=ctx.context_snippets,
             system_prompt=synthesis_prompt,
             planning_context=planning_ctx,
+            chart_mode=req.options.chart_mode,
+            user_id=req.user_id,
         )
         return self._finalize_nl2sql_sequential_v2(
             req,
             ctx,
-            summary=summary,
-            synthesis_version=synthesis_version,
+            summary=syn_outcome.summary,
+            synthesis_version=syn_outcome.synthesis_version,
             report_version=report_version,
             synthesis_started=t_syn,
+            syn_outcome=syn_outcome,
         )
 
     def _finalize_nl2sql_sequential_v2(
@@ -1592,6 +1645,7 @@ class AnalysisGraphRunner:
         synthesis_version: str,
         report_version: str,
         synthesis_started: float,
+        syn_outcome: _SynthesisRunOutcome | None = None,
     ) -> AnalysisV2Result:
         """顺序 NL2SQL 路径：在已有 summary 上组装 structured_report / evidence / trace（同步与流式后处理共用）。"""
         request_id = ctx.request_id
@@ -1612,6 +1666,7 @@ class AnalysisGraphRunner:
         degrade_reasons = ctx.degrade_reasons
 
         suggestions = self._build_suggestions(summary, req.analysis_type, req.options.max_suggestions)
+        strategy_eff = syn_outcome.strategy_effective if syn_outcome else "v1"
         structured_report = self._build_structured_report(
             summary=summary,
             suggestions=suggestions,
@@ -1627,6 +1682,10 @@ class AnalysisGraphRunner:
                 "skipped_calls": sum(1 for c in nl2sql_calls if c.status == "skipped"),
                 "records": self._extract_records_from_gathered(gathered_data),
             },
+            v2_tables=syn_outcome.v2_tables if syn_outcome else None,
+            v2_charts=syn_outcome.v2_charts if syn_outcome else None,
+            v2_sections=syn_outcome.v2_sections if syn_outcome else None,
+            synthesis_strategy_effective=strategy_eff,
         )
         self._mark_node(node_latency_ms, node_status, "synthesis", synthesis_started, ok=True)
         ANALYSIS_NODE_LATENCY.labels(node="synthesis", analysis_type=req.analysis_type).observe(
@@ -1656,6 +1715,10 @@ class AnalysisGraphRunner:
                 "data_plan": data_plan_version,
                 "synthesis": synthesis_version,
                 "report": report_version,
+                "synthesis_strategy": (
+                    syn_outcome.strategy_configured if syn_outcome else self._configured_synthesis_strategy(req.analysis_type)
+                ),
+                "synthesis_strategy_effective": strategy_eff,
             },
             execution_summary={
                 "analysis_type": req.analysis_type,
@@ -1663,6 +1726,14 @@ class AnalysisGraphRunner:
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "used_rag": used_rag,
                 "planned_calls": len(tasks),
+                "synthesis_strategy": (
+                    syn_outcome.strategy_configured if syn_outcome else self._configured_synthesis_strategy(req.analysis_type)
+                ),
+                "synthesis_strategy_effective": strategy_eff,
+                "synthesis_fallback_reason": (
+                    syn_outcome.strategy_fallback_reason if syn_outcome else None
+                ),
+                "synthesis_slot_trace": syn_outcome.slot_trace if syn_outcome else [],
                 "orchestrator": "sequential",
                 "graph_nodes": [
                     "normalize_request",
@@ -1700,6 +1771,280 @@ class AnalysisGraphRunner:
             structured_report=structured_report,
             evidence=evidence,
             trace=trace,
+        )
+
+    def _synthesis_strategy_for_type(self, analysis_type: str) -> str | None:
+        """按 analysis_type 读取专项 synthesis 策略覆盖（v1/v2）。"""
+        mapping: dict[str, str | None] = {
+            "overheat_guidance": self._analysis_cfg.synthesis_strategy_overheat_guidance,
+            "maintenance_strategy": self._analysis_cfg.synthesis_strategy_maintenance_strategy,
+            "four_tube_health_interpretation": (
+                self._analysis_cfg.synthesis_strategy_four_tube_health_interpretation
+            ),
+            "leakage_burst_analysis": self._analysis_cfg.synthesis_strategy_leakage_burst_analysis,
+            "custom": self._analysis_cfg.synthesis_strategy_custom,
+        }
+        per = mapping.get(analysis_type)
+        if per in ("v1", "v2"):
+            return per
+        return None
+
+    def _configured_synthesis_strategy(self, analysis_type: str) -> str:
+        if analysis_type == "img_diag":
+            return "v1"
+        per = self._synthesis_strategy_for_type(analysis_type)
+        if per:
+            return per
+        base = (self._analysis_cfg.synthesis_strategy or "v1").strip().lower()
+        return base if base in ("v1", "v2") else "v1"
+
+    def _resolve_synthesis_strategy_effective(
+        self, analysis_type: str
+    ) -> tuple[str, str | None]:
+        configured = self._configured_synthesis_strategy(analysis_type)
+        if configured == "v2" and not synthesis_v2_registry_available(analysis_type):
+            return "v1", "v2_registry_missing"
+        return configured, None
+
+    def _plan_template_version_for_type(self, analysis_type: str) -> str | None:
+        mapping: dict[str, str | None] = {
+            "overheat_guidance": self._analysis_cfg.plan_template_version_overheat_guidance,
+            "maintenance_strategy": self._analysis_cfg.plan_template_version_maintenance_strategy,
+            "four_tube_health_interpretation": (
+                self._analysis_cfg.plan_template_version_four_tube_health_interpretation
+            ),
+            "leakage_burst_analysis": self._analysis_cfg.plan_template_version_leakage_burst_analysis,
+            "custom": self._analysis_cfg.plan_template_version_custom,
+        }
+        per = (mapping.get(analysis_type) or "").strip()
+        return per or None
+
+    def _synthesis_template_version_for_type(self, analysis_type: str) -> str | None:
+        mapping: dict[str, str | None] = {
+            "overheat_guidance": self._analysis_cfg.synthesis_template_version_overheat_guidance,
+            "maintenance_strategy": self._analysis_cfg.synthesis_template_version_maintenance_strategy,
+            "four_tube_health_interpretation": (
+                self._analysis_cfg.synthesis_template_version_four_tube_health_interpretation
+            ),
+            "leakage_burst_analysis": (
+                self._analysis_cfg.synthesis_template_version_leakage_burst_analysis
+            ),
+            "custom": self._analysis_cfg.synthesis_template_version_custom,
+        }
+        per = (mapping.get(analysis_type) or "").strip()
+        return per or None
+
+    @staticmethod
+    def _merge_template_version(
+        *,
+        per_type: str | None,
+        global_ver: str | None,
+        effective_strategy: str,
+    ) -> str | None:
+        """
+        专项 > 全局；均未配置时：effective v2 默认 v2，v1 返回 None（hash 选版）。
+        """
+        explicit = (per_type or "").strip() or (global_ver or "").strip() or None
+        if explicit:
+            return explicit
+        if effective_strategy == "v2":
+            return "v2"
+        return None
+
+    def _resolve_plan_template_version(self, analysis_type: str) -> str | None:
+        eff, _ = self._resolve_synthesis_strategy_effective(analysis_type)
+        return self._merge_template_version(
+            per_type=self._plan_template_version_for_type(analysis_type),
+            global_ver=self._analysis_cfg.plan_template_version,
+            effective_strategy=eff,
+        )
+
+    def _resolve_plan_template_version_label(self, req: AnalysisNL2SQLRequest) -> str:
+        """
+        与 acquire_data / QA 闭环一致的 plan 模板版本标签。
+        显式配置优先；否则与 _build_data_plan_from_template 相同用 get_template(version=None) 探测命中版本。
+        """
+        explicit = self._resolve_plan_template_version(req.analysis_type)
+        if explicit:
+            return explicit
+        scene = f"analysis_plan_{req.analysis_type}"
+        tpl = self._prompts.get_template(scene=scene, user_id=req.user_id, version=None)
+        if tpl is not None and getattr(tpl, "version", None):
+            return str(tpl.version)
+        return "unknown"
+
+    def _resolve_synthesis_template_version(self, analysis_type: str) -> str | None:
+        eff, _ = self._resolve_synthesis_strategy_effective(analysis_type)
+        return self._merge_template_version(
+            per_type=self._synthesis_template_version_for_type(analysis_type),
+            global_ver=self._analysis_cfg.synthesis_template_version,
+            effective_strategy=eff,
+        )
+
+    def _resolve_synthesis_stage_template(
+        self,
+        *,
+        analysis_type: str,
+        user_id: str,
+        default_text: str,
+    ) -> tuple[str, str]:
+        """加载 analysis_synthesis 模板，应用 ANALYSIS_SYNTHESIS_TEMPLATE_VERSION(_<TYPE>)。"""
+        tpl_ver = self._resolve_synthesis_template_version(analysis_type)
+        return self._resolve_stage_template(
+            stage="analysis_synthesis",
+            analysis_type=analysis_type,
+            user_id=user_id,
+            default_text=default_text,
+            template_version=tpl_ver,
+        )
+
+    def _make_synthesis_v2_engine(self) -> AnalysisSynthesisV2Engine:
+        return AnalysisSynthesisV2Engine(
+            llm_client=self._llm,
+            prompts=self._prompts,
+            gathered_json_max_chars=self._analysis_cfg.synthesis_gathered_json_max_chars,
+            segment_max_tokens=self._analysis_cfg.synthesis_v2_segment_max_tokens,
+            max_parallel_llm=self._analysis_cfg.synthesis_v2_max_parallel_llm,
+            table_max_rows=self._analysis_cfg.synthesis_v2_table_max_rows,
+            synthesis_timeout_seconds=self._analysis_cfg.synthesis_timeout_seconds,
+            emit_structured_sse=self._analysis_cfg.synthesis_v2_enable_structured_sse_events,
+            json_fallback=self._json_fallback,
+        )
+
+    async def _execute_synthesis(
+        self,
+        *,
+        query: str,
+        analysis_type: str,
+        data_mode: str,
+        data_blob: dict,
+        context_snippets: list[str],
+        system_prompt: str,
+        planning_context: str | None = None,
+        chart_mode: str = "auto",
+        user_id: str = "",
+    ) -> _SynthesisRunOutcome:
+        configured = self._configured_synthesis_strategy(analysis_type)
+        effective, fallback = self._resolve_synthesis_strategy_effective(analysis_type)
+        if effective == "v2":
+            engine = self._make_synthesis_v2_engine()
+            gathered = data_blob if isinstance(data_blob, dict) else {}
+            v2_result = await engine.run_sync(
+                analysis_type=analysis_type,
+                query=query,
+                data_mode=data_mode,
+                gathered_data=cast(dict[str, list[dict]], gathered),
+                context_snippets=context_snippets,
+                planning_context=planning_context,
+                chart_mode=chart_mode,
+            )
+            return _SynthesisRunOutcome(
+                summary=v2_result.summary,
+                synthesis_version=v2_result.synthesis_version,
+                strategy_configured=configured,
+                strategy_effective="v2",
+                strategy_fallback_reason=fallback,
+                v2_tables=v2_result.tables,
+                v2_charts=v2_result.charts,
+                v2_sections=v2_result.sections,
+                slot_trace=v2_result.slot_trace,
+            )
+        summary = await self._generate_summary(
+            query=query,
+            analysis_type=analysis_type,
+            data_mode=data_mode,
+            data_blob=data_blob,
+            context_snippets=context_snippets,
+            system_prompt=system_prompt,
+            planning_context=planning_context,
+        )
+        _, synthesis_version = self._resolve_synthesis_stage_template(
+            analysis_type=analysis_type,
+            user_id=user_id,
+            default_text=system_prompt,
+        )
+        return _SynthesisRunOutcome(
+            summary=summary,
+            synthesis_version=synthesis_version,
+            strategy_configured=configured,
+            strategy_effective="v1",
+            strategy_fallback_reason=fallback,
+        )
+
+    async def _iter_synthesis_v2_stream(
+        self,
+        *,
+        analysis_type: str,
+        query: str,
+        data_mode: str,
+        gathered_data: dict[str, list[dict]],
+        context_snippets: list[str],
+        planning_context: str | None,
+        chart_mode: str,
+    ) -> AsyncIterator[tuple[dict[str, Any], _SynthesisRunOutcome | None]]:
+        engine = self._make_synthesis_v2_engine()
+        if self._analysis_cfg.synthesis_v2_stream_live_first:
+            async for event, result in engine.iter_stream_events_live_first(
+                analysis_type=analysis_type,
+                query=query,
+                data_mode=data_mode,
+                gathered_data=gathered_data,
+                context_snippets=context_snippets,
+                planning_context=planning_context,
+                chart_mode=chart_mode,
+            ):
+                if result is not None:
+                    configured = self._configured_synthesis_strategy(analysis_type)
+                    _, fallback = self._resolve_synthesis_strategy_effective(analysis_type)
+                    yield (
+                        {},
+                        _SynthesisRunOutcome(
+                            summary=result.summary,
+                            synthesis_version=result.synthesis_version,
+                            strategy_configured=configured,
+                            strategy_effective="v2",
+                            strategy_fallback_reason=fallback,
+                            v2_tables=result.tables,
+                            v2_charts=result.charts,
+                            v2_sections=result.sections,
+                            slot_trace=result.slot_trace,
+                        ),
+                    )
+                else:
+                    yield (event, None)
+            return
+        v2 = await engine.run_sync(
+            analysis_type=analysis_type,
+            query=query,
+            data_mode=data_mode,
+            gathered_data=gathered_data,
+            context_snippets=context_snippets,
+            planning_context=planning_context,
+            chart_mode=chart_mode,
+        )
+        chunk_size = 480
+        for i in range(0, len(v2.summary), chunk_size):
+            yield ({"event": "summary_delta", "text": v2.summary[i : i + chunk_size]}, None)
+        if self._analysis_cfg.synthesis_v2_enable_structured_sse_events:
+            for tbl in v2.tables:
+                yield ({"event": "table_payload", "table": tbl}, None)
+            for ch in v2.charts:
+                yield ({"event": "chart_payload", "chart": ch}, None)
+        configured = self._configured_synthesis_strategy(analysis_type)
+        _, fallback = self._resolve_synthesis_strategy_effective(analysis_type)
+        yield (
+            {},
+            _SynthesisRunOutcome(
+                summary=v2.summary,
+                synthesis_version=v2.synthesis_version,
+                strategy_configured=configured,
+                strategy_effective="v2",
+                strategy_fallback_reason=fallback,
+                v2_tables=v2.tables,
+                v2_charts=v2.charts,
+                v2_sections=v2.sections,
+                slot_trace=v2.slot_trace,
+            ),
         )
 
     def _build_summary_user_content(
@@ -1844,8 +2189,7 @@ class AnalysisGraphRunner:
                 req.session_id,
             )
             ctx = await self._run_nl2sql_pipeline_through_rag(req, request_id=stream_request_id)
-            synthesis_prompt, synthesis_version = self._resolve_stage_template(
-                stage="analysis_synthesis",
+            synthesis_prompt, synthesis_version = self._resolve_synthesis_stage_template(
                 analysis_type=req.analysis_type,
                 user_id=req.user_id,
                 default_text="你是一名综合分析助手，请基于事实数据给出结论和建议。",
@@ -1860,6 +2204,8 @@ class AnalysisGraphRunner:
             if self._analysis_cfg.nl2sql_llm_planner_enabled:
                 planning_ctx = json.dumps(ctx.intent_obj.model_dump(mode="json"), ensure_ascii=False)
 
+            configured_strategy = self._configured_synthesis_strategy(req.analysis_type)
+            effective_strategy, _ = self._resolve_synthesis_strategy_effective(req.analysis_type)
             yield {
                 "event": "meta",
                 "request_id": ctx.request_id,
@@ -1870,30 +2216,66 @@ class AnalysisGraphRunner:
                 "template_versions": {
                     "synthesis": synthesis_version,
                     "report": report_version,
+                    "synthesis_strategy": configured_strategy,
+                    "synthesis_strategy_effective": effective_strategy,
                 },
             }
 
             t_syn = perf_counter()
-            parts: list[str] = []
+            syn_outcome: _SynthesisRunOutcome | None = None
             try:
-                async for chunk in self._stream_summary_text(
-                    query=req.query,
-                    analysis_type=req.analysis_type,
-                    data_mode="nl2sql",
-                    data_blob=ctx.gathered_data,
-                    context_snippets=ctx.context_snippets,
-                    system_prompt=synthesis_prompt,
-                    planning_context=planning_ctx,
-                ):
-                    parts.append(chunk)
-                    yield {"event": "summary_delta", "text": chunk}
+                if effective_strategy == "v2":
+                    async for event, outcome in self._iter_synthesis_v2_stream(
+                        analysis_type=req.analysis_type,
+                        query=req.query,
+                        data_mode="nl2sql",
+                        gathered_data=ctx.gathered_data,
+                        context_snippets=ctx.context_snippets,
+                        planning_context=planning_ctx,
+                        chart_mode=req.options.chart_mode,
+                    ):
+                        if outcome is not None:
+                            syn_outcome = outcome
+                            continue
+                        if event:
+                            yield event
+                else:
+                    parts: list[str] = []
+                    async for chunk in self._stream_summary_text(
+                        query=req.query,
+                        analysis_type=req.analysis_type,
+                        data_mode="nl2sql",
+                        data_blob=ctx.gathered_data,
+                        context_snippets=ctx.context_snippets,
+                        system_prompt=synthesis_prompt,
+                        planning_context=planning_ctx,
+                    ):
+                        parts.append(chunk)
+                        yield {"event": "summary_delta", "text": chunk}
+                    summary_v1 = "".join(parts)
+                    _, syn_ver = self._resolve_synthesis_stage_template(
+                        analysis_type=req.analysis_type,
+                        user_id=req.user_id,
+                        default_text=synthesis_prompt,
+                    )
+                    syn_outcome = _SynthesisRunOutcome(
+                        summary=summary_v1,
+                        synthesis_version=syn_ver,
+                        strategy_configured=configured_strategy,
+                        strategy_effective="v1",
+                    )
             except Exception:  # noqa: BLE001
                 logger.exception("analysis nl2sql stream summary failed")
                 fb = "综合分析生成失败，已返回基础报告，请稍后重试。"
-                parts = [fb]
                 yield {"event": "summary_delta", "text": fb}
+                syn_outcome = _SynthesisRunOutcome(
+                    summary=fb,
+                    synthesis_version=synthesis_version,
+                    strategy_configured=configured_strategy,
+                    strategy_effective=effective_strategy,
+                )
 
-            summary = "".join(parts)
+            summary = syn_outcome.summary if syn_outcome else ""
             synthesis_ms = int((perf_counter() - t_syn) * 1000)
             yield {
                 "event": "summary_complete",
@@ -1913,6 +2295,9 @@ class AnalysisGraphRunner:
                     "used_plan_rag": ctx.used_plan_rag,
                     "used_business_rag": ctx.used_business_rag,
                     "rag_citations": ctx.rag_citations,
+                    "synthesis_strategy_effective": (
+                        syn_outcome.strategy_effective if syn_outcome else effective_strategy
+                    ),
                 },
             }
 
@@ -1921,10 +2306,13 @@ class AnalysisGraphRunner:
                     req,
                     ctx,
                     summary=summary,
-                    synthesis_version=synthesis_version,
+                    synthesis_version=(
+                        syn_outcome.synthesis_version if syn_outcome else synthesis_version
+                    ),
                     report_version=report_version,
                     synthesis_started=t_syn,
                     on_complete=on_complete,
+                    syn_outcome=syn_outcome,
                 )
             )
             yield {"event": "structured_async_enqueued", "request_id": ctx.request_id}
@@ -1948,6 +2336,7 @@ class AnalysisGraphRunner:
         report_version: str,
         synthesis_started: float,
         on_complete: Callable[[AnalysisV2Result], Awaitable[None]] | None,
+        syn_outcome: _SynthesisRunOutcome | None = None,
     ) -> None:
         """流式 summary 结束后：组装与同步路径一致的 `AnalysisV2Result`，写日志并投递扩展钩子。"""
         try:
@@ -1958,6 +2347,7 @@ class AnalysisGraphRunner:
                 synthesis_version=synthesis_version,
                 report_version=report_version,
                 synthesis_started=synthesis_started,
+                syn_outcome=syn_outcome,
             )
             payload = result.model_dump(mode="json")
             dumped = json.dumps(payload, ensure_ascii=False)
@@ -2165,11 +2555,15 @@ class AnalysisGraphRunner:
         report_template: str,
         chart_mode: str,
         data_coverage: dict[str, Any],
+        v2_tables: list[dict[str, Any]] | None = None,
+        v2_charts: list[dict[str, Any]] | None = None,
+        v2_sections: list[dict[str, Any]] | None = None,
+        synthesis_strategy_effective: str | None = None,
     ) -> dict:
         """由摘要与数据覆盖组装 `structured_report`（sections/tables/charts 等）。"""
         records = AnalysisGraphRunner._flatten_records(data_coverage)
-        charts = []
-        if chart_mode != "off":
+        charts: list[dict[str, Any]] = []
+        if chart_mode != "off" and synthesis_strategy_effective != "v2":
             if analysis_type == "overheat_guidance":
                 charts = [
                     {
@@ -2208,30 +2602,45 @@ class AnalysisGraphRunner:
                         "data": AnalysisGraphRunner._build_level_count_data(records),
                     },
                 ]
+        sections: list[dict[str, Any]] = []
+        if v2_sections:
+            sections.extend(v2_sections)
+        else:
+            sections.append({"title": "结论摘要", "content": summary})
+        sections.append(
+            {
+                "title": "执行说明",
+                "content": (
+                    "数据覆盖概览: "
+                    f"{json.dumps(data_coverage, ensure_ascii=False, default=AnalysisGraphRunner._json_fallback)}"
+                ),
+            }
+        )
+        tables: list[dict[str, Any]] = list(v2_tables or [])
+        tables.append(
+            {
+                "title": "建议清单",
+                "columns": ["priority", "category", "owner", "eta", "trigger", "rationale", "action"],
+                "rows": suggestions,
+            }
+        )
+        merged_charts = list(v2_charts or [])
+        if merged_charts:
+            out_charts = merged_charts
+        else:
+            out_charts = charts if chart_mode != "minimal" else charts[:1]
+        meta: dict[str, Any] = {
+            "analysis_type": analysis_type,
+            "report_style": report_style,
+            "report_template": report_template,
+        }
+        if synthesis_strategy_effective:
+            meta["synthesis_strategy_effective"] = synthesis_strategy_effective
         return {
-            "meta": {
-                "analysis_type": analysis_type,
-                "report_style": report_style,
-                "report_template": report_template,
-            },
-            "sections": [
-                {"title": "结论摘要", "content": summary},
-                {
-                    "title": "执行说明",
-                    "content": (
-                        "数据覆盖概览: "
-                        f"{json.dumps(data_coverage, ensure_ascii=False, default=AnalysisGraphRunner._json_fallback)}"
-                    ),
-                },
-            ],
-            "tables": [
-                {
-                    "title": "建议清单",
-                    "columns": ["priority", "category", "owner", "eta", "trigger", "rationale", "action"],
-                    "rows": suggestions,
-                }
-            ],
-            "charts": charts if chart_mode != "minimal" else charts[:1],
+            "meta": meta,
+            "sections": sections,
+            "tables": tables,
+            "charts": out_charts,
             "suggestions": suggestions,
             "risks": [],
         }
@@ -2353,6 +2762,7 @@ class AnalysisGraphRunner:
         analysis_type: str,
         user_id: str,
         default_text: str,
+        template_version: str | None = None,
     ) -> tuple[str, str]:
         """
         分层模板解析策略（生产可用）：
@@ -2371,8 +2781,9 @@ class AnalysisGraphRunner:
             stage,
             "analysis",
         ]
+        ver = (template_version or "").strip() or None
         for scene in candidate_scenes:
-            tpl = self._prompts.get_template(scene=scene, user_id=user_id, version=None)
+            tpl = self._prompts.get_template(scene=scene, user_id=user_id, version=ver)
             if tpl and tpl.content:
                 version = f"{scene}:{getattr(tpl, 'version', 'default')}"
                 return tpl.content, version
@@ -2877,7 +3288,8 @@ class AnalysisGraphRunner:
         ]
         """
         scene = f"analysis_plan_{req.analysis_type}"
-        tpl = self._prompts.get_template(scene=scene, user_id=req.user_id, version=None)
+        plan_ver = self._resolve_plan_template_version(req.analysis_type)
+        tpl = self._prompts.get_template(scene=scene, user_id=req.user_id, version=plan_ver)
         if tpl is None or not getattr(tpl, "content", "").strip():
             return []
         try:
@@ -2926,6 +3338,7 @@ class AnalysisGraphRunner:
         task: _PlanTask,
         *,
         analysis_request_id: str | None = None,
+        plan_template_version: str | None = None,
     ) -> tuple[AnalysisNL2SQLCall, dict[str, list[dict]]]:
         """单次 plan 任务：LLM 生成 SQL + 执行（封装于 NL2SQLService.query），最多 2 次尝试。"""
         max_attempts = 2
@@ -2941,6 +3354,7 @@ class AnalysisGraphRunner:
                         analysis_type=req.analysis_type,
                         analysis_request_id=analysis_request_id,
                         plan_item_id=task.item_id,
+                        plan_template_version=plan_template_version,
                         time_intent_text=(req.query or "").strip(),
                     ),
                     record_conversation=False,
@@ -2988,8 +3402,10 @@ class AnalysisGraphRunner:
         req: AnalysisNL2SQLRequest,
         tasks: list[_PlanTask],
         analysis_request_id: str | None = None,
+        plan_template_version: str | None = None,
     ) -> tuple[list[AnalysisNL2SQLCall], dict[str, list[dict]], dict[str, str]]:
         """与并行版语义一致，仅按 plan_tasks 顺序串行调度（并行关闭或单任务时使用）。"""
+        ptv = plan_template_version or self._resolve_plan_template_version_label(req)
         calls: list[AnalysisNL2SQLCall] = []
         gathered_data: dict[str, list[dict]] = {}
         task_status: dict[str, str] = {}
@@ -3014,7 +3430,10 @@ class AnalysisGraphRunner:
                 ).inc()
                 continue
             call, gd = await self._run_single_nl2sql_plan_task(
-                req, task, analysis_request_id=analysis_request_id
+                req,
+                task,
+                analysis_request_id=analysis_request_id,
+                plan_template_version=ptv,
             )
             calls.append(call)
             gathered_data.update(gd)
@@ -3030,15 +3449,20 @@ class AnalysisGraphRunner:
         req: AnalysisNL2SQLRequest,
         tasks: list[_PlanTask],
         analysis_request_id: str | None = None,
+        plan_template_version: str | None = None,
     ) -> tuple[list[AnalysisNL2SQLCall], dict[str, list[dict]], dict[str, str], int]:
         """执行 NL2SQL：依赖未满足则 skipped；每项最多 2 次尝试。默认同层无依赖任务并行（含生成 SQL 与查库）。"""
+        ptv = plan_template_version or self._resolve_plan_template_version_label(req)
         t_data = perf_counter()
         order_idx = {t.item_id: i for i, t in enumerate(tasks)}
         task_by_id = {t.item_id: t for t in tasks}
 
         if not self._analysis_cfg.nl2sql_acquire_parallel_enabled or len(tasks) <= 1:
             calls, gathered_data, task_status = await self._execute_data_plan_sequential(
-                req=req, tasks=tasks, analysis_request_id=analysis_request_id
+                req=req,
+                tasks=tasks,
+                analysis_request_id=analysis_request_id,
+                plan_template_version=ptv,
             )
             duration_s = perf_counter() - t_data
             ANALYSIS_NODE_LATENCY.labels(node="acquire_data", analysis_type=req.analysis_type).observe(duration_s)
@@ -3054,7 +3478,10 @@ class AnalysisGraphRunner:
         async def bounded(task: _PlanTask) -> tuple[AnalysisNL2SQLCall, dict[str, list[dict]]]:
             async with sem:
                 return await self._run_single_nl2sql_plan_task(
-                    req, task, analysis_request_id=analysis_request_id
+                    req,
+                    task,
+                    analysis_request_id=analysis_request_id,
+                    plan_template_version=ptv,
                 )
 
         while unfinished:

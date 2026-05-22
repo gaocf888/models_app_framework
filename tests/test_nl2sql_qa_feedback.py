@@ -4,13 +4,16 @@ import unittest
 from app.nl2sql.qa_feedback import (
     NL2SQL_QA_AUTO_KIND,
     META_KEY_DATA_SOURCE_FP,
+    META_KEY_PLAN_TEMPLATE_VERSION,
     META_KEY_SCHEMA_FP,
     NL2SQLQARetrievalContext,
     analysis_accepts_auto_qa_feedback,
     build_nl2sql_auto_qa_doc_name,
     compact_nl2sql_feedback_question,
     format_nl2sql_qa_embedding_text,
+    list_nl2sql_auto_qa_entries,
     qa_chunk_passes_retrieval_filter,
+    update_nl2sql_auto_qa_entry,
     upsert_nl2sql_auto_qa_pair,
 )
 from app.nl2sql.rag_service import NL2SQLRAGService
@@ -79,21 +82,30 @@ class TestNl2sqlQaFeedbackCompact(unittest.TestCase):
 
 
 class TestNl2sqlQaFeedbackDedup(unittest.TestCase):
-    def test_doc_name_stable_for_four_tuple(self) -> None:
+    def test_doc_name_stable_for_five_tuple(self) -> None:
         a = build_nl2sql_auto_qa_doc_name(
             analysis_type="overheat_guidance",
             plan_item_id="q1",
+            plan_template_version="v1",
         )
         b = build_nl2sql_auto_qa_doc_name(
             analysis_type="overheat_guidance",
             plan_item_id="q1",
+            plan_template_version="v1",
         )
         c = build_nl2sql_auto_qa_doc_name(
             analysis_type="overheat_guidance",
             plan_item_id="q2",
+            plan_template_version="v1",
+        )
+        d = build_nl2sql_auto_qa_doc_name(
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version="v2",
         )
         self.assertEqual(a, b)
         self.assertNotEqual(a, c)
+        self.assertNotEqual(a, d)
 
     def test_analysis_accepts_only_with_type_and_plan_item(self) -> None:
         self.assertTrue(analysis_accepts_auto_qa_feedback("overheat_guidance", "q1"))
@@ -111,6 +123,7 @@ class TestNl2sqlQaFeedbackDedup(unittest.TestCase):
             policy_fp="pol1",
             analysis_type="overheat_guidance",
             plan_item_id="q1",
+            plan_template_version="v1",
             prompt_prefix_snapshot=None,
         )
         first = upsert_nl2sql_auto_qa_pair(rag, **kw)
@@ -127,6 +140,77 @@ class TestNl2sqlQaFeedbackDedup(unittest.TestCase):
         self.assertEqual(1, len(entries))
         self.assertIn("SELECT 1", entries[0].get("text") or "")
 
+    def test_upsert_v1_and_v2_plan_versions_both_stored(self) -> None:
+        rag, store = _rag_with_inmemory_store()
+        base = dict(
+            question="请分析超温",
+            sql="SELECT 1",
+            data_source_fp="ds1",
+            schema_fp="sc1",
+            policy_fp="pol1",
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            prompt_prefix_snapshot=None,
+        )
+        first = upsert_nl2sql_auto_qa_pair(rag, **{**base, "plan_template_version": "v1"})
+        second = upsert_nl2sql_auto_qa_pair(rag, **{**base, "plan_template_version": "v2", "sql": "SELECT 2"})
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        entries = [
+            it
+            for it in store._items  # noqa: SLF001
+            if it.get("namespace") == NL2SQLRAGService.NS_QA
+        ]
+        self.assertEqual(2, len(entries))
+
+    def test_list_filter_by_plan_template_version(self) -> None:
+        rag, _store = _rag_with_inmemory_store()
+        base = dict(
+            question="q",
+            sql="SELECT 1",
+            data_source_fp="ds1",
+            schema_fp="sc1",
+            policy_fp="pol1",
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            prompt_prefix_snapshot=None,
+        )
+        upsert_nl2sql_auto_qa_pair(rag, **{**base, "plan_template_version": "v1"})
+        upsert_nl2sql_auto_qa_pair(rag, **{**base, "plan_template_version": "v2", "sql": "SELECT 2"})
+        v1_rows = list_nl2sql_auto_qa_entries(
+            rag, limit=50, analysis_type="overheat_guidance", plan_template_version="v1"
+        )
+        self.assertEqual(1, len(v1_rows))
+        self.assertEqual("v1", (v1_rows[0].get("metadata") or {}).get(META_KEY_PLAN_TEMPLATE_VERSION))
+
+    def test_patch_recomputes_dedup_key(self) -> None:
+        rag, store = _rag_with_inmemory_store()
+        doc = upsert_nl2sql_auto_qa_pair(
+            rag,
+            question="q",
+            sql="SELECT 1",
+            data_source_fp="ds1",
+            schema_fp="sc1",
+            policy_fp="pol1",
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version="v1",
+            prompt_prefix_snapshot=None,
+        )
+        self.assertIsNotNone(doc)
+        update_nl2sql_auto_qa_entry(
+            rag,
+            doc_name=doc,
+            question="q2",
+            sql="SELECT 9",
+            metadata_patch={"question_normalized": "norm"},
+        )
+        items = store._items.values() if hasattr(store._items, "values") else store._items  # noqa: SLF001
+        entry = next(it for it in items if it.get("doc_name") == doc)
+        meta = entry.get("metadata") or {}
+        self.assertIn("v1", meta.get("dedup_key", ""))
+        self.assertEqual("norm", meta.get("question_normalized"))
+
     def test_upsert_rejects_direct_nl2sql_without_plan_item(self) -> None:
         rag, store = _rag_with_inmemory_store()
         out = upsert_nl2sql_auto_qa_pair(
@@ -138,6 +222,7 @@ class TestNl2sqlQaFeedbackDedup(unittest.TestCase):
             policy_fp="pol1",
             analysis_type="overheat_guidance",
             plan_item_id=None,
+            plan_template_version=None,
             prompt_prefix_snapshot=None,
         )
         self.assertIsNone(out)

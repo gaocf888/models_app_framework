@@ -22,8 +22,9 @@ python3 -m http.server 8765
 | [inspection-extract-async.html](inspection-extract-async.html) | 检修提取 **异步**：`run/async` + 任务轮询与分块 |
 | [inspection-extract-v0-async.html](inspection-extract-v0-async.html) | 检修提取 **V0 异步**（LangGraph + 版面 OCR）：`/inspection-extract-v0/*` |
 | [analysis-img-diag.html](analysis-img-diag-stream.html) | 综合分析 **看图诊断（流式）**：`POST /analysis/img-diag/upload` + `POST /analysis/run-img-diag-stream`（SSE，与超温流式页同构） |
-| [analysis-nl2sql-stream.html](analysis-nl2sql-stream.html) | 综合分析 **NL2SQL 流式 synthesis（全专项）**：超温 / 检修策略 / 四管健康解读 / 泄爆 · `POST /analysis/run-with-nl2sql-stream` |
-| [analysis-nl2sql-overheat-stream.html](analysis-nl2sql-overheat-stream.html) | 综合分析 **NL2SQL 流式 synthesis（超温专项页，保留）**：`POST /analysis/run-with-nl2sql-stream` |
+| [analysis-nl2sql-stream-v1.html](analysis-nl2sql-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（全专项，默认策略）**：`POST /analysis/run-with-nl2sql-stream` |
+| [analysis-nl2sql-overheat-stream-v1.html](analysis-nl2sql-overheat-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（超温专项页）** |
+| [analysis-nl2sql-stream-v2.html](analysis-nl2sql-stream-v2.html) | 综合分析 **NL2SQL 流式 synthesis v2（超温多槽位；需服务端 env）**：同上接口，可收 `table_payload` / `chart_payload` |
 
 ---
 
@@ -184,51 +185,76 @@ V0 单段异步任务 **`work_idx` 一般为 `1`**；`strict` 可不传，走 `I
 
 ---
 
-## 5. `analysis-nl2sql-stream.html`（综合分析 · 全专项 NL2SQL 流式 synthesis）
+## 5. `analysis-nl2sql-stream-v1.html`（综合分析 · 全专项 NL2SQL 流式 synthesis **v1**）
 
 ### 5.1 前置条件
 
 - `POST /analysis/run-with-nl2sql-stream` 已部署；vLLM 流式与 NL2SQL 服务可用  
-- 页面支持 **`analysis_type`**：`overheat_guidance`（超温）、`maintenance_strategy`（检修策略）、`four_tube_health_interpretation`（四管健康解读）、`leakage_burst_analysis`（泄爆）  
+- **synthesis v1（默认）**：单次 LLM 生成整篇报告；服务端 `ANALYSIS_SYNTHESIS_STRATEGY` 默认为 `v1`  
+- 页面支持 **`analysis_type`**：`overheat_guidance`、`maintenance_strategy`、`four_tube_health_interpretation`、`leakage_burst_analysis`  
 
 ### 5.2 访问示例
 
-[http://127.0.0.1:8765/analysis-nl2sql-stream.html](http://127.0.0.1:8765/analysis-nl2sql-stream.html)
+[http://127.0.0.1:8765/analysis-nl2sql-stream-v1.html](http://127.0.0.1:8765/analysis-nl2sql-stream-v1.html)
 
 ### 5.3 行为说明
 
 - 切换专项后可点「填入当前专项示例 query」快速联调  
 - **取数、质量门、RAG** 阶段仍阻塞在首包之前  
-- SSE 事件顺序一般为：`meta` → 多条 `summary_delta` → `summary_complete` → `structured_async_enqueued`  
-- 完整 `AnalysisV2Result` 异步落日志与 trace；可用 `GET /analysis/traces/{request_id}` 查询  
+- SSE：`meta` → 多条 `summary_delta` → `summary_complete` → `finished` → `structured_async_enqueued`  
+- 完整 `AnalysisV2Result` 异步落日志与 trace；`GET /analysis/traces/{request_id}`  
 
-### 5.4 与超温专用页关系
+### 5.4 相关页面
 
-- [analysis-nl2sql-overheat-stream.html](analysis-nl2sql-overheat-stream.html) 保留，默认聚焦超温演示；全专项请用本页。  
+- 超温 v1 精简页：[analysis-nl2sql-overheat-stream-v1.html](analysis-nl2sql-overheat-stream-v1.html)  
+- 超温 v2 多槽位页：[analysis-nl2sql-stream-v2.html](analysis-nl2sql-stream-v2.html)（需服务端 env，见 §7）  
 
 ---
 
-## 6. `analysis-nl2sql-overheat-stream.html`（综合分析 · 超温 NL2SQL 流式 synthesis）
+## 6. `analysis-nl2sql-overheat-stream-v1.html`（综合分析 · 超温 NL2SQL 流式 synthesis **v1**）
 
 ### 6.1 前置条件
 
-- 同 §5.1；本页默认 **`analysis_type=overheat_guidance`**，亦可在下拉中切换 `maintenance_strategy` / `custom`  
+- 同 §5.1；默认 **`analysis_type=overheat_guidance`**  
 
 ### 6.2 访问示例
 
-[http://127.0.0.1:8765/analysis-nl2sql-overheat-stream.html](http://127.0.0.1:8765/analysis-nl2sql-overheat-stream.html)
+[http://127.0.0.1:8765/analysis-nl2sql-overheat-stream-v1.html](http://127.0.0.1:8765/analysis-nl2sql-overheat-stream-v1.html)
 
 ### 6.3 行为说明
 
-- 与 §5.3 相同（流式 synthesis、异步 structured_report）  
+- 与 §5.3 相同（v1 单次 LLM 流式 synthesis）  
 
 ### 6.4 与同步接口差异（提示）
 
-- 流式路由走 **顺序管道** 实现；若生产上同步接口走 LangGraph 且需行为逐字节一致，请用 `POST /analysis/run-with-nl2sql` 对照。  
+- 流式路由走 **顺序管道** 实现；对照同步接口可用 `POST /analysis/run-with-nl2sql`  
 
 ---
 
-## 7. 通用常见问题与安全
+## 7. `analysis-nl2sql-stream-v2.html`（综合分析 · 超温 NL2SQL 流式 synthesis **v2**）
+
+### 7.1 前置条件
+
+- 同 §5.1，且服务端已配置 **effective v2**（请求体不能切换策略），例如：  
+  - `ANALYSIS_SYNTHESIS_STRATEGY_OVERHEAT_GUIDANCE=v2`（推荐）或全局 `ANALYSIS_SYNTHESIS_STRATEGY=v2`  
+  - 建议 `ANALYSIS_PLAN_TEMPLATE_VERSION_OVERHEAT_GUIDANCE=v2`  
+  - 可选 `ANALYSIS_SYNTHESIS_V2_ENABLE_STRUCTURED_SSE=true`（默认 true）以在流中收到 `table_payload` / `chart_payload`  
+- **P0 仅 `overheat_guidance` 注册 v2 槽位**；其它专项配置 v2 会因无注册表回退 v1  
+
+### 7.2 访问示例
+
+[http://127.0.0.1:8765/analysis-nl2sql-stream-v2.html](http://127.0.0.1:8765/analysis-nl2sql-stream-v2.html)
+
+### 7.3 行为说明
+
+- 首帧 `meta.template_versions` 应含 `synthesis_strategy_effective: v2`；页面会提示若非 v2  
+- SSE 除 `summary_delta` 外可有 `table_payload`、`chart_payload`（含 `slot_id`）  
+- v1 对照：[analysis-nl2sql-stream-v1.html](analysis-nl2sql-stream-v1.html)、[analysis-nl2sql-overheat-stream-v1.html](analysis-nl2sql-overheat-stream-v1.html)  
+- 设计说明：`docs/综合分析优化版本实现方案(v2版本).md`  
+
+---
+
+## 8. 通用常见问题与安全
 
 - **401/403**：密钥错误或未填（而后端已开鉴权）  
 - **422**：`user_id` / `session_id` 等不符合后端校验规则  

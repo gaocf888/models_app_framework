@@ -68,9 +68,10 @@ class NL2SQLRAGService:
         policy_fp: str,
         analysis_type: str | None,
         plan_item_id: str | None,
+        plan_template_version: str | None,
         prompt_prefix_snapshot: str | None,
     ) -> str | None:
-        """系统自动写入闭环：校验通过后调用；四元组已存在则跳过，返回 None。"""
+        """系统自动写入闭环：校验通过后调用；五元组已存在则跳过，返回 None。"""
         from app.nl2sql.qa_feedback import upsert_nl2sql_auto_qa_pair
 
         return upsert_nl2sql_auto_qa_pair(
@@ -82,6 +83,7 @@ class NL2SQLRAGService:
             policy_fp=policy_fp,
             analysis_type=analysis_type,
             plan_item_id=plan_item_id,
+            plan_template_version=plan_template_version,
             prompt_prefix_snapshot=prompt_prefix_snapshot,
         )
 

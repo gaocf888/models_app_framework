@@ -242,13 +242,13 @@ flowchart LR
 
 | 项目 | 说明 |
 |------|------|
-| **实现位置** | `app/nl2sql/qa_feedback.py`（元数据键、过滤规则、按四元组首次写入、列表/更新辅助）；`NL2SQLRAGService.retrieve` / `retrieve_chunks` 增加 `nl2sql_qa_context`；`NL2SQLChain` 在 **非 L2/L1 缓存短路径** 的 LLM 成功 + 校验通过后 **异步** 写入（`asyncio.to_thread`） |
+| **实现位置** | `app/nl2sql/qa_feedback.py`（元数据键、过滤规则、按五元组首次写入、列表/更新辅助）；`NL2SQLRAGService.retrieve` / `retrieve_chunks` 增加 `nl2sql_qa_context`；`NL2SQLChain` 在 **非 L2/L1 缓存短路径** 的 LLM 成功 + 校验通过后 **异步** 写入（`asyncio.to_thread`） |
 | **写入范围** | 仅当 **`analysis_type` 与 `plan_item_id` 均非空**（综合分析 q1～q4 等）；直连 `POST /nl2sql/query` 未传 `plan_item_id` 或 `analysis_type` 为空时 **不写入** |
-| **去重** | `doc_name` 由 **`(namespace, ingest_source, analysis_type, plan_item_id)`** 确定性哈希；**已存在则跳过**（不覆盖、不删后写） |
-| **元数据** | `ingest_source=auto`、`nl2sql_auto_kind=nl2sql_system_feedback_v1`、`doc_version=auto_v1`，以及 `data_source_fp` / `schema_fp` / `policy_fp` / `dedup_key` 等（与 `sql_cache.compute_*` 一致） |
-| **检索过滤** | `NL2SQL_QA_FILTER_ENABLED=true`（默认）时，对 **仅** `nl2sql_qa_examples` 命中的 chunk 校验上述指纹；无指纹的 **历史人工** QA 由 `NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED`（默认 `true`）控制是否仍进入 Prompt |
+| **去重** | `doc_name` 由 **`(namespace, ingest_source, analysis_type, plan_item_id, plan_template_version)`** 确定性哈希；**已存在则跳过**（不覆盖、不删后写）。`plan_template_version` 由综合分析 `acquire_data` 经 `NL2SQLQueryRequest` 传入，与 `analysis_plan_<type>` 的 v1/v2 一致 |
+| **元数据** | `ingest_source=auto`、`nl2sql_auto_kind=nl2sql_system_feedback_v1`、向量库 `doc_version=auto_v1`（技术字段，**不参与**业务去重），以及 `data_source_fp` / `schema_fp` / `policy_fp` / `plan_template_version` / `dedup_key` 等 |
+| **检索过滤** | `NL2SQL_QA_FILTER_ENABLED=true`（默认）时，对 **仅** `nl2sql_qa_examples` 命中的 chunk 校验指纹；请求带 `plan_template_version` 时优先同版本自动 QA；无 `plan_template_version` 的旧条目由 `NL2SQL_QA_INCLUDE_LEGACY_NO_PLAN_VER`（默认 `true`）控制；无指纹的 **历史人工** QA 由 `NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED` 控制 |
 | **prefetch** | 过滤会丢掉部分 Top-K，故对 QA 命名空间先放大召回再截断：``NL2SQL_QA_RAG_PREFETCH_MULT``（默认 `4`） |
-| **管理面（查询 / 更新问答对）** | **`GET /rag/nl2sql-auto-qa`**：分页列出命名空间 **`nl2sql_qa_examples`** 下系统自动写入的 QA（支持筛选）；**`PATCH /rag/nl2sql-auto-qa`**：按 `doc_name` 指定条目 **删后重建**，用于修正问答文本或 SQL（见 **`app/api/rag_admin.py`**）。底层存储为 **Elasticsearch / EasySearch** 时列表依赖 `metadata.nl2sql_auto_kind` 等字段检索（见 `ElasticsearchVectorStore.metadata_search`）；进程内 Faiss 则为全量扫描 `_items`。 |
+| **管理面** | **`GET /rag/nl2sql-auto-qa`**：列出自动 QA；Query 可选 **`analysis_type`**、**`plan_item_id`**、**`plan_template_version`**；响应含便捷字段与完整 `metadata`。**`PATCH /rag/nl2sql-auto-qa`**：按 **`doc_name`**（五元组哈希）删后写；仅修正问句/SQL/指纹，**勿** patch 变更五元组维度（换 plan 版本应删条或重新跑分析写入）。见 **`app/api/rag_admin.py`**。 |
 
 **环境变量（另见 `app/app-deploy/.env.example`）**
 
@@ -258,6 +258,7 @@ flowchart LR
 | `NL2SQL_QA_FEEDBACK_ONLY_FRESH_SQL` | `true` 时仅 **本轮走 LLM 生成** 成功后写入（**不**在 L2/L1 缓存直接返回路径写库） | `true` |
 | `NL2SQL_QA_FILTER_ENABLED` | 检索时是否对 QA 命名空间做指纹过滤 | `true` |
 | `NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED` | 无 `data_source_fp` 的旧人工 QA 是否仍保留在上下文中 | `true` |
+| `NL2SQL_QA_INCLUDE_LEGACY_NO_PLAN_VER` | 检索带 `plan_template_version` 时，是否仍召回 metadata 无 `plan_template_version` 的自动 QA | `true` |
 | `NL2SQL_QA_RAG_PREFETCH_MULT` | QA 命名空间检索放大系数 | `4` |
 
 配置模型：`app/core/config.py` · `AnalysisConfig.nl2sql_qa_feedback_enabled`（环境变量 `NL2SQL_QA_FEEDBACK_ENABLED`）。
@@ -330,3 +331,4 @@ flowchart LR
 | 2026-05-06 | v0.3 | L1 时间骨架落地；§4.1 区分 L2/L1 键；§七～七 bis 集成点与运维速查；§3.1 已实现形态说明 |
 | 2026-05-06 | v0.4 | §七 ter：QA 向量闭环（`NL2SQL_QA_*`、`qa_feedback.py`、RAG 检索过滤、`/rag/nl2sql-auto-qa`）；§10.1 增补 `NL2SQL_QA_FEEDBACK_ENABLED` |
 | 2026-05-09 | v0.5 | 文首「当前实现摘要」：时间口径（天/周/月/近 N 天）与 L1/L2、环境变量；`nl2sql_qa_examples` 写入与 **`GET`/`PATCH` 管理端**；§七 修正链内顺序（先 NL2SQL RAG，再 L2→L1）；§1.1 澄清命中后仍跑 RAG、仅跳过 LLM |
+| 2026-05-19 | v0.6 | QA 去重扩展为五元组（+`plan_template_version`）；`GET /rag/nl2sql-auto-qa` 支持按 plan 版本筛选；与综合分析 plan v1/v2 配置联动 |

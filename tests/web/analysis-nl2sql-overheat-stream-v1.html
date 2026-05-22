@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>综合分析 · 全专项 NL2SQL 流式测试 · /analysis/run-with-nl2sql-stream</title>
+  <title>综合分析 · 超温 NL2SQL 流式 synthesis v1 · /analysis/run-with-nl2sql-stream</title>
   <style>
     :root {
       --bg: #0f1419;
@@ -134,43 +134,19 @@
     .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
     code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
     .hint { font-size: 0.75rem; color: var(--muted); margin-top: 0.35rem; }
-    .type-desc {
-      margin-top: 0.5rem;
-      padding: 0.5rem 0.65rem;
-      border-radius: 6px;
-      border: 1px solid var(--border);
-      background: #0d1117;
-      font-size: 0.8rem;
-      color: var(--muted);
-    }
-    .type-pills {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.35rem;
-      margin-top: 0.5rem;
-    }
-    .type-pills button {
-      padding: 0.25rem 0.55rem;
-      font-size: 0.72rem;
-      font-weight: 500;
-    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>综合分析 · 全专项 NL2SQL 流式 synthesis</h1>
+    <h1>综合分析 · 超温 NL2SQL 流式 synthesis <span style="color:var(--accent);font-size:0.85em">v1</span></h1>
     <p class="sub">
-      调用 <code>POST /analysis/run-with-nl2sql-stream</code>（<code>text/event-stream</code>）。
-      支持专项：<code>overheat_guidance</code>、<code>maintenance_strategy</code>、
-      <code>four_tube_health_interpretation</code>、<code>leakage_burst_analysis</code>。
-      取数与质量门仍为同步阻塞；仅结论阶段以 SSE 增量下发 Markdown 源码。
+      <strong>synthesis v1（默认）</strong>：单次 LLM 流式输出 Markdown。
+      调用 <code>POST /analysis/run-with-nl2sql-stream</code>，默认 <code>analysis_type=overheat_guidance</code>。
       事件序：<code>meta</code> → <code>summary_delta</code> → <code>summary_complete</code> →
-      <code>finished</code>（<code>meta.rag_citations</code>，含 <code>original_content_url</code>）→
-      <code>structured_async_enqueued</code>。
-      完整 <code>structured_report</code> 在服务端异步组装并写日志 / trace，可用
-      <code>GET /analysis/traces/{request_id}</code> 查询（<code>request_id</code> 见首帧 <code>meta</code>）。
-      超温专项专用页见 <a href="analysis-nl2sql-overheat-stream.html" style="color:var(--accent)">analysis-nl2sql-overheat-stream.html</a>。
-      需后端 CORS 放行本页来源；鉴权 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。
+      <code>finished</code> → <code>structured_async_enqueued</code>。
+      全专项 v1 页：<a href="analysis-nl2sql-stream-v1.html" style="color:var(--accent)">analysis-nl2sql-stream-v1.html</a>；
+      超温 v2 多槽位页：<a href="analysis-nl2sql-stream-v2.html" style="color:var(--accent)">analysis-nl2sql-stream-v2.html</a>。
+      需后端 CORS 与 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。
     </p>
 
     <div class="grid">
@@ -185,27 +161,22 @@
       <fieldset>
         <legend>会话</legend>
         <label>user_id</label>
-        <input type="text" id="userId" value="u_web_analysis_nl2sql_stream" autocomplete="off" />
+        <input type="text" id="userId" value="u_web_overheat_stream" autocomplete="off" />
         <label>session_id</label>
-        <input type="text" id="sessionId" value="u_web_analysis_nl2sql_stream_s_001" autocomplete="off" />
+        <input type="text" id="sessionId" value="u_web_overheat_stream_s_001" autocomplete="off" />
       </fieldset>
 
       <fieldset class="full">
         <legend>分析请求（AnalysisNL2SQLRequest）</legend>
-        <label>analysis_type（综合分析专项）</label>
+        <label>analysis_type（默认超温专项）</label>
         <select id="analysisType">
-          <option value="overheat_guidance">overheat_guidance（超温分析）</option>
+          <option value="overheat_guidance" selected>overheat_guidance（超温分析）</option>
           <option value="maintenance_strategy">maintenance_strategy（检修策略）</option>
-          <option value="four_tube_health_interpretation">four_tube_health_interpretation（四管健康报告智能解读）</option>
-          <option value="leakage_burst_analysis">leakage_burst_analysis（泄爆分析）</option>
+          <option value="custom">custom</option>
         </select>
-        <div id="typeDesc" class="type-desc"></div>
-        <div class="type-pills" id="typePills"></div>
         <label>query（分析需求描述）</label>
-        <textarea id="query" rows="4" placeholder="选择专项后点击「填入示例 query」，或自行输入。"></textarea>
-        <p class="hint">
-          <button type="button" class="secondary" id="btnFillDemo" style="padding:0.2rem 0.5rem;font-size:0.75rem;">填入当前专项示例 query</button>
-        </p>
+        <textarea id="query" rows="4" placeholder="例如：分析最近一周 #1 炉水冷壁区域超温情况与处置建议。"></textarea>
+        <p class="hint">可将默认示例填入：<button type="button" class="secondary" id="btnFillDemo" style="padding:0.2rem 0.5rem;font-size:0.75rem;">填入示例 query</button></p>
         <label>data_requirements_hint（可选，每行一条，空则 []）</label>
         <textarea id="dataHints" rows="2" placeholder="留空或逐行填写补充取数提示"></textarea>
       </fieldset>
@@ -246,33 +217,6 @@
 (function () {
   const $ = (id) => document.getElementById(id);
 
-  const TYPE_CONFIG = {
-    overheat_guidance: {
-      label: "超温分析",
-      desc: "受热面超温事件复盘、运行参数关联与处置建议。模板：analysis_plan_overheat_guidance。",
-      demo:
-        "请对 1 号炉水冷壁相关测点最近 7 天的超温情况进行综合分析：是否存在持续超温、主要区域、可行的运行调整建议。",
-    },
-    maintenance_strategy: {
-      label: "检修策略",
-      desc: "基于测厚、缺陷、超温与检修策划，输出分级检修清单与窗口建议。模板：analysis_plan_maintenance_strategy。",
-      demo:
-        "针对 2 号炉计划小修窗口，请给出水冷壁与高温过热器的检修优先级清单（必检/建议检/可暂缓），并说明关键依据。",
-    },
-    four_tube_health_interpretation: {
-      label: "四管健康报告智能解读",
-      desc: "将健康指数、风险等级、剩余寿命等结果解读为运行简报与检修建议书。模板：analysis_plan_four_tube_health_interpretation。",
-      demo:
-        "生成简洁版周简报：解读本期 2 号炉四管整体健康指数与风险等级，重点说明高温过热器 B 侧高风险管段原因及本周巡检要点。",
-    },
-    leakage_burst_analysis: {
-      label: "泄爆分析",
-      desc: "围绕泄漏/爆管履历、同区域测厚缺陷与泄爆前超温，做原因复盘与防控建议。模板：analysis_plan_leakage_burst_analysis。",
-      demo:
-        "分析 2 号炉水冷壁近一年泄爆与泄漏事件原因，归纳高发区域，并给出运行防控与扩检建议。",
-    },
-  };
-
   const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
   const headers = () => {
     const h = { "Content-Type": "application/json", Accept: "text/event-stream" };
@@ -281,36 +225,11 @@
     return h;
   };
 
-  function currentType() {
-    return $("analysisType").value;
-  }
-
-  function renderTypeUi() {
-    const t = currentType();
-    const cfg = TYPE_CONFIG[t] || { label: t, desc: "", demo: "" };
-    $("typeDesc").textContent = cfg.desc || "（无专项说明）";
-    const pills = $("typePills");
-    pills.innerHTML = "";
-    Object.keys(TYPE_CONFIG).forEach((key) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "secondary";
-      btn.textContent = TYPE_CONFIG[key].label;
-      if (key === t) btn.style.outline = "1px solid var(--accent)";
-      btn.addEventListener("click", () => {
-        $("analysisType").value = key;
-        renderTypeUi();
-      });
-      pills.appendChild(btn);
-    });
-  }
-
-  $("analysisType").addEventListener("change", renderTypeUi);
-  renderTypeUi();
+  const DEMO_QUERY =
+    "请对 1 号炉水冷壁相关测点最近 7 天的超温情况进行综合分析：是否存在持续超温、主要区域、可行的运行调整建议。";
 
   $("btnFillDemo").addEventListener("click", () => {
-    const cfg = TYPE_CONFIG[currentType()];
-    if (cfg && cfg.demo) $("query").value = cfg.demo;
+    $("query").value = DEMO_QUERY;
   });
 
   function buildBody() {
@@ -331,7 +250,7 @@
     return {
       user_id: $("userId").value.trim(),
       session_id: $("sessionId").value.trim(),
-      analysis_type: currentType(),
+      analysis_type: $("analysisType").value,
       query: $("query").value,
       data_requirements_hint: hints,
       options,
@@ -476,8 +395,6 @@
     const uid = $("userId").value.trim();
     const sid = $("sessionId").value.trim();
     const q = $("query").value.trim();
-    const at = currentType();
-    const atLabel = (TYPE_CONFIG[at] && TYPE_CONFIG[at].label) || at;
     if (!uid || !sid || !q) {
       showErr("请填写 user_id、session_id、query。");
       return;
@@ -485,7 +402,7 @@
 
     abortCtrl = new AbortController();
     setBusy(true);
-    appendStatus("连接中 [" + atLabel + "]（取数与 RAG 阶段可能较长，首包前请耐心等待）…");
+    appendStatus("连接中（取数与 RAG 阶段可能较长，首包前请耐心等待）…");
     let answerText = "";
 
     const url = baseUrl() + "/analysis/run-with-nl2sql-stream";
@@ -520,11 +437,7 @@
 
         if (kind === "meta") {
           $("meta").textContent =
-            "analysis_type: " +
-            at +
-            " (" +
-            atLabel +
-            ")\nrequest_id: " +
+            "request_id: " +
             (ev.request_id || "") +
             "\nplan_id: " +
             (ev.plan_id || "") +
@@ -532,7 +445,7 @@
             (ev.orchestrator || "") +
             "\n" +
             JSON.stringify(ev.template_versions || {}, null, 2);
-          appendStatus("已连接 [" + atLabel + "]，流式 synthesis 中…");
+          appendStatus("已连接，流式 synthesis 中…");
           return;
         }
         if (kind === "summary_delta" && ev.text != null) {

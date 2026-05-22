@@ -1032,16 +1032,27 @@ async def query_rag(req: QueryRequest) -> QueryRagResponse:
 class Nl2sqlAutoQaItem(BaseModel):
     """NL2SQL 闭环自动写入的向量条目（namespace=nl2sql_qa_examples）。"""
 
-    doc_name: str | None = Field(None, description="文档逻辑名；更新接口 PATCH 的主键")
+    doc_name: str | None = Field(None, description="文档逻辑名；由五元组哈希生成；PATCH 的主键（改五元组请删后靠新写入生成新 doc_name）")
     ext_id: str | None = Field(None, description="底层向量存储中的条目 id（若后端提供）")
     namespace: str | None = Field(None, description="命名空间，系统自动写入固定为 nl2sql_qa_examples")
+    analysis_type: str | None = Field(None, description="专项类型（来自 metadata.analysis_type）")
+    plan_item_id: str | None = Field(None, description="数据计划子任务 id，如 q1（来自 metadata.plan_item_id）")
+    plan_template_version: str | None = Field(
+        None,
+        description="数据计划模板版本 v1/v2（来自 metadata.plan_template_version；参与去重五元组）",
+    )
+    dedup_key: str | None = Field(None, description="明文去重键（metadata.dedup_key，五元组拼接）")
     text: str | None = Field(
         None,
         description="入库向量对应的完整文本（由 format_nl2sql_qa_embedding_text 拼装：问句摘要 + 可选前缀摘要 + SQL）",
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
-        description="索引元数据：含 ingest_source、nl2sql_auto_kind、data_source_fp、schema_fp、policy_fp、analysis_type、plan_item_id、question_normalized 等",
+        description=(
+            "索引元数据：含 ingest_source、nl2sql_auto_kind、data_source_fp、schema_fp、policy_fp、"
+            "analysis_type、plan_item_id、plan_template_version、dedup_key、question_normalized 等；"
+            "向量库 doc_version 固定 auto_v1（技术字段，不参与业务去重）"
+        ),
     )
 
 
@@ -1069,6 +1080,9 @@ class Nl2sqlAutoQaUpdateRequest(BaseModel):
         None,
         description=(
             "可选。与列举到的现有 metadata **浅合并**后重写索引（**勿随意删除** data_source_fp、schema_fp、policy_fp 等指纹键，否则检索过滤会失效）。"
+            "合并后会按 analysis_type + plan_item_id + plan_template_version 重算 dedup_key；"
+            "**勿在 patch 中修改 analysis_type / plan_item_id / plan_template_version**（doc_name 仍为原五元组哈希，"
+            "与新区间不一致；若需迁移版本请删除本条后重新触发综合分析写入）。"
         ),
     )
 
@@ -1086,12 +1100,23 @@ class Nl2sqlAutoQaPatchResponse(BaseModel):
 )
 async def list_nl2sql_auto_qa(
     limit: Annotated[int, Query(ge=1, le=5000, description="返回条数上限，默认 200")] = 200,
+    analysis_type: Annotated[
+        str | None, Query(description="可选。按 metadata.analysis_type 精确过滤，如 overheat_guidance")
+    ] = None,
+    plan_item_id: Annotated[
+        str | None, Query(description="可选。按 metadata.plan_item_id 精确过滤，如 q1")
+    ] = None,
+    plan_template_version: Annotated[
+        str | None,
+        Query(description="可选。按 metadata.plan_template_version 精确过滤，如 v1、v2（空串视为 unknown）"),
+    ] = None,
 ) -> Nl2sqlAutoQaListResponse:
     """
     列出由 NL2SQL 闭环自动写入、命名空间 **`nl2sql_qa_examples`** 下的 QA 条目（`ingest_source=auto`、`nl2sql_auto_kind` 等元数据标识）。
 
     **路径/Query**
     - `limit`：可选，默认 200，范围 1～5000；最多返回条数。
+    - `analysis_type` / `plan_item_id` / `plan_template_version`：可选精确过滤（便于区分 plan v1 与 v2 下同名 q*）。
 
     **请求体**：无（GET）。
 
@@ -1099,9 +1124,10 @@ async def list_nl2sql_auto_qa(
     - `ok`：固定 true。
     - `count`：本次返回条数。
     - `items[]`：每条为 `Nl2sqlAutoQaItem`。
-      - `doc_name` / `ext_id` / `namespace`：索引标识。
+      - `doc_name` / `ext_id` / `namespace`：索引标识；`doc_name` 由五元组 `(namespace, ingest_source, analysis_type, plan_item_id, plan_template_version)` 哈希。
+      - `analysis_type` / `plan_item_id` / `plan_template_version` / `dedup_key`：从 metadata 提取的便捷字段。
       - `text`：嵌入用拼接正文（问句 + 可选前缀摘要 + SQL），用于排查与对照更新。
-      - `metadata`：指纹与业务标签（`data_source_fp`、`schema_fp`、`policy_fp`、`analysis_type`、`plan_item_id` 等）。
+      - `metadata`：完整指纹与业务标签（含 `plan_template_version`、`dedup_key` 等）。
 
     **存储后端差异**：Faiss 进程内实现可能全量扫描；Elasticsearch / EasySearch 走 metadata 条件召回（见 `list_nl2sql_auto_qa_entries`）。
 
@@ -1110,17 +1136,29 @@ async def list_nl2sql_auto_qa(
     from app.nl2sql.qa_feedback import list_nl2sql_auto_qa_entries
 
     rag = _get_service()._rag_service  # noqa: SLF001
-    rows = list_nl2sql_auto_qa_entries(rag, limit=limit)
-    items = [
-        Nl2sqlAutoQaItem(
-            doc_name=r.get("doc_name"),
-            ext_id=r.get("ext_id"),
-            namespace=r.get("namespace"),
-            text=r.get("text"),
-            metadata=dict(r.get("metadata") or {}),
+    rows = list_nl2sql_auto_qa_entries(
+        rag,
+        limit=limit,
+        analysis_type=analysis_type,
+        plan_item_id=plan_item_id,
+        plan_template_version=plan_template_version,
+    )
+    items = []
+    for r in rows:
+        meta = dict(r.get("metadata") or {})
+        items.append(
+            Nl2sqlAutoQaItem(
+                doc_name=r.get("doc_name"),
+                ext_id=r.get("ext_id"),
+                namespace=r.get("namespace"),
+                analysis_type=meta.get("analysis_type"),
+                plan_item_id=meta.get("plan_item_id"),
+                plan_template_version=meta.get("plan_template_version"),
+                dedup_key=meta.get("dedup_key"),
+                text=r.get("text"),
+                metadata=meta,
+            )
         )
-        for r in rows
-    ]
     return Nl2sqlAutoQaListResponse(count=len(items), items=items)
 
 
@@ -1142,7 +1180,7 @@ async def patch_nl2sql_auto_qa(req: Nl2sqlAutoQaUpdateRequest) -> Nl2sqlAutoQaPa
     - `question`：**必填**。更新后的完整问题字符串（写入链路会做 compact/normalize 用于向量文本）。
     - `sql`：**必填**。替换后的 **只读 SELECT** SQL。
     - `prompt_prefix_snapshot`：**可选**。与链路上 **`NL2SQLChain`** 成功写入 QA 时传入的 **预制 System 前缀快照**（`system_prefix`，即 resolved 后的 nl2sql 模板内容）同语义；用于拼入向量正文「【预制提示前缀摘要】」。默认部署 **`NL2SQL_QA_EMBED_PREFIX_MAX_CHARS=0`** 时该段会被丢弃，仅 **问句 + SQL** 参与嵌入；若提高该上限且传入非空前缀，可增强 Few-shot 上下文。**运维修正 SQL/问句时多数场景可省略（null）**。
-    - `metadata_patch`：**可选**。与当前条目的 metadata **字典合并**后再入库；勿删除指纹键（`data_source_fp`、`schema_fp`、`policy_fp` 等）除非明确要切断检索过滤。
+    - `metadata_patch`：**可选**。与当前条目的 metadata **字典合并**后再入库；勿删除指纹键（`data_source_fp`、`schema_fp`、`policy_fp` 等）除非明确要切断检索过滤。合并后服务端会重算 `dedup_key`（**不**改 `doc_name`）；勿通过 patch 变更 `analysis_type` / `plan_item_id` / `plan_template_version` 来「换槽位」，应删文档后依赖新综合分析写入。
 
     **响应体 `Nl2sqlAutoQaPatchResponse`（200）**
     - `ok`：true。

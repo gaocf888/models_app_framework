@@ -38,6 +38,8 @@ class TestAnalysisPhase1Runner(unittest.TestCase):
             hybrid_rag=_FakeHybridRAG(),
             nl2sql_service=MagicMock(),
         )
+        runner._analysis_cfg.synthesis_strategy = "v1"
+        runner._analysis_cfg.synthesis_strategy_overheat_guidance = None
         req = AnalysisPayloadRequest(
             user_id="user_payload",
             session_id="sess_payload",
