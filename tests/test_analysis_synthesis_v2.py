@@ -1,7 +1,11 @@
 import asyncio
+import json
 import unittest
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+
+from app.services.analysis_service import _encode_sse_event
 
 from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
 from app.llm.graphs.analysis_synthesis_v2 import (
@@ -10,6 +14,19 @@ from app.llm.graphs.analysis_synthesis_v2 import (
     synthesis_v2_registry_available,
 )
 from app.models.analysis import AnalysisNL2SQLRequest, AnalysisOptions
+
+
+class TestSseEventJsonEncoding(unittest.TestCase):
+    def test_table_payload_decimal_serializable(self):
+        payload = {
+            "event": "table_payload",
+            "slot_id": "s01",
+            "table": {"rows": [{"highest_temp": Decimal("580.5"), "limit_temp": 545}]},
+        }
+        raw = _encode_sse_event(payload).decode("utf-8")
+        self.assertTrue(raw.startswith("data: "))
+        data = json.loads(raw[6:].strip())
+        self.assertEqual("580.5", data["table"]["rows"][0]["highest_temp"])
 
 
 class TestSynthesisV2Registry(unittest.TestCase):

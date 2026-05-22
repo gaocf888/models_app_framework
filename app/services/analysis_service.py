@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from threading import Lock
+from typing import Any
 
 from app.conversation.manager import ConversationManager
 from app.core.config import get_app_config
@@ -44,6 +46,26 @@ from app.services.analysis_trace_store import create_analysis_trace_store
 from app.services.analysis_img_diag_upload import upload_analysis_img_diag_image
 
 logger = get_logger(__name__)
+
+
+def _sse_event_json_default(value: Any) -> Any:
+    """SSE 事件 JSON 编码：兼容 NL2SQL 行数据中的 Decimal / datetime 等类型。"""
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:  # noqa: BLE001
+            return str(value)
+    return str(value)
+
+
+def _encode_sse_event(event: dict[str, Any]) -> bytes:
+    return f"data: {json.dumps(event, ensure_ascii=False, default=_sse_event_json_default)}\n\n".encode(
+        "utf-8"
+    )
 
 
 class AnalysisService:
@@ -119,7 +141,7 @@ class AnalysisService:
 
         async def event_gen():
             async for ev in self._graph_runner.iter_nl2sql_stream_events(req, on_complete=on_complete):
-                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8")
+                yield _encode_sse_event(ev)
 
         headers = {
             "Cache-Control": "no-cache",
@@ -147,7 +169,7 @@ class AnalysisService:
 
         async def event_gen():
             async for ev in self._graph_runner.iter_img_diag_stream_events(req, on_complete=on_complete):
-                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8")
+                yield _encode_sse_event(ev)
 
         headers = {
             "Cache-Control": "no-cache",
