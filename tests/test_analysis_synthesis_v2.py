@@ -9,8 +9,13 @@ from app.services.analysis_service import _encode_sse_event
 
 from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
 from app.llm.graphs.analysis_synthesis_v2 import (
+    AnalysisSynthesisV2Engine,
+    _build_audit_facts,
+    _rag_snippets_for_slot,
+    _resolve_data_subset,
     get_synthesis_v2_slots,
     render_markdown_table,
+    strip_leading_duplicate_heading,
     synthesis_v2_registry_available,
 )
 from app.models.analysis import AnalysisNL2SQLRequest, AnalysisOptions
@@ -36,6 +41,55 @@ class TestSynthesisV2Registry(unittest.TestCase):
 
     def test_unknown_type_no_registry(self):
         self.assertFalse(synthesis_v2_registry_available("unknown_type"))
+
+
+class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
+    def test_strip_duplicate_chapter_heading(self):
+        raw = "### 一、报告基础信息\n\n机组 A\n"
+        out = strip_leading_duplicate_heading(raw, "一、报告基础信息")
+        self.assertEqual("机组 A", out)
+
+    def test_strict_subset_no_full_fallback(self):
+        data = {"q1": [{"a": 1}], "q2": [{"b": 2}]}
+        sub = _resolve_data_subset(data, ("q1",), strict=True)
+        self.assertEqual({"q1": [{"a": 1}]}, sub)
+        self.assertNotIn("q2", sub)
+
+    def test_rag_trim_when_bound_items_empty(self):
+        snippets = ["规范1", "规范2", "规范3", "规范4"]
+        data = {"q3": []}
+        out = _rag_snippets_for_slot(snippets, data, ("q3",))
+        self.assertEqual(2, len(out))
+
+    def test_audit_facts_marks_empty_query(self):
+        text = _build_audit_facts({"q3": []}, "#2机组超温")
+        self.assertIn("[q3] 无数据行", text)
+        self.assertIn("#2机组", text)
+
+    def test_segment_user_content_includes_audit_facts(self):
+        engine = AnalysisSynthesisV2Engine(
+            llm_client=MagicMock(),
+            prompts=_FakePromptRegistry(),
+            gathered_json_max_chars=8000,
+            segment_max_tokens=512,
+            max_parallel_llm=1,
+            table_max_rows=10,
+            synthesis_timeout_seconds=30.0,
+        )
+        slot = get_synthesis_v2_slots("overheat_guidance")[0]
+        content = engine._build_segment_user_content(
+            query="#2机组",
+            analysis_type="overheat_guidance",
+            data_mode="nl2sql",
+            gathered_data={"q1": [{"boiler_name": "1号炉", "highest_temp": 580}]},
+            context_snippets=["示例 410 MPa"],
+            planning_context=None,
+            slot=slot,
+            item_ids=slot.source_item_ids,
+        )
+        self.assertIn("可引用事实", content)
+        self.assertIn("boiler_name=1号炉", content)
+        self.assertNotIn('"q2"', content)
 
 
 class TestRenderMarkdownTable(unittest.TestCase):

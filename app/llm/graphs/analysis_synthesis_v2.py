@@ -69,9 +69,10 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s01",
             kind="llm_narrative",
             title="一、报告基础信息",
+            source_item_ids=("q1",),
             narrative_instruction=(
-                "仅撰写「一、报告基础信息」章节：报告编号、生成时间、机组信息、监测部位、数据来源、"
-                "分析主体、异常等级、超温测点数量等。使用输入数据中的真实字段，缺失项标注「待补充」。"
+                "撰写报告基础信息正文（勿输出任何标题行）：报告编号、生成时间、机组/锅炉信息、监测部位、"
+                "数据来源、分析主体、异常等级、超温测点数量等。仅使用可引用事实与 q1 字段，缺失项标注「待补充」。"
             ),
             stream_live=True,
         ),
@@ -79,9 +80,10 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s02",
             kind="llm_narrative",
             title="二、超温事件概况",
+            source_item_ids=("q1",),
             narrative_instruction=(
-                "仅撰写「二、超温事件概况」：超温起止时段、运行工况、按严重程度分类的测点汇总、"
-                "温度极值、分布特征。必须引用数据摘要中的事实，禁止编造。"
+                "撰写超温事件概况正文（勿输出标题行）：起止时段、运行工况、测点汇总、温度极值与分布。"
+                "必须引用可引用事实，禁止编造。"
             ),
         ),
         SynthesisV2Slot(
@@ -94,10 +96,11 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
         SynthesisV2Slot(
             id="s04",
             kind="llm_narrative",
-            title="三、超温数据统计分析（分析叙述）",
+            title="",
+            source_item_ids=("q1", "q2"),
             narrative_instruction=(
-                "在上一节数据表之后，撰写「三、超温数据统计分析」的文字分析：多测点温度统计、"
-                "关联参数联动、多测点对比。结合 q1/q2 数据摘要。"
+                "紧接上一节数据表，撰写「三、超温数据统计分析」文字分析（勿输出标题行）：多测点温度统计、"
+                "关联参数联动、多测点对比。q2 无数据行时不得编造测点明细，须说明待补充。"
             ),
         ),
         SynthesisV2Slot(
@@ -111,24 +114,30 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s06",
             kind="llm_narrative",
             title="四、超温核心原因智能诊断",
+            source_item_ids=("q1", "q2"),
             narrative_instruction=(
-                "撰写「四、超温核心原因智能诊断」，分 (一) 共性原因 与 (二) 区域专属原因，"
-                "每条原因标注置信度（高/中/低）并给出数据依据。"
+                "撰写超温核心原因诊断正文（勿输出标题行）：(一) 共性原因 (二) 区域专属原因；"
+                "每条标注置信度（高/中/低）并给出字段名=值 依据；q2 无行时仅基于 q1，不得虚构测点过程。"
             ),
         ),
         SynthesisV2Slot(
             id="s07",
             kind="llm_narrative",
             title="五、超温带来的安全危害评估",
-            narrative_instruction="撰写「五、超温带来的安全危害评估」，涵盖短期、中期、长期安全与经济影响。",
+            source_item_ids=("q1", "q2"),
+            narrative_instruction=(
+                "撰写安全危害评估正文（勿输出标题行）：短期、中期、长期安全与经济影响；"
+                "无数据支撑的量化影响标注「待补充」。"
+            ),
         ),
         SynthesisV2Slot(
             id="s08",
             kind="llm_narrative",
             title="六、智能处置调控措施",
+            source_item_ids=("q1", "q2"),
             narrative_instruction=(
-                "撰写「六、智能处置调控措施」：(一) 紧急处置 (二) 运行优化调整 "
-                "(三) 检修预防措施 (四) 长效防控方案。建议须可执行。"
+                "撰写处置调控措施正文（勿输出标题行）：(一) 紧急处置 (二) 运行优化 "
+                "(三) 检修预防 (四) 长效防控；建议须可执行，勿编造已执行操作。"
             ),
         ),
         SynthesisV2Slot(
@@ -141,19 +150,21 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
         SynthesisV2Slot(
             id="s10",
             kind="llm_narrative",
-            title="七、整改完成情况与效果验证",
+            title="",
+            source_item_ids=("q3",),
             narrative_instruction=(
-                "在数据表之后撰写「七、整改完成情况&效果验证」：已执行操作、效果验证、"
-                "关联参数验证、后续跟踪。若数据不足则说明待现场补录。"
+                "紧接上一节数据表，撰写整改完成与效果验证正文（勿输出标题行）。"
+                "q3 无数据行时全文仅说明「数据不足，待现场补录」，禁止编造检修/验证记录。"
             ),
         ),
         SynthesisV2Slot(
             id="s11",
             kind="llm_narrative",
             title="八、总结结论与后续管控建议",
+            source_item_ids=("q1", "q2", "q3"),
             narrative_instruction=(
-                "撰写「八、总结结论&后续管控建议」：事件定性、重复风险等级、日常重点盯防、"
-                "大模型优化建议。"
+                "撰写总结与管控建议正文（勿输出标题行）：事件定性、重复风险、日常盯防、优化建议；"
+                "须与可引用事实一致，不得与数据行矛盾。"
             ),
         ),
         SynthesisV2Slot(
@@ -269,6 +280,137 @@ def _gather_item_rows(gathered_data: dict[str, list[dict]], item_ids: tuple[str,
     return out
 
 
+def _resolve_data_subset(
+    gathered_data: dict[str, list[dict]],
+    item_ids: tuple[str, ...],
+    *,
+    strict: bool,
+) -> dict[str, list[dict]]:
+    """按槽位绑定查询项切片；strict 时不再回退为全量 gathered_data。"""
+    if not item_ids:
+        return dict(gathered_data) if gathered_data else {}
+    subset: dict[str, list[dict]] = {}
+    for iid in item_ids:
+        chunk = gathered_data.get(iid)
+        if isinstance(chunk, list):
+            subset[iid] = [r for r in chunk if isinstance(r, dict)]
+        else:
+            subset[iid] = []
+    if subset or strict:
+        return subset
+    return dict(gathered_data)
+
+
+_CHAPTER_PREFIX_RE = re.compile(r"^[一二三四五六七八九十百]+、")
+
+# 常见列 → 单位提示，降低 MPa/MW 等误读
+_FIELD_UNIT_HINTS: dict[str, str] = {
+    "highest_temp": "一般为 ℃，勿写作 MPa/MW",
+    "limit_temp": "一般为 ℃",
+    "temperature": "一般为 ℃",
+    "temp": "一般为 ℃",
+    "steam_pressure_value": "按数据原值书写，勿猜测单位",
+    "main_steam_pressure": "按数据原值书写，勿猜测单位",
+    "load_mw": "一般为 MW，勿与 MPa 混淆",
+    "power_mw": "一般为 MW",
+}
+
+
+def _normalize_heading_text(text: str) -> str:
+    s = re.sub(r"[、：:（）()\s]", "", (text or "").strip())
+    return s.casefold()
+
+
+def strip_leading_duplicate_heading(md: str, slot_title: str) -> str:
+    """去掉模型正文开头与 slot 标题重复的 Markdown 标题行。"""
+    if not (md or "").strip():
+        return ""
+    lines = md.split("\n")
+    idx = 0
+    skipped = 0
+    target = _normalize_heading_text(slot_title) if slot_title else ""
+    chapter_prefix = _CHAPTER_PREFIX_RE.match(slot_title).group(0) if slot_title and _CHAPTER_PREFIX_RE.match(slot_title) else ""
+    while idx < len(lines) and skipped < 6:
+        line = lines[idx].strip()
+        if not line:
+            idx += 1
+            skipped += 1
+            continue
+        m = re.match(r"^\s{0,3}(#{1,6})\s+(.+)$", line)
+        if m:
+            heading = _normalize_heading_text(m.group(2))
+            if target and (target in heading or heading in target):
+                idx += 1
+                skipped += 1
+                continue
+            if chapter_prefix and chapter_prefix in m.group(2):
+                idx += 1
+                skipped += 1
+                continue
+            if not slot_title:
+                idx += 1
+                skipped += 1
+                continue
+        break
+    return "\n".join(lines[idx:]).strip()
+
+
+def _build_audit_facts(subset: dict[str, list[dict]], query: str) -> str:
+    lines: list[str] = ["【可引用事实（正文数值仅可来自下列键值）】"]
+    for iid, rows in subset.items():
+        if not rows:
+            lines.append(f"- [{iid}] 无数据行 → 不得编造该查询项明细")
+            continue
+        lines.append(f"- [{iid}] {len(rows)} 行")
+        for row in rows[:3]:
+            if not isinstance(row, dict):
+                continue
+            for key, val in list(row.items())[:18]:
+                if val is None or str(val).strip() == "":
+                    continue
+                hint = _FIELD_UNIT_HINTS.get(str(key).lower(), "")
+                suffix = f" （{hint}）" if hint else ""
+                lines.append(f"  {key}={val}{suffix}")
+    q = (query or "").strip()
+    if q:
+        lines.append(f"- 用户问题约束: {q[:500]}")
+    lines.append("- 数值须写成「字段名=值」；字段无单位时写「单位待确认」，禁止自造 MPa/MW/℃")
+    return "\n".join(lines)
+
+
+def _build_data_coverage_note(subset: dict[str, list[dict]]) -> str:
+    parts: list[str] = []
+    for iid, rows in subset.items():
+        parts.append(f"{iid}={'有' if rows else '无'}数据")
+    if not parts:
+        return ""
+    return "【本槽数据覆盖】" + "；".join(parts)
+
+
+def _rag_snippets_for_slot(
+    context_snippets: list[str],
+    gathered_data: dict[str, list[dict]],
+    item_ids: tuple[str, ...],
+) -> list[str]:
+    """绑定查询项全无行时收紧 RAG，避免用片段中的示例数值补全正文。"""
+    if not context_snippets:
+        return []
+    if not item_ids:
+        return context_snippets[:8]
+    if any(_gather_item_rows(gathered_data, item_ids)):
+        return context_snippets[:8]
+    return context_snippets[:2]
+
+
+def _wrap_narrative_markdown(title: str, body: str) -> str:
+    cleaned = strip_leading_duplicate_heading((body or "").strip(), title)
+    if not cleaned:
+        return f"### {title}\n\n（待补充）\n\n" if title else ""
+    if title:
+        return f"### {title}\n\n{cleaned}\n\n"
+    return f"{cleaned}\n\n"
+
+
 def _build_overheat_charts(records: list[dict], *, chart_mode: str) -> tuple[str, list[dict[str, Any]]]:
     if chart_mode == "off" or not records:
         return "", []
@@ -380,25 +522,30 @@ class AnalysisSynthesisV2Engine:
         slot: SynthesisV2Slot,
         item_ids: tuple[str, ...],
     ) -> str:
-        subset: dict[str, list[dict]] = {}
-        for iid in item_ids or gathered_data.keys():
-            if iid in gathered_data:
-                subset[iid] = gathered_data[iid]
-        if not subset and gathered_data:
-            subset = gathered_data
+        subset = _resolve_data_subset(
+            gathered_data,
+            item_ids,
+            strict=slot.kind == "llm_narrative",
+        )
+        audit_facts = _build_audit_facts(subset, query)
+        coverage = _build_data_coverage_note(subset)
         data_preview = json.dumps(subset, ensure_ascii=False, default=self._json_fallback)[
             : self._gathered_json_max_chars
         ]
-        rag_text = "\n".join(f"- {s}" for s in context_snippets[:8])
+        rag_list = _rag_snippets_for_slot(context_snippets, gathered_data, item_ids)
+        rag_text = "\n".join(f"- {s}" for s in rag_list) if rag_list else "（无，且不得用常识补数值）"
         pc = (planning_context or "").strip()
         planning_block = f"\n分阶段规划意图(结构化要点):\n{pc[:2000]}\n" if pc else ""
+        coverage_block = f"\n{coverage}\n" if coverage else ""
         return (
             f"分析类型: {analysis_type}\n"
             f"数据来源模式: {data_mode}\n"
             f"用户问题: {query}\n"
             f"{planning_block}"
+            f"{coverage_block}"
+            f"{audit_facts}\n"
             f"数据摘要(JSON截断): {data_preview}\n"
-            f"RAG参考片段:\n{rag_text}\n\n"
+            f"RAG参考片段（仅规范/方法，不可作数值来源）:\n{rag_text}\n\n"
             f"【本章写作任务】\n{slot.narrative_instruction}\n"
         ).strip()
 
@@ -478,7 +625,7 @@ class AnalysisSynthesisV2Engine:
                 )
 
             if slot.kind == "llm_narrative":
-                md = await self._render_llm_slot(
+                body = await self._render_llm_slot(
                     query=query,
                     analysis_type=analysis_type,
                     data_mode=data_mode,
@@ -487,8 +634,7 @@ class AnalysisSynthesisV2Engine:
                     planning_context=planning_context,
                     slot=slot,
                 )
-                if title:
-                    md = f"### {title}\n\n{md}\n\n"
+                md = _wrap_narrative_markdown(title, body)
                 return SynthesisV2SlotOutput(slot.id, slot.kind, title, md)
 
             return SynthesisV2SlotOutput(slot.id, slot.kind, title, "", error=f"unknown_kind:{slot.kind}")
@@ -701,7 +847,6 @@ class AnalysisSynthesisV2Engine:
         bg_tasks = [asyncio.create_task(_fill_index(i)) for i in range(len(slots)) if i != live_idx]
 
         live_slot = slots[live_idx]
-        live_parts: list[str] = []
         system_prompt = self._narrative_system_prompt(analysis_type)
         user_content = self._build_segment_user_content(
             query=query,
@@ -717,9 +862,9 @@ class AnalysisSynthesisV2Engine:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ]
-        if live_slot.title:
-            header = f"### {live_slot.title}\n\n"
-            live_parts.append(header)
+        header = f"### {live_slot.title}\n\n" if live_slot.title else ""
+        stream_body_parts: list[str] = []
+        if header:
             yield ({"event": "summary_delta", "text": header}, None)
 
         async for chunk in self._llm.stream_chat(
@@ -728,16 +873,17 @@ class AnalysisSynthesisV2Engine:
             timeout=float(self._synthesis_timeout),
             max_tokens=self._segment_max_tokens,
         ):
-            live_parts.append(chunk)
+            stream_body_parts.append(chunk)
             yield ({"event": "summary_delta", "text": chunk}, None)
-        live_parts.append("\n\n")
-        yield ({"event": "summary_delta", "text": "\n\n"}, None)
+        body = strip_leading_duplicate_heading("".join(stream_body_parts), live_slot.title)
+        live_md = _wrap_narrative_markdown(live_slot.title, body)
         outputs[live_idx] = SynthesisV2SlotOutput(
             live_slot.id,
             live_slot.kind,
             live_slot.title,
-            "".join(live_parts),
+            live_md,
         )
+        yield ({"event": "summary_delta", "text": "\n\n"}, None)
 
         if bg_tasks:
             await asyncio.gather(*bg_tasks)
