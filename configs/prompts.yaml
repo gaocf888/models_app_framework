@@ -776,48 +776,48 @@ analysis_plan_overheat_guidance:
 
   - version: v2
     weight: 1.0
-    description: 超温专项 v2 数据计划（q1～q6 对齐九段报告；参考 docs/综合分析-超温分析 报告模板及查询数据逻辑/overheat_plan_v2_reference_sql.sql）
+    description: 超温专项 v2 数据计划（q1～q6 对齐九段报告；question 为业务意图问句，SQL 参考见 overheat_plan_v2_reference_sql.sql 及 nl2sql_qa_examples 闭环）
     content: |
       [
         {
           "item_id": "q1",
           "purpose": "一、报告基础信息（锅炉台账+超温测点分级统计）",
-          "question": "【报告第一章】查询用户问题指定机组/锅炉与时间窗内的报告基础信息。主表 account_boiler 与 monitor_hotarea_temp。须返回两类结果（可用 UNION ALL 合并，增加 section 列区分）：(1) section=锅炉台账：boiler_name 机组名称、boiler_model 锅炉型号、edfh 额定负荷_MW，WHERE boiler_name 匹配用户问题中的机组关键词（如1号锅炉、#2机组）；(2) section=测点分级统计：对 monitor_hotarea_temp 关联 account_boiler，筛选 start_time 在用户时间窗内且 highest_temp>limit_temp，按 pi_code 聚合取最高超温差值并分级（严重≥20℃、中度10～20℃、轻微5～10℃），统计 DISTINCT 超温测点总数及各级数量。禁止臆造表名；JOIN 键 t.boiler_id=ab.boiler_id。",
+          "question": "查询用户指定锅炉/机组的基本台账，展示机组名称、锅炉型号、额定负荷（MW）。并统计用户指定时间窗内发生超温的测点总数，按各测点最大超温差值分级：严重超温（≥20℃）、中度超温（10～20℃）、轻微超温（5～10℃），分别输出各级测点数量。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q2",
-          "purpose": "二、超温事件概况（测点时段+运行工况+分级清单+极值）",
-          "question": "【报告第二章】查询指定机组时间窗内超温事件概况。主表 monitor_hotarea_temp，LEFT JOIN account_boiler ab ON t.boiler_id=ab.boiler_id，LEFT JOIN base_temp_point btp ON t.pi_code=btp.point_code，LEFT JOIN account_static_device asd ON t.device_id=asd.device_id，LEFT JOIN base_temp_device btd ON t.device_id=btd.device_id。须包含：(1) 各测点 pi_code 的最早 start_time、最晚 end_time、SUM(limit_duration) 超温总时长_秒；(2) 全事件 AVG(mw_value) 当前负荷_MW、AVG(mw_value)/edfh*100 负荷_percent、AVG(steam_pressure_value) 主汽压力_MPa；(3) 按超温等级（严重≥20、中度10～20、轻微5～10）GROUP_CONCAT 测点及位置（含 device_name、point_name、row_num、pipe_num）及 COUNT DISTINCT pi_code；(4) 分区域 GROUP_CONCAT 设计壁温 btd.over_hot_limit、MAX(highest_temp) 实测最高、MAX(highest_temp-limit_temp) 最大超温差值、AVG(highest_temp-limit_temp) 平均超温差值。WHERE ab.boiler_name 匹配用户机组且 t.highest_temp>t.limit_temp。可增加 section 列区分结果类型。",
+          "purpose": "二、超温事件概况（按测点汇总时段与工况）",
+          "question": "统计用户指定锅炉在用户指定时间窗内各超温测点的事件概况。按测点汇总：测点编号与名称、所属受热面、管排位置（若有），各测点最早超温起始时间、最晚结束时间、累计超温时长（秒），期间平均机组负荷与平均主汽压力；以及各测点实测最高壁温、最大超温差值、设计允许壁温。按累计超温时长从长到短排序。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q3",
           "purpose": "三、超温数据统计（区域汇总+尖峰频次）",
-          "question": "【报告第三章·数据表】查询指定机组时间窗内超温量化统计，分两类（可用 section 列）：(1) section=区域统计：按 ab.boiler_name、asd.device_name 分组，COUNT DISTINCT pi_code、MAX/MIN/AVG(highest_temp)、AVG(highest_temp-limit_temp)、SUM(limit_duration)，ORDER BY 累计超温时长 DESC；(2) section=尖峰频次：按 pi_code 统计 highest_temp-limit_temp>=15 的次数与累计 limit_duration，JOIN account_boiler、account_static_device、base_temp_point，ORDER BY 尖峰次数 DESC。主表 monitor_hotarea_temp，筛选 highest_temp>limit_temp 且 boiler_name 匹配用户机组。",
+          "question": "对用户指定锅炉在用户指定时间窗内的超温数据进行量化统计。(1) 按超温区域/受热面汇总：各区域超温测点数量、最高/最低/平均壁温、平均超温差值、累计超温时长，按累计时长降序；(2) 按测点统计瞬时尖峰超温（单次温差≥15℃）的发生次数及累计时长，按尖峰次数降序。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q4",
-          "purpose": "三、关联参数联动（壁温时序+SIS关联测点）",
-          "question": "【报告第三章·关联参数】查询超温事件时间窗内关联参数时序，分两类（data_source 列）：(1) data_source=壁温时序：monitor_hotarea_temp t JOIN account_boiler ab，返回 start_time 采集时间、pi_code、point_name、highest_temp 壁温_℃、mw_value 机组负荷_MW、steam_pressure_value 主汽压力_MPa，筛选 highest_temp>limit_temp 且机组匹配；(2) data_source=SIS时序：sis_pi_data spd LEFT JOIN base_temp_point btp ON spd.tag=btp.point_code，返回 data_time、tag、point_name、value 测点数值，筛选 data_time 在同时间窗且 point_name 含减温水/烟温/排烟/主汽压力/负荷/总风量。按时间升序。",
+          "purpose": "三、关联参数联动（壁温时序）",
+          "question": "查询用户指定锅炉在用户指定时间窗内超温事件的壁温时序明细。展示每条超温记录的采集/起始时间、测点编号与名称、实测最高壁温、限温值，以及对应时刻的机组负荷（MW）和主汽压力（MPa），按时间先后、测点编号排序。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q5",
-          "purpose": "七、历史缺陷/泄爆/换管+整改效果验证",
-          "question": "【报告第七章】查询指定机组近一年内检修佐证及调控后效果。(1) record_type=遗留问题：overhaul_legacy_problem p JOIN account_boiler ab、account_static_device d、overhaul_boiler b，返回 problem_descrip、deal_content、status、device_name、overhaul_name、record_time；(2) record_type=泄漏记录：overhual_leakage l 同法关联，返回 leakage_descrip、handling_method、reason_type、leakage_date；(3) record_type=换管记录：overhaul_record r JOIN overhaul_record_tubes t ON r.id=t.overhaul_record_id，mark_type='2' AND t.is_change='1'，返回 defect_type、tube_position、mark_time；(4) record_type=效果验证：monitor_hotarea_temp 调控后时间窗（用户未指定则取事件结束至+12小时），统计严重/中度/轻微测点恢复数量与平均壁温。用 UNION ALL 合并(1)(2)(3)按时间倒序；效果验证可单独结果集或同列 NULL 填充。",
+          "purpose": "七、历史缺陷/泄爆/换管记录",
+          "question": "查询用户指定锅炉近一年内的检修与泄爆相关记录，包括：遗留问题（问题描述、处理措施、状态、涉及设备、记录时间）、泄漏/泄爆记录（泄漏描述、处置方法、原因类型、涉及设备、发生日期）、换管记录（缺陷类型、管段位置、涉及设备、标记时间）。按记录时间从新到旧排列。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q6",
-          "purpose": "九、附件（壁温趋势+多测点对照+历史同类对标）",
-          "question": "【报告第九章·附件数据】查询指定机组附件用数据，分三类（section 列）：(1) section=壁温趋势：monitor_hotarea_temp 超温记录明细，含 pi_code、point_name、device_name、start_time 采集时间、highest_temp 壁温值、limit_temp、超温差值，按 start_time、pi_code 排序；(2) section=多测点对照：按 pi_code 聚合 MAX(highest_temp)、设计壁温 base_temp_device.over_hot_limit、超温差值、SUM(limit_duration)，JOIN account_boiler、account_static_device、base_temp_point、base_temp_device，ORDER BY 超温差值 DESC；(3) section=历史同类对标：本次超温 pi_code 在 start_time<本次时间窗 的历史 monitor_hotarea_temp 记录，按 pi_code 与日期聚合 MAX(highest_temp-limit_temp)，LIMIT 50。机组与时间窗从用户问题解析。",
+          "purpose": "九、附件（多测点对照+壁温明细）",
+          "question": "查询用户指定锅炉在用户指定时间窗内超温测点的附件用明细。每条记录包含：测点编号与名称、所属受热面、采集/起始时间、实测最高壁温、限温值、超温差值、设计允许壁温、单次超温持续时长；按时间先后、测点编号排序。",
           "mandatory": true,
           "dependency_ids": []
         }
@@ -1174,11 +1174,20 @@ inspection_extract_parse:
            - 如果表格无列分组，仅靠上方文字描述判断：仅当描述明确指向“上部区域”、“上方”时，管号加负号。
 
       ### 字段逻辑判定（优先级由高到低）
-      1. **检测类型**：
-         - [最高优先级-颜色强规则]：若单元格 中有颜色标注（[颜色标注:...]）且包含“高亮”、底纹为红色等异常颜色时，强制标记为 "缺陷"(若表格中上下“高亮”的列之间夹杂着非"高亮"的数据，间隔夹杂的数据也强制标记 "缺陷"，且缺陷类型置空（比如：第一列的c3和c5是"高亮"，那c4也强制标记为“缺陷”）)。
-         - [语义匹配]：若描述中包含对应管号数据的“减薄”、“超标”、“缺陷”等信息时，标记为 "缺陷"。
-         - [默认]：其余标记为 "测厚"。
+      1. **检测类型**（按 record 独立判定，禁止整行/整表泛化）：
+         - **绑定单元格（最高优先级）**：
+           - 每条 record 对应表格中**一个列组**内的一组「编号 + 壁厚」。
+           - 仅当该 record **所属列组内**、用于本 record 的单元格文本中存在 `[颜色标注:...]`，且标注含「高亮」或红色/黄色等异常底纹时，才强制 `检测类型="缺陷"`。
+           - **禁止**：因同一表格行中**其他列组**存在高亮，而将本 record 标为缺陷。
+           - **禁止**：因表格其他行存在高亮，而将本 record 标为缺陷。
+         - **列内间隔传播（第二优先级，严格限定范围）**：
+           - 仅当**同一列索引**（如始终为 c3）在**纵向相邻多行**上，按行序出现「高亮 → 普通 → 高亮」时，中间那些**同一列**上的普通单元格对应 record 也标 `检测类型="缺陷"`，且 `缺陷类型=""`。
+           - **禁止**跨列传播（例如 c3 高亮不得使 c0/c1 标缺陷）。
+           - **禁止**跨列组传播（例如「上 c0–c1」与「下 c2–c3」互不影响）。
+           - 若该列纵向仅为「普通 → 高亮 → 高亮…」（前面无高亮），**不触发**间隔传播。
+         - **[默认]**：不满足以上条件的 record，一律 `检测类型="测厚"`。
       2. **缺陷类型**（仅当检测类型为"缺陷"时填写，否则置空）：
+         - 若检测类型="缺陷"且依据仅为「颜色标注/高亮/间隔传播规则」，无法从文本判断具体缺陷类别时，`缺陷类型` 必须置空 ""。
          - 表面吹损（关键词：吹损、蒸汽吹损、吹灰器冲刷）
          - 高温腐蚀（关键词：高温腐蚀、腐蚀减薄）
          - 磨损（关键词：磨损、机械磨损）

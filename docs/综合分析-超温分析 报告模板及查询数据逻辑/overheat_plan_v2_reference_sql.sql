@@ -1,5 +1,7 @@
 -- 超温分析 v2 数据计划参考 SQL（TiDB/MySQL 8，表名以 fmfb catalog 为准）
 -- 占位说明：@unit_keyword 由 NL2SQL 从用户问题解析（如 1号锅炉、#2机组）；@t_start/@t_end 为超温分析时间窗
+-- NL2SQL 约束（与 analysis_plan_overheat_guidance v2 对齐）：每条 plan 问句对应单条可执行 SQL；禁止 WITH/CTE；
+-- limit_temp 仅取自 monitor_hotarea_temp；设计壁温取自 base_temp_device.over_hot_limit；q4/q6 为明细时序，q5 为检修 UNION ALL。
 
 -- =============================================================================
 -- q1 一、报告基础信息（锅炉台账 + 超温测点分级统计）
