@@ -35,9 +35,12 @@ class TestSseEventJsonEncoding(unittest.TestCase):
 
 
 class TestSynthesisV2Registry(unittest.TestCase):
-    def test_overheat_registry_exists(self):
+    def test_overheat_registry_slot_count(self):
         self.assertTrue(synthesis_v2_registry_available("overheat_guidance"))
-        self.assertGreater(len(get_synthesis_v2_slots("overheat_guidance")), 5)
+        slots = get_synthesis_v2_slots("overheat_guidance")
+        self.assertEqual(14, len(slots))
+        self.assertEqual("q1", slots[0].source_item_ids[0])
+        self.assertEqual("q6", slots[12].source_item_ids[0])
 
     def test_unknown_type_no_registry(self):
         self.assertFalse(synthesis_v2_registry_available("unknown_type"))
@@ -274,9 +277,12 @@ class TestAnalysisSynthesisStrategy(unittest.TestCase):
                 analysis_type="overheat_guidance",
                 data_mode="nl2sql",
                 data_blob={
-                    "q1": [{"device_name": "屏过", "highest_temp": 580}],
-                    "q2": [{"time": "2026-01-01", "temperature": 570}],
-                    "q3": [{"defect": "减薄"}],
+                    "q1": [{"section": "锅炉台账", "机组名称": "1号锅炉", "锅炉型号": "HG-1000", "额定负荷_MW": 600}],
+                    "q2": [{"pi_code": "T01", "超温总时长_秒": 3600, "当前负荷_MW": 520}],
+                    "q3": [{"section": "区域统计", "超温区域": "屏过", "最高壁温_℃": 580}],
+                    "q4": [{"data_source": "壁温时序", "壁温_℃": 575}],
+                    "q5": [{"record_type": "遗留问题", "问题描述": "减薄"}],
+                    "q6": [{"section": "壁温趋势", "壁温值": 570, "采集时间": "2026-05-01 10:00:00"}],
                 },
                 context_snippets=["规则片段"],
                 system_prompt="ignored",

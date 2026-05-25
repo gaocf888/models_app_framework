@@ -338,105 +338,95 @@ analysis_synthesis_overheat_guidance:
       - 上述分析和数据展示，必须使用4 组聚合数据中的全量数据。
       - 如果输入数据为空（无超温记录），请直接输出：“昨日无超温报警记录，设备运行正常。”
 
-# 当前synthesis v2策略的该提示词模板目前仅作为蓝图，实际报告分析各槽位的LLM提示词模板在 槽位实现文件 llm/graphs/analysis_synthesis_v2.py 中硬编码配置(例如超温分析：_overheat_v2_slots)
   - version: v2
     weight: 1.0
-    description: 超温专项 v2 报告模板（对齐《锅炉管壁超温智能分析报告》0525 版，配合 q1～q6 数据计划）
+    description: 超温专项分析模板（针对v2版本分析链路）
     content: |
-      **角色：** 火电厂锅炉专业 AI 分析师
-      **任务：** 基于 NL2SQL 取数结果（q1～q6，见 analysis_plan_overheat_guidance v2）及业务 RAG，生成《锅炉管壁超温智能分析报告（多测点版）》。
-      **数据映射（正文引用时使用业务名称，勿写 q 编号）：**
-      - q1 → 一、报告基础信息（锅炉台账 + 超温测点分级统计）
-      - q2 → 二、超温事件概况（测点时段、运行工况、分级清单、设计/实测极值）
-      - q3 → 三、超温数据统计（区域汇总 + 尖峰频次，程序表 + 本章叙述）
-      - q4 → 三、关联参数联动（壁温时序 + SIS 减温水/烟温/负荷等，程序表 + 本章叙述）
-      - q5 → 七、历史缺陷/泄爆/换管 + 整改效果验证
-      - q6 → 九、附件（壁温趋势、多测点对照、历史同类对标；程序图/表）
-      **硬约束：**
-      1. 语言专业严谨，使用热动术语；禁止编造数值，无数据标「待补充」。
-      2. 报告结构严格九段，禁止增删章节；各章条目顺序与下列模板一致。
-      3. 第四～六章为智能推理，须引用 q1～q4 事实并标注置信度；不得用 RAG 示例值替代查库结果。
-      4. 超温等级口径：严重≥20℃、中度10～20℃、轻微5～10℃（与 q1/q2 一致）；异常等级Ⅰ～Ⅳ对应轻微/中度/严重/临界。
+      **角色：** 火电厂锅炉专业AI分析师
+      **任务：** 根据提供的锅炉运行数据和设备台账，自动生成一份专业的《锅炉管壁超温智能分析报告》。
+      **要求：**
+      1.  **语言风格：** 专业、严谨、逻辑清晰，使用火电厂热动专业术语。
+      2.  **报告结构：** 严格遵循以下九个章节的具体结构和条目（禁止删减或增加）。
+      3.  **数据填充：** 报告中的所有括号内（如 ”{当前时间}“）或列表项均需根据输入数据填充具体数值或描述，禁止臆造。
+      4.  **智能诊断：** 不要只罗列数据，请结合“共性原因”和“区域专属原因”进行推理分析。
+      5.  **处置建议：** 必须包含紧急处置、运行优化、检修预防和长效防控四个层面的建议。
       
-      **报告输出模板（严格遵循）：**
+      **报告输出模板结构如下：**
       
       **一、报告基础信息**
-      1. 报告编号：GL-CW-{YYYYMMDD}-{XXX}
-      2. 生成时间：{yyyy年mm月dd日 HH:MM}
-      3. 机组信息：{机组编号} 锅炉型号：{型号} 额定负荷：{数值}MW
-      4. 监测部位：（按超温区域分类）水冷壁（左/右/前/后）、过热器（屏式/末级/低温）、再热器（高/低温）、省煤器等
-      5. 数据来源：锅炉壁温测点、DCS实时数据、烟气温度、负荷参数、吹灰记录、减温水流量、煤质分析数据
+      1. 报告编号：GL-CW-{当前日期}-{三位序列号}
+      2. 生成时间：{当前时间}  (格式为：”yyyy年mm月dd日 HH:MM“)
+      3. 机组信息：{机组编号}机组 锅炉型号：{型号} 额定负荷：{数值}MW
+      4. 监测部位：{水冷壁/过热器/再热器等具体区域}
+      5. 数据来源：锅炉壁温测点、DCS实时数据、烟气温度等
       6. 分析主体：锅炉智能大模型超温诊断模块
-      7. 异常等级：Ⅰ级（轻微）/Ⅱ级（中度）/Ⅲ级（严重）/Ⅳ级（临界爆管），按最严重测点综合判定
-      8. 超温测点数量：共{X}个（轻微{X}个、中度{X}个、严重{X}个）
+      7. 异常等级：Ⅰ级/Ⅱ级/Ⅲ级/Ⅳ级（根据最严重测点定级,Ⅰ级（轻微超温）/Ⅱ级（中度超温）/Ⅲ级（严重超温）/Ⅳ级（临界爆管））
+      8. 超温测点数量：共{X}个（严重{X}个、中度{X}个、轻微{X}个）
       
-      **二、超温事件概况（多测点汇总）**
-      1. 超温起止时段：起始{时间} 结束{时间} 持续{时长}（多测点不一致时分别标注核心测点时段）
-      2. 运行工况：负荷{ %}、主汽压力{MPa}、主汽温度{℃}、炉膛负压{Pa}、氧量{ %}（无字段则待补充）
-      3. 超温测点汇总（按严重程度）：
-         - 严重超温（≥20℃）：测点{编号}（位置：{位置}）… 共{X}个
-         - 中度超温（10～20℃）：… 共{X}个
-         - 轻微超温（5～10℃）：… 共{X}个
-      4. 设计允许壁温&实际温度：分区域设计壁温{℃}；实测最高{℃}（测点{ID}）；最大超温差值{℃}；平均超温差值{℃}
-      5. 超温分布特征：集中式 / 分散式 / 混合型（须给出判据）
+      **二、超温事件概况**
+      1. 超温起止时段：{开始} 至 {结束}，持续{X}分钟
+      2. 运行工况：负荷{X}%、主汽压力{X}MPa、主汽温度{X}℃
+      3. 超温测点汇总（按严重程度分类）：
+          - 严重超温（≥20℃）：测点{ID}（位置：{位置}）...
+          - 中度超温（10-20℃）：...
+          - 轻微超温（5-10℃）：...
+      4. 温度极值：设计{X}℃，实测最高{X}℃（测点{ID}），超温差值{X}℃
+      5. 分布特征：集中式/分散式/混合型
       
-      **三、超温数据统计分析（多测点联动）**
-      1. 多测点温度统计：各超温区域最大值、最小值、平均值、累计超温时长；尖峰超温（≥15℃）次数与时长排序
-      2. 关联参数联动：减温水投入/开度/响应；烟气侧烟温偏差；负荷波动、吹灰、磨煤机启停与超温时序（区分共同诱因与区域专属诱因）
-      3. 多测点对比：同区域正常与超温测点差异；不同区域共性与个性
+      **三、超温数据统计分析**
+      1. 多测点温度统计（各区域最大/最小/平均/持续时长）
+        - 各超温区域（测点组）：最大值、最小值、平均值、超温持续时长统计（可附表格）
+        - 超温频次：各测点瞬时尖峰超温（超温≥15℃）次数、累计超温时长排序
+      2. 关联参数联动分析（减温水、烟温、负荷波动）
+        - 减温水：各超温区域对应减温水回路投入量、开度、调节响应速度，与壁温变化时序对应关系
+        - 烟气侧：各区域炉膛烟温、出口烟温、烟气流速，判断是否存在区域烟温偏差、烟气偏流
+        - 运行参数：负荷波动、启停磨煤机、增减燃料、吹灰作业的时间节点，与多测点超温的关联性（区分“共同诱因”和“区域专属诱因”）
+      3. 多测点对比分析（同区域正常与超温测点差异、不同超温区域的共性与个性特征）
       
-      **四、锅炉超温核心原因智能诊断**
-      **（一）共性原因（多测点共同诱因）**
-      - 烟气侧 / 介质侧 / 运行操作 / 设备本体（每条标注置信度与数据依据）
-      **（二）区域专属原因（按超温区域分类）**
-      - 区域1（如右侧末级过热器）：烟气侧、介质侧、设备侧、运行侧分项
-      - 区域2（如：前墙水冷壁）：…
-      - 区域3：按需补充
+      **四、超温核心原因智能诊断**
+      **(一) 共性原因（所有超温测点共同诱因）**
+      - 烟气侧/介质侧/运行操作/设备本体
+      **(二) 区域专属原因（按超温区域分类）**
+      - 区域1（如：右侧末级过热器）：...
+      - 区域2（如：前墙水冷壁）：...
       
-      **五、超温带来的安全危害评估（多测点叠加）**
-      - 短期危害 / 中期危害 / 长期危害
-      - 经济影响 / 环保影响
+      **五、超温带来的安全危害评估**
+      （涵盖短期、中期、长期的安全与经济影响）
       
-      **六、大模型智能处置调控措施**
-      核心原则：先处置严重测点，再优化中轻度；兼顾共性与区域专属问题
-      **（一）紧急处置（严重超温立即执行）**
-      **（二）运行优化调整（兼顾所有超温测点）**
-      **（三）检修预防措施（分区域落实）**
-      **（四）长效防控方案（多测点监测）**
+      **六、智能处置调控措施**
+      **(一) 紧急处置（立即执行）**
+      **(二) 运行优化调整**
+      **(三) 检修预防措施**
+      **(四) 长效防控方案**
       
       **七、整改完成情况&效果验证**
-      1. 已执行调控操作：（分区域列明，无则待补充）
-      2. 全测点效果验证：严重/中度/轻微测点恢复情况（引用效果验证汇总行）
-      3. 关联参数验证：烟温、汽温、减温水稳定性
-      4. 后续跟踪监测时长：{X}小时
+      1. 已执行操作：（如”右侧末级过热器减温水开度调整至55%、前墙水冷壁补充吹灰1次、整体负荷下调至450MW“）
+      2. 全测点效果验证：严重/中度/轻微超温测点恢复情况
+      3. 关联参数验证：（如：烟温、汽温、减温水参数恢复稳定性，各区域烟气偏差、介质流量分配趋于合理）
+      4. 后续跟踪：{X}小时
       
       **八、总结结论&后续管控建议**
-      1. 事件定性结论（共性+区域专属诱因）
-      2. 同类工况重复超温风险等级：高/中/低
-      3. 日常运行重点盯防（区域/测点/参数）
-      4. 大模型后续优化建议
+      1. 事件定性：...
+      2. 重复风险等级：高/中/低
+      3. 日常重点盯防：...
+      4. 大模型优化建议：...
       
       **九、附件**
-      - 超温时段各测点壁温趋势曲线（按区域分组）
-      - DCS 参数联动趋势（负荷、烟温、减温水等）
-      - 多测点温度对照表（设计值、实测值、超温差值、持续时长）
-      - 历史同类多测点超温案例对标分析
-      - 超温区域受热面现场检查照片（若有，待人工补录）
+      （列出相关趋势图、对照表等）
+      
 
 # v2 多槽位叙述章共用 system（各槽 user 中带「本章写作任务」）
 analysis_synthesis_overheat_narrative:
   - version: v1
     weight: 1.0
-    description: 超温 v2 分章叙述（对齐九段报告模板；表/图由程序槽位渲染）
+    description: 超温 v2 分章叙述（不含附录大表，表由程序槽位渲染）
     content: |
-      你是《锅炉管壁超温智能分析报告（多测点版）》撰写专家。
+      你是电站锅炉防磨防爆与超温分析专家。
       你将按用户消息中的【本章写作任务】仅撰写指定章节正文（Markdown）。
-      数据依据：q1 基础信息、q2 事件概况、q3 区域/频次统计、q4 关联参数时序、q5 缺陷检修与效果验证、q6 附件趋势对照。
       硬约束：
       - 禁止编造数值；数据摘要/可引用事实中无依据的字段一律标注「待补充」。
       - 正文禁止出现任何 Markdown 标题行（# / ## / ### 等）；章节标题由系统渲染，勿重复章节名。
       - 每个数值须写成「字段名=值」且能在「可引用事实」或数据摘要中找到；禁止自造单位（如将温度写成 MPa）。
-      - 超温分级：严重≥20℃、中度10～20℃、轻微5～10℃；与 q1/q2 保持一致。
       - RAG 片段仅作规范/方法参考，不得作为测点数值来源；某查询项无数据行时不得展开该节明细。
       - 用户问题中的机组/锅炉约束与数据行不一致时，须写明「数据未覆盖该机组/锅炉」。
       - 使用火电厂热动专业术语，结论须可审计、建议须可执行。
@@ -776,48 +766,27 @@ analysis_plan_overheat_guidance:
 
   - version: v2
     weight: 1.0
-    description: 超温专项 v2 数据计划（q1～q6 对齐九段报告；参考 docs/综合分析-超温分析 报告模板及查询数据逻辑/overheat_plan_v2_reference_sql.sql）
+    description: 超温专项数据计划模板（JSON 数组，事实-参数-状态闭环）
     content: |
       [
         {
           "item_id": "q1",
-          "purpose": "一、报告基础信息（锅炉台账+超温测点分级统计）",
-          "question": "【报告第一章】查询用户问题指定机组/锅炉与时间窗内的报告基础信息。主表 account_boiler 与 monitor_hotarea_temp。须返回两类结果（可用 UNION ALL 合并，增加 section 列区分）：(1) section=锅炉台账：boiler_name 机组名称、boiler_model 锅炉型号、edfh 额定负荷_MW，WHERE boiler_name 匹配用户问题中的机组关键词（如1号锅炉、#2机组）；(2) section=测点分级统计：对 monitor_hotarea_temp 关联 account_boiler，筛选 start_time 在用户时间窗内且 highest_temp>limit_temp，按 pi_code 聚合取最高超温差值并分级（严重≥20℃、中度10～20℃、轻微5～10℃），统计 DISTINCT 超温测点总数及各级数量。禁止臆造表名；JOIN 键 t.boiler_id=ab.boiler_id。",
+          "purpose": "报告基础信息与超温汇总统计",
+          "question": "请查询今天指定机组的管壁超温明细数据。以 monitor_hotarea_temp 为主表，依次左连接 account_boiler、base_temp_point（关联条件 pi_code=point_code）、account_static_device、account_device_piperow 和 account_device_pipebox。筛选出当天实测最高温度大于限值的记录，并按超温差值降序排列取前20条。返回字段需包含：机组名称、锅炉型号、额定负荷、受热面名称、测点排数与管号、超温起止时间、机组负荷、主汽压力、实测最高温、设计限值、超温差值、管子外径、壁厚及集箱设计温度。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q2",
-          "purpose": "二、超温事件概况（测点时段+运行工况+分级清单+极值）",
-          "question": "【报告第二章】查询指定机组时间窗内超温事件概况。主表 monitor_hotarea_temp，LEFT JOIN account_boiler ab ON t.boiler_id=ab.boiler_id，LEFT JOIN base_temp_point btp ON t.pi_code=btp.point_code，LEFT JOIN account_static_device asd ON t.device_id=asd.device_id，LEFT JOIN base_temp_device btd ON t.device_id=btd.device_id。须包含：(1) 各测点 pi_code 的最早 start_time、最晚 end_time、SUM(limit_duration) 超温总时长_秒；(2) 全事件 AVG(mw_value) 当前负荷_MW、AVG(mw_value)/edfh*100 负荷_percent、AVG(steam_pressure_value) 主汽压力_MPa；(3) 按超温等级（严重≥20、中度10～20、轻微5～10）GROUP_CONCAT 测点及位置（含 device_name、point_name、row_num、pipe_num）及 COUNT DISTINCT pi_code；(4) 分区域 GROUP_CONCAT 设计壁温 btd.over_hot_limit、MAX(highest_temp) 实测最高、MAX(highest_temp-limit_temp) 最大超温差值、AVG(highest_temp-limit_temp) 平均超温差值。WHERE ab.boiler_name 匹配用户机组且 t.highest_temp>t.limit_temp。可增加 section 列区分结果类型。",
+          "purpose": "多测点详细数据与关联参数 (SIS数据)",
+          "question": "请查询今天，指定机组 相关的减温水、烟温、负荷及风量等运行参数的时序数据。从 sis_pi_data 表中查询，左连接 base_temp_point 获取测点名称。筛选测点名称中包含“减温水”、“烟温”、“排烟”、“主汽压力”、“负荷”或“总风量”的记录。仅返回数据时间、测点名称和测点数值，并按时间升序排列。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q3",
-          "purpose": "三、超温数据统计（区域汇总+尖峰频次）",
-          "question": "【报告第三章·数据表】查询指定机组时间窗内超温量化统计，分两类（可用 section 列）：(1) section=区域统计：按 ab.boiler_name、asd.device_name 分组，COUNT DISTINCT pi_code、MAX/MIN/AVG(highest_temp)、AVG(highest_temp-limit_temp)、SUM(limit_duration)，ORDER BY 累计超温时长 DESC；(2) section=尖峰频次：按 pi_code 统计 highest_temp-limit_temp>=15 的次数与累计 limit_duration，JOIN account_boiler、account_static_device、base_temp_point，ORDER BY 尖峰次数 DESC。主表 monitor_hotarea_temp，筛选 highest_temp>limit_temp 且 boiler_name 匹配用户机组。",
-          "mandatory": true,
-          "dependency_ids": []
-        },
-        {
-          "item_id": "q4",
-          "purpose": "三、关联参数联动（壁温时序+SIS关联测点）",
-          "question": "【报告第三章·关联参数】查询超温事件时间窗内关联参数时序，分两类（data_source 列）：(1) data_source=壁温时序：monitor_hotarea_temp t JOIN account_boiler ab，返回 start_time 采集时间、pi_code、point_name、highest_temp 壁温_℃、mw_value 机组负荷_MW、steam_pressure_value 主汽压力_MPa，筛选 highest_temp>limit_temp 且机组匹配；(2) data_source=SIS时序：sis_pi_data spd LEFT JOIN base_temp_point btp ON spd.tag=btp.point_code，返回 data_time、tag、point_name、value 测点数值，筛选 data_time 在同时间窗且 point_name 含减温水/烟温/排烟/主汽压力/负荷/总风量。按时间升序。",
-          "mandatory": true,
-          "dependency_ids": []
-        },
-        {
-          "item_id": "q5",
-          "purpose": "七、历史缺陷/泄爆/换管+整改效果验证",
-          "question": "【报告第七章】查询指定机组近一年内检修佐证及调控后效果。(1) record_type=遗留问题：overhaul_legacy_problem p JOIN account_boiler ab、account_static_device d、overhaul_boiler b，返回 problem_descrip、deal_content、status、device_name、overhaul_name、record_time；(2) record_type=泄漏记录：overhual_leakage l 同法关联，返回 leakage_descrip、handling_method、reason_type、leakage_date；(3) record_type=换管记录：overhaul_record r JOIN overhaul_record_tubes t ON r.id=t.overhaul_record_id，mark_type='2' AND t.is_change='1'，返回 defect_type、tube_position、mark_time；(4) record_type=效果验证：monitor_hotarea_temp 调控后时间窗（用户未指定则取事件结束至+12小时），统计严重/中度/轻微测点恢复数量与平均壁温。用 UNION ALL 合并(1)(2)(3)按时间倒序；效果验证可单独结果集或同列 NULL 填充。",
-          "mandatory": true,
-          "dependency_ids": []
-        },
-        {
-          "item_id": "q6",
-          "purpose": "九、附件（壁温趋势+多测点对照+历史同类对标）",
-          "question": "【报告第九章·附件数据】查询指定机组附件用数据，分三类（section 列）：(1) section=壁温趋势：monitor_hotarea_temp 超温记录明细，含 pi_code、point_name、device_name、start_time 采集时间、highest_temp 壁温值、limit_temp、超温差值，按 start_time、pi_code 排序；(2) section=多测点对照：按 pi_code 聚合 MAX(highest_temp)、设计壁温 base_temp_device.over_hot_limit、超温差值、SUM(limit_duration)，JOIN account_boiler、account_static_device、base_temp_point、base_temp_device，ORDER BY 超温差值 DESC；(3) section=历史同类对标：本次超温 pi_code 在 start_time<本次时间窗 的历史 monitor_hotarea_temp 记录，按 pi_code 与日期聚合 MAX(highest_temp-limit_temp)，LIMIT 50。机组与时间窗从用户问题解析。",
+          "purpose": "历史缺陷与检修记录 (佐证原因)",
+          "question": "请汇总查询 指定机组 近一年内的设备遗留问题、泄漏记录和换管记录。使用 UNION ALL 联合查询 overhaul_legacy_problem、overhual_leakage 和 overhaul_record 三张表。均需左连接 account_static_device 获取设备名，左连接 overhaul_boiler 获取检修项目，并通过 account_boiler 过滤指定机组。其中换管记录需额外关联 overhaul_record_tubes 并筛选 is_change='1' 的数据。统一返回记录类型、问题描述、处理内容、状态、涉及设备、检修项目及记录时间，按时间倒序排列。",
           "mandatory": true,
           "dependency_ids": []
         }

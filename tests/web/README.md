@@ -15,16 +15,16 @@ python3 -m http.server 8765
 
 ## 页面索引
 
-| 页面 | 用途 |
-|------|------|
-| [chatbot-stream.html](chatbot-stream.html) | 智能客服：`POST /chatbot/chat/stream`（SSE） |
-| [inspection-extract.html](inspection-extract.html) | 检修提取 **同步**：`upload` + `POST /inspection-extract/run` |
-| [inspection-extract-async.html](inspection-extract-async.html) | 检修提取 **异步**：`run/async` + 任务轮询与分块 |
-| [inspection-extract-v0-async.html](inspection-extract-v0-async.html) | 检修提取 **V0 异步**（LangGraph + 版面 OCR）：`/inspection-extract-v0/*` |
+| 页面 | 用途                                                                                                      |
+|------|---------------------------------------------------------------------------------------------------------|
+| [chatbot-stream.html](chatbot-stream.html) | 智能客服：`POST /chatbot/chat/stream`（SSE）                                                                   |
+| [inspection-extract.html](inspection-extract.html) | 检修提取 **同步**：`upload` + `POST /inspection-extract/run`                                                   |
+| [inspection-extract-async.html](inspection-extract-async.html) | 检修提取 **异步**：`run/async` + 任务轮询与分块（当前在用版本）                                                               |
+| [inspection-extract-v0-async.html](inspection-extract-v0-async.html) | 检修提取 **V0 异步**（LangGraph + 版面 OCR）：`/inspection-extract-v0/*`                                           |
 | [analysis-img-diag.html](analysis-img-diag-stream.html) | 综合分析 **看图诊断（流式）**：`POST /analysis/img-diag/upload` + `POST /analysis/run-img-diag-stream`（SSE，与超温流式页同构） |
-| [analysis-nl2sql-stream-v1.html](analysis-nl2sql-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（全专项，默认策略）**：`POST /analysis/run-with-nl2sql-stream` |
-| [analysis-nl2sql-overheat-stream-v1.html](analysis-nl2sql-overheat-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（超温专项页）** |
-| [analysis-nl2sql-stream-v2.html](analysis-nl2sql-stream-v2.html) | 综合分析 **NL2SQL 流式 synthesis v2（超温多槽位；需服务端 env）**：同上接口，可收 `table_payload` / `chart_payload` |
+| [analysis-nl2sql-stream-v1.html](analysis-nl2sql-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（全专项，默认策略）**：`POST /analysis/run-with-nl2sql-stream`                       |
+| [analysis-nl2sql-overheat-stream-v1.html](analysis-nl2sql-overheat-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（超温专项页）**                                                                  |
+| [analysis-nl2sql-stream-v2.html](analysis-nl2sql-stream-v2.html) | 综合分析 **NL2SQL 流式 synthesis v2（超温多槽位；需服务端 env）**：同上接口，可收 `table_payload` / `chart_payload`               |
 
 ---
 
@@ -249,8 +249,9 @@ V0 单段异步任务 **`work_idx` 一般为 `1`**；`strict` 可不传，走 `I
 
 - 首帧 `meta.template_versions` 应含 `synthesis_strategy_effective: v2`；页面会提示若非 v2  
 - SSE 除 `summary_delta` 外可有 `table_payload`、`chart_payload`（含 `slot_id`）  
+- **plan v2**：超温 **q1～q6**（默认 `max_nl2sql_calls=6`）；**14 槽**（程序表/图 + 多段 LLM）；LLM 槽 prompt = `analysis_synthesis_overheat_narrative` + 槽位 `narrative_instruction`（非整篇 `analysis_synthesis_overheat_guidance` v2）  
 - v1 对照：[analysis-nl2sql-stream-v1.html](analysis-nl2sql-stream-v1.html)、[analysis-nl2sql-overheat-stream-v1.html](analysis-nl2sql-overheat-stream-v1.html)  
-- 设计说明：`docs/综合分析优化版本实现方案(v2版本).md`  
+- 设计说明：`docs/综合分析优化版本实现方案(v2版本).md`；槽位/q 映射：`enterprise-level_transformation_docs/系统整体技术实现-简版.md` §1.1.6  
 
 ---
 

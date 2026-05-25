@@ -255,8 +255,8 @@ c.vLLM本身是高性能的，需要考虑使用LangChain的调用层不要成�
 当前综合分析中，我想实现最终的分析报告的生成节点(synthesis)改成多LLM调用并行(或者串行)，然后最终报告整体是流式输出。所以请帮我分析 链路图后面的synthesis(依据gathered_data、RAG 片段、（可选）意图 JSON 作为 planning_context进行报告分析生成)节点，能否改成下面的方案：
 1. 最后分析阶段(synthesis)实现两种策略：
 	第一种策略：也就是原来的策略v1(融合gathered_data、RAG、分析提示词模板，最终一次调用LLM)；
-	第二种策略：报告通过提示词配置报告占位模板(见当前prompts.yaml中analysis_synthesis_overheat_guidance的v2版本)，然后其中数据报表和其中的分析部分多线程并行(或串行，串行或并行请根据整体需要可行性和性能两方面考虑)，最终想办法实现流式响应（哪个线程先跑完就流式返回哪个，其他的排队流式返回）
-	上述两种策略通过配置项实现配置走哪个策略链路，第二种策略单独配置对应的v2版提示词模板（包括数据计划和编排分析计划，当前已配置超温分析专项的 analysis_synthesis_overheat_guidance 的v2版本和analysis_plan_overheat_guidance的v2版本）。
+	第二种策略：报告通过 **14 槽位**编排（`analysis_synthesis_v2.py`）+ plan v2 **q1～q6**；LLM 槽使用 `analysis_synthesis_overheat_narrative`（system）与各槽 `narrative_instruction`（user），**非**运行时整篇注入 `analysis_synthesis_overheat_guidance` v2（该模板为九段结构蓝本）。数据表/图程序渲染，叙述多段 LLM 有限并行，按槽位顺序串行流式输出。
+	上述两种策略通过配置项实现配置走哪个策略链路，第二种策略单独配置对应的 v2 版 **plan** 模板（`analysis_plan_overheat_guidance` v2，q1～q6）及槽位注册表；`analysis_synthesis_overheat_guidance` v2 供结构与 v1 路径使用。
 2. 上述v2策略分支 报告流式加载研究是否可以这样实现: 按照报告占位模板的顺序进行串行流式加载。如果基于这种方式的话，报告中所有分析并行需不需要改成串行，如果分析还是并行，只是报告输出响应时串行流式就行（当然报告中第一个模块肯定是与大模型输出同步流式输出，后续的模块排队流式返回）
 3. 上述v2分支报告中图表的返回使用结构化返回（比如markdown json 图表的源码格式等）
 

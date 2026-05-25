@@ -64,6 +64,7 @@ class SynthesisV2RunResult:
 # ---------------------------------------------------------------------------
 
 def _overheat_v2_slots() -> list[SynthesisV2Slot]:
+    """与 analysis_plan_overheat_guidance v2（q1～q6）及九段报告模板对齐。"""
     return [
         SynthesisV2Slot(
             id="s01",
@@ -71,8 +72,11 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="一、报告基础信息",
             source_item_ids=("q1",),
             narrative_instruction=(
-                "撰写报告基础信息正文（勿输出任何标题行）：报告编号、生成时间、机组/锅炉信息、监测部位、"
-                "数据来源、分析主体、异常等级、超温测点数量等。仅使用可引用事实与 q1 字段，缺失项标注「待补充」。"
+                "撰写「一、报告基础信息」正文（勿输出标题行），严格按模板条目顺序："
+                "1.报告编号 GL-CW-{日期}-{三位序号，无则001}；2.生成时间 yyyy年mm月dd日 HH:MM；"
+                "3.机组信息（机组编号、锅炉型号、额定负荷MW）；4.监测部位（按超温区域分类列举）；"
+                "5.数据来源；6.分析主体；7.异常等级（Ⅰ～Ⅳ，按最严重测点）；"
+                "8.超温测点数量（共X个，轻微/中度/严重分项）。仅引用 q1 字段，缺失标「待补充」。"
             ),
             stream_live=True,
         ),
@@ -80,105 +84,129 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s02",
             kind="llm_narrative",
             title="二、超温事件概况",
-            source_item_ids=("q1",),
+            source_item_ids=("q2",),
             narrative_instruction=(
-                "撰写超温事件概况正文（勿输出标题行）：起止时段、运行工况、测点汇总、温度极值与分布。"
-                "必须引用可引用事实，禁止编造。"
+                "撰写「二、超温事件概况」正文（勿输出标题行）："
+                "1.超温起止时段与持续时长（多测点分别标注核心测点时段）；"
+                "2.运行工况（负荷%、主汽压力MPa、主汽温度℃、炉膛负压、氧量，无则待补充）；"
+                "3.超温测点汇总（按严重/中度/轻微分类列测点编号与位置）；"
+                "4.设计允许壁温与实测极值、平均超温差值；"
+                "5.分布特征（集中式/分散式/混合型及依据）。仅引用 q2。"
             ),
         ),
         SynthesisV2Slot(
             id="s03",
             kind="table_deterministic",
-            title="三、超温数据统计分析（数据表）",
-            source_item_ids=("q1",),
-            table_id="overheat_q1_summary",
+            title="三、超温数据统计分析（区域与频次数据表）",
+            source_item_ids=("q3",),
+            table_id="overheat_q3_region_freq",
         ),
         SynthesisV2Slot(
             id="s04",
             kind="llm_narrative",
             title="",
-            source_item_ids=("q1", "q2"),
+            source_item_ids=("q3", "q4"),
             narrative_instruction=(
-                "紧接上一节数据表，撰写「三、超温数据统计分析」文字分析（勿输出标题行）：多测点温度统计、"
-                "关联参数联动、多测点对比。q2 无数据行时不得编造测点明细，须说明待补充。"
+                "紧接上一节数据表，撰写「三、超温数据统计分析」文字分析（勿输出标题行）："
+                "1.多测点温度统计解读；2.关联参数联动（减温水/烟气/负荷/吹灰等，基于 q4）；"
+                "3.多测点对比（同区域正常与超温差异、区域共性与个性）。"
+                "q4 无行时关联参数部分仅写待补充，禁止编造时序。"
             ),
         ),
         SynthesisV2Slot(
             id="s05",
             kind="table_deterministic",
-            title="关联参数与测点明细（数据表）",
-            source_item_ids=("q2",),
-            table_id="overheat_q2_detail",
+            title="关联参数时序（数据表）",
+            source_item_ids=("q4",),
+            table_id="overheat_q4_correlation",
         ),
         SynthesisV2Slot(
             id="s06",
             kind="llm_narrative",
             title="四、超温核心原因智能诊断",
-            source_item_ids=("q1", "q2"),
+            source_item_ids=("q1", "q2", "q3", "q4"),
             narrative_instruction=(
-                "撰写超温核心原因诊断正文（勿输出标题行）：(一) 共性原因 (二) 区域专属原因；"
-                "每条标注置信度（高/中/低）并给出字段名=值 依据；q2 无行时仅基于 q1，不得虚构测点过程。"
+                "撰写「四、超温核心原因智能诊断」（勿输出标题行）："
+                "(一)共性原因：烟气侧/介质侧/运行操作/设备本体，每条标注置信度与字段依据；"
+                "(二)区域专属原因：按 q3 超温区域逐区分析。禁止无数据支撑的断言。"
             ),
         ),
         SynthesisV2Slot(
             id="s07",
             kind="llm_narrative",
             title="五、超温带来的安全危害评估",
-            source_item_ids=("q1", "q2"),
+            source_item_ids=("q1", "q2", "q3"),
             narrative_instruction=(
-                "撰写安全危害评估正文（勿输出标题行）：短期、中期、长期安全与经济影响；"
-                "无数据支撑的量化影响标注「待补充」。"
+                "撰写「五、超温带来的安全危害评估」（勿输出标题行）："
+                "短期/中期/长期安全影响、经济影响、环保影响（多测点叠加表述）。"
+                "无量化数据处标注待补充。"
             ),
         ),
         SynthesisV2Slot(
             id="s08",
             kind="llm_narrative",
             title="六、智能处置调控措施",
-            source_item_ids=("q1", "q2"),
+            source_item_ids=("q1", "q2", "q3", "q4"),
             narrative_instruction=(
-                "撰写处置调控措施正文（勿输出标题行）：(一) 紧急处置 (二) 运行优化 "
-                "(三) 检修预防 (四) 长效防控；建议须可执行，勿编造已执行操作。"
+                "撰写「六、智能处置调控措施」（勿输出标题行，分四节）："
+                "(一)紧急处置（严重测点优先）；(二)运行优化（共性+区域）；"
+                "(三)检修预防（分区域）；(四)长效防控。建议须可执行，勿编造已执行操作。"
             ),
         ),
         SynthesisV2Slot(
             id="s09",
             kind="table_deterministic",
             title="七、历史缺陷与检修记录（数据表）",
-            source_item_ids=("q3",),
-            table_id="overheat_q3_defects",
+            source_item_ids=("q5",),
+            table_id="overheat_q5_defects",
         ),
         SynthesisV2Slot(
             id="s10",
             kind="llm_narrative",
             title="",
-            source_item_ids=("q3",),
+            source_item_ids=("q5",),
             narrative_instruction=(
-                "紧接上一节数据表，撰写整改完成与效果验证正文（勿输出标题行）。"
-                "q3 无数据行时全文仅说明「数据不足，待现场补录」，禁止编造检修/验证记录。"
+                "紧接上一节，撰写「七、整改完成情况&效果验证」（勿输出标题行）："
+                "1.已执行调控操作（分区域，无则待补充）；"
+                "2.全测点效果验证（引用 q5 中 record_type=效果验证 行）；"
+                "3.关联参数验证；4.后续跟踪监测时长。"
+                "q5 无效果验证行时验证部分写「待现场补录」。"
             ),
         ),
         SynthesisV2Slot(
             id="s11",
             kind="llm_narrative",
             title="八、总结结论与后续管控建议",
-            source_item_ids=("q1", "q2", "q3"),
+            source_item_ids=("q1", "q2", "q3", "q4", "q5", "q6"),
             narrative_instruction=(
-                "撰写总结与管控建议正文（勿输出标题行）：事件定性、重复风险、日常盯防、优化建议；"
-                "须与可引用事实一致，不得与数据行矛盾。"
+                "撰写「八、总结结论&后续管控建议」（勿输出标题行）："
+                "1.事件定性（共性+区域诱因）；2.重复超温风险等级高/中/低；"
+                "3.日常重点盯防（区域/测点/参数）；4.大模型后续优化建议。"
             ),
         ),
         SynthesisV2Slot(
             id="s12",
             kind="chart_structured",
-            title="九、附件（趋势与分布图）",
-            source_item_ids=("q1", "q2"),
-            table_id="overheat_charts",
+            title="九、附件（趋势图）",
+            source_item_ids=("q6",),
+            table_id="overheat_q6_charts",
         ),
         SynthesisV2Slot(
             id="s13",
+            kind="table_deterministic",
+            title="九、附件（多测点对照与历史对标数据表）",
+            source_item_ids=("q6",),
+            table_id="overheat_q6_attachment",
+        ),
+        SynthesisV2Slot(
+            id="s14",
             kind="static_markdown",
             title="",
-            static_body="**九、附件**\n\n以上图表与数据表为本次分析的结构化附件，可与正文对照审计。",
+            static_body=(
+                "**九、附件说明**\n\n"
+                "以上趋势图、多测点对照表及历史同类对标数据，与正文各章数据同源，可对照审计。"
+                "现场检查照片等非结构化资料需人工补录。"
+            ),
         ),
     ]
 
@@ -417,15 +445,15 @@ def _build_overheat_charts(records: list[dict], *, chart_mode: str) -> tuple[str
     trend: list[dict[str, Any]] = []
     zone_buckets: dict[str, int] = {}
     for r in records:
-        t = r.get("start_time") or r.get("time") or r.get("timestamp")
-        temp = r.get("highest_temp") or r.get("temperature") or r.get("temp")
+        t = r.get("start_time") or r.get("采集时间") or r.get("time") or r.get("timestamp")
+        temp = r.get("highest_temp") or r.get("壁温值") or r.get("temperature") or r.get("temp") or r.get("实测最高壁温_℃")
         if t is not None and temp is not None:
             try:
                 trend.append({"time": str(t), "temperature": float(temp)})
             except (TypeError, ValueError):
                 pass
         zone = (
-            str(r.get("device_name") or r.get("监测部位") or r.get("boiler_name") or "unknown")[:64]
+            str(r.get("device_name") or r.get("设备名称") or r.get("监测部位") or r.get("boiler_name") or "unknown")[:64]
         )
         zone_buckets[zone] = zone_buckets.get(zone, 0) + 1
     charts: list[dict[str, Any]] = []
