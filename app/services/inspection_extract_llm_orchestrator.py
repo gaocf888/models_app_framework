@@ -624,6 +624,30 @@ class InspectionExtractLlmOrchestrator:
                 if records_i:
                     parse_format = "json_salvage"
             records_i = _ensure_debug_fields(records_i)
+            if bool(getattr(self._cfg, "v2_color_guard_enabled", True)) and "[DOCX_V2_TABLE" in (chunk or ""):
+                from app.inspection_v2.detection_type_color_guard import apply_docx_v2_color_guard
+
+                before_defect = sum(
+                    1
+                    for r in records_i
+                    if isinstance(r, dict)
+                    and str(r.get("检测类型") or r.get("detection_type") or "").strip() in ("缺陷", "异常")
+                )
+                records_i = apply_docx_v2_color_guard(records_i, chunk)
+                after_defect = sum(
+                    1
+                    for r in records_i
+                    if isinstance(r, dict)
+                    and str(r.get("检测类型") or r.get("detection_type") or "").strip() in ("缺陷", "异常")
+                )
+                if before_defect != after_defect:
+                    logger.info(
+                        "inspection_extract color_guard chunk=%s/%s defect_count %s->%s",
+                        idx,
+                        total,
+                        before_defect,
+                        after_defect,
+                    )
             logger.info("inspection_extract llm stage=parse chunk=%s result_records=%s", idx, len(records_i))
             logger.info("inspection_extract parse chunk=%s parse_format=%s", idx, parse_format)
             if records_i and isinstance(records_i[0], dict):

@@ -609,6 +609,8 @@ class InspectionExtractConfig:
     # V2：Processing Unit 分块后每块最大字符；classify 批大小（与文档 20～40 条建议对齐）
     v2_parse_unit_max_chars: int = 6000
     v2_classify_batch_size: int = 40
+    # DOCX V2：parse 后按分块内 [颜色标注] 校正检测类型，避免同行/跨列误标缺陷
+    v2_color_guard_enabled: bool = True
     # 异步检修任务（断点续跑）根目录：每任务子目录含 request.json、chunks/*.json、job_meta.json
     async_jobs_state_dir: str = "./data/inspection_extract_jobs"
     # REDIS_URL 启用时：检修异步队列 worker 线程数（与摄入队列分离 key_prefix）
@@ -1150,6 +1152,8 @@ def _load_from_env() -> AppConfig:
         v2_shading_candidate_fills=_v2_fills_list,
         v2_parse_unit_max_chars=max(2000, int(os.getenv("INSPECT_EXTRACT_V2_PARSE_UNIT_MAX_CHARS", "6000"))),
         v2_classify_batch_size=max(8, min(200, int(os.getenv("INSPECT_EXTRACT_V2_CLASSIFY_BATCH_SIZE", "40")))),
+        v2_color_guard_enabled=os.getenv("INSPECT_EXTRACT_V2_COLOR_GUARD", "true").lower()
+        in ("1", "true", "yes", "on"),
         async_jobs_state_dir=(
             os.getenv("INSPECT_EXTRACT_ASYNC_JOBS_DIR", "./data/inspection_extract_jobs") or "./data/inspection_extract_jobs"
         ).strip(),
