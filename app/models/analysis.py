@@ -70,7 +70,7 @@ class AnalysisOptions(BaseModel):
     enable_context: bool = Field(True, description="是否启用会话上下文")
     report_style: str = Field("standard", description="报告风格，如 standard/strict")
     max_suggestions: int = Field(8, ge=1, le=20, description="建议条目最大数量")
-    max_nl2sql_calls: int = Field(14, ge=1, le=20, description="单次分析允许的 NL2SQL 调用上限")
+    max_nl2sql_calls: int = Field(15, ge=1, le=20, description="单次分析允许的 NL2SQL 调用上限")
     max_rows_per_query: int = Field(2000, ge=50, le=20000, description="单次 NL2SQL 查询行数建议上限")
     strict: bool = Field(False, description="是否启用严格模式（关键数据缺失时直接失败）")
     report_template: str = Field("standard", description="报告模板标识，如 standard/executive")

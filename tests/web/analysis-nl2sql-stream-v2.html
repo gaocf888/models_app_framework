@@ -100,6 +100,29 @@
       padding: 0.75rem;
     }
     #status { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
+    #slotLoading {
+      display: none;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+      padding: 0.45rem 0.65rem;
+      border-radius: 6px;
+      border: 1px dashed var(--warn);
+      background: rgba(251, 191, 36, 0.08);
+      font-size: 0.8rem;
+      color: var(--warn);
+    }
+    #slotLoading.visible { display: flex; }
+    #slotLoading .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--warn);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
     #meta, #eventLog {
       margin-top: 0.75rem;
       padding-top: 0.75rem;
@@ -201,7 +224,8 @@
     <p class="sub">
       调用同一接口 <code>POST /analysis/run-with-nl2sql-stream</code>。
       <strong>P0 仅 <code>overheat_guidance</code> 注册 v2 槽位</strong>；其它专项设 v2 会回退 v1。
-      v2 事件除 <code>summary_delta</code> 外可含 <code>table_payload</code>、<code>chart_payload</code>（按槽位 <code>slot_id</code>）。
+      v2 事件除 <code>summary_delta</code> 外可含 <code>table_payload</code>、<code>chart_payload</code>（按槽位 <code>slot_id</code>），
+      以及槽位等待心跳 <code>synthesis_loading</code>（默认空闲 5s，见 <code>ANALYSIS_SYNTHESIS_V2_IDLE_HEARTBEAT_SECONDS</code>）。
       见 <code>docs/综合分析优化版本实现方案(v2版本).md</code>。需 CORS 与 Bearer 鉴权。
     </p>
 
@@ -262,7 +286,11 @@
 
     <div class="out" style="margin-top: 1rem;">
       <div id="status">就绪</div>
-      <h2>summary（Markdown 增量拼接，v2 按槽位顺序）</h2>
+      <div id="slotLoading" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="slotLoadingText">正在生成下一章节…</span>
+      </div>
+      <h2>summary（Markdown 增量拼接，v2 按槽位顺序就绪即推）</h2>
       <div id="answer"></div>
       <h2 style="margin-top:1rem;">structured SSE（table_payload / chart_payload）</h2>
       <div id="structuredBlocks">（尚未开始；需 ANALYSIS_SYNTHESIS_V2_ENABLE_STRUCTURED_SSE=true）</div>
@@ -482,6 +510,7 @@
 
   $("btnClear").addEventListener("click", () => {
     $("answer").textContent = "";
+    setSlotLoading(false);
     $("structuredBlocks").textContent =
       "（尚未开始；需 ANALYSIS_SYNTHESIS_V2_ENABLE_STRUCTURED_SSE=true）";
     $("ragCitations").textContent = "（尚未开始）";
@@ -561,6 +590,20 @@
     appendStatus("连接中 [" + atLabel + "]（取数与 RAG 阶段可能较长，首包前请耐心等待）…");
     let answerText = "";
 
+    function setSlotLoading(active, ev) {
+      const el = $("slotLoading");
+      const txt = $("slotLoadingText");
+      if (!active) {
+        el.classList.remove("visible");
+        return;
+      }
+      const hint =
+        (ev && (ev.hint || ev.slot_id)) ||
+        "正在生成下一章节…";
+      txt.textContent = hint;
+      el.classList.add("visible");
+    }
+
     const url = baseUrl() + "/analysis/run-with-nl2sql-stream";
 
     try {
@@ -619,7 +662,17 @@
           logEvent("chart_payload" + (ev.slot_id ? ":" + ev.slot_id : ""));
           return;
         }
+        if (kind === "synthesis_loading") {
+          setSlotLoading(ev.active !== false, ev);
+          logEvent(
+            "synthesis_loading" +
+              (ev.active === false ? ":off" : ":on") +
+              (ev.slot_id ? ":" + ev.slot_id : "")
+          );
+          return;
+        }
         if (kind === "summary_delta" && ev.text != null) {
+          setSlotLoading(false);
           answerText += ev.text;
           $("answer").textContent = answerText;
           appendStatus("生成中… 已收字符 " + answerText.length);

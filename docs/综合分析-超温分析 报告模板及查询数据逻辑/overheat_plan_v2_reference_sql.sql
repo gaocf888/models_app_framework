@@ -1,7 +1,10 @@
--- 超温分析 v2 数据计划参考 SQL（方案B：q1 + q2a～q2d + q3a～q6c 一一映射槽位）
--- TiDB/MySQL 8，表名以 fmfb catalog 为准
--- 占位：@unit_keyword 由 NL2SQL 从用户问题解析；@t_start/@t_end 为超温分析时间窗；@t_after 为调控后跟踪窗
--- 约束：每条 plan 问句对应单条可执行 SQL；禁止 WITH/CTE；limit_temp 取自 monitor_hotarea_temp
+-- 超温分析 v2 数据计划参考 SQL（方案B：q1 + q2a～q2d + q3a～q6d 共 15 条）
+-- 对照：火电厂锅炉专业大模型系统-锅炉管壁超温智能分析报告-数据获取逻辑梳理0525.docx
+-- TiDB/MySQL 8；表名以部署 ANALYSIS_NL2SQL_TABLE_SCOPE 为准
+-- 占位：@unit_keyword 机组关键字；@t_start/@t_end 超温事件窗；@t_after 调控后跟踪窗起始（通常 = @t_end）
+-- 超温等级（与 prompts v2 / synthesis v2 一致，按监测超温差值 highest_temp - limit_temp）：
+--   严重 ≥20℃；中度 [10,20)；轻微 [5,10)；尖峰频次阈值 ≥15℃
+-- 约束：每条 plan 问句单条可执行 SQL；禁止 WITH/CTE；limit_temp 取自 monitor_hotarea_temp
 
 -- =============================================================================
 -- q1 一、报告基础信息（锅炉台账 + 监测部位 + 超温测点分级统计）
@@ -300,7 +303,16 @@ LEFT JOIN base_temp_point btp ON spd.tag = btp.point_code
 WHERE spd.data_time >= @t_start
   AND spd.data_time < @t_end
   AND (
-    IFNULL(btp.point_name, '') LIKE '%减温水%'
+    spd.tag IN (
+      SELECT DISTINCT t_evt.pi_code
+      FROM monitor_hotarea_temp t_evt
+      INNER JOIN account_boiler ab_evt ON t_evt.boiler_id = ab_evt.boiler_id
+      WHERE t_evt.start_time >= @t_start
+        AND t_evt.start_time < @t_end
+        AND t_evt.highest_temp > t_evt.limit_temp
+        AND ab_evt.boiler_name LIKE CONCAT('%', @unit_keyword, '%')
+    )
+    OR IFNULL(btp.point_name, '') LIKE '%减温水%'
     OR IFNULL(btp.point_name, '') LIKE '%烟温%'
     OR IFNULL(btp.point_name, '') LIKE '%排烟%'
     OR IFNULL(btp.point_name, '') LIKE '%主汽压力%'
@@ -368,34 +380,77 @@ WHERE r.mark_type = '2'
 ORDER BY 记录时间 DESC;
 
 -- =============================================================================
--- q5b 七、整改效果验证汇总（单行）
+-- q5b 七、整改效果验证汇总（单行；事件窗定级 + 跟踪窗判恢复，对齐 0525 docx）
 -- =============================================================================
 SELECT
-  SUM(CASE WHEN x.over_level = '严重超温' AND x.highest_temp <= x.limit_temp THEN 1 ELSE 0 END) AS 已恢复严重超温数,
-  MAX(CASE WHEN x.over_level = '严重超温' AND x.highest_temp <= x.limit_temp THEN x.highest_temp END) AS 恢复后最高壁温,
-  SUM(CASE WHEN x.over_level = '严重超温' AND x.highest_temp > x.limit_temp THEN 1 ELSE 0 END) AS 剩余未恢复严重超温数,
+  SUM(
+    CASE
+      WHEN ep.event_level = '严重超温'
+        AND COALESCE(ap.after_max_highest_temp, ep.event_limit_temp + 1) <= ep.event_limit_temp
+      THEN 1 ELSE 0
+    END
+  ) AS 已恢复严重超温数,
+  MAX(
+    CASE
+      WHEN ep.event_level = '严重超温'
+        AND COALESCE(ap.after_max_highest_temp, ep.event_limit_temp + 1) <= ep.event_limit_temp
+      THEN ap.after_max_highest_temp
+    END
+  ) AS 恢复后最高壁温,
+  SUM(
+    CASE
+      WHEN ep.event_level = '严重超温'
+        AND COALESCE(ap.after_max_highest_temp, ep.event_limit_temp + 1) > ep.event_limit_temp
+      THEN 1 ELSE 0
+    END
+  ) AS 剩余未恢复严重超温数,
   CASE
-    WHEN SUM(CASE WHEN x.over_level IN ('中度超温', '轻微超温') AND x.highest_temp > x.limit_temp THEN 1 ELSE 0 END) = 0
+    WHEN SUM(
+      CASE
+        WHEN ep.event_level IN ('中度超温', '轻微超温')
+          AND COALESCE(ap.after_max_highest_temp, ep.event_limit_temp + 1) > ep.event_limit_temp
+        THEN 1 ELSE 0
+      END
+    ) = 0
     THEN '是' ELSE '否'
   END AS 中轻度是否全部恢复,
-  ROUND(AVG(CASE WHEN x.over_level IN ('中度超温', '轻微超温') THEN x.highest_temp END), 1) AS 中轻度当前平均壁温
+  ROUND(
+    AVG(
+      CASE
+        WHEN ep.event_level IN ('中度超温', '轻微超温') THEN ap.after_max_highest_temp
+      END
+    ),
+    1
+  ) AS 中轻度当前平均壁温
 FROM (
   SELECT
     t.pi_code,
     t.boiler_id,
-    t.limit_temp,
-    t.highest_temp,
+    MAX(t.limit_temp) AS event_limit_temp,
     CASE
-      WHEN (t.highest_temp - t.limit_temp) >= 20 THEN '严重超温'
-      WHEN (t.highest_temp - t.limit_temp) >= 10 THEN '中度超温'
-      WHEN (t.highest_temp - t.limit_temp) >= 5 THEN '轻微超温'
+      WHEN MAX(t.highest_temp - t.limit_temp) >= 20 THEN '严重超温'
+      WHEN MAX(t.highest_temp - t.limit_temp) >= 10 THEN '中度超温'
+      WHEN MAX(t.highest_temp - t.limit_temp) >= 5 THEN '轻微超温'
       ELSE '正常'
-    END AS over_level
+    END AS event_level
+  FROM monitor_hotarea_temp t
+  INNER JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+  WHERE t.start_time >= @t_start
+    AND t.start_time < @t_end
+    AND t.highest_temp > t.limit_temp
+    AND ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%')
+  GROUP BY t.pi_code, t.boiler_id
+) ep
+LEFT JOIN (
+  SELECT
+    t.pi_code,
+    t.boiler_id,
+    MAX(t.highest_temp) AS after_max_highest_temp
   FROM monitor_hotarea_temp t
   WHERE t.start_time >= @t_after
-) x
-INNER JOIN account_boiler ab ON x.boiler_id = ab.boiler_id
-WHERE ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%');
+  GROUP BY t.pi_code, t.boiler_id
+) ap ON ap.pi_code = ep.pi_code AND ap.boiler_id = ep.boiler_id
+WHERE ep.event_level <> '正常';
 
 -- =============================================================================
 -- q6a 九、附件-壁温趋势
@@ -467,3 +522,96 @@ WHERE t.start_time < @t_start
 GROUP BY t.pi_code, ab.boiler_name, asd.device_name, DATE(t.start_time)
 ORDER BY 历史最大超温差值 DESC
 LIMIT 50;
+
+-- =============================================================================
+-- q6d 九、附件-DCS参数联动趋势图（0525 docx：壁温+负荷+主汽压 + SIS 减温水/烟温等）
+-- 长表格式便于 s12b 多序列折线图；亦兼容 docx 宽表字段名（壁温_℃/机组负荷_MW/主汽压力_MPa）
+-- =============================================================================
+SELECT
+  DATE_FORMAT(t.start_time, '%Y-%m-%d %H:%i') AS 采集时间,
+  t.pi_code AS 测点编号,
+  IFNULL(btp.point_name, t.pi_code) AS 测点名称,
+  '壁温' AS 参数类型,
+  CAST(t.highest_temp AS DECIMAL(10, 2)) AS 参数值,
+  '℃' AS 单位
+FROM monitor_hotarea_temp t
+INNER JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+LEFT JOIN base_temp_point btp ON t.pi_code = btp.point_code
+WHERE t.start_time >= @t_start
+  AND t.start_time < @t_end
+  AND t.highest_temp > t.limit_temp
+  AND ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%')
+
+UNION ALL
+
+SELECT
+  DATE_FORMAT(t.start_time, '%Y-%m-%d %H:%i'),
+  t.pi_code,
+  IFNULL(btp.point_name, t.pi_code),
+  '机组负荷',
+  CAST(t.mw_value AS DECIMAL(10, 2)),
+  'MW'
+FROM monitor_hotarea_temp t
+INNER JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+LEFT JOIN base_temp_point btp ON t.pi_code = btp.point_code
+WHERE t.start_time >= @t_start
+  AND t.start_time < @t_end
+  AND t.highest_temp > t.limit_temp
+  AND ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%')
+
+UNION ALL
+
+SELECT
+  DATE_FORMAT(t.start_time, '%Y-%m-%d %H:%i'),
+  t.pi_code,
+  IFNULL(btp.point_name, t.pi_code),
+  '主汽压力',
+  CAST(t.steam_pressure_value AS DECIMAL(10, 2)),
+  'MPa'
+FROM monitor_hotarea_temp t
+INNER JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+LEFT JOIN base_temp_point btp ON t.pi_code = btp.point_code
+WHERE t.start_time >= @t_start
+  AND t.start_time < @t_end
+  AND t.highest_temp > t.limit_temp
+  AND ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%')
+
+UNION ALL
+
+SELECT
+  DATE_FORMAT(spd.data_time, '%Y-%m-%d %H:%i'),
+  spd.tag,
+  IFNULL(btp.point_name, spd.tag),
+  CASE
+    WHEN IFNULL(btp.point_name, '') LIKE '%减温水%' THEN '减温水'
+    WHEN IFNULL(btp.point_name, '') LIKE '%烟温%' THEN '烟温'
+    WHEN IFNULL(btp.point_name, '') LIKE '%排烟%' THEN '排烟温度'
+    WHEN IFNULL(btp.point_name, '') LIKE '%主汽压力%' THEN '主汽压力(SIS)'
+    WHEN IFNULL(btp.point_name, '') LIKE '%负荷%' THEN '机组负荷(SIS)'
+    WHEN IFNULL(btp.point_name, '') LIKE '%总风量%' THEN '总风量'
+    ELSE 'DCS参数'
+  END,
+  CAST(spd.value AS DECIMAL(10, 2)),
+  ''
+FROM sis_pi_data spd
+LEFT JOIN base_temp_point btp ON spd.tag = btp.point_code
+WHERE spd.data_time >= @t_start
+  AND spd.data_time < @t_end
+  AND (
+    spd.tag IN (
+      SELECT DISTINCT t_evt.pi_code
+      FROM monitor_hotarea_temp t_evt
+      INNER JOIN account_boiler ab_evt ON t_evt.boiler_id = ab_evt.boiler_id
+      WHERE t_evt.start_time >= @t_start
+        AND t_evt.start_time < @t_end
+        AND t_evt.highest_temp > t_evt.limit_temp
+        AND ab_evt.boiler_name LIKE CONCAT('%', @unit_keyword, '%')
+    )
+    OR IFNULL(btp.point_name, '') LIKE '%减温水%'
+    OR IFNULL(btp.point_name, '') LIKE '%烟温%'
+    OR IFNULL(btp.point_name, '') LIKE '%排烟%'
+    OR IFNULL(btp.point_name, '') LIKE '%主汽压力%'
+    OR IFNULL(btp.point_name, '') LIKE '%负荷%'
+    OR IFNULL(btp.point_name, '') LIKE '%总风量%'
+  )
+ORDER BY 采集时间, 测点编号, 参数类型;

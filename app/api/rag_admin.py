@@ -1096,7 +1096,7 @@ class Nl2sqlAutoQaCreateRequest(BaseModel):
     question: str = Field(..., description="必填。与 plan 子任务问句一致（或 compact 后的业务问句）")
     sql: str = Field(..., description="必填。只读 SELECT SQL；默认经 SQLValidator 校验后入库")
     analysis_type: str = Field(..., description="必填。专项类型，如 overheat_guidance")
-    plan_item_id: str = Field(..., description="必填。数据计划子任务 id，如 q2a（方案 B 14 条之一）")
+    plan_item_id: str = Field(..., description="必填。数据计划子任务 id，如 q2a（方案 B 15 条之一）")
     plan_template_version: str | None = Field(
         None,
         description="可选。数据计划模板版本 v1/v2；省略时归一化为 unknown，参与五元组去重",

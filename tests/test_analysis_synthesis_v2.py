@@ -3,15 +3,17 @@ import json
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.analysis_service import _encode_sse_event
 
 from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
 from app.llm.graphs.analysis_synthesis_v2 import (
     AnalysisSynthesisV2Engine,
+    SynthesisV2Slot,
     _aggregate_q2_severity_table_rows,
     _build_audit_facts,
+    _build_dcs_linkage_charts,
     _extract_q2_event_summary,
     _rag_snippets_for_slot,
     _render_overheat_ch2_item1,
@@ -44,13 +46,15 @@ class TestSynthesisV2Registry(unittest.TestCase):
     def test_overheat_registry_slot_count(self):
         self.assertTrue(synthesis_v2_registry_available("overheat_guidance"))
         slots = get_synthesis_v2_slots("overheat_guidance")
-        self.assertEqual(22, len(slots))
+        self.assertEqual(23, len(slots))
         self.assertEqual("q1", slots[0].source_item_ids[0])
         self.assertEqual("q2a", slots[2].source_item_ids[0])
         self.assertEqual("overheat_ch2_item1", slots[2].template_id)
         self.assertEqual("q3a", slots[7].source_item_ids[0])
         self.assertEqual("q3b", slots[8].source_item_ids[0])
         self.assertEqual("q6a", slots[18].source_item_ids[0])
+        self.assertEqual("q6d", slots[19].source_item_ids[0])
+        self.assertEqual("overheat_q6_dcs_linkage", slots[19].table_id)
 
     def test_unknown_type_no_registry(self):
         self.assertFalse(synthesis_v2_registry_available("unknown_type"))
@@ -164,6 +168,31 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
             }],
         )
         self.assertIn("实测最高590℃", item4)
+
+    def test_dcs_linkage_charts_long_format(self):
+        rows = [
+            {"采集时间": "2026-05-01 10:00", "参数类型": "壁温", "参数值": 580},
+            {"采集时间": "2026-05-01 10:00", "参数类型": "机组负荷", "参数值": 520},
+            {"采集时间": "2026-05-01 10:05", "参数类型": "减温水", "参数值": 55},
+        ]
+        md, charts = _build_dcs_linkage_charts(rows, chart_mode="auto")
+        self.assertEqual(3, len(charts))
+        self.assertIn("DCS联动", md)
+        titles = {c["title"] for c in charts}
+        self.assertIn("DCS联动-壁温", titles)
+
+    def test_dcs_linkage_charts_wide_format(self):
+        rows = [
+            {
+                "采集时间": "2026-05-01 10:00",
+                "pi_code": "T01",
+                "壁温_℃": 580,
+                "机组负荷_MW": 520,
+                "主汽压力_MPa": 16.2,
+            }
+        ]
+        _md, charts = _build_dcs_linkage_charts(rows, chart_mode="auto")
+        self.assertGreaterEqual(len(charts), 2)
 
     def test_segment_user_content_includes_audit_facts(self):
         engine = AnalysisSynthesisV2Engine(
@@ -387,6 +416,10 @@ class TestAnalysisSynthesisStrategy(unittest.TestCase):
                     "q6a": [{"section": "壁温趋势", "壁温值": 570, "采集时间": "2026-05-01 10:00:00"}],
                     "q6b": [{"测点编号": "T01", "超温差值_℃": 20}],
                     "q6c": [{"测点编号": "T01", "历史最大超温差值": 18}],
+                    "q6d": [
+                        {"采集时间": "2026-05-01 10:00", "参数类型": "壁温", "参数值": 575},
+                        {"采集时间": "2026-05-01 10:00", "参数类型": "机组负荷", "参数值": 510},
+                    ],
                 },
                 context_snippets=["规则片段"],
                 system_prompt="ignored",
@@ -398,6 +431,103 @@ class TestAnalysisSynthesisStrategy(unittest.TestCase):
         self.assertIn("章节正文", out.summary)
         self.assertGreater(llm.chat.await_count, 1)
         self.assertTrue(any(t.get("title") for t in out.v2_tables) or out.v2_tables == [])
+
+
+class TestSynthesisV2OrderedStream(unittest.TestCase):
+    def test_live_first_emits_static_before_slow_llm(self):
+        mini_slots = [
+            SynthesisV2Slot(
+                id="s01",
+                kind="llm_narrative",
+                title="第一章",
+                source_item_ids=("q1",),
+                narrative_instruction="写第一章",
+                stream_live=True,
+            ),
+            SynthesisV2Slot(
+                id="s02",
+                kind="static_markdown",
+                title="",
+                static_body="## 第二章\n\n",
+            ),
+            SynthesisV2Slot(
+                id="s03",
+                kind="llm_narrative",
+                title="第三章",
+                source_item_ids=("q2",),
+                narrative_instruction="写第三章",
+            ),
+        ]
+        stream_calls = {"n": 0}
+
+        async def _stream_chat(**_kwargs):
+            stream_calls["n"] += 1
+            if stream_calls["n"] == 1:
+                yield "首章"
+                return
+            await asyncio.sleep(0.08)
+            yield "三章"
+
+        llm = MagicMock()
+        llm.stream_chat = _stream_chat
+        engine = AnalysisSynthesisV2Engine(
+            llm_client=llm,
+            prompts=_FakePromptRegistry(),
+            gathered_json_max_chars=8000,
+            segment_max_tokens=512,
+            max_parallel_llm=2,
+            table_max_rows=10,
+            synthesis_timeout_seconds=30.0,
+            stream_chunk_chars=8,
+            idle_heartbeat_seconds=0.03,
+            emit_structured_sse=False,
+        )
+
+        async def _run():
+            events: list[dict] = []
+            with patch(
+                "app.llm.graphs.analysis_synthesis_v2.get_synthesis_v2_slots",
+                return_value=mini_slots,
+            ):
+                async for ev, result in engine.iter_stream_events_live_first(
+                    analysis_type="overheat_guidance",
+                    query="测试",
+                    data_mode="nl2sql",
+                    gathered_data={"q1": [{"a": 1}], "q2": [{"b": 2}]},
+                    context_snippets=[],
+                    planning_context=None,
+                    chart_mode="off",
+                ):
+                    if result is None and ev:
+                        events.append(ev)
+            return events
+
+        events = asyncio.run(_run())
+        kinds = [e.get("event") for e in events]
+        deltas = [e.get("text", "") for e in events if e.get("event") == "summary_delta"]
+        joined = "".join(deltas)
+        self.assertIn("首章", joined)
+        self.assertIn("## 第二章", joined)
+        self.assertIn("三章", joined)
+        idx_ch2 = joined.find("## 第二章")
+        idx_ch3 = joined.find("三章")
+        self.assertGreater(idx_ch3, idx_ch2)
+        self.assertIn("synthesis_loading", kinds)
+
+    def test_deterministic_slot_chunked(self):
+        engine = AnalysisSynthesisV2Engine(
+            llm_client=MagicMock(),
+            prompts=_FakePromptRegistry(),
+            gathered_json_max_chars=8000,
+            segment_max_tokens=512,
+            max_parallel_llm=1,
+            table_max_rows=10,
+            synthesis_timeout_seconds=30.0,
+            stream_chunk_chars=4,
+            emit_structured_sse=False,
+        )
+        chunks = engine._chunk_text("abcdefgh", 4)
+        self.assertEqual(["abcd", "efgh"], chunks)
 
 
 class TestBuildStructuredReportV2Merge(unittest.TestCase):

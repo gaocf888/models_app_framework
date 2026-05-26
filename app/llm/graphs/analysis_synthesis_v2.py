@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Callable, Literal
@@ -27,7 +28,10 @@ SlotKind = Literal[
     "template_deterministic",
 ]
 
+# 历史默认（非 live_first 回退路径仍可由引擎 stream_chunk_chars 覆盖）
 STREAM_CHUNK_CHARS = 480
+
+_LLM_STREAM_END = object()
 
 
 @dataclass(frozen=True)
@@ -71,7 +75,7 @@ class SynthesisV2RunResult:
 # ---------------------------------------------------------------------------
 
 def _overheat_v2_slots() -> list[SynthesisV2Slot]:
-    """与 analysis_plan_overheat_guidance v2 方案B（q1 + q2a～q6c）及九段报告模板一一映射。"""
+    """与 analysis_plan_overheat_guidance v2 方案B（q1 + q2a～q6d）及九段报告模板一一映射。"""
     return [
         SynthesisV2Slot(
             id="s01",
@@ -228,7 +232,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="八、总结结论与后续管控建议",
             source_item_ids=(
                 "q1", "q2a", "q2b", "q2c", "q2d",
-                "q3a", "q3b", "q4a", "q4b", "q5a", "q5b", "q6a", "q6b", "q6c",
+                "q3a", "q3b", "q4a", "q4b", "q5a", "q5b", "q6a", "q6b", "q6c", "q6d",
             ),
             narrative_instruction=(
                 "撰写「八、总结结论&后续管控建议」（勿输出标题行）："
@@ -239,9 +243,16 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
         SynthesisV2Slot(
             id="s12",
             kind="chart_structured",
-            title="九、附件（趋势图）",
+            title="九、附件（壁温趋势图）",
             source_item_ids=("q6a",),
             table_id="overheat_q6_charts",
+        ),
+        SynthesisV2Slot(
+            id="s12b",
+            kind="chart_structured",
+            title="九、附件（DCS 参数联动趋势图）",
+            source_item_ids=("q6d",),
+            table_id="overheat_q6_dcs_linkage",
         ),
         SynthesisV2Slot(
             id="s13",
@@ -263,7 +274,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             static_body=(
                 "**九、附件说明**\n\n"
-                "以上趋势图、多测点对照表及历史同类对标数据，与正文各章数据同源，可对照审计。"
+                "以上壁温趋势图、DCS 参数联动趋势图、多测点对照表及历史同类对标数据，与正文各章数据同源，可对照审计。"
                 "现场检查照片等非结构化资料需人工补录。"
             ),
         ),
@@ -896,6 +907,78 @@ def _build_overheat_charts(records: list[dict], *, chart_mode: str) -> tuple[str
     return md, charts
 
 
+def _build_dcs_linkage_charts(records: list[dict], *, chart_mode: str) -> tuple[str, list[dict[str, Any]]]:
+    """九、附件 DCS 参数联动趋势图（q6d：长表 参数类型/参数值 或 docx 宽表字段）。"""
+    if chart_mode == "off" or not records:
+        return "", []
+    by_param: dict[str, list[dict[str, Any]]] = {}
+    wide_field_map = (
+        ("壁温_℃", "壁温"),
+        ("highest_temp", "壁温"),
+        ("机组负荷_MW", "机组负荷"),
+        ("mw_value", "机组负荷"),
+        ("主汽压力_MPa", "主汽压力"),
+        ("steam_pressure_value", "主汽压力"),
+        ("超温差值_℃", "超温差值"),
+    )
+
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        t = (
+            r.get("采集时间")
+            or r.get("start_time")
+            or r.get("数据时间")
+            or r.get("time")
+            or r.get("timestamp")
+        )
+        if t is None:
+            continue
+        param_type = r.get("参数类型")
+        if param_type is not None:
+            val = r.get("参数值")
+            if val is None:
+                continue
+            try:
+                point = {"time": str(t), "value": float(val)}
+            except (TypeError, ValueError):
+                continue
+            key = str(param_type).strip() or "参数"
+            by_param.setdefault(key, []).append(point)
+            continue
+        for field, label in wide_field_map:
+            if field not in r or r.get(field) is None:
+                continue
+            try:
+                point = {"time": str(t), "value": float(r.get(field))}
+            except (TypeError, ValueError):
+                continue
+            by_param.setdefault(label, []).append(point)
+
+    charts: list[dict[str, Any]] = []
+    md_parts: list[str] = []
+    for param, points in sorted(by_param.items(), key=lambda x: (-len(x[1]), x[0]))[:8]:
+        if not points:
+            continue
+        points.sort(key=lambda p: p["time"])
+        trimmed = points[:500]
+        spec = {
+            "id": f"dcs_linkage_{abs(hash(param)) % 10_000_000}",
+            "chart_type": "line",
+            "title": f"DCS联动-{param}",
+            "spec": {
+                "x_field": "time",
+                "y_field": "value",
+                "series_name": param,
+                "data": trimmed,
+            },
+        }
+        charts.append(spec)
+        md_parts.append(f"- DCS联动图：`{spec['title']}`（{len(trimmed)} 点）")
+    md = "\n".join(md_parts) + "\n\n" if md_parts else ""
+    return md, charts
+
+
 # ---------------------------------------------------------------------------
 # v2 引擎
 # ---------------------------------------------------------------------------
@@ -915,6 +998,8 @@ class AnalysisSynthesisV2Engine:
         table_max_rows: int,
         synthesis_timeout_seconds: float,
         emit_structured_sse: bool = True,
+        stream_chunk_chars: int = 16,
+        idle_heartbeat_seconds: float = 5.0,
         json_fallback: Callable[[Any], Any] | None = None,
     ) -> None:
         self._llm = llm_client
@@ -925,7 +1010,311 @@ class AnalysisSynthesisV2Engine:
         self._table_max_rows = max(1, table_max_rows)
         self._synthesis_timeout = synthesis_timeout_seconds
         self._emit_structured_sse = emit_structured_sse
+        self._stream_chunk_chars = max(1, stream_chunk_chars)
+        self._idle_heartbeat_seconds = max(0.5, float(idle_heartbeat_seconds))
         self._json_fallback = json_fallback or (lambda o: str(o))
+
+    @staticmethod
+    def _chunk_text(text: str, chunk_size: int) -> list[str]:
+        if not text:
+            return []
+        size = max(1, chunk_size)
+        return [text[i : i + size] for i in range(0, len(text), size)]
+
+    def _loading_event(
+        self,
+        *,
+        active: bool,
+        slot_id: str = "",
+        slot_index: int | None = None,
+        phase: str = "waiting_slot",
+        elapsed_ms: int | None = None,
+        hint: str = "",
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "event": "synthesis_loading",
+            "active": active,
+            "phase": phase,
+        }
+        if slot_id:
+            payload["slot_id"] = slot_id
+        if slot_index is not None:
+            payload["slot_index"] = slot_index
+        if elapsed_ms is not None:
+            payload["elapsed_ms"] = elapsed_ms
+        if hint:
+            payload["hint"] = hint
+        return payload
+
+    def _llm_messages_for_slot(
+        self,
+        *,
+        query: str,
+        analysis_type: str,
+        data_mode: str,
+        gathered_data: dict[str, list[dict]],
+        context_snippets: list[str],
+        planning_context: str | None,
+        slot: SynthesisV2Slot,
+    ) -> list[dict[str, str]]:
+        system_prompt = self._narrative_system_prompt(analysis_type)
+        user_content = self._build_segment_user_content(
+            query=query,
+            analysis_type=analysis_type,
+            data_mode=data_mode,
+            gathered_data=gathered_data,
+            context_snippets=context_snippets,
+            planning_context=planning_context,
+            slot=slot,
+            item_ids=slot.source_item_ids,
+        )
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+
+    async def _run_llm_slot_background(
+        self,
+        *,
+        index: int,
+        slot: SynthesisV2Slot,
+        outputs: list[SynthesisV2SlotOutput | None],
+        chunk_queue: asyncio.Queue[Any],
+        sem: asyncio.Semaphore,
+        query: str,
+        analysis_type: str,
+        data_mode: str,
+        gathered_data: dict[str, list[dict]],
+        context_snippets: list[str],
+        planning_context: str | None,
+    ) -> None:
+        title = slot.title.strip()
+        try:
+            async with sem:
+                messages = self._llm_messages_for_slot(
+                    query=query,
+                    analysis_type=analysis_type,
+                    data_mode=data_mode,
+                    gathered_data=gathered_data,
+                    context_snippets=context_snippets,
+                    planning_context=planning_context,
+                    slot=slot,
+                )
+                stream_body_parts: list[str] = []
+                async for chunk in self._llm.stream_chat(
+                    model=None,
+                    messages=messages,
+                    timeout=float(self._synthesis_timeout),
+                    max_tokens=self._segment_max_tokens,
+                ):
+                    stream_body_parts.append(chunk)
+                    await chunk_queue.put(chunk)
+                body = strip_leading_duplicate_heading("".join(stream_body_parts), slot.title)
+                outputs[index] = SynthesisV2SlotOutput(
+                    slot.id,
+                    slot.kind,
+                    title,
+                    _wrap_narrative_markdown(title, body),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("synthesis v2 slot failed slot_id=%s", slot.id)
+            err_md = f"### {title}\n\n（本章生成失败：{exc}）\n\n" if title else f"（本章生成失败：{exc}）\n\n"
+            outputs[index] = SynthesisV2SlotOutput(slot.id, slot.kind, title, err_md, error=str(exc))
+        finally:
+            await chunk_queue.put(_LLM_STREAM_END)
+
+    def _start_background_slot(
+        self,
+        *,
+        index: int,
+        slot: SynthesisV2Slot,
+        outputs: list[SynthesisV2SlotOutput | None],
+        sem: asyncio.Semaphore,
+        query: str,
+        analysis_type: str,
+        data_mode: str,
+        gathered_data: dict[str, list[dict]],
+        context_snippets: list[str],
+        planning_context: str | None,
+        chart_mode: str,
+    ) -> tuple[asyncio.Task[None], asyncio.Queue[Any] | None]:
+        if slot.kind == "llm_narrative":
+            chunk_queue: asyncio.Queue[Any] = asyncio.Queue()
+            task = asyncio.create_task(
+                self._run_llm_slot_background(
+                    index=index,
+                    slot=slot,
+                    outputs=outputs,
+                    chunk_queue=chunk_queue,
+                    sem=sem,
+                    query=query,
+                    analysis_type=analysis_type,
+                    data_mode=data_mode,
+                    gathered_data=gathered_data,
+                    context_snippets=context_snippets,
+                    planning_context=planning_context,
+                )
+            )
+            return task, chunk_queue
+
+        async def _deterministic_runner() -> None:
+            outputs[index] = await self._render_slot(
+                query=query,
+                analysis_type=analysis_type,
+                data_mode=data_mode,
+                gathered_data=gathered_data,
+                context_snippets=context_snippets,
+                planning_context=planning_context,
+                slot=slot,
+                chart_mode=chart_mode,
+            )
+
+        return asyncio.create_task(_deterministic_runner()), None
+
+    async def _await_task_with_heartbeat(
+        self,
+        task: asyncio.Task[None],
+        *,
+        slot: SynthesisV2Slot,
+        slot_index: int,
+        last_emit_at: float,
+    ) -> AsyncIterator[dict[str, Any]]:
+        while not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=self._idle_heartbeat_seconds)
+            except asyncio.TimeoutError:
+                elapsed_ms = int((time.monotonic() - last_emit_at) * 1000)
+                yield self._loading_event(
+                    active=True,
+                    slot_id=slot.id,
+                    slot_index=slot_index,
+                    phase="waiting_slot",
+                    elapsed_ms=elapsed_ms,
+                    hint=f"正在生成：{slot.title or slot.id}",
+                )
+        await task
+
+    async def _iter_llm_slot_stream_deltas(
+        self,
+        *,
+        slot: SynthesisV2Slot,
+        slot_index: int,
+        task: asyncio.Task[None],
+        chunk_queue: asyncio.Queue[Any],
+        last_emit_at: float,
+    ) -> AsyncIterator[tuple[dict[str, Any], float]]:
+        title = slot.title.strip()
+        if title:
+            yield ({"event": "summary_delta", "text": f"### {title}\n\n"}, time.monotonic())
+        got_body = False
+        while True:
+            if task.done() and chunk_queue.empty():
+                break
+            try:
+                item = await asyncio.wait_for(chunk_queue.get(), timeout=self._idle_heartbeat_seconds)
+            except asyncio.TimeoutError:
+                elapsed_ms = int((time.monotonic() - last_emit_at) * 1000)
+                yield (
+                    self._loading_event(
+                        active=True,
+                        slot_id=slot.id,
+                        slot_index=slot_index,
+                        phase="waiting_slot",
+                        elapsed_ms=elapsed_ms,
+                        hint=f"正在生成：{title or slot.id}",
+                    ),
+                    last_emit_at,
+                )
+                continue
+            if item is _LLM_STREAM_END:
+                break
+            got_body = True
+            yield ({"event": "summary_delta", "text": item}, time.monotonic())
+            last_emit_at = time.monotonic()
+        if not task.done():
+            async for ev in self._await_task_with_heartbeat(
+                task, slot=slot, slot_index=slot_index, last_emit_at=last_emit_at
+            ):
+                yield (ev, last_emit_at)
+            await task
+        if title and got_body:
+            yield ({"event": "summary_delta", "text": "\n\n"}, time.monotonic())
+
+    async def _emit_markdown_chunks(
+        self, text: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        for piece in self._chunk_text(text, self._stream_chunk_chars):
+            yield {"event": "summary_delta", "text": piece}
+
+    def _structured_events_for_output(self, out: SynthesisV2SlotOutput) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        if self._emit_structured_sse and out.table:
+            events.append(
+                {"event": "table_payload", "slot_id": out.slot_id, "table": out.table}
+            )
+        if self._emit_structured_sse:
+            for ch in out.charts or ([out.chart] if out.chart else []):
+                events.append(
+                    {"event": "chart_payload", "slot_id": out.slot_id, "chart": ch}
+                )
+        return events
+
+    async def _emit_slot_in_order(
+        self,
+        *,
+        index: int,
+        slot: SynthesisV2Slot,
+        outputs: list[SynthesisV2SlotOutput | None],
+        task: asyncio.Task[None],
+        chunk_queue: asyncio.Queue[Any] | None,
+        last_emit_at: float,
+    ) -> AsyncIterator[tuple[dict[str, Any], float]]:
+        if slot.kind == "llm_narrative" and chunk_queue is not None:
+            got_any_delta = False
+            async for ev, ts in self._iter_llm_slot_stream_deltas(
+                slot=slot,
+                slot_index=index,
+                task=task,
+                chunk_queue=chunk_queue,
+                last_emit_at=last_emit_at,
+            ):
+                if ev.get("event") == "summary_delta":
+                    got_any_delta = True
+                    last_emit_at = ts
+                yield (ev, last_emit_at)
+            out = outputs[index]
+            if out is None:
+                await task
+                out = outputs[index]
+            if out is not None and not got_any_delta:
+                async for ev in self._emit_markdown_chunks(out.markdown):
+                    yield (ev, time.monotonic())
+                    last_emit_at = time.monotonic()
+            if out is not None:
+                for se in self._structured_events_for_output(out):
+                    yield (se, time.monotonic())
+            yield (
+                self._loading_event(active=False, slot_id=slot.id, slot_index=index),
+                time.monotonic(),
+            )
+            return
+
+        async for hb in self._await_task_with_heartbeat(
+            task, slot=slot, slot_index=index, last_emit_at=last_emit_at
+        ):
+            yield (hb, last_emit_at)
+        out = outputs[index]
+        if out is None:
+            return
+        async for ev in self._emit_markdown_chunks(out.markdown):
+            yield (ev, time.monotonic())
+            last_emit_at = time.monotonic()
+        for se in self._structured_events_for_output(out):
+            yield (se, time.monotonic())
+        yield (
+            self._loading_event(active=False, slot_id=slot.id, slot_index=index),
+            time.monotonic(),
+        )
 
     def _narrative_system_prompt(self, analysis_type: str) -> str:
         for scene in (
@@ -1049,7 +1438,10 @@ class AnalysisSynthesisV2Engine:
 
             if slot.kind == "chart_structured":
                 rows = _gather_item_rows(gathered_data, slot.source_item_ids)
-                md, charts = _build_overheat_charts(rows, chart_mode=chart_mode)
+                if slot.table_id == "overheat_q6_dcs_linkage":
+                    md, charts = _build_dcs_linkage_charts(rows, chart_mode=chart_mode)
+                else:
+                    md, charts = _build_overheat_charts(rows, chart_mode=chart_mode)
                 md_block = f"### {title}\n\n{md}" if title else md
                 return SynthesisV2SlotOutput(
                     slot.id,
@@ -1198,37 +1590,44 @@ class AnalysisSynthesisV2Engine:
         chart_mode: str,
     ) -> AsyncIterator[dict[str, Any]]:
         """
-        后台并行生成各槽位，按槽位顺序分块推送 summary_delta；
+        后台并行生成各槽位，按槽位顺序就绪即推送（小块 summary_delta + 空闲心跳）；
         表/图可额外推送 table_payload / chart_payload。
         """
         slots = get_synthesis_v2_slots(analysis_type)
-        outputs = await self._fill_all_slots_parallel(
-            slots=slots,
-            query=query,
-            analysis_type=analysis_type,
-            data_mode=data_mode,
-            gathered_data=gathered_data,
-            context_snippets=context_snippets,
-            planning_context=planning_context,
-            chart_mode=chart_mode,
-        )
-        for out in outputs:
-            text = out.markdown
-            for i in range(0, len(text), STREAM_CHUNK_CHARS):
-                yield {"event": "summary_delta", "text": text[i : i + STREAM_CHUNK_CHARS]}
-            if self._emit_structured_sse and out.table:
-                yield {
-                    "event": "table_payload",
-                    "slot_id": out.slot_id,
-                    "table": out.table,
-                }
-            if self._emit_structured_sse:
-                for ch in out.charts or ([out.chart] if out.chart else []):
-                    yield {
-                        "event": "chart_payload",
-                        "slot_id": out.slot_id,
-                        "chart": ch,
-                    }
+        if not slots:
+            return
+        outputs: list[SynthesisV2SlotOutput | None] = [None] * len(slots)
+        sem = asyncio.Semaphore(self._max_parallel_llm)
+        bg_tasks: list[asyncio.Task[None]] = []
+        bg_queues: list[asyncio.Queue[Any] | None] = []
+        for i, slot in enumerate(slots):
+            task, queue = self._start_background_slot(
+                index=i,
+                slot=slot,
+                outputs=outputs,
+                sem=sem,
+                query=query,
+                analysis_type=analysis_type,
+                data_mode=data_mode,
+                gathered_data=gathered_data,
+                context_snippets=context_snippets,
+                planning_context=planning_context,
+                chart_mode=chart_mode,
+            )
+            bg_tasks.append(task)
+            bg_queues.append(queue)
+
+        last_emit_at = time.monotonic()
+        for i, slot in enumerate(slots):
+            async for ev, last_emit_at in self._emit_slot_in_order(
+                index=i,
+                slot=slot,
+                outputs=outputs,
+                task=bg_tasks[i],
+                chunk_queue=bg_queues[i],
+                last_emit_at=last_emit_at,
+            ):
+                yield ev
 
     async def iter_stream_events_live_first(
         self,
@@ -1242,7 +1641,7 @@ class AnalysisSynthesisV2Engine:
         chart_mode: str,
     ) -> AsyncIterator[tuple[dict[str, Any], SynthesisV2RunResult | None]]:
         """
-        首槽 LLM 真流式，其余槽并行预生成后按序推送；最终返回完整 SynthesisV2RunResult。
+        首槽 LLM 真流式；其余槽后台并行、按注册表顺序就绪即推送（token/小块 + 空闲心跳）。
         Yields (event_dict, None) ；最后一次 yield (_, result)。
         """
         slots = get_synthesis_v2_slots(analysis_type)
@@ -1255,37 +1654,29 @@ class AnalysisSynthesisV2Engine:
         outputs: list[SynthesisV2SlotOutput | None] = [None] * len(slots)
         sem = asyncio.Semaphore(self._max_parallel_llm)
 
-        async def _fill_index(i: int) -> None:
-            slot = slots[i]
-            if slot.kind == "llm_narrative":
-                async with sem:
-                    outputs[i] = await self._render_slot(
-                        query=query,
-                        analysis_type=analysis_type,
-                        data_mode=data_mode,
-                        gathered_data=gathered_data,
-                        context_snippets=context_snippets,
-                        planning_context=planning_context,
-                        slot=slot,
-                        chart_mode=chart_mode,
-                    )
-            else:
-                outputs[i] = await self._render_slot(
-                    query=query,
-                    analysis_type=analysis_type,
-                    data_mode=data_mode,
-                    gathered_data=gathered_data,
-                    context_snippets=context_snippets,
-                    planning_context=planning_context,
-                    slot=slot,
-                    chart_mode=chart_mode,
-                )
-
-        bg_tasks = [asyncio.create_task(_fill_index(i)) for i in range(len(slots)) if i != live_idx]
+        bg_tasks: list[asyncio.Task[None] | None] = [None] * len(slots)
+        bg_queues: list[asyncio.Queue[Any] | None] = [None] * len(slots)
+        for i, slot in enumerate(slots):
+            if i == live_idx:
+                continue
+            task, queue = self._start_background_slot(
+                index=i,
+                slot=slot,
+                outputs=outputs,
+                sem=sem,
+                query=query,
+                analysis_type=analysis_type,
+                data_mode=data_mode,
+                gathered_data=gathered_data,
+                context_snippets=context_snippets,
+                planning_context=planning_context,
+                chart_mode=chart_mode,
+            )
+            bg_tasks[i] = task
+            bg_queues[i] = queue
 
         live_slot = slots[live_idx]
-        system_prompt = self._narrative_system_prompt(analysis_type)
-        user_content = self._build_segment_user_content(
+        messages = self._llm_messages_for_slot(
             query=query,
             analysis_type=analysis_type,
             data_mode=data_mode,
@@ -1293,25 +1684,47 @@ class AnalysisSynthesisV2Engine:
             context_snippets=context_snippets,
             planning_context=planning_context,
             slot=live_slot,
-            item_ids=live_slot.source_item_ids,
         )
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ]
         header = f"### {live_slot.title}\n\n" if live_slot.title else ""
         stream_body_parts: list[str] = []
+        last_emit_at = time.monotonic()
         if header:
             yield ({"event": "summary_delta", "text": header}, None)
+            last_emit_at = time.monotonic()
 
-        async for chunk in self._llm.stream_chat(
+        stream_iter = self._llm.stream_chat(
             model=None,
             messages=messages,
             timeout=float(self._synthesis_timeout),
             max_tokens=self._segment_max_tokens,
-        ):
+        )
+        aiter = stream_iter.__aiter__()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    aiter.__anext__(),
+                    timeout=self._idle_heartbeat_seconds,
+                )
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                elapsed_ms = int((time.monotonic() - last_emit_at) * 1000)
+                yield (
+                    self._loading_event(
+                        active=True,
+                        slot_id=live_slot.id,
+                        slot_index=live_idx,
+                        phase="waiting_token",
+                        elapsed_ms=elapsed_ms,
+                        hint=f"正在生成：{live_slot.title or live_slot.id}",
+                    ),
+                    None,
+                )
+                continue
             stream_body_parts.append(chunk)
             yield ({"event": "summary_delta", "text": chunk}, None)
+            last_emit_at = time.monotonic()
+
         body = strip_leading_duplicate_heading("".join(stream_body_parts), live_slot.title)
         live_md = _wrap_narrative_markdown(live_slot.title, body)
         outputs[live_idx] = SynthesisV2SlotOutput(
@@ -1321,21 +1734,27 @@ class AnalysisSynthesisV2Engine:
             live_md,
         )
         yield ({"event": "summary_delta", "text": "\n\n"}, None)
+        yield (
+            self._loading_event(active=False, slot_id=live_slot.id, slot_index=live_idx),
+            None,
+        )
+        last_emit_at = time.monotonic()
 
-        if bg_tasks:
-            await asyncio.gather(*bg_tasks)
-
-        for i, out in enumerate(outputs):
-            if i == live_idx or out is None:
+        for i, slot in enumerate(slots):
+            if i == live_idx:
                 continue
-            text = out.markdown
-            for j in range(0, len(text), STREAM_CHUNK_CHARS):
-                yield ({"event": "summary_delta", "text": text[j : j + STREAM_CHUNK_CHARS]}, None)
-            if self._emit_structured_sse and out.table:
-                yield ({"event": "table_payload", "slot_id": out.slot_id, "table": out.table}, None)
-            if self._emit_structured_sse:
-                for ch in out.charts or ([out.chart] if out.chart else []):
-                    yield ({"event": "chart_payload", "slot_id": out.slot_id, "chart": ch}, None)
+            task = bg_tasks[i]
+            if task is None:
+                continue
+            async for ev, last_emit_at in self._emit_slot_in_order(
+                index=i,
+                slot=slot,
+                outputs=outputs,
+                task=task,
+                chunk_queue=bg_queues[i],
+                last_emit_at=last_emit_at,
+            ):
+                yield (ev, None)
 
         filled = [o for o in outputs if o is not None]
         result = self._assemble_result(filled, analysis_type=analysis_type)

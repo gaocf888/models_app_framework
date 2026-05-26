@@ -1908,6 +1908,8 @@ class AnalysisGraphRunner:
             table_max_rows=self._analysis_cfg.synthesis_v2_table_max_rows,
             synthesis_timeout_seconds=self._analysis_cfg.synthesis_timeout_seconds,
             emit_structured_sse=self._analysis_cfg.synthesis_v2_enable_structured_sse_events,
+            stream_chunk_chars=self._analysis_cfg.synthesis_v2_stream_chunk_chars,
+            idle_heartbeat_seconds=self._analysis_cfg.synthesis_v2_idle_heartbeat_seconds,
             json_fallback=self._json_fallback,
         )
 
@@ -2022,7 +2024,7 @@ class AnalysisGraphRunner:
             planning_context=planning_context,
             chart_mode=chart_mode,
         )
-        chunk_size = 480
+        chunk_size = max(1, int(self._analysis_cfg.synthesis_v2_stream_chunk_chars))
         for i in range(0, len(v2.summary), chunk_size):
             yield ({"event": "summary_delta", "text": v2.summary[i : i + chunk_size]}, None)
         if self._analysis_cfg.synthesis_v2_enable_structured_sse_events:
