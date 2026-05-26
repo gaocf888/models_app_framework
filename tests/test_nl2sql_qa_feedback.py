@@ -428,6 +428,42 @@ class TestNl2sqlQaSlotLookup(unittest.TestCase):
         self.assertIn("SELECT slot_q1", chunks[0].text or "")
         self.assertNotIn("SELECT slot_q2a", chunks[0].text or "")
 
+    def test_fetch_by_slot_uses_doc_name_not_metadata_scan_cap(self) -> None:
+        """doc_name 直取不受 list_nl2sql_auto_qa_entries(limit=1) 的 scan_cap=20 限制。"""
+        rag, _store = _rag_with_inmemory_store()
+        for i in range(25):
+            create_nl2sql_auto_qa_entry(
+                rag,
+                question=f"decoy question {i}",
+                sql=f"SELECT decoy_{i}",
+                analysis_type="overheat_guidance",
+                plan_item_id=f"dec{i}",
+                plan_template_version="v2",
+                prompt_prefix_snapshot=None,
+                mode="replace",
+                **self._fps,
+            )
+        create_nl2sql_auto_qa_entry(
+            rag,
+            question="q2a question",
+            sql="SELECT slot_q2a",
+            analysis_type="overheat_guidance",
+            plan_item_id="q2a",
+            plan_template_version="v2",
+            prompt_prefix_snapshot=None,
+            mode="replace",
+            **self._fps,
+        )
+        ctx = NL2SQLQARetrievalContext(
+            **self._fps,
+            analysis_type="overheat_guidance",
+            plan_item_id="q2a",
+            plan_template_version="v2",
+        )
+        chunks = fetch_nl2sql_qa_chunks_by_slot(rag, ctx)
+        self.assertEqual(1, len(chunks))
+        self.assertIn("SELECT slot_q2a", chunks[0].text or "")
+
     def test_fetch_by_slot_empty_on_fingerprint_mismatch(self) -> None:
         rag, _store = _rag_with_inmemory_store()
         create_nl2sql_auto_qa_entry(

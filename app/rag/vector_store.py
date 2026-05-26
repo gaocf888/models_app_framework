@@ -131,6 +131,20 @@ class VectorStore(ABC):
         ...
 
     @abstractmethod
+    def list_chunks_for_document(
+        self,
+        doc_name: str,
+        namespace: str | None,
+        doc_version: str | None = None,
+        limit: int = 50000,
+    ) -> list[dict[str, Any]]:
+        """
+        列出向量库中某文档全部 chunk（含 text / ext_id / metadata 等），
+        顺序按 metadata.chunk_index（若有）再按 ext_id 稳定排序。
+        namespace 为 None 时匹配「默认分区」（与 delete_by_doc_name 一致）。
+        """
+        ...
+
     def list_chunk_texts_for_document(
         self,
         doc_name: str,
@@ -142,7 +156,16 @@ class VectorStore(ABC):
         列出向量库中某文档全部 chunk 的正文，顺序按 metadata.chunk_index（若有）再按 ext_id 稳定排序。
         namespace 为 None 时匹配「默认分区」（与 delete_by_doc_name 一致）。
         """
-        ...
+        return [
+            str(r.get("text") or "")
+            for r in self.list_chunks_for_document(
+                doc_name,
+                namespace=namespace,
+                doc_version=doc_version,
+                limit=limit,
+            )
+            if str(r.get("text") or "")
+        ]
 
 
 def _chunk_sort_key(item: dict[str, Any]) -> tuple[int, str]:
@@ -338,21 +361,34 @@ class InMemoryVectorStore(VectorStore):
             updated += 1
         return updated
 
-    def list_chunk_texts_for_document(
+    def list_chunks_for_document(
         self,
         doc_name: str,
         namespace: str | None,
         doc_version: str | None = None,
         limit: int = 50000,
-    ) -> list[str]:
+    ) -> list[dict[str, Any]]:
         rows = [
             it
             for it in self._items
             if _chunk_matches_doc_namespace_version(it, doc_name, namespace, doc_version)
         ]
         rows.sort(key=_chunk_sort_key)
-        out = [str(it.get("text") or "") for it in rows[: max(0, limit)]]
-        return [t for t in out if t]
+        out: list[dict[str, Any]] = []
+        for it in rows[: max(0, limit)]:
+            text = str(it.get("text") or "")
+            if not text:
+                continue
+            out.append(
+                {
+                    "text": text,
+                    "ext_id": it.get("ext_id"),
+                    "namespace": it.get("namespace"),
+                    "doc_name": it.get("doc_name"),
+                    "metadata": it.get("metadata") or {},
+                }
+            )
+        return out
 
 
 class FaissVectorStore(VectorStore):
@@ -682,21 +718,34 @@ class FaissVectorStore(VectorStore):
             self._persist()
         return updated
 
-    def list_chunk_texts_for_document(
+    def list_chunks_for_document(
         self,
         doc_name: str,
         namespace: str | None,
         doc_version: str | None = None,
         limit: int = 50000,
-    ) -> list[str]:
+    ) -> list[dict[str, Any]]:
         rows = [
             it
             for it in self._items.values()
             if _chunk_matches_doc_namespace_version(it, doc_name, namespace, doc_version)
         ]
         rows.sort(key=_chunk_sort_key)
-        out = [str(it.get("text") or "") for it in rows[: max(0, limit)]]
-        return [t for t in out if t]
+        out: list[dict[str, Any]] = []
+        for it in rows[: max(0, limit)]:
+            text = str(it.get("text") or "")
+            if not text:
+                continue
+            out.append(
+                {
+                    "text": text,
+                    "ext_id": it.get("ext_id"),
+                    "namespace": it.get("namespace"),
+                    "doc_name": it.get("doc_name"),
+                    "metadata": it.get("metadata") or {},
+                }
+            )
+        return out
 
 
 class ElasticsearchVectorStore(VectorStore):
@@ -1179,13 +1228,13 @@ class ElasticsearchVectorStore(VectorStore):
         )
         return int(resp.get("updated", 0))
 
-    def list_chunk_texts_for_document(
+    def list_chunks_for_document(
         self,
         doc_name: str,
         namespace: str | None,
         doc_version: str | None = None,
         limit: int = 50000,
-    ) -> list[str]:
+    ) -> list[dict[str, Any]]:
         if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
             return []
         must: list[dict[str, Any]] = [{"term": {"doc_name": doc_name}}]
@@ -1221,7 +1270,7 @@ class ElasticsearchVectorStore(VectorStore):
             "size": size,
             "query": {"bool": {"must": must}},
             "sort": [{"ext_id": {"order": "asc"}}],
-            "_source": ["text", "ext_id", "metadata"],
+            "_source": ["text", "ext_id", "metadata", "namespace", "doc_name"],
         }
         resp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
         hits = resp.get("hits", {}).get("hits", [])
@@ -1232,7 +1281,7 @@ class ElasticsearchVectorStore(VectorStore):
             total_val = int(total or 0)
         if total_val > size:
             logger.warning(
-                "list_chunk_texts_for_document truncated: doc_name=%s total=%s returned=%s",
+                "list_chunks_for_document truncated: doc_name=%s total=%s returned=%s",
                 doc_name,
                 total_val,
                 size,
@@ -1240,15 +1289,20 @@ class ElasticsearchVectorStore(VectorStore):
         rows: list[dict[str, Any]] = []
         for h in hits:
             src = h.get("_source") or {}
+            text = str(src.get("text") or "")
+            if not text:
+                continue
             rows.append(
                 {
-                    "text": src.get("text", ""),
+                    "text": text,
                     "ext_id": src.get("ext_id") or h.get("_id"),
+                    "namespace": src.get("namespace"),
+                    "doc_name": src.get("doc_name") or doc_name,
                     "metadata": src.get("metadata") or {},
                 }
             )
         rows.sort(key=_chunk_sort_key)
-        return [str(x.get("text") or "") for x in rows if str(x.get("text") or "")]
+        return rows
 
     def _with_retry(self, fn):
         last_err = None

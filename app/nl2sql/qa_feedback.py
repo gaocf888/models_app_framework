@@ -199,6 +199,47 @@ def format_nl2sql_qa_embedding_text(
     return "\n\n".join(parts)
 
 
+def _load_nl2sql_auto_qa_entries_by_doc_name(
+    rag: RAGService,
+    doc_name: str,
+    *,
+    namespace: str = NL2SQLRAGService.NS_QA,
+    doc_version: str = NL2SQL_QA_DOC_VERSION_AUTO,
+    limit: int = 1,
+) -> list[dict[str, Any]]:
+    """
+    按 doc_name 直取向量库 chunk（含 metadata），不受 metadata_search scan_cap 限制。
+    """
+    store = rag._store_provider.get_default_store()  # noqa: SLF001
+    list_fn = getattr(store, "list_chunks_for_document", None)
+    if not callable(list_fn):
+        return []
+    rows = list_fn(
+        doc_name,
+        namespace=namespace,
+        doc_version=doc_version,
+        limit=max(1, limit),
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text") or "")
+        if not text:
+            continue
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        out.append(
+            {
+                "doc_name": doc_name,
+                "ext_id": row.get("ext_id"),
+                "namespace": row.get("namespace") or namespace,
+                "text": text,
+                "metadata": meta,
+            }
+        )
+    return out
+
+
 def fetch_nl2sql_qa_chunks_by_slot(
     rag: RAGService,
     ctx: NL2SQLQARetrievalContext,
@@ -222,17 +263,29 @@ def fetch_nl2sql_qa_chunks_by_slot(
         plan_template_version=ptv,
     )
 
-    entries = list_nl2sql_auto_qa_entries(
+    entries = _load_nl2sql_auto_qa_entries_by_doc_name(
         rag,
+        doc_name,
+        namespace=NL2SQLRAGService.NS_QA,
+        doc_version=NL2SQL_QA_DOC_VERSION_AUTO,
         limit=max(1, max_chunks),
-        analysis_type=at,
-        plan_item_id=pid,
-        plan_template_version=ptv,
     )
+    if not entries:
+        # 兼容未实现 list_chunks_for_document 的旧 store
+        entries = [
+            e
+            for e in list_nl2sql_auto_qa_entries(
+                rag,
+                limit=max(1, max_chunks),
+                analysis_type=at,
+                plan_item_id=pid,
+                plan_template_version=ptv,
+            )
+            if str(e.get("doc_name") or "") == doc_name
+        ]
+
     out: list[RetrievedChunk] = []
     for entry in entries:
-        if str(entry.get("doc_name") or "") != doc_name:
-            continue
         meta = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
         chunk = RetrievedChunk(
             text=str(entry.get("text") or ""),
