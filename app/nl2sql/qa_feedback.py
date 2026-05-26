@@ -85,6 +85,22 @@ def nl2sql_qa_slot_lookup_eligible(ctx: NL2SQLQARetrievalContext | None) -> bool
     return bool(ptv and ptv != "unknown")
 
 
+def nl2sql_qa_slot_strict_replay_enabled(analysis_type: str | None = None) -> bool:
+    """
+    QA slot 命中后是否跳过 LLM，直接回放 chunk 中【校验通过的 SQL】（经 TiDB/filter 后处理与校验）。
+    全局 NL2SQL_QA_SLOT_STRICT_REPLAY=true 时对所有 eligible 槽位生效；
+    否则可按 analysis_type 专项开启，如 NL2SQL_QA_SLOT_STRICT_REPLAY_OVERHEAT_GUIDANCE=true。
+    """
+    if os.getenv("NL2SQL_QA_SLOT_STRICT_REPLAY", "false").lower() == "true":
+        return True
+    at = (analysis_type or "").strip()
+    if at:
+        key = f"NL2SQL_QA_SLOT_STRICT_REPLAY_{at.upper()}"
+        if os.getenv(key, "false").lower() == "true":
+            return True
+    return False
+
+
 def normalize_plan_template_version(plan_template_version: str | None) -> str:
     """写入/去重用的 plan 模板版本标签；空则 unknown（兼容未传参的旧调用）。"""
     s = (plan_template_version or "").strip()
@@ -199,6 +215,20 @@ def format_nl2sql_qa_embedding_text(
     return "\n\n".join(parts)
 
 
+def parse_sql_from_nl2sql_qa_text(text: str) -> str:
+    """从 nl2sql_qa_examples chunk 正文解析【校验通过的 SQL】段。"""
+    if not text or "【校验通过的 SQL】" not in text:
+        return ""
+    after_marker = text.split("【校验通过的 SQL】", 1)[1]
+    if "【用户问题】" in after_marker:
+        sql_part = after_marker.split("【用户问题】", 1)[0]
+    elif "【预制提示前缀摘要】" in after_marker:
+        sql_part = after_marker.split("【预制提示前缀摘要】", 1)[0]
+    else:
+        sql_part = after_marker
+    return sql_part.strip()
+
+
 def _load_nl2sql_auto_qa_entries_by_doc_name(
     rag: RAGService,
     doc_name: str,
@@ -225,8 +255,6 @@ def _load_nl2sql_auto_qa_entries_by_doc_name(
         if not isinstance(row, dict):
             continue
         text = str(row.get("text") or "")
-        if not text:
-            continue
         meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         out.append(
             {
@@ -285,6 +313,8 @@ def fetch_nl2sql_qa_chunks_by_slot(
         ]
 
     out: list[RetrievedChunk] = []
+    miss_reason = ""
+    miss_fp_detail = ""
     for entry in entries:
         meta = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
         chunk = RetrievedChunk(
@@ -299,18 +329,113 @@ def fetch_nl2sql_qa_chunks_by_slot(
             continue
         if qa_chunk_passes_retrieval_filter(chunk, ctx):
             out.append(chunk)
+        elif not miss_reason:
+            mismatch_fields = _qa_chunk_retrieval_filter_mismatch_fields(chunk, ctx)
+            if mismatch_fields:
+                miss_reason = f"fp_mismatch({'|'.join(mismatch_fields)})"
+                miss_fp_detail = _format_qa_slot_fp_mismatch_detail(meta, ctx, mismatch_fields)
         if len(out) >= max(1, max_chunks):
             break
 
-    logger.info(
-        "NL2SQL QA slot lookup doc_name=%s analysis_type=%s plan_item_id=%s plan_template_version=%s hit=%s",
-        doc_name,
-        at,
-        pid,
-        ptv,
-        bool(out),
+    if not out and not miss_reason:
+        if not entries:
+            miss_reason = "doc_not_found"
+        else:
+            miss_reason = "empty_text"
+
+    log_msg = (
+        "NL2SQL QA slot lookup doc_name=%s analysis_type=%s plan_item_id=%s "
+        "plan_template_version=%s hit=%s miss_reason=%s"
     )
+    log_args: list[Any] = [doc_name, at, pid, ptv, bool(out), miss_reason or "-"]
+    if miss_fp_detail:
+        log_msg += " fp_detail=%s"
+        log_args.append(miss_fp_detail)
+    logger.info(log_msg, *log_args)
     return out
+
+
+def _qa_chunk_retrieval_filter_mismatch_fields(
+    chunk: RetrievedChunk,
+    ctx: NL2SQLQARetrievalContext | None,
+) -> list[str]:
+    """
+    返回未通过 qa_chunk_passes_retrieval_filter 的字段标签（空列表表示通过）。
+    标签用于 slot lookup 诊断日志，如 data_source / schema / policy。
+    """
+    if ctx is None:
+        return []
+    ns = chunk.namespace or ""
+    if ns != NL2SQLRAGService.NS_QA:
+        return []
+
+    meta = chunk.metadata if isinstance(chunk.metadata, dict) else {}
+    include_legacy = os.getenv("NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED", "true").lower() == "true"
+
+    kind = str(meta.get(META_KEY_AUTO_KIND) or "")
+    src = str(meta.get(META_KEY_INGEST_SOURCE) or "")
+    mismatches: list[str] = []
+
+    if kind == NL2SQL_QA_AUTO_KIND or src == INGEST_SOURCE_AUTO:
+        if meta.get(META_KEY_DATA_SOURCE_FP) != ctx.data_source_fp:
+            mismatches.append("data_source")
+        if meta.get(META_KEY_SCHEMA_FP) != ctx.schema_fp:
+            mismatches.append("schema")
+        pol_m = meta.get(META_KEY_POLICY_FP)
+        if ctx.policy_fp and pol_m not in (None, "") and str(pol_m) != str(ctx.policy_fp):
+            mismatches.append("policy")
+        at_m = meta.get("analysis_type")
+        if ctx.analysis_type and at_m not in (None, "") and str(at_m) != str(ctx.analysis_type):
+            mismatches.append("analysis_type")
+        ptv_ctx = normalize_plan_template_version(ctx.plan_template_version) if ctx.plan_template_version else None
+        if ptv_ctx and ptv_ctx != "unknown":
+            ptv_m = meta.get(META_KEY_PLAN_TEMPLATE_VERSION)
+            if ptv_m not in (None, ""):
+                if normalize_plan_template_version(str(ptv_m)) != ptv_ctx:
+                    mismatches.append("plan_template_version")
+            elif os.getenv("NL2SQL_QA_INCLUDE_LEGACY_NO_PLAN_VER", "true").lower() != "true":
+                mismatches.append("plan_template_version")
+        return mismatches
+
+    ds = meta.get(META_KEY_DATA_SOURCE_FP)
+    sf = meta.get(META_KEY_SCHEMA_FP)
+    if ds or sf:
+        if str(ds or "") != ctx.data_source_fp:
+            mismatches.append("data_source")
+        if str(sf or "") != ctx.schema_fp:
+            mismatches.append("schema")
+        return mismatches
+
+    if not include_legacy:
+        mismatches.append("legacy_unscoped")
+    return mismatches
+
+
+def _format_qa_slot_fp_mismatch_detail(
+    meta: dict[str, Any],
+    ctx: NL2SQLQARetrievalContext,
+    fields: list[str],
+) -> str:
+    """指纹 miss 时输出 ctx vs doc 对照，便于运维排查。"""
+    parts: list[str] = []
+    if "data_source" in fields:
+        parts.append(
+            f"data_source(ctx={ctx.data_source_fp!r},doc={meta.get(META_KEY_DATA_SOURCE_FP)!r})"
+        )
+    if "schema" in fields:
+        parts.append(f"schema(ctx={ctx.schema_fp!r},doc={meta.get(META_KEY_SCHEMA_FP)!r})")
+    if "policy" in fields:
+        parts.append(f"policy(ctx={ctx.policy_fp!r},doc={meta.get(META_KEY_POLICY_FP)!r})")
+    if "analysis_type" in fields:
+        parts.append(f"analysis_type(ctx={ctx.analysis_type!r},doc={meta.get('analysis_type')!r})")
+    if "plan_template_version" in fields:
+        parts.append(
+            "plan_template_version("
+            f"ctx={normalize_plan_template_version(ctx.plan_template_version)!r},"
+            f"doc={normalize_plan_template_version(str(meta.get(META_KEY_PLAN_TEMPLATE_VERSION) or ''))!r}"
+            ")"
+        )
+    return " ".join(parts)
 
 
 def qa_chunk_passes_retrieval_filter(
@@ -320,48 +445,7 @@ def qa_chunk_passes_retrieval_filter(
     """
     仅对 nl2sql_qa_examples 命名空间生效；schema/biz 始终放行（调用方应只对 QA  chunk 调用）。
     """
-    if ctx is None:
-        return True
-    ns = chunk.namespace or ""
-    if ns != NL2SQLRAGService.NS_QA:
-        return True
-
-    meta = chunk.metadata if isinstance(chunk.metadata, dict) else {}
-    include_legacy = os.getenv("NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED", "true").lower() == "true"
-
-    kind = str(meta.get(META_KEY_AUTO_KIND) or "")
-    src = str(meta.get(META_KEY_INGEST_SOURCE) or "")
-
-    # 系统自动写入：必须指纹全匹配
-    if kind == NL2SQL_QA_AUTO_KIND or src == INGEST_SOURCE_AUTO:
-        if meta.get(META_KEY_DATA_SOURCE_FP) != ctx.data_source_fp:
-            return False
-        if meta.get(META_KEY_SCHEMA_FP) != ctx.schema_fp:
-            return False
-        pol_m = meta.get(META_KEY_POLICY_FP)
-        if ctx.policy_fp and pol_m not in (None, "") and str(pol_m) != str(ctx.policy_fp):
-            return False
-        at_m = meta.get("analysis_type")
-        if ctx.analysis_type and at_m not in (None, "") and str(at_m) != str(ctx.analysis_type):
-            return False
-        ptv_ctx = normalize_plan_template_version(ctx.plan_template_version) if ctx.plan_template_version else None
-        if ptv_ctx and ptv_ctx != "unknown":
-            ptv_m = meta.get(META_KEY_PLAN_TEMPLATE_VERSION)
-            if ptv_m not in (None, ""):
-                if normalize_plan_template_version(str(ptv_m)) != ptv_ctx:
-                    return False
-            elif os.getenv("NL2SQL_QA_INCLUDE_LEGACY_NO_PLAN_VER", "true").lower() != "true":
-                return False
-        return True
-
-    # 显式打了指纹的人工/旧版文档：按指纹约束
-    ds = meta.get(META_KEY_DATA_SOURCE_FP)
-    sf = meta.get(META_KEY_SCHEMA_FP)
-    if ds or sf:
-        return str(ds or "") == ctx.data_source_fp and str(sf or "") == ctx.schema_fp
-
-    # 无指纹：历史人工 QA，可配置是否保留
-    return include_legacy
+    return not _qa_chunk_retrieval_filter_mismatch_fields(chunk, ctx)
 
 
 Nl2sqlAutoQaWriteMode = Literal["skip_if_exists", "replace"]

@@ -1,9 +1,13 @@
 import os
 import unittest
+from unittest import mock
 
 from app.nl2sql.qa_feedback import (
     NL2SQL_QA_AUTO_KIND,
+    NL2SQL_QA_DOC_VERSION_AUTO,
+    META_KEY_AUTO_KIND,
     META_KEY_DATA_SOURCE_FP,
+    META_KEY_INGEST_SOURCE,
     META_KEY_PLAN_TEMPLATE_VERSION,
     META_KEY_SCHEMA_FP,
     NL2SQLQARetrievalContext,
@@ -15,6 +19,8 @@ from app.nl2sql.qa_feedback import (
     format_nl2sql_qa_embedding_text,
     list_nl2sql_auto_qa_entries,
     nl2sql_qa_slot_lookup_eligible,
+    nl2sql_qa_slot_strict_replay_enabled,
+    parse_sql_from_nl2sql_qa_text,
     qa_chunk_passes_retrieval_filter,
     update_nl2sql_auto_qa_entry,
     upsert_nl2sql_auto_qa_pair,
@@ -487,6 +493,109 @@ class TestNl2sqlQaSlotLookup(unittest.TestCase):
         )
         self.assertEqual([], fetch_nl2sql_qa_chunks_by_slot(rag, ctx))
 
+    def test_fetch_by_slot_miss_reason_doc_not_found(self) -> None:
+        rag, _store = _rag_with_inmemory_store()
+        ctx = NL2SQLQARetrievalContext(
+            **self._fps,
+            analysis_type="overheat_guidance",
+            plan_item_id="q_missing",
+            plan_template_version="v2",
+        )
+        with self.assertLogs("app.nl2sql.qa_feedback", level="INFO") as logs:
+            self.assertEqual([], fetch_nl2sql_qa_chunks_by_slot(rag, ctx))
+        joined = "\n".join(logs.output)
+        self.assertIn("miss_reason=doc_not_found", joined)
+        self.assertIn("hit=False", joined)
+
+    def test_fetch_by_slot_miss_reason_fp_mismatch(self) -> None:
+        rag, _store = _rag_with_inmemory_store()
+        create_nl2sql_auto_qa_entry(
+            rag,
+            question="q2a question",
+            sql="SELECT slot_q2a",
+            analysis_type="overheat_guidance",
+            plan_item_id="q2a",
+            plan_template_version="v2",
+            prompt_prefix_snapshot=None,
+            mode="replace",
+            **self._fps,
+        )
+        ctx = NL2SQLQARetrievalContext(
+            data_source_fp="ds1",
+            schema_fp="sc_other",
+            policy_fp="pol1",
+            analysis_type="overheat_guidance",
+            plan_item_id="q2a",
+            plan_template_version="v2",
+        )
+        with self.assertLogs("app.nl2sql.qa_feedback", level="INFO") as logs:
+            self.assertEqual([], fetch_nl2sql_qa_chunks_by_slot(rag, ctx))
+        joined = "\n".join(logs.output)
+        self.assertIn("miss_reason=fp_mismatch(schema)", joined)
+        self.assertIn("fp_detail=", joined)
+        self.assertIn("schema(ctx='sc_other',doc='sc1')", joined)
+
+    def test_fetch_by_slot_miss_reason_empty_text(self) -> None:
+        rag, store = _rag_with_inmemory_store()
+        doc_name = build_nl2sql_auto_qa_doc_name(
+            analysis_type="overheat_guidance",
+            plan_item_id="q2a",
+            plan_template_version="v2",
+        )
+        store._items.append(  # noqa: SLF001
+            {
+                "text": "",
+                "doc_name": doc_name,
+                "namespace": NL2SQLRAGService.NS_QA,
+                "ext_id": doc_name,
+                "metadata": {
+                    "doc_version": NL2SQL_QA_DOC_VERSION_AUTO,
+                    META_KEY_AUTO_KIND: NL2SQL_QA_AUTO_KIND,
+                    META_KEY_INGEST_SOURCE: "auto",
+                    **self._fps,
+                    "analysis_type": "overheat_guidance",
+                    "plan_item_id": "q2a",
+                    META_KEY_PLAN_TEMPLATE_VERSION: "v2",
+                },
+            }
+        )
+        ctx = NL2SQLQARetrievalContext(
+            **self._fps,
+            analysis_type="overheat_guidance",
+            plan_item_id="q2a",
+            plan_template_version="v2",
+        )
+        with self.assertLogs("app.nl2sql.qa_feedback", level="INFO") as logs:
+            self.assertEqual([], fetch_nl2sql_qa_chunks_by_slot(rag, ctx))
+        joined = "\n".join(logs.output)
+        self.assertIn("miss_reason=empty_text", joined)
+
+    def test_fetch_by_slot_hit_logs_miss_reason_dash(self) -> None:
+        rag, _store = _rag_with_inmemory_store()
+        create_nl2sql_auto_qa_entry(
+            rag,
+            question="q1 question",
+            sql="SELECT slot_q1",
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version="v2",
+            prompt_prefix_snapshot=None,
+            mode="replace",
+            **self._fps,
+        )
+        ctx = NL2SQLQARetrievalContext(
+            **self._fps,
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version="v2",
+        )
+        with self.assertLogs("app.nl2sql.qa_feedback", level="INFO") as logs:
+            chunks = fetch_nl2sql_qa_chunks_by_slot(rag, ctx)
+        self.assertEqual(1, len(chunks))
+        joined = "\n".join(logs.output)
+        self.assertIn("hit=True", joined)
+        self.assertIn("miss_reason=-", joined)
+
     def test_rag_service_slot_hit_skips_vector_qa(self) -> None:
         rag, _store = _rag_with_inmemory_store()
         rag._rerank = lambda query, hits: hits  # noqa: SLF001
@@ -537,6 +646,38 @@ class TestNl2sqlQaSlotLookup(unittest.TestCase):
         qa_chunks = [c for c in chunks if c.namespace == NL2SQLRAGService.NS_QA]
         self.assertGreaterEqual(len(qa_chunks), 1)
         self.assertIn("vector qa decoy", qa_chunks[0].text or "")
+
+
+class TestNl2sqlQaStrictReplayHelpers(unittest.TestCase):
+    def test_parse_sql_from_qa_text(self) -> None:
+        body = format_nl2sql_qa_embedding_text(
+            question="查询超温明细",
+            sql="SELECT id FROM monitor_hotarea_temp LIMIT 1",
+            prompt_prefix_snapshot=None,
+            max_prefix_chars=0,
+        )
+        self.assertEqual(
+            "SELECT id FROM monitor_hotarea_temp LIMIT 1",
+            parse_sql_from_nl2sql_qa_text(body),
+        )
+
+    def test_parse_sql_empty_when_marker_missing(self) -> None:
+        self.assertEqual("", parse_sql_from_nl2sql_qa_text("no sql marker here"))
+
+    def test_strict_replay_enabled_global(self) -> None:
+        with mock.patch.dict(os.environ, {"NL2SQL_QA_SLOT_STRICT_REPLAY": "true"}, clear=False):
+            self.assertTrue(nl2sql_qa_slot_strict_replay_enabled())
+            self.assertTrue(nl2sql_qa_slot_strict_replay_enabled("overheat_guidance"))
+
+    def test_strict_replay_enabled_per_analysis_type(self) -> None:
+        env = {
+            "NL2SQL_QA_SLOT_STRICT_REPLAY": "false",
+            "NL2SQL_QA_SLOT_STRICT_REPLAY_OVERHEAT_GUIDANCE": "true",
+        }
+        with mock.patch.dict(os.environ, env, clear=False):
+            self.assertFalse(nl2sql_qa_slot_strict_replay_enabled())
+            self.assertTrue(nl2sql_qa_slot_strict_replay_enabled("overheat_guidance"))
+            self.assertFalse(nl2sql_qa_slot_strict_replay_enabled("maintenance_strategy"))
 
 
 if __name__ == "__main__":

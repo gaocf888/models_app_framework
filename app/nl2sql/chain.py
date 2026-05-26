@@ -304,6 +304,33 @@ class NL2SQLChain:
 
         fresh_sql_generation = False
 
+        from app.nl2sql.qa_feedback import (
+            nl2sql_qa_slot_lookup_eligible,
+            nl2sql_qa_slot_strict_replay_enabled,
+        )
+
+        if (
+            nl2sql_qa_ctx is not None
+            and nl2sql_qa_slot_strict_replay_enabled(analysis_type)
+            and nl2sql_qa_slot_lookup_eligible(nl2sql_qa_ctx)
+        ):
+            replay_sql = await self._try_qa_slot_strict_replay(
+                nl2sql_qa_ctx=nl2sql_qa_ctx,
+                question=question,
+                time_intent_source=time_src,
+                validation_ctx=validation_ctx,
+                entity_rules=entity_rules,
+                user_id=user_id,
+                plan_item_id=plan_item_id,
+            )
+            if replay_sql:
+                logger.info(
+                    "NL2SQLChain.generate_sql success sql_len=%d preview=%r qa_replay=strict",
+                    len(replay_sql or ""),
+                    _text_preview(replay_sql, 0),
+                )
+                return replay_sql, validation_ctx
+
         if cfg_analysis.nl2sql_cache_enabled and db_cfg is not None:
             cache_key_for_store = build_nl2sql_sql_cache_key(
                 data_source_fp=data_source_fp,
@@ -332,58 +359,41 @@ class NL2SQLChain:
                 )
             cached_sql = sql_cache_backend.get(cache_key_for_store)
             if cached_sql:
-                sql = cached_sql
-                sql = self._validator.normalize_sql(sql)
-                sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
-                sql, filter_notes = self._rewrite_query_filters(
-                    sql, question=question, time_intent_source=time_src
+                sql, valid, fail_reason = self._postprocess_and_validate_candidate_sql(
+                    cached_sql,
+                    question=question,
+                    time_intent_source=time_src,
+                    validation_ctx=validation_ctx,
+                    entity_rules=entity_rules,
+                    log_label="sql_cache",
                 )
-                rewrite_notes.extend(filter_notes)
-                if rewrite_notes:
+                if valid:
                     logger.info(
-                        "NL2SQLChain sql_cache TiDB rewrite applied: %s",
-                        "; ".join(rewrite_notes),
+                        "NL2SQLChain sql_cache hit sql_len=%d data_source_fp=%s plan_item_id=%s",
+                        len(sql or ""),
+                        data_source_fp,
+                        plan_item_id or "-",
                     )
-                dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
-                if dialect_ok:
-                    valid, validation_error = self._validate_sql(
-                        sql,
-                        question=question,
-                        allowed_tables=allowed_tables,
-                        allowed_columns=allowed_columns,
-                        enforce_column_whitelist=schema_ok,
-                        table_columns=table_columns_map if schema_ok else None,
-                        join_whitelist=join_whitelist,
-                        entity_rules=entity_rules,
+                    self._ls_tracker.log_run(
+                        name="nl2sql",
+                        run_type="llm",
+                        inputs={
+                            "user_id": user_id,
+                            "question": question,
+                        },
+                        outputs={"sql": sql},
+                        metadata={"scene": "nl2sql", "sql_cache": "hit"},
                     )
-                    if valid:
-                        logger.info(
-                            "NL2SQLChain sql_cache hit sql_len=%d data_source_fp=%s plan_item_id=%s",
-                            len(sql or ""),
-                            data_source_fp,
-                            plan_item_id or "-",
-                        )
-                        self._ls_tracker.log_run(
-                            name="nl2sql",
-                            run_type="llm",
-                            inputs={
-                                "user_id": user_id,
-                                "question": question,
-                            },
-                            outputs={"sql": sql},
-                            metadata={"scene": "nl2sql", "sql_cache": "hit"},
-                        )
-                        logger.info(
-                            "NL2SQLChain.generate_sql success sql_len=%d preview=%r",
-                            len(sql or ""),
-                            _text_preview(sql, 0),
-                        )
-                        return sql, validation_ctx
+                    logger.info(
+                        "NL2SQLChain.generate_sql success sql_len=%d preview=%r",
+                        len(sql or ""),
+                        _text_preview(sql, 0),
+                    )
+                    return sql, validation_ctx
                 logger.warning(
-                    "NL2SQLChain sql_cache stale_or_invalid evict preview=%r dialect_ok=%s reason=%s",
+                    "NL2SQLChain sql_cache stale_or_invalid evict preview=%r reason=%s",
                     _text_preview(sql, 0),
-                    dialect_ok,
-                    dialect_reason if not dialect_ok else "-",
+                    fail_reason or "-",
                 )
                 sql_cache_backend.delete(cache_key_for_store)
 
@@ -400,58 +410,41 @@ class NL2SQLChain:
                     else:
                         rendered = render_sql_time_skeleton(payload, time_src)
                         if rendered:
-                            sql = rendered
-                            sql = self._validator.normalize_sql(sql)
-                            sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
-                            sql, filter_notes = self._rewrite_query_filters(
-                                sql, question=question, time_intent_source=time_src
+                            sql, valid, fail_reason = self._postprocess_and_validate_candidate_sql(
+                                rendered,
+                                question=question,
+                                time_intent_source=time_src,
+                                validation_ctx=validation_ctx,
+                                entity_rules=entity_rules,
+                                log_label="sql_l1_cache",
                             )
-                            rewrite_notes.extend(filter_notes)
-                            if rewrite_notes:
+                            if valid:
                                 logger.info(
-                                    "NL2SQLChain sql_l1_cache TiDB rewrite applied: %s",
-                                    "; ".join(rewrite_notes),
+                                    "NL2SQLChain sql_l1_cache hit sql_len=%d data_source_fp=%s plan_item_id=%s",
+                                    len(sql or ""),
+                                    data_source_fp,
+                                    plan_item_id or "-",
                                 )
-                            dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
-                            if dialect_ok:
-                                valid, validation_error = self._validate_sql(
-                                    sql,
-                                    question=question,
-                                    allowed_tables=allowed_tables,
-                                    allowed_columns=allowed_columns,
-                                    enforce_column_whitelist=schema_ok,
-                                    table_columns=table_columns_map if schema_ok else None,
-                                    join_whitelist=join_whitelist,
-                                    entity_rules=entity_rules,
+                                self._ls_tracker.log_run(
+                                    name="nl2sql",
+                                    run_type="llm",
+                                    inputs={
+                                        "user_id": user_id,
+                                        "question": question,
+                                    },
+                                    outputs={"sql": sql},
+                                    metadata={"scene": "nl2sql", "sql_cache": "l1_hit"},
                                 )
-                                if valid:
-                                    logger.info(
-                                        "NL2SQLChain sql_l1_cache hit sql_len=%d data_source_fp=%s plan_item_id=%s",
-                                        len(sql or ""),
-                                        data_source_fp,
-                                        plan_item_id or "-",
-                                    )
-                                    self._ls_tracker.log_run(
-                                        name="nl2sql",
-                                        run_type="llm",
-                                        inputs={
-                                            "user_id": user_id,
-                                            "question": question,
-                                        },
-                                        outputs={"sql": sql},
-                                        metadata={"scene": "nl2sql", "sql_cache": "l1_hit"},
-                                    )
-                                    logger.info(
-                                        "NL2SQLChain.generate_sql success sql_len=%d preview=%r",
-                                        len(sql or ""),
-                                        _text_preview(sql, 0),
-                                    )
-                                    return sql, validation_ctx
+                                logger.info(
+                                    "NL2SQLChain.generate_sql success sql_len=%d preview=%r",
+                                    len(sql or ""),
+                                    _text_preview(sql, 0),
+                                )
+                                return sql, validation_ctx
                             logger.warning(
-                                "NL2SQLChain sql_l1_cache stale_or_invalid evict preview=%r dialect_ok=%s reason=%s",
+                                "NL2SQLChain sql_l1_cache stale_or_invalid evict preview=%r reason=%s",
                                 _text_preview(sql, 0),
-                                dialect_ok,
-                                dialect_reason if not dialect_ok else "-",
+                                fail_reason or "-",
                             )
                             l1_cache_backend.delete(l1_cache_key_for_store)
 
@@ -802,6 +795,129 @@ class NL2SQLChain:
             backend.set(cache_key, skeleton_payload_to_json(payload))
         except Exception:
             logger.exception("NL2SQLChain sql_l1_cache set failed")
+
+    def _postprocess_and_validate_candidate_sql(
+        self,
+        sql: str,
+        *,
+        question: str,
+        time_intent_source: str,
+        validation_ctx: NL2SQLValidationContext,
+        entity_rules: list[EntityRule],
+        log_label: str,
+    ) -> tuple[str, bool, str | None]:
+        """normalize → TiDB 改写 → 时间/区域 filter → 方言与 whitelist 校验（L2/L1/QA replay 共用）。"""
+        sql = self._validator.normalize_sql(sql)
+        sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
+        sql, filter_notes = self._rewrite_query_filters(
+            sql, question=question, time_intent_source=time_intent_source
+        )
+        rewrite_notes.extend(filter_notes)
+        if rewrite_notes:
+            logger.info(
+                "NL2SQLChain %s TiDB/filter rewrite applied: %s",
+                log_label,
+                "; ".join(rewrite_notes),
+            )
+        dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
+        if not dialect_ok:
+            return sql, False, dialect_reason
+        table_columns_map = (
+            {k: set(v) for k, v in validation_ctx.table_columns.items()}
+            if validation_ctx.schema_ok
+            else None
+        )
+        valid, validation_error = self._validate_sql(
+            sql,
+            question=question,
+            allowed_tables=set(validation_ctx.allowed_tables),
+            allowed_columns=set(validation_ctx.allowed_columns),
+            enforce_column_whitelist=validation_ctx.schema_ok,
+            table_columns=table_columns_map,
+            join_whitelist=set(validation_ctx.join_whitelist),
+            entity_rules=entity_rules,
+        )
+        if not valid:
+            return sql, False, validation_error
+        return sql, True, None
+
+    async def _try_qa_slot_strict_replay(
+        self,
+        *,
+        nl2sql_qa_ctx: Any,
+        question: str,
+        time_intent_source: str,
+        validation_ctx: NL2SQLValidationContext,
+        entity_rules: list[EntityRule],
+        user_id: str | None,
+        plan_item_id: str | None,
+    ) -> str | None:
+        """slot 命中时解析 QA SQL，经后处理校验通过后跳过 LLM。"""
+        from app.nl2sql.qa_feedback import (
+            fetch_nl2sql_qa_chunks_by_slot,
+            parse_sql_from_nl2sql_qa_text,
+        )
+
+        inner_rag = getattr(self._rag, "_rag", None)
+        if inner_rag is None:
+            logger.info(
+                "NL2SQLChain qa_replay=strict_skipped reason=no_rag_backend plan_item_id=%s",
+                plan_item_id or "-",
+            )
+            return None
+
+        chunks = fetch_nl2sql_qa_chunks_by_slot(inner_rag, nl2sql_qa_ctx, max_chunks=1)
+        if not chunks:
+            return None
+
+        chunk = chunks[0]
+        raw_sql = parse_sql_from_nl2sql_qa_text(chunk.text or "")
+        if not raw_sql.strip():
+            logger.warning(
+                "NL2SQLChain qa_replay=strict_failed reason=parse_empty plan_item_id=%s doc_name=%s",
+                plan_item_id or "-",
+                chunk.doc_name or "-",
+            )
+            return None
+
+        sql, ok, fail_reason = self._postprocess_and_validate_candidate_sql(
+            raw_sql,
+            question=question,
+            time_intent_source=time_intent_source,
+            validation_ctx=validation_ctx,
+            entity_rules=entity_rules,
+            log_label="qa_replay",
+        )
+        if not ok:
+            logger.warning(
+                "NL2SQLChain qa_replay=strict_failed reason=%s plan_item_id=%s doc_name=%s fallback=cache_llm",
+                fail_reason or "unknown",
+                plan_item_id or "-",
+                chunk.doc_name or "-",
+            )
+            return None
+
+        logger.info(
+            "NL2SQLChain qa_replay=strict ok sql_len=%d plan_item_id=%s doc_name=%s",
+            len(sql or ""),
+            plan_item_id or "-",
+            chunk.doc_name or "-",
+        )
+        self._ls_tracker.log_run(
+            name="nl2sql",
+            run_type="llm",
+            inputs={
+                "user_id": user_id,
+                "question": question,
+            },
+            outputs={"sql": sql},
+            metadata={
+                "scene": "nl2sql",
+                "qa_replay": "strict",
+                "plan_item_id": plan_item_id or "-",
+            },
+        )
+        return sql
 
     async def refine_sql_after_executor_error(
         self,
