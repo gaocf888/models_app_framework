@@ -14,7 +14,7 @@
 
 2. **校验通过的 SQL + 问题写入 `nl2sql_qa_examples`（与 L2/L1 并列、独立）**  
    - 开启 **`NL2SQL_QA_FEEDBACK_ENABLED`** 后，在 **本轮经 LLM 生成且校验通过**（默认 **`NL2SQL_QA_FEEDBACK_ONLY_FRESH_SQL=true`** 时不包含纯 L2/L1 缓存返回路径）时，将压缩后的问句 + SQL 等 **幂等 upsert** 至向量库命名空间 **`nl2sql_qa_examples`**（元数据含数据源/schema/policy 指纹，检索侧可过滤）。  
-   - **运维与 RAG 管理接口**：可通过 **`GET /rag/nl2sql-auto-qa`** 查询系统自动写入条目，**`PATCH /rag/nl2sql-auto-qa`** 按 `doc_name` 删后重建以更新问答内容（见 §七 ter、`app/api/rag_admin.py`）。
+   - **运维与 RAG 管理接口**：可通过 **`GET /rag/nl2sql-auto-qa`** 查询系统自动写入条目，**`POST /rag/nl2sql-auto-qa`** 半自动灌库（`mode=replace|skip_if_exists`），**`PATCH /rag/nl2sql-auto-qa`** 按 `doc_name` 删后重建以更新问答内容（见 §七 ter、`app/api/rag_admin.py`）。
 
 ---
 
@@ -248,7 +248,7 @@ flowchart LR
 | **元数据** | `ingest_source=auto`、`nl2sql_auto_kind=nl2sql_system_feedback_v1`、向量库 `doc_version=auto_v1`（技术字段，**不参与**业务去重），以及 `data_source_fp` / `schema_fp` / `policy_fp` / `plan_template_version` / `dedup_key` 等 |
 | **检索过滤** | `NL2SQL_QA_FILTER_ENABLED=true`（默认）时，对 **仅** `nl2sql_qa_examples` 命中的 chunk 校验指纹；请求带 `plan_template_version` 时优先同版本自动 QA；无 `plan_template_version` 的旧条目由 `NL2SQL_QA_INCLUDE_LEGACY_NO_PLAN_VER`（默认 `true`）控制；无指纹的 **历史人工** QA 由 `NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED` 控制 |
 | **prefetch** | 过滤会丢掉部分 Top-K，故对 QA 命名空间先放大召回再截断：``NL2SQL_QA_RAG_PREFETCH_MULT``（默认 `4`） |
-| **管理面** | **`GET /rag/nl2sql-auto-qa`**：列出自动 QA；Query 可选 **`analysis_type`**、**`plan_item_id`**、**`plan_template_version`**；响应含便捷字段与完整 `metadata`。**`PATCH /rag/nl2sql-auto-qa`**：按 **`doc_name`**（五元组哈希）删后写；仅修正问句/SQL/指纹，**勿** patch 变更五元组维度（换 plan 版本应删条或重新跑分析写入）。见 **`app/api/rag_admin.py`**。 |
+| **管理面** | **`GET /rag/nl2sql-auto-qa`**：列出自动 QA；Query 可选 **`analysis_type`**、**`plan_item_id`**、**`plan_template_version`**；响应含便捷字段与完整 `metadata`。**`POST /rag/nl2sql-auto-qa`**：半自动灌库，按五元组 **`mode=replace`（默认，删后写）** 或 **`skip_if_exists`** 写入。**`PATCH /rag/nl2sql-auto-qa`**：按 **`doc_name`**（五元组哈希）删后写；仅修正问句/SQL/指纹，**勿** patch 变更五元组维度（换 plan 版本应删条或重新跑分析写入）。见 **`app/api/rag_admin.py`**。 |
 
 **环境变量（另见 `app/app-deploy/.env.example`）**
 
@@ -318,7 +318,7 @@ flowchart LR
 | **P0** | L2 SQL 快照 + 规则 Key + 规则修补 + Validator；Redis TTL；配置开关 |
 | **P1** | L1 骨架抽取与渲染；schema/policy 指纹自动化（**已落地首版**：`app/nl2sql/sql_skeleton.py` — 意图键折叠相对日词 + `DATE_SUB`/`'YYYY-MM-DD[ HH:MM:SS]'` 占位与重渲染；与 L2 进程内缓存叠加，lookup 顺序 **L2 → L1 → LLM**） |
 | **P2** | 向量近似召回 Top-K + 人工阈值；可选补丁 LLM |
-| **（并行）QA 闭环** | **`nl2sql_qa_examples` 自动写入 + 检索指纹过滤**（§七 ter），管理接口 **`GET/PATCH /rag/nl2sql-auto-qa`** |
+| **（并行）QA 闭环** | **`nl2sql_qa_examples` 自动写入 + 检索指纹过滤**（§七 ter），管理接口 **`GET/POST/PATCH /rag/nl2sql-auto-qa`** |
 
 ---
 
@@ -331,4 +331,4 @@ flowchart LR
 | 2026-05-06 | v0.3 | L1 时间骨架落地；§4.1 区分 L2/L1 键；§七～七 bis 集成点与运维速查；§3.1 已实现形态说明 |
 | 2026-05-06 | v0.4 | §七 ter：QA 向量闭环（`NL2SQL_QA_*`、`qa_feedback.py`、RAG 检索过滤、`/rag/nl2sql-auto-qa`）；§10.1 增补 `NL2SQL_QA_FEEDBACK_ENABLED` |
 | 2026-05-09 | v0.5 | 文首「当前实现摘要」：时间口径（天/周/月/近 N 天）与 L1/L2、环境变量；`nl2sql_qa_examples` 写入与 **`GET`/`PATCH` 管理端**；§七 修正链内顺序（先 NL2SQL RAG，再 L2→L1）；§1.1 澄清命中后仍跑 RAG、仅跳过 LLM |
-| 2026-05-19 | v0.6 | QA 去重扩展为五元组（+`plan_template_version`）；`GET /rag/nl2sql-auto-qa` 支持按 plan 版本筛选；与综合分析 plan v1/v2 配置联动 |
+| 2026-05-19 | v0.7 | 新增 **`POST /rag/nl2sql-auto-qa`** 半自动灌库（`mode=replace|skip_if_exists`，可选 SQLValidator） |

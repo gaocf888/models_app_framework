@@ -21,7 +21,7 @@
 部署侧启用 **`NL2SQL_CACHE_ENABLED`**（及可选 **`NL2SQL_L1_CACHE_ENABLED`**，均由环境变量配置）后，单次 `generate_sql` 内顺序为：**先 NL2SQL 专用 RAG（schema/biz/qa 片段与白名单上下文）**，再在 **`NL2SQL_CACHE_ENABLED`** 打开时按 **L2（完整问题文本键）→ L1（时间意图折叠键）** 查找已入库的可执行 SQL／时间骨架；其中 **L1** 将 **相对日、ISO 周（本周/上周）、月（本月/上月）、近 N 天** 等中文时间口径折叠进意图键，并对 SQL 中 **`DATE_SUB` / 日期字面量** 做占位与按当前问句重渲染。命中后 **跳过 Prompt 与 LLM**，仍执行 TiDB/过滤器改写与 **`SQLValidator`**。分层模型、键维度与运维说明见 **`docs/NL2SQL缓存实现方案.md`**（含文首「当前实现摘要」）。
 
 **可选：QA 样例向量闭环（与缓存并列）**  
-启用 **`NL2SQL_QA_FEEDBACK_ENABLED`** 后，校验通过可将 **问题 + SQL** 写入 **`nl2sql_qa_examples`**；按 **五元组**（含 **`plan_template_version`**，与综合分析 `analysis_plan_*` v1/v2 一致）去重，已存在则跳过。检索按数据源/schema 等指纹过滤。运维 **`GET /rag/nl2sql-auto-qa`**（可筛 plan 版本）、**`PATCH /rag/nl2sql-auto-qa`**。详见 **`docs/NL2SQL缓存实现方案.md`** §七 ter。
+启用 **`NL2SQL_QA_FEEDBACK_ENABLED`** 后，校验通过可将 **问题 + SQL** 写入 **`nl2sql_qa_examples`**；按 **五元组**（含 **`plan_template_version`**，与综合分析 `analysis_plan_*` v1/v2 一致）去重，已存在则跳过。检索按数据源/schema 等指纹过滤。运维 **`GET /rag/nl2sql-auto-qa`**（可筛 plan 版本）、**`POST /rag/nl2sql-auto-qa`**（半自动灌库）、**`PATCH /rag/nl2sql-auto-qa`**。详见 **`docs/NL2SQL缓存实现方案.md`** §七 ter。
 
 从系统组件看，划分为三大层：
 
@@ -81,7 +81,7 @@
 - **Schema 同步**：支持定时全量同步（如每日凌晨）与手动触发增量更新，保证与真实数据库结构一致；
 - **业务知识维护**：通过配置文件或管理后台维护业务定义、统计口径与问答对，支持版本控制；
 - **索引更新**：当 Schema 或业务知识更新时，自动或按需重建对应命名空间索引，避免全库重建；
-- **系统自动 QA 样例（可选）**：运行态校验通过的 NL2SQL 可写入 **`nl2sql_qa_examples`**（带数据源/schema 元数据），并通过 **`GET` / `PATCH /rag/nl2sql-auto-qa`** 运维；详见 **`docs/NL2SQL缓存实现方案.md`** §七 ter。
+- **系统自动 QA 样例（可选）**：运行态校验通过的 NL2SQL 可写入 **`nl2sql_qa_examples`**（带数据源/schema 元数据），并通过 **`GET` / `POST` / `PATCH /rag/nl2sql-auto-qa`** 运维；详见 **`docs/NL2SQL缓存实现方案.md`** §七 ter。
 
 ---
 

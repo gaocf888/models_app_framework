@@ -1092,6 +1092,146 @@ class Nl2sqlAutoQaPatchResponse(BaseModel):
     doc_name: str = Field(..., description="已更新的文档名，与请求一致")
 
 
+class Nl2sqlAutoQaCreateRequest(BaseModel):
+    question: str = Field(..., description="必填。与 plan 子任务问句一致（或 compact 后的业务问句）")
+    sql: str = Field(..., description="必填。只读 SELECT SQL；默认经 SQLValidator 校验后入库")
+    analysis_type: str = Field(..., description="必填。专项类型，如 overheat_guidance")
+    plan_item_id: str = Field(..., description="必填。数据计划子任务 id，如 q2a（方案 B 14 条之一）")
+    plan_template_version: str | None = Field(
+        None,
+        description="可选。数据计划模板版本 v1/v2；省略时归一化为 unknown，参与五元组去重",
+    )
+    mode: str = Field(
+        "replace",
+        description="写入模式：replace=按五元组删后写（半自动默认）；skip_if_exists=已存在则跳过（同运行时自动写入）",
+    )
+    prompt_prefix_snapshot: str | None = Field(
+        None,
+        description="可选。预制 System 前缀快照；多数运维补录可省略（见 PATCH 说明）",
+    )
+    data_source_fp: str | None = Field(
+        None,
+        description="可选。数据源指纹；省略时用当前应用 DB 配置计算",
+    )
+    schema_fp: str | None = Field(
+        None,
+        description="可选。schema 指纹；省略时用内存 Schema 目录表名列表计算",
+    )
+    policy_fp: str | None = Field(
+        None,
+        description="可选。策略指纹；省略时按 analysis_type 计算",
+    )
+    validate_sql: bool = Field(
+        True,
+        description="为 true 时用 SQLValidator 做只读 SELECT 校验；失败返回 422",
+    )
+
+
+class Nl2sqlAutoQaCreateResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    doc_name: str = Field(..., description="五元组哈希后的文档名")
+    created: bool = Field(
+        ...,
+        description="true=本次已写入；false=skip_if_exists 下条目已存在未写入",
+    )
+    dedup_key: str = Field(..., description="明文去重键（五元组拼接）")
+
+
+@router.post(
+    "/nl2sql-auto-qa",
+    summary="半自动写入 NL2SQL 系统自动 QA（按五元组创建或覆盖）",
+    response_model=Nl2sqlAutoQaCreateResponse,
+    response_description="写入或跳过后的 doc_name、created、dedup_key。",
+)
+async def post_nl2sql_auto_qa(req: Nl2sqlAutoQaCreateRequest) -> Nl2sqlAutoQaCreateResponse:
+    """
+    运维半自动灌库：按 **`(namespace, ingest_source, analysis_type, plan_item_id, plan_template_version)`**
+    定位 `doc_name`，将问句 + SQL 写入 **`nl2sql_qa_examples`**（与运行时自动闭环同一向量格式与 metadata）。
+
+    **`Nl2sqlAutoQaCreateRequest`（请求体）**
+    - `question` / `sql`：**必填**。
+    - `analysis_type` / `plan_item_id`：**必填**（直连 NL2SQL 无 plan_item_id 的场景不支持）。
+    - `plan_template_version`：可选，默认 unknown。
+    - `mode`：**`replace`（默认）** 已存在则删后写；**`skip_if_exists`** 与 `upsert_nl2sql_auto_qa_pair` 一致。
+    - `data_source_fp` / `schema_fp` / `policy_fp`：均可省略，由服务端按当前 DB 与 Schema 目录解析。
+    - `validate_sql`：默认 true，非只读 SELECT 返回 **422**。
+
+    **响应 `Nl2sqlAutoQaCreateResponse`（200）**
+    - `doc_name`、`created`、`dedup_key`。
+
+    **错误**
+    - **400**：`mode` 非法或缺少 analysis_type/plan_item_id。
+    - **422**：SQL 校验未通过（`validate_sql=true`）。
+    - **5xx**：索引失败。
+    """
+    from app.nl2sql.qa_feedback import (
+        create_nl2sql_auto_qa_entry,
+        resolve_nl2sql_qa_fingerprints,
+    )
+    from app.nl2sql.validator import SQLValidator
+
+    mode = (req.mode or "replace").strip()
+    if mode not in ("skip_if_exists", "replace"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid mode: {mode!r}; use skip_if_exists or replace",
+        )
+
+    sql = (req.sql or "").strip()
+    if req.validate_sql:
+        validator = SQLValidator()
+        normalized = validator.normalize_sql(sql)
+        if not normalized or not validator.validate(normalized):
+            raise HTTPException(
+                status_code=422,
+                detail="SQL must be a non-empty read-only SELECT (or WITH) statement",
+            )
+        sql = normalized
+
+    try:
+        fps = resolve_nl2sql_qa_fingerprints(
+            data_source_fp=req.data_source_fp,
+            schema_fp=req.schema_fp,
+            policy_fp=req.policy_fp,
+            analysis_type=req.analysis_type,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    rag = _get_service()._rag_service  # noqa: SLF001
+    try:
+        doc_name, created, dedup_key = create_nl2sql_auto_qa_entry(
+            rag,
+            question=req.question,
+            sql=sql,
+            data_source_fp=fps.data_source_fp,
+            schema_fp=fps.schema_fp,
+            policy_fp=fps.policy_fp,
+            analysis_type=req.analysis_type,
+            plan_item_id=req.plan_item_id,
+            plan_template_version=req.plan_template_version,
+            prompt_prefix_snapshot=req.prompt_prefix_snapshot,
+            mode=mode,  # type: ignore[arg-type]
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "post nl2sql-auto-qa failed analysis_type=%s plan_item_id=%s mode=%s",
+            req.analysis_type,
+            req.plan_item_id,
+            mode,
+        )
+        raise HTTPException(status_code=500, detail=f"create failed: {e}") from e
+
+    return Nl2sqlAutoQaCreateResponse(
+        ok=True,
+        doc_name=doc_name,
+        created=created,
+        dedup_key=dedup_key,
+    )
+
+
 @router.get(
     "/nl2sql-auto-qa",
     summary="列出 NL2SQL 系统自动写入的 QA 向量条目",

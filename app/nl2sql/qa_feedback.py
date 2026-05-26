@@ -9,7 +9,9 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+from app.nl2sql.schema_service import SchemaMetadataService
 
 from app.core.logging import get_logger
 from app.nl2sql.rag_service import NL2SQLRAGService
@@ -229,6 +231,213 @@ def qa_chunk_passes_retrieval_filter(
     return include_legacy
 
 
+Nl2sqlAutoQaWriteMode = Literal["skip_if_exists", "replace"]
+
+
+@dataclass(frozen=True)
+class ResolvedNl2sqlQaFingerprints:
+    data_source_fp: str
+    schema_fp: str
+    policy_fp: str
+
+
+def resolve_nl2sql_qa_fingerprints(
+    *,
+    data_source_fp: str | None = None,
+    schema_fp: str | None = None,
+    policy_fp: str | None = None,
+    analysis_type: str | None = None,
+) -> ResolvedNl2sqlQaFingerprints:
+    """
+    解析自动 QA 写入所需指纹：显式传入优先，否则用当前应用 DB 配置与内存 Schema 目录。
+    """
+    from app.core.config import get_app_config
+    from app.nl2sql.sql_cache import (
+        compute_nl2sql_data_source_fp,
+        compute_nl2sql_policy_fp,
+        compute_schema_fp_from_metadata,
+    )
+
+    app_cfg = get_app_config()
+    db_cfg = getattr(app_cfg, "db", None)
+
+    ds = (data_source_fp or "").strip()
+    if not ds:
+        if db_cfg is None:
+            raise ValueError("data_source_fp is required when application DB config is not available")
+        ds = compute_nl2sql_data_source_fp(
+            host=db_cfg.host,
+            port=db_cfg.port,
+            database=db_cfg.database,
+        )
+
+    sc = (schema_fp or "").strip()
+    if not sc:
+        table_names = [t.name for t in SchemaMetadataService().list_tables() if t.name]
+        if not table_names:
+            raise ValueError(
+                "schema_fp is required when schema catalog is empty; "
+                "pass schema_fp explicitly or refresh NL2SQL schema from DB first"
+            )
+        sc = compute_schema_fp_from_metadata(table_names)
+
+    pol = (policy_fp or "").strip()
+    if not pol:
+        pol = compute_nl2sql_policy_fp(analysis_type=analysis_type)
+
+    return ResolvedNl2sqlQaFingerprints(data_source_fp=ds, schema_fp=sc, policy_fp=pol)
+
+
+def _nl2sql_auto_qa_slot_ids(
+    *,
+    analysis_type: str | None,
+    plan_item_id: str | None,
+    plan_template_version: str | None,
+) -> tuple[str, str, str, str, str]:
+    if not analysis_accepts_auto_qa_feedback(analysis_type, plan_item_id):
+        raise ValueError("analysis_type and plan_item_id are both required for nl2sql auto QA")
+    at = (analysis_type or "").strip()
+    pid = (plan_item_id or "").strip()
+    ptv = normalize_plan_template_version(plan_template_version)
+    ns = NL2SQLRAGService.NS_QA
+    src = INGEST_SOURCE_AUTO
+    doc_name = build_nl2sql_auto_qa_doc_name(
+        namespace=ns,
+        ingest_source=src,
+        analysis_type=at,
+        plan_item_id=pid,
+        plan_template_version=ptv,
+    )
+    dedup_key = build_nl2sql_auto_qa_dedup_key(
+        namespace=ns,
+        ingest_source=src,
+        analysis_type=at,
+        plan_item_id=pid,
+        plan_template_version=ptv,
+    )
+    return at, pid, ptv, doc_name, dedup_key
+
+
+def _index_nl2sql_auto_qa_pair(
+    rag: RAGService,
+    *,
+    doc_name: str,
+    question: str,
+    sql: str,
+    data_source_fp: str,
+    schema_fp: str,
+    policy_fp: str,
+    analysis_type: str,
+    plan_item_id: str,
+    plan_template_version: str,
+    prompt_prefix_snapshot: str | None,
+    metadata_extra: dict[str, Any] | None = None,
+) -> None:
+    ns = NL2SQLRAGService.NS_QA
+    src = INGEST_SOURCE_AUTO
+    text = format_nl2sql_qa_embedding_text(
+        question=question,
+        sql=sql,
+        prompt_prefix_snapshot=prompt_prefix_snapshot,
+    )
+    meta = {
+        "doc_version": NL2SQL_QA_DOC_VERSION_AUTO,
+        META_KEY_INGEST_SOURCE: src,
+        META_KEY_AUTO_KIND: NL2SQL_QA_AUTO_KIND,
+        META_KEY_DEDUP_NAMESPACE: ns,
+        META_KEY_DEDUP_INGEST_SOURCE: src,
+        META_KEY_DATA_SOURCE_FP: data_source_fp,
+        META_KEY_SCHEMA_FP: schema_fp,
+        META_KEY_POLICY_FP: policy_fp,
+        "analysis_type": analysis_type,
+        "plan_item_id": plan_item_id,
+        META_KEY_PLAN_TEMPLATE_VERSION: plan_template_version,
+        "dedup_key": build_nl2sql_auto_qa_dedup_key(
+            namespace=ns,
+            ingest_source=src,
+            analysis_type=analysis_type,
+            plan_item_id=plan_item_id,
+            plan_template_version=plan_template_version,
+        ),
+        "question_normalized": normalize_nl2sql_question(compact_nl2sql_feedback_question(question)),
+    }
+    if metadata_extra:
+        meta.update(metadata_extra)
+    rag.index_texts(
+        [text],
+        namespace=ns,
+        doc_name=doc_name,
+        ids=[doc_name],
+        metadatas=[meta],
+    )
+
+
+def create_nl2sql_auto_qa_entry(
+    rag: RAGService,
+    *,
+    question: str,
+    sql: str,
+    data_source_fp: str,
+    schema_fp: str,
+    policy_fp: str,
+    analysis_type: str,
+    plan_item_id: str,
+    plan_template_version: str | None,
+    prompt_prefix_snapshot: str | None = None,
+    mode: Nl2sqlAutoQaWriteMode = "replace",
+) -> tuple[str, bool, str]:
+    """
+    管理端半自动写入：按五元组定位 doc_name。
+    - skip_if_exists：已存在则跳过（与运行时自动写入一致）
+    - replace：已存在则删后写（等同未知 doc_name 的 PATCH）
+    返回 (doc_name, created, dedup_key)；created=False 表示未写入（仅 skip_if_exists 跳过）。
+    """
+    if mode not in ("skip_if_exists", "replace"):
+        raise ValueError(f"invalid mode: {mode!r}")
+
+    at, pid, ptv, doc_name, dedup_key = _nl2sql_auto_qa_slot_ids(
+        analysis_type=analysis_type,
+        plan_item_id=plan_item_id,
+        plan_template_version=plan_template_version,
+    )
+    ns = NL2SQLRAGService.NS_QA
+    exists = nl2sql_auto_qa_doc_exists(rag, doc_name=doc_name, namespace=ns)
+
+    if exists and mode == "skip_if_exists":
+        logger.info(
+            "NL2SQL QA admin create skipped existing doc_name=%s dedup=%s",
+            doc_name,
+            dedup_key,
+        )
+        return doc_name, False, dedup_key
+
+    if exists and mode == "replace":
+        rag.delete_by_doc_name(doc_name, namespace=ns, doc_version=NL2SQL_QA_DOC_VERSION_AUTO)
+
+    _index_nl2sql_auto_qa_pair(
+        rag,
+        doc_name=doc_name,
+        question=question,
+        sql=sql,
+        data_source_fp=data_source_fp,
+        schema_fp=schema_fp,
+        policy_fp=policy_fp,
+        analysis_type=at,
+        plan_item_id=pid,
+        plan_template_version=ptv,
+        prompt_prefix_snapshot=prompt_prefix_snapshot,
+    )
+    logger.info(
+        "NL2SQL QA admin create indexed doc_name=%s mode=%s analysis_type=%s plan_item_id=%s plan_template_version=%s",
+        doc_name,
+        mode,
+        at,
+        pid,
+        ptv,
+    )
+    return doc_name, True, dedup_key
+
+
 def upsert_nl2sql_auto_qa_pair(
     rag: RAGService,
     *,
@@ -256,74 +465,23 @@ def upsert_nl2sql_auto_qa_pair(
         )
         return None
 
-    at = (analysis_type or "").strip()
-    pid = (plan_item_id or "").strip()
-    ptv = normalize_plan_template_version(plan_template_version)
-    ns = NL2SQLRAGService.NS_QA
-    src = INGEST_SOURCE_AUTO
-    doc_name = build_nl2sql_auto_qa_doc_name(
-        namespace=ns,
-        ingest_source=src,
-        analysis_type=at,
-        plan_item_id=pid,
-        plan_template_version=ptv,
-    )
-    if nl2sql_auto_qa_doc_exists(rag, doc_name=doc_name, namespace=ns):
-        logger.info(
-            "NL2SQL QA feedback skipped existing doc_name=%s dedup=%s",
-            doc_name,
-            build_nl2sql_auto_qa_dedup_key(
-                namespace=ns,
-                ingest_source=src,
-                analysis_type=at,
-                plan_item_id=pid,
-                plan_template_version=ptv,
-            ),
+    try:
+        doc_name, created, _dedup = create_nl2sql_auto_qa_entry(
+            rag,
+            question=question,
+            sql=sql,
+            data_source_fp=data_source_fp,
+            schema_fp=schema_fp,
+            policy_fp=policy_fp,
+            analysis_type=(analysis_type or "").strip(),
+            plan_item_id=(plan_item_id or "").strip(),
+            plan_template_version=plan_template_version,
+            prompt_prefix_snapshot=prompt_prefix_snapshot,
+            mode="skip_if_exists",
         )
+    except ValueError:
         return None
-
-    text = format_nl2sql_qa_embedding_text(
-        question=question,
-        sql=sql,
-        prompt_prefix_snapshot=prompt_prefix_snapshot,
-    )
-    meta = {
-        "doc_version": NL2SQL_QA_DOC_VERSION_AUTO,
-        META_KEY_INGEST_SOURCE: src,
-        META_KEY_AUTO_KIND: NL2SQL_QA_AUTO_KIND,
-        META_KEY_DEDUP_NAMESPACE: ns,
-        META_KEY_DEDUP_INGEST_SOURCE: src,
-        META_KEY_DATA_SOURCE_FP: data_source_fp,
-        META_KEY_SCHEMA_FP: schema_fp,
-        META_KEY_POLICY_FP: policy_fp,
-        "analysis_type": at,
-        "plan_item_id": pid,
-        META_KEY_PLAN_TEMPLATE_VERSION: ptv,
-        "dedup_key": build_nl2sql_auto_qa_dedup_key(
-            namespace=ns,
-            ingest_source=src,
-            analysis_type=at,
-            plan_item_id=pid,
-            plan_template_version=ptv,
-        ),
-        "question_normalized": normalize_nl2sql_question(compact_nl2sql_feedback_question(question)),
-    }
-    rag.index_texts(
-        [text],
-        namespace=ns,
-        doc_name=doc_name,
-        ids=[doc_name],
-        metadatas=[meta],
-    )
-    logger.info(
-        "NL2SQL QA feedback indexed doc_name=%s ns=%s analysis_type=%s plan_item_id=%s plan_template_version=%s",
-        doc_name,
-        ns,
-        at,
-        pid,
-        ptv,
-    )
-    return doc_name
+    return doc_name if created else None
 
 
 def _nl2sql_auto_qa_entry_matches_filters(
@@ -436,11 +594,6 @@ def update_nl2sql_auto_qa_entry(
             break
     if base_meta is None:
         raise ValueError(f"doc_name not found in nl2sql auto QA: {doc_name!r}")
-    text = format_nl2sql_qa_embedding_text(
-        question=question,
-        sql=sql,
-        prompt_prefix_snapshot=prompt_prefix_snapshot,
-    )
     merged = {**base_meta, **(metadata_patch or {})}
     at = str(merged.get("analysis_type") or "").strip()
     pid = str(merged.get("plan_item_id") or "").strip()
@@ -459,10 +612,21 @@ def update_nl2sql_auto_qa_entry(
             plan_template_version=ptv,
         )
     rag.delete_by_doc_name(doc_name, namespace=NL2SQLRAGService.NS_QA, doc_version=NL2SQL_QA_DOC_VERSION_AUTO)
-    rag.index_texts(
-        [text],
-        namespace=NL2SQLRAGService.NS_QA,
+    ptv = normalize_plan_template_version(
+        str(merged.get(META_KEY_PLAN_TEMPLATE_VERSION) or merged.get("plan_template_version") or "")
+    )
+    metadata_extra = dict(metadata_patch) if metadata_patch else None
+    _index_nl2sql_auto_qa_pair(
+        rag,
         doc_name=doc_name,
-        ids=[doc_name],
-        metadatas=[merged],
+        question=question,
+        sql=sql,
+        data_source_fp=str(merged.get(META_KEY_DATA_SOURCE_FP) or ""),
+        schema_fp=str(merged.get(META_KEY_SCHEMA_FP) or ""),
+        policy_fp=str(merged.get(META_KEY_POLICY_FP) or ""),
+        analysis_type=at or str(merged.get("analysis_type") or ""),
+        plan_item_id=pid or str(merged.get("plan_item_id") or ""),
+        plan_template_version=ptv,
+        prompt_prefix_snapshot=prompt_prefix_snapshot,
+        metadata_extra=metadata_extra or None,
     )

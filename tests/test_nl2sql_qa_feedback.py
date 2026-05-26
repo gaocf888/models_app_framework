@@ -10,6 +10,7 @@ from app.nl2sql.qa_feedback import (
     analysis_accepts_auto_qa_feedback,
     build_nl2sql_auto_qa_doc_name,
     compact_nl2sql_feedback_question,
+    create_nl2sql_auto_qa_entry,
     format_nl2sql_qa_embedding_text,
     list_nl2sql_auto_qa_entries,
     qa_chunk_passes_retrieval_filter,
@@ -230,6 +231,71 @@ class TestNl2sqlQaFeedbackDedup(unittest.TestCase):
             0,
             sum(1 for it in store._items if it.get("namespace") == NL2SQLRAGService.NS_QA),  # noqa: SLF001
         )
+
+
+class TestNl2sqlAutoQaAdminCreate(unittest.TestCase):
+    _base = dict(
+        question="请分析超温。查询明细",
+        sql="SELECT 1",
+        data_source_fp="ds1",
+        schema_fp="sc1",
+        policy_fp="pol1",
+        analysis_type="overheat_guidance",
+        plan_item_id="q2a",
+        plan_template_version="v2",
+        prompt_prefix_snapshot=None,
+    )
+
+    def test_create_replace_writes_new_entry(self) -> None:
+        rag, store = _rag_with_inmemory_store()
+        doc, created, dedup_key = create_nl2sql_auto_qa_entry(rag, **self._base, mode="replace")
+        self.assertTrue(created)
+        self.assertIn("v2", dedup_key)
+        self.assertIsNotNone(doc)
+        entries = [
+            it for it in store._items if it.get("namespace") == NL2SQLRAGService.NS_QA  # noqa: SLF001
+        ]
+        self.assertEqual(1, len(entries))
+        self.assertIn("SELECT 1", entries[0].get("text") or "")
+
+    def test_create_skip_if_exists_skips_second(self) -> None:
+        rag, store = _rag_with_inmemory_store()
+        first_doc, first_created, _ = create_nl2sql_auto_qa_entry(rag, **self._base, mode="replace")
+        self.assertTrue(first_created)
+        second_doc, second_created, _ = create_nl2sql_auto_qa_entry(
+            rag,
+            **{**self._base, "sql": "SELECT 2"},
+            mode="skip_if_exists",
+        )
+        self.assertEqual(first_doc, second_doc)
+        self.assertFalse(second_created)
+        entries = [
+            it for it in store._items if it.get("namespace") == NL2SQLRAGService.NS_QA  # noqa: SLF001
+        ]
+        self.assertEqual(1, len(entries))
+        self.assertIn("SELECT 1", entries[0].get("text") or "")
+
+    def test_create_replace_overwrites_existing(self) -> None:
+        rag, store = _rag_with_inmemory_store()
+        doc, _, _ = create_nl2sql_auto_qa_entry(rag, **self._base, mode="replace")
+        _, created, _ = create_nl2sql_auto_qa_entry(
+            rag,
+            **{**self._base, "sql": "SELECT 9"},
+            mode="replace",
+        )
+        self.assertTrue(created)
+        items = store._items.values() if hasattr(store._items, "values") else store._items  # noqa: SLF001
+        entry = next(it for it in items if it.get("doc_name") == doc)
+        self.assertIn("SELECT 9", entry.get("text") or "")
+
+    def test_create_rejects_missing_plan_item(self) -> None:
+        rag, _store = _rag_with_inmemory_store()
+        with self.assertRaises(ValueError):
+            create_nl2sql_auto_qa_entry(
+                rag,
+                **{**self._base, "plan_item_id": ""},
+                mode="replace",
+            )
 
 
 class TestNl2sqlQaFeedbackFilter(unittest.TestCase):
