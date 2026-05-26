@@ -10,8 +10,14 @@ from app.services.analysis_service import _encode_sse_event
 from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
 from app.llm.graphs.analysis_synthesis_v2 import (
     AnalysisSynthesisV2Engine,
+    _aggregate_q2_severity_table_rows,
     _build_audit_facts,
+    _extract_q2_event_summary,
     _rag_snippets_for_slot,
+    _render_overheat_ch2_item1,
+    _render_overheat_ch2_item3,
+    _render_overheat_ch2_item5,
+    _render_template_slot,
     _resolve_data_subset,
     get_synthesis_v2_slots,
     render_markdown_table,
@@ -38,9 +44,13 @@ class TestSynthesisV2Registry(unittest.TestCase):
     def test_overheat_registry_slot_count(self):
         self.assertTrue(synthesis_v2_registry_available("overheat_guidance"))
         slots = get_synthesis_v2_slots("overheat_guidance")
-        self.assertEqual(14, len(slots))
+        self.assertEqual(22, len(slots))
         self.assertEqual("q1", slots[0].source_item_ids[0])
-        self.assertEqual("q6", slots[12].source_item_ids[0])
+        self.assertEqual("q2a", slots[2].source_item_ids[0])
+        self.assertEqual("overheat_ch2_item1", slots[2].template_id)
+        self.assertEqual("q3a", slots[7].source_item_ids[0])
+        self.assertEqual("q3b", slots[8].source_item_ids[0])
+        self.assertEqual("q6a", slots[18].source_item_ids[0])
 
     def test_unknown_type_no_registry(self):
         self.assertFalse(synthesis_v2_registry_available("unknown_type"))
@@ -68,6 +78,92 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
         text = _build_audit_facts({"q3": []}, "#2机组超温")
         self.assertIn("[q3] 无数据行", text)
         self.assertIn("#2机组", text)
+
+    def test_q2_severity_aggregate_and_event_summary(self):
+        rows = [
+            {
+                "测点编号": "P1",
+                "超温等级": "严重超温",
+                "测点及位置": "P1（位置：1号锅炉-末过）",
+            },
+            {
+                "测点编号": "P2",
+                "超温等级": "中度超温",
+                "测点及位置": "P2（位置：1号锅炉-水冷壁）",
+            },
+        ]
+        agg = _aggregate_q2_severity_table_rows(rows)
+        self.assertEqual(2, len(agg))
+        self.assertEqual(1, agg[0]["测点数量"])
+        self.assertIn("P1", agg[0]["测点及位置列表"])
+        summary = _extract_q2_event_summary(
+            [{"全事件平均负荷_MW": 480, "全事件主汽压力_MPa": 16.2}]
+        )
+        self.assertEqual(480, summary["全事件平均负荷_MW"])
+        audit = _build_audit_facts(
+            {"q2b": [{"全事件平均负荷_MW": 480, "全事件主汽压力_MPa": 16.2}]},
+            "1号锅炉",
+            slot_id="s02_2",
+        )
+        self.assertIn("[q2b]", audit)
+        self.assertIn("全事件平均负荷_MW=480", audit)
+
+    def test_q2c_preaggregated_severity_rows(self):
+        rows = [
+            {"超温等级": "严重超温", "测点及位置列表": "P1（位置：1号锅炉-末过）", "测点数量": 1},
+            {"超温等级": "中度超温", "测点及位置列表": "P2（位置：1号锅炉-水冷壁）", "测点数量": 1},
+        ]
+        item3 = _render_overheat_ch2_item3(rows)
+        self.assertIn("P1（位置：1号锅炉-末过）", item3)
+        self.assertIn("轻微超温（5～10℃）：无，共0个", item3)
+
+    def test_ch2_template_renderers(self):
+        rows = [
+            {
+                "测点编号": "P1",
+                "超温等级": "严重超温",
+                "测点及位置": "P1（位置：1号锅炉-末过）",
+                "最早超温起始": "2026-05-01 08:00:00",
+                "最晚超温结束": "2026-05-01 10:00:00",
+                "超温总时长_秒": 7200,
+                "时段说明": "2026-05-01 08:00:00 至 2026-05-01 10:00:00，持续 7200 秒",
+                "受热面名称": "末级过热器",
+            },
+            {
+                "测点编号": "P2",
+                "超温等级": "中度超温",
+                "测点及位置": "P2（位置：1号锅炉-水冷壁）",
+                "最早超温起始": "2026-05-01 08:30:00",
+                "最晚超温结束": "2026-05-01 09:30:00",
+                "超温总时长_秒": 1800,
+                "时段说明": "2026-05-01 08:30:00 至 2026-05-01 09:30:00，持续 1800 秒",
+                "受热面名称": "前墙水冷壁",
+            },
+        ]
+        item1 = _render_overheat_ch2_item1(rows)
+        self.assertIn("1. 超温起止时段", item1)
+        self.assertIn("2026-05-01 08:00:00", item1)
+        self.assertIn("核心测点时段", item1)
+        item5 = _render_overheat_ch2_item5(rows)
+        self.assertIn("5. 超温分布特征", item5)
+        full = _render_template_slot(
+            "overheat_ch2_item2",
+            [{"全事件平均负荷_MW": 480, "全事件负荷_percent": 80, "全事件主汽压力_MPa": 16.2}],
+        )
+        self.assertIn("负荷80%", full)
+        self.assertIn("主汽温度待补充", full)
+        item4 = _render_template_slot(
+            "overheat_ch2_item4",
+            [{
+                "分区域设计壁温": "过热器（末级）：540℃",
+                "全事件实测最高壁温": 590,
+                "全事件最高壁温测点": "P1（末过）",
+                "全事件最大超温差值_监测": 25,
+                "全事件最大超温差值_设计": 20,
+                "全事件平均超温差值_监测": 12.5,
+            }],
+        )
+        self.assertIn("实测最高590℃", item4)
 
     def test_segment_user_content_includes_audit_facts(self):
         engine = AnalysisSynthesisV2Engine(
@@ -278,11 +374,19 @@ class TestAnalysisSynthesisStrategy(unittest.TestCase):
                 data_mode="nl2sql",
                 data_blob={
                     "q1": [{"section": "锅炉台账", "机组名称": "1号锅炉", "锅炉型号": "HG-1000", "额定负荷_MW": 600}],
-                    "q2": [{"pi_code": "T01", "超温总时长_秒": 3600, "当前负荷_MW": 520}],
-                    "q3": [{"section": "区域统计", "超温区域": "屏过", "最高壁温_℃": 580}],
-                    "q4": [{"data_source": "壁温时序", "壁温_℃": 575}],
-                    "q5": [{"record_type": "遗留问题", "问题描述": "减薄"}],
-                    "q6": [{"section": "壁温趋势", "壁温值": 570, "采集时间": "2026-05-01 10:00:00"}],
+                    "q2a": [{"测点编号": "T01", "超温总时长_秒": 3600, "受热面名称": "末过"}],
+                    "q2b": [{"全事件平均负荷_MW": 520}],
+                    "q2c": [{"超温等级": "严重超温", "测点及位置列表": "T01", "测点数量": 1}],
+                    "q2d": [{"全事件实测最高壁温": 580}],
+                    "q3a": [{"超温区域": "屏过", "最高壁温_℃": 580}],
+                    "q3b": [{"测点编号": "T01", "瞬时尖峰超温次数": 2}],
+                    "q4a": [{"采集时间": "2026-05-01", "壁温_℃": 575}],
+                    "q4b": [{"采集时间": "2026-05-01", "测点数值": 100}],
+                    "q5a": [{"record_type": "遗留问题", "问题描述": "减薄"}],
+                    "q5b": [{"已恢复严重超温数": 1}],
+                    "q6a": [{"section": "壁温趋势", "壁温值": 570, "采集时间": "2026-05-01 10:00:00"}],
+                    "q6b": [{"测点编号": "T01", "超温差值_℃": 20}],
+                    "q6c": [{"测点编号": "T01", "历史最大超温差值": 18}],
                 },
                 context_snippets=["规则片段"],
                 system_prompt="ignored",

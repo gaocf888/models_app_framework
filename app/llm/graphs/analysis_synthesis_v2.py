@@ -19,7 +19,13 @@ from app.llm.prompt_registry import PromptTemplateRegistry
 
 logger = get_logger(__name__)
 
-SlotKind = Literal["llm_narrative", "table_deterministic", "chart_structured", "static_markdown"]
+SlotKind = Literal[
+    "llm_narrative",
+    "table_deterministic",
+    "chart_structured",
+    "static_markdown",
+    "template_deterministic",
+]
 
 STREAM_CHUNK_CHARS = 480
 
@@ -32,6 +38,7 @@ class SynthesisV2Slot:
     source_item_ids: tuple[str, ...] = ()
     narrative_instruction: str = ""
     table_id: str = ""
+    template_id: str = ""
     static_body: str = ""
     stream_live: bool = False
 
@@ -64,7 +71,7 @@ class SynthesisV2RunResult:
 # ---------------------------------------------------------------------------
 
 def _overheat_v2_slots() -> list[SynthesisV2Slot]:
-    """与 analysis_plan_overheat_guidance v2（q1～q6）及九段报告模板对齐。"""
+    """与 analysis_plan_overheat_guidance v2 方案B（q1 + q2a～q6c）及九段报告模板一一映射。"""
     return [
         SynthesisV2Slot(
             id="s01",
@@ -74,7 +81,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             narrative_instruction=(
                 "撰写「一、报告基础信息」正文（勿输出标题行），严格按模板条目顺序："
                 "1.报告编号 GL-CW-{日期}-{三位序号，无则001}；2.生成时间 yyyy年mm月dd日 HH:MM；"
-                "3.机组信息（机组编号、锅炉型号、额定负荷MW）；4.监测部位（按超温区域分类列举）；"
+                "3.机组信息（机组编号、锅炉型号、额定负荷MW）；4.监测部位（直接引用 q1「监测部位」字段，格式如：右侧末级过热器（3个测点）、前墙水冷壁（2个测点）；无则待补充）；"
                 "5.数据来源；6.分析主体；7.异常等级（Ⅰ～Ⅳ，按最严重测点）；"
                 "8.超温测点数量（共X个，轻微/中度/严重分项）。仅引用 q1 字段，缺失标「待补充」。"
             ),
@@ -82,60 +89,102 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
         ),
         SynthesisV2Slot(
             id="s02",
-            kind="llm_narrative",
-            title="二、超温事件概况",
-            source_item_ids=("q2",),
-            narrative_instruction=(
-                "撰写「二、超温事件概况」正文（勿输出标题行）："
-                "1.超温起止时段与持续时长（多测点分别标注核心测点时段）；"
-                "2.运行工况（负荷%、主汽压力MPa、主汽温度℃、炉膛负压、氧量，无则待补充）；"
-                "3.超温测点汇总（按严重/中度/轻微分类列测点编号与位置）；"
-                "4.设计允许壁温与实测极值、平均超温差值；"
-                "5.分布特征（集中式/分散式/混合型及依据）。仅引用 q2。"
-            ),
+            kind="static_markdown",
+            title="",
+            static_body="### 二、超温事件概况\n\n",
+        ),
+        SynthesisV2Slot(
+            id="s02_1",
+            kind="template_deterministic",
+            title="",
+            source_item_ids=("q2a",),
+            template_id="overheat_ch2_item1",
+        ),
+        SynthesisV2Slot(
+            id="s02_2",
+            kind="template_deterministic",
+            title="",
+            source_item_ids=("q2b",),
+            template_id="overheat_ch2_item2",
+        ),
+        SynthesisV2Slot(
+            id="s02_3",
+            kind="template_deterministic",
+            title="",
+            source_item_ids=("q2c",),
+            template_id="overheat_ch2_item3",
+        ),
+        SynthesisV2Slot(
+            id="s02_4",
+            kind="template_deterministic",
+            title="",
+            source_item_ids=("q2d",),
+            template_id="overheat_ch2_item4",
+        ),
+        SynthesisV2Slot(
+            id="s02_5",
+            kind="template_deterministic",
+            title="",
+            source_item_ids=("q2a",),
+            template_id="overheat_ch2_item5",
         ),
         SynthesisV2Slot(
             id="s03",
             kind="table_deterministic",
-            title="三、超温数据统计分析（区域与频次数据表）",
-            source_item_ids=("q3",),
-            table_id="overheat_q3_region_freq",
+            title="三、超温数据统计分析（区域汇总数据表）",
+            source_item_ids=("q3a",),
+            table_id="overheat_q3_region",
+        ),
+        SynthesisV2Slot(
+            id="s03b",
+            kind="table_deterministic",
+            title="三、超温数据统计分析（尖峰频次数据表）",
+            source_item_ids=("q3b",),
+            table_id="overheat_q3_peak_freq",
+        ),
+        SynthesisV2Slot(
+            id="s05",
+            kind="table_deterministic",
+            title="三、关联参数联动（壁温时序数据表）",
+            source_item_ids=("q4a",),
+            table_id="overheat_q4_wall_temp",
+        ),
+        SynthesisV2Slot(
+            id="s05b",
+            kind="table_deterministic",
+            title="三、关联参数联动（SIS 关联参数数据表）",
+            source_item_ids=("q4b",),
+            table_id="overheat_q4_sis",
         ),
         SynthesisV2Slot(
             id="s04",
             kind="llm_narrative",
             title="",
-            source_item_ids=("q3", "q4"),
+            source_item_ids=("q3a", "q3b", "q4a", "q4b"),
             narrative_instruction=(
-                "紧接上一节数据表，撰写「三、超温数据统计分析」文字分析（勿输出标题行）："
-                "1.多测点温度统计解读；2.关联参数联动（减温水/烟气/负荷/吹灰等，基于 q4）；"
-                "3.多测点对比（同区域正常与超温差异、区域共性与个性）。"
-                "q4 无行时关联参数部分仅写待补充，禁止编造时序。"
+                "紧接上文全部数据表，撰写「三、超温数据统计分析」文字分析（勿输出标题行）："
+                "1.多测点温度统计解读（引用 q3a 区域汇总、q3b 尖峰频次）；"
+                "2.关联参数联动（减温水/烟气/负荷/吹灰等，基于 q4a 壁温时序与 q4b SIS 时序）；"
+                "3.多测点对比（同区域正常与超温差异、区域共性与个性；可结合 q6c 历史对标若已在前文出现则引用）。"
+                "q4a/q4b 无行时关联参数部分仅写待补充，禁止编造时序。"
             ),
-        ),
-        SynthesisV2Slot(
-            id="s05",
-            kind="table_deterministic",
-            title="关联参数时序（数据表）",
-            source_item_ids=("q4",),
-            table_id="overheat_q4_correlation",
         ),
         SynthesisV2Slot(
             id="s06",
             kind="llm_narrative",
             title="四、超温核心原因智能诊断",
-            source_item_ids=("q1", "q2", "q3", "q4"),
+            source_item_ids=("q1", "q2a", "q2b", "q2c", "q2d", "q3a", "q3b", "q4a", "q4b"),
             narrative_instruction=(
                 "撰写「四、超温核心原因智能诊断」（勿输出标题行）："
                 "(一)共性原因：烟气侧/介质侧/运行操作/设备本体，每条标注置信度与字段依据；"
-                "(二)区域专属原因：按 q3 超温区域逐区分析。禁止无数据支撑的断言。"
+                "(二)区域专属原因：按 q3a 超温区域逐区分析。禁止无数据支撑的断言。"
             ),
         ),
         SynthesisV2Slot(
             id="s07",
             kind="llm_narrative",
             title="五、超温带来的安全危害评估",
-            source_item_ids=("q1", "q2", "q3"),
+            source_item_ids=("q1", "q2a", "q2c", "q3a", "q3b"),
             narrative_instruction=(
                 "撰写「五、超温带来的安全危害评估」（勿输出标题行）："
                 "短期/中期/长期安全影响、经济影响、环保影响（多测点叠加表述）。"
@@ -146,7 +195,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s08",
             kind="llm_narrative",
             title="六、智能处置调控措施",
-            source_item_ids=("q1", "q2", "q3", "q4"),
+            source_item_ids=("q1", "q2a", "q2c", "q3a", "q4a", "q4b"),
             narrative_instruction=(
                 "撰写「六、智能处置调控措施」（勿输出标题行，分四节）："
                 "(一)紧急处置（严重测点优先）；(二)运行优化（共性+区域）；"
@@ -157,27 +206,30 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s09",
             kind="table_deterministic",
             title="七、历史缺陷与检修记录（数据表）",
-            source_item_ids=("q5",),
+            source_item_ids=("q5a",),
             table_id="overheat_q5_defects",
         ),
         SynthesisV2Slot(
             id="s10",
             kind="llm_narrative",
             title="",
-            source_item_ids=("q5",),
+            source_item_ids=("q5a", "q5b"),
             narrative_instruction=(
                 "紧接上一节，撰写「七、整改完成情况&效果验证」（勿输出标题行）："
-                "1.已执行调控操作（分区域，无则待补充）；"
-                "2.全测点效果验证（引用 q5 中 record_type=效果验证 行）；"
+                "1.已执行调控操作（分区域，无则待补充，可引用 q5a）；"
+                "2.全测点效果验证（引用 q5b 汇总行：已恢复严重超温数、恢复后最高壁温、剩余未恢复严重超温数、中轻度是否全部恢复、中轻度当前平均壁温）；"
                 "3.关联参数验证；4.后续跟踪监测时长。"
-                "q5 无效果验证行时验证部分写「待现场补录」。"
+                "q5b 无行时验证部分写「待现场补录」。"
             ),
         ),
         SynthesisV2Slot(
             id="s11",
             kind="llm_narrative",
             title="八、总结结论与后续管控建议",
-            source_item_ids=("q1", "q2", "q3", "q4", "q5", "q6"),
+            source_item_ids=(
+                "q1", "q2a", "q2b", "q2c", "q2d",
+                "q3a", "q3b", "q4a", "q4b", "q5a", "q5b", "q6a", "q6b", "q6c",
+            ),
             narrative_instruction=(
                 "撰写「八、总结结论&后续管控建议」（勿输出标题行）："
                 "1.事件定性（共性+区域诱因）；2.重复超温风险等级高/中/低；"
@@ -188,15 +240,22 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s12",
             kind="chart_structured",
             title="九、附件（趋势图）",
-            source_item_ids=("q6",),
+            source_item_ids=("q6a",),
             table_id="overheat_q6_charts",
         ),
         SynthesisV2Slot(
             id="s13",
             kind="table_deterministic",
-            title="九、附件（多测点对照与历史对标数据表）",
-            source_item_ids=("q6",),
-            table_id="overheat_q6_attachment",
+            title="九、附件（多测点对照数据表）",
+            source_item_ids=("q6b",),
+            table_id="overheat_q6_compare",
+        ),
+        SynthesisV2Slot(
+            id="s13b",
+            kind="table_deterministic",
+            title="九、附件（历史同类对标数据表）",
+            source_item_ids=("q6c",),
+            table_id="overheat_q6_history",
         ),
         SynthesisV2Slot(
             id="s14",
@@ -383,22 +442,366 @@ def strip_leading_duplicate_heading(md: str, slot_title: str) -> str:
     return "\n".join(lines[idx:]).strip()
 
 
-def _build_audit_facts(subset: dict[str, list[dict]], query: str) -> str:
+def _normalize_overheat_level(raw: Any) -> str:
+    s = str(raw or "").strip()
+    if not s or s == "正常":
+        return ""
+    if "严重" in s:
+        return "严重超温"
+    if "中度" in s:
+        return "中度超温"
+    if "轻微" in s:
+        return "轻微超温"
+    return s
+
+
+def _aggregate_q2_severity_table_rows(rows: list[dict]) -> list[dict]:
+    """将 q2 测点明细聚合为 docx 第二章第 3 项：按超温等级的测点及位置列表与数量。"""
+    order = {"严重超温": 1, "中度超温": 2, "轻微超温": 3}
+    buckets: dict[str, list[str]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        level = _normalize_overheat_level(row.get("超温等级") or row.get("overheat_severity"))
+        if not level:
+            continue
+        loc = str(row.get("测点及位置") or row.get("测点编号") or "").strip()
+        if not loc:
+            continue
+        buckets.setdefault(level, []).append(loc)
+    out: list[dict] = []
+    for level in sorted(buckets.keys(), key=lambda x: order.get(x, 99)):
+        pts = buckets[level]
+        out.append(
+            {
+                "超温等级": level,
+                "测点及位置列表": "、".join(pts),
+                "测点数量": len(pts),
+            }
+        )
+    return out
+
+
+_Q2_EVENT_SUMMARY_KEYS: tuple[str, ...] = (
+    "全事件平均负荷_MW",
+    "全事件负荷_percent",
+    "全事件主汽压力_MPa",
+    "全事件实测最高壁温",
+    "全事件最高壁温测点",
+    "全事件最大超温差值_监测",
+    "全事件最大超温差值_设计",
+    "全事件平均超温差值_监测",
+    "分区域设计壁温",
+)
+
+
+def _extract_q2_event_summary(rows: list[dict]) -> dict[str, Any]:
+    """从 q2 任一行提取 JOIN 的全事件级字段（各行相同）。"""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        summary = {k: row[k] for k in _Q2_EVENT_SUMMARY_KEYS if row.get(k) not in (None, "")}
+        if summary:
+            return summary
+    return {}
+
+
+def _first_data_row(rows: list[dict]) -> dict[str, Any]:
+    for row in rows:
+        if isinstance(row, dict):
+            return row
+    return {}
+
+
+def _rows_for_table_slot(table_id: str, rows: list[dict]) -> list[dict]:
+    if table_id == "overheat_q2_severity":
+        return _aggregate_q2_severity_table_rows(rows)
+    return rows
+
+
+def _fmt_template_val(val: Any, fallback: str = "待补充") -> str:
+    if val is None:
+        return fallback
+    s = str(val).strip()
+    return s if s else fallback
+
+
+def _q2_numeric(val: Any) -> float | None:
+    if val is None or str(val).strip() == "":
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_q2_time(val: Any) -> datetime | None:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    s = str(val).strip()
+    if not s:
+        return None
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+    ):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _format_duration_seconds(seconds: int) -> str:
+    if seconds <= 0:
+        return "0秒"
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours}小时")
+    if minutes:
+        parts.append(f"{minutes}分")
+    if secs or not parts:
+        parts.append(f"{secs}秒")
+    return "".join(parts)
+
+
+def _q2_global_time_window(rows: list[dict]) -> tuple[str, str, str]:
+    """返回 (起始, 结束, 持续时长描述)。"""
+    starts: list[datetime] = []
+    ends: list[datetime] = []
+    total_limit_sec = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        st = _parse_q2_time(row.get("最早超温起始"))
+        et = _parse_q2_time(row.get("最晚超温结束"))
+        if st:
+            starts.append(st)
+        if et:
+            ends.append(et)
+        dur = _q2_numeric(row.get("超温总时长_秒"))
+        if dur is not None:
+            total_limit_sec += int(dur)
+    if not starts or not ends:
+        return "待补充", "待补充", "待补充"
+    start_dt = min(starts)
+    end_dt = max(ends)
+    span_sec = int((end_dt - start_dt).total_seconds())
+    if span_sec > 0:
+        duration = _format_duration_seconds(span_sec)
+    elif total_limit_sec > 0:
+        duration = f"累计超温{_format_duration_seconds(total_limit_sec)}"
+    else:
+        duration = "待补充"
+    return (
+        start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        duration,
+    )
+
+
+def _q2_core_point_annotations(rows: list[dict], *, limit: int = 3) -> str:
+    scored: list[tuple[float, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        dur = _q2_numeric(row.get("超温总时长_秒")) or 0.0
+        code = _fmt_template_val(row.get("测点编号"), "")
+        period = _fmt_template_val(row.get("时段说明"), "")
+        if not code or code == "待补充":
+            continue
+        label = f"{code}：{period}" if period and period != "待补充" else code
+        scored.append((dur, label))
+    if not scored:
+        return ""
+    scored.sort(key=lambda x: x[0], reverse=True)
+    labels = [label for _, label in scored[:limit]]
+    return "；".join(labels)
+
+
+def _render_overheat_ch2_item1(rows: list[dict]) -> str:
+    if not rows:
+        return "1. 超温起止时段：起始待补充 结束待补充 持续待补充\n"
+    start, end, duration = _q2_global_time_window(rows)
+    line = f"1. 超温起止时段：起始{start} 结束{end} 持续{duration}"
+    core = _q2_core_point_annotations(rows)
+    if core:
+        line += f"（核心测点时段：{core}）"
+    return line + "\n"
+
+
+def _render_overheat_ch2_item2(rows: list[dict]) -> str:
+    row = _first_data_row(rows)
+    load_pct = _fmt_template_val(row.get("全事件负荷_percent") or row.get("负荷_percent"))
+    pressure = _fmt_template_val(row.get("全事件主汽压力_MPa") or row.get("主汽压力_MPa"))
+    avg_mw = _fmt_template_val(row.get("全事件平均负荷_MW") or row.get("平均负荷_MW"))
+    return (
+        "2. 运行工况："
+        f"负荷{load_pct}%"
+        f"、主汽压力{pressure}MPa"
+        f"、主汽温度待补充℃"
+        f"、炉膛负压待补充Pa"
+        f"、氧量待补充%"
+        f"（平均负荷{avg_mw}MW）\n"
+    )
+
+
+_CH2_SEVERITY_LABELS: tuple[tuple[str, str], ...] = (
+    ("严重超温", "严重超温（≥20℃）"),
+    ("中度超温", "中度超温（10～20℃）"),
+    ("轻微超温", "轻微超温（5～10℃）"),
+)
+
+
+def _severity_buckets_from_rows(rows: list[dict]) -> dict[str, dict]:
+    """优先使用 q2c 已聚合行；否则从测点明细行聚合。"""
+    buckets: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        level = _normalize_overheat_level(row.get("超温等级") or row.get("overheat_severity"))
+        if not level:
+            continue
+        if row.get("测点及位置列表") is not None or row.get("测点数量") is not None:
+            buckets[level] = row
+    if buckets:
+        return buckets
+    return {row["超温等级"]: row for row in _aggregate_q2_severity_table_rows(rows)}
+
+
+def _render_overheat_ch2_item3(rows: list[dict]) -> str:
+    agg = _severity_buckets_from_rows(rows)
+    lines = ["3. 超温测点汇总："]
+    for level_key, label in _CH2_SEVERITY_LABELS:
+        bucket = agg.get(level_key)
+        if bucket:
+            pts = bucket.get("测点及位置列表") or "无"
+            count = bucket.get("测点数量") or 0
+            lines.append(f"{label}：{pts}，共{count}个")
+        else:
+            lines.append(f"{label}：无，共0个")
+    return "\n".join(lines) + "\n"
+
+
+def _render_overheat_ch2_item4(rows: list[dict]) -> str:
+    row = _first_data_row(rows)
+    design_temps = _fmt_template_val(row.get("分区域设计壁温"))
+    max_temp = _fmt_template_val(row.get("全事件实测最高壁温"))
+    max_point = _fmt_template_val(row.get("全事件最高壁温测点"))
+    delta_design = _fmt_template_val(row.get("全事件最大超温差值_设计"))
+    delta_monitor = _fmt_template_val(row.get("全事件最大超温差值_监测"))
+    avg_delta = _fmt_template_val(row.get("全事件平均超温差值_监测"))
+    return (
+        "4. 设计允许壁温&实际温度："
+        f"分区域设计壁温{design_temps}；"
+        f"实测最高{max_temp}℃（测点{max_point}），"
+        f"最大超温差值{delta_design}℃（设计口径）/ {delta_monitor}℃（监测口径）；"
+        f"各超温测点平均超温差值{avg_delta}℃\n"
+    )
+
+
+def _infer_overheat_distribution(rows: list[dict]) -> tuple[str, str]:
+    from collections import Counter
+
+    device_counts: Counter[str] = Counter()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("受热面名称") or row.get("device_name") or "").strip()
+        if not name:
+            continue
+        device_counts[name] += 1
+    if not device_counts:
+        return "待判定", "q2a 无有效受热面名称字段"
+    multi = [name for name, cnt in device_counts.items() if cnt >= 2]
+    singles = [name for name, cnt in device_counts.items() if cnt == 1]
+    total_devices = len(device_counts)
+    total_points = sum(device_counts.values())
+    if total_devices == 1 and total_points >= 2:
+        only = next(iter(device_counts))
+        return "集中式", f"全部{total_points}个超温测点均位于{only}"
+    if total_devices >= 3 and not multi:
+        names = "、".join(sorted(device_counts.keys())[:5])
+        suffix = "等" if total_devices > 5 else ""
+        return "分散式", f"超温测点分散在{total_devices}个受热面（{names}{suffix}），各面均为单点超温"
+    if multi and not singles:
+        names = "、".join(multi[:3])
+        suffix = "等" if len(multi) > 3 else ""
+        return "集中式", f"超温测点集中在{names}{suffix}等{total_devices}个受热面，存在同面多测点超温"
+    names = "、".join(multi[:2]) if multi else "、".join(sorted(device_counts.keys())[:2])
+    return "混合型", f"共{total_points}个测点分布于{total_devices}个受热面，{names}等存在多测点或跨面分布"
+
+
+def _render_overheat_ch2_item5(rows: list[dict]) -> str:
+    if not rows:
+        return "5. 超温分布特征：待判定（q2a 无数据行）\n"
+    pattern, reason = _infer_overheat_distribution(rows)
+    return f"5. 超温分布特征：{pattern}（{reason}）\n"
+
+
+_OVERHEAT_CH2_TEMPLATE_RENDERERS: dict[str, Callable[[list[dict]], str]] = {
+    "overheat_ch2_item1": _render_overheat_ch2_item1,
+    "overheat_ch2_item2": _render_overheat_ch2_item2,
+    "overheat_ch2_item3": _render_overheat_ch2_item3,
+    "overheat_ch2_item4": _render_overheat_ch2_item4,
+    "overheat_ch2_item5": _render_overheat_ch2_item5,
+}
+
+
+def _render_template_slot(template_id: str, rows: list[dict]) -> str:
+    renderer = _OVERHEAT_CH2_TEMPLATE_RENDERERS.get(template_id)
+    if not renderer:
+        raise ValueError(f"unknown_template_id:{template_id}")
+    return renderer(rows)
+
+
+def _audit_preview_row_limit(item_id: str, row_count: int, *, slot_id: str = "") -> int:
+    if item_id == "q2a" and slot_id.startswith("s02"):
+        return min(max(3, row_count), 12)
+    if item_id in ("q2b", "q2d", "q5b") and slot_id.startswith(("s02", "s10")):
+        return min(1, row_count)
+    if item_id == "q2c" and slot_id.startswith("s02"):
+        return min(3, row_count)
+    return min(3, row_count)
+
+
+def _build_audit_facts(
+    subset: dict[str, list[dict]],
+    query: str,
+    *,
+    slot_id: str = "",
+) -> str:
     lines: list[str] = ["【可引用事实（正文数值仅可来自下列键值）】"]
     for iid, rows in subset.items():
         if not rows:
             lines.append(f"- [{iid}] 无数据行 → 不得编造该查询项明细")
             continue
+        preview_n = _audit_preview_row_limit(iid, len(rows), slot_id=slot_id)
         lines.append(f"- [{iid}] {len(rows)} 行")
-        for row in rows[:3]:
+        for row in rows[:preview_n]:
             if not isinstance(row, dict):
                 continue
-            for key, val in list(row.items())[:18]:
+            shown = 0
+            for key, val in row.items():
                 if val is None or str(val).strip() == "":
                     continue
                 hint = _FIELD_UNIT_HINTS.get(str(key).lower(), "")
                 suffix = f" （{hint}）" if hint else ""
                 lines.append(f"  {key}={val}{suffix}")
+                shown += 1
+                if shown >= 18:
+                    break
+        if len(rows) > preview_n:
+            lines.append(f"  ……共 {len(rows)} 行，以上仅预览前 {preview_n} 行")
     q = (query or "").strip()
     if q:
         lines.append(f"- 用户问题约束: {q[:500]}")
@@ -555,7 +958,7 @@ class AnalysisSynthesisV2Engine:
             item_ids,
             strict=slot.kind == "llm_narrative",
         )
-        audit_facts = _build_audit_facts(subset, query)
+        audit_facts = _build_audit_facts(subset, query, slot_id=slot.id)
         coverage = _build_data_coverage_note(subset)
         data_preview = json.dumps(subset, ensure_ascii=False, default=self._json_fallback)[
             : self._gathered_json_max_chars
@@ -629,8 +1032,14 @@ class AnalysisSynthesisV2Engine:
                 md = slot.static_body
                 return SynthesisV2SlotOutput(slot.id, slot.kind, title, md)
 
+            if slot.kind == "template_deterministic":
+                rows = _gather_item_rows(gathered_data, slot.source_item_ids)
+                body = _render_template_slot(slot.template_id, rows)
+                return SynthesisV2SlotOutput(slot.id, slot.kind, title, body)
+
             if slot.kind == "table_deterministic":
                 rows = _gather_item_rows(gathered_data, slot.source_item_ids)
+                rows = _rows_for_table_slot(slot.table_id, rows)
                 md, tbl = render_markdown_table(
                     rows, max_rows=self._table_max_rows, title=title or slot.table_id
                 )

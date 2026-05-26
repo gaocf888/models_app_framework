@@ -468,7 +468,7 @@ class AnalysisConfig:
     default_report_template: str = "standard"
     default_chart_mode: str = "auto"  # auto | minimal | off
     default_report_style: str = "standard"
-    default_max_nl2sql_calls: int = 6
+    default_max_nl2sql_calls: int = 14
     default_max_rows_per_query: int = 2000
     default_max_suggestions: int = 8
     synthesis_timeout_seconds: float = 90.0
@@ -996,7 +996,7 @@ def _load_from_env() -> AppConfig:
         default_report_template=(os.getenv("ANALYSIS_DEFAULT_REPORT_TEMPLATE", "standard") or "standard").strip(),
         default_chart_mode=(os.getenv("ANALYSIS_DEFAULT_CHART_MODE", "auto") or "auto").strip().lower(),
         default_report_style=(os.getenv("ANALYSIS_DEFAULT_REPORT_STYLE", "standard") or "standard").strip(),
-        default_max_nl2sql_calls=max(1, int(os.getenv("ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS", "6"))),
+        default_max_nl2sql_calls=max(1, int(os.getenv("ANALYSIS_DEFAULT_MAX_NL2SQL_CALLS", "14"))),
         default_max_rows_per_query=max(50, int(os.getenv("ANALYSIS_DEFAULT_MAX_ROWS_PER_QUERY", "2000"))),
         default_max_suggestions=max(1, min(20, int(os.getenv("ANALYSIS_DEFAULT_MAX_SUGGESTIONS", "8")))),
         synthesis_timeout_seconds=max(5.0, float(os.getenv("ANALYSIS_SYNTHESIS_TIMEOUT_SECONDS", "90"))),
