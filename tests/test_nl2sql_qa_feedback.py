@@ -11,8 +11,10 @@ from app.nl2sql.qa_feedback import (
     build_nl2sql_auto_qa_doc_name,
     compact_nl2sql_feedback_question,
     create_nl2sql_auto_qa_entry,
+    fetch_nl2sql_qa_chunks_by_slot,
     format_nl2sql_qa_embedding_text,
     list_nl2sql_auto_qa_entries,
+    nl2sql_qa_slot_lookup_eligible,
     qa_chunk_passes_retrieval_filter,
     update_nl2sql_auto_qa_entry,
     upsert_nl2sql_auto_qa_pair,
@@ -361,6 +363,144 @@ class TestNl2sqlQaFeedbackFilter(unittest.TestCase):
                 os.environ.pop("NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED", None)
             else:
                 os.environ["NL2SQL_QA_INCLUDE_LEGACY_UNSCOPED"] = prev
+
+
+class TestNl2sqlQaSlotLookup(unittest.TestCase):
+    _fps = dict(data_source_fp="ds1", schema_fp="sc1", policy_fp="pol1")
+
+    def test_slot_eligible_requires_plan_template_version(self) -> None:
+        ctx = NL2SQLQARetrievalContext(
+            **self._fps,
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version=None,
+        )
+        self.assertFalse(nl2sql_qa_slot_lookup_eligible(ctx))
+        ctx_v2 = NL2SQLQARetrievalContext(
+            **self._fps,
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version="v2",
+        )
+        self.assertTrue(nl2sql_qa_slot_lookup_eligible(ctx_v2))
+
+    def test_slot_not_eligible_without_plan_item(self) -> None:
+        ctx = NL2SQLQARetrievalContext(
+            **self._fps,
+            analysis_type="overheat_guidance",
+            plan_item_id=None,
+            plan_template_version="v2",
+        )
+        self.assertFalse(nl2sql_qa_slot_lookup_eligible(ctx))
+
+    def test_fetch_by_slot_returns_exact_doc(self) -> None:
+        rag, _store = _rag_with_inmemory_store()
+        create_nl2sql_auto_qa_entry(
+            rag,
+            question="q1 question",
+            sql="SELECT slot_q1",
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version="v2",
+            prompt_prefix_snapshot=None,
+            mode="replace",
+            **self._fps,
+        )
+        create_nl2sql_auto_qa_entry(
+            rag,
+            question="q2a question",
+            sql="SELECT slot_q2a",
+            analysis_type="overheat_guidance",
+            plan_item_id="q2a",
+            plan_template_version="v2",
+            prompt_prefix_snapshot=None,
+            mode="replace",
+            **self._fps,
+        )
+        ctx = NL2SQLQARetrievalContext(
+            **self._fps,
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version="v2",
+        )
+        chunks = fetch_nl2sql_qa_chunks_by_slot(rag, ctx)
+        self.assertEqual(1, len(chunks))
+        self.assertIn("SELECT slot_q1", chunks[0].text or "")
+        self.assertNotIn("SELECT slot_q2a", chunks[0].text or "")
+
+    def test_fetch_by_slot_empty_on_fingerprint_mismatch(self) -> None:
+        rag, _store = _rag_with_inmemory_store()
+        create_nl2sql_auto_qa_entry(
+            rag,
+            question="q1 question",
+            sql="SELECT slot_q1",
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version="v2",
+            prompt_prefix_snapshot=None,
+            mode="replace",
+            **self._fps,
+        )
+        ctx = NL2SQLQARetrievalContext(
+            data_source_fp="ds1",
+            schema_fp="sc_other",
+            policy_fp="pol1",
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version="v2",
+        )
+        self.assertEqual([], fetch_nl2sql_qa_chunks_by_slot(rag, ctx))
+
+    def test_rag_service_slot_hit_skips_vector_qa(self) -> None:
+        rag, _store = _rag_with_inmemory_store()
+        rag._rerank = lambda query, hits: hits  # noqa: SLF001
+        create_nl2sql_auto_qa_entry(
+            rag,
+            question="q1 question",
+            sql="SELECT slot_q1",
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version="v2",
+            prompt_prefix_snapshot=None,
+            mode="replace",
+            **self._fps,
+        )
+        rag.index_texts(
+            ["decoy vector qa should not win when slot hits"],
+            namespace=NL2SQLRAGService.NS_QA,
+            doc_name="manual_decoy",
+        )
+        svc = NL2SQLRAGService(rag_service=rag)
+        ctx = NL2SQLQARetrievalContext(
+            **self._fps,
+            analysis_type="overheat_guidance",
+            plan_item_id="q1",
+            plan_template_version="v2",
+        )
+        chunks = svc.retrieve_chunks("unrelated query text", nl2sql_qa_context=ctx)
+        qa_chunks = [c for c in chunks if c.namespace == NL2SQLRAGService.NS_QA]
+        self.assertEqual(1, len(qa_chunks))
+        self.assertIn("SELECT slot_q1", qa_chunks[0].text or "")
+
+    def test_rag_service_without_plan_item_uses_vector_qa(self) -> None:
+        rag, _store = _rag_with_inmemory_store()
+        rag._rerank = lambda query, hits: hits  # noqa: SLF001
+        rag.index_texts(
+            ["vector qa decoy text for retrieval"],
+            namespace=NL2SQLRAGService.NS_QA,
+            doc_name="manual_only",
+        )
+        svc = NL2SQLRAGService(rag_service=rag)
+        ctx = NL2SQLQARetrievalContext(
+            **self._fps,
+            analysis_type=None,
+            plan_item_id=None,
+            plan_template_version=None,
+        )
+        chunks = svc.retrieve_chunks("vector qa decoy", nl2sql_qa_context=ctx)
+        qa_chunks = [c for c in chunks if c.namespace == NL2SQLRAGService.NS_QA]
+        self.assertGreaterEqual(len(qa_chunks), 1)
+        self.assertIn("vector qa decoy", qa_chunks[0].text or "")
 
 
 if __name__ == "__main__":

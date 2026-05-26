@@ -63,7 +63,26 @@ class NL2SQLQARetrievalContext:
     schema_fp: str
     policy_fp: str
     analysis_type: str | None = None
+    plan_item_id: str | None = None
     plan_template_version: str | None = None
+
+
+def nl2sql_qa_slot_lookup_enabled() -> bool:
+    """综合分析 acquire_data 子任务按五元组直取 QA 的总开关（默认开启）。"""
+    return os.getenv("NL2SQL_QA_SLOT_LOOKUP_ENABLED", "true").lower() == "true"
+
+
+def nl2sql_qa_slot_lookup_eligible(ctx: NL2SQLQARetrievalContext | None) -> bool:
+    """
+    是否对 nl2sql_qa_examples 走五元组 doc_name 精确取 1 条（非向量 Top-K）。
+    需同时具备 analysis_type + plan_item_id + plan_template_version（且版本非 unknown）。
+    """
+    if ctx is None or not nl2sql_qa_slot_lookup_enabled():
+        return False
+    if not analysis_accepts_auto_qa_feedback(ctx.analysis_type, ctx.plan_item_id):
+        return False
+    ptv = normalize_plan_template_version(ctx.plan_template_version)
+    return bool(ptv and ptv != "unknown")
 
 
 def normalize_plan_template_version(plan_template_version: str | None) -> str:
@@ -178,6 +197,67 @@ def format_nl2sql_qa_embedding_text(
         parts.append(f"【预制提示前缀摘要】\n{prefix}")
     parts.append(f"【校验通过的 SQL】\n{sql_body}")
     return "\n\n".join(parts)
+
+
+def fetch_nl2sql_qa_chunks_by_slot(
+    rag: RAGService,
+    ctx: NL2SQLQARetrievalContext,
+    *,
+    max_chunks: int = 1,
+) -> list[RetrievedChunk]:
+    """
+    按五元组 (namespace, ingest_source, analysis_type, plan_item_id, plan_template_version)
+    精确加载 nl2sql_qa_examples 中唯一 doc；再经指纹过滤。
+    未命中或指纹不匹配时返回空列表（由调用方回退向量检索）。
+    """
+    if not nl2sql_qa_slot_lookup_eligible(ctx):
+        return []
+
+    at = (ctx.analysis_type or "").strip()
+    pid = (ctx.plan_item_id or "").strip()
+    ptv = normalize_plan_template_version(ctx.plan_template_version)
+    doc_name = build_nl2sql_auto_qa_doc_name(
+        analysis_type=at,
+        plan_item_id=pid,
+        plan_template_version=ptv,
+    )
+
+    entries = list_nl2sql_auto_qa_entries(
+        rag,
+        limit=max(1, max_chunks),
+        analysis_type=at,
+        plan_item_id=pid,
+        plan_template_version=ptv,
+    )
+    out: list[RetrievedChunk] = []
+    for entry in entries:
+        if str(entry.get("doc_name") or "") != doc_name:
+            continue
+        meta = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+        chunk = RetrievedChunk(
+            text=str(entry.get("text") or ""),
+            doc_name=doc_name,
+            namespace=str(entry.get("namespace") or NL2SQLRAGService.NS_QA),
+            chunk_id=str(entry.get("ext_id") or doc_name),
+            score=1.0,
+            metadata=meta,
+        )
+        if not (chunk.text or "").strip():
+            continue
+        if qa_chunk_passes_retrieval_filter(chunk, ctx):
+            out.append(chunk)
+        if len(out) >= max(1, max_chunks):
+            break
+
+    logger.info(
+        "NL2SQL QA slot lookup doc_name=%s analysis_type=%s plan_item_id=%s plan_template_version=%s hit=%s",
+        doc_name,
+        at,
+        pid,
+        ptv,
+        bool(out),
+    )
+    return out
 
 
 def qa_chunk_passes_retrieval_filter(

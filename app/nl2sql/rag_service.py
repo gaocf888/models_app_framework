@@ -123,9 +123,15 @@ class NL2SQLRAGService:
     ) -> List[RetrievedChunk]:
         """
         标准检索接口：返回 RetrievedChunk（含 doc/namespace/section 等元信息）。
-        nl2sql_qa_context：启用时按数据源/schema 指纹过滤 nl2sql_qa_examples 中的系统自动写入片段。
+        nl2sql_qa_context：启用时按数据源/schema 指纹过滤 nl2sql_qa_examples 中的系统自动写入片段；
+        综合分析 acquire_data（analysis_type + plan_item_id + plan_template_version 齐全）时
+        对 QA 命名空间优先按五元组 doc_name 精确取 1 条，未命中再回退向量检索。
         """
-        from app.nl2sql.qa_feedback import qa_chunk_passes_retrieval_filter
+        from app.nl2sql.qa_feedback import (
+            fetch_nl2sql_qa_chunks_by_slot,
+            nl2sql_qa_slot_lookup_eligible,
+            qa_chunk_passes_retrieval_filter,
+        )
 
         profile = get_app_config().rag.scene_profiles.nl2sql
         top = top_k if top_k is not None else profile.top_k
@@ -142,10 +148,26 @@ class NL2SQLRAGService:
         decision = self._policy.decide(question)
         per_ns_vector: dict[str, int] = {}
         per_ns_graph: dict[str, int] = {}
+        qa_slot_lookup: str = "n/a"
 
         for ns in (self.NS_SCHEMA, self.NS_BIZ, self.NS_QA):
+            qa_used_slot = False
+            if ns == self.NS_QA and nl2sql_qa_slot_lookup_eligible(nl2sql_qa_context):
+                slot_chunks = fetch_nl2sql_qa_chunks_by_slot(
+                    self._rag,
+                    nl2sql_qa_context,  # type: ignore[arg-type]
+                    max_chunks=ns_qa,
+                )
+                if slot_chunks:
+                    qa_used_slot = True
+                    qa_slot_lookup = "hit"
+                    per_ns_vector[ns] = len(slot_chunks)
+                    results.extend(slot_chunks)
+                elif qa_slot_lookup != "hit":
+                    qa_slot_lookup = "miss_fallback_vector"
+
             # 向量侧标准结构优先保留（含 doc/section 元信息）。
-            if decision.mode != "graph":
+            if decision.mode != "graph" and not qa_used_slot:
                 if ns == self.NS_SCHEMA:
                     ns_top = ns_schema
                 elif ns == self.NS_BIZ:
@@ -164,7 +186,7 @@ class NL2SQLRAGService:
                 per_ns_vector[ns] = per_ns_vector.get(ns, 0) + len(chunks)
                 results.extend(chunks)
             # 图侧事实按统一策略层决策补充。
-            if decision.mode != "vector" and self._graph_query is not None:
+            if decision.mode != "vector" and self._graph_query is not None and not qa_used_slot:
                 graph_facts = self._graph_query.query_relevant_facts(
                     question=question,
                     namespace=ns,
@@ -202,7 +224,8 @@ class NL2SQLRAGService:
             unique_results.append(c)
         logger.info(
             "NL2SQLRAG.retrieve_chunks mode=%s top_k=%s schema_raw_top=%s caps(schema,biz,qa)=(%s,%s,%s) "
-            "effective(schema,biz,qa)=(%s,%s,%s) graph_enabled=%s raw_total=%d unique=%d per_ns_vector=%s per_ns_graph=%s query_len=%d",
+            "effective(schema,biz,qa)=(%s,%s,%s) graph_enabled=%s qa_slot_lookup=%s raw_total=%d unique=%d "
+            "per_ns_vector=%s per_ns_graph=%s query_len=%d",
             decision.mode,
             top,
             schema_ns_top,
@@ -213,6 +236,7 @@ class NL2SQLRAGService:
             ns_biz,
             ns_qa,
             self._graph_query is not None,
+            qa_slot_lookup,
             len(results),
             len(unique_results),
             per_ns_vector,

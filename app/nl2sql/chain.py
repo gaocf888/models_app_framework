@@ -248,6 +248,7 @@ class NL2SQLChain:
                     schema_fp=schema_fp,
                     policy_fp=policy_fp,
                     analysis_type=analysis_type,
+                    plan_item_id=plan_item_id,
                     plan_template_version=plan_template_version,
                 )
 
