@@ -106,6 +106,16 @@ class NL2SQLChain:
             "recent_6_months",
         }
     )
+    _HALF_OPEN_WINDOW_TAGS = _DAY_WINDOW_TAGS | frozenset(
+        {
+            "this_week",
+            "last_week",
+            "this_month",
+            "last_month",
+            "this_year",
+            "last_year",
+        }
+    )
 
     def __init__(
         self,
@@ -376,6 +386,7 @@ class NL2SQLChain:
                     validation_ctx=validation_ctx,
                     entity_rules=entity_rules,
                     log_label="sql_cache",
+                    plan_item_id=plan_item_id,
                 )
                 if valid:
                     logger.info(
@@ -427,6 +438,7 @@ class NL2SQLChain:
                                 validation_ctx=validation_ctx,
                                 entity_rules=entity_rules,
                                 log_label="sql_l1_cache",
+                                plan_item_id=plan_item_id,
                             )
                             if valid:
                                 logger.info(
@@ -815,12 +827,16 @@ class NL2SQLChain:
         validation_ctx: NL2SQLValidationContext,
         entity_rules: list[EntityRule],
         log_label: str,
+        plan_item_id: str | None = None,
     ) -> tuple[str, bool, str | None]:
         """normalize → TiDB 改写 → 时间/区域 filter → 方言与 whitelist 校验（L2/L1/QA replay 共用）。"""
         sql = self._validator.normalize_sql(sql)
         sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
         sql, filter_notes = self._rewrite_query_filters(
-            sql, question=question, time_intent_source=time_intent_source
+            sql,
+            question=question,
+            time_intent_source=time_intent_source,
+            plan_item_id=plan_item_id,
         )
         rewrite_notes.extend(filter_notes)
         if rewrite_notes:
@@ -899,6 +915,7 @@ class NL2SQLChain:
             validation_ctx=validation_ctx,
             entity_rules=entity_rules,
             log_label="qa_replay",
+            plan_item_id=plan_item_id,
         )
         if not ok:
             logger.warning(
@@ -1168,6 +1185,7 @@ class NL2SQLChain:
         *,
         question: str,
         time_intent_source: str | None = None,
+        plan_item_id: str | None = None,
     ) -> tuple[str, list[str]]:
         """P2：优化口径（通用时间语义动态窗 + 机组/锅炉范围 + 区域放宽匹配）。"""
         notes: list[str] = []
@@ -1192,6 +1210,16 @@ class NL2SQLChain:
                 tag=tag,
             )
             notes.extend(time_notes)
+            rewritten, bound_notes = self._inject_missing_time_upper_bounds(
+                rewritten,
+                start_expr=start_expr,
+                end_expr=end_expr,
+                tag=tag,
+            )
+            notes.extend(bound_notes)
+            rewritten = self._normalize_end_time_upper_to_start_time(rewritten, end_expr=end_expr)
+        rewritten, gc_notes = self._rewrite_group_concat_utf8_safe(rewritten, plan_item_id=plan_item_id)
+        notes.extend(gc_notes)
         rewritten, scope_notes = self._rewrite_entity_scope_literals(rewritten, question=question)
         notes.extend(scope_notes)
         rewritten, region_notes = self._rewrite_relaxed_region_match(rewritten, question=question)
@@ -1483,6 +1511,87 @@ class NL2SQLChain:
                 else:
                     rewritten = f"{rewritten} WHERE {col} >= {start_expr} AND {col} < {end_expr}"
                 notes.append(f"dynamic_time_window_injected:{tag}")
+        return rewritten, notes
+
+    @classmethod
+    def _should_inject_time_upper_bound(cls, tag: str) -> bool:
+        if cls._is_plan_override_window_tag(tag) or tag.startswith("recent_"):
+            return False
+        if tag in cls._HALF_OPEN_WINDOW_TAGS:
+            return True
+        return tag.startswith("month_") or tag.startswith("year_")
+
+    def _inject_missing_time_upper_bounds(
+        self,
+        sql: str,
+        *,
+        start_expr: str,
+        end_expr: str,
+        tag: str,
+    ) -> tuple[str, list[str]]:
+        """对仅有下界（>= start_expr）而无上界（< end_expr）的时间列补齐半开区间上界。"""
+        if not self._should_inject_time_upper_bound(tag):
+            return sql, []
+        notes: list[str] = []
+        rewritten = sql
+        ge_pat = re.compile(
+            rf"(?i)(\b[a-zA-Z_][\w]*\.(?:start_time|record_time|data_time|leakage_date|mark_time|ts|timestamp)"
+            rf"|(?<![\w.])(?:start_time|record_time|data_time|leakage_date|mark_time|ts|timestamp))"
+            rf"\s*>=\s*{re.escape(start_expr)}"
+        )
+        offset = 0
+        for m in ge_pat.finditer(sql):
+            col = m.group(1)
+            upper_pat = re.compile(
+                rf"(?i){re.escape(col)}\s*<\s*{re.escape(end_expr)}"
+            )
+            if upper_pat.search(rewritten):
+                continue
+            insert_at = m.end() + offset
+            suffix = f" AND {col} < {end_expr}"
+            rewritten = rewritten[:insert_at] + suffix + rewritten[insert_at:]
+            offset += len(suffix)
+            notes.append(f"dynamic_time_window_injected_lt:{tag}")
+        return rewritten, notes
+
+    @staticmethod
+    def _normalize_end_time_upper_to_start_time(sql: str, *, end_expr: str) -> str:
+        """将 end_time 的上界条件归一到 start_time，避免跨天事件漏计/多计。"""
+        esc_end = re.escape(end_expr)
+        return re.sub(
+            rf"(?i)(\b[a-zA-Z_][\w]*\.)end_time(\s*<\s*{esc_end})",
+            r"\1start_time\2",
+            sql,
+        )
+
+    @staticmethod
+    def _rewrite_group_concat_utf8_safe(
+        sql: str,
+        *,
+        plan_item_id: str | None = None,
+    ) -> tuple[str, list[str]]:
+        """
+        q2c 等含 GROUP_CONCAT 中文拼接的查询：限制长度并显式 utf8mb4，降低驱动解码失败概率。
+        """
+        if (plan_item_id or "").lower() != "q2c":
+            return sql, []
+        if "GROUP_CONCAT" not in sql.upper():
+            return sql, []
+        marker = "CAST(GROUP_CONCAT("
+        if marker in sql:
+            return sql, []
+        notes: list[str] = []
+        rewritten = re.sub(
+            r"(?is)GROUP_CONCAT\s*\((.*?)\)",
+            lambda m: (
+                "SUBSTRING(CAST(GROUP_CONCAT("
+                f"{m.group(1)}) AS CHAR CHARACTER SET utf8mb4), 1, 4096)"
+            ),
+            sql,
+            count=1,
+        )
+        if rewritten != sql:
+            notes.append("group_concat_utf8_safe")
         return rewritten, notes
 
     def _rewrite_date_sub_time_anchors(

@@ -283,6 +283,54 @@ def test_rewrite_time_placeholders_t_after() -> None:
     assert ">= DATE_ADD(CURDATE(), INTERVAL 1 DAY)" in rewritten
 
 
+def test_rewrite_injects_missing_upper_bound_for_today() -> None:
+    """仅有 >= CURDATE() 的子查询应补齐 < DATE_ADD(CURDATE(), INTERVAL 1 DAY)（q1 lv 子查询）。"""
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "WHERE t.start_time >= CURDATE() AND t.highest_temp > t.limit_temp"
+    )
+    user_q = "请分析1号锅炉今天的超温情况"
+    rewritten, notes = chain._rewrite_query_filters(
+        sql, question=user_q, time_intent_source=user_q
+    )
+    assert "t.start_time >= CURDATE()" in rewritten
+    assert "t.start_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)" in rewritten
+    assert any("injected_lt" in n for n in notes)
+
+
+def test_rewrite_normalizes_end_time_upper_to_start_time() -> None:
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "WHERE t.start_time >= '2026-05-27 00:00:00' "
+        "AND t.end_time <= '2026-05-27 23:59:59'"
+    )
+    user_q = "请分析1号锅炉今天的超温情况"
+    rewritten, _ = chain._rewrite_query_filters(
+        sql, question=user_q, time_intent_source=user_q, plan_item_id="q6a"
+    )
+    assert "t.end_time <" not in rewritten.lower()
+    assert "t.start_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)" in rewritten
+
+
+def test_rewrite_q2c_group_concat_utf8_safe() -> None:
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT GROUP_CONCAT(x.测点及位置 ORDER BY x.max_delta DESC SEPARATOR '、') "
+        "FROM t"
+    )
+    rewritten, notes = chain._rewrite_query_filters(
+        sql,
+        question="请分析1号锅炉今天的超温情况",
+        time_intent_source="请分析1号锅炉今天的超温情况",
+        plan_item_id="q2c",
+    )
+    assert "CAST(GROUP_CONCAT(" in rewritten
+    assert "utf8mb4" in rewritten
+    assert "group_concat_utf8_safe" in notes
+
+
 def test_table_scope_from_env(monkeypatch) -> None:
     chain = _build_chain_for_unit()
     tc = {

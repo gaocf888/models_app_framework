@@ -16,6 +16,7 @@ from app.llm.graphs.analysis_synthesis_v2 import (
     _build_dcs_linkage_charts,
     _extract_q2_event_summary,
     _rag_snippets_for_slot,
+    _render_overheat_ch1_basic_info,
     _render_overheat_ch2_item1,
     _render_overheat_ch2_item3,
     _render_overheat_ch2_item5,
@@ -48,6 +49,8 @@ class TestSynthesisV2Registry(unittest.TestCase):
         slots = get_synthesis_v2_slots("overheat_guidance")
         self.assertEqual(23, len(slots))
         self.assertEqual("q1", slots[0].source_item_ids[0])
+        self.assertEqual("template_deterministic", slots[0].kind)
+        self.assertEqual("overheat_ch1_basic", slots[0].template_id)
         self.assertEqual("q2a", slots[2].source_item_ids[0])
         self.assertEqual("overheat_ch2_item1", slots[2].template_id)
         self.assertEqual("q3a", slots[7].source_item_ids[0])
@@ -111,6 +114,27 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
         )
         self.assertIn("[q2b]", audit)
         self.assertIn("全事件平均负荷_MW=480", audit)
+
+    def test_ch1_basic_info_from_q1(self):
+        body = _render_overheat_ch1_basic_info(
+            [
+                {
+                    "机组名称": "1号锅炉",
+                    "锅炉型号": "HG-1000",
+                    "额定负荷_MW": 600,
+                    "监测部位": "水冷壁螺旋段右墙（13个测点）",
+                    "超温测点总数": 98,
+                    "轻微超温数量": 20,
+                    "中度超温数量": 30,
+                    "严重超温数量": 48,
+                }
+            ]
+        )
+        self.assertIn("1号锅炉", body)
+        self.assertIn("HG-1000", body)
+        self.assertIn("共98个", body)
+        self.assertIn("Ⅳ级（严重超温）", body)
+        self.assertNotIn("（待补充）", body)
 
     def test_q2c_preaggregated_severity_rows(self):
         rows = [

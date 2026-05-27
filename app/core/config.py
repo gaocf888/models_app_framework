@@ -730,8 +730,12 @@ def _load_from_env() -> AppConfig:
     db_url = os.getenv(
         "DB_URL",
         "mysql+aiomysql://"
-        f"{quote(db_user, safe='')}:{quote(db_password, safe='')}@{db_host}:{db_port}/{db_name}",
+        f"{quote(db_user, safe='')}:{quote(db_password, safe='')}@{db_host}:{db_port}/{db_name}"
+        "?charset=utf8mb4",
     )
+    if "charset=" not in db_url.lower():
+        sep = "&" if "?" in db_url else "?"
+        db_url = f"{db_url}{sep}charset=utf8mb4"
 
     db_cfg = DatabaseConfig(
         url=db_url,

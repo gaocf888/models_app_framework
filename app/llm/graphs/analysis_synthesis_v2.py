@@ -79,17 +79,10 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
     return [
         SynthesisV2Slot(
             id="s01",
-            kind="llm_narrative",
+            kind="template_deterministic",
             title="一、报告基础信息",
             source_item_ids=("q1",),
-            narrative_instruction=(
-                "撰写「一、报告基础信息」正文（勿输出标题行），严格按模板条目顺序："
-                "1.报告编号 GL-CW-{日期}-{三位序号，无则001}；2.生成时间 yyyy年mm月dd日 HH:MM；"
-                "3.机组信息（机组编号、锅炉型号、额定负荷MW）；4.监测部位（直接引用 q1「监测部位」字段，格式如：右侧末级过热器（3个测点）、前墙水冷壁（2个测点）；无则待补充）；"
-                "5.数据来源；6.分析主体；7.异常等级（Ⅰ～Ⅳ，按最严重测点）；"
-                "8.超温测点数量（共X个，轻微/中度/严重分项）。仅引用 q1 字段，缺失标「待补充」。"
-            ),
-            stream_live=True,
+            template_id="overheat_ch1_basic",
         ),
         SynthesisV2Slot(
             id="s02",
@@ -639,6 +632,51 @@ def _q2_core_point_annotations(rows: list[dict], *, limit: int = 3) -> str:
     return "；".join(labels)
 
 
+def _overheat_anomaly_level_from_q1(row: dict[str, Any]) -> str:
+    severe = int(_q2_numeric(row.get("严重超温数量")) or 0)
+    moderate = int(_q2_numeric(row.get("中度超温数量")) or 0)
+    mild = int(_q2_numeric(row.get("轻微超温数量")) or 0)
+    if severe > 0:
+        return "Ⅳ级（严重超温）"
+    if moderate > 0:
+        return "Ⅲ级（中度超温）"
+    if mild > 0:
+        return "Ⅱ级（轻微超温）"
+    return "Ⅰ级（正常）"
+
+
+def _render_overheat_ch1_basic_info(rows: list[dict]) -> str:
+    row = _first_data_row(rows)
+    if not row:
+        return "（待补充）\n"
+    now = datetime.now()
+    report_no = f"GL-CW-{now.strftime('%Y%m%d')}-001"
+    gen_time = now.strftime("%Y年%m月%d日 %H:%M")
+    boiler = _fmt_template_val(row.get("机组名称"))
+    model = _fmt_template_val(row.get("锅炉型号"))
+    load_mw = _fmt_template_val(row.get("额定负荷_MW"))
+    monitor = _fmt_template_val(row.get("监测部位"))
+    total = int(_q2_numeric(row.get("超温测点总数")) or 0)
+    mild = int(_q2_numeric(row.get("轻微超温数量")) or 0)
+    moderate = int(_q2_numeric(row.get("中度超温数量")) or 0)
+    severe = int(_q2_numeric(row.get("严重超温数量")) or 0)
+    anomaly = _overheat_anomaly_level_from_q1(row)
+    lines = [
+        f"1.报告编号：{report_no}",
+        f"2.生成时间：{gen_time}",
+        f"3.机组信息：机组编号{boiler}、锅炉型号{model}、额定负荷{load_mw}MW",
+        f"4.监测部位：{monitor}",
+        "5.数据来源：SIS/DCS 实时监测与历史台账",
+        f"6.分析主体：{boiler}",
+        f"7.异常等级：{anomaly}",
+        (
+            f"8.超温测点数量：共{total}个"
+            f"（轻微{mild}个、中度{moderate}个、严重{severe}个）"
+        ),
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _render_overheat_ch2_item1(rows: list[dict]) -> str:
     if not rows:
         return "1. 超温起止时段：起始待补充 结束待补充 持续待补充\n"
@@ -760,6 +798,7 @@ def _render_overheat_ch2_item5(rows: list[dict]) -> str:
 
 
 _OVERHEAT_CH2_TEMPLATE_RENDERERS: dict[str, Callable[[list[dict]], str]] = {
+    "overheat_ch1_basic": _render_overheat_ch1_basic_info,
     "overheat_ch2_item1": _render_overheat_ch2_item1,
     "overheat_ch2_item2": _render_overheat_ch2_item2,
     "overheat_ch2_item3": _render_overheat_ch2_item3,

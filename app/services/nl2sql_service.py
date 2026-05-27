@@ -60,6 +60,8 @@ class NL2SQLService:
             time_intent_text=req.time_intent_text,
         )
         rows: list = []
+        execute_succeeded = False
+        last_execute_error: BaseException | None = None
         explain_first = os.getenv("NL2SQL_EXPLAIN_BEFORE_EXECUTE", "false").lower() == "true"
         refine_on_exec = os.getenv("NL2SQL_REFINE_ON_EXEC_ERROR", "true").lower() == "true"
         max_refines = max(0, int(os.getenv("NL2SQL_MAX_EXEC_REFINES", "0")))
@@ -118,6 +120,7 @@ class NL2SQLService:
                     break
             try:
                 rows = await self._executor.execute(sql)
+                execute_succeeded = True
                 logger.info(
                     "NL2SQLService.query execute ok user_id=%s session_id=%s row_count=%d duration_ms=%d analysis_request_id=%s plan_item_id=%s",
                     req.user_id,
@@ -129,6 +132,8 @@ class NL2SQLService:
                 )
                 break
             except Exception as exc:  # noqa: BLE001
+                last_execute_error = exc
+                execute_succeeded = False
                 NL2SQL_QUERY_ERROR_COUNT.inc()
                 logger.exception(
                     "NL2SQLService.query execute failed user_id=%s session_id=%s sql_len=%d analysis_request_id=%s plan_item_id=%s",
@@ -155,6 +160,10 @@ class NL2SQLService:
                         req.user_id, req.session_id, f"SQL execution error: {exc}"
                     )
                 break
+
+        if (sql or "").strip() and not execute_succeeded:
+            err_msg = str(last_execute_error) if last_execute_error else "sql_execution_failed"
+            raise RuntimeError(f"SQL execution failed: {err_msg}") from last_execute_error
 
         if record_conversation:
             self._conv.append_assistant_message(req.user_id, req.session_id, f"SQL: {sql}")
