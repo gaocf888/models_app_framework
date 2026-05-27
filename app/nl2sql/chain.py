@@ -827,12 +827,14 @@ class NL2SQLChain:
             if validation_ctx.schema_ok
             else None
         )
+        # QA strict replay 信任 slot 中已审核 SQL，跳过 flat 列白名单（仍保留表白名单与列绑定等校验）。
+        enforce_column_whitelist = validation_ctx.schema_ok and log_label != "qa_replay"
         valid, validation_error = self._validate_sql(
             sql,
             question=question,
             allowed_tables=set(validation_ctx.allowed_tables),
             allowed_columns=set(validation_ctx.allowed_columns),
-            enforce_column_whitelist=validation_ctx.schema_ok,
+            enforce_column_whitelist=enforce_column_whitelist,
             table_columns=table_columns_map,
             join_whitelist=set(validation_ctx.join_whitelist),
             entity_rules=entity_rules,

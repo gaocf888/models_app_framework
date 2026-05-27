@@ -37,6 +37,9 @@ def _build_chain_for_replay() -> NL2SQLChain:
                     TableColumn("id", "BIGINT"),
                     TableColumn("boiler_id", "BIGINT"),
                     TableColumn("start_time", "DATETIME"),
+                    TableColumn("pi_code", "VARCHAR"),
+                    TableColumn("highest_temp", "DECIMAL"),
+                    TableColumn("limit_temp", "DECIMAL"),
                 ],
                 foreign_keys=[],
             ),
@@ -46,7 +49,7 @@ def _build_chain_for_replay() -> NL2SQLChain:
 
 
 def _validation_ctx() -> NL2SQLValidationContext:
-    cols = frozenset({"id", "boiler_id", "start_time"})
+    cols = frozenset({"id", "boiler_id", "start_time", "pi_code", "highest_temp", "limit_temp"})
     return NL2SQLValidationContext(
         allowed_tables=frozenset({"monitor_hotarea_temp"}),
         allowed_columns=cols,
@@ -54,6 +57,45 @@ def _validation_ctx() -> NL2SQLValidationContext:
         table_columns={"monitor_hotarea_temp": cols},
         join_whitelist=frozenset(),
     )
+
+
+def test_postprocess_qa_replay_skips_column_whitelist() -> None:
+    """qa_replay=strict 跳过 flat 列白名单，允许子查询派生列（如 over_level）。"""
+    chain = _build_chain_for_replay()
+    sql_with_derived = """
+    SELECT x.over_level, x.max_delta
+    FROM (
+      SELECT
+        t.pi_code,
+        MAX(t.highest_temp - t.limit_temp) AS max_delta,
+        '严重超温' AS over_level
+      FROM monitor_hotarea_temp t
+      GROUP BY t.pi_code
+    ) x
+    WHERE x.over_level <> '正常'
+    """
+    ctx = _validation_ctx()
+    _, ok_replay, reason_replay = chain._postprocess_and_validate_candidate_sql(
+        sql_with_derived,
+        question="按严重度汇总测点",
+        time_intent_source="按严重度汇总测点",
+        validation_ctx=ctx,
+        entity_rules=[],
+        log_label="qa_replay",
+    )
+    assert ok_replay, reason_replay
+
+    _, ok_cache, reason_cache = chain._postprocess_and_validate_candidate_sql(
+        sql_with_derived,
+        question="按严重度汇总测点",
+        time_intent_source="按严重度汇总测点",
+        validation_ctx=ctx,
+        entity_rules=[],
+        log_label="cache_l2",
+    )
+    assert not ok_cache
+    assert reason_cache is not None
+    assert "unknown columns" in reason_cache
 
 
 @pytest.mark.asyncio
