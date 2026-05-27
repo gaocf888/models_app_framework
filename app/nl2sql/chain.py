@@ -98,6 +98,14 @@ class NL2SQLChain:
     _tidb_date_call_rhs = rf"DATE_[A-Z_]+\({_tidb_date_call_arg}\)"
     # 动态时间窗仅替换 QA/模板中的日期字面量，避免误改 SQL 内已有的 DATE_SUB/CURDATE() 表达式。
     _TIME_LITERAL_RHS = r"'[^']+'"
+    _DAY_WINDOW_TAGS = frozenset({"today", "yesterday", "day_before_yesterday"})
+    _PLAN_OVERRIDE_WINDOW_TAGS = frozenset(
+        {
+            "recent_1_year",
+            "recent_7_days",
+            "recent_6_months",
+        }
+    )
 
     def __init__(
         self,
@@ -1168,12 +1176,20 @@ class NL2SQLChain:
             question=question,
             time_intent_source=time_intent_source,
         )
-        if time_window is not None and not self._sql_has_time_placeholders(rewritten):
+        if time_window is not None:
+            start_expr, end_expr, tag = time_window
+            if self._sql_has_time_placeholders(rewritten):
+                rewritten, ph_notes = self._rewrite_time_placeholders(
+                    rewritten,
+                    start_expr=start_expr,
+                    end_expr=end_expr,
+                )
+                notes.extend(ph_notes)
             rewritten, time_notes = self._rewrite_dynamic_time_window(
                 rewritten,
-                start_expr=time_window[0],
-                end_expr=time_window[1],
-                tag=time_window[2],
+                start_expr=start_expr,
+                end_expr=end_expr,
+                tag=tag,
             )
             notes.extend(time_notes)
         rewritten, scope_notes = self._rewrite_entity_scope_literals(rewritten, question=question)
@@ -1186,6 +1202,33 @@ class NL2SQLChain:
     def _sql_has_time_placeholders(sql: str) -> bool:
         return bool(re.search(r"@t_(?:start|end|after)\b", sql, re.IGNORECASE))
 
+    @classmethod
+    def _is_plan_override_window_tag(cls, tag: str) -> bool:
+        if tag in cls._PLAN_OVERRIDE_WINDOW_TAGS:
+            return True
+        return tag.startswith("recent_") and tag not in cls._DAY_WINDOW_TAGS
+
+    def _rewrite_time_placeholders(
+        self,
+        sql: str,
+        *,
+        start_expr: str,
+        end_expr: str,
+    ) -> tuple[str, list[str]]:
+        """将 @t_start/@t_end/@t_after 替换为当前生效时间窗（与字面量改写一致）。"""
+        notes: list[str] = []
+        rewritten = sql
+        replacements = (
+            (r"@t_start\b", start_expr, "time_placeholder_t_start"),
+            (r"@t_end\b", end_expr, "time_placeholder_t_end"),
+            (r"@t_after\b", end_expr, "time_placeholder_t_after"),
+        )
+        for pat, expr, note in replacements:
+            if re.search(pat, rewritten, re.IGNORECASE):
+                rewritten = re.sub(pat, expr, rewritten, flags=re.IGNORECASE)
+                notes.append(note)
+        return rewritten, notes
+
     def _resolve_time_window_for_rewrite(
         self,
         *,
@@ -1193,17 +1236,27 @@ class NL2SQLChain:
         time_intent_source: str | None,
     ) -> tuple[str, str, str] | None:
         """
-        解析生效时间窗：plan 子任务问句若含「近一年」等长窗语义，优先于全局「今天」类短窗。
+        解析生效时间窗：
+        1) plan 子任务显式长窗（近一年等）优先；
+        2) 用户 time_intent 的 today/yesterday/前天 优先于问句内误触发的字面年月；
+        3) 其余从 intent / task 问句回落。
         """
         task_q = (question or "").strip()
-        intent_q = (time_intent_source or "").strip()
+        intent_q = (time_intent_source or "").strip() or task_q
         task_win = self._extract_time_window_from_question(task_q) if task_q else None
-        if task_win and task_win[2] not in ("today", "yesterday", "day_before_yesterday"):
+        intent_win = self._extract_time_window_from_question(intent_q) if intent_q else None
+
+        if task_win and self._is_plan_override_window_tag(task_win[2]):
             return task_win
-        if intent_q and intent_q != task_q:
-            intent_win = self._extract_time_window_from_question(intent_q)
-            if intent_win:
-                return intent_win
+
+        if intent_win and intent_win[2] in self._DAY_WINDOW_TAGS:
+            return intent_win
+
+        if task_win and task_win[2] in self._DAY_WINDOW_TAGS:
+            return task_win
+
+        if intent_win:
+            return intent_win
         return task_win
 
     @staticmethod
@@ -1278,22 +1331,6 @@ class NL2SQLChain:
         if n_min:
             return (f"DATE_SUB(NOW(), INTERVAL {n_min} MINUTE)", "NOW()", f"recent_{n_min}_minutes")
 
-        m_year = re.search(r"\b(20\d{2})年\b", q)
-        if m_year:
-            y = m_year.group(1)
-            return (f"'{y}-01-01 00:00:00'", f"'{int(y)+1}-01-01 00:00:00'", f"year_{y}")
-        m_ym = re.search(r"\b(20\d{2})[-/年](0?[1-9]|1[0-2])月?\b", q)
-        if m_ym:
-            y = int(m_ym.group(1))
-            mon = int(m_ym.group(2))
-            next_y = y + 1 if mon == 12 else y
-            next_m = 1 if mon == 12 else mon + 1
-            return (
-                f"'{y:04d}-{mon:02d}-01 00:00:00'",
-                f"'{next_y:04d}-{next_m:02d}-01 00:00:00'",
-                f"month_{y:04d}_{mon:02d}",
-            )
-
         if "本周" in q or "这周" in q:
             return (this_week_start, f"DATE_ADD({this_week_start}, INTERVAL 7 DAY)", "this_week")
         if "上周" in q:
@@ -1323,6 +1360,24 @@ class NL2SQLChain:
                 "DATE_SUB(CURDATE(), INTERVAL 2 DAY)",
                 "DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
                 "day_before_yesterday",
+            )
+
+        m_year = re.search(r"(20\d{2})年", q)
+        if m_year:
+            y = m_year.group(1)
+            return (f"'{y}-01-01 00:00:00'", f"'{int(y)+1}-01-01 00:00:00'", f"year_{y}")
+        m_ym = re.search(r"(20\d{2})年(0?[1-9]|1[0-2])月", q)
+        if not m_ym:
+            m_ym = re.search(r"(20\d{2})-(0?[1-9]|1[0-2])(?!-\d{2})", q)
+        if m_ym:
+            y = int(m_ym.group(1))
+            mon = int(m_ym.group(2))
+            next_y = y + 1 if mon == 12 else y
+            next_m = 1 if mon == 12 else mon + 1
+            return (
+                f"'{y:04d}-{mon:02d}-01 00:00:00'",
+                f"'{next_y:04d}-{next_m:02d}-01 00:00:00'",
+                f"month_{y:04d}_{mon:02d}",
             )
         return None
 
@@ -1405,6 +1460,13 @@ class NL2SQLChain:
                 rewritten,
             )
             notes.append(f"dynamic_time_window_eq_to_range:{tag}")
+        rewritten, ds_notes = self._rewrite_date_sub_time_anchors(
+            rewritten,
+            start_expr=start_expr,
+            end_expr=end_expr,
+            tag=tag,
+        )
+        notes.extend(ds_notes)
         if not notes:
             col_hint = re.search(r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\b", rewritten)
             if col_hint:
@@ -1421,6 +1483,73 @@ class NL2SQLChain:
                 else:
                     rewritten = f"{rewritten} WHERE {col} >= {start_expr} AND {col} < {end_expr}"
                 notes.append(f"dynamic_time_window_injected:{tag}")
+        return rewritten, notes
+
+    def _rewrite_date_sub_time_anchors(
+        self,
+        sql: str,
+        *,
+        start_expr: str,
+        end_expr: str,
+        tag: str,
+    ) -> tuple[str, list[str]]:
+        """
+        统一 QA 中 DATE_SUB(NOW()/CURDATE()/字面量, INTERVAL …) 锚点为当前时间窗（P1/P2）。
+        """
+        notes: list[str] = []
+        lit = NL2SQLChain._TIME_LITERAL_RHS
+
+        def _is_time_col(col: str) -> bool:
+            c = col.lower().split(".")[-1]
+            return c.endswith("time") or c.endswith("date") or c == "ts" or c.endswith("timestamp")
+
+        rewritten = sql
+        ge_datesub = re.compile(
+            rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*>=\s*"
+            rf"DATE_SUB\s*\(\s*(?:{lit}|NOW\(\)|CURDATE\(\))\s*,\s*INTERVAL\s+\d+\s+\w+\s*\)"
+        )
+        if ge_datesub.search(rewritten):
+            rewritten = ge_datesub.sub(
+                lambda m: f"{m.group(1)} >= {start_expr}" if _is_time_col(m.group(1)) else m.group(0),
+                rewritten,
+            )
+            notes.append(f"dynamic_time_window_ge_datesub:{tag}")
+
+        lt_datesub = re.compile(
+            rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*<\s*"
+            rf"DATE_SUB\s*\(\s*(?:{lit}|NOW\(\)|CURDATE\(\))\s*,\s*INTERVAL\s+\d+\s+\w+\s*\)"
+        )
+        if lt_datesub.search(rewritten):
+            rewritten = lt_datesub.sub(
+                lambda m: f"{m.group(1)} < {end_expr}" if _is_time_col(m.group(1)) else m.group(0),
+                rewritten,
+            )
+            notes.append(f"dynamic_time_window_lt_datesub:{tag}")
+
+        le_datesub = re.compile(
+            rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*<=\s*"
+            rf"DATE_SUB\s*\(\s*(?:{lit}|NOW\(\)|CURDATE\(\))\s*,\s*INTERVAL\s+\d+\s+\w+\s*\)"
+        )
+        if le_datesub.search(rewritten):
+            rewritten = le_datesub.sub(
+                lambda m: f"{m.group(1)} < {end_expr}" if _is_time_col(m.group(1)) else m.group(0),
+                rewritten,
+            )
+            notes.append(f"dynamic_time_window_le_datesub:{tag}")
+
+        standalone_datesub = re.compile(
+            rf"(?i)DATE_SUB\s*\(\s*{lit}\s*,\s*(INTERVAL\s+\d+\s+\w+)\s*\)"
+        )
+
+        def _standalone_repl(m: re.Match[str]) -> str:
+            notes.append(f"dynamic_time_window_datesub_literal:{tag}")
+            if tag == "recent_1_year":
+                return f"DATE_SUB(CURDATE(), {m.group(1)})"
+            return f"DATE_SUB(CURDATE(), {m.group(1)})"
+
+        if standalone_datesub.search(rewritten):
+            rewritten = standalone_datesub.sub(_standalone_repl, rewritten)
+
         return rewritten, notes
 
     @staticmethod
