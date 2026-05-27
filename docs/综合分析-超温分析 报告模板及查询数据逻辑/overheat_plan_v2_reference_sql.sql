@@ -292,6 +292,9 @@ ORDER BY t.start_time, t.pi_code;
 
 -- =============================================================================
 -- q4b 三、关联参数联动-SIS 关联参数时序
+-- 说明：原口径用「超温 pi_code IN sis_pi_data」能查到大量行，但多为壁温(…CT…)；
+-- 勿用 NOT IN(全部超温 pi_code) 一刀切（会把唯一数据源删光）。
+-- 正确做法：保留原 OR 条件，仅按编码/名称行级排除壁温；名称匹配的工艺点不受 IN 限制。
 -- =============================================================================
 SELECT
   DATE_FORMAT(spd.data_time, '%Y-%m-%d %H:%i') AS 采集时间,
@@ -318,6 +321,16 @@ WHERE spd.data_time >= @t_start
     OR IFNULL(btp.point_name, '') LIKE '%主汽压力%'
     OR IFNULL(btp.point_name, '') LIKE '%负荷%'
     OR IFNULL(btp.point_name, '') LIKE '%总风量%'
+    OR IFNULL(btp.point_name, '') LIKE '%氧量%'
+    OR IFNULL(btp.point_name, '') LIKE '%炉膛负压%'
+  )
+  AND NOT (
+    UPPER(spd.tag) REGEXP '[0-9]+HAD[0-9]+CT[0-9]+'
+    OR (UPPER(spd.tag) LIKE '%HAD%' AND UPPER(spd.tag) LIKE '%CT%')
+    OR (
+      IFNULL(btp.point_name, '') LIKE '%壁温%'
+      AND IFNULL(btp.point_name, '') NOT LIKE '%减温水%'
+    )
   )
 ORDER BY spd.data_time, spd.tag;
 

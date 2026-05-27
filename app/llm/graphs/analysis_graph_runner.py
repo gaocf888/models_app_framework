@@ -1625,6 +1625,7 @@ class AnalysisGraphRunner:
             planning_context=planning_ctx,
             chart_mode=req.options.chart_mode,
             user_id=req.user_id,
+            task_status=ctx.task_status,
         )
         return self._finalize_nl2sql_sequential_v2(
             req,
@@ -1925,6 +1926,7 @@ class AnalysisGraphRunner:
         planning_context: str | None = None,
         chart_mode: str = "auto",
         user_id: str = "",
+        task_status: dict[str, str] | None = None,
     ) -> _SynthesisRunOutcome:
         configured = self._configured_synthesis_strategy(analysis_type)
         effective, fallback = self._resolve_synthesis_strategy_effective(analysis_type)
@@ -1939,6 +1941,7 @@ class AnalysisGraphRunner:
                 context_snippets=context_snippets,
                 planning_context=planning_context,
                 chart_mode=chart_mode,
+                task_status=task_status,
             )
             return _SynthesisRunOutcome(
                 summary=v2_result.summary,
@@ -1983,6 +1986,7 @@ class AnalysisGraphRunner:
         context_snippets: list[str],
         planning_context: str | None,
         chart_mode: str,
+        task_status: dict[str, str] | None = None,
     ) -> AsyncIterator[tuple[dict[str, Any], _SynthesisRunOutcome | None]]:
         engine = self._make_synthesis_v2_engine()
         if self._analysis_cfg.synthesis_v2_stream_live_first:
@@ -1994,6 +1998,7 @@ class AnalysisGraphRunner:
                 context_snippets=context_snippets,
                 planning_context=planning_context,
                 chart_mode=chart_mode,
+                task_status=task_status,
             ):
                 if result is not None:
                     configured = self._configured_synthesis_strategy(analysis_type)
@@ -2023,6 +2028,7 @@ class AnalysisGraphRunner:
             context_snippets=context_snippets,
             planning_context=planning_context,
             chart_mode=chart_mode,
+            task_status=task_status,
         )
         chunk_size = max(1, int(self._analysis_cfg.synthesis_v2_stream_chunk_chars))
         for i in range(0, len(v2.summary), chunk_size):
@@ -2235,6 +2241,7 @@ class AnalysisGraphRunner:
                         context_snippets=ctx.context_snippets,
                         planning_context=planning_ctx,
                         chart_mode=req.options.chart_mode,
+                        task_status=ctx.task_status,
                     ):
                         if outcome is not None:
                             syn_outcome = outcome

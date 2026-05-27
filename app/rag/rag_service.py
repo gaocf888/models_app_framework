@@ -208,11 +208,21 @@ class RAGService:
             kw_k = max(kw_top, k)
             md_k = max(md_top, k)
             metadata_enabled = bool(self._cfg.hybrid.metadata_recall_enabled)
+            md_query = query
+            if metadata_enabled and (scene or "").strip().lower() == "nl2sql":
+                md_query = (
+                    os.getenv("NL2SQL_HYBRID_METADATA_QUERY", "").strip()
+                    or "nl2sql_system_feedback_v1"
+                )
             worker_num = 3 if metadata_enabled else 2
             with ThreadPoolExecutor(max_workers=worker_num) as pool:
                 f_sem = pool.submit(store.similarity_search_by_vector, q_emb, sem_k, namespace)
                 f_kw = pool.submit(store.keyword_search, query, kw_k, namespace)
-                f_md = pool.submit(store.metadata_search, query, md_k, namespace) if metadata_enabled else None
+                f_md = (
+                    pool.submit(store.metadata_search, md_query, md_k, namespace)
+                    if metadata_enabled
+                    else None
+                )
                 semantic_hits = f_sem.result()
                 keyword_hits = f_kw.result()
                 metadata_hits = f_md.result() if f_md is not None else []

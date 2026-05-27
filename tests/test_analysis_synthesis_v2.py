@@ -21,7 +21,10 @@ from app.llm.graphs.analysis_synthesis_v2 import (
     _render_overheat_ch2_item2,
     _render_overheat_ch2_item3,
     _render_overheat_ch2_item5,
+    _filter_q4b_sis_rows,
+    _overheat_anomaly_level_from_q1,
     _render_template_slot,
+    _truncate_point_list,
     _resolve_data_subset,
     _resolve_live_slot_index,
     _wrap_template_markdown,
@@ -50,17 +53,19 @@ class TestSynthesisV2Registry(unittest.TestCase):
     def test_overheat_registry_slot_count(self):
         self.assertTrue(synthesis_v2_registry_available("overheat_guidance"))
         slots = get_synthesis_v2_slots("overheat_guidance")
-        self.assertEqual(23, len(slots))
+        self.assertEqual(31, len(slots))
         self.assertEqual("q1", slots[0].source_item_ids[0])
         self.assertEqual("template_deterministic", slots[0].kind)
         self.assertEqual("overheat_ch1_basic", slots[0].template_id)
         self.assertEqual("q2a", slots[2].source_item_ids[0])
         self.assertEqual("overheat_ch2_item1", slots[2].template_id)
-        self.assertEqual("q3a", slots[7].source_item_ids[0])
-        self.assertEqual("q3b", slots[8].source_item_ids[0])
-        self.assertEqual("q6a", slots[18].source_item_ids[0])
-        self.assertEqual("q6d", slots[19].source_item_ids[0])
-        self.assertEqual("overheat_q6_dcs_linkage", slots[19].table_id)
+        by_id = {s.id: s for s in slots}
+        self.assertEqual(("q3a", "q3b"), by_id["s04a"].source_item_ids)
+        self.assertEqual("q3a", by_id["s03"].source_item_ids[0])
+        self.assertEqual("q3b", by_id["s03b"].source_item_ids[0])
+        self.assertEqual("q6a", by_id["s12"].source_item_ids[0])
+        self.assertEqual("q6d", by_id["s12b"].source_item_ids[0])
+        self.assertEqual("overheat_q6_dcs_linkage", by_id["s12b"].table_id)
 
     def test_unknown_type_no_registry(self):
         self.assertFalse(synthesis_v2_registry_available("unknown_type"))
@@ -136,7 +141,7 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
         self.assertIn("1号锅炉", body)
         self.assertIn("HG-1000", body)
         self.assertIn("共98个", body)
-        self.assertIn("Ⅳ级（严重超温）", body)
+        self.assertIn("Ⅲ级（严重超温）", body)
         self.assertNotIn("（待补充）", body)
 
     def test_wrap_template_markdown_with_title(self):
@@ -151,10 +156,11 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
         self.assertNotEqual("s01", slots[idx].id)
         self.assertEqual("llm_narrative", slots[idx].kind)
 
-    def test_ch2_item2_pressure_suspicious_unit(self):
+    def test_ch2_item2_pressure_kpa_to_mpa(self):
         body = _render_overheat_ch2_item2([{"全事件负荷_percent": 115.83, "全事件主汽压力_MPa": 411.17}])
-        self.assertIn("单位待确认", body)
-        self.assertNotIn("411.17MPa", body)
+        self.assertIn("0.41", body)
+        self.assertIn("MPa", body)
+        self.assertNotIn("主汽温度", body)
 
     def test_q2c_preaggregated_severity_rows(self):
         rows = [
@@ -199,7 +205,7 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
             [{"全事件平均负荷_MW": 480, "全事件负荷_percent": 80, "全事件主汽压力_MPa": 16.2}],
         )
         self.assertIn("负荷80%", full)
-        self.assertIn("主汽温度待补充", full)
+        self.assertNotIn("主汽温度", full)
         item4 = _render_template_slot(
             "overheat_ch2_item4",
             [{
@@ -212,6 +218,45 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
             }],
         )
         self.assertIn("实测最高590℃", item4)
+
+    def test_anomaly_level_mapping(self):
+        row = {"严重超温数量": 2, "中度超温数量": 0, "轻微超温数量": 0}
+        self.assertEqual("Ⅲ级（严重超温）", _overheat_anomaly_level_from_q1(row))
+        critical = _overheat_anomaly_level_from_q1(
+            row, q2d_row={"全事件最大超温差值_监测": 45}
+        )
+        self.assertEqual("Ⅳ级（临界爆管风险）", critical)
+
+    def test_ch2_item1_fallback_q4a(self):
+        q4a = [{"采集时间": "2026-05-01 08:00:00"}, {"采集时间": "2026-05-01 12:30:00"}]
+        body = _render_overheat_ch2_item1([], gathered_data={"q4a": q4a})
+        self.assertIn("2026-05-01 08:00:00", body)
+        self.assertIn("q4a", body)
+
+    def test_ch2_item5_fallback_q3a(self):
+        q3a = [
+            {"超温区域": "末过", "累计超温时长_秒": 5000},
+            {"超温区域": "水冷壁", "累计超温时长_秒": 800},
+        ]
+        body = _render_overheat_ch2_item5([], gathered_data={"q3a": q3a})
+        self.assertIn("集中式", body)
+        self.assertIn("q3a", body)
+
+    def test_truncate_point_list_by_entries(self):
+        text = "、".join([f"P{i}（位置：1号锅炉）" for i in range(10)])
+        out = _truncate_point_list(text, max_entries=3)
+        self.assertIn("前3个", out)
+        self.assertIn("共10个", out)
+        self.assertNotIn("P9", out)
+
+    def test_filter_q4b_excludes_wall_temp(self):
+        rows = [
+            {"测点编码": "10HAD11CT101", "测点名称": "末过壁温"},
+            {"测点编码": "FW01", "测点名称": "减温水流量"},
+        ]
+        filtered = _filter_q4b_sis_rows(rows)
+        self.assertEqual(1, len(filtered))
+        self.assertEqual("FW01", filtered[0]["测点编码"])
 
     def test_dcs_linkage_charts_long_format(self):
         rows = [
@@ -271,6 +316,28 @@ class TestRenderMarkdownTable(unittest.TestCase):
         self.assertIn("测试表", md)
         self.assertTrue(tbl.get("truncated"))
         self.assertEqual(10, len(tbl["rows"]))
+
+    def test_table_empty_q5a_message(self):
+        from app.llm.graphs.analysis_synthesis_v2 import _table_empty_message
+
+        msg = _table_empty_message(
+            "overheat_q5_defects",
+            ("q5a",),
+            task_status={"q5a": "success"},
+            gathered_data={"q5a": []},
+        )
+        self.assertIn("近一年无", msg)
+
+    def test_table_query_failed_message(self):
+        from app.llm.graphs.analysis_synthesis_v2 import _table_empty_message
+
+        msg = _table_empty_message(
+            "overheat_q6_history",
+            ("q6c",),
+            task_status={"q6c": "mandatory_failed"},
+            gathered_data={"q6c": []},
+        )
+        self.assertIn("查询失败", msg)
 
 
 class _FakePromptRegistry:

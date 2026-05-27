@@ -207,7 +207,34 @@
     }
     .strategy-ok { color: var(--meta); }
     .strategy-warn { color: var(--warn); }
+    #chartPanels {
+      margin-top: 0.75rem;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.75rem;
+    }
+    @media (min-width: 900px) {
+      #chartPanels { grid-template-columns: 1fr 1fr; }
+    }
+    .chart-box {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #0d1117;
+      padding: 0.5rem;
+      min-height: 260px;
+    }
+    .chart-box h3 {
+      margin: 0 0 0.35rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--muted);
+    }
+    .chart-canvas {
+      width: 100%;
+      height: 220px;
+    }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
 </head>
 <body>
   <div class="wrap">
@@ -292,6 +319,8 @@
       </div>
       <h2>summary（Markdown 增量拼接，v2 按槽位顺序就绪即推）</h2>
       <div id="answer"></div>
+      <h2 style="margin-top:1rem;">趋势图（ECharts · chart_payload）</h2>
+      <div id="chartPanels"></div>
       <h2 style="margin-top:1rem;">structured SSE（table_payload / chart_payload）</h2>
       <div id="structuredBlocks">（尚未开始；需 ANALYSIS_SYNTHESIS_V2_ENABLE_STRUCTURED_SSE=true）</div>
       <h2 style="margin-top:1rem;">知识来源 rag_citations（finished 帧）</h2>
@@ -401,6 +430,7 @@
   }
 
   let abortCtrl = null;
+  const chartInstances = new Map();
 
   function appendStatus(t) {
     $("status").textContent = t;
@@ -472,6 +502,56 @@
     $("btnAbort").disabled = !b;
   }
 
+  function renderEchartsChart(chart) {
+    if (!chart || typeof echarts === "undefined") return;
+    const spec = chart.spec || {};
+    const data = Array.isArray(spec.data) ? spec.data : [];
+    if (!data.length) return;
+    const cid = chart.id || "chart_" + Math.random().toString(36).slice(2, 9);
+    const panels = $("chartPanels");
+    const box = document.createElement("div");
+    box.className = "chart-box";
+    box.dataset.chartId = cid;
+    const title = document.createElement("h3");
+    title.textContent = chart.title || cid;
+    box.appendChild(title);
+    const canvas = document.createElement("div");
+    canvas.className = "chart-canvas";
+    canvas.id = "echart_" + cid;
+    box.appendChild(canvas);
+    panels.appendChild(box);
+    const inst = echarts.init(canvas, null, { renderer: "canvas" });
+    chartInstances.set(cid, inst);
+    const xField = spec.x_field || "time";
+    const yField = spec.y_field || "value";
+    const xData = data.map((d) => d[xField]);
+    const yData = data.map((d) => d[yField] ?? d.temperature);
+    inst.setOption({
+      backgroundColor: "transparent",
+      textStyle: { color: "#e6edf3" },
+      grid: { left: 48, right: 16, top: 24, bottom: 36 },
+      tooltip: { trigger: "axis" },
+      xAxis: { type: "category", data: xData, axisLabel: { color: "#8b9cb3", rotate: 30 } },
+      yAxis: { type: "value", axisLabel: { color: "#8b9cb3" }, splitLine: { lineStyle: { color: "#2d3a4d" } } },
+      series: [
+        {
+          name: spec.series_name || chart.title || "series",
+          type: chart.chart_type === "bar" ? "bar" : "line",
+          data: yData,
+          smooth: true,
+          showSymbol: false,
+        },
+      ],
+    });
+    window.addEventListener("resize", () => inst.resize());
+  }
+
+  function clearCharts() {
+    chartInstances.forEach((inst) => inst.dispose());
+    chartInstances.clear();
+    $("chartPanels").replaceChildren();
+  }
+
   function appendStructured(kind, ev) {
     const el = $("structuredBlocks");
     if (el.textContent.startsWith("（尚未")) el.textContent = "";
@@ -510,6 +590,7 @@
 
   $("btnClear").addEventListener("click", () => {
     $("answer").textContent = "";
+    clearCharts();
     setSlotLoading(false);
     $("structuredBlocks").textContent =
       "（尚未开始；需 ANALYSIS_SYNTHESIS_V2_ENABLE_STRUCTURED_SSE=true）";
@@ -571,6 +652,7 @@
   $("btnSend").addEventListener("click", async () => {
     showErr("");
     $("answer").textContent = "";
+    clearCharts();
     $("structuredBlocks").textContent = "…";
     $("ragCitations").textContent = "…";
     $("meta").textContent = "…";
@@ -659,6 +741,7 @@
         }
         if (kind === "chart_payload") {
           appendStructured("chart_payload", ev);
+          if (ev.chart) renderEchartsChart(ev.chart);
           logEvent("chart_payload" + (ev.slot_id ? ":" + ev.slot_id : ""));
           return;
         }
@@ -693,6 +776,9 @@
         if (kind === "finished") {
           const m = ev.meta || {};
           const cites = Array.isArray(m.rag_citations) ? m.rag_citations : [];
+          const sr = m.structured_report || {};
+          const charts = Array.isArray(sr.charts) ? sr.charts : [];
+          charts.forEach((ch) => renderEchartsChart(ch));
           renderRagCitations($("ragCitations"), cites);
           const tail =
             "--- finished ---\n" +
