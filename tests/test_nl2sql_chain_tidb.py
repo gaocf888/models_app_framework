@@ -299,6 +299,40 @@ def test_rewrite_injects_missing_upper_bound_for_today() -> None:
     assert any("injected_lt" in n for n in notes)
 
 
+def test_rewrite_injects_upper_bound_per_subquery_not_global() -> None:
+    """reg 子查询已有上界时，lv 子查询仍应单独补齐上界（q1）。"""
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM ("
+        "SELECT t.boiler_id FROM monitor_hotarea_temp t "
+        "WHERE t.start_time >= CURDATE() AND t.highest_temp > t.limit_temp"
+        ") lv LEFT JOIN ("
+        "SELECT t.boiler_id FROM monitor_hotarea_temp t "
+        "WHERE t.start_time >= CURDATE() "
+        "AND t.start_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY) AND t.highest_temp > t.limit_temp"
+        ") reg ON lv.boiler_id = reg.boiler_id"
+    )
+    user_q = "请分析1号锅炉今天的超温情况"
+    rewritten, notes = chain._rewrite_query_filters(
+        sql, question=user_q, time_intent_source=user_q, plan_item_id="q1"
+    )
+    assert rewritten.count("t.start_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)") == 2
+    assert any("injected_lt" in n for n in notes)
+
+
+def test_rewrite_dedupes_duplicate_upper_bound() -> None:
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t WHERE t.start_time >= CURDATE() "
+        "AND t.start_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY) "
+        "AND t.start_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)"
+    )
+    out = chain._dedupe_redundant_time_upper_bounds(
+        sql, end_expr="DATE_ADD(CURDATE(), INTERVAL 1 DAY)"
+    )
+    assert out.count("t.start_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)") == 1
+
+
 def test_rewrite_normalizes_end_time_upper_to_start_time() -> None:
     chain = _build_chain_for_unit()
     sql = (

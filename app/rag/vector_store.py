@@ -775,8 +775,8 @@ class ElasticsearchVectorStore(VectorStore):
         分析成 >1024 个 term。因此再做「空白分词后的词数上限」以及「无空格长串」的字符上限。
         （向量嵌入仍可用完整 query；仅 keyword/metadata 臂参与本截断。）
         """
-        max_c = max(128, int(os.getenv("RAG_ES_MATCH_QUERY_MAX_CHARS", "1200")))
-        max_terms = max(8, int(os.getenv("RAG_ES_MATCH_QUERY_MAX_TERMS", "150")))
+        max_c = max(128, int(os.getenv("RAG_ES_MATCH_QUERY_MAX_CHARS", "2400")))
+        max_terms = max(8, int(os.getenv("RAG_ES_MATCH_QUERY_MAX_TERMS", "120")))
         dense_cap = max(32, int(os.getenv("RAG_ES_MATCH_QUERY_MAX_DENSE_CHARS", "256")))
         t = (text or "").strip()
         if not t:

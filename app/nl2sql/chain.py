@@ -1218,6 +1218,7 @@ class NL2SQLChain:
             )
             notes.extend(bound_notes)
             rewritten = self._normalize_end_time_upper_to_start_time(rewritten, end_expr=end_expr)
+            rewritten = self._dedupe_redundant_time_upper_bounds(rewritten, end_expr=end_expr)
         rewritten, gc_notes = self._rewrite_group_concat_utf8_safe(rewritten, plan_item_id=plan_item_id)
         notes.extend(gc_notes)
         rewritten, scope_notes = self._rewrite_entity_scope_literals(rewritten, question=question)
@@ -1521,6 +1522,31 @@ class NL2SQLChain:
             return True
         return tag.startswith("month_") or tag.startswith("year_")
 
+    @classmethod
+    def _time_clause_local_region(cls, sql: str, ge_end: int, *, max_len: int = 640) -> str:
+        """从 >= 匹配点向后截取同一 WHERE 子句片段，用于判断该处是否已有上界。"""
+        chunk = sql[ge_end : ge_end + max_len]
+        boundary = re.search(
+            r"(?i)\b(GROUP\s+BY|ORDER\s+BY|LIMIT|UNION\b|\)\s*(?:GROUP|ORDER|LIMIT|WHERE|\w+))",
+            chunk,
+        )
+        return chunk[: boundary.start()] if boundary else chunk
+
+    @classmethod
+    def _has_local_time_upper_bound(
+        cls,
+        sql: str,
+        *,
+        col: str,
+        end_expr: str,
+        ge_end: int,
+    ) -> bool:
+        region = cls._time_clause_local_region(sql, ge_end)
+        upper_pat = re.compile(
+            rf"(?i){re.escape(col)}\s*(?:<|<=)\s*{re.escape(end_expr)}"
+        )
+        return bool(upper_pat.search(region))
+
     def _inject_missing_time_upper_bounds(
         self,
         sql: str,
@@ -1542,17 +1568,27 @@ class NL2SQLChain:
         offset = 0
         for m in ge_pat.finditer(sql):
             col = m.group(1)
-            upper_pat = re.compile(
-                rf"(?i){re.escape(col)}\s*<\s*{re.escape(end_expr)}"
-            )
-            if upper_pat.search(rewritten):
+            ge_end = m.end() + offset
+            if self._has_local_time_upper_bound(
+                rewritten, col=col, end_expr=end_expr, ge_end=ge_end
+            ):
                 continue
-            insert_at = m.end() + offset
+            insert_at = ge_end
             suffix = f" AND {col} < {end_expr}"
             rewritten = rewritten[:insert_at] + suffix + rewritten[insert_at:]
             offset += len(suffix)
             notes.append(f"dynamic_time_window_injected_lt:{tag}")
         return rewritten, notes
+
+    @staticmethod
+    def _dedupe_redundant_time_upper_bounds(sql: str, *, end_expr: str) -> str:
+        """移除同一列上重复的 `< end_expr` 条件（q6a 等 le+inject 叠加）。"""
+        esc_end = re.escape(end_expr)
+        pat = re.compile(
+            rf"(?i)((?:\b[a-zA-Z_][\w]*\.)?(?:start_time|record_time|data_time|leakage_date|mark_time|ts|timestamp)\s*<\s*{esc_end})"
+            rf"(?:\s+AND\s+\1)+"
+        )
+        return pat.sub(r"\1", sql)
 
     @staticmethod
     def _normalize_end_time_upper_to_start_time(sql: str, *, end_expr: str) -> str:

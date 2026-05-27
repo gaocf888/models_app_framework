@@ -18,10 +18,13 @@ from app.llm.graphs.analysis_synthesis_v2 import (
     _rag_snippets_for_slot,
     _render_overheat_ch1_basic_info,
     _render_overheat_ch2_item1,
+    _render_overheat_ch2_item2,
     _render_overheat_ch2_item3,
     _render_overheat_ch2_item5,
     _render_template_slot,
     _resolve_data_subset,
+    _resolve_live_slot_index,
+    _wrap_template_markdown,
     get_synthesis_v2_slots,
     render_markdown_table,
     strip_leading_duplicate_heading,
@@ -135,6 +138,23 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
         self.assertIn("共98个", body)
         self.assertIn("Ⅳ级（严重超温）", body)
         self.assertNotIn("（待补充）", body)
+
+    def test_wrap_template_markdown_with_title(self):
+        md = _wrap_template_markdown("一、报告基础信息", "1.报告编号：GL-CW-001\n")
+        self.assertIn("### 一、报告基础信息", md)
+        self.assertIn("GL-CW-001", md)
+
+    def test_resolve_live_slot_skips_template_s01(self):
+        slots = get_synthesis_v2_slots("overheat_guidance")
+        idx = _resolve_live_slot_index(slots)
+        self.assertIsNotNone(idx)
+        self.assertNotEqual("s01", slots[idx].id)
+        self.assertEqual("llm_narrative", slots[idx].kind)
+
+    def test_ch2_item2_pressure_suspicious_unit(self):
+        body = _render_overheat_ch2_item2([{"全事件负荷_percent": 115.83, "全事件主汽压力_MPa": 411.17}])
+        self.assertIn("单位待确认", body)
+        self.assertNotIn("411.17MPa", body)
 
     def test_q2c_preaggregated_severity_rows(self):
         rows = [
@@ -537,6 +557,66 @@ class TestSynthesisV2OrderedStream(unittest.TestCase):
         idx_ch3 = joined.find("三章")
         self.assertGreater(idx_ch3, idx_ch2)
         self.assertIn("synthesis_loading", kinds)
+
+    def test_live_first_template_s01_uses_deterministic_not_llm(self):
+        """s01 为 template_deterministic 时，live_first 不得对其调用 LLM。"""
+        overheat_slots = get_synthesis_v2_slots("overheat_guidance")
+
+        llm = MagicMock()
+        llm.stream_chat = MagicMock(side_effect=AssertionError("s01 must not stream LLM"))
+        llm.chat = AsyncMock(return_value="章节正文")
+        engine = AnalysisSynthesisV2Engine(
+            llm_client=llm,
+            prompts=_FakePromptRegistry(),
+            gathered_json_max_chars=8000,
+            segment_max_tokens=512,
+            max_parallel_llm=2,
+            table_max_rows=10,
+            synthesis_timeout_seconds=30.0,
+            stream_chunk_chars=64,
+            idle_heartbeat_seconds=0.05,
+            emit_structured_sse=False,
+        )
+
+        q1_row = {
+            "机组名称": "1号锅炉",
+            "锅炉型号": "HG-1000",
+            "额定负荷_MW": 600,
+            "监测部位": "水冷壁",
+            "超温测点总数": 10,
+            "轻微超温数量": 1,
+            "中度超温数量": 2,
+            "严重超温数量": 3,
+        }
+
+        async def _run():
+            result = None
+            deltas: list[str] = []
+            async for ev, res in engine.iter_stream_events_live_first(
+                analysis_type="overheat_guidance",
+                query="请分析1号锅炉今天的超温情况",
+                data_mode="nl2sql",
+                gathered_data={"q1": [q1_row], "q2a": [], "q2b": [], "q2c": []},
+                context_snippets=[],
+                planning_context=None,
+                chart_mode="off",
+            ):
+                if res is not None:
+                    result = res
+                elif ev.get("event") == "summary_delta":
+                    deltas.append(ev.get("text", ""))
+            return result, "".join(deltas)
+
+        with patch(
+            "app.llm.graphs.analysis_synthesis_v2.get_synthesis_v2_slots",
+            return_value=overheat_slots[:6],
+        ):
+            result, joined = asyncio.run(_run())
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIn("1号锅炉", result.summary)
+        self.assertIn("HG-1000", joined)
+        self.assertNotIn("### 一、报告基础信息\n\n（待补充）", result.summary)
 
     def test_deterministic_slot_chunked(self):
         engine = AnalysisSynthesisV2Engine(

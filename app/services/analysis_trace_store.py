@@ -13,6 +13,7 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.logging import get_logger
@@ -20,6 +21,14 @@ from app.core.metrics import ANALYSIS_TRACE_INDEX_CLEANUP_COUNT
 from app.models.analysis import AnalysisV2Result
 
 logger = get_logger(__name__)
+
+
+def _trace_json_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def _build_elasticsearch_client_kwargs(
@@ -168,7 +177,7 @@ class RedisAnalysisTraceStore(AnalysisTraceStore):
         type_key = f"{self._index_type_prefix}{result.analysis_type}"
         mode = str(result.evidence.data_coverage.get("mode", "payload"))
         mode_key = f"{self._index_mode_prefix}{mode}"
-        payload = json.dumps(result.model_dump(), ensure_ascii=False)
+        payload = json.dumps(result.model_dump(), ensure_ascii=False, default=_trace_json_default)
         pipe = self._redis.pipeline(transaction=True)
         pipe.set(key, payload)
         if self._ttl_seconds > 0:

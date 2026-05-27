@@ -287,6 +287,26 @@ def get_synthesis_v2_slots(analysis_type: str) -> list[SynthesisV2Slot]:
     return list(SYNTHESIS_V2_SLOT_REGISTRIES.get(analysis_type, ()))
 
 
+def _resolve_live_slot_index(slots: list[SynthesisV2Slot]) -> int | None:
+    """首槽 LLM 流式索引：显式 stream_live 优先，否则首个 llm_narrative；无则 None。"""
+    for i, slot in enumerate(slots):
+        if slot.stream_live and slot.kind == "llm_narrative":
+            return i
+    for i, slot in enumerate(slots):
+        if slot.kind == "llm_narrative":
+            return i
+    return None
+
+
+def _wrap_template_markdown(title: str, body: str) -> str:
+    cleaned = (body or "").strip()
+    if not title:
+        return cleaned + ("\n" if cleaned else "")
+    if not cleaned or cleaned == "（待补充）":
+        return f"### {title}\n\n（待补充）\n\n"
+    return f"### {title}\n\n{cleaned}\n\n"
+
+
 # ---------------------------------------------------------------------------
 # 表 / 图渲染
 # ---------------------------------------------------------------------------
@@ -530,6 +550,27 @@ def _fmt_template_val(val: Any, fallback: str = "待补充") -> str:
     return s if s else fallback
 
 
+def _format_steam_pressure_display(val: Any) -> str:
+    """主汽压力展示：alias 虽为 MPa，但 SIS 原值常超 25，避免误标 MPa。"""
+    num = _q2_numeric(val)
+    if num is None:
+        return "待补充"
+    if num > 25:
+        return f"{num:.2f}（单位待确认）"
+    return f"{num:.2f}"
+
+
+def _truncate_point_list(text: str, *, max_len: int = 900) -> str:
+    s = (text or "").strip()
+    if len(s) <= max_len:
+        return s
+    cut = s[:max_len]
+    sep = cut.rfind("、")
+    if sep > max_len // 2:
+        cut = cut[:sep]
+    return f"{cut}…等（完整列表见 q2c 数据）"
+
+
 def _q2_numeric(val: Any) -> float | None:
     if val is None or str(val).strip() == "":
         return None
@@ -691,12 +732,14 @@ def _render_overheat_ch2_item1(rows: list[dict]) -> str:
 def _render_overheat_ch2_item2(rows: list[dict]) -> str:
     row = _first_data_row(rows)
     load_pct = _fmt_template_val(row.get("全事件负荷_percent") or row.get("负荷_percent"))
-    pressure = _fmt_template_val(row.get("全事件主汽压力_MPa") or row.get("主汽压力_MPa"))
+    pressure_raw = row.get("全事件主汽压力_MPa") or row.get("主汽压力_MPa")
+    pressure = _format_steam_pressure_display(pressure_raw)
+    pressure_suffix = "" if "单位待确认" in pressure else "MPa"
     avg_mw = _fmt_template_val(row.get("全事件平均负荷_MW") or row.get("平均负荷_MW"))
     return (
         "2. 运行工况："
         f"负荷{load_pct}%"
-        f"、主汽压力{pressure}MPa"
+        f"、主汽压力{pressure}{pressure_suffix}"
         f"、主汽温度待补充℃"
         f"、炉膛负压待补充Pa"
         f"、氧量待补充%"
@@ -733,7 +776,7 @@ def _render_overheat_ch2_item3(rows: list[dict]) -> str:
     for level_key, label in _CH2_SEVERITY_LABELS:
         bucket = agg.get(level_key)
         if bucket:
-            pts = bucket.get("测点及位置列表") or "无"
+            pts = _truncate_point_list(str(bucket.get("测点及位置列表") or "无"))
             count = bucket.get("测点数量") or 0
             lines.append(f"{label}：{pts}，共{count}个")
         else:
@@ -1463,7 +1506,8 @@ class AnalysisSynthesisV2Engine:
             if slot.kind == "template_deterministic":
                 rows = _gather_item_rows(gathered_data, slot.source_item_ids)
                 body = _render_template_slot(slot.template_id, rows)
-                return SynthesisV2SlotOutput(slot.id, slot.kind, title, body)
+                md = _wrap_template_markdown(title, body)
+                return SynthesisV2SlotOutput(slot.id, slot.kind, title, md)
 
             if slot.kind == "table_deterministic":
                 rows = _gather_item_rows(gathered_data, slot.source_item_ids)
@@ -1689,7 +1733,44 @@ class AnalysisSynthesisV2Engine:
             yield ({"event": "summary_delta", "text": ""}, result)
             return
 
-        live_idx = next((i for i, s in enumerate(slots) if s.stream_live and s.kind == "llm_narrative"), 0)
+        live_idx = _resolve_live_slot_index(slots)
+        if live_idx is None or slots[live_idx].kind != "llm_narrative":
+            outputs_fb: list[SynthesisV2SlotOutput | None] = [None] * len(slots)
+            sem_fb = asyncio.Semaphore(self._max_parallel_llm)
+            bg_tasks_fb: list[asyncio.Task[None]] = []
+            bg_queues_fb: list[asyncio.Queue[Any] | None] = []
+            for i, slot in enumerate(slots):
+                task, queue = self._start_background_slot(
+                    index=i,
+                    slot=slot,
+                    outputs=outputs_fb,
+                    sem=sem_fb,
+                    query=query,
+                    analysis_type=analysis_type,
+                    data_mode=data_mode,
+                    gathered_data=gathered_data,
+                    context_snippets=context_snippets,
+                    planning_context=planning_context,
+                    chart_mode=chart_mode,
+                )
+                bg_tasks_fb.append(task)
+                bg_queues_fb.append(queue)
+            last_emit_at = time.monotonic()
+            for i, slot in enumerate(slots):
+                async for ev, last_emit_at in self._emit_slot_in_order(
+                    index=i,
+                    slot=slot,
+                    outputs=outputs_fb,
+                    task=bg_tasks_fb[i],
+                    chunk_queue=bg_queues_fb[i],
+                    last_emit_at=last_emit_at,
+                ):
+                    yield (ev, None)
+            filled_fb = [o for o in outputs_fb if o is not None]
+            yield ({}, self._assemble_result(filled_fb, analysis_type=analysis_type))
+            return
+
+        live_slot = slots[live_idx]
         outputs: list[SynthesisV2SlotOutput | None] = [None] * len(slots)
         sem = asyncio.Semaphore(self._max_parallel_llm)
 
@@ -1714,7 +1795,6 @@ class AnalysisSynthesisV2Engine:
             bg_tasks[i] = task
             bg_queues[i] = queue
 
-        live_slot = slots[live_idx]
         messages = self._llm_messages_for_slot(
             query=query,
             analysis_type=analysis_type,
