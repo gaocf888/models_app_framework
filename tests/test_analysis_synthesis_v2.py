@@ -24,6 +24,7 @@ from app.llm.graphs.analysis_synthesis_v2 import (
     _filter_q4b_sis_rows,
     _overheat_anomaly_level_from_q1,
     _render_template_slot,
+    _sanitize_report_narrative,
     _truncate_point_list,
     _resolve_data_subset,
     _resolve_live_slot_index,
@@ -91,7 +92,7 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
 
     def test_audit_facts_marks_empty_query(self):
         text = _build_audit_facts({"q3": []}, "#2机组超温")
-        self.assertIn("[q3] 无数据行", text)
+        self.assertIn("无数据行", text)
         self.assertIn("#2机组", text)
 
     def test_q2_severity_aggregate_and_event_summary(self):
@@ -120,7 +121,7 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
             "1号锅炉",
             slot_id="s02_2",
         )
-        self.assertIn("[q2b]", audit)
+        self.assertIn("[全事件运行工况]", audit)
         self.assertIn("全事件平均负荷_MW=480", audit)
 
     def test_ch1_basic_info_from_q1(self):
@@ -227,11 +228,19 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
         )
         self.assertEqual("Ⅳ级（临界爆管风险）", critical)
 
+    def test_sanitize_report_narrative(self):
+        raw = "原因A [置信度：高]（依据：q3a 区域汇总）。见 q2a 测点。"
+        out = _sanitize_report_narrative(raw)
+        self.assertNotIn("置信度", out)
+        self.assertNotIn("依据", out)
+        self.assertNotIn("q3a", out.lower())
+        self.assertNotIn("q2a", out.lower())
+
     def test_ch2_item1_fallback_q4a(self):
         q4a = [{"采集时间": "2026-05-01 08:00:00"}, {"采集时间": "2026-05-01 12:30:00"}]
         body = _render_overheat_ch2_item1([], gathered_data={"q4a": q4a})
         self.assertIn("2026-05-01 08:00:00", body)
-        self.assertIn("q4a", body)
+        self.assertIn("壁温时序推导", body)
 
     def test_ch2_item5_fallback_q3a(self):
         q3a = [
@@ -240,7 +249,7 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
         ]
         body = _render_overheat_ch2_item5([], gathered_data={"q3a": q3a})
         self.assertIn("集中式", body)
-        self.assertIn("q3a", body)
+        self.assertIn("区域汇总推导", body)
 
     def test_truncate_point_list_by_entries(self):
         text = "、".join([f"P{i}（位置：1号锅炉）" for i in range(10)])

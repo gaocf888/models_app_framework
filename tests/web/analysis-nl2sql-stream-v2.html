@@ -88,16 +88,33 @@
       padding: 1rem;
     }
     .out h2 { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.5rem; font-weight: 500; }
-    #answer {
+    .report-stream {
       white-space: pre-wrap;
       word-break: break-word;
       color: var(--answer);
       font-size: 0.95rem;
       min-height: 4rem;
+      max-height: 70vh;
+      overflow: auto;
       border: 1px solid var(--border);
       border-radius: 6px;
       background: #0d1117;
       padding: 0.75rem;
+      contain: content;
+    }
+    .report-stream.rendered-md {
+      white-space: normal;
+    }
+    .report-stream.rendered-md table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 0.85rem;
+      margin: 0.5rem 0;
+    }
+    .report-stream.rendered-md th,
+    .report-stream.rendered-md td {
+      border: 1px solid var(--border);
+      padding: 0.35rem 0.5rem;
     }
     #status { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
     #slotLoading {
@@ -299,6 +316,8 @@
           <label><input type="checkbox" id="enableRag" checked /> enable_rag</label>
           <label><input type="checkbox" id="enableContext" checked /> enable_context</label>
           <label><input type="checkbox" id="strict" /> strict</label>
+          <label><input type="checkbox" id="liteStream" checked /> 轻量流式（防卡死，推荐）</label>
+          <label><input type="checkbox" id="debugSse" /> 调试 SSE 日志</label>
         </div>
         <label>max_nl2sql_calls（空则服务端默认）</label>
         <input type="number" id="maxNl2sql" placeholder="6" min="1" max="20" />
@@ -317,8 +336,8 @@
         <span class="spinner" aria-hidden="true"></span>
         <span id="slotLoadingText">正在生成下一章节…</span>
       </div>
-      <h2>summary（Markdown 增量拼接，v2 按槽位顺序就绪即推）</h2>
-      <div id="answer"></div>
+      <h2>summary（流式 Markdown；完成后可渲染 HTML）</h2>
+      <div id="answer" class="report-stream"></div>
       <h2 style="margin-top:1rem;">趋势图（ECharts · chart_payload）</h2>
       <div id="chartPanels"></div>
       <h2 style="margin-top:1rem;">structured SSE（table_payload / chart_payload）</h2>
@@ -431,6 +450,144 @@
 
   let abortCtrl = null;
   const chartInstances = new Map();
+  const structuredStore = { tables: [], charts: [] };
+
+  /** 轻量 SSE 报告渲染：缓冲 + rAF 刷新 DOM，避免每个 token 触发全量 reflow */
+  const StreamReportRenderer = {
+    buffer: "",
+    flushScheduled: false,
+    lastStatusAt: 0,
+    tableCount: 0,
+    chartCount: 0,
+    lite: true,
+    debug: false,
+
+    reset() {
+      this.buffer = "";
+      this.flushScheduled = false;
+      this.tableCount = 0;
+      this.chartCount = 0;
+      structuredStore.tables = [];
+      structuredStore.charts = [];
+      const el = $("answer");
+      el.textContent = "";
+      el.classList.remove("rendered-md");
+    },
+
+    appendDelta(text) {
+      if (!text) return;
+      this.buffer += text;
+      this.scheduleFlush();
+    },
+
+    scheduleFlush() {
+      if (this.flushScheduled) return;
+      this.flushScheduled = true;
+      requestAnimationFrame(() => {
+        $("answer").textContent = this.buffer;
+        this.flushScheduled = false;
+        const now = Date.now();
+        if (now - this.lastStatusAt > 600) {
+          appendStatus("生成中… 已收 " + this.buffer.length + " 字");
+          this.lastStatusAt = now;
+        }
+      });
+    },
+
+    flushNow() {
+      $("answer").textContent = this.buffer;
+    },
+
+    onTablePayload(ev) {
+      this.tableCount += 1;
+      if (ev.table) structuredStore.tables.push(ev.table);
+      if (this.lite) {
+        $("structuredBlocks").textContent =
+          "轻量模式：已收 " +
+          this.tableCount +
+          " 个表格、" +
+          this.chartCount +
+          " 个图表（流结束后展示详情与图表）";
+        return;
+      }
+      appendStructured("table_payload", ev);
+    },
+
+    onChartPayload(ev) {
+      this.chartCount += 1;
+      if (ev.chart) structuredStore.charts.push(ev.chart);
+      if (this.lite) {
+        $("structuredBlocks").textContent =
+          "轻量模式：已收 " +
+          this.tableCount +
+          " 个表格、" +
+          this.chartCount +
+          " 个图表（流结束后渲染 ECharts）";
+        return;
+      }
+      appendStructured("chart_payload", ev);
+      if (ev.chart) renderEchartsChart(ev.chart);
+    },
+
+    finalizeStructured(meta) {
+      const sr = (meta && meta.structured_report) || {};
+      const charts = Array.isArray(sr.charts) ? sr.charts : structuredStore.charts;
+      const tables = Array.isArray(sr.tables) ? sr.tables : structuredStore.tables;
+      $("structuredBlocks").replaceChildren();
+      const summary = document.createElement("div");
+      summary.className = "struct-item";
+      summary.textContent =
+        "structured_report: tables=" + tables.length + " charts=" + charts.length;
+      $("structuredBlocks").appendChild(summary);
+      if (this.debug && tables.length) {
+        tables.slice(0, 3).forEach((t, i) => {
+          const item = document.createElement("div");
+          item.className = "struct-item";
+          item.textContent = "table[" + i + "] " + (t.title || t.id || "") + "\n" + JSON.stringify(t, null, 2).slice(0, 4000);
+          $("structuredBlocks").appendChild(item);
+        });
+      }
+      charts.forEach((ch) => renderEchartsChart(ch));
+    },
+
+    /** 流结束后可选：简易 Markdown → HTML（不依赖第三方库） */
+    renderMarkdownFinish() {
+      const el = $("answer");
+      const md = this.buffer;
+      if (!md) return;
+      el.classList.add("rendered-md");
+      el.innerHTML = simpleMarkdownToHtml(md);
+    },
+  };
+
+  function simpleMarkdownToHtml(md) {
+    const esc = (s) =>
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const lines = md.split("\n");
+    const out = [];
+    let inTable = false;
+    for (const line of lines) {
+      const t = line.trim();
+      if (t.startsWith("### ")) {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        out.push("<h3>" + esc(t.slice(4)) + "</h3>");
+      } else if (t.startsWith("#### ")) {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        out.push("<h4>" + esc(t.slice(5)) + "</h4>");
+      } else if (t.startsWith("|") && t.includes("|")) {
+        const cells = t.split("|").slice(1, -1).map((c) => c.trim());
+        if (/^[-:\s|]+$/.test(t.replace(/\|/g, ""))) continue;
+        if (!inTable) { out.push("<table>"); inTable = true; }
+        const tag = out.length && out[out.length - 1] === "<table>" ? "th" : "td";
+        out.push("<tr>" + cells.map((c) => "<" + tag + ">" + esc(c) + "</" + tag + ">").join("") + "</tr>");
+      } else {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        if (t) out.push("<p>" + esc(t) + "</p>");
+      }
+    }
+    if (inTable) out.push("</table>");
+    return out.join("\n");
+  }
 
   function appendStatus(t) {
     $("status").textContent = t;
@@ -448,9 +605,15 @@
   }
 
   function logEvent(line) {
+    if (!$("debugSse").checked) return;
     const el = $("eventLog");
     const ts = new Date().toISOString().slice(11, 23);
+    const maxLines = 120;
     el.textContent += "[" + ts + "] " + line + "\n";
+    const parts = el.textContent.split("\n");
+    if (parts.length > maxLines) {
+      el.textContent = parts.slice(-maxLines).join("\n");
+    }
     el.scrollTop = el.scrollHeight;
   }
 
@@ -543,7 +706,7 @@
         },
       ],
     });
-    window.addEventListener("resize", () => inst.resize());
+    window.addEventListener("resize", () => inst.resize(), { passive: true });
   }
 
   function clearCharts() {
@@ -589,7 +752,7 @@
   }
 
   $("btnClear").addEventListener("click", () => {
-    $("answer").textContent = "";
+    StreamReportRenderer.reset();
     clearCharts();
     setSlotLoading(false);
     $("structuredBlocks").textContent =
@@ -651,8 +814,10 @@
 
   $("btnSend").addEventListener("click", async () => {
     showErr("");
-    $("answer").textContent = "";
+    StreamReportRenderer.reset();
     clearCharts();
+    StreamReportRenderer.lite = $("liteStream").checked;
+    StreamReportRenderer.debug = $("debugSse").checked;
     $("structuredBlocks").textContent = "…";
     $("ragCitations").textContent = "…";
     $("meta").textContent = "…";
@@ -670,7 +835,6 @@
     abortCtrl = new AbortController();
     setBusy(true);
     appendStatus("连接中 [" + atLabel + "]（取数与 RAG 阶段可能较长，首包前请耐心等待）…");
-    let answerText = "";
 
     function setSlotLoading(active, ev) {
       const el = $("slotLoading");
@@ -735,13 +899,12 @@
           return;
         }
         if (kind === "table_payload") {
-          appendStructured("table_payload", ev);
+          StreamReportRenderer.onTablePayload(ev);
           logEvent("table_payload" + (ev.slot_id ? ":" + ev.slot_id : ""));
           return;
         }
         if (kind === "chart_payload") {
-          appendStructured("chart_payload", ev);
-          if (ev.chart) renderEchartsChart(ev.chart);
+          StreamReportRenderer.onChartPayload(ev);
           logEvent("chart_payload" + (ev.slot_id ? ":" + ev.slot_id : ""));
           return;
         }
@@ -756,15 +919,14 @@
         }
         if (kind === "summary_delta" && ev.text != null) {
           setSlotLoading(false);
-          answerText += ev.text;
-          $("answer").textContent = answerText;
-          appendStatus("生成中… 已收字符 " + answerText.length);
+          StreamReportRenderer.appendDelta(ev.text);
           return;
         }
         if (kind === "summary_complete") {
+          StreamReportRenderer.flushNow();
           const tail =
             "chars: " +
-            (ev.chars != null ? ev.chars : answerText.length) +
+            (ev.chars != null ? ev.chars : StreamReportRenderer.buffer.length) +
             "  synthesis_ms: " +
             (ev.synthesis_ms != null ? ev.synthesis_ms : "—") +
             "\nrequest_id: " +
@@ -775,10 +937,10 @@
         }
         if (kind === "finished") {
           const m = ev.meta || {};
+          StreamReportRenderer.flushNow();
+          StreamReportRenderer.renderMarkdownFinish();
+          StreamReportRenderer.finalizeStructured(m);
           const cites = Array.isArray(m.rag_citations) ? m.rag_citations : [];
-          const sr = m.structured_report || {};
-          const charts = Array.isArray(sr.charts) ? sr.charts : [];
-          charts.forEach((ch) => renderEchartsChart(ch));
           renderRagCitations($("ragCitations"), cites);
           const tail =
             "--- finished ---\n" +

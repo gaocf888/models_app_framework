@@ -74,6 +74,47 @@ class SynthesisV2RunResult:
 # 槽位注册表（P0：超温）；其它专项后续扩展
 # ---------------------------------------------------------------------------
 
+_OVERHEAT_DATA_SOURCE_LABELS: dict[str, str] = {
+    "q1": "报告基础信息",
+    "q2a": "测点超温时段",
+    "q2b": "全事件运行工况",
+    "q2c": "超温测点分级汇总",
+    "q2d": "设计实测壁温极值",
+    "q3a": "区域汇总统计",
+    "q3b": "尖峰频次统计",
+    "q4a": "壁温时序",
+    "q4b": "SIS关联参数时序",
+    "q5a": "历史缺陷检修记录",
+    "q5b": "整改效果验证",
+    "q6a": "壁温趋势",
+    "q6b": "多测点对照",
+    "q6c": "历史同类对标",
+    "q6d": "DCS参数联动趋势",
+}
+
+
+def _data_source_label(item_id: str) -> str:
+    return _OVERHEAT_DATA_SOURCE_LABELS.get(item_id, "业务数据")
+
+
+def _sanitize_report_narrative(text: str) -> str:
+    """移除正文中不应出现的置信度/依据/q 编号等（对齐 docx 实战示例口径）。"""
+    if not (text or "").strip():
+        return text or ""
+    out = text
+    # q 编号（含 q1、q2a 等）
+    out = re.sub(r"\bq[0-9][a-z]?\b", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"\[q[0-9][a-z]?\]", "", out, flags=re.IGNORECASE)
+    # 置信度 / 依据 常见写法
+    out = re.sub(r"[\[（(]?置信度[：:\s]*[高中低][）)\]]?", "", out)
+    out = re.sub(r"[（(]依据[：:][^）)\n]+[）)]", "", out)
+    out = re.sub(r"依据[：:][^\n。；;]+", "", out)
+    out = re.sub(r"数据依据[：:][^\n]+", "", out)
+    # 多余空行
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
 def _overheat_v2_slots() -> list[SynthesisV2Slot]:
     """与 analysis_plan_overheat_guidance v2 方案B（q1 + q2a～q6d）及九段报告模板一一映射。"""
     return [
@@ -137,9 +178,10 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             source_item_ids=("q3a", "q3b"),
             narrative_instruction=(
-                "撰写第三章第 1 节「多测点温度统计」（勿输出任何 # 标题行）："
-                "解读 q3a 区域汇总与 q3b 尖峰频次，按区域点明测点数量、累计时长、最高壁温/温差；"
-                "须引用 q3b TOP3 尖峰测点编号。无数据处写待补充。"
+                "撰写「1.多测点温度统计」正文（勿输出 # 标题行）："
+                "按区域简述测点数量、累计超温时长、最高/平均壁温与温差；"
+                "可点名 1～3 个尖峰测点编号。无数据写待补充。"
+                "禁止输出置信度、依据、结论摘要、建议措施等额外结构。"
             ),
         ),
         SynthesisV2Slot(
@@ -162,9 +204,9 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             source_item_ids=("q4a", "q4b"),
             narrative_instruction=(
-                "撰写第三章第 2 节「关联参数联动」（勿输出 # 标题行）："
-                "基于 q4a 壁温时序与 q4b SIS/DCS 参数（减温水、烟温、排烟、负荷、主汽压力、总风量等）"
-                "描述同步变化；q4a/q4b 无行时写待补充，禁止编造。"
+                "撰写「2.关联参数联动」正文（勿输出 # 标题行）："
+                "简述减温水、烟温、排烟、负荷、主汽压力、总风量等与超温时序的联动关系；"
+                "无数据写待补充，禁止编造。禁止置信度、依据、额外章节。"
             ),
         ),
         SynthesisV2Slot(
@@ -187,8 +229,9 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             source_item_ids=("q3a", "q3b", "q4a", "q6c"),
             narrative_instruction=(
-                "撰写第三章第 3 节「多测点对比」（勿输出 # 标题行）："
-                "同区域共性/个性、正常与超温差异；可引用 q6c 历史对标。无数据写待补充。"
+                "撰写「3.多测点对比」正文（勿输出 # 标题行）："
+                "简述同区域正常与超温差异、区域共性与个性；可引用历史对标。无数据写待补充。"
+                "禁止置信度、依据、结论与建议等额外结构。"
             ),
         ),
         SynthesisV2Slot(
@@ -203,10 +246,10 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             source_item_ids=("q1", "q2a", "q2b", "q2c", "q2d", "q3a", "q3b", "q4a", "q4b"),
             narrative_instruction=(
-                "撰写第四章正文（勿输出 # 标题行）："
-                "(一)共性原因：烟气侧/介质侧/运行操作/设备本体，每条标注置信度与字段依据；"
-                "(二)区域专属原因：按 q3a 各超温区域逐区写，每区须引用该区 q3a 指标 + q3b 代表尖峰测点"
-                "+（若有）q2a 代表测点时段，禁止 8 段同构套话。"
+                "撰写第四章正文（勿输出 # 标题行），严格两节："
+                "（一）共性原因：烟气侧、介质侧、运行操作、设备本体，每条 1～2 句事实描述；"
+                "（二）区域专属原因：按各超温区域逐区简述，须结合该区域统计与代表测点，避免八段同构。"
+                "禁止出现「置信度」「依据」字样；禁止增删章节；禁止写 q 编号。"
             ),
         ),
         SynthesisV2Slot(
@@ -221,9 +264,10 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             source_item_ids=("q1", "q2a", "q2c", "q3a", "q3b"),
             narrative_instruction=(
-                "撰写第五章正文（勿输出 # 标题行）：仅写"
-                "短期安全影响、中期安全影响、长期安全影响、经济影响、环保影响五块；"
-                "禁止另设「综合评估」「建议措施」等章节。无量化数据处标注待补充。"
+                "撰写第五章正文（勿输出 # 标题行）：仅五段——"
+                "短期安全影响、中期安全影响、长期安全影响、经济影响、环保影响；"
+                "每段 2～4 句，无数据写待补充。"
+                "禁止「综合评估」「建议措施」「结论摘要」等额外章节；禁止置信度、依据。"
             ),
         ),
         SynthesisV2Slot(
@@ -238,10 +282,10 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             source_item_ids=("q1", "q2a", "q2c", "q3a", "q3b", "q4a", "q4b"),
             narrative_instruction=(
-                "撰写第六章正文（勿输出 # 标题行），分四节："
-                "(一)紧急处置：须点名 q3b TOP5 尖峰测点或 q2c 严重超温测点编号，给出可执行步骤；"
-                "(二)运行优化；(三)检修预防（分区域）；(四)长效防控。"
-                "禁止编造已执行操作。"
+                "撰写第六章正文（勿输出 # 标题行），严格四节："
+                "（一）紧急处置：点名严重/尖峰测点编号与可执行步骤；"
+                "（二）运行优化；（三）检修预防（分区域）；（四）长效防控。"
+                "禁止编造已执行操作；禁止置信度、依据、额外总结章节。"
             ),
         ),
         SynthesisV2Slot(
@@ -263,12 +307,12 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             source_item_ids=("q5a", "q5b"),
             narrative_instruction=(
-                "撰写第七章整改验证正文（勿输出 # 标题行）："
-                "1.已执行调控（可引用 q5a，无则待补充）；"
-                "2.全测点效果验证（须引用 q5b 汇总字段）；"
-                "3.关联参数验证；4.后续跟踪时长。"
-                "若事实清单标明 q5b 查询失败，须写「效果验证查询失败（非无数据）」；"
-                "若 q5b 成功但无行，写「待现场补录」。"
+                "撰写第七章整改验证正文（勿输出 # 标题行），严格四条："
+                "1.已执行调控操作（分区域，无则待补充）；"
+                "2.全测点效果验证（已恢复严重数、剩余严重数、中轻度恢复情况等）；"
+                "3.关联参数验证；4.后续跟踪监测时长。"
+                "效果验证数据查询失败时写「效果验证查询失败（非无数据）」；"
+                "查询成功但无汇总行写「待现场补录」。禁止置信度、依据、q 编号。"
             ),
         ),
         SynthesisV2Slot(
@@ -286,9 +330,10 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
                 "q3a", "q3b", "q4a", "q4b", "q5a", "q5b", "q6a", "q6b", "q6c", "q6d",
             ),
             narrative_instruction=(
-                "撰写第八章正文（勿输出 # 标题行）："
-                "1.事件定性；2.重复超温风险等级；3.日常重点盯防（区域/测点/参数）；"
-                "4.后续优化建议。主汽压力须使用事实清单中已换算的 MPa 值。"
+                "撰写第八章正文（勿输出 # 标题行），严格四条："
+                "1.事件定性；2.重复超温风险等级（高/中/低）；"
+                "3.日常重点盯防（区域/测点/参数）；4.后续优化建议。"
+                "主汽压力使用已换算 MPa 值。禁止置信度、依据、额外章节。"
             ),
         ),
         SynthesisV2Slot(
@@ -414,7 +459,7 @@ def _table_empty_message(
     for iid in source_item_ids:
         st = status.get(iid, "")
         if st in ("mandatory_failed", "optional_failed"):
-            return f"（{iid} 查询失败，非无数据）"
+            return f"（{_data_source_label(iid)} 查询失败，非无数据）"
     if table_id == "overheat_q5_defects" and source_item_ids == ("q5a",):
         if status.get("q5a") == "success" and not (data.get("q5a") or []):
             return "（近一年无遗留问题/泄漏/换管记录；查询条件：机组与时间窗见正文）"
@@ -899,7 +944,7 @@ def _render_overheat_ch2_item1(
         q4a = (gathered_data or {}).get("q4a") or []
         if q4a:
             start, end, duration = _q4a_global_time_window(q4a)
-            note = "（q2a 无数据，由 q4a 时序推导）"
+            note = "（测点时段明细不可用，由壁温时序推导）"
             return (
                 f"1. 超温起止时段：起始{start} 结束{end} 持续{duration}{note}\n"
             )
@@ -1063,8 +1108,8 @@ def _render_overheat_ch2_item5(
         q3a = (gathered_data or {}).get("q3a") or []
         if q3a:
             pattern, reason = _infer_overheat_distribution_from_q3a(q3a)
-            return f"5. 超温分布特征：{pattern}（{reason}；q2a 无数据由 q3a 推导）\n"
-        return "5. 超温分布特征：待判定（q2a/q3a 均无数据）\n"
+            return f"5. 超温分布特征：{pattern}（{reason}；由区域汇总推导）\n"
+        return "5. 超温分布特征：待判定（测点时段与区域汇总均无数据）\n"
     pattern, reason = _infer_overheat_distribution(rows)
     return f"5. 超温分布特征：{pattern}（{reason}）\n"
 
@@ -1128,7 +1173,7 @@ def _append_q2a_top_points(lines: list[str], rows: list[dict]) -> None:
         return
     scored.sort(key=lambda x: x[0], reverse=True)
     top = "、".join(c for _, c in scored[:5])
-    lines.append(f"- [q2a] TOP测点(时长): {top}")
+    lines.append(f"- 尖峰测点(时长排序): {top}")
 
 
 def _append_q3b_top_points(lines: list[str], rows: list[dict]) -> None:
@@ -1144,7 +1189,7 @@ def _append_q3b_top_points(lines: list[str], rows: list[dict]) -> None:
         return
     scored.sort(key=lambda x: x[0], reverse=True)
     top = "、".join(c for _, c in scored[:5])
-    lines.append(f"- [q3b] TOP尖峰测点: {top}")
+    lines.append(f"- 尖峰频次测点: {top}")
 
 
 def _build_audit_facts(
@@ -1154,18 +1199,19 @@ def _build_audit_facts(
     slot_id: str = "",
     task_status: dict[str, str] | None = None,
 ) -> str:
-    lines: list[str] = ["【可引用事实（正文数值仅可来自下列键值）】"]
+    lines: list[str] = ["【可引用事实（正文数值仅可来自下列键值；勿在报告中写数据源编号）】"]
     status = task_status or {}
     for iid, rows in subset.items():
+        label = _data_source_label(iid)
         st = status.get(iid, "")
         if st in ("mandatory_failed", "optional_failed"):
-            lines.append(f"- [{iid}] 查询失败 → 须写明查询失败（非无数据）")
+            lines.append(f"- [{label}] 查询失败 → 须写明查询失败（非无数据）")
             continue
         if not rows:
-            lines.append(f"- [{iid}] 无数据行 → 不得编造该查询项明细")
+            lines.append(f"- [{label}] 无数据行 → 不得编造该部分明细")
             continue
         preview_n = _audit_preview_row_limit(iid, len(rows), slot_id=slot_id)
-        lines.append(f"- [{iid}] {len(rows)} 行")
+        lines.append(f"- [{label}] {len(rows)} 行")
         for row in rows[:preview_n]:
             if not isinstance(row, dict):
                 continue
@@ -1198,11 +1244,12 @@ def _build_data_coverage_note(
     status = task_status or {}
     parts: list[str] = []
     for iid, rows in subset.items():
+        label = _data_source_label(iid)
         st = status.get(iid, "")
         if st in ("mandatory_failed", "optional_failed"):
-            parts.append(f"{iid}=查询失败")
+            parts.append(f"{label}=查询失败")
         else:
-            parts.append(f"{iid}={'有' if rows else '无'}数据")
+            parts.append(f"{label}={'有' if rows else '无'}数据")
     if not parts:
         return ""
     return "【本槽数据覆盖】" + "；".join(parts)
@@ -1224,7 +1271,7 @@ def _rag_snippets_for_slot(
 
 
 def _wrap_narrative_markdown(title: str, body: str) -> str:
-    cleaned = strip_leading_duplicate_heading((body or "").strip(), title)
+    cleaned = _sanitize_report_narrative(strip_leading_duplicate_heading((body or "").strip(), title))
     if not cleaned:
         return f"### {title}\n\n（待补充）\n\n" if title else "（待补充）\n\n"
     if title:
@@ -1493,6 +1540,7 @@ class AnalysisSynthesisV2Engine:
                     stream_body_parts.append(chunk)
                     await chunk_queue.put(chunk)
                 body = strip_leading_duplicate_heading("".join(stream_body_parts), slot.title)
+                body = _sanitize_report_narrative(body)
                 outputs[index] = SynthesisV2SlotOutput(
                     slot.id,
                     slot.kind,
@@ -1712,8 +1760,9 @@ class AnalysisSynthesisV2Engine:
             if tpl and tpl.content.strip():
                 return tpl.content.strip()
         return (
-            "你是电站锅炉防磨防爆与超温分析专家。请严格按章节指令撰写，使用专业术语，"
-            "禁止编造数值；仅输出所要求章节正文（Markdown），不要输出其它章节。"
+            "你是《锅炉管壁超温智能分析报告》撰写专家。严格按【本章写作任务】输出指定章节正文；"
+            "禁止编造数值；禁止 Markdown 标题行；禁止出现置信度、依据、q 编号；"
+            "禁止增删模板章节或额外「结论摘要/综合评估/建议措施」结构。"
         )
 
     def _build_segment_user_content(
