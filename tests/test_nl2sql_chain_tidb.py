@@ -100,17 +100,16 @@ def test_rewrite_recent_week_time_window() -> None:
 
 
 def test_rewrite_dynamic_time_window_does_not_corrupt_nested_date_sub() -> None:
-    """DATE_SUB(NOW(), INTERVAL 7 DAY) 含嵌套括号，旧版 ge_pat 会截断并生成非法 SQL。"""
+    """SQL 已含 DATE_SUB 表达式时仅改写字面量，不截断嵌套括号。"""
     chain = _build_chain_for_unit()
     sql = (
         "SELECT 1 FROM monitor_hotarea_temp mht "
         "WHERE mht.start_time >= DATE_SUB(NOW(), INTERVAL 7 DAY) ORDER BY mht.start_time DESC"
     )
-    rewritten, notes = chain._rewrite_query_filters(sql, question="请分析最近一周超温情况")
+    rewritten, _notes = chain._rewrite_query_filters(sql, question="请分析最近一周超温情况")
     assert ", INTERVAL 7 DAY), INTERVAL" not in rewritten
     assert rewritten.count("INTERVAL 7 DAY") == 1
     assert "mht.start_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)" in rewritten
-    assert notes
 
 
 def test_rewrite_region_equals_to_like() -> None:
@@ -143,8 +142,72 @@ def test_rewrite_recent_30_days_time_window() -> None:
     sql = "SELECT * FROM monitor_hotarea_temp WHERE ts = '2024-02-01'"
     rewritten, notes = chain._rewrite_query_filters(sql, question="recent 30 days overheat")
     assert "DATE_SUB(NOW(), INTERVAL 30 DAY)" in rewritten
-    assert "ts <=" in rewritten
+    assert "ts <" in rewritten
     assert notes
+
+
+def test_rewrite_today_qa_literal_half_open() -> None:
+    """QA 存库为固定日期字面量时，问句「今天」应改写为自然日半开区间。"""
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "WHERE t.start_time >= '2026-05-27 00:00:00' "
+        "AND t.start_time <= '2026-05-27 23:59:59'"
+    )
+    q = "请分析1号锅炉今天的超温情况"
+    rewritten, notes = chain._rewrite_query_filters(sql, question=q, time_intent_source=q)
+    assert "t.start_time >= CURDATE()" in rewritten
+    assert "t.start_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)" in rewritten
+    assert "23:59:59" not in rewritten
+    assert notes
+
+
+def test_rewrite_today_qa_literal_lt_upper_bound() -> None:
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "WHERE t.start_time >= '2026-05-27 00:00:00' "
+        "AND t.start_time < '2026-05-28 00:00:00'"
+    )
+    rewritten, notes = chain._rewrite_query_filters(
+        sql, question="今天超温", time_intent_source="今天超温"
+    )
+    assert "t.start_time >= CURDATE()" in rewritten
+    assert "t.start_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)" in rewritten
+    assert "2026-05-28" not in rewritten
+    assert notes
+
+
+def test_rewrite_plan_near_year_overrides_today() -> None:
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "WHERE t.record_time >= '2020-01-01 00:00:00' "
+        "AND t.record_time <= '2026-05-27 23:59:59'"
+    )
+    q = "请分析1号锅炉今天的超温。查询用户指定锅炉近一年内的检修记录"
+    rewritten, notes = chain._rewrite_query_filters(
+        sql, question=q, time_intent_source="请分析1号锅炉今天的超温"
+    )
+    assert "DATE_SUB(CURDATE(), INTERVAL 1 YEAR)" in rewritten
+    assert "record_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)" in rewritten
+    assert "CURDATE()" in rewritten
+    assert "record_time >= CURDATE()" not in rewritten
+    assert notes
+
+
+def test_rewrite_entity_scope_boiler_from_question() -> None:
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "JOIN account_boiler ab ON t.boiler_id = ab.id "
+        "WHERE ab.boiler_name = '2号锅炉'"
+    )
+    rewritten, notes = chain._rewrite_query_filters(
+        sql, question="请分析3号锅炉今天的超温", time_intent_source="请分析3号锅炉今天的超温"
+    )
+    assert "ab.boiler_name = '3号锅炉'" in rewritten
+    assert "entity_scope_boiler_name" in notes
 
 
 def test_table_scope_from_env(monkeypatch) -> None:

@@ -96,6 +96,8 @@ class NL2SQLChain:
     # DATE_SUB / DATE_ADD 等参数里可含嵌套括号（如 NOW()），用 [^)]* 会截断在第一个 )，把 “, INTERVAL 7 DAY)” 留在 SQL 外导致语法错误。
     _tidb_date_call_arg = r"(?:[^()]|\([^()]*\))*"
     _tidb_date_call_rhs = rf"DATE_[A-Z_]+\({_tidb_date_call_arg}\)"
+    # 动态时间窗仅替换 QA/模板中的日期字面量，避免误改 SQL 内已有的 DATE_SUB/CURDATE() 表达式。
+    _TIME_LITERAL_RHS = r"'[^']+'"
 
     def __init__(
         self,
@@ -1159,12 +1161,14 @@ class NL2SQLChain:
         question: str,
         time_intent_source: str | None = None,
     ) -> tuple[str, list[str]]:
-        """P2：优化口径（通用时间语义动态窗 + 区域放宽匹配）。"""
+        """P2：优化口径（通用时间语义动态窗 + 机组/锅炉范围 + 区域放宽匹配）。"""
         notes: list[str] = []
         rewritten = sql
-        time_q = time_intent_source if time_intent_source is not None else question
-        time_window = self._extract_time_window_from_question(time_q)
-        if time_window is not None:
+        time_window = self._resolve_time_window_for_rewrite(
+            question=question,
+            time_intent_source=time_intent_source,
+        )
+        if time_window is not None and not self._sql_has_time_placeholders(rewritten):
             rewritten, time_notes = self._rewrite_dynamic_time_window(
                 rewritten,
                 start_expr=time_window[0],
@@ -1172,9 +1176,35 @@ class NL2SQLChain:
                 tag=time_window[2],
             )
             notes.extend(time_notes)
+        rewritten, scope_notes = self._rewrite_entity_scope_literals(rewritten, question=question)
+        notes.extend(scope_notes)
         rewritten, region_notes = self._rewrite_relaxed_region_match(rewritten, question=question)
         notes.extend(region_notes)
         return rewritten, notes
+
+    @staticmethod
+    def _sql_has_time_placeholders(sql: str) -> bool:
+        return bool(re.search(r"@t_(?:start|end|after)\b", sql, re.IGNORECASE))
+
+    def _resolve_time_window_for_rewrite(
+        self,
+        *,
+        question: str,
+        time_intent_source: str | None,
+    ) -> tuple[str, str, str] | None:
+        """
+        解析生效时间窗：plan 子任务问句若含「近一年」等长窗语义，优先于全局「今天」类短窗。
+        """
+        task_q = (question or "").strip()
+        intent_q = (time_intent_source or "").strip()
+        task_win = self._extract_time_window_from_question(task_q) if task_q else None
+        if task_win and task_win[2] not in ("today", "yesterday", "day_before_yesterday"):
+            return task_win
+        if intent_q and intent_q != task_q:
+            intent_win = self._extract_time_window_from_question(intent_q)
+            if intent_win:
+                return intent_win
+        return task_win
 
     @staticmethod
     def _extract_numeric_window(q: str, unit_keys: tuple[str, ...]) -> int | None:
@@ -1218,35 +1248,12 @@ class NL2SQLChain:
         this_month_start = "DATE_FORMAT(CURDATE(), '%Y-%m-01')"
         this_year_start = "DATE_FORMAT(CURDATE(), '%Y-01-01')"
         this_week_start = "DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)"
-        if "今天" in q or "今日" in q:
-            return ("CURDATE()", "DATE_ADD(CURDATE(), INTERVAL 1 DAY)", "today")
-        if "昨天" in q:
-            return ("DATE_SUB(CURDATE(), INTERVAL 1 DAY)", "CURDATE()", "yesterday")
-        if "前天" in q:
+        # 长窗 / 日历周期优先于「今天」，避免 plan 问句同时含用户「今天」与子任务「近一年」时误用短窗。
+        if "近一年" in q or "最近一年" in q or "过去一年" in q:
             return (
-                "DATE_SUB(CURDATE(), INTERVAL 2 DAY)",
-                "DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
-                "day_before_yesterday",
-            )
-        if "本周" in q or "这周" in q:
-            return (this_week_start, f"DATE_ADD({this_week_start}, INTERVAL 7 DAY)", "this_week")
-        if "上周" in q:
-            return (f"DATE_SUB({this_week_start}, INTERVAL 7 DAY)", this_week_start, "last_week")
-        if "本月" in q or "这个月" in q:
-            return (this_month_start, f"DATE_ADD({this_month_start}, INTERVAL 1 MONTH)", "this_month")
-        if "上月" in q or "上个月" in q:
-            return (
-                f"DATE_SUB({this_month_start}, INTERVAL 1 MONTH)",
-                this_month_start,
-                "last_month",
-            )
-        if "今年" in q or "本年" in q:
-            return (this_year_start, f"DATE_ADD({this_year_start}, INTERVAL 1 YEAR)", "this_year")
-        if "去年" in q:
-            return (
-                f"DATE_SUB({this_year_start}, INTERVAL 1 YEAR)",
-                this_year_start,
-                "last_year",
+                "DATE_SUB(CURDATE(), INTERVAL 1 YEAR)",
+                "DATE_ADD(CURDATE(), INTERVAL 1 DAY)",
+                "recent_1_year",
             )
         if "最近一周" in q or "近一周" in q:
             return ("DATE_SUB(NOW(), INTERVAL 7 DAY)", "NOW()", "recent_7_days")
@@ -1286,6 +1293,37 @@ class NL2SQLChain:
                 f"'{next_y:04d}-{next_m:02d}-01 00:00:00'",
                 f"month_{y:04d}_{mon:02d}",
             )
+
+        if "本周" in q or "这周" in q:
+            return (this_week_start, f"DATE_ADD({this_week_start}, INTERVAL 7 DAY)", "this_week")
+        if "上周" in q:
+            return (f"DATE_SUB({this_week_start}, INTERVAL 7 DAY)", this_week_start, "last_week")
+        if "本月" in q or "这个月" in q:
+            return (this_month_start, f"DATE_ADD({this_month_start}, INTERVAL 1 MONTH)", "this_month")
+        if "上月" in q or "上个月" in q:
+            return (
+                f"DATE_SUB({this_month_start}, INTERVAL 1 MONTH)",
+                this_month_start,
+                "last_month",
+            )
+        if "今年" in q or "本年" in q:
+            return (this_year_start, f"DATE_ADD({this_year_start}, INTERVAL 1 YEAR)", "this_year")
+        if "去年" in q:
+            return (
+                f"DATE_SUB({this_year_start}, INTERVAL 1 YEAR)",
+                this_year_start,
+                "last_year",
+            )
+        if "今天" in q or "今日" in q:
+            return ("CURDATE()", "DATE_ADD(CURDATE(), INTERVAL 1 DAY)", "today")
+        if "昨天" in q:
+            return ("DATE_SUB(CURDATE(), INTERVAL 1 DAY)", "CURDATE()", "yesterday")
+        if "前天" in q:
+            return (
+                "DATE_SUB(CURDATE(), INTERVAL 2 DAY)",
+                "DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
+                "day_before_yesterday",
+            )
         return None
 
     def _rewrite_dynamic_time_window(
@@ -1298,13 +1336,21 @@ class NL2SQLChain:
     ) -> tuple[str, list[str]]:
         notes: list[str] = []
         rewritten = sql
+        lit = NL2SQLChain._TIME_LITERAL_RHS
+
         def _is_time_col(col: str) -> bool:
             c = col.lower().split(".")[-1]
             return c.endswith("time") or c.endswith("date") or c == "ts" or c.endswith("timestamp")
-        # 优先改写固定日期区间，避免“历史固定时间”导致 0 行。
-        _dr = NL2SQLChain._tidb_date_call_rhs
+
+        def _is_date_literal(val: str) -> bool:
+            core = val.strip().strip("'")
+            return bool(
+                re.match(r"^\d{4}-\d{2}-\d{2}", core)
+                or re.match(r"^\d{4}/\d{2}/\d{2}", core)
+            )
+
         between_pat = re.compile(
-            rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s+BETWEEN\s+('[^']+'|NOW\(\)|CURDATE\(\)|{_dr})\s+AND\s+('[^']+'|NOW\(\)|CURDATE\(\)|{_dr})"
+            rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s+BETWEEN\s+({lit})\s+AND\s+({lit})"
         )
 
         def _between_repl(m: re.Match[str]) -> str:
@@ -1312,33 +1358,48 @@ class NL2SQLChain:
             if not _is_time_col(col):
                 return m.group(0)
             notes.append(f"dynamic_time_window_between:{tag}")
-            return f"{col} >= {start_expr} AND {col} <= {end_expr}"
+            return f"{col} >= {start_expr} AND {col} < {end_expr}"
 
         rewritten = between_pat.sub(_between_repl, rewritten)
-        ge_pat = re.compile(
-            rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*>=\s*('[^']+'|NOW\(\)|CURDATE\(\)|{_dr})"
-        )
+        ge_pat = re.compile(rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*>=\s*({lit})")
         if ge_pat.search(rewritten):
             rewritten = ge_pat.sub(
-                lambda m: f"{m.group(1)} >= {start_expr}" if _is_time_col(m.group(1)) else m.group(0),
+                lambda m: (
+                    f"{m.group(1)} >= {start_expr}"
+                    if _is_time_col(m.group(1)) and _is_date_literal(m.group(2))
+                    else m.group(0)
+                ),
                 rewritten,
             )
             notes.append(f"dynamic_time_window_ge:{tag}")
-        le_pat = re.compile(
-            rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*<=\s*('[^']+'|NOW\(\)|CURDATE\(\)|{_dr})"
-        )
+        le_pat = re.compile(rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*<=\s*({lit})")
         if le_pat.search(rewritten):
             rewritten = le_pat.sub(
-                lambda m: f"{m.group(1)} <= {end_expr}" if _is_time_col(m.group(1)) else m.group(0),
+                lambda m: (
+                    f"{m.group(1)} < {end_expr}"
+                    if _is_time_col(m.group(1)) and _is_date_literal(m.group(2))
+                    else m.group(0)
+                ),
                 rewritten,
             )
             notes.append(f"dynamic_time_window_le:{tag}")
-        eq_pat = re.compile(r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*=\s*'[^']+'")
+        lt_pat = re.compile(rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*<\s*({lit})")
+        if lt_pat.search(rewritten):
+            rewritten = lt_pat.sub(
+                lambda m: (
+                    f"{m.group(1)} < {end_expr}"
+                    if _is_time_col(m.group(1)) and _is_date_literal(m.group(2))
+                    else m.group(0)
+                ),
+                rewritten,
+            )
+            notes.append(f"dynamic_time_window_lt:{tag}")
+        eq_pat = re.compile(rf"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*=\s*({lit})")
         if eq_pat.search(rewritten):
             rewritten = eq_pat.sub(
                 lambda m: (
-                    f"{m.group(1)} >= {start_expr} AND {m.group(1)} <= {end_expr}"
-                    if _is_time_col(m.group(1))
+                    f"{m.group(1)} >= {start_expr} AND {m.group(1)} < {end_expr}"
+                    if _is_time_col(m.group(1)) and _is_date_literal(m.group(2))
                     else m.group(0)
                 ),
                 rewritten,
@@ -1353,13 +1414,64 @@ class NL2SQLChain:
                 if re.search(r"(?i)\bwhere\b", rewritten):
                     rewritten = re.sub(
                         r"(?i)\bwhere\b",
-                        f"WHERE {col} >= {start_expr} AND {col} <= {end_expr} AND ",
+                        f"WHERE {col} >= {start_expr} AND {col} < {end_expr} AND ",
                         rewritten,
                         count=1,
                     )
                 else:
-                    rewritten = f"{rewritten} WHERE {col} >= {start_expr} AND {col} <= {end_expr}"
+                    rewritten = f"{rewritten} WHERE {col} >= {start_expr} AND {col} < {end_expr}"
                 notes.append(f"dynamic_time_window_injected:{tag}")
+        return rewritten, notes
+
+    @staticmethod
+    def _extract_scope_literals_from_question(question: str) -> dict[str, str]:
+        """从问句提取锅炉/机组等范围，用于替换 QA 模板中的示例字面量。"""
+        scopes: dict[str, str] = {}
+        q = question or ""
+        m_boiler = re.search(r"(\d+号锅炉|[一二两三四五六七八九十百]+号锅炉)", q)
+        if m_boiler:
+            scopes["boiler"] = m_boiler.group(1)
+        m_unit = re.search(r"(\d+号机组|[一二两三四五六七八九十百]+号机组)", q)
+        if m_unit:
+            scopes["unit"] = m_unit.group(1)
+        return scopes
+
+    def _rewrite_entity_scope_literals(self, sql: str, *, question: str) -> tuple[str, list[str]]:
+        """将 QA 中示例锅炉名/机组名替换为当前问句中的实体范围。"""
+        notes: list[str] = []
+        scopes = self._extract_scope_literals_from_question(question)
+        if not scopes:
+            return sql, notes
+        rewritten = sql
+        if boiler := scopes.get("boiler"):
+            safe = boiler.replace("'", "''")
+            boiler_pat = re.compile(
+                r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*=\s*'([^']*锅炉[^']*)'"
+            )
+
+            def _boiler_repl(m: re.Match[str]) -> str:
+                col = m.group(1)
+                if "boiler" not in col.lower():
+                    return m.group(0)
+                notes.append("entity_scope_boiler_name")
+                return f"{col} = '{safe}'"
+
+            rewritten = boiler_pat.sub(_boiler_repl, rewritten)
+        if unit := scopes.get("unit"):
+            safe = unit.replace("'", "''")
+            unit_pat = re.compile(
+                r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*=\s*'([^']*机组[^']*)'"
+            )
+
+            def _unit_repl(m: re.Match[str]) -> str:
+                col = m.group(1)
+                col_l = col.lower()
+                if not any(k in col_l for k in ("unit", "机组", "plant", "set")):
+                    return m.group(0)
+                notes.append("entity_scope_unit_name")
+                return f"{col} = '{safe}'"
+
+            rewritten = unit_pat.sub(_unit_repl, rewritten)
         return rewritten, notes
 
     def _rewrite_relaxed_region_match(self, sql: str, *, question: str) -> tuple[str, list[str]]:
