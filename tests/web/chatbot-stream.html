@@ -178,7 +178,7 @@
 
     <div class="out" style="margin-top: 1rem;">
       <div id="status">就绪</div>
-      <h2>回答（delta 拼接；仅渲染 LaTeX 公式，Markdown 保持原文）</h2>
+      <h2>回答（delta 即时拼接；流结束后再 KaTeX 渲染公式）</h2>
       <div id="answer"></div>
       <div id="err" class="err" hidden></div>
       <h2 style="margin-top:1rem;">结束帧 meta</h2>
@@ -209,10 +209,17 @@
     errorColor: "#f87171",
   };
 
-  let renderMathTimer = null;
+  let katexTimer = null;
   let katexReady = typeof renderMathInElement === "function";
+  let pendingKatexText = "";
 
-  function renderAnswerPlainWithMath(text) {
+  /** 流式过程中：仅更新纯文本（每个 delta 立即显示，保持逐字/逐 token 效果）。 */
+  function updateAnswerTextImmediate(text) {
+    $("answer").textContent = text;
+    pendingKatexText = text;
+  }
+
+  function applyKatexToAnswer(text) {
     const el = $("answer");
     el.textContent = text;
     if (!katexReady) {
@@ -229,20 +236,23 @@
     }
   }
 
-  function scheduleRenderAnswer(text) {
-    if (renderMathTimer) clearTimeout(renderMathTimer);
-    renderMathTimer = setTimeout(() => {
-      renderMathTimer = null;
-      renderAnswerPlainWithMath(text);
-    }, 120);
+  /** 生成中偶尔刷新公式（可选）；不阻塞上面的即时文本更新。 */
+  function scheduleKatexPass(text) {
+    pendingKatexText = text;
+    if (katexTimer) clearTimeout(katexTimer);
+    katexTimer = setTimeout(() => {
+      katexTimer = null;
+      applyKatexToAnswer(pendingKatexText);
+    }, 400);
   }
 
-  function flushRenderAnswer(text) {
-    if (renderMathTimer) {
-      clearTimeout(renderMathTimer);
-      renderMathTimer = null;
+  function flushAnswerWithKatex(text) {
+    if (katexTimer) {
+      clearTimeout(katexTimer);
+      katexTimer = null;
     }
-    renderAnswerPlainWithMath(text);
+    updateAnswerTextImmediate(text);
+    applyKatexToAnswer(text);
   }
 
   const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
@@ -425,12 +435,13 @@
         }
         if (ev.delta != null && ev.finished === false) {
           answerText += ev.delta;
-          scheduleRenderAnswer(answerText);
+          updateAnswerTextImmediate(answerText);
+          scheduleKatexPass(answerText);
           appendStatus("生成中… 已收字符 " + answerText.length);
           return;
         }
         if (ev.finished === true) {
-          flushRenderAnswer(answerText);
+          flushAnswerWithKatex(answerText);
           $("meta").textContent = JSON.stringify(ev.meta || {}, null, 2);
           appendStatus("完成");
           return;
