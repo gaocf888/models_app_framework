@@ -210,6 +210,28 @@ def test_rewrite_entity_scope_boiler_from_question() -> None:
     assert "entity_scope_boiler_name" in notes
 
 
+def test_rewrite_entity_scope_boiler_like_concat_global() -> None:
+    """QA strict replay 常见 LIKE CONCAT('%', '1号锅炉', '%') 应随问句替换为 2号锅炉。"""
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "INNER JOIN account_boiler ab ON t.boiler_id = ab.boiler_id "
+        "WHERE ab.boiler_name LIKE CONCAT('%', '1号锅炉', '%') "
+        "AND t.pi_code IN ("
+        "SELECT DISTINCT t_evt.pi_code FROM monitor_hotarea_temp t_evt "
+        "INNER JOIN account_boiler ab_evt ON t_evt.boiler_id = ab_evt.boiler_id "
+        "WHERE ab_evt.boiler_name LIKE CONCAT('%', '1号锅炉', '%'))"
+    )
+    rewritten, notes = chain._rewrite_query_filters(
+        sql,
+        question="请分析2号锅炉昨天的超温情况，并出具分析报告",
+        time_intent_source="请分析2号锅炉昨天的超温情况，并出具分析报告",
+    )
+    assert rewritten.count("'2号锅炉'") >= 2
+    assert "1号锅炉" not in rewritten
+    assert "entity_scope_boiler_name" in notes
+
+
 def test_today_wins_over_iso_date_in_long_plan_question() -> None:
     """plan 长问句含 2026-05-27 等示例日期时，仍应用用户 time_intent 的「今天」。"""
     chain = _build_chain_for_unit()

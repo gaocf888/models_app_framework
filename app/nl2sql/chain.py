@@ -1710,6 +1710,11 @@ class NL2SQLChain:
             scopes["unit"] = m_unit.group(1)
         return scopes
 
+    # QA 模板中常见的示例锅炉名字面量（strict replay 需按问句全局替换）
+    _BOILER_UNIT_LITERAL_IN_QUOTES = re.compile(
+        r"'(\d+号锅炉|[一二两三四五六七八九十百]+号锅炉)'"
+    )
+
     def _rewrite_entity_scope_literals(self, sql: str, *, question: str) -> tuple[str, list[str]]:
         """将 QA 中示例锅炉名/机组名替换为当前问句中的实体范围。"""
         notes: list[str] = []
@@ -1731,6 +1736,29 @@ class NL2SQLChain:
                 return f"{col} = '{safe}'"
 
             rewritten = boiler_pat.sub(_boiler_repl, rewritten)
+
+            like_concat_pat = re.compile(
+                r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s+LIKE\s+CONCAT\s*\(\s*'%'\s*,\s*"
+                r"'([^']*号锅炉[^']*)'\s*,\s*'%'\s*\)"
+            )
+
+            def _boiler_like_concat_repl(m: re.Match[str]) -> str:
+                col = m.group(1)
+                if "boiler" not in col.lower():
+                    return m.group(0)
+                notes.append("entity_scope_boiler_name")
+                return f"{col} LIKE CONCAT('%', '{safe}', '%')"
+
+            rewritten = like_concat_pat.sub(_boiler_like_concat_repl, rewritten)
+
+            def _global_boiler_lit_repl(m: re.Match[str]) -> str:
+                old = m.group(1)
+                if old == boiler:
+                    return m.group(0)
+                notes.append("entity_scope_boiler_name")
+                return f"'{safe}'"
+
+            rewritten = self._BOILER_UNIT_LITERAL_IN_QUOTES.sub(_global_boiler_lit_repl, rewritten)
         if unit := scopes.get("unit"):
             safe = unit.replace("'", "''")
             unit_pat = re.compile(
