@@ -1,3 +1,5 @@
+import pytest
+
 from app.nl2sql.chain import NL2SQLChain
 from app.nl2sql.schema_service import TableColumn, TableSchema
 from app.nl2sql.validator import SQLValidator
@@ -208,6 +210,63 @@ def test_rewrite_entity_scope_boiler_from_question() -> None:
     )
     assert "ab.boiler_name = '3号锅炉'" in rewritten
     assert "entity_scope_boiler_name" in notes
+
+
+@pytest.mark.parametrize(
+    "question,expected",
+    [
+        ("请分析2号锅炉昨天的超温", "2号锅炉"),
+        ("请分析2号机组昨天的超温", "2号锅炉"),
+        ("请分析2#机组昨天的超温", "2号锅炉"),
+        ("请分析#2机组昨天的超温", "2号锅炉"),
+        ("请分析二号机组昨天的超温", "二号锅炉"),
+    ],
+)
+def test_extract_boiler_scope_label_unit_aliases_to_boiler(question: str, expected: str) -> None:
+    chain = _build_chain_for_unit()
+    assert chain._extract_boiler_scope_label_from_question(question) == expected
+
+
+def test_rewrite_entity_scope_unit_alias_rewrites_boiler_sql(question: str = "请分析2号机组昨天的超温") -> None:
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "INNER JOIN account_boiler ab ON t.boiler_id = ab.boiler_id "
+        "WHERE ab.boiler_name LIKE CONCAT('%', '1号锅炉', '%')"
+    )
+    rewritten, notes = chain._rewrite_query_filters(
+        sql, question=question, time_intent_source=question
+    )
+    assert "'2号锅炉'" in rewritten
+    assert "1号锅炉" not in rewritten
+    assert "entity_scope_boiler_name" in notes
+
+
+def test_entity_scope_uses_time_intent_not_rag_guide_boiler_example() -> None:
+    """plan 长问句尾部规则线索含「1号锅炉」示例时，仍以 req.query 的 2号机组 为准。"""
+    chain = _build_chain_for_unit()
+    user_q = "请分析2号机组昨天的超温情况，并出具分析报告"
+    long_q = (
+        f"{user_q}。统计用户指定锅炉在昨天的超温事件。"
+        "若用户未指定机组/区域，则不要在 WHERE 中臆造具体锅炉名或墙别。"
+        "。请结合以下规则线索：参考1号锅炉典型超温案例，注意壁温测点配置。"
+    )
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "INNER JOIN account_boiler ab ON t.boiler_id = ab.boiler_id "
+        "WHERE ab.boiler_name LIKE CONCAT('%', '1号锅炉', '%')"
+    )
+    rewritten, notes = chain._rewrite_query_filters(
+        sql, question=long_q, time_intent_source=user_q
+    )
+    assert "'2号锅炉'" in rewritten
+    assert "1号锅炉" not in rewritten
+    assert "entity_scope_boiler_name" in notes
+    assert chain._extract_boiler_scope_label_from_question(long_q) == "1号锅炉"
+    assert (
+        chain._resolve_entity_scope_question(question=long_q, time_intent_source=user_q)
+        == user_q
+    )
 
 
 def test_rewrite_entity_scope_boiler_like_concat_global() -> None:

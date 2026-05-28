@@ -19,6 +19,7 @@ from app.nl2sql.schema_snippet_parser import (
     parse_nl2sql_schema_snippets,
 )
 from app.nl2sql.entity_rules import EntityRule, check_entity_rules, load_entity_rules_from_env
+from app.nl2sql.sql_cache import strip_plan_context_guide_suffix
 from app.nl2sql.validator import SQLValidator
 
 logger = get_logger(__name__)
@@ -1221,7 +1222,11 @@ class NL2SQLChain:
             rewritten = self._dedupe_redundant_time_upper_bounds(rewritten, end_expr=end_expr)
         rewritten, gc_notes = self._rewrite_group_concat_utf8_safe(rewritten, plan_item_id=plan_item_id)
         notes.extend(gc_notes)
-        rewritten, scope_notes = self._rewrite_entity_scope_literals(rewritten, question=question)
+        rewritten, scope_notes = self._rewrite_entity_scope_literals(
+            rewritten,
+            question=question,
+            time_intent_source=time_intent_source,
+        )
         notes.extend(scope_notes)
         rewritten, region_notes = self._rewrite_relaxed_region_match(rewritten, question=question)
         notes.extend(region_notes)
@@ -1698,16 +1703,49 @@ class NL2SQLChain:
         return rewritten, notes
 
     @staticmethod
+    def _resolve_entity_scope_question(
+        *, question: str, time_intent_source: str | None
+    ) -> str:
+        """
+        实体范围解析用问句：优先用户原始 query（time_intent），避免 plan 任务长问句
+        尾部 RAG「请结合以下规则线索」中的示例「1号锅炉」覆盖用户「2号机组」。
+        """
+        intent_q = (time_intent_source or "").strip()
+        if intent_q:
+            return intent_q
+        return strip_plan_context_guide_suffix(question)
+
+    @staticmethod
+    def _extract_boiler_scope_label_from_question(question: str) -> str | None:
+        """
+        从问句解析锅炉范围（与 account_boiler.boiler_name 一致，统一为「N号锅炉」）。
+        用户若写「N号机组」「N#机组」「#N机组」等，均归一为「N号锅炉」。
+        """
+        q = (question or "").strip()
+        if not q:
+            return None
+        m_boiler = re.search(r"(\d+号锅炉|[一二两三四五六七八九十百]+号锅炉)", q)
+        if m_boiler:
+            return m_boiler.group(1)
+        unit_as_boiler_patterns = (
+            r"(\d+)号机组",
+            r"([一二两三四五六七八九十百]+)号机组",
+            r"(\d+)#机组",
+            r"#(\d+)机组",
+        )
+        for pat in unit_as_boiler_patterns:
+            m = re.search(pat, q)
+            if m:
+                return f"{m.group(1)}号锅炉"
+        return None
+
+    @staticmethod
     def _extract_scope_literals_from_question(question: str) -> dict[str, str]:
         """从问句提取锅炉/机组等范围，用于替换 QA 模板中的示例字面量。"""
         scopes: dict[str, str] = {}
-        q = question or ""
-        m_boiler = re.search(r"(\d+号锅炉|[一二两三四五六七八九十百]+号锅炉)", q)
-        if m_boiler:
-            scopes["boiler"] = m_boiler.group(1)
-        m_unit = re.search(r"(\d+号机组|[一二两三四五六七八九十百]+号机组)", q)
-        if m_unit:
-            scopes["unit"] = m_unit.group(1)
+        boiler = NL2SQLChain._extract_boiler_scope_label_from_question(question)
+        if boiler:
+            scopes["boiler"] = boiler
         return scopes
 
     # QA 模板中常见的示例锅炉名字面量（strict replay 需按问句全局替换）
@@ -1715,10 +1753,19 @@ class NL2SQLChain:
         r"'(\d+号锅炉|[一二两三四五六七八九十百]+号锅炉)'"
     )
 
-    def _rewrite_entity_scope_literals(self, sql: str, *, question: str) -> tuple[str, list[str]]:
+    def _rewrite_entity_scope_literals(
+        self,
+        sql: str,
+        *,
+        question: str,
+        time_intent_source: str | None = None,
+    ) -> tuple[str, list[str]]:
         """将 QA 中示例锅炉名/机组名替换为当前问句中的实体范围。"""
         notes: list[str] = []
-        scopes = self._extract_scope_literals_from_question(question)
+        scope_q = self._resolve_entity_scope_question(
+            question=question, time_intent_source=time_intent_source
+        )
+        scopes = self._extract_scope_literals_from_question(scope_q)
         if not scopes:
             return sql, notes
         rewritten = sql
@@ -1759,21 +1806,6 @@ class NL2SQLChain:
                 return f"'{safe}'"
 
             rewritten = self._BOILER_UNIT_LITERAL_IN_QUOTES.sub(_global_boiler_lit_repl, rewritten)
-        if unit := scopes.get("unit"):
-            safe = unit.replace("'", "''")
-            unit_pat = re.compile(
-                r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*=\s*'([^']*机组[^']*)'"
-            )
-
-            def _unit_repl(m: re.Match[str]) -> str:
-                col = m.group(1)
-                col_l = col.lower()
-                if not any(k in col_l for k in ("unit", "机组", "plant", "set")):
-                    return m.group(0)
-                notes.append("entity_scope_unit_name")
-                return f"{col} = '{safe}'"
-
-            rewritten = unit_pat.sub(_unit_repl, rewritten)
         return rewritten, notes
 
     def _rewrite_relaxed_region_match(self, sql: str, *, question: str) -> tuple[str, list[str]]:
