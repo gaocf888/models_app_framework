@@ -10,6 +10,7 @@ from app.core.logging import get_logger
 from app.models.chatbot import ChatRequest, ChatResponse
 from app.llm.client import VLLMHttpClient
 from app.llm.graphs import ChatbotLangGraphRunner
+from app.llm.graphs.chatbot_rag_scope import augment_retrieval_query_for_plant_kb, resolve_rag_namespace
 from app.llm.graphs.chatbot_follow_up import build_suggested_questions
 from app.llm.graphs.chatbot_intent_rules import classify_chatbot_intent
 from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_citations
@@ -120,15 +121,31 @@ class ChatbotService:
             anaphora_type=rule.anaphora_type,
             rule_result=rule,
         )
+        scope = resolve_rag_namespace(
+            query,
+            enabled=cfg.plant_kb_enabled,
+            plant_kb_namespace=cfg.plant_kb_namespace,
+            history_messages=hist if enable_context else None,
+            enable_context=enable_context,
+            query_boost_name=cfg.plant_kb_query_boost_name or None,
+        )
+        rag_ns = scope.rag_namespace
+        if rag_ns:
+            rag_q = augment_retrieval_query_for_plant_kb(rag_q, query_boost=scope.query_boost)
         graph_active = bool(
             get_app_config().rag.graph.enabled
             and getattr(self._hybrid_rag, "_graph_query", None) is not None
         )
         if not graph_active:
-            chunks = self._rag.retrieve_chunks(rag_q, scene="chatbot")
+            chunks = self._rag.retrieve_chunks(rag_q, scene="chatbot", namespace=rag_ns)
+            if rag_ns and cfg.plant_kb_fallback_on_empty and not chunks:
+                chunks = self._rag.retrieve_chunks(rag_q, scene="chatbot", namespace=None)
             return [c.text for c in chunks if c.text], chunks_to_rag_citations(chunks), rule.anaphora_type, slot_bullets
-        snippets = self._hybrid_rag.retrieve(rag_q)
-        vec = self._rag.retrieve_chunks(rag_q, scene="chatbot")
+        snippets = self._hybrid_rag.retrieve(rag_q, namespace=rag_ns)
+        vec = self._rag.retrieve_chunks(rag_q, scene="chatbot", namespace=rag_ns)
+        if rag_ns and cfg.plant_kb_fallback_on_empty and not snippets and not vec:
+            snippets = self._hybrid_rag.retrieve(rag_q, namespace=None)
+            vec = self._rag.retrieve_chunks(rag_q, scene="chatbot", namespace=None)
         return snippets, chunks_to_rag_citations(vec), rule.anaphora_type, slot_bullets
 
     def _maybe_update_anaphora_slots(

@@ -11,7 +11,7 @@
 
 - 编排与执行分离：LangGraph 负责状态流转，LLM/RAG/会话仍用现有服务。
 - 兼容优先：请求/响应协议尽量不变，支持灰度发布与一键回退。
-- 结构先行：先完整建图（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；结束 `meta` 含 **`suggested_questions`**（规则预设表 + 复用本轮 `context_snippets` 的首行种子 + 可选 LLM JSON 补全；**不为关联问题单独做二次向量检索**）。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**上下文指代消解（P0～P3）**见本文 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。
+- 结构先行：先完整建图（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；结束 `meta` 含 **`suggested_questions`**（规则预设表 + 复用本轮 `context_snippets` 的首行种子 + 可选 LLM JSON 补全；**不为关联问题单独做二次向量检索**）。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**本厂专属知识库 RAG 范围（`rag_scope_resolve`）**见本文 **第 16 节**。**上下文指代消解（P0～P3）**见本文 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。
 - 可观测优先：接入 LangSmith，节点级记录耗时、路由、重试与失败原因。
 
 ## 3. 总体架构
@@ -84,9 +84,9 @@
      ┌─────────────┘         │         └──────────────────────────┐
      ▼                       ▼                                    ▼
 ┌──────────┐        ┌──────────────┐              ┌────────────────────────┐
-│固定澄清话│        │NL2SQL 链+执行 │              │select_rag→kb_retrieve  │
-│术        │        │→nl2sql_answer│              │→C-RAG 循环→kb_build_   │
-│          │        │总结自然语言  │              │messages                │
+│固定澄清话│        │NL2SQL 链+执行 │              │select_rag→rag_scope_   │
+│术        │        │→nl2sql_answer│              │resolve→kb_retrieve     │
+│          │        │总结自然语言  │              │→C-RAG→kb_build_messages│
 └────┬─────┘        │（无主链路RAG）│              └───────────┬────────────┘
      │              └──────┬───────┘                          ▼
      │                     │                   ┌────────────────────────┐
@@ -147,7 +147,8 @@ flowchart TB
     R1 -->|clarify| NC["clarify_build_response"]
     R1 -->|data_query| NSQ["nl2sql_answer\nNL2SQLService.query record_conversation=False\n+ chatbot_nl2sql_answer.summarize_nl2sql_with_llm"]
     R1 -->|kb_qa| N4["select_rag_engine"]
-    N4 --> N5["kb_retrieve\nAgentic/Hybrid + 指代P0/P3"]
+    N4 --> N4b["rag_scope_resolve\nchatbot_rag_scope.resolve_rag_namespace"]
+    N4b --> N5["kb_retrieve\nAgentic/Hybrid + namespace + 指代P0/P3"]
     N5 --> N6["kb_quality_check"]
     N6 --> R2{"_route_after_quality_check C-RAG"}
     R2 -->|retry| N7["kb_rewrite_query"] --> N5
@@ -210,7 +211,7 @@ flowchart TB
 - 提示词域：`prompt_template_id`、`prompt_version`、`prompt_variant`、`system_prompt`
 - 会话域：`history_messages`、`history_limit`
 - 意图域：`intent_label`、`intent_confidence`、`intent_reason`（实现为扁平字段）
-- 检索域：`context_snippets`、`retrieval_score`、`retrieval_attempts`、`rag_engine`、`used_rag`
+- 检索域：`rag_namespace`、`rag_scope_reason`、`rag_query_boost`、`rag_scope_fallback`、`context_snippets`、`retrieval_score`、`retrieval_attempts`、`rag_engine`、`used_rag`
 - NL2SQL 域：`used_nl2sql`、`nl2sql_sql`
 - 相似案例域：`need_similar_cases`、`case_rag_query`、`fault_detect_sources`、`fault_detect_confidence`、`similar_cases_appended`
 - 关联问题域：`suggested_questions`（Runner 写入，进 `meta`）
@@ -234,12 +235,13 @@ flowchart TB
 5. **条件路由** `_route_by_intent`（非独立节点）。
 6. `nl2sql_answer`：`NL2SQLService` + `summarize_nl2sql_with_llm`（`data_query`）。
 7. `select_rag_engine`：`agentic` / `hybrid`（`kb_qa`）。
-8. `kb_retrieve`：`HybridRAGService` / `AgenticRAGService`；**并入**指代规则检测、可选 Coref LLM（P3）、检索 query 与上轮摘要融合（P0）、读会话槽位（P2，开关开启时）。
-9. `kb_quality_check` + `kb_rewrite_query`：C-RAG。
-10. `kb_build_messages`：组装 `llm_messages`（system：模板 → **可选对话锚块（P1）** → RAG 导语与片段）。
-11. `clarify_build_response`：固定或模板澄清话术。
-12. `unsafe_guard` / `handoff_human` / `smalltalk_generate`：占位，默认意图不命中。
-13. `finalize`：收敛状态。
+8. **`rag_scope_resolve`**：`chatbot_rag_scope.resolve_rag_namespace`；厂别指代命中时写入 `rag_namespace`（默认 `Power_plant_knowledge`）、`rag_scope_reason`、`rag_query_boost`；**仅首轮 kb_qa 进入**，C-RAG 重试不再经过本节点。
+9. `kb_retrieve`：`HybridRAGService` / `AgenticRAGService`，传入 **`namespace=state.rag_namespace`**（`None` 为全库）；**并入**指代规则检测、可选 Coref LLM（P3）、检索 query 与上轮摘要融合（P0）、读会话槽位（P2，开关开启时）。
+10. `kb_quality_check` + `kb_rewrite_query`：C-RAG。
+11. `kb_build_messages`：组装 `llm_messages`（system：模板 → **可选对话锚块（P1）** → RAG 导语与片段）。
+12. `clarify_build_response`：固定或模板澄清话术。
+13. `unsafe_guard` / `handoff_human` / `smalltalk_generate`：占位，默认意图不命中。
+14. `finalize`：收敛状态。
 
 **Runner 层（图外，同一文件 `run_stream_events`）**
 
@@ -260,7 +262,7 @@ flowchart TB
 
 - `intent_label=clarify` → `clarify_build_response` → `finalize` → Runner 输出 `answer_text`；**不**追加相似案例；**仍**生成 `suggested_questions`（条数偏少）。
 - `intent_label=data_query` → `nl2sql_answer` → `finalize` → Runner 输出 `answer_text`；**不**追加相似案例；`context_snippets` 通常为空，关联问题以规则 + LLM 为主。
-- `intent_label=kb_qa` → `select_rag_engine` → `kb_retrieve` → `kb_quality_check` →（C-RAG 或）`kb_build_messages` → `finalize` → Runner `stream_chat`；可选相似案例二次 RAG；关联问题含片段种子。
+- `intent_label=kb_qa` → `select_rag_engine` → **`rag_scope_resolve`** → `kb_retrieve` → `kb_quality_check` →（C-RAG 或）`kb_build_messages` → `finalize` → Runner `stream_chat`；可选相似案例二次 RAG；关联问题含片段种子。
 
 预留（默认意图不产出）：
 
@@ -396,6 +398,7 @@ flowchart TB
 - `CHATBOT_SUGGESTED_QUESTIONS_MAX=5`
 - `CHATBOT_RAG_ENGINE_MODE=agentic`
 - `CHATBOT_RAG_ENGINE_FALLBACK=hybrid`
+- **`CHATBOT_PLANT_KB_ENABLED`** / **`CHATBOT_PLANT_KB_NAMESPACE`** / **`CHATBOT_PLANT_KB_QUERY_BOOST_NAME`** / **`CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY`**（本厂 RAG 范围，见 **第 16 节**）
 - `CHATBOT_CRAG_ENABLED=true`
 - `CHATBOT_CRAG_MAX_ATTEMPTS=2`
 - `CHATBOT_CRAG_MIN_SCORE=0.55`
@@ -426,7 +429,7 @@ flowchart TB
 
 说明：通过开关支持灰度与回滚，不需要改 API。
 
-**相似案例 / 故障域扩展**相关配置见 **第 14 节**；**上下文指代消解**见 **第 15 节**。
+**相似案例 / 故障域扩展**相关配置见 **第 14 节**；**上下文指代消解**见 **第 15 节**；**本厂专属知识库 RAG 范围**见 **第 16 节**。
 
 ## 10. 发布、灰度与回滚
 
@@ -625,8 +628,63 @@ flowchart LR
 | 对话锚 | `chatbot_dialogue_anchor.py` |
 | 槽位与 Coref 缓存 | `chatbot_anaphora_store.py` |
 | Coref LLM | `chatbot_anaphora_llm.py` |
-| 图内接线 | `chatbot_graph_runner.py`（`_node_kb_retrieve`、`_node_kb_build_messages`、`_persist_success`、`_build_finished_meta`） |
+| 图内接线 | `chatbot_graph_runner.py`（**`_node_rag_scope_resolve`**、`_node_kb_retrieve`、`_node_kb_build_messages`、`_persist_success`、`_build_finished_meta`） |
 | Legacy 对齐 | `chatbot_service.py`（`_rag_context_and_citations`、`_build_llm_messages`、流式落库） |
 | 观测 | `app/core/metrics.py`（`anaphora_*` Counter）；`CHATBOT_ANAPHORA_EXPOSE_META` 控制 `meta` 扩展字段 |
 
 **专项设计与评测口径**：`docs/智能客服上下文理指代实现优化方案-20260514.md`；单测与 fixture：`tests/test_chatbot_anaphora.py`、`tests/fixtures/chatbot_anaphora_cases.yaml`。
+
+---
+
+## 16. 本厂专属知识库 RAG 范围（`rag_scope_resolve`）
+
+### 16.1 目标
+
+当用户问句含 **厂别/公司/单位指代**（如本厂、本公司、本电厂、我单位、厂里、我们这边等，见 `chatbot_rag_scope._PLANT_PRONOUN_MARKERS`）时，**主 RAG 检索**仅在该电厂专属 namespace 内进行（默认 **`Power_plant_knowledge`**），与意图三分流（`kb_qa` / `data_query` / `clarify`）解耦；**不**改变 `data_query` → NL2SQL 路径。
+
+### 16.2 图节点与边
+
+| 节点 | 职责 |
+|------|------|
+| **`rag_scope_resolve`** | 调用 `resolve_rag_namespace`；写入 `rag_namespace`、`rag_scope_reason`、`rag_query_boost` |
+| **`kb_retrieve`** | 所有 `HybridRAGService` / `AgenticRAGService` / `retrieve_chunks` 调用传入 **`namespace=state.rag_namespace`**；指代 P0/P2/P3 在本节点内执行 |
+
+**边顺序（kb_qa）**：`select_rag_engine` → **`rag_scope_resolve`** → `kb_retrieve` → …  
+**C-RAG 重试**：`kb_rewrite_query` → `kb_retrieve`（**跳过** `rag_scope_resolve`，复用 state 中已有 `rag_namespace`）。
+
+### 16.3 规则要点
+
+- **本轮** query 含厂别指代 → 锁定 `CHATBOT_PLANT_KB_NAMESPACE`。
+- **多轮延续**：本轮无厂别指代，但近几轮 **user** 历史含厂别指代 → 仍锁定（`plant_pronoun_history_continuation`）。
+- 锁定时可选将 **`CHATBOT_PLANT_KB_QUERY_BOOST_NAME`**（默认华电五彩湾北一发电有限公司）拼入检索 query，提升召回。
+- **`CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY=false`**（默认）：首轮 plant 库 0 命中不回退全库；设为 `true` 时仅 **首轮**（`retrieval_attempts==1`）空结果可回退全库，并在 `meta.rag_scope_fallback=true` 标记。
+
+### 16.4 与相似案例、指代的关系
+
+| 能力 | 关系 |
+|------|------|
+| **`CHATBOT_SIMILAR_CASE_NAMESPACE`** | 主答结束后 **二次**检索，与主 RAG namespace **独立** |
+| **指代消解 P0～P3** | 在 `kb_retrieve` 内执行；先融合 query，再按 `rag_namespace` 召回 |
+| **Outline「第 N 点」** | Service 层 `_apply_structured_reference` 改写 query，**不参与** `rag_scope_resolve` |
+
+### 16.5 配置项
+
+| 变量 | 含义 |
+|------|------|
+| `CHATBOT_PLANT_KB_ENABLED` | 总开关（默认 `true`） |
+| `CHATBOT_PLANT_KB_NAMESPACE` | 电厂专属库 namespace（默认 `Power_plant_knowledge`） |
+| `CHATBOT_PLANT_KB_QUERY_BOOST_NAME` | 锁库时拼入检索句的电厂正式名称 |
+| `CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY` | 首轮 plant 库空结果是否回退全库 |
+
+### 16.6 代码落点与观测
+
+| 模块 | 路径 |
+|------|------|
+| 规则 | `app/llm/graphs/chatbot_rag_scope.py` |
+| 图节点 | `chatbot_graph_runner._node_rag_scope_resolve`、`_node_kb_retrieve`、`_retrieve_kb_payload` |
+| State | `chatbot_graph_state.rag_namespace`、`rag_scope_reason`、`rag_query_boost`、`rag_scope_fallback` |
+| Legacy / Chain | `chatbot_service._rag_context_and_citations`、`chatbot_chain.run` |
+| SSE meta | `rag_namespace`、`rag_scope_reason`、`rag_scope_fallback` |
+| 单测 | `tests/test_chatbot_rag_scope.py` |
+
+入库时向量 chunk 的 **`namespace` 字段须与 `CHATBOT_PLANT_KB_NAMESPACE` 完全一致**（大小写敏感）。

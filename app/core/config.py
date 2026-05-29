@@ -454,6 +454,11 @@ class ChatbotConfig:
     anaphora_llm_timeout_sec: float = 4.0
     anaphora_llm_model: str | None = None
     anaphora_expose_meta: bool = False
+    # 本厂/该厂等问句锁定电厂专属知识库 namespace（RAG 链路 rag_scope_resolve）
+    plant_kb_enabled: bool = True
+    plant_kb_namespace: str = "Power_plant_knowledge"
+    plant_kb_query_boost_name: str = "华电五彩湾北一发电有限公司"
+    plant_kb_fallback_on_empty: bool = False
 
 
 @dataclass
@@ -1028,6 +1033,12 @@ def _load_from_env() -> AppConfig:
         anaphora_llm_timeout_sec=max(0.5, float(os.getenv("CHATBOT_ANAPHORA_LLM_TIMEOUT_SEC", "4"))),
         anaphora_llm_model=(os.getenv("CHATBOT_ANAPHORA_LLM_MODEL") or "").strip() or None,
         anaphora_expose_meta=os.getenv("CHATBOT_ANAPHORA_EXPOSE_META", "false").lower() == "true",
+        plant_kb_enabled=os.getenv("CHATBOT_PLANT_KB_ENABLED", "true").lower() == "true",
+        plant_kb_namespace=(os.getenv("CHATBOT_PLANT_KB_NAMESPACE", "Power_plant_knowledge") or "Power_plant_knowledge").strip(),
+        plant_kb_query_boost_name=(
+            os.getenv("CHATBOT_PLANT_KB_QUERY_BOOST_NAME", "华电五彩湾北一发电有限公司") or "华电五彩湾北一发电有限公司"
+        ).strip(),
+        plant_kb_fallback_on_empty=os.getenv("CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY", "false").lower() == "true",
     )
     analysis_cfg = AnalysisConfig(
         default_report_template=(os.getenv("ANALYSIS_DEFAULT_REPORT_TEMPLATE", "standard") or "standard").strip(),

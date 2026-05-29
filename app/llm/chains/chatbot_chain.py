@@ -23,6 +23,7 @@ from app.llm.prompt_registry import PromptTemplateRegistry
 from app.llm.langsmith_tracker import LangSmithTracker
 from app.rag.rag_service import RAGService
 from app.rag.agentic import AgenticRAGService, RAGContext, RAGMode
+from app.llm.graphs.chatbot_rag_scope import augment_retrieval_query_for_plant_kb, resolve_rag_namespace
 
 logger = get_logger(__name__)
 
@@ -114,14 +115,36 @@ class ChatbotChain:
         # 避免 vLLM/Qwen chat_template 对「仅首条可为 system」的限制。）
         ctx_snippets: list[str] = []
         if enable_rag:
+            hist = self._conv.get_recent_history(user_id, session_id, limit=10) if enable_context else []
+            scope = resolve_rag_namespace(
+                query,
+                enabled=cfg_cb.plant_kb_enabled,
+                plant_kb_namespace=cfg_cb.plant_kb_namespace,
+                history_messages=list(hist) if hist else None,
+                enable_context=enable_context,
+                query_boost_name=cfg_cb.plant_kb_query_boost_name or None,
+            )
+            rag_q = query
+            if scope.rag_namespace:
+                rag_q = augment_retrieval_query_for_plant_kb(rag_q, query_boost=scope.query_boost)
             rag_ctx = RAGContext(user_id=user_id, session_id=session_id, scene="chatbot")
             rag_result = await self._agentic_rag.retrieve(
-                query=query,
+                query=rag_q,
                 ctx=rag_ctx,
                 mode=RAGMode.AGENTIC,
                 top_k=None,
+                namespace=scope.rag_namespace,
             )
             ctx_snippets = list(rag_result.context_snippets or [])
+            if scope.rag_namespace and cfg_cb.plant_kb_fallback_on_empty and not ctx_snippets:
+                rag_result = await self._agentic_rag.retrieve(
+                    query=rag_q,
+                    ctx=rag_ctx,
+                    mode=RAGMode.AGENTIC,
+                    top_k=None,
+                    namespace=None,
+                )
+                ctx_snippets = list(rag_result.context_snippets or [])
 
         system_chunks: list[str] = [system_prompt]
         if intent_summary:

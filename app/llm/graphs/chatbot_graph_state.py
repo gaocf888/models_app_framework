@@ -62,6 +62,11 @@ class ChatbotGraphState(TypedDict, total=False):
 
     # ===== 检索域（RAG + C-RAG）=====
     rag_engine: Literal["agentic", "hybrid"]
+    # 本轮主 RAG 限定 namespace；None 表示全库（由 rag_scope_resolve 写入，C-RAG 重试复用）
+    rag_namespace: Optional[str]
+    rag_scope_reason: str
+    rag_scope_fallback: bool
+    rag_query_boost: Optional[str]
     context_snippets: List[str]
     # 与本轮注入模型的向量片段对应的结构化引用（SSE finished.meta.rag_citations）
     rag_citations: List[Dict[str, Any]]

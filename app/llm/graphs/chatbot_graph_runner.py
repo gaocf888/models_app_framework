@@ -22,6 +22,7 @@ from .chatbot_intent_rules import classify_chatbot_intent
 from .chatbot_nl2sql_answer import summarize_nl2sql_with_llm
 from .chatbot_rag_citations import chunks_to_rag_citations, filter_rag_citation_dicts
 from .chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
+from .chatbot_rag_scope import augment_retrieval_query_for_plant_kb, resolve_rag_namespace
 from .chatbot_dialogue_anchor import build_dialogue_anchor_block
 from .chatbot_anaphora_detect import classify_anaphora_rules
 from .chatbot_anaphora_llm import maybe_apply_coref_llm
@@ -113,6 +114,10 @@ class ChatbotLangGraphRunner:
         self._anaphora_llm_timeout = float(cfg.anaphora_llm_timeout_sec)
         self._anaphora_llm_model = cfg.anaphora_llm_model
         self._anaphora_expose_meta = bool(cfg.anaphora_expose_meta)
+        self._plant_kb_enabled = bool(cfg.plant_kb_enabled)
+        self._plant_kb_namespace = (cfg.plant_kb_namespace or "Power_plant_knowledge").strip()
+        self._plant_kb_query_boost = (cfg.plant_kb_query_boost_name or "").strip()
+        self._plant_kb_fallback_on_empty = bool(cfg.plant_kb_fallback_on_empty)
 
         self._graph = None
         if self._graph_enabled:
@@ -139,6 +144,7 @@ class ChatbotLangGraphRunner:
         graph.add_node("handoff_human", self._node_handoff_human)
         graph.add_node("smalltalk_generate", self._node_smalltalk_generate)
         graph.add_node("select_rag_engine", self._node_select_rag_engine)
+        graph.add_node("rag_scope_resolve", self._node_rag_scope_resolve)
         graph.add_node("kb_retrieve", self._node_kb_retrieve)
         graph.add_node("kb_quality_check", self._node_kb_quality_check)
         graph.add_node("kb_rewrite_query", self._node_kb_rewrite_query)
@@ -173,7 +179,8 @@ class ChatbotLangGraphRunner:
         graph.add_edge("handoff_human", "finalize")
         graph.add_edge("smalltalk_generate", "finalize")
         graph.add_edge("nl2sql_answer", "finalize")
-        graph.add_edge("select_rag_engine", "kb_retrieve")
+        graph.add_edge("select_rag_engine", "rag_scope_resolve")
+        graph.add_edge("rag_scope_resolve", "kb_retrieve")
         graph.add_edge("kb_retrieve", "kb_quality_check")
         # 质量路由（C-RAG 核心）：
         # - retry: 低分且重试预算未耗尽
@@ -415,6 +422,10 @@ class ChatbotLangGraphRunner:
             "rag_citations": [],
             "retrieval_score": 0.0,
             "retrieval_attempts": 0,
+            "rag_namespace": None,
+            "rag_scope_reason": "",
+            "rag_scope_fallback": False,
+            "rag_query_boost": None,
             "intent_label": "kb_qa",
             "intent_confidence": 0.0,
             "intent_reason": "",
@@ -489,6 +500,7 @@ class ChatbotLangGraphRunner:
                 state = m(state, await self._node_nl2sql_answer(state))
                 return m(state, await self._node_finalize(state))
             state = m(state, await self._node_select_rag_engine(state))
+            state = m(state, await self._node_rag_scope_resolve(state))
             while True:
                 state = m(state, await self._node_kb_retrieve(state))
                 state = m(state, await self._node_kb_quality_check(state))
@@ -649,6 +661,106 @@ class ChatbotLangGraphRunner:
         engine = self._rag_mode if self._rag_mode in {"agentic", "hybrid"} else "hybrid"
         return {"rag_engine": engine}
 
+    async def _node_rag_scope_resolve(self, state: ChatbotGraphState) -> ChatbotGraphState:
+        """
+        解析主 RAG namespace（仅 kb_qa 路径进入本节点）。
+        结果写入 state；C-RAG 重试走 kb_rewrite_query → kb_retrieve，不再经过本节点，故 namespace 保持不变。
+        """
+        if state.get("rag_scope_reason"):
+            return {}
+        query = str(state.get("query") or "")
+        hist = list(state.get("history_messages") or []) if state.get("enable_context", True) else []
+        scope = resolve_rag_namespace(
+            query,
+            enabled=self._plant_kb_enabled,
+            plant_kb_namespace=self._plant_kb_namespace,
+            history_messages=hist,
+            enable_context=bool(state.get("enable_context", True)),
+            query_boost_name=self._plant_kb_query_boost or None,
+        )
+        logger.info(
+            "chatbot.rag_scope namespace=%s reason=%s query_len=%s",
+            scope.rag_namespace,
+            scope.rag_scope_reason,
+            len(query),
+        )
+        return {
+            "rag_namespace": scope.rag_namespace,
+            "rag_scope_reason": scope.rag_scope_reason,
+            "rag_scope_fallback": False,
+            "rag_query_boost": scope.query_boost,
+        }
+
+    async def _retrieve_kb_payload(
+        self,
+        rag_query: str,
+        *,
+        engine: str,
+        rag_namespace: str | None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> tuple[List[str], List[Dict[str, Any]], str]:
+        """执行主 RAG 召回；返回 snippets、citations、实际使用的 engine。"""
+        snippets: List[str] = []
+        citations: List[Dict[str, Any]] = []
+        graph_active = bool(
+            get_app_config().rag.graph.enabled and getattr(self._hybrid_rag, "_graph_query", None) is not None
+        )
+        effective_engine = engine
+        try:
+            if engine == "agentic":
+                ctx = RAGContext(
+                    user_id=user_id,
+                    session_id=session_id,
+                    scene="chatbot",
+                )
+                res = await self._agentic_rag.retrieve(
+                    query=rag_query,
+                    ctx=ctx,
+                    mode=RAGMode.AGENTIC,
+                    namespace=rag_namespace,
+                )
+                snippets = list(res.context_snippets or [])
+                if res.chunks:
+                    citations = chunks_to_rag_citations(list(res.chunks))
+                elif snippets:
+                    citations = chunks_to_rag_citations(
+                        self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
+                    )
+            elif not graph_active:
+                chunks = self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
+                snippets = [c.text for c in chunks if c.text]
+                citations = chunks_to_rag_citations(chunks)
+            else:
+                snippets = self._hybrid_rag.retrieve(rag_query, namespace=rag_namespace)
+                citations = chunks_to_rag_citations(
+                    self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "kb_retrieve failed on engine=%s ns=%s fallback=%s err=%s",
+                engine,
+                rag_namespace,
+                self._rag_fallback,
+                exc,
+            )
+            if engine != self._rag_fallback and self._rag_fallback == "hybrid":
+                effective_engine = "hybrid"
+                graph_active = bool(
+                    get_app_config().rag.graph.enabled
+                    and getattr(self._hybrid_rag, "_graph_query", None) is not None
+                )
+                if not graph_active:
+                    chunks = self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
+                    snippets = [c.text for c in chunks if c.text]
+                    citations = chunks_to_rag_citations(chunks)
+                else:
+                    snippets = self._hybrid_rag.retrieve(rag_query, namespace=rag_namespace)
+                    citations = chunks_to_rag_citations(
+                        self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
+                    )
+        return snippets, citations, effective_engine
+
     async def _node_kb_retrieve(self, state: ChatbotGraphState) -> ChatbotGraphState:
         query = str(state.get("query") or "")
         hist = list(state.get("history_messages") or [])
@@ -709,6 +821,13 @@ class ChatbotLangGraphRunner:
                 len(rag_query),
             )
 
+        rag_namespace = state.get("rag_namespace")
+        if rag_namespace:
+            rag_query = augment_retrieval_query_for_plant_kb(
+                rag_query,
+                query_boost=state.get("rag_query_boost"),
+            )
+
         if not state.get("enable_rag", True):
             return {
                 "context_snippets": [],
@@ -720,52 +839,32 @@ class ChatbotLangGraphRunner:
 
         attempts = int(state.get("retrieval_attempts", 0)) + 1
         engine = str(state.get("rag_engine") or "hybrid")
-        snippets: List[str] = []
-        citations: List[Dict[str, Any]] = []
-        graph_active = bool(
-            get_app_config().rag.graph.enabled and getattr(self._hybrid_rag, "_graph_query", None) is not None
+        snippets, citations, engine = await self._retrieve_kb_payload(
+            rag_query,
+            engine=engine,
+            rag_namespace=rag_namespace,
+            user_id=state.get("user_id"),
+            session_id=state.get("session_id"),
         )
-
-        try:
-            if engine == "agentic":
-                ctx = RAGContext(
-                    user_id=state.get("user_id"),
-                    session_id=state.get("session_id"),
-                    scene="chatbot",
-                )
-                res = await self._agentic_rag.retrieve(
-                    query=rag_query,
-                    ctx=ctx,
-                    mode=RAGMode.AGENTIC,
-                )
-                snippets = res.context_snippets or []
-                if res.chunks:
-                    citations = chunks_to_rag_citations(list(res.chunks))
-                elif snippets:
-                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(rag_query, scene="chatbot"))
-            else:
-                if not graph_active:
-                    chunks = self._rag.retrieve_chunks(rag_query, scene="chatbot")
-                    snippets = [c.text for c in chunks if c.text]
-                    citations = chunks_to_rag_citations(chunks)
-                else:
-                    snippets = self._hybrid_rag.retrieve(rag_query)
-                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(rag_query, scene="chatbot"))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("kb_retrieve failed on engine=%s, fallback=%s err=%s", engine, self._rag_fallback, exc)
-            if engine != self._rag_fallback and self._rag_fallback == "hybrid":
-                snippets = self._hybrid_rag.retrieve(rag_query)
-                engine = "hybrid"
-                graph_active = bool(
-                    get_app_config().rag.graph.enabled
-                    and getattr(self._hybrid_rag, "_graph_query", None) is not None
-                )
-                if not graph_active:
-                    chunks = self._rag.retrieve_chunks(rag_query, scene="chatbot")
-                    snippets = [c.text for c in chunks if c.text]
-                    citations = chunks_to_rag_citations(chunks)
-                else:
-                    citations = chunks_to_rag_citations(self._rag.retrieve_chunks(rag_query, scene="chatbot"))
+        scope_fallback = False
+        if (
+            rag_namespace
+            and self._plant_kb_fallback_on_empty
+            and attempts == 1
+            and not snippets
+        ):
+            logger.info(
+                "chatbot.kb_retrieve plant_kb empty, fallback to all namespaces ns=%s",
+                rag_namespace,
+            )
+            snippets, citations, engine = await self._retrieve_kb_payload(
+                rag_query,
+                engine=engine,
+                rag_namespace=None,
+                user_id=state.get("user_id"),
+                session_id=state.get("session_id"),
+            )
+            scope_fallback = True
 
         # 轻量质量分（首版）：
         # 命中条数越多分越高。后续可以替换为“分数+覆盖率”混合评分，
@@ -778,6 +877,7 @@ class ChatbotLangGraphRunner:
             "retrieval_attempts": attempts,
             "retrieval_score": score,
             "rag_engine": engine,
+            "rag_scope_fallback": scope_fallback or bool(state.get("rag_scope_fallback")),
             "status": "retrieved",
             **anaphora_patch,
         }
@@ -1059,6 +1159,9 @@ class ChatbotLangGraphRunner:
             "intent_label": state.get("intent_label"),
             "retrieval_attempts": int(state.get("retrieval_attempts", 0)),
             "rag_engine": state.get("rag_engine"),
+            "rag_namespace": state.get("rag_namespace"),
+            "rag_scope_reason": state.get("rag_scope_reason"),
+            "rag_scope_fallback": bool(state.get("rag_scope_fallback")),
             "status": state.get("status"),
             "duration_ms": int((time.perf_counter() - start_ts) * 1000),
             "terminate_reason": state.get("terminate_reason"),
