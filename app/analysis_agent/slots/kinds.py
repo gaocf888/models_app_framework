@@ -32,7 +32,7 @@ class AnalysisAgentSlot:
     max_synthesize_retries: int = 1
     allow_human_confirm: bool = False
     stream_live: bool = False
-    # llm_section 蓝图（来自 analysis_agent_slots_* 配置）
+    # llm_section 蓝图（来自 configs/analysis_agent_reports/*.json）
     outline: tuple[str, ...] = ()
     constraints: tuple[str, ...] = ()
     allowed_outputs: tuple[str, ...] = ()

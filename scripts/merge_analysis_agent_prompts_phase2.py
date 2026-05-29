@@ -16,11 +16,10 @@ MAPPINGS = [
     ("analysis_plan_maintenance_strategy", "analysis_agent_plan_maintenance_strategy"),
     ("analysis_plan_four_tube_health_interpretation", "analysis_agent_plan_four_tube_health_interpretation"),
     ("analysis_plan_leakage_burst_analysis", "analysis_agent_plan_leakage_burst_analysis"),
-    ("analysis_synthesis_overheat_narrative", "analysis_agent_synthesis_narrative"),
+    ("analysis_synthesis_overheat_narrative", "analysis_agent_synthesis_overheat_guidance"),
     ("analysis_synthesis_maintenance_strategy", "analysis_agent_synthesis_maintenance_strategy"),
     ("analysis_synthesis_four_tube_health_interpretation", "analysis_agent_synthesis_four_tube_health_interpretation"),
     ("analysis_synthesis_leakage_burst_analysis", "analysis_agent_synthesis_leakage_burst_analysis"),
-    ("nl2sql", "analysis_agent_nl2sql"),
 ]
 
 _TOP_KEY = re.compile(r"^[A-Za-z_][\w]*:\s*")

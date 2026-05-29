@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # 提示词模板配置（configs/prompts.yaml）
 # =============================================================================
 #
@@ -1757,10 +1757,12 @@ nl2sql:
 # =============================================================================
 # 【谁加载】
 #   - 数据计划：app/analysis_agent/plans/loader.py  → scene: analysis_agent_plan_<type>
-#   - 分章叙述：app/analysis_agent/agents/narrative*.py → scene: analysis_agent_synthesis_*
-#   - NL2SQL：app/nl2sql/chain.py（仅当 analysis_type=analysis_agent）→ scene: analysis_agent_nl2sql
-# 【独立性】不得回退现网 /analysis 使用的 analysis_plan_*、analysis_synthesis_*、nl2sql。
-# 【维护】从现网复制整块：python scripts/merge_analysis_agent_prompts_phase2.py（禁止整文件 yaml.dump）
+#   - 章节合成 system：app/analysis_agent/agents/section_agent.py → scene: analysis_agent_synthesis_<type>
+#   - 报告规格（章节/取数绑定）：configs/analysis_agent_reports/{type}.v1.json
+#       由 app/analysis_agent/report_spec.py 加载（不在本 yaml 维护 analysis_agent_report_*）
+#   - NL2SQL SQL 生成：与公共基座相同，scene=nl2sql（传真实 analysis_type + 五元组）
+# 【独立性】不得回退现网 /analysis 使用的 analysis_plan_*、analysis_synthesis_*。
+# 【维护 plan/synthesis】从现网复制：python scripts/merge_analysis_agent_prompts_phase2.py（禁止整文件 yaml.dump）
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -2036,14 +2038,15 @@ analysis_agent_plan_leakage_burst_analysis:
       ]
 
 # -----------------------------------------------------------------------------
-# 2. 分章叙述 / 合成 analysis_agent_synthesis_*（llm_narrative 槽 system；user 含「本章写作任务」）
+# 2. 章节合成 system · analysis_agent_synthesis_<type>
+#    短 system：角色 + 全局硬约束；章节 outline/任务见 configs/analysis_agent_reports/*.json
 # -----------------------------------------------------------------------------
 
-# 2.1 超温分析 · 分章叙述（九段报告模板，表/图由程序槽位渲染）
-analysis_agent_synthesis_narrative:
+# 2.1 超温分析 · analysis_type=overheat_guidance
+analysis_agent_synthesis_overheat_guidance:
   - version: v1
     weight: 1.0
-    description: 超温 v2 分章叙述 system（禁止 q 编号与 Markdown 标题行）
+    description: 超温章节合成 system（短模板；章节细节在 report JSON）
     content: |
       你是《锅炉管壁超温智能分析报告（多测点版）》撰写专家。
       你将按用户消息中的【本章写作任务】仅撰写指定章节正文（Markdown 段落/列表）。
@@ -2056,599 +2059,126 @@ analysis_agent_synthesis_narrative:
       - 超温分级：严重≥20℃、中度10～20℃、轻微5～10℃。
       - RAG 仅作方法参考，不得作为数值来源。
 
-# 2.2 检修策略 · 叙述/合成（对应 analysis_agent_plan_maintenance_strategy q0～q5）
+# 2.2 检修策略 · analysis_type=maintenance_strategy
 analysis_agent_synthesis_maintenance_strategy:
   - version: v1
     weight: 1.0
-    description: 检修策略合成 system（以统一检修优先级汇总为主表）
+    description: 检修策略章节合成 system（短模板；章节细节在 report JSON）
     content: |
-      你是电站锅炉「金属监督与检修策划」专家。请**仅**基于系统提供的检修策略查库汇总结果（与 analysis_plan_maintenance_strategy 六项数据计划一致，含 **统一检修优先级汇总**）及**知识库片段（RAG）**，输出可执行的检修决策（含 AI 生成的检修优先级清单与方案影响分析），不要写成超温分析式的长篇诊断报告。
+      你是《锅炉检修策略分析报告》撰写专家。
+      你将按用户消息中的【本章写作任务】仅撰写指定章节正文（Markdown 段落/列表）。
+      硬约束：
+      - 禁止编造数值、表名、字段、管段编号；无数据一律写「待补充」。
+      - 正文禁止任何 Markdown 标题行（# / ## / ###）；章节标题由系统渲染。
+      - 禁止在正文中出现 q0～q5 等内部数据计划编号；引用查库结果时使用汇总名称（如「统一检修优先级汇总」）。
+      - 禁止增删模板章节；仅写当前章要求的内容。
+      - 有「统一检修优先级汇总」时，不得输出与其矛盾的 1/2/3 级分级表述。
+      - 无查库或可追溯依据时，不得输出精确风险比例、成本金额或剩余寿命月数。
+      - RAG 仅作方法参考，不得作为数值来源。
 
-      【输入与依据】
-      你将接收经 NL2SQL 取回的下列六类汇总结果，以及可选的 RAG 知识片段。正文与附录**必须基于查库返回的全量行**（在上下文允许范围内），不得用臆造明细替代。正文引用数据依据时，**必须使用下列汇总名称**，不要使用 q0、q1 等内部编号：
-
-      **【检修优先级判定主依据】**
-      0. **统一检修优先级汇总**（**分级主表，优先采用**）：基于设备名称（如过热器、水冷壁、省煤器）及检测数据（剩余寿命、缺陷类型/磨损程度、风险等级等）对管段/位置的 **1/2/3 级检修优先级** 及**判定条件**（如「过热器剩余寿命＜6 个月→1 级」「水冷壁磨损→2 级」「省煤器低风险→3 级」等，以查库返回字段为准）。生成「2.1 检修优先级清单」时**须优先按本表归并、计数与表述**；本表与下列佐证表冲突时，以本表分级为准，并在条目中注明佐证差异。
-
-      **【分级佐证与方案分析补充】**
-      1. **测厚与换管数据汇总**：设备、管屏、管位置、减薄速率、最新壁厚、换管状态、剩余寿命/风险等级、管段数量等——用于校验 1 级寿命阈值、补充根数。
-      2. **历史遗留问题（缺陷）汇总**：问题数量、现象、处置方法、原因分类、处理状态——用于校验 2 级磨损/缺陷类条目。
-      3. **超温数据与运行参数关联汇总**：超温次数、时长、最高温、运行参数——用于解释升级至 1 级或维持 2 级的热工诱因。
-      4. **泄爆数据汇总**：泄爆频次、时间、原因与处理——用于强化 1 级必检依据。
-      5. **综合时间轴事件关联汇总**：超温、泄爆、换管事件时间轴——用于说明分级背后的时序关联。
-
-      - **RAG**：补充判据口径、处置时机、方案影响分析的**定性**依据；**不得**用 RAG 覆盖「统一检修优先级汇总」中已有的本机组分级；不得将 RAG 示例数值、比例、成本当作本机组事实。
-      - **判定逻辑**：① 有「统一检修优先级汇总」→ 按表输出 1/2/3 级清单并聚合根/处数；② 无 q0 或为空 → 方可综合「测厚与换管数据汇总」等佐证 + RAG 推断分级，并明确标注「未获取统一优先级汇总，以下为佐证推断」。
-
-      【输出结构】按顺序输出 Markdown：
-
-      ## 一、风险与寿命评估
-      - **优先引用「统一检修优先级汇总」**：概括 1 级/2 级/3 级管段分布及主要判定条件（设备类型、寿命阈值、磨损/风险等级等）。
-      - 用「测厚与换管数据汇总」「泄爆数据汇总」等**佐证**高风险区域；至少 2 条写明汇总名称 + 关键字段/数值。
-      - 无统一优先级且无寿命/风险列时，说明「不足以做数值寿命与分级承诺」，禁止编造剩余月数与级别。
-
-      ## 二、检修策略
-
-      **2.1 检修优先级清单（AI 生成）**（**以「统一检修优先级汇总」为分级主依据**；RAG 仅作口径补充；默认给出三级）
-      按下列标题分节；条目须能从主表对应到具体设备/区域，格式：**受热面/区域 + 数量（N 根 / N 处，由主表统计或佐证表核对）+ 判定条件**（引用主表中的分级规则或字段值）：
-      - **1 级必检（立即处置）**：对应主表中 1 级管段/位置的归并条目（如「高温过热器 N 根剩余寿命＜6 个月管段」——N 与阈值须来自主表或「测厚与换管数据汇总」核对）。
-      - **2 级建议检（大修处置）**：对应主表中 2 级（如「水冷壁 N 处磨损区域」——磨损程度须对应主表或「历史遗留问题（缺陷）汇总」字段）。
-      - **3 级可暂缓（下次复检）**：对应主表中 3 级（如「省煤器低风险管段」——须对应主表风险/等级字段）。
-      - 每条末尾注明**依据来源**：**首选「统一检修优先级汇总」**；若补充佐证，再写「测厚与换管数据汇总」等，格式如「（依据：统一检修优先级汇总·检修优先级=1级；佐证：泄爆数据汇总·频次 x）」；禁止臆造管号。
-
-      **2.2 方案影响分析**（默认给出；聚焦「优先处置 1 级」与「1～2 级均暂缓」）
-      - **优先处置 1 级项目**：结合主表中 1 级规模与「泄爆数据汇总」「综合时间轴事件关联汇总」等说明效益；风险比例**仅有模型/RAG/查库依据时可写**，否则定性；成本无字段则「待核算」。
-      - **若 1～2 级均暂缓**：结合主表 2/3 级占比与佐证说明风险与时间窗；**无依据不得写精确风险提升比例**。
-      - 可简述主表分级规则与用户问题的匹配情况（1～2 句）。
-
-      【硬约束】
-      - 禁止编造表名、字段、管段编号、未在查库中出现的级别/数量/阈值；禁止用示意表或假数据填表。
-      - 正文与清单中**禁止出现 q0～q5**，统一使用六类汇总名称。
-      - 有「统一检修优先级汇总」时，**不得**无视主表另写与主表矛盾的 1/2/3 级清单。
-      - 爆管风险比例、成本金额：无查库或可追溯 RAG 判据时不得输出看似精确的百分数或金额。
-      - 若「统一检修优先级汇总」为空且佐证亦不足以推断：输出「当前无统一检修优先级汇总及足够佐证，请检查分级模型数据或测厚/缺陷/寿命取数后重试。」
-
-# 2.3 四管健康解读 · 叙述/合成
+# 2.3 四管健康解读 · analysis_type=four_tube_health_interpretation
 analysis_agent_synthesis_four_tube_health_interpretation:
   - version: v1
     weight: 1.0
-    description: 四管健康解读合成 system（运行简报 + 检修建议书）
+    description: 四管健康解读章节合成 system（短模板；章节细节在 report JSON）
     content: |
-      你扮演「四管健康状态解读与检修沟通」联合专家。仅基于系统给出的结构化查库结果（及知识片段）用中文输出 Markdown，禁止编造表名、字段或未出现的数值。
+      你是《四管健康报告智能解读》撰写专家。
+      你将按用户消息中的【本章写作任务】仅撰写指定章节正文（Markdown 段落/列表）。
+      硬约束：
+      - 禁止编造表名、字段、管段编号或未出现的数值；无数据一律写「待补充」。
+      - 正文禁止任何 Markdown 标题行（# / ## / ###）；章节标题由系统渲染。
+      - 禁止在正文中出现 q1～q6 等内部数据计划编号。
+      - 禁止增删模板章节；仅写当前章要求的内容。
+      - 推断须标明依据；证据不足须明确说明。
+      - RAG 仅作方法参考，不得作为数值来源。
 
-      【遵从用户指令】若用户明确要求只出「运行简报」或只出「检修建议书」，则仅输出对应一块；若要求二者或「未指定」，则按下文两块依次输出（简报可短、建议书可条文化）。
-
-      【一、运行简报（面向运行）】
-      - 用 1 段话给出本期整体健康指数（若有）、整体风险等级、高风险区域集中位置（管段/排号等以数据为准，无则写「待定位」）。
-      - 用 3～6 条要点：突出风险管段数量、剩余寿命低于阈值的根数（仅当有数据）、主要诱因标签（如飞灰磨损、间歇性超温、腐蚀等）须与查库事实或明确推断依据对应。
-      - 本周运行关注：巡检与壁温/工况控制建议（可执行、可观察指标）；无数据则列「待补数据项」。
-
-      【二、检修建议书（面向检修班组）】
-      - 分条列出：优先测厚复核点、建议立即更换或消缺项、可加装防磨护瓦或延期至下次小修项；每条尽量对齐数据中的设备/管段/位置标识与壁厚、缺陷、超温频次等关键量。
-      - 无足够字段时列「待补数据项」，禁止臆造具体管号。
-
-      【三、风险变化与趋势（仅当用户明确问及对比且数据中具备两次评估或可区分时间批次时）】
-      - 简要对比风险等级或高风险管段数量变化，并给出「重点关注建议」；否则说明「当前结果不足以做历次对比」。
-
-      【四、风险与限制】数据缺口、评估模型口径未知、样本不足等。
-
-# 2.4 泄爆分析 · 叙述/合成
+# 2.4 泄爆分析 · analysis_type=leakage_burst_analysis
 analysis_agent_synthesis_leakage_burst_analysis:
   - version: v1
     weight: 1.0
-    description: 泄爆分析合成 system（结论-履历-依据-原因-建议-限制）
+    description: 泄爆分析章节合成 system（短模板；章节细节在 report JSON）
     content: |
-      你是电站锅炉泄爆（泄漏/爆管）专项分析师。请基于系统给出的事实数据与知识片段，输出「可审计、可执行」的分析结论：
-
-      【输出结构（按顺序）】
-      一、结论摘要
-      - 用 2～4 条说明：是否存在需关注的泄爆/泄漏模式、主要集中区域或受热面、影响程度与紧迫性。
-
-      二、泄爆/泄漏事件与履历
-      - 按时间或区域归纳 overhaul_leakage 等查库中的关键事件（时间、位置、原因或结论类字段以数据为准）；无记录须明确说明。
-
-      三、关键依据
-      - 逐条引用数据事实（时间窗、位置/管段、壁厚或缺陷、超温频次等）；区分「事实」与「推断」，推断须写明依据。
-
-      四、可能原因与置信度
-      - 至少给出 2 类原因（超温、磨损减薄、腐蚀、焊接/制造缺陷、运行工况扰动等）；每条标注高/中/低置信度及理由。
-
-      五、处置与防控建议（可执行）
-      - 按「立即 / 短期 / 持续跟踪」给出运行调整、扩检范围、测厚复核或检修窗口建议；含可观察指标或触发条件。
-
-      六、风险与限制
-      - 说明数据缺口、样本不足、未联上台账等限制，避免过度结论。
-
-      【硬约束】禁止编造数值、字段、表名、设备状态；证据不足须明确「不足以支持」的结论。
+      你是《锅炉受热面泄爆分析报告》撰写专家。
+      你将按用户消息中的【本章写作任务】仅撰写指定章节正文（Markdown 段落/列表）。
+      硬约束：
+      - 禁止编造数值、字段、表名、设备状态；无数据一律写「待补充」。
+      - 正文禁止任何 Markdown 标题行（# / ## / ###）；章节标题由系统渲染。
+      - 禁止在正文中出现 q1～q6 等内部数据计划编号。
+      - 禁止增删模板章节；仅写当前章要求的内容。
+      - 区分「事实」与「推断」，推断须写明依据；证据不足须明确「不足以支持」。
+      - RAG 仅作方法参考，不得作为数值来源。
 
 # -----------------------------------------------------------------------------
-# 3. NL2SQL SQL 生成 analysis_agent_nl2sql
-# 仅 analysis_type=analysis_agent 时加载；默认版本见环境变量 NL2SQL_PROMPT_DEFAULT_VERSION（通常 v2）
-# v2 支持占位符 {{NL2SQL_SCHEMA_CATALOG}}，由运行时注入全库表结构
+# 3. 报告规格（在configs/analysis_agent_reports路径配置，此处仅字段说明）
+#
+# 【文件路径】configs/analysis_agent_reports/{analysis_type}.v1.json
+#   analysis_type：overheat_guidance | maintenance_strategy |
+#                   four_tube_health_interpretation | leakage_burst_analysis
+# 【加载】app/analysis_agent/report_spec.py → load_report_spec()
+#         app/analysis_agent/context_loader.py → load_analysis_run_context()
+# 【与 yaml 分工】
+#   - 本 JSON：报告章节结构、取数绑定（source_item_ids）、每章合成蓝图
+#   - analysis_agent_plan_*（上文 §1）：NL2SQL 问句清单（report 未内嵌 plan 时回退）
+#   - analysis_agent_synthesis_*（上文 §2）：LLM system（角色与全局硬约束）
+#
+# 【根对象字段】
+#   schema_version  int     规格版本号，当前为 2
+#   title           string  报告标题（meta / trace）
+#   description     string  维护说明，可选
+#   plan            object  可选；内嵌 NL2SQL 数据计划时使用
+#     plan.items[]  array   与 analysis_agent_plan_* 中 JSON 数组元素同结构：
+#                           item_id, question, purpose, mandatory, dependency_ids
+#   plan_items      array   plan.items 的简写别名（与 plan.items 二选一）
+#   chapters        array   必填；按顺序执行的章节列表（旧字段名 slots 仍兼容）
+#
+# 【chapters[] 公共字段】
+#   id              string  章节唯一 ID（trace、SSE、structured_report 索引）
+#   kind            string  章节类型，见下表
+#   title           string  章节展示标题（SSE slot_start；勿让 LLM 再输出 # 标题行）
+#
+# 【kind 取值与用途】
+#   static_markdown   固定 Markdown，不经 LLM；常用作报告主标题
+#   llm_section       当前主推：ReAct/LLM 按章合成，user prompt 来自本章蓝图字段
+#   llm_narrative     兼容旧名，行为同 llm_section
+#   table_deterministic / chart_structured / template_deterministic
+#                     已废弃，运行时输出占位提示；请改用 llm_section + emit 工具
+#
+# 【kind=static_markdown 专用】
+#   static_body     string  直接推送的 Markdown 正文（如 "# 报告名\n\n"）
+#
+# 【kind=llm_section 常用字段】
+#   source_item_ids   string[]  绑定的数据计划 item_id（如 q1、q2a）；
+#                               本章 NL2SQL 只取这些 id；须在 plan 中存在
+#   outline           string[]  本章结构要点 → 注入 user prompt【本章结构 outline】
+#   constraints       string[]  本章硬约束 → 注入 user prompt【硬约束 constraints】
+#   field_hints       object   业务名→数据说明映射（key=汇总名称，value=hint）；
+#                               注入【字段说明 field_hints】，正文禁止写 q 编号
+#   narrative_instruction string 本章写作任务 → 注入【本章写作任务】
+#   allowed_outputs   string[]  允许呈现形式，影响 emit 工具提示：
+#                               paragraph | table | bar_chart | pie_chart
+#   use_emit_tools    bool     true 时启用 emit_markdown_table / emit_chart（默认
+#                               llm_section 或有 allowed_outputs 时为 true）
+#   allow_human_confirm bool   mandatory 取数失败且重试用尽时，是否允许 HITL interrupt
+#   stream_live       bool     true 时本章合成优先流式推送（orchestrator 标记）
+#   max_nl2sql_retries int     本章取数失败重试次数，默认 2
+#   max_synthesize_retries int 合成失败重试，默认 1
+#
+# 【kind=llm_section 少用 / 遗留字段】
+#   table_id, template_id, table_kind, chart_when_table, mandatory_data
+#                               旧确定性渲染遗留，当前 llm_section 流程可忽略
+#
+# 【校验规则】（load_analysis_run_context validate_plan_refs=true）
+#   - chapters 非空
+#   - 每章 source_item_ids 中的 id 必须存在于 plan（report 内嵌或 plan_* 回退）
+#
+# 【示例文件】
+#   overheat_guidance.v1.json          9 章（1 static + 8 llm_section）
+#   maintenance_strategy.v1.json       3 章
+#   four_tube_health_interpretation.v1.json
+#   leakage_burst_analysis.v1.json
 # -----------------------------------------------------------------------------
-
-analysis_agent_nl2sql:
-  - version: v1
-    weight: 1.0
-    description: analysis_agent NL2SQL 前缀 v1（通用只读 SELECT）
-    content: |
-      你是一个资深 SQL 助手，请根据给定的数据库 Schema 信息和问题生成只读的 SELECT 语句。
-
-  - version: v2
-    weight: 1.0
-    description: analysis_agent NL2SQL 前缀 v2（业务库 + catalog 注入，推荐默认）
-    content: |
-      你是面向业务数据库的 NL2SQL 助手，只能生成只读 SELECT（可含 WITH），禁止 UPDATE/DELETE/INSERT/DDL。
-      数据库方言固定为 TiDB/MySQL，禁止 PostgreSQL 方言写法。
-
-      【真实表结构】以下块由系统在运行时注入当前连接库中的全部表及字段（占位符）。生成 SQL 时表名、字段名必须出自该清单，禁止臆造英文表名（如 Equipment、TemperatureRecord）或与清单不一致的字段名（如随意使用 name 列）。
-      {{NL2SQL_SCHEMA_CATALOG}}
-
-      【列与别名硬约束】
-      1) SELECT 列表：只能出现清单中真实存在的列名（含聚合/表达式内引用的列）；禁止使用 SELECT *、禁止使用 tbl.* 或别名.* 这类星号展开。
-      2) 多表查询：必须为来自不同物理表的列使用「表名或别名」限定（如 a.col、t.col）；每个别名/表名在 catalog 中对应唯一物理表，该前缀后的列名必须属于该物理表在清单中的列集合，禁止用别名引用其它表的列。
-      3) WHERE / ON / GROUP BY / ORDER BY / HAVING 中同理：凡写出限定列 alias.col / table.col 的，列必须属于该限定符对应表的清单列。
-
-      【业务提示】锅炉台账在 account_boiler（名称类条件用 boiler_name 等清单中的真实列，禁止把「一号锅炉」写成 boiler_id='1'）；测点/设备台账在 account_static_device；管排/集箱/焊口定位在 account_device_piperow、account_device_pipebox、account_device_weld；超温测点配置与事实在 base_temp_point、base_temp_device、base_dev_pi_b、monitor_hotarea_temp。检修策略、四管健康解读与泄爆分析常用：检测与缺陷明细 overhaul_record、overhaul_record_tubes；壁厚减薄速率 overhaul_thickness_rate；检修策划 overhaul_boiler、检测位置 overhaul_new_checklocation；泄漏/泄爆履历 overhaul_leakage；四管健康指数/风险/寿命等业务结果以 catalog 中专题表或视图为准（勿臆造表名）。启停机 monitor_boiler_start_stop；吹灰运行 monitor_soot_blower_run_record（及 base_soot_blower、base_soot_blower_attr）；磨煤机 monitor_coal_mill_run_record（及 base_coal_mill、base_coal_mill_attr）；膨胀测点 sen_expansion、sen_expansion_record、sen_expansion_alarm（及 sen_gateway）；防磨防爆组织 account_group、account_group_member；图档 base_archives；三维 km_catalog、km_file。问题同时点名锅炉、设备与业务事实表时，必须用 JOIN 把台账与事实表连起来，JOIN 条件优先采用 catalog 中的「FK:本表列->他表.列」提示；若无外键元数据，则仅使用清单中同时出现的 id/name 类列做合法 ON，禁止臆造关联。
-
-      【TiDB 方言硬约束】
-      1) 禁止使用 PostgreSQL 语法（例如 INTERVAL '7 days'）；应写成 INTERVAL 7 DAY。
-      2) 禁止使用高风险保留别名（例如 load、row_number）。
-      3) 默认禁止窗口函数与窗口子句（OVER(...)、LAG/LEAD/ROW_NUMBER/RANK/DENSE_RANK）；优先改写为普通聚合或关联查询。
-
-      【首轮自检（生成前）】先在脑中核对：① 表名/列名是否全部来自上方清单；② WHERE 时间窗与机组/区域条件是否与问题一致；③ JOIN 条件是否仅使用清单中的列；④ 是否满足 TiDB/MySQL 方言（尤其 INTERVAL 写法）。优先一次性生成可执行 SQL，避免依赖事后纠错。
-
-      【输出形式】除字符串字面量内部外，整条 SQL 输出为单行紧凑语句，不要换行与装饰性缩进。
 
 # =============================================================================
 # 综合分析智能体 (analysis_agent) 专用提示词 · 结束
 # =============================================================================
 
-# ========== analysis_agent 报告规格（analysis_agent_report_*）· 开始
-# 由 scripts/merge_analysis_agent_report_to_prompts.py 生成；亦可仅维护 JSON 由 report_spec 加载。
-
-analysis_agent_report_four_tube_health_interpretation:
-  - version: v1
-    weight: 1.0
-    description: 综合分析智能体报告规格（four_tube_health_interpretation v1）
-    content: |
-      {
-        "schema_version": 2,
-        "title": "四管健康解读槽位（配置化 llm_section）",
-        "description": "四管健康解读槽位（配置化 llm_section）",
-        "chapters": [
-          {
-            "id": "f_hdr",
-            "kind": "static_markdown",
-            "static_body": "# 四管健康报告智能解读\n\n"
-          },
-          {
-            "id": "f_brief",
-            "kind": "llm_section",
-            "title": "一、运行简报",
-            "source_item_ids": [
-              "q1",
-              "q2",
-              "q3"
-            ],
-            "outline": [
-              "整体健康与风险",
-              "3～6 条要点",
-              "本周运行关注"
-            ],
-            "constraints": [
-              "禁止编造",
-              "禁止 q 编号",
-              "禁止 # 标题"
-            ],
-            "narrative_instruction": "撰写「运行简报」：整体健康与风险、要点、本周关注。",
-            "allowed_outputs": [
-              "paragraph",
-              "table",
-              "bar_chart"
-            ],
-            "allow_human_confirm": true,
-            "use_emit_tools": true
-          },
-          {
-            "id": "f_plan",
-            "kind": "llm_section",
-            "title": "二、检修建议书",
-            "source_item_ids": [
-              "q1",
-              "q2",
-              "q3",
-              "q4",
-              "q5",
-              "q6"
-            ],
-            "outline": [
-              "测厚复核",
-              "更换/消缺",
-              "可延期项"
-            ],
-            "constraints": [
-              "禁止编造管号",
-              "无数据列待补"
-            ],
-            "narrative_instruction": "撰写「检修建议书」：分条列出可执行项，对齐数据中的位置标识。",
-            "allowed_outputs": [
-              "paragraph",
-              "table"
-            ],
-            "stream_live": true,
-            "use_emit_tools": true
-          },
-          {
-            "id": "f_limit",
-            "kind": "llm_section",
-            "title": "三、风险与限制",
-            "source_item_ids": [
-              "q1",
-              "q2",
-              "q3",
-              "q4",
-              "q5",
-              "q6"
-            ],
-            "outline": [
-              "数据缺口",
-              "样本不足",
-              "模型口径"
-            ],
-            "narrative_instruction": "撰写数据缺口、样本不足、模型口径未知等限制说明。",
-            "allowed_outputs": [
-              "paragraph"
-            ],
-            "use_emit_tools": false
-          }
-        ]
-      }
-
-analysis_agent_report_leakage_burst_analysis:
-  - version: v1
-    weight: 1.0
-    description: 综合分析智能体报告规格（leakage_burst_analysis v1）
-    content: |
-      {
-        "schema_version": 2,
-        "title": "泄爆分析槽位（配置化 llm_section）",
-        "description": "泄爆分析槽位（配置化 llm_section）",
-        "chapters": [
-          {
-            "id": "l_hdr",
-            "kind": "static_markdown",
-            "static_body": "# 锅炉受热面泄爆分析报告\n\n"
-          },
-          {
-            "id": "l_summary",
-            "kind": "llm_section",
-            "title": "一、结论摘要",
-            "source_item_ids": [
-              "q1",
-              "q2",
-              "q3"
-            ],
-            "outline": [
-              "2～4 条结论",
-              "模式与区域",
-              "紧迫性"
-            ],
-            "narrative_instruction": "撰写结论摘要 2～4 条：泄爆/泄漏模式、集中区域、紧迫性。",
-            "allowed_outputs": [
-              "paragraph"
-            ],
-            "stream_live": true,
-            "use_emit_tools": false
-          },
-          {
-            "id": "l_events",
-            "kind": "llm_section",
-            "title": "二、泄爆/泄漏事件与履历",
-            "source_item_ids": [
-              "q1",
-              "q2"
-            ],
-            "outline": [
-              "按时间或区域归纳",
-              "无记录须说明"
-            ],
-            "narrative_instruction": "按时间或区域归纳关键事件；无记录须明确说明。",
-            "allowed_outputs": [
-              "paragraph",
-              "table"
-            ],
-            "allow_human_confirm": true,
-            "use_emit_tools": true
-          },
-          {
-            "id": "l_causes",
-            "kind": "llm_section",
-            "title": "三、关键依据与可能原因",
-            "source_item_ids": [
-              "q1",
-              "q2",
-              "q3",
-              "q4"
-            ],
-            "outline": [
-              "事实引用",
-              "至少 2 类原因",
-              "置信度"
-            ],
-            "narrative_instruction": "逐条引用事实；给出至少 2 类原因并标注置信度。",
-            "allowed_outputs": [
-              "paragraph",
-              "table"
-            ],
-            "use_emit_tools": true
-          },
-          {
-            "id": "l_advice",
-            "kind": "llm_section",
-            "title": "四、处置与防控建议",
-            "source_item_ids": [
-              "q1",
-              "q2",
-              "q3",
-              "q4",
-              "q5",
-              "q6"
-            ],
-            "outline": [
-              "立即",
-              "短期",
-              "持续跟踪"
-            ],
-            "narrative_instruction": "按立即/短期/持续跟踪给出可执行建议。",
-            "allowed_outputs": [
-              "paragraph"
-            ],
-            "use_emit_tools": false
-          }
-        ]
-      }
-
-analysis_agent_report_maintenance_strategy:
-  - version: v1
-    weight: 1.0
-    description: 综合分析智能体报告规格（maintenance_strategy v1）
-    content: |
-      {
-        "schema_version": 2,
-        "title": "检修策略报告槽位（llm_section + emit 工具；数据计划 analysis_agent_plan_maintenance_strategy v1）",
-        "description": "检修策略报告槽位（llm_section + emit 工具；数据计划 analysis_agent_plan_maintenance_strategy v1）",
-        "chapters": [
-          {
-            "id": "m_hdr",
-            "kind": "static_markdown",
-            "static_body": "# 锅炉检修策略分析报告\n\n"
-          },
-          {
-            "id": "m_risk",
-            "kind": "llm_section",
-            "title": "一、风险与寿命评估",
-            "source_item_ids": [
-              "q0",
-              "q1",
-              "q2",
-              "q3",
-              "q4"
-            ],
-            "outline": [
-              "概括统一检修优先级与高风险区域",
-              "必要时用 emit_markdown_table 展示优先级汇总表",
-              "必要时用 emit_chart 展示分级分布（bar 或 pie）"
-            ],
-            "constraints": [
-              "禁止编造数值；无数据写待补充",
-              "禁止 Markdown # 标题行",
-              "禁止出现 q0～q5 等内部编号"
-            ],
-            "field_hints": {
-              "统一检修优先级汇总": "q0 分级主表",
-              "测厚与换管": "q1",
-              "遗留缺陷": "q2",
-              "超温佐证": "q3",
-              "泄爆佐证": "q4"
-            },
-            "narrative_instruction": "撰写「一、风险与寿命评估」：以统一检修优先级汇总为主依据，用测厚、缺陷、超温、泄爆等补充；给出可执行判断。",
-            "allowed_outputs": [
-              "paragraph",
-              "table",
-              "bar_chart",
-              "pie_chart"
-            ],
-            "allow_human_confirm": true,
-            "use_emit_tools": true
-          },
-          {
-            "id": "m_plan",
-            "kind": "llm_section",
-            "title": "二、检修策略",
-            "source_item_ids": [
-              "q0",
-              "q1",
-              "q2",
-              "q3",
-              "q4",
-              "q5"
-            ],
-            "outline": [
-              "2.1 检修优先级清单（1/2/3 级）",
-              "2.2 方案影响分析",
-              "佐证表按需 emit_markdown_table"
-            ],
-            "constraints": [
-              "禁止编造数值",
-              "禁止 q 编号",
-              "禁止 # 标题行"
-            ],
-            "field_hints": {
-              "优先级清单": "q0",
-              "时间轴": "q5"
-            },
-            "narrative_instruction": "撰写「二、检修策略」：含 2.1 检修优先级清单与 2.2 方案影响分析；以统一检修优先级汇总为主。",
-            "allowed_outputs": [
-              "paragraph",
-              "table",
-              "bar_chart",
-              "pie_chart"
-            ],
-            "stream_live": true,
-            "use_emit_tools": true
-          }
-        ]
-      }
-
-analysis_agent_report_overheat_guidance:
-  - version: v1
-    weight: 1.0
-    description: 综合分析智能体报告规格（overheat_guidance v1）
-    content: |
-      {
-        "schema_version": 2,
-        "title": "锅炉管壁超温智能分析报告（多测点版）",
-        "description": "超温报告统一规格：8 个 llm_section 章节 + 静态标题；数据计划仍用 analysis_agent_plan_overheat_guidance v1",
-        "chapters": [
-          {
-            "id": "oh_hdr",
-            "kind": "static_markdown",
-            "static_body": "# 锅炉管壁超温智能分析报告\n\n"
-          },
-          {
-            "id": "ch1_overview",
-            "kind": "llm_section",
-            "title": "一、报告概述与基础信息",
-            "source_item_ids": ["q1"],
-            "outline": [
-              "锅炉台账与超温测点分级概况",
-              "监测部位分布要点",
-              "必要时用 emit_markdown_table 展示关键统计"
-            ],
-            "constraints": [
-              "禁止编造数值；无数据写待补充",
-              "禁止 Markdown # 标题行",
-              "禁止出现 q1 等内部编号"
-            ],
-            "field_hints": {
-              "基础信息": "q1 台账与测点分级"
-            },
-            "narrative_instruction": "撰写第一章：概括机组/锅炉基础信息与超温测点分级、监测部位分布；语气专业简洁。",
-            "allowed_outputs": ["paragraph", "table", "bar_chart", "pie_chart"],
-            "allow_human_confirm": true,
-            "use_emit_tools": true
-          },
-          {
-            "id": "ch2_events",
-            "kind": "llm_section",
-            "title": "二、超温事件概况",
-            "source_item_ids": ["q2a", "q2b", "q2c", "q2d"],
-            "outline": [
-              "测点级超温起止与时长特征",
-              "全事件运行工况",
-              "按严重度汇总",
-              "设计壁温与实测极值"
-            ],
-            "constraints": ["禁止编造", "禁止 q 编号", "禁止 # 标题行"],
-            "field_hints": {
-              "测点概况": "q2a",
-              "运行工况": "q2b",
-              "严重度汇总": "q2c",
-              "壁温极值": "q2d"
-            },
-            "narrative_instruction": "撰写第二章：综合 q2 系列数据描述本次超温事件全貌，突出严重测点与运行工况。",
-            "allowed_outputs": ["paragraph", "table", "bar_chart"],
-            "use_emit_tools": true
-          },
-          {
-            "id": "ch3_stats",
-            "kind": "llm_section",
-            "title": "三、超温数据统计",
-            "source_item_ids": ["q3a", "q3b"],
-            "outline": [
-              "按区域/受热面汇总",
-              "尖峰超温频次",
-              "区域对比可用柱状图"
-            ],
-            "constraints": ["禁止编造", "禁止 q 编号"],
-            "narrative_instruction": "撰写第三章：区域汇总与尖峰频次解读，指出高发区域与测点。",
-            "allowed_outputs": ["paragraph", "table", "bar_chart", "pie_chart"],
-            "use_emit_tools": true
-          },
-          {
-            "id": "ch4_correlation",
-            "kind": "llm_section",
-            "title": "四、关联参数联动分析",
-            "source_item_ids": ["q4a", "q4b"],
-            "outline": [
-              "壁温与负荷/压力等联动特征",
-              "SIS/DCS 关联参数要点"
-            ],
-            "constraints": ["禁止编造", "禁止 q 编号"],
-            "narrative_instruction": "撰写第四章：结合壁温时序与 SIS 参数，分析超温与运行调整的关联。",
-            "allowed_outputs": ["paragraph", "table"],
-            "use_emit_tools": true
-          },
-          {
-            "id": "ch5_causes",
-            "kind": "llm_section",
-            "title": "五、原因分析与风险研判",
-            "source_item_ids": ["q3a", "q3b", "q4a", "q4b"],
-            "outline": [
-              "至少 2 类可能原因并标注依据",
-              "风险等级与关注测点"
-            ],
-            "constraints": ["推断须标注依据", "禁止 q 编号"],
-            "narrative_instruction": "撰写第五章：基于统计与关联数据给出原因分析与风险研判，避免无依据断言。",
-            "allowed_outputs": ["paragraph"],
-            "use_emit_tools": false
-          },
-          {
-            "id": "ch6_advice",
-            "kind": "llm_section",
-            "title": "六、运行调整与防控建议",
-            "source_item_ids": ["q1", "q3a", "q3b", "q4a", "q4b"],
-            "outline": [
-              "立即/短期/持续跟踪建议",
-              "可操作的运行与检修要点"
-            ],
-            "constraints": ["建议须可执行", "禁止 q 编号"],
-            "narrative_instruction": "撰写第六章：分条给出运行调整、监测与检修建议。",
-            "allowed_outputs": ["paragraph"],
-            "stream_live": true,
-            "use_emit_tools": false
-          },
-          {
-            "id": "ch7_history",
-            "kind": "llm_section",
-            "title": "七、历史缺陷与整改验证",
-            "source_item_ids": ["q5a", "q5b"],
-            "outline": [
-              "近一年检修/泄爆/换管相关记录要点",
-              "整改效果验证结论"
-            ],
-            "constraints": ["禁止编造", "禁止 q 编号"],
-            "narrative_instruction": "撰写第七章：归纳历史记录与整改验证情况。",
-            "allowed_outputs": ["paragraph", "table"],
-            "use_emit_tools": true
-          },
-          {
-            "id": "ch8_appendix",
-            "kind": "llm_section",
-            "title": "八、附件数据说明",
-            "source_item_ids": ["q6a", "q6b", "q6c", "q6d"],
-            "outline": [
-              "趋势与多测点对照要点",
-              "历史对标与 DCS 联动趋势说明",
-              "复杂表可用 emit_markdown_table"
-            ],
-            "constraints": ["禁止编造", "禁止 q 编号"],
-            "narrative_instruction": "撰写第八章：说明附件类数据的要点与使用方式，勿逐行抄写全表。",
-            "allowed_outputs": ["paragraph", "table", "bar_chart"],
-            "use_emit_tools": true
-          }
-        ]
-      }
-
-# ========== analysis_agent 报告规格（analysis_agent_report_*）· 结束

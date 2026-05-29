@@ -10,23 +10,13 @@ from pydantic import BaseModel, Field
 from app.analysis_agent.slots.builder import slots_from_spec_dict
 from app.analysis_agent.slots.kinds import AnalysisAgentSlot
 from app.analysis_agent.slots.specs import normalize_template_version
-from app.llm.prompt_registry import PromptTemplateRegistry
 
 _REPORTS_DIR = Path(__file__).resolve().parents[2] / "configs" / "analysis_agent_reports"
 
 
-def _report_scene(analysis_type: str) -> str:
-    return f"analysis_agent_report_{analysis_type}"
-
-
 def _load_report_json(*, analysis_type: str, version: str) -> dict | None:
+    """从 configs/analysis_agent_reports/{type}.{version}.json 加载报告规格。"""
     ver = normalize_template_version(version)
-    reg = PromptTemplateRegistry()
-    tpl = reg.get_template(scene=_report_scene(analysis_type), version=ver)
-    if tpl and (tpl.content or "").strip():
-        raw = json.loads(tpl.content)
-        if isinstance(raw, dict):
-            return raw
     path = _REPORTS_DIR / f"{analysis_type}.{ver}.json"
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
