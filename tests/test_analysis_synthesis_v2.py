@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
@@ -773,6 +774,32 @@ class TestSynthesisV2OrderedStream(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         self.assertIn("一、报告基础信息", result.summary)
+
+    def test_emit_markdown_chunks_honors_stream_delay(self):
+        engine = AnalysisSynthesisV2Engine(
+            llm_client=MagicMock(),
+            prompts=_FakePromptRegistry(),
+            gathered_json_max_chars=8000,
+            segment_max_tokens=512,
+            max_parallel_llm=1,
+            table_max_rows=10,
+            synthesis_timeout_seconds=30.0,
+            stream_chunk_chars=4,
+            stream_chunk_delay_ms=10.0,
+            emit_structured_sse=False,
+        )
+
+        async def _collect():
+            out = []
+            async for ev in engine._emit_markdown_chunks("abcdefgh"):
+                out.append(ev)
+            return out
+
+        t0 = time.perf_counter()
+        events = asyncio.run(_collect())
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        self.assertEqual(2, len(events))
+        self.assertGreaterEqual(elapsed_ms, 8.0)
 
     def test_deterministic_slot_chunked(self):
         engine = AnalysisSynthesisV2Engine(

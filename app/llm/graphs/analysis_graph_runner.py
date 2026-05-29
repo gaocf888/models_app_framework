@@ -1910,6 +1910,7 @@ class AnalysisGraphRunner:
             synthesis_timeout_seconds=self._analysis_cfg.synthesis_timeout_seconds,
             emit_structured_sse=self._analysis_cfg.synthesis_v2_enable_structured_sse_events,
             stream_chunk_chars=self._analysis_cfg.synthesis_v2_stream_chunk_chars,
+            stream_chunk_delay_ms=self._analysis_cfg.synthesis_v2_stream_chunk_delay_ms,
             idle_heartbeat_seconds=self._analysis_cfg.synthesis_v2_idle_heartbeat_seconds,
             json_fallback=self._json_fallback,
         )

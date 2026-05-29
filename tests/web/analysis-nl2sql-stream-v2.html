@@ -453,13 +453,12 @@
   const chartInstances = new Map();
   const structuredStore = { tables: [], charts: [] };
 
-  /** 轻量 SSE 报告渲染：缓冲 + 可选打字机队列 + rAF 刷新 DOM */
+  /** 轻量 SSE 报告渲染：缓冲 + rAF 打字机队列（避免确定性槽突发整块、summary_complete 冲掉队列） */
   const StreamReportRenderer = {
     buffer: "",
     pending: "",
-    typewriterTimer: null,
-    typewriterMs: 28,
-    typewriterChars: 2,
+    rafId: null,
+    streamEnded: false,
     flushScheduled: false,
     lastStatusAt: 0,
     tableCount: 0,
@@ -472,6 +471,7 @@
       this.stopTypewriter();
       this.buffer = "";
       this.pending = "";
+      this.streamEnded = false;
       this.flushScheduled = false;
       this.tableCount = 0;
       this.chartCount = 0;
@@ -483,9 +483,9 @@
     },
 
     stopTypewriter() {
-      if (this.typewriterTimer != null) {
-        clearInterval(this.typewriterTimer);
-        this.typewriterTimer = null;
+      if (this.rafId != null) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = null;
       }
     },
 
@@ -498,19 +498,32 @@
       }
       this.pending += text;
       this.ensureTypewriter();
+      this.tickTypewriter();
     },
 
     ensureTypewriter() {
-      if (this.typewriterTimer != null) return;
-      this.typewriterTimer = setInterval(() => this.tickTypewriter(), this.typewriterMs);
+      if (this.rafId != null) return;
+      const loop = () => {
+        this.rafId = requestAnimationFrame(loop);
+        if (!this.pending.length) {
+          if (this.streamEnded) {
+            this.stopTypewriter();
+          }
+          return;
+        }
+        this.tickTypewriter();
+      };
+      this.rafId = requestAnimationFrame(loop);
     },
 
     tickTypewriter() {
-      if (!this.pending.length) {
-        this.stopTypewriter();
-        return;
-      }
-      const n = Math.min(this.typewriterChars, this.pending.length);
+      if (!this.pending.length) return;
+      const backlog = this.pending.length;
+      let n = 1;
+      if (backlog > 1200) n = 5;
+      else if (backlog > 400) n = 3;
+      else if (backlog > 80) n = 2;
+      n = Math.min(n, backlog);
       this.buffer += this.pending.slice(0, n);
       this.pending = this.pending.slice(n);
       this.scheduleFlush();
@@ -524,10 +537,18 @@
         this.flushScheduled = false;
         const now = Date.now();
         if (now - this.lastStatusAt > 600) {
-          appendStatus("生成中… 已展示 " + this.buffer.length + " 字");
+          const tail = this.pending.length ? "（队列 " + this.pending.length + " 字）" : "";
+          appendStatus("生成中… 已展示 " + this.buffer.length + " 字" + tail);
           this.lastStatusAt = now;
         }
       });
+    },
+
+    markStreamEnded() {
+      this.streamEnded = true;
+      if (!this.pending.length) {
+        this.stopTypewriter();
+      }
     },
 
     flushNow() {
@@ -537,6 +558,23 @@
       }
       this.stopTypewriter();
       $("answer").textContent = this.buffer;
+    },
+
+    async drainPending(accelerated) {
+      if (!this.typewriter) {
+        this.flushNow();
+        return;
+      }
+      const charsPerTick = accelerated ? 10 : 3;
+      const ms = accelerated ? 10 : 16;
+      while (this.pending.length) {
+        const n = Math.min(charsPerTick, this.pending.length);
+        this.buffer += this.pending.slice(0, n);
+        this.pending = this.pending.slice(n);
+        $("answer").textContent = this.buffer;
+        await new Promise((r) => setTimeout(r, ms));
+      }
+      this.stopTypewriter();
     },
 
     onTablePayload(ev) {
@@ -833,10 +871,10 @@
         try {
           obj = JSON.parse(payload);
         } catch (e) {
-          onEvent({ parseError: true, raw: payload, error: String(e) });
+          await Promise.resolve(onEvent({ parseError: true, raw: payload, error: String(e) }));
           continue;
         }
-        onEvent(obj);
+        await Promise.resolve(onEvent(obj));
       }
     }
     const tail = buffer.trim();
@@ -845,9 +883,9 @@
       if (dataLines.length) {
         const payload = dataLines.map((l) => l.slice(5).trimStart()).join("\n");
         try {
-          onEvent(JSON.parse(payload));
+          await Promise.resolve(onEvent(JSON.parse(payload)));
         } catch (e) {
-          onEvent({ parseError: true, raw: payload, error: String(e) });
+          await Promise.resolve(onEvent({ parseError: true, raw: payload, error: String(e) }));
         }
       }
     }
@@ -913,7 +951,7 @@
         appendStatus("警告: Content-Type 非 text/event-stream: " + ct);
       }
 
-      await readSseStream(resp, (ev) => {
+      await readSseStream(resp, async (ev) => {
         if (ev.parseError) {
           showErr("SSE JSON 解析失败: " + ev.error + "\n片段: " + (ev.raw || "").slice(0, 500));
           logEvent("parse_error");
@@ -965,21 +1003,21 @@
           return;
         }
         if (kind === "summary_complete") {
-          StreamReportRenderer.flushNow();
+          StreamReportRenderer.markStreamEnded();
           const tail =
             "chars: " +
-            (ev.chars != null ? ev.chars : StreamReportRenderer.buffer.length) +
+            (ev.chars != null ? ev.chars : StreamReportRenderer.buffer.length + StreamReportRenderer.pending.length) +
             "  synthesis_ms: " +
             (ev.synthesis_ms != null ? ev.synthesis_ms : "—") +
             "\nrequest_id: " +
             (ev.request_id || "");
           $("meta").textContent = ($("meta").textContent || "") + "\n\n--- summary_complete ---\n" + tail;
-          appendStatus("summary 流结束，等待 finished…");
+          appendStatus("summary 流结束，打字机继续展示剩余内容…");
           return;
         }
         if (kind === "finished") {
           const m = ev.meta || {};
-          StreamReportRenderer.flushNow();
+          await StreamReportRenderer.drainPending(true);
           StreamReportRenderer.renderMarkdownFinish();
           StreamReportRenderer.finalizeStructured(m);
           const cites = Array.isArray(m.rag_citations) ? m.rag_citations : [];

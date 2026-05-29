@@ -502,6 +502,7 @@ class AnalysisConfig:
     synthesis_v2_enable_structured_sse_events: bool = True
     synthesis_v2_stream_live_first: bool = False
     synthesis_v2_stream_chunk_chars: int = 16
+    synthesis_v2_stream_chunk_delay_ms: float = 18.0
     synthesis_v2_idle_heartbeat_seconds: float = 5.0
     strict_by_default: bool = False
     trace_backend: str = "redis"  # redis | memory
@@ -1099,6 +1100,10 @@ def _load_from_env() -> AppConfig:
         != "false",
         synthesis_v2_stream_chunk_chars=max(
             1, int(os.getenv("ANALYSIS_SYNTHESIS_V2_STREAM_CHUNK_CHARS", "16"))
+        ),
+        synthesis_v2_stream_chunk_delay_ms=max(
+            0.0,
+            float(os.getenv("ANALYSIS_SYNTHESIS_V2_STREAM_CHUNK_DELAY_MS", "18")),
         ),
         synthesis_v2_idle_heartbeat_seconds=max(
             0.5, float(os.getenv("ANALYSIS_SYNTHESIS_V2_IDLE_HEARTBEAT_SECONDS", "5"))

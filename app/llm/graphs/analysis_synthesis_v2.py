@@ -1425,6 +1425,7 @@ class AnalysisSynthesisV2Engine:
         synthesis_timeout_seconds: float,
         emit_structured_sse: bool = True,
         stream_chunk_chars: int = 16,
+        stream_chunk_delay_ms: float = 0.0,
         idle_heartbeat_seconds: float = 5.0,
         json_fallback: Callable[[Any], Any] | None = None,
     ) -> None:
@@ -1437,6 +1438,7 @@ class AnalysisSynthesisV2Engine:
         self._synthesis_timeout = synthesis_timeout_seconds
         self._emit_structured_sse = emit_structured_sse
         self._stream_chunk_chars = max(1, stream_chunk_chars)
+        self._stream_chunk_delay_ms = max(0.0, float(stream_chunk_delay_ms))
         self._idle_heartbeat_seconds = max(0.5, float(idle_heartbeat_seconds))
         self._json_fallback = json_fallback or (lambda o: str(o))
 
@@ -1446,6 +1448,10 @@ class AnalysisSynthesisV2Engine:
             return []
         size = max(1, chunk_size)
         return [text[i : i + size] for i in range(0, len(text), size)]
+
+    async def _sleep_stream_chunk_delay(self) -> None:
+        if self._stream_chunk_delay_ms > 0:
+            await asyncio.sleep(self._stream_chunk_delay_ms / 1000.0)
 
     def _loading_event(
         self,
@@ -1640,6 +1646,7 @@ class AnalysisSynthesisV2Engine:
         title = slot.title.strip()
         if title:
             yield ({"event": "summary_delta", "text": f"### {title}\n\n"}, time.monotonic())
+            await self._sleep_stream_chunk_delay()
         got_body = False
         while True:
             if task.done() and chunk_queue.empty():
@@ -1665,6 +1672,7 @@ class AnalysisSynthesisV2Engine:
             got_body = True
             yield ({"event": "summary_delta", "text": item}, time.monotonic())
             last_emit_at = time.monotonic()
+            await self._sleep_stream_chunk_delay()
         if not task.done():
             async for ev in self._await_task_with_heartbeat(
                 task, slot=slot, slot_index=slot_index, last_emit_at=last_emit_at
@@ -1673,12 +1681,14 @@ class AnalysisSynthesisV2Engine:
             await task
         if title and got_body:
             yield ({"event": "summary_delta", "text": "\n\n"}, time.monotonic())
+            await self._sleep_stream_chunk_delay()
 
     async def _emit_markdown_chunks(
         self, text: str
     ) -> AsyncIterator[dict[str, Any]]:
         for piece in self._chunk_text(text, self._stream_chunk_chars):
             yield {"event": "summary_delta", "text": piece}
+            await self._sleep_stream_chunk_delay()
 
     def _structured_events_for_output(self, out: SynthesisV2SlotOutput) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
