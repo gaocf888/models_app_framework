@@ -552,6 +552,34 @@ class AnalysisConfig:
     img_diag_upload_max_mb: int = 15
 
 
+@dataclass
+class AnalysisAgentConfig:
+    """综合分析智能体（analysis_agent）独立配置。"""
+
+    enabled: bool = True
+    use_langgraph: bool = True
+    use_react_agent: bool = True
+    checkpoint_backend: str = "memory"  # none | memory | redis（生产见 APP_ENV=production 默认 redis）
+    checkpoint_redis_url: str | None = None
+    checkpoint_namespace: str = "analysis_agent"
+    session_store_backend: str = "memory"  # memory | redis（多 worker / HITL resume 须 redis）
+    session_store_redis_url: str | None = None
+    session_ttl_seconds: int = 3600
+    slot_nl2sql_max_retries: int = 2
+    slot_synth_max_retries: int = 1
+    react_max_iterations: int = 8
+    stream_chunk_chars: int = 256
+    enable_human_in_the_loop: bool = True
+    rag_top_k: int = 8
+    gathered_json_max_chars: int = 12000
+    narrative_max_tokens: int = 4096
+    nl2sql_disable_qa_slot_replay: bool = True
+    enable_structured_sse_events: bool = True
+    trace_backend: str = "memory"
+    trace_ttl_minutes: int = 1440
+    trace_max_items: int = 5000
+
+
 def _default_inspection_v2_shading_fills() -> list[str]:
     """常见「超标」底纹 RGB（无 #，大写），可通过环境变量覆盖。"""
     return [
@@ -663,6 +691,7 @@ class AppConfig:
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
     chatbot: ChatbotConfig = field(default_factory=ChatbotConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    analysis_agent: AnalysisAgentConfig = field(default_factory=AnalysisAgentConfig)
     inspection_extract: InspectionExtractConfig = field(default_factory=InspectionExtractConfig)
     inspection_extract_v0: InspectionExtractV0Config = field(default_factory=InspectionExtractV0Config)
 
@@ -1124,6 +1153,41 @@ def _load_from_env() -> AppConfig:
         ),
         img_diag_upload_max_mb=max(1, int(os.getenv("ANALYSIS_IMG_DIAG_UPLOAD_MAX_MB", "15"))),
     )
+    _app_env = (os.getenv("APP_ENV", "dev") or "dev").strip().lower()
+    _aa_persist_default = "redis" if _app_env in ("production", "prod") else "memory"
+    analysis_agent_cfg = AnalysisAgentConfig(
+        enabled=os.getenv("ANALYSIS_AGENT_ENABLED", "true").lower() != "false",
+        use_langgraph=os.getenv("ANALYSIS_AGENT_USE_LANGGRAPH", "true").lower() != "false",
+        use_react_agent=os.getenv("ANALYSIS_AGENT_USE_REACT_AGENT", "true").lower() != "false",
+        checkpoint_backend=(
+            os.getenv("ANALYSIS_AGENT_CHECKPOINT_BACKEND", _aa_persist_default) or _aa_persist_default
+        ).strip().lower(),
+        checkpoint_redis_url=(os.getenv("ANALYSIS_AGENT_CHECKPOINT_REDIS_URL") or os.getenv("REDIS_URL") or "").strip()
+        or None,
+        checkpoint_namespace=(os.getenv("ANALYSIS_AGENT_CHECKPOINT_NAMESPACE", "analysis_agent") or "analysis_agent").strip(),
+        session_store_backend=(
+            os.getenv("ANALYSIS_AGENT_SESSION_STORE_BACKEND", _aa_persist_default) or _aa_persist_default
+        ).strip().lower(),
+        session_store_redis_url=(
+            os.getenv("ANALYSIS_AGENT_SESSION_STORE_REDIS_URL") or os.getenv("REDIS_URL") or ""
+        ).strip()
+        or None,
+        session_ttl_seconds=max(60, int(os.getenv("ANALYSIS_AGENT_SESSION_TTL_SECONDS", "3600"))),
+        slot_nl2sql_max_retries=max(0, int(os.getenv("ANALYSIS_AGENT_SLOT_NL2SQL_MAX_RETRIES", "2"))),
+        slot_synth_max_retries=max(0, int(os.getenv("ANALYSIS_AGENT_SLOT_SYNTH_MAX_RETRIES", "1"))),
+        react_max_iterations=max(1, int(os.getenv("ANALYSIS_AGENT_REACT_MAX_ITERATIONS", "8"))),
+        stream_chunk_chars=max(1, int(os.getenv("ANALYSIS_AGENT_STREAM_CHUNK_CHARS", "256"))),
+        enable_human_in_the_loop=os.getenv("ANALYSIS_AGENT_ENABLE_HUMAN_IN_THE_LOOP", "true").lower() != "false",
+        rag_top_k=max(1, int(os.getenv("ANALYSIS_AGENT_RAG_TOP_K", "8"))),
+        gathered_json_max_chars=max(1000, int(os.getenv("ANALYSIS_AGENT_GATHERED_JSON_MAX_CHARS", "12000"))),
+        narrative_max_tokens=max(256, int(os.getenv("ANALYSIS_AGENT_NARRATIVE_MAX_TOKENS", "4096"))),
+        nl2sql_disable_qa_slot_replay=os.getenv("ANALYSIS_AGENT_NL2SQL_DISABLE_QA_SLOT_REPLAY", "true").lower()
+        != "false",
+        enable_structured_sse_events=os.getenv("ANALYSIS_AGENT_ENABLE_STRUCTURED_SSE", "true").lower() != "false",
+        trace_backend=(os.getenv("ANALYSIS_AGENT_TRACE_BACKEND", "memory") or "memory").strip().lower(),
+        trace_ttl_minutes=max(10, int(os.getenv("ANALYSIS_AGENT_TRACE_TTL_MINUTES", "1440"))),
+        trace_max_items=max(100, int(os.getenv("ANALYSIS_AGENT_TRACE_MAX_ITEMS", "5000"))),
+    )
     _v2_fills_env = os.getenv("INSPECT_EXTRACT_V2_SHADING_CANDIDATE_FILLS", "").strip()
     if _v2_fills_env:
         _v2_fills_list = [
@@ -1202,6 +1266,7 @@ def _load_from_env() -> AppConfig:
         mineru=mineru_cfg,
         chatbot=chatbot_cfg,
         analysis=analysis_cfg,
+        analysis_agent=analysis_agent_cfg,
         inspection_extract=inspection_extract_cfg,
         inspection_extract_v0=inspection_extract_v0_cfg,
     )

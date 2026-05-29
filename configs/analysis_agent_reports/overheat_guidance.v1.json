@@ -1,0 +1,144 @@
+{
+  "schema_version": 2,
+  "title": "锅炉管壁超温智能分析报告（多测点版）",
+  "description": "超温报告统一规格：8 个 llm_section 章节 + 静态标题；数据计划仍用 analysis_agent_plan_overheat_guidance v1",
+  "chapters": [
+    {
+      "id": "oh_hdr",
+      "kind": "static_markdown",
+      "static_body": "# 锅炉管壁超温智能分析报告\n\n"
+    },
+    {
+      "id": "ch1_overview",
+      "kind": "llm_section",
+      "title": "一、报告概述与基础信息",
+      "source_item_ids": ["q1"],
+      "outline": [
+        "锅炉台账与超温测点分级概况",
+        "监测部位分布要点",
+        "必要时用 emit_markdown_table 展示关键统计"
+      ],
+      "constraints": [
+        "禁止编造数值；无数据写待补充",
+        "禁止 Markdown # 标题行",
+        "禁止出现 q1 等内部编号"
+      ],
+      "field_hints": {
+        "基础信息": "q1 台账与测点分级"
+      },
+      "narrative_instruction": "撰写第一章：概括机组/锅炉基础信息与超温测点分级、监测部位分布；语气专业简洁。",
+      "allowed_outputs": ["paragraph", "table", "bar_chart", "pie_chart"],
+      "allow_human_confirm": true,
+      "use_emit_tools": true
+    },
+    {
+      "id": "ch2_events",
+      "kind": "llm_section",
+      "title": "二、超温事件概况",
+      "source_item_ids": ["q2a", "q2b", "q2c", "q2d"],
+      "outline": [
+        "测点级超温起止与时长特征",
+        "全事件运行工况",
+        "按严重度汇总",
+        "设计壁温与实测极值"
+      ],
+      "constraints": ["禁止编造", "禁止 q 编号", "禁止 # 标题行"],
+      "field_hints": {
+        "测点概况": "q2a",
+        "运行工况": "q2b",
+        "严重度汇总": "q2c",
+        "壁温极值": "q2d"
+      },
+      "narrative_instruction": "撰写第二章：综合 q2 系列数据描述本次超温事件全貌，突出严重测点与运行工况。",
+      "allowed_outputs": ["paragraph", "table", "bar_chart"],
+      "use_emit_tools": true
+    },
+    {
+      "id": "ch3_stats",
+      "kind": "llm_section",
+      "title": "三、超温数据统计",
+      "source_item_ids": ["q3a", "q3b"],
+      "outline": [
+        "按区域/受热面汇总",
+        "尖峰超温频次",
+        "区域对比可用柱状图"
+      ],
+      "constraints": ["禁止编造", "禁止 q 编号"],
+      "narrative_instruction": "撰写第三章：区域汇总与尖峰频次解读，指出高发区域与测点。",
+      "allowed_outputs": ["paragraph", "table", "bar_chart", "pie_chart"],
+      "use_emit_tools": true
+    },
+    {
+      "id": "ch4_correlation",
+      "kind": "llm_section",
+      "title": "四、关联参数联动分析",
+      "source_item_ids": ["q4a", "q4b"],
+      "outline": [
+        "壁温与负荷/压力等联动特征",
+        "SIS/DCS 关联参数要点"
+      ],
+      "constraints": ["禁止编造", "禁止 q 编号"],
+      "narrative_instruction": "撰写第四章：结合壁温时序与 SIS 参数，分析超温与运行调整的关联。",
+      "allowed_outputs": ["paragraph", "table"],
+      "use_emit_tools": true
+    },
+    {
+      "id": "ch5_causes",
+      "kind": "llm_section",
+      "title": "五、原因分析与风险研判",
+      "source_item_ids": ["q3a", "q3b", "q4a", "q4b"],
+      "outline": [
+        "至少 2 类可能原因并标注依据",
+        "风险等级与关注测点"
+      ],
+      "constraints": ["推断须标注依据", "禁止 q 编号"],
+      "narrative_instruction": "撰写第五章：基于统计与关联数据给出原因分析与风险研判，避免无依据断言。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    },
+    {
+      "id": "ch6_advice",
+      "kind": "llm_section",
+      "title": "六、运行调整与防控建议",
+      "source_item_ids": ["q1", "q3a", "q3b", "q4a", "q4b"],
+      "outline": [
+        "立即/短期/持续跟踪建议",
+        "可操作的运行与检修要点"
+      ],
+      "constraints": ["建议须可执行", "禁止 q 编号"],
+      "narrative_instruction": "撰写第六章：分条给出运行调整、监测与检修建议。",
+      "allowed_outputs": ["paragraph"],
+      "stream_live": true,
+      "use_emit_tools": false
+    },
+    {
+      "id": "ch7_history",
+      "kind": "llm_section",
+      "title": "七、历史缺陷与整改验证",
+      "source_item_ids": ["q5a", "q5b"],
+      "outline": [
+        "近一年检修/泄爆/换管相关记录要点",
+        "整改效果验证结论"
+      ],
+      "constraints": ["禁止编造", "禁止 q 编号"],
+      "narrative_instruction": "撰写第七章：归纳历史记录与整改验证情况。",
+      "allowed_outputs": ["paragraph", "table"],
+      "use_emit_tools": true
+    },
+    {
+      "id": "ch8_appendix",
+      "kind": "llm_section",
+      "title": "八、附件数据说明",
+      "source_item_ids": ["q6a", "q6b", "q6c", "q6d"],
+      "outline": [
+        "趋势与多测点对照要点",
+        "历史对标与 DCS 联动趋势说明",
+        "复杂表可用 emit_markdown_table"
+      ],
+      "constraints": ["禁止编造", "禁止 q 编号"],
+      "narrative_instruction": "撰写第八章：说明附件类数据的要点与使用方式，勿逐行抄写全表。",
+      "allowed_outputs": ["paragraph", "table", "bar_chart"],
+      "use_emit_tools": true
+    }
+  ]
+}

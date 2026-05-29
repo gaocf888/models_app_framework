@@ -476,10 +476,15 @@ class NL2SQLChain:
             catalog_tables = [t for t in catalog_tables if t.name and t.name.lower() in scoped_tables]
         full_catalog = self._format_enriched_schema_catalog(catalog_tables, rag_hints)
 
-        # NL2SQL 专用 Prompt 前缀（scene=nl2sql），支持 {{NL2SQL_SCHEMA_CATALOG}} 注入全库表结构
+        # NL2SQL Prompt 前缀：analysis_agent 走独立 scene，其余走 nl2sql
         prompt_default_version = os.getenv("NL2SQL_PROMPT_DEFAULT_VERSION", "v2")
+        nl2sql_scene = (
+            "analysis_agent_nl2sql"
+            if (analysis_type or "").strip().lower() == "analysis_agent"
+            else "nl2sql"
+        )
         tpl = self._prompts.get_template(
-            scene="nl2sql",
+            scene=nl2sql_scene,
             user_id=user_id,
             version=None,
             default_version=prompt_default_version,

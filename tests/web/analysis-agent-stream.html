@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>综合分析智能体 SSE 联调</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1rem; max-width: 960px; }
+    textarea { width: 100%; min-height: 4rem; }
+    #log { white-space: pre-wrap; background: #111; color: #eee; padding: 1rem; height: 50vh; overflow: auto; font-size: 12px; }
+    .chart-box { margin: 1rem 0; padding: 0.5rem; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <h1>analysis_agent · run-stream</h1>
+  <p>POST <code>/analysis-agent/run-stream</code> · 人机恢复 <code>POST /analysis-agent/resume-stream</code></p>
+  <p>Header: <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code></p>
+  <div id="resume" style="display:none;margin:1rem 0;padding:0.5rem;border:1px solid #fa0;">
+    <strong>等待用户输入</strong>
+    <p id="resumePrompt"></p>
+    <label>resume_token <input id="resumeToken" size="50" readonly /></label><br/>
+    <button id="btnSkip">skip_slot</button>
+    <button id="btnRetry">retry</button>
+    <button id="btnAbort">abort</button>
+  </div>
+  <label>API Base <input id="base" size="60" value="http://127.0.0.1:8000" /></label><br/>
+  <label>API Key <input id="key" size="60" /></label><br/>
+  <label>Query <textarea id="query">请分析近期超温情况</textarea></label><br/>
+  <button id="run">开始流式分析</button>
+  <div id="charts"></div>
+  <pre id="log"></pre>
+  <script>
+    const log = (msg) => {
+      const el = document.getElementById('log');
+      el.textContent += msg + '\n';
+      el.scrollTop = el.scrollHeight;
+    };
+    document.getElementById('run').onclick = async () => {
+      document.getElementById('log').textContent = '';
+      document.getElementById('charts').innerHTML = '';
+      const base = document.getElementById('base').value.replace(/\/$/, '');
+      const key = document.getElementById('key').value;
+      const body = {
+        user_id: 'web_test',
+        session_id: 'web_sess_' + Date.now(),
+        analysis_type: 'overheat_guidance',
+        query: document.getElementById('query').value,
+        options: { enable_rag: true, plan_template_version: 'v2' }
+      };
+      const res = await fetch(base + '/analysis-agent/run-stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + key
+        },
+        body: JSON.stringify(body)
+      });
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n');
+        buf = parts.pop() || '';
+        for (const p of parts) {
+          if (!p.startsWith('data: ')) continue;
+          const ev = JSON.parse(p.slice(6));
+          if (ev.event === 'analysis_agent_summary_delta') {
+            log(ev.text || '');
+          } else if (ev.event === 'analysis_agent_chart_payload') {
+            const div = document.createElement('div');
+            div.className = 'chart-box';
+            div.textContent = JSON.stringify(ev.chart, null, 2);
+            document.getElementById('charts').appendChild(div);
+            log('[chart] ' + (ev.chart && ev.chart.title));
+          } else if (ev.event === 'analysis_agent_user_input_required') {
+            document.getElementById('resume').style.display = 'block';
+            document.getElementById('resumePrompt').textContent = ev.prompt || '';
+            document.getElementById('resumeToken').value = ev.resume_token || '';
+            window._lastResume = { token: ev.resume_token, user_id: body.user_id, session_id: body.session_id };
+          } else {
+            log('[' + ev.event + '] ' + JSON.stringify(ev).slice(0, 200));
+          }
+        }
+      }
+    };
+    async function doResume(action) {
+      const r = window._lastResume;
+      if (!r) return;
+      const base = document.getElementById('base').value.replace(/\/$/, '');
+      const key = document.getElementById('key').value;
+      const res = await fetch(base + '/analysis-agent/resume-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+        body: JSON.stringify({ resume_token: r.token, user_id: r.user_id, session_id: r.session_id, action, payload: {} })
+      });
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n');
+        buf = parts.pop() || '';
+        for (const p of parts) {
+          if (!p.startsWith('data: ')) continue;
+          const ev = JSON.parse(p.slice(6));
+          if (ev.event === 'analysis_agent_summary_delta') log(ev.text || '');
+          else log('[' + ev.event + '] ' + JSON.stringify(ev).slice(0, 120));
+        }
+      }
+      document.getElementById('resume').style.display = 'none';
+    }
+    document.getElementById('btnSkip').onclick = () => doResume('skip_slot');
+    document.getElementById('btnRetry').onclick = () => doResume('retry');
+    document.getElementById('btnAbort').onclick = () => doResume('abort');
+  </script>
+</body>
+</html>

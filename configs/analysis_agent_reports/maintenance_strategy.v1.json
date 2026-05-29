@@ -1,0 +1,86 @@
+{
+  "schema_version": 2,
+  "title": "检修策略报告槽位（llm_section + emit 工具；数据计划 analysis_agent_plan_maintenance_strategy v1）",
+  "description": "检修策略报告槽位（llm_section + emit 工具；数据计划 analysis_agent_plan_maintenance_strategy v1）",
+  "chapters": [
+    {
+      "id": "m_hdr",
+      "kind": "static_markdown",
+      "static_body": "# 锅炉检修策略分析报告\n\n"
+    },
+    {
+      "id": "m_risk",
+      "kind": "llm_section",
+      "title": "一、风险与寿命评估",
+      "source_item_ids": [
+        "q0",
+        "q1",
+        "q2",
+        "q3",
+        "q4"
+      ],
+      "outline": [
+        "概括统一检修优先级与高风险区域",
+        "必要时用 emit_markdown_table 展示优先级汇总表",
+        "必要时用 emit_chart 展示分级分布（bar 或 pie）"
+      ],
+      "constraints": [
+        "禁止编造数值；无数据写待补充",
+        "禁止 Markdown # 标题行",
+        "禁止出现 q0～q5 等内部编号"
+      ],
+      "field_hints": {
+        "统一检修优先级汇总": "q0 分级主表",
+        "测厚与换管": "q1",
+        "遗留缺陷": "q2",
+        "超温佐证": "q3",
+        "泄爆佐证": "q4"
+      },
+      "narrative_instruction": "撰写「一、风险与寿命评估」：以统一检修优先级汇总为主依据，用测厚、缺陷、超温、泄爆等补充；给出可执行判断。",
+      "allowed_outputs": [
+        "paragraph",
+        "table",
+        "bar_chart",
+        "pie_chart"
+      ],
+      "allow_human_confirm": true,
+      "use_emit_tools": true
+    },
+    {
+      "id": "m_plan",
+      "kind": "llm_section",
+      "title": "二、检修策略",
+      "source_item_ids": [
+        "q0",
+        "q1",
+        "q2",
+        "q3",
+        "q4",
+        "q5"
+      ],
+      "outline": [
+        "2.1 检修优先级清单（1/2/3 级）",
+        "2.2 方案影响分析",
+        "佐证表按需 emit_markdown_table"
+      ],
+      "constraints": [
+        "禁止编造数值",
+        "禁止 q 编号",
+        "禁止 # 标题行"
+      ],
+      "field_hints": {
+        "优先级清单": "q0",
+        "时间轴": "q5"
+      },
+      "narrative_instruction": "撰写「二、检修策略」：含 2.1 检修优先级清单与 2.2 方案影响分析；以统一检修优先级汇总为主。",
+      "allowed_outputs": [
+        "paragraph",
+        "table",
+        "bar_chart",
+        "pie_chart"
+      ],
+      "stream_live": true,
+      "use_emit_tools": true
+    }
+  ]
+}

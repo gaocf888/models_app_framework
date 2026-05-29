@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "description": "四管健康解读槽位（配置化 llm_section）",
+  "slots": [
+    {
+      "id": "f_hdr",
+      "kind": "static_markdown",
+      "static_body": "# 四管健康报告智能解读\n\n"
+    },
+    {
+      "id": "f_brief",
+      "kind": "llm_section",
+      "title": "一、运行简报",
+      "source_item_ids": ["q1", "q2", "q3"],
+      "outline": ["整体健康与风险", "3～6 条要点", "本周运行关注"],
+      "constraints": ["禁止编造", "禁止 q 编号", "禁止 # 标题"],
+      "narrative_instruction": "撰写「运行简报」：整体健康与风险、要点、本周关注。",
+      "allowed_outputs": ["paragraph", "table", "bar_chart"],
+      "allow_human_confirm": true,
+      "use_emit_tools": true
+    },
+    {
+      "id": "f_plan",
+      "kind": "llm_section",
+      "title": "二、检修建议书",
+      "source_item_ids": ["q1", "q2", "q3", "q4", "q5", "q6"],
+      "outline": ["测厚复核", "更换/消缺", "可延期项"],
+      "constraints": ["禁止编造管号", "无数据列待补"],
+      "narrative_instruction": "撰写「检修建议书」：分条列出可执行项，对齐数据中的位置标识。",
+      "allowed_outputs": ["paragraph", "table"],
+      "stream_live": true,
+      "use_emit_tools": true
+    },
+    {
+      "id": "f_limit",
+      "kind": "llm_section",
+      "title": "三、风险与限制",
+      "source_item_ids": ["q1", "q2", "q3", "q4", "q5", "q6"],
+      "outline": ["数据缺口", "样本不足", "模型口径"],
+      "narrative_instruction": "撰写数据缺口、样本不足、模型口径未知等限制说明。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    }
+  ]
+}

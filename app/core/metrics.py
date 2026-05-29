@@ -143,6 +143,31 @@ ANALYSIS_TRACE_INDEX_CLEANUP_COUNT = Counter(
     ["index_type"],
 )
 
+# Analysis Agent 指标（`AnalysisAgentGraphRunner` / `SlotOrchestrator`）：独立于现网 /analysis/*。
+ANALYSIS_AGENT_REQUEST_COUNT = Counter(
+    "analysis_agent_requests_total",
+    "Total analysis_agent requests",
+    ["analysis_type", "status"],
+)
+
+ANALYSIS_AGENT_SLOT_LATENCY = Histogram(
+    "analysis_agent_slot_latency_seconds",
+    "Analysis agent slot latency in seconds",
+    ["slot_kind", "analysis_type"],
+)
+
+ANALYSIS_AGENT_NL2SQL_CALL_COUNT = Counter(
+    "analysis_agent_nl2sql_calls_total",
+    "Total analysis_agent NL2SQL sub-calls",
+    ["analysis_type", "status"],
+)
+
+ANALYSIS_AGENT_DEGRADE_COUNT = Counter(
+    "analysis_agent_degrade_total",
+    "Total analysis_agent degrade events",
+    ["reason"],
+)
+
 # Inspection Extract 指标：请求量、解析与 LLM 耗时、输出记录数、校验失败数。
 INSPECT_EXTRACT_REQUEST_COUNT = Counter(
     "inspect_extract_requests_total",
