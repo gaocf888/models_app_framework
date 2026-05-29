@@ -131,29 +131,43 @@ async def run_analysis_with_nl2sql(data: AnalysisNL2SQLRequest) -> AnalysisV2Res
     "/run-with-nl2sql-stream",
     summary="综合分析执行（NL2SQL 模式 · 流式 summary）",
     response_class=StreamingResponse,
-    response_description="`text/event-stream`：先推送元数据，再流式输出 Markdown 片段，最后 `summary_complete` 与 `structured_async_enqueued`；完整 JSON 在服务端异步落日志 / trace。",
+    response_description=(
+        "`text/event-stream`：每条 `data: {json}\\n\\n`，JSON 内 `event` 字段标识类型；"
+        "顺序 meta → summary_delta/… → summary_complete → finished → structured_async_enqueued；"
+        "完整 AnalysisV2Result 不在 SSE 内，见 trace。"
+    ),
 )
 async def run_analysis_with_nl2sql_stream(data: AnalysisNL2SQLRequest) -> StreamingResponse:
     """
     与 **`/run-with-nl2sql`** 相同鉴权、请求体与**前半段业务链路**（规划 RAG → 取数 → 质量门 → 业务 RAG），
-    **synthesis 阶段**改为 **vLLM 流式输出** summary（标准 Markdown 文本增量）。
-    **`analysis_type` 与同步入口一致**（含 `overheat_guidance`、`maintenance_strategy`、`four_tube_health_interpretation`、`leakage_burst_analysis`、`custom` 等），
-    模板仍由 `configs/prompts.yaml` 中 `analysis_plan_<type>` 与各 `analysis_*_<type>` 分流。
+    synthesis 阶段改为流式推送报告正文与结构化片段。
 
-    **响应**：`text/event-stream`（SSE），每条 `data: {json}\\n\\n`：
-    - `event: meta`：含 `request_id`、`plan_id`、`analysis_type`、`orchestrator=sequential_stream` 等；
-    - 多条 `summary_delta`：增量文本（v2 默认按槽位注册表顺序推送：后台并行、就绪暂存，轮到章节再流式输出；LLM 槽为 token 流，确定性槽为小段切块）；
-    - `synthesis_loading`（v2）：槽位/ token 空闲超过配置阈值（默认 5s）时的加载心跳，`active` true/false；
-    - `summary_complete`：流结束元数据（`chars`、`synthesis_ms`）；
-    - `finished`：结束帧，`meta` 含 `rag_citations`（与智能客服同形，含 `original_content_url` 等；**不含** `nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples` 库表知识片段，避免与 acquire_data 内 NL2SQL RAG 重复展示）、`used_rag` / `used_plan_rag` / `used_business_rag`；
-    - `structured_async_enqueued`：已排队后台组装与 trace 持久化。
+    **传输**
+    - `Content-Type: text/event-stream`；每条 `data: {json}\\n\\n`（类型在 JSON 的 **`event`** 字段，非 SSE `event:` 行）
+    - 响应头含 `Cache-Control: no-cache`、`X-Accel-Buffering: no`
+    - **`meta` 之前可能长时间无事件**（NL2SQL 取数阶段），属正常，非断流
 
-    完整 **`AnalysisV2Result`（含 `structured_report`）** 在流结束后**异步**构建，与同步接口结构一致；
-    默认写入**应用日志**并调用 **`app.services.analysis_stream_hooks.register_analysis_nl2sql_stream_structured_hook`** 已注册投递器；
-    **trace 存储**在后台与同步路由相同执行 **`_save_trace`**（含完整 `structured_report`）。
+    **SSE 事件（`event` 字段，共 8 种）**
 
-    **说明**：本路由为**顺序管道 + 流式合成**；与已启用 LangGraph 时的 **`/run-with-nl2sql`** 相比，
-    前者在内部使用与无图降级相同的顺序实现，若需与 LangGraph 版行为逐字节一致请使用同步接口。
+    | event | 作用 |
+    |-------|------|
+    | `meta` | 首条；`request_id`/`plan_id`/`analysis_type`/`template_versions`（含 `synthesis_strategy_effective` v1\\|v2） |
+    | `summary_delta` | 报告 Markdown 增量返回；前端拼接 `text`；v2 按槽位章节顺序推送 |
+    | `synthesis_loading` | v2 专用；槽位或 token 等待超时心跳；`active`/`phase`/`slot_id`/`hint` |
+    | `table_payload` | 表格json返回 v2 + 结构化 SSE 开启；`slot_id` + `table`（columns/rows，非 HTML） |
+    | `chart_payload` | 统计图表json返回 v2 + 结构化 SSE 开启 + `chart_mode≠off`；`slot_id` + `chart`（JSON spec+data，前端 ECharts 渲染） |
+    | `summary_complete` | 正文流结束；`chars`/`synthesis_ms`/`request_id` |
+    | `finished` | 结束帧；`meta` 含 RAG 开关与 `rag_citations`（**不含** nl2sql 库表/QA 命名空间）；**无** `structured_report` |
+    | `structured_async_enqueued` | 末条；完整 JSON 已排队后台写日志/trace |
+
+    v1 synthesis 仅含：meta、summary_delta、summary_complete、finished、structured_async_enqueued。
+
+    **前端要点**
+    - 正文 = 全部 `summary_delta.text` 拼接；表格/图优先收 `table_payload`/`chart_payload`
+    - 完整 **`AnalysisV2Result`**（含 `structured_report`/`evidence`/`trace`）**不在流内**；用 `meta.request_id` 调 **`GET /analysis/traces/{request_id}`**
+    - synthesis 失败时仍可能有 SSE，降级文案经 `summary_delta` 输出后正常收尾
+
+    后台与同步路由相同 **`_save_trace`**；钩子见 **`register_analysis_nl2sql_stream_structured_hook`**。
     """
     return await service.run_analysis_nl2sql_stream(data)
 

@@ -2159,8 +2159,16 @@ class AnalysisGraphRunner:
         on_complete: Callable[[AnalysisV2Result], Awaitable[None]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """
-        NL2SQL 专用：完成与 `_run_nl2sql_pipeline_through_rag` 一致的前半段后，
-        以 SSE 友好的事件字典流式推送 summary，并在结束后异步组装完整 JSON（日志 + 可选投递钩子 + on_complete）。
+        NL2SQL 流式事件源：先 `_run_nl2sql_pipeline_through_rag`（此阶段无 SSE），再 synthesis 流式输出。
+
+        Yields 事件 dict（字段 `event` 标识类型，详见 `app.api.analysis.run_analysis_with_nl2sql_stream`）：
+
+        - `meta`：取数完成后首条
+        - `summary_delta`：Markdown 增量（v1 整篇 LLM token；v2 按槽位顺序，见 `iter_stream_events`）
+        - `synthesis_loading` / `table_payload` / `chart_payload`：仅 v2 且配置开启
+        - `summary_complete` → `finished` → `structured_async_enqueued`：收尾三连
+
+        结束后 `create_task(_nl2sql_stream_background_finalize)` 异步写完整 JSON + trace。
         """
         ANALYSIS_REQUEST_COUNT.labels(
             analysis_type=req.analysis_type, data_mode="nl2sql", status="started"

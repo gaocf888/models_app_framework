@@ -63,6 +63,7 @@ def _sse_event_json_default(value: Any) -> Any:
 
 
 def _encode_sse_event(event: dict[str, Any]) -> bytes:
+    """SSE 单帧：`data: {json}\\n\\n`；`event` 类型见 `run_analysis_with_nl2sql_stream` 路由文档。"""
     return f"data: {json.dumps(event, ensure_ascii=False, default=_sse_event_json_default)}\n\n".encode(
         "utf-8"
     )
@@ -130,9 +131,17 @@ class AnalysisService:
 
     async def run_analysis_nl2sql_stream(self, data: AnalysisNL2SQLRequest) -> StreamingResponse:
         """
-        NL2SQL 流式 synthesis：`text/event-stream`，事件 JSON 与 `AnalysisGraphRunner.iter_nl2sql_stream_events` 一致。
-        完整 `AnalysisV2Result` 在 summary 流结束后由后台任务组装，写入日志并调用 `analysis_stream_hooks` 钩子，
-        同时 **`_save_trace`** 与同步路由一致（在钩子回调中执行）。
+        NL2SQL 流式 synthesis → `text/event-stream`。
+
+        编码：每条 `data: {json}\\n\\n`（`_encode_sse_event`），事件字典由
+        `AnalysisGraphRunner.iter_nl2sql_stream_events` 产出；`event` 取值见
+        **`app.api.analysis.run_analysis_with_nl2sql_stream`** 文档。
+
+        典型顺序：meta →（summary_delta | synthesis_loading | table_payload | chart_payload）×N
+        → summary_complete → finished → structured_async_enqueued。
+
+        流内不含完整 `AnalysisV2Result`；结束后 `_nl2sql_stream_background_finalize` 异步组装并
+        `_save_trace`（钩子 `analysis_stream_hooks`）。
         """
         req = self._apply_defaults_nl2sql(data)
 
