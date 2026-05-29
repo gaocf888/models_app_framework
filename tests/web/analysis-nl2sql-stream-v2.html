@@ -317,6 +317,7 @@
           <label><input type="checkbox" id="enableContext" checked /> enable_context</label>
           <label><input type="checkbox" id="strict" /> strict</label>
           <label><input type="checkbox" id="liteStream" checked /> 轻量流式（防卡死，推荐）</label>
+          <label><input type="checkbox" id="typewriterStream" checked /> 打字机效果（按序逐字展示）</label>
           <label><input type="checkbox" id="debugSse" /> 调试 SSE 日志</label>
         </div>
         <label>max_nl2sql_calls（空则服务端默认）</label>
@@ -452,18 +453,25 @@
   const chartInstances = new Map();
   const structuredStore = { tables: [], charts: [] };
 
-  /** 轻量 SSE 报告渲染：缓冲 + rAF 刷新 DOM，避免每个 token 触发全量 reflow */
+  /** 轻量 SSE 报告渲染：缓冲 + 可选打字机队列 + rAF 刷新 DOM */
   const StreamReportRenderer = {
     buffer: "",
+    pending: "",
+    typewriterTimer: null,
+    typewriterMs: 28,
+    typewriterChars: 2,
     flushScheduled: false,
     lastStatusAt: 0,
     tableCount: 0,
     chartCount: 0,
     lite: true,
+    typewriter: true,
     debug: false,
 
     reset() {
+      this.stopTypewriter();
       this.buffer = "";
+      this.pending = "";
       this.flushScheduled = false;
       this.tableCount = 0;
       this.chartCount = 0;
@@ -474,9 +482,37 @@
       el.classList.remove("rendered-md");
     },
 
+    stopTypewriter() {
+      if (this.typewriterTimer != null) {
+        clearInterval(this.typewriterTimer);
+        this.typewriterTimer = null;
+      }
+    },
+
     appendDelta(text) {
       if (!text) return;
-      this.buffer += text;
+      if (!this.typewriter) {
+        this.buffer += text;
+        this.scheduleFlush();
+        return;
+      }
+      this.pending += text;
+      this.ensureTypewriter();
+    },
+
+    ensureTypewriter() {
+      if (this.typewriterTimer != null) return;
+      this.typewriterTimer = setInterval(() => this.tickTypewriter(), this.typewriterMs);
+    },
+
+    tickTypewriter() {
+      if (!this.pending.length) {
+        this.stopTypewriter();
+        return;
+      }
+      const n = Math.min(this.typewriterChars, this.pending.length);
+      this.buffer += this.pending.slice(0, n);
+      this.pending = this.pending.slice(n);
       this.scheduleFlush();
     },
 
@@ -488,13 +524,18 @@
         this.flushScheduled = false;
         const now = Date.now();
         if (now - this.lastStatusAt > 600) {
-          appendStatus("生成中… 已收 " + this.buffer.length + " 字");
+          appendStatus("生成中… 已展示 " + this.buffer.length + " 字");
           this.lastStatusAt = now;
         }
       });
     },
 
     flushNow() {
+      if (this.pending.length) {
+        this.buffer += this.pending;
+        this.pending = "";
+      }
+      this.stopTypewriter();
       $("answer").textContent = this.buffer;
     },
 
@@ -817,6 +858,7 @@
     StreamReportRenderer.reset();
     clearCharts();
     StreamReportRenderer.lite = $("liteStream").checked;
+    StreamReportRenderer.typewriter = $("typewriterStream").checked;
     StreamReportRenderer.debug = $("debugSse").checked;
     $("structuredBlocks").textContent = "…";
     $("ragCitations").textContent = "…";

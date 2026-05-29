@@ -8,6 +8,7 @@ from app.analysis_agent.graph.orchestrator import SlotOrchestrator
 from app.analysis_agent.graph.state import AnalysisAgentState
 from app.analysis_agent.nl2sql_executor import plan_item_resolved
 from app.analysis_agent.report_spec import load_report_spec
+from app.analysis_agent.slots.specs import get_default_agent_template_version
 from app.analysis_agent.slots.registry import clear_slot_cache, get_agent_slots
 from app.models.nl2sql import NL2SQLQueryResponse
 
@@ -26,7 +27,7 @@ def test_plan_item_resolved_covers_empty_and_status() -> None:
 
 
 def test_overheat_report_spec_loads() -> None:
-    spec = load_report_spec("overheat_guidance", version="v1")
+    spec = load_report_spec("overheat_guidance")
     assert spec is not None
     assert len(spec.chapters) == 9
     kinds = {s.kind for s in spec.chapters}
@@ -80,14 +81,15 @@ async def test_acquire_slot_data_dedupes_plan_item_id() -> None:
     slot_b = {**slot_a, "id": "s2", "title": "B", "table_id": "s2"}
     from app.analysis_agent.slots.serialize import slot_from_dict
 
+    default_ver = get_default_agent_template_version()
     state: AnalysisAgentState = {
         "user_id": "u1",
         "session_id": "s1",
         "request_id": "aa_test",
         "analysis_type": "maintenance_strategy",
         "query": "分析",
-        "options": {"plan_template_version": "v1", "max_rows_per_query": 100},
-        "trace": {"plan_template_version": "v1"},
+        "options": {"plan_template_version": default_ver, "max_rows_per_query": 100},
+        "trace": {"plan_template_version": default_ver},
         "plan_tasks": plan_tasks,
         "ordered_slots": [slot_a, slot_b],
         "slot_index": 0,
@@ -103,7 +105,7 @@ async def test_acquire_slot_data_dedupes_plan_item_id() -> None:
     req = nl2sql.query.await_args_list[0].args[0]
     assert req.analysis_type == "maintenance_strategy"
     assert req.plan_item_id == "q1"
-    assert req.plan_template_version == "v1"
+    assert req.plan_template_version == default_ver
     assert len(state["nl2sql_calls"]) == 2
     assert sum(1 for c in state["nl2sql_calls"] if c.get("cache_hit")) == 1
     assert state["gathered_data"]["q1"]

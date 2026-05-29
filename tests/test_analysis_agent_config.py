@@ -30,3 +30,15 @@ def test_analysis_agent_dev_defaults_memory_persistence() -> None:
     assert cfg.analysis_agent.checkpoint_backend == "memory"
     assert cfg.analysis_agent.session_store_backend == "memory"
     get_app_config.cache_clear()
+
+
+def test_analysis_agent_plan_template_version_from_env() -> None:
+    get_app_config.cache_clear()
+    with patch.dict(
+        os.environ,
+        {"ANALYSIS_AGENT_PLAN_TEMPLATE_VERSION": "analysis_agent_v2"},
+        clear=False,
+    ):
+        cfg = _load_from_env()
+    assert cfg.analysis_agent.plan_template_version == "analysis_agent_v2"
+    get_app_config.cache_clear()

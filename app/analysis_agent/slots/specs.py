@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-# 综合分析智能体统一模板版本（多槽位流水线，不再区分 v1/v2）
-DEFAULT_AGENT_TEMPLATE_VERSION = "v1"
+REPORT_FALLBACK_SUFFIX = "analysis_agent"
+DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK = "analysis_agent_v1"
+_LEGACY_VERSION_ALIASES = frozenset({"v1", "v2"})
 
 PLAN_VERSION_BY_TYPE: dict[str, str] = {
-    "overheat_guidance": DEFAULT_AGENT_TEMPLATE_VERSION,
-    "maintenance_strategy": DEFAULT_AGENT_TEMPLATE_VERSION,
-    "four_tube_health_interpretation": DEFAULT_AGENT_TEMPLATE_VERSION,
-    "leakage_burst_analysis": DEFAULT_AGENT_TEMPLATE_VERSION,
+    "overheat_guidance": DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK,
+    "maintenance_strategy": DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK,
+    "four_tube_health_interpretation": DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK,
+    "leakage_burst_analysis": DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK,
 }
 
 NARRATIVE_SCENE_BY_TYPE: dict[str, str] = {
@@ -22,8 +23,25 @@ NARRATIVE_SCENE_BY_TYPE: dict[str, str] = {
 SUPPORTED_ANALYSIS_TYPES: tuple[str, ...] = tuple(PLAN_VERSION_BY_TYPE.keys())
 
 
+def get_default_agent_template_version() -> str:
+    """逻辑 plan 版本：来自 ANALYSIS_AGENT_PLAN_TEMPLATE_VERSION，供 NL2SQL QA 五元组隔离。"""
+    try:
+        from app.core.config import get_app_config
+
+        v = (get_app_config().analysis_agent.plan_template_version or "").strip()
+        if v:
+            return v
+    except Exception:  # noqa: BLE001
+        pass
+    return DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK
+
+
+# 兼容旧 import；运行时请以 get_default_agent_template_version() 为准
+DEFAULT_AGENT_TEMPLATE_VERSION = DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK
+
+
 def default_plan_version(analysis_type: str) -> str:
-    return PLAN_VERSION_BY_TYPE.get(analysis_type, DEFAULT_AGENT_TEMPLATE_VERSION)
+    return PLAN_VERSION_BY_TYPE.get(analysis_type, get_default_agent_template_version())
 
 
 def default_slot_version(analysis_type: str) -> str:
@@ -38,8 +56,8 @@ def narrative_scene_for_type(analysis_type: str) -> str:
 
 
 def normalize_template_version(version: str | None) -> str:
-    """将历史 v2 或空值规范为统一多槽位版本 v1。"""
+    """空值及历史 v1/v2 规范为 env 默认逻辑版本（与现网 /analysis 的 v1/v2 隔离）。"""
     v = (version or "").strip().lower()
-    if not v or v == "v2":
-        return DEFAULT_AGENT_TEMPLATE_VERSION
+    if not v or v in _LEGACY_VERSION_ALIASES:
+        return get_default_agent_template_version()
     return v

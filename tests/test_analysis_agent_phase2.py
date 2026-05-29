@@ -13,7 +13,11 @@ from app.analysis_agent.slots.registry import (
     get_agent_slots,
     registry_available,
 )
-from app.analysis_agent.slots.specs import default_plan_version, narrative_scene_for_type
+from app.analysis_agent.slots.specs import (
+    default_plan_version,
+    get_default_agent_template_version,
+    narrative_scene_for_type,
+)
 
 
 @pytest.mark.parametrize(
@@ -35,10 +39,10 @@ def test_registry_all_analysis_types(analysis_type: str, min_slots: int) -> None
 @pytest.mark.parametrize(
     "analysis_type,version,expected_item",
     [
-        ("overheat_guidance", "v1", "q1"),
-        ("maintenance_strategy", "v1", "q0"),
-        ("four_tube_health_interpretation", "v1", "q1"),
-        ("leakage_burst_analysis", "v1", "q1"),
+        ("overheat_guidance", None, "q1"),
+        ("maintenance_strategy", None, "q0"),
+        ("four_tube_health_interpretation", None, "q1"),
+        ("leakage_burst_analysis", None, "q1"),
     ],
 )
 def test_plan_loads_with_fallback(
@@ -50,11 +54,12 @@ def test_plan_loads_with_fallback(
 
 
 def test_default_plan_version_by_type() -> None:
-    assert default_plan_version("overheat_guidance") == "v1"
-    assert default_plan_version("maintenance_strategy") == "v1"
-    assert effective_plan_version("maintenance_strategy", {}) == "v1"
-    assert effective_plan_version("overheat_guidance", {}) == "v1"
-    assert effective_plan_version("overheat_guidance", {"plan_template_version": "v2"}) == "v1"
+    default_ver = get_default_agent_template_version()
+    assert default_plan_version("overheat_guidance") == default_ver
+    assert default_plan_version("maintenance_strategy") == default_ver
+    assert effective_plan_version("maintenance_strategy", {}) == default_ver
+    assert effective_plan_version("overheat_guidance", {}) == default_ver
+    assert effective_plan_version("overheat_guidance", {"plan_template_version": "v2"}) == default_ver
 
 
 def test_synthesis_template_resolves() -> None:

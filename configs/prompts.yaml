@@ -1758,8 +1758,8 @@ nl2sql:
 # 【谁加载】
 #   - 数据计划：app/analysis_agent/plans/loader.py  → scene: analysis_agent_plan_<type>
 #   - 章节合成 system：app/analysis_agent/agents/section_agent.py → scene: analysis_agent_synthesis_<type>
-#   - 报告规格（章节/取数绑定）：configs/analysis_agent_reports/{type}.v1.json
-#       由 app/analysis_agent/report_spec.py 加载（不在本 yaml 维护 analysis_agent_report_*）
+#   - 报告规格（章节/取数绑定）：configs/analysis_agent_reports/{type}.analysis_agent.json
+#       或 {type}.{ANALYSIS_AGENT_PLAN_TEMPLATE_VERSION}.json；由 report_spec.py 加载
 #   - NL2SQL SQL 生成：与公共基座相同，scene=nl2sql（传真实 analysis_type + 五元组）
 # 【独立性】不得回退现网 /analysis 使用的 analysis_plan_*、analysis_synthesis_*。
 # 【维护 plan/synthesis】从现网复制：python scripts/merge_analysis_agent_prompts_phase2.py（禁止整文件 yaml.dump）
@@ -1767,12 +1767,12 @@ nl2sql:
 
 # -----------------------------------------------------------------------------
 # 1. 数据计划 analysis_agent_plan_*（content 为 JSON 任务数组）
-# 统一模板版本：v1（多槽位）（见 app/analysis_agent/slots/specs.py）
+# 统一模板逻辑版本：analysis_agent_v1（见 ANALYSIS_AGENT_PLAN_TEMPLATE_VERSION / specs.py）
 # -----------------------------------------------------------------------------
 
-# 1.1 超温分析 · analysis_type=overheat_guidance（统一多槽位 v1）
+# 1.1 超温分析 · analysis_type=overheat_guidance（统一多槽位 analysis_agent_v1）
 analysis_agent_plan_overheat_guidance:
-  - version: v1
+  - version: analysis_agent_v1
     weight: 1.0
     description: 超温数据计划（多槽位 q1+q2a～q6d，对齐槽位流水线）
     content: |
@@ -1886,9 +1886,9 @@ analysis_agent_plan_overheat_guidance:
 
 # 1.2 检修策略 · analysis_type=maintenance_strategy（q0～q5，q0 为统一检修优先级主表）
 analysis_agent_plan_maintenance_strategy:
-  - version: v1
+  - version: analysis_agent_v1
     weight: 1.0
-    description: 检修策略数据计划 v1（q0 统一优先级 + q1～q5 佐证）
+    description: 检修策略数据计划 analysis_agent_v1（q0 统一优先级 + q1～q5 佐证）
     content: |
       [
         {
@@ -1937,9 +1937,9 @@ analysis_agent_plan_maintenance_strategy:
 
 # 1.3 四管健康解读 · analysis_type=four_tube_health_interpretation（q1～q6）
 analysis_agent_plan_four_tube_health_interpretation:
-  - version: v1
+  - version: analysis_agent_v1
     weight: 1.0
-    description: 四管健康解读数据计划 v1（评估 + 测厚缺陷 + 超温 + 泄爆 + 台账 + 检修窗口）
+    description: 四管健康解读数据计划 analysis_agent_v1（评估 + 测厚缺陷 + 超温 + 泄爆 + 台账 + 检修窗口）
     content: |
       [
         {
@@ -1988,9 +1988,9 @@ analysis_agent_plan_four_tube_health_interpretation:
 
 # 1.4 泄爆分析 · analysis_type=leakage_burst_analysis（q1～q6，履历主表 overhaul_leakage）
 analysis_agent_plan_leakage_burst_analysis:
-  - version: v1
+  - version: analysis_agent_v1
     weight: 1.0
-    description: 泄爆分析数据计划 v1（履历 + 测厚缺陷 + 超温 + 减薄 + 台账 + 启停）
+    description: 泄爆分析数据计划 analysis_agent_v1（履历 + 测厚缺陷 + 超温 + 减薄 + 台账 + 启停）
     content: |
       [
         {
@@ -2044,7 +2044,7 @@ analysis_agent_plan_leakage_burst_analysis:
 
 # 2.1 超温分析 · analysis_type=overheat_guidance
 analysis_agent_synthesis_overheat_guidance:
-  - version: v1
+  - version: analysis_agent_v1
     weight: 1.0
     description: 超温章节合成 system（短模板；章节细节在 report JSON）
     content: |
@@ -2061,7 +2061,7 @@ analysis_agent_synthesis_overheat_guidance:
 
 # 2.2 检修策略 · analysis_type=maintenance_strategy
 analysis_agent_synthesis_maintenance_strategy:
-  - version: v1
+  - version: analysis_agent_v1
     weight: 1.0
     description: 检修策略章节合成 system（短模板；章节细节在 report JSON）
     content: |
@@ -2078,7 +2078,7 @@ analysis_agent_synthesis_maintenance_strategy:
 
 # 2.3 四管健康解读 · analysis_type=four_tube_health_interpretation
 analysis_agent_synthesis_four_tube_health_interpretation:
-  - version: v1
+  - version: analysis_agent_v1
     weight: 1.0
     description: 四管健康解读章节合成 system（短模板；章节细节在 report JSON）
     content: |
@@ -2094,7 +2094,7 @@ analysis_agent_synthesis_four_tube_health_interpretation:
 
 # 2.4 泄爆分析 · analysis_type=leakage_burst_analysis
 analysis_agent_synthesis_leakage_burst_analysis:
-  - version: v1
+  - version: analysis_agent_v1
     weight: 1.0
     description: 泄爆分析章节合成 system（短模板；章节细节在 report JSON）
     content: |
@@ -2111,7 +2111,8 @@ analysis_agent_synthesis_leakage_burst_analysis:
 # -----------------------------------------------------------------------------
 # 3. 报告规格（在configs/analysis_agent_reports路径配置，此处仅字段说明）
 #
-# 【文件路径】configs/analysis_agent_reports/{analysis_type}.v1.json
+# 【文件路径】configs/analysis_agent_reports/{analysis_type}.analysis_agent.json（兜底）
+#             或 {analysis_type}.{ANALYSIS_AGENT_PLAN_TEMPLATE_VERSION}.json
 #   analysis_type：overheat_guidance | maintenance_strategy |
 #                   four_tube_health_interpretation | leakage_burst_analysis
 # 【加载】app/analysis_agent/report_spec.py → load_report_spec()
@@ -2172,10 +2173,10 @@ analysis_agent_synthesis_leakage_burst_analysis:
 #   - 每章 source_item_ids 中的 id 必须存在于 plan（report 内嵌或 plan_* 回退）
 #
 # 【示例文件】
-#   overheat_guidance.v1.json          9 章（1 static + 8 llm_section）
-#   maintenance_strategy.v1.json       3 章
-#   four_tube_health_interpretation.v1.json
-#   leakage_burst_analysis.v1.json
+#   overheat_guidance.analysis_agent.json          9 章（1 static + 8 llm_section）
+#   maintenance_strategy.analysis_agent.json       3 章
+#   four_tube_health_interpretation.analysis_agent.json
+#   leakage_burst_analysis.analysis_agent.json
 # -----------------------------------------------------------------------------
 
 # =============================================================================

@@ -142,7 +142,7 @@ async def run_analysis_with_nl2sql_stream(data: AnalysisNL2SQLRequest) -> Stream
 
     **响应**：`text/event-stream`（SSE），每条 `data: {json}\\n\\n`：
     - `event: meta`：含 `request_id`、`plan_id`、`analysis_type`、`orchestrator=sequential_stream` 等；
-    - 多条 `summary_delta`：增量文本（v2 按槽位顺序就绪即推，LLM 槽为 token 流，确定性槽为小段切块）；
+    - 多条 `summary_delta`：增量文本（v2 默认按槽位注册表顺序推送：后台并行、就绪暂存，轮到章节再流式输出；LLM 槽为 token 流，确定性槽为小段切块）；
     - `synthesis_loading`（v2）：槽位/ token 空闲超过配置阈值（默认 5s）时的加载心跳，`active` true/false；
     - `summary_complete`：流结束元数据（`chars`、`synthesis_ms`）；
     - `finished`：结束帧，`meta` 含 `rag_citations`（与智能客服同形，含 `original_content_url` 等；**不含** `nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples` 库表知识片段，避免与 acquire_data 内 NL2SQL RAG 重复展示）、`used_rag` / `used_plan_rag` / `used_business_rag`；

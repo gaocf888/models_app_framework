@@ -23,7 +23,7 @@ def test_registry_available(analysis_type: str) -> None:
 
 
 def test_plan_template_loads() -> None:
-    tasks = load_plan_tasks("overheat_guidance", version="v1")
+    tasks = load_plan_tasks("overheat_guidance")
     ids = {t["item_id"] for t in tasks}
     assert "q1" in ids and "q6d" in ids
     assert len(tasks) >= 15

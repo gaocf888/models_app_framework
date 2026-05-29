@@ -9,17 +9,27 @@ from pydantic import BaseModel, Field
 
 from app.analysis_agent.slots.builder import slots_from_spec_dict
 from app.analysis_agent.slots.kinds import AnalysisAgentSlot
-from app.analysis_agent.slots.specs import normalize_template_version
+from app.analysis_agent.slots.specs import REPORT_FALLBACK_SUFFIX, normalize_template_version
 
 _REPORTS_DIR = Path(__file__).resolve().parents[2] / "configs" / "analysis_agent_reports"
 
 
-def _load_report_json(*, analysis_type: str, version: str) -> dict | None:
-    """从 configs/analysis_agent_reports/{type}.{version}.json 加载报告规格。"""
+def _report_json_candidates(*, analysis_type: str, version: str) -> list[Path]:
+    """加载顺序：{type}.{逻辑版本}.json → {type}.analysis_agent.json（无版本兜底）。"""
+    candidates: list[Path] = []
     ver = normalize_template_version(version)
-    path = _REPORTS_DIR / f"{analysis_type}.{ver}.json"
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
+    versioned = _REPORTS_DIR / f"{analysis_type}.{ver}.json"
+    fallback = _REPORTS_DIR / f"{analysis_type}.{REPORT_FALLBACK_SUFFIX}.json"
+    for path in (versioned, fallback):
+        if path not in candidates:
+            candidates.append(path)
+    return candidates
+
+
+def _load_report_json(*, analysis_type: str, version: str) -> dict | None:
+    for path in _report_json_candidates(analysis_type=analysis_type, version=version):
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
     return None
 
 

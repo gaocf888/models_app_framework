@@ -5,6 +5,7 @@ import pytest
 from app.analysis_agent.context_loader import load_analysis_run_context
 from app.analysis_agent.report_spec import load_report_spec, report_spec_available
 from app.analysis_agent.slots.registry import clear_slot_cache, get_agent_slots
+from app.analysis_agent.slots.specs import get_default_agent_template_version
 
 
 @pytest.fixture(autouse=True)
@@ -24,11 +25,11 @@ def _clear_cache() -> None:
     ],
 )
 def test_report_spec_available(analysis_type: str) -> None:
-    assert report_spec_available(analysis_type, version="v1")
+    assert report_spec_available(analysis_type)
 
 
 def test_load_analysis_run_context_overheat() -> None:
-    ctx = load_analysis_run_context("overheat_guidance", version="v1")
+    ctx = load_analysis_run_context("overheat_guidance")
     assert ctx.from_report_spec
     assert len(ctx.slots) == 9
     assert all(s.kind in ("llm_section", "static_markdown") for s in ctx.slots)
@@ -43,6 +44,6 @@ def test_registry_no_legacy_overheat_slots() -> None:
 
 
 def test_load_report_spec_maintenance() -> None:
-    spec = load_report_spec("maintenance_strategy", version="v1")
+    spec = load_report_spec("maintenance_strategy")
     assert spec is not None
     assert len(spec.chapters) >= 2

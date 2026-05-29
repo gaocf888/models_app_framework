@@ -5,8 +5,8 @@ from typing import Any
 
 from app.analysis_agent.report_spec import load_report_spec
 from app.analysis_agent.slots.specs import (
-    DEFAULT_AGENT_TEMPLATE_VERSION,
     default_plan_version,
+    get_default_agent_template_version,
     narrative_scene_for_type,
     normalize_template_version,
 )
@@ -32,25 +32,37 @@ def resolve_plan_template(
     reg = prompts or PromptTemplateRegistry()
     ver = normalize_template_version(version or default_plan_version(analysis_type))
     scene = _plan_scene(analysis_type)
-    for v in (ver,):
+    default_ver = get_default_agent_template_version()
+    tried: list[str] = []
+    for v in (ver, default_ver, "v1"):
+        if not v or v in tried:
+            continue
+        tried.append(v)
         tpl = reg.get_template(scene=scene, version=v)
         if tpl and (tpl.content or "").strip():
-            return scene, v, tpl.content
+            return scene, ver, tpl.content
     raise ValueError(f"missing_plan_template:{scene}:{ver}")
 
 
 def get_synthesis_template(
     analysis_type: str,
     *,
-    version: str = "v1",
+    version: str | None = None,
     prompts: PromptTemplateRegistry | None = None,
 ) -> tuple[Any | None, str]:
     """返回 (template, scene_used)。"""
     reg = prompts or PromptTemplateRegistry()
-    for scene in synthesis_scene_candidates(analysis_type):
-        tpl = reg.get_template(scene=scene, version=version)
-        if tpl and (tpl.content or "").strip():
-            return tpl, scene
+    ver = normalize_template_version(version or default_plan_version(analysis_type))
+    default_ver = get_default_agent_template_version()
+    tried: list[str] = []
+    for v in (ver, default_ver, "v1"):
+        if not v or v in tried:
+            continue
+        tried.append(v)
+        for scene in synthesis_scene_candidates(analysis_type):
+            tpl = reg.get_template(scene=scene, version=v)
+            if tpl and (tpl.content or "").strip():
+                return tpl, scene
     return None, narrative_scene_for_type(analysis_type)
 
 

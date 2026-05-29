@@ -12,7 +12,7 @@ from app.analysis_agent.nl2sql_executor import (
     run_nl2sql_for_plan_item,
     task_status_from_rows,
 )
-from app.analysis_agent.plans.loader import plan_tasks_for_slot
+from app.analysis_agent.plans.loader import effective_plan_version, plan_tasks_for_slot
 from app.analysis_agent.renderers.charts_extra import chart_from_table
 from app.analysis_agent.renderers.slot_renderer import render_deterministic_slot
 from app.analysis_agent.slots.kinds import AnalysisAgentSlot, SlotOutput
@@ -294,11 +294,11 @@ class SlotOrchestrator:
             return events
 
         analysis_type = str(state.get("analysis_type") or "overheat_guidance")
-        plan_version = str(
-            (state.get("trace") or {}).get("plan_template_version")
-            or (options.get("plan_template_version"))
-            or "v1"
-        )
+        merged_opts = dict(options)
+        trace_ptv = (state.get("trace") or {}).get("plan_template_version")
+        if trace_ptv:
+            merged_opts["plan_template_version"] = trace_ptv
+        plan_version = effective_plan_version(analysis_type, merged_opts)
         user_query = str(state.get("query") or "")
 
         async def _one(task: dict[str, Any]) -> None:

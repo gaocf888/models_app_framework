@@ -500,7 +500,7 @@ class AnalysisConfig:
     synthesis_v2_segment_max_tokens: int = 4096
     synthesis_v2_table_max_rows: int = 80
     synthesis_v2_enable_structured_sse_events: bool = True
-    synthesis_v2_stream_live_first: bool = True
+    synthesis_v2_stream_live_first: bool = False
     synthesis_v2_stream_chunk_chars: int = 16
     synthesis_v2_idle_heartbeat_seconds: float = 5.0
     strict_by_default: bool = False
@@ -578,6 +578,7 @@ class AnalysisAgentConfig:
     trace_backend: str = "memory"
     trace_ttl_minutes: int = 1440
     trace_max_items: int = 5000
+    plan_template_version: str = "analysis_agent_v1"
 
 
 def _default_inspection_v2_shading_fills() -> list[str]:
@@ -1093,7 +1094,7 @@ def _load_from_env() -> AppConfig:
         ).lower()
         != "false",
         synthesis_v2_stream_live_first=os.getenv(
-            "ANALYSIS_SYNTHESIS_V2_STREAM_LIVE_FIRST", "true"
+            "ANALYSIS_SYNTHESIS_V2_STREAM_LIVE_FIRST", "false"
         ).lower()
         != "false",
         synthesis_v2_stream_chunk_chars=max(
@@ -1187,6 +1188,9 @@ def _load_from_env() -> AppConfig:
         trace_backend=(os.getenv("ANALYSIS_AGENT_TRACE_BACKEND", "memory") or "memory").strip().lower(),
         trace_ttl_minutes=max(10, int(os.getenv("ANALYSIS_AGENT_TRACE_TTL_MINUTES", "1440"))),
         trace_max_items=max(100, int(os.getenv("ANALYSIS_AGENT_TRACE_MAX_ITEMS", "5000"))),
+        plan_template_version=(
+            os.getenv("ANALYSIS_AGENT_PLAN_TEMPLATE_VERSION", "analysis_agent_v1") or "analysis_agent_v1"
+        ).strip(),
     )
     _v2_fills_env = os.getenv("INSPECT_EXTRACT_V2_SHADING_CANDIDATE_FILLS", "").strip()
     if _v2_fills_env:

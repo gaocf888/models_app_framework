@@ -1990,7 +1990,7 @@ class AnalysisGraphRunner:
     ) -> AsyncIterator[tuple[dict[str, Any], _SynthesisRunOutcome | None]]:
         engine = self._make_synthesis_v2_engine()
         if self._analysis_cfg.synthesis_v2_stream_live_first:
-            async for event, result in engine.iter_stream_events_live_first(
+            event_source = engine.iter_stream_events_live_first(
                 analysis_type=analysis_type,
                 query=query,
                 data_mode=data_mode,
@@ -1999,61 +1999,38 @@ class AnalysisGraphRunner:
                 planning_context=planning_context,
                 chart_mode=chart_mode,
                 task_status=task_status,
-            ):
-                if result is not None:
-                    configured = self._configured_synthesis_strategy(analysis_type)
-                    _, fallback = self._resolve_synthesis_strategy_effective(analysis_type)
-                    yield (
-                        {},
-                        _SynthesisRunOutcome(
-                            summary=result.summary,
-                            synthesis_version=result.synthesis_version,
-                            strategy_configured=configured,
-                            strategy_effective="v2",
-                            strategy_fallback_reason=fallback,
-                            v2_tables=result.tables,
-                            v2_charts=result.charts,
-                            v2_sections=result.sections,
-                            slot_trace=result.slot_trace,
-                        ),
-                    )
-                else:
-                    yield (event, None)
-            return
-        v2 = await engine.run_sync(
-            analysis_type=analysis_type,
-            query=query,
-            data_mode=data_mode,
-            gathered_data=gathered_data,
-            context_snippets=context_snippets,
-            planning_context=planning_context,
-            chart_mode=chart_mode,
-            task_status=task_status,
-        )
-        chunk_size = max(1, int(self._analysis_cfg.synthesis_v2_stream_chunk_chars))
-        for i in range(0, len(v2.summary), chunk_size):
-            yield ({"event": "summary_delta", "text": v2.summary[i : i + chunk_size]}, None)
-        if self._analysis_cfg.synthesis_v2_enable_structured_sse_events:
-            for tbl in v2.tables:
-                yield ({"event": "table_payload", "table": tbl}, None)
-            for ch in v2.charts:
-                yield ({"event": "chart_payload", "chart": ch}, None)
-        configured = self._configured_synthesis_strategy(analysis_type)
-        _, fallback = self._resolve_synthesis_strategy_effective(analysis_type)
-        yield (
-            {},
-            _SynthesisRunOutcome(
-                summary=v2.summary,
-                synthesis_version=v2.synthesis_version,
-                strategy_configured=configured,
-                strategy_effective="v2",
-                strategy_fallback_reason=fallback,
-                v2_tables=v2.tables,
-                v2_charts=v2.charts,
-                v2_sections=v2.sections,
-                slot_trace=v2.slot_trace,
-            ),
-        )
+            )
+        else:
+            event_source = engine.iter_stream_events(
+                analysis_type=analysis_type,
+                query=query,
+                data_mode=data_mode,
+                gathered_data=gathered_data,
+                context_snippets=context_snippets,
+                planning_context=planning_context,
+                chart_mode=chart_mode,
+                task_status=task_status,
+            )
+        async for event, result in event_source:
+            if result is not None:
+                configured = self._configured_synthesis_strategy(analysis_type)
+                _, fallback = self._resolve_synthesis_strategy_effective(analysis_type)
+                yield (
+                    {},
+                    _SynthesisRunOutcome(
+                        summary=result.summary,
+                        synthesis_version=result.synthesis_version,
+                        strategy_configured=configured,
+                        strategy_effective="v2",
+                        strategy_fallback_reason=fallback,
+                        v2_tables=result.tables,
+                        v2_charts=result.charts,
+                        v2_sections=result.sections,
+                        slot_trace=result.slot_trace,
+                    ),
+                )
+            elif event:
+                yield (event, None)
 
     def _build_summary_user_content(
         self,

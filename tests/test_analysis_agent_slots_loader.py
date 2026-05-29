@@ -7,6 +7,7 @@ import pytest
 from app.analysis_agent.slots.builder import slot_from_dict, slots_from_spec_dict
 from app.analysis_agent.slots.loader import load_agent_slots
 from app.analysis_agent.slots.registry import clear_slot_cache, get_agent_slots
+from app.analysis_agent.slots.specs import get_default_agent_template_version
 from app.analysis_agent.tools.agent_tools import _tool_emit_markdown_table
 from app.analysis_agent.tools.slot_context import reset_slot_tool_context, set_slot_tool_context
 
@@ -28,7 +29,7 @@ def test_slot_from_dict_llm_section() -> None:
 
 def test_load_maintenance_slots_from_json() -> None:
     clear_slot_cache()
-    slots = load_agent_slots("maintenance_strategy", version="v1")
+    slots = load_agent_slots("maintenance_strategy")
     assert len(slots) >= 2
     kinds = {s.kind for s in slots}
     assert "llm_section" in kinds
@@ -77,8 +78,8 @@ def test_slots_plan_item_validation() -> None:
             }
         )
     ]
-    ctx = load_analysis_run_context("maintenance_strategy", version="v1")
+    ctx = load_analysis_run_context("maintenance_strategy")
     with pytest.raises(ValueError, match="report_plan_mismatch"):
         from app.analysis_agent.context_loader import _validate_slots_plan_refs
 
-        _validate_slots_plan_refs("maintenance_strategy", "v1", slots, ctx.plan_tasks)
+        _validate_slots_plan_refs("maintenance_strategy", get_default_agent_template_version(), slots, ctx.plan_tasks)

@@ -21,7 +21,7 @@ class AnalysisAgentOptions(BaseModel):
     chart_mode: Literal["auto", "minimal", "off"] = Field("auto")
     plan_template_version: str = Field(
         "",
-        description="analysis_agent 模板版本；空则 v1（统一多槽位）。传入 v2 将自动视为 v1（兼容旧客户端）",
+        description="analysis_agent 模板逻辑版本；空则使用 ANALYSIS_AGENT_PLAN_TEMPLATE_VERSION（默认 analysis_agent_v1）。传入 v1/v2 将自动映射为 env 默认（与现网 /analysis 隔离）",
     )
     enable_human_in_the_loop: bool = Field(True)
 

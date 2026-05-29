@@ -694,6 +694,86 @@ class TestSynthesisV2OrderedStream(unittest.TestCase):
         self.assertIn("HG-1000", joined)
         self.assertNotIn("### 一、报告基础信息\n\n（待补充）", result.summary)
 
+    def test_ordered_stream_emits_early_slots_before_later_llm(self):
+        """iter_stream_events：按注册表顺序推送，第一章先于第三章 LLM。"""
+        mini_slots = [
+            SynthesisV2Slot(
+                id="s01",
+                kind="static_markdown",
+                title="",
+                static_body="### 一、报告基础信息\n\n第一章正文\n\n",
+            ),
+            SynthesisV2Slot(
+                id="s02",
+                kind="static_markdown",
+                title="",
+                static_body="### 二、超温事件概况\n\n",
+            ),
+            SynthesisV2Slot(
+                id="s04a",
+                kind="llm_narrative",
+                title="",
+                source_item_ids=("q3a",),
+                narrative_instruction="写第三章统计",
+            ),
+        ]
+        stream_calls = {"n": 0}
+
+        async def _stream_chat(**_kwargs):
+            stream_calls["n"] += 1
+            await asyncio.sleep(0.05)
+            yield "第三章LLM"
+
+        llm = MagicMock()
+        llm.stream_chat = _stream_chat
+        engine = AnalysisSynthesisV2Engine(
+            llm_client=llm,
+            prompts=_FakePromptRegistry(),
+            gathered_json_max_chars=8000,
+            segment_max_tokens=512,
+            max_parallel_llm=2,
+            table_max_rows=10,
+            synthesis_timeout_seconds=30.0,
+            stream_chunk_chars=8,
+            idle_heartbeat_seconds=0.03,
+            emit_structured_sse=False,
+        )
+
+        async def _run():
+            events: list[dict] = []
+            result = None
+            with patch(
+                "app.llm.graphs.analysis_synthesis_v2.get_synthesis_v2_slots",
+                return_value=mini_slots,
+            ):
+                async for ev, res in engine.iter_stream_events(
+                    analysis_type="overheat_guidance",
+                    query="测试",
+                    data_mode="nl2sql",
+                    gathered_data={"q3a": [{"a": 1}]},
+                    context_snippets=[],
+                    planning_context=None,
+                    chart_mode="off",
+                ):
+                    if res is not None:
+                        result = res
+                    elif ev:
+                        events.append(ev)
+            return events, result
+
+        events, result = asyncio.run(_run())
+        deltas = [e.get("text", "") for e in events if e.get("event") == "summary_delta"]
+        joined = "".join(deltas)
+        self.assertIn("一、报告基础信息", joined)
+        self.assertIn("二、超温事件概况", joined)
+        self.assertIn("第三章LLM", joined)
+        idx_ch1 = joined.find("一、报告基础信息")
+        idx_ch3 = joined.find("第三章LLM")
+        self.assertGreater(idx_ch3, idx_ch1)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIn("一、报告基础信息", result.summary)
+
     def test_deterministic_slot_chunked(self):
         engine = AnalysisSynthesisV2Engine(
             llm_client=MagicMock(),

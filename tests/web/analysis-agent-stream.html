@@ -2,120 +2,1022 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <title>综合分析智能体 SSE 联调</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>综合分析智能体 SSE 联调 · /analysis-agent/run-stream</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 1rem; max-width: 960px; }
-    textarea { width: 100%; min-height: 4rem; }
-    #log { white-space: pre-wrap; background: #111; color: #eee; padding: 1rem; height: 50vh; overflow: auto; font-size: 12px; }
-    .chart-box { margin: 1rem 0; padding: 0.5rem; border: 1px solid #ccc; }
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #10b981;
+      --accent-hover: #059669;
+      --warn: #fbbf24;
+      --answer: #f0f4f8;
+      --meta: #22c55e;
+      --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1000px; margin: 0 auto; padding: 1.25rem 1rem 2rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin-bottom: 1.25rem; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+    }
+    @media (min-width: 780px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+      .grid .full { grid-column: 1 / -1; }
+    }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      margin: 0;
+      padding: 0.75rem 1rem 1rem;
+    }
+    legend { padding: 0 0.35rem; color: var(--muted); font-size: 0.8rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"],
+    input[type="url"],
+    input[type="password"],
+    input[type="number"],
+    textarea,
+    select {
+      width: 100%;
+      margin-top: 0.2rem;
+      padding: 0.45rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    textarea { min-height: 4rem; resize: vertical; font-family: inherit; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; align-items: center; margin-top: 0.5rem; }
+    .row label { display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--text); font-size: 0.875rem; }
+    .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+    button {
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button.primary { background: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.secondary { background: var(--border); color: var(--text); }
+    button.warn { background: rgba(251, 191, 36, 0.2); color: var(--warn); border: 1px solid var(--warn); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .out {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      min-height: 220px;
+      padding: 1rem;
+    }
+    .out h2 { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.5rem; font-weight: 500; }
+    .report-stream {
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--answer);
+      font-size: 0.95rem;
+      min-height: 4rem;
+      max-height: 70vh;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #0d1117;
+      padding: 0.75rem;
+    }
+    .report-stream.rendered-md { white-space: normal; }
+    .report-stream.rendered-md table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 0.85rem;
+      margin: 0.5rem 0;
+    }
+    .report-stream.rendered-md th,
+    .report-stream.rendered-md td {
+      border: 1px solid var(--border);
+      padding: 0.35rem 0.5rem;
+    }
+    #status { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
+    #slotLoading {
+      display: none;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+      padding: 0.45rem 0.65rem;
+      border-radius: 6px;
+      border: 1px dashed var(--warn);
+      background: rgba(251, 191, 36, 0.08);
+      font-size: 0.8rem;
+      color: var(--warn);
+    }
+    #slotLoading.visible { display: flex; }
+    #slotLoading .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--warn);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #meta, #eventLog, #nl2sqlLog {
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.75rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #meta { color: var(--meta); }
+    #eventLog, #nl2sqlLog {
+      color: var(--muted);
+      max-height: 140px;
+      overflow: auto;
+      font-family: ui-monospace, Consolas, monospace;
+    }
+    .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
+    code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    .hint { font-size: 0.75rem; color: var(--muted); margin-top: 0.35rem; }
+    .type-desc {
+      margin-top: 0.5rem;
+      padding: 0.5rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .type-pills { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.5rem; }
+    .type-pills button { padding: 0.25rem 0.55rem; font-size: 0.72rem; font-weight: 500; }
+    .env-banner {
+      margin-bottom: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--accent);
+      background: rgba(16, 185, 129, 0.08);
+      font-size: 0.8rem;
+      color: var(--answer);
+    }
+    .env-banner a { color: var(--accent); }
+    #hitlPanel {
+      display: none;
+      margin: 1rem 0;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--warn);
+      background: rgba(251, 191, 36, 0.08);
+    }
+    #hitlPanel.visible { display: block; }
+    #hitlPanel.resuming { opacity: 0.75; pointer-events: none; }
+    #hitlPanel h3 { margin: 0 0 0.5rem; font-size: 0.9rem; color: var(--warn); }
+    #hitlMeta { font-size: 0.75rem; color: var(--muted); margin-bottom: 0.5rem; font-family: ui-monospace, Consolas, monospace; }
+    #hitlPrompt { font-size: 0.85rem; color: var(--answer); margin-bottom: 0.5rem; white-space: pre-wrap; }
+    #hitlActions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+    #structuredBlocks .struct-item {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.5rem;
+      margin-bottom: 0.5rem;
+      background: #0d1117;
+      font-size: 0.72rem;
+      font-family: ui-monospace, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #chartPanels {
+      margin-top: 0.5rem;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.75rem;
+    }
+    @media (min-width: 900px) {
+      #chartPanels { grid-template-columns: 1fr 1fr; }
+    }
+    .chart-box {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #0d1117;
+      padding: 0.5rem;
+      min-height: 260px;
+    }
+    .chart-box h3 {
+      margin: 0 0 0.35rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--muted);
+    }
+    .chart-canvas { width: 100%; height: 220px; }
+    .table-wrap {
+      overflow: auto;
+      margin: 0.5rem 0;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #0d1117;
+    }
+    .table-wrap table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 0.8rem;
+    }
+    .table-wrap th, .table-wrap td {
+      border: 1px solid var(--border);
+      padding: 0.35rem 0.5rem;
+      text-align: left;
+    }
+    .table-wrap caption {
+      caption-side: top;
+      padding: 0.35rem 0.5rem;
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
 </head>
 <body>
-  <h1>analysis_agent · run-stream</h1>
-  <p>POST <code>/analysis-agent/run-stream</code> · 人机恢复 <code>POST /analysis-agent/resume-stream</code></p>
-  <p>Header: <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code></p>
-  <div id="resume" style="display:none;margin:1rem 0;padding:0.5rem;border:1px solid #fa0;">
-    <strong>等待用户输入</strong>
-    <p id="resumePrompt"></p>
-    <label>resume_token <input id="resumeToken" size="50" readonly /></label><br/>
-    <button id="btnSkip">skip_slot</button>
-    <button id="btnRetry">retry</button>
-    <button id="btnAbort">abort</button>
+  <div class="wrap">
+    <h1>综合分析智能体 <span style="color:var(--accent);font-size:0.85em">analysis_agent</span></h1>
+    <div class="env-banner">
+      <strong>接口</strong>：
+      <code>POST /analysis-agent/run-stream</code> · 人机恢复 <code>POST /analysis-agent/resume-stream</code> ·
+      trace <code>GET /analysis-agent/trace/{request_id}</code>。
+      报告规格见 <code>configs/analysis_agent_reports/{type}.analysis_agent.json</code>（兜底）或
+      <code>{type}.{plan_template_version}.json</code>（默认 <code>analysis_agent_v1</code>，env
+      <code>ANALYSIS_AGENT_PLAN_TEMPLATE_VERSION</code>）；
+      HITL 需服务端 <code>ANALYSIS_AGENT_CHECKPOINT_BACKEND</code> ≠ none，且勾选 <code>enable_human_in_the_loop</code>。
+      收到 <code>analysis_agent_user_input_required</code> 后，在本页 HITL 区选择动作并调用 <code>resume-stream</code> 续流。
+      现网综合分析对照：<a href="analysis-nl2sql-stream-v2.html">analysis-nl2sql-stream-v2.html</a>
+    </div>
+    <p class="sub">
+      SSE 事件前缀 <code>analysis_agent_*</code>：按章节推送
+      <code>slot_start</code> → <code>nl2sql_done</code> → <code>summary_delta</code> →
+      <code>table_payload</code> / <code>chart_payload</code> → <code>slot_complete</code>，末帧
+      <code>report_complete</code> + <code>finished</code>。
+      需 CORS 与 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。
+    </p>
+
+    <div class="grid">
+      <fieldset>
+        <legend>连接与服务密钥</legend>
+        <label>API 根地址（不含路径尾斜杠）</label>
+        <input type="url" id="baseUrl" value="http://127.0.0.1:8083" autocomplete="off" />
+        <label>Service API Key</label>
+        <input type="password" id="apiKey" placeholder="留空或粘贴密钥" autocomplete="off" />
+      </fieldset>
+
+      <fieldset>
+        <legend>会话</legend>
+        <label>user_id</label>
+        <input type="text" id="userId" value="u_web_analysis_agent" autocomplete="off" />
+        <label>session_id</label>
+        <input type="text" id="sessionId" value="u_web_analysis_agent_s_001" autocomplete="off" />
+      </fieldset>
+
+      <fieldset class="full">
+        <legend>分析请求（AnalysisAgentRunRequest）</legend>
+        <label>analysis_type</label>
+        <select id="analysisType">
+          <option value="overheat_guidance" selected>overheat_guidance（超温分析）</option>
+          <option value="maintenance_strategy">maintenance_strategy（检修策略）</option>
+          <option value="four_tube_health_interpretation">four_tube_health_interpretation（四管健康）</option>
+          <option value="leakage_burst_analysis">leakage_burst_analysis（泄爆分析）</option>
+        </select>
+        <div id="typeDesc" class="type-desc"></div>
+        <div class="type-pills" id="typePills"></div>
+        <label>query（分析需求）</label>
+        <textarea id="query" rows="4" placeholder="选择专项后点击「填入示例 query」"></textarea>
+        <p class="hint">
+          <button type="button" class="secondary" id="btnFillDemo" style="padding:0.2rem 0.5rem;font-size:0.75rem;">填入当前专项示例 query</button>
+        </p>
+      </fieldset>
+
+      <fieldset>
+        <legend>options</legend>
+        <div class="row">
+          <label><input type="checkbox" id="enableRag" checked /> enable_rag</label>
+          <label><input type="checkbox" id="enableHitl" checked /> enable_human_in_the_loop</label>
+          <label><input type="checkbox" id="strict" /> strict</label>
+          <label><input type="checkbox" id="liteStream" checked /> 轻量流式（推荐）</label>
+          <label><input type="checkbox" id="debugSse" /> 调试 SSE 日志</label>
+        </div>
+        <label>plan_template_version（空则 analysis_agent_v1）</label>
+        <input type="text" id="planVersion" placeholder="analysis_agent_v1" autocomplete="off" />
+        <label>chart_mode</label>
+        <select id="chartMode">
+          <option value="auto" selected>auto</option>
+          <option value="minimal">minimal</option>
+          <option value="off">off</option>
+        </select>
+        <label>max_rows_per_query</label>
+        <input type="number" id="maxRows" placeholder="2000" min="50" max="20000" />
+      </fieldset>
+    </div>
+
+    <div id="hitlPanel" aria-live="polite">
+      <h3>⏸ 等待用户确认（HITL · 人机恢复）</h3>
+      <div id="hitlMeta"></div>
+      <div id="hitlPrompt"></div>
+      <label>resume_token（续流凭证，勿刷新页面丢失）</label>
+      <input type="text" id="resumeToken" readonly />
+      <label>payload（可选 JSON，如 custom / widen_time_range 扩展参数）</label>
+      <textarea id="hitlPayload" rows="2" placeholder='{} 或 {"reason":"用户确认跳过"}'></textarea>
+      <p class="hint">点击下方按钮 → <code>POST /analysis-agent/resume-stream</code>，从 LangGraph interrupt 断点继续推送后续章节。</p>
+      <div id="hitlActions"></div>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="primary" id="btnSend">开始流式分析</button>
+      <button type="button" class="secondary" id="btnStop" disabled>中断请求</button>
+      <button type="button" class="secondary" id="btnClear">清空输出</button>
+    </div>
+
+    <div class="out" style="margin-top: 1rem;">
+      <div id="status">就绪</div>
+      <div id="slotLoading">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="slotLoadingText">章节处理中…</span>
+      </div>
+      <h2>summary（analysis_agent_summary_delta 流式拼接）</h2>
+      <div id="answer" class="report-stream"></div>
+      <h2 style="margin-top:1rem;">图表（analysis_agent_chart_payload · ECharts）</h2>
+      <div id="chartPanels"></div>
+      <h2 style="margin-top:1rem;">表格 / 结构化块</h2>
+      <div id="structuredBlocks">（尚未开始）</div>
+      <h2 style="margin-top:1rem;">NL2SQL 取数 trace</h2>
+      <div id="nl2sqlLog">（尚未开始）</div>
+      <h2 style="margin-top:1rem;">meta / finished</h2>
+      <div id="meta">（尚未开始）</div>
+      <h2 style="margin-top:1rem;">事件 trace（调试用）</h2>
+      <div id="eventLog"></div>
+      <div id="err" class="err" hidden></div>
+    </div>
   </div>
-  <label>API Base <input id="base" size="60" value="http://127.0.0.1:8000" /></label><br/>
-  <label>API Key <input id="key" size="60" /></label><br/>
-  <label>Query <textarea id="query">请分析近期超温情况</textarea></label><br/>
-  <button id="run">开始流式分析</button>
-  <div id="charts"></div>
-  <pre id="log"></pre>
+
   <script>
-    const log = (msg) => {
-      const el = document.getElementById('log');
-      el.textContent += msg + '\n';
-      el.scrollTop = el.scrollHeight;
-    };
-    document.getElementById('run').onclick = async () => {
-      document.getElementById('log').textContent = '';
-      document.getElementById('charts').innerHTML = '';
-      const base = document.getElementById('base').value.replace(/\/$/, '');
-      const key = document.getElementById('key').value;
-      const body = {
-        user_id: 'web_test',
-        session_id: 'web_sess_' + Date.now(),
-        analysis_type: 'overheat_guidance',
-        query: document.getElementById('query').value,
-        options: { enable_rag: true, plan_template_version: 'v2' }
-      };
-      const res = await fetch(base + '/analysis-agent/run-stream', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + key
-        },
-        body: JSON.stringify(body)
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  const TYPE_CONFIG = {
+    overheat_guidance: {
+      label: "超温分析",
+      desc: "9 章 llm_section；report：overheat_guidance.analysis_agent.json；plan：analysis_agent_plan_overheat_guidance（analysis_agent_v1）。",
+      demo: "请对 1 号炉水冷壁相关测点最近 7 天的超温情况进行综合分析：是否存在持续超温、主要区域、可行的运行调整建议。",
+    },
+    maintenance_strategy: {
+      label: "检修策略",
+      desc: "2 章 llm_section + emit 工具；plan q0～q5（统一检修优先级主表）。",
+      demo: "针对 2 号炉计划小修窗口，请给出水冷壁与高温过热器的检修优先级清单（必检/建议检/可暂缓），并说明关键依据。",
+    },
+    four_tube_health_interpretation: {
+      label: "四管健康解读",
+      desc: "运行简报 + 检修建议书 + 风险限制；plan q1～q6。",
+      demo: "生成简洁版周简报：解读本期 2 号炉四管整体健康指数与风险等级，重点说明高温过热器 B 侧高风险管段原因及本周巡检要点。",
+    },
+    leakage_burst_analysis: {
+      label: "泄爆分析",
+      desc: "结论摘要 → 履历 → 依据原因 → 处置建议；plan q1～q6。",
+      demo: "分析 2 号炉水冷壁近一年泄爆与泄漏事件原因，归纳高发区域，并给出运行防控与扩检建议。",
+    },
+  };
+
+  const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
+  const headers = () => {
+    const h = { "Content-Type": "application/json", Accept: "text/event-stream" };
+    const k = $("apiKey").value.trim();
+    if (k) h["Authorization"] = "Bearer " + k;
+    return h;
+  };
+
+  function currentType() {
+    return $("analysisType").value;
+  }
+
+  function renderTypeUi() {
+    const t = currentType();
+    const cfg = TYPE_CONFIG[t] || { label: t, desc: "", demo: "" };
+    $("typeDesc").textContent = cfg.desc || "（无专项说明）";
+    const pills = $("typePills");
+    pills.replaceChildren();
+    Object.keys(TYPE_CONFIG).forEach((key) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "secondary";
+      btn.textContent = TYPE_CONFIG[key].label;
+      if (key === t) btn.style.outline = "1px solid var(--accent)";
+      btn.addEventListener("click", () => {
+        $("analysisType").value = key;
+        renderTypeUi();
       });
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const parts = buf.split('\n\n');
-        buf = parts.pop() || '';
-        for (const p of parts) {
-          if (!p.startsWith('data: ')) continue;
-          const ev = JSON.parse(p.slice(6));
-          if (ev.event === 'analysis_agent_summary_delta') {
-            log(ev.text || '');
-          } else if (ev.event === 'analysis_agent_chart_payload') {
-            const div = document.createElement('div');
-            div.className = 'chart-box';
-            div.textContent = JSON.stringify(ev.chart, null, 2);
-            document.getElementById('charts').appendChild(div);
-            log('[chart] ' + (ev.chart && ev.chart.title));
-          } else if (ev.event === 'analysis_agent_user_input_required') {
-            document.getElementById('resume').style.display = 'block';
-            document.getElementById('resumePrompt').textContent = ev.prompt || '';
-            document.getElementById('resumeToken').value = ev.resume_token || '';
-            window._lastResume = { token: ev.resume_token, user_id: body.user_id, session_id: body.session_id };
-          } else {
-            log('[' + ev.event + '] ' + JSON.stringify(ev).slice(0, 200));
-          }
-        }
-      }
+      pills.appendChild(btn);
+    });
+  }
+
+  $("analysisType").addEventListener("change", renderTypeUi);
+  renderTypeUi();
+
+  $("btnFillDemo").addEventListener("click", () => {
+    const cfg = TYPE_CONFIG[currentType()];
+    if (cfg && cfg.demo) $("query").value = cfg.demo;
+  });
+
+  function buildBody() {
+    const options = {
+      enable_rag: $("enableRag").checked,
+      strict: $("strict").checked,
+      enable_human_in_the_loop: $("enableHitl").checked,
+      chart_mode: $("chartMode").value,
     };
-    async function doResume(action) {
-      const r = window._lastResume;
-      if (!r) return;
-      const base = document.getElementById('base').value.replace(/\/$/, '');
-      const key = document.getElementById('key').value;
-      const res = await fetch(base + '/analysis-agent/resume-stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-        body: JSON.stringify({ resume_token: r.token, user_id: r.user_id, session_id: r.session_id, action, payload: {} })
-      });
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const parts = buf.split('\n\n');
-        buf = parts.pop() || '';
-        for (const p of parts) {
-          if (!p.startsWith('data: ')) continue;
-          const ev = JSON.parse(p.slice(6));
-          if (ev.event === 'analysis_agent_summary_delta') log(ev.text || '');
-          else log('[' + ev.event + '] ' + JSON.stringify(ev).slice(0, 120));
-        }
-      }
-      document.getElementById('resume').style.display = 'none';
+    const pv = $("planVersion").value.trim();
+    if (pv) options.plan_template_version = pv;
+    const mr = $("maxRows").value.trim();
+    if (mr !== "") {
+      const n = parseInt(mr, 10);
+      if (Number.isFinite(n)) options.max_rows_per_query = n;
     }
-    document.getElementById('btnSkip').onclick = () => doResume('skip_slot');
-    document.getElementById('btnRetry').onclick = () => doResume('retry');
-    document.getElementById('btnAbort').onclick = () => doResume('abort');
+    return {
+      user_id: $("userId").value.trim(),
+      session_id: $("sessionId").value.trim(),
+      analysis_type: currentType(),
+      query: $("query").value.trim(),
+      options,
+    };
+  }
+
+  let abortCtrl = null;
+  let lastRunContext = null;
+  let resumeContext = null;
+  const chartInstances = new Map();
+  const structuredStore = { tables: [], charts: [] };
+
+  const StreamReportRenderer = {
+    buffer: "",
+    flushScheduled: false,
+    lastStatusAt: 0,
+    lite: true,
+
+    reset() {
+      this.buffer = "";
+      this.flushScheduled = false;
+      structuredStore.tables = [];
+      structuredStore.charts = [];
+      const el = $("answer");
+      el.textContent = "";
+      el.classList.remove("rendered-md");
+    },
+
+    appendDelta(text) {
+      if (!text) return;
+      this.buffer += text;
+      this.scheduleFlush();
+    },
+
+    scheduleFlush() {
+      if (this.flushScheduled) return;
+      this.flushScheduled = true;
+      requestAnimationFrame(() => {
+        $("answer").textContent = this.buffer;
+        this.flushScheduled = false;
+        const now = Date.now();
+        if (now - this.lastStatusAt > 600) {
+          appendStatus("生成中… 已收 " + this.buffer.length + " 字");
+          this.lastStatusAt = now;
+        }
+      });
+    },
+
+    flushNow() {
+      $("answer").textContent = this.buffer;
+    },
+
+    renderMarkdownFinish() {
+      const el = $("answer");
+      const md = this.buffer;
+      if (!md) return;
+      el.classList.add("rendered-md");
+      el.innerHTML = simpleMarkdownToHtml(md);
+    },
+  };
+
+  function simpleMarkdownToHtml(md) {
+    const esc = (s) =>
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const lines = md.split("\n");
+    const out = [];
+    let inTable = false;
+    for (const line of lines) {
+      const t = line.trim();
+      if (t.startsWith("### ")) {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        out.push("<h3>" + esc(t.slice(4)) + "</h3>");
+      } else if (t.startsWith("#### ")) {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        out.push("<h4>" + esc(t.slice(5)) + "</h4>");
+      } else if (t.startsWith("|") && t.includes("|")) {
+        const cells = t.split("|").slice(1, -1).map((c) => c.trim());
+        if (/^[-:\s|]+$/.test(t.replace(/\|/g, ""))) continue;
+        if (!inTable) { out.push("<table>"); inTable = true; }
+        const tag = out.length && out[out.length - 1] === "<table>" ? "th" : "td";
+        out.push("<tr>" + cells.map((c) => "<" + tag + ">" + esc(c) + "</" + tag + ">").join("") + "</tr>");
+      } else {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        if (t) out.push("<p>" + esc(t) + "</p>");
+      }
+    }
+    if (inTable) out.push("</table>");
+    return out.join("\n");
+  }
+
+  function appendStatus(t) {
+    $("status").textContent = t;
+  }
+
+  function showErr(msg) {
+    const el = $("err");
+    if (!msg) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.hidden = false;
+    el.textContent = msg;
+  }
+
+  function logEvent(line) {
+    if (!$("debugSse").checked) return;
+    const el = $("eventLog");
+    const ts = new Date().toISOString().slice(11, 23);
+    el.textContent += "[" + ts + "] " + line + "\n";
+    const parts = el.textContent.split("\n");
+    if (parts.length > 120) el.textContent = parts.slice(-120).join("\n");
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function logNl2sql(line) {
+    const el = $("nl2sqlLog");
+    if (el.textContent.startsWith("（尚未")) el.textContent = "";
+    el.textContent += line + "\n";
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function setBusy(b) {
+    $("btnSend").disabled = b;
+    $("btnStop").disabled = !b;
+  }
+
+  function setSlotLoading(active, text) {
+    const el = $("slotLoading");
+    if (!active) {
+      el.classList.remove("visible");
+      return;
+    }
+    $("slotLoadingText").textContent = text || "章节处理中…";
+    el.classList.add("visible");
+  }
+
+  const ACTION_LABELS = {
+    retry: "retry · 重试取数",
+    skip_slot: "skip_slot · 跳过本章",
+    abort: "abort · 终止报告",
+    widen_time_range: "widen_time_range · 放宽时间窗",
+    custom: "custom · 自定义",
+  };
+
+  function renderHitlActions(actions) {
+    const container = $("hitlActions");
+    container.replaceChildren();
+    const list =
+      Array.isArray(actions) && actions.length
+        ? actions
+        : ["retry", "widen_time_range", "skip_slot", "abort"];
+    list.forEach((action) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = action === "abort" ? "warn" : "secondary";
+      btn.textContent = ACTION_LABELS[action] || action;
+      btn.addEventListener("click", () => doResume(action));
+      container.appendChild(btn);
+    });
+  }
+
+  function setHitlResuming(active) {
+    $("hitlPanel").classList.toggle("resuming", active);
+    $("hitlActions").querySelectorAll("button").forEach((b) => {
+      b.disabled = active;
+    });
+  }
+
+  function showHitl(ev) {
+    resumeContext = {
+      resume_token: ev.resume_token,
+      request_id: ev.request_id,
+      slot_id: ev.slot_id,
+      user_id: (lastRunContext && lastRunContext.user_id) || $("userId").value.trim(),
+      session_id: (lastRunContext && lastRunContext.session_id) || $("sessionId").value.trim(),
+      suggested_actions: ev.suggested_actions || [],
+      prompt: ev.prompt || "",
+    };
+    $("hitlMeta").textContent =
+      "request_id: " + (ev.request_id || "—") +
+      "  ·  slot_id: " + (ev.slot_id || "—");
+    $("hitlPrompt").textContent = ev.prompt || "（无提示文案）";
+    $("resumeToken").value = ev.resume_token || "";
+    $("hitlPayload").value = "";
+    renderHitlActions(ev.suggested_actions);
+    $("hitlPanel").classList.add("visible");
+    setHitlResuming(false);
+    $("hitlPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    appendStatus("等待 HITL，请选择动作后 resume-stream");
+  }
+
+  function hideHitl() {
+    $("hitlPanel").classList.remove("visible", "resuming");
+    resumeContext = null;
+  }
+
+  function clearCharts() {
+    chartInstances.forEach((inst) => inst.dispose());
+    chartInstances.clear();
+    $("chartPanels").replaceChildren();
+  }
+
+  function renderTableDom(table, slotId) {
+    if (!table || !Array.isArray(table.columns)) return;
+    const wrap = document.createElement("div");
+    wrap.className = "table-wrap";
+    const tbl = document.createElement("table");
+    if (table.title) {
+      const cap = document.createElement("caption");
+      cap.textContent = (slotId ? slotId + " · " : "") + table.title;
+      tbl.appendChild(cap);
+    }
+    const thead = document.createElement("thead");
+    const hr = document.createElement("tr");
+    table.columns.forEach((c) => {
+      const th = document.createElement("th");
+      th.textContent = c;
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    tbl.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    (table.rows || []).slice(0, 50).forEach((row) => {
+      const tr = document.createElement("tr");
+      table.columns.forEach((c) => {
+        const td = document.createElement("td");
+        td.textContent = row[c] != null ? String(row[c]) : "";
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody);
+    wrap.appendChild(tbl);
+    $("structuredBlocks").appendChild(wrap);
+  }
+
+  function renderEchartsChart(chart) {
+    if (!chart || typeof echarts === "undefined") return;
+    const cid = chart.id || "chart_" + Math.random().toString(36).slice(2, 9);
+    const panels = $("chartPanels");
+    const box = document.createElement("div");
+    box.className = "chart-box";
+    const title = document.createElement("h3");
+    title.textContent = chart.title || cid;
+    box.appendChild(title);
+    const canvas = document.createElement("div");
+    canvas.className = "chart-canvas";
+    canvas.id = "echart_" + cid;
+    box.appendChild(canvas);
+    panels.appendChild(box);
+    const inst = echarts.init(canvas, null, { renderer: "canvas" });
+    chartInstances.set(cid, inst);
+
+    const spec = chart.spec || {};
+    const data = Array.isArray(spec.data) ? spec.data : [];
+    const ct = (chart.chart_type || "").toLowerCase();
+
+    if (ct === "pie" && data.length) {
+      const nameField = spec.colorField || "category";
+      const valField = spec.angleField || "value";
+      inst.setOption({
+        backgroundColor: "transparent",
+        textStyle: { color: "#e6edf3" },
+        tooltip: { trigger: "item" },
+        series: [{
+          type: "pie",
+          radius: "60%",
+          data: data.map((d) => ({ name: String(d[nameField] ?? ""), value: Number(d[valField]) || 0 })),
+        }],
+      });
+    } else if (ct === "bar" && data.length) {
+      const xField = spec.xField || "zone";
+      const yField = spec.yField || "count";
+      inst.setOption({
+        backgroundColor: "transparent",
+        textStyle: { color: "#e6edf3" },
+        grid: { left: 48, right: 16, top: 24, bottom: 36 },
+        tooltip: { trigger: "axis" },
+        xAxis: { type: "category", data: data.map((d) => d[xField]), axisLabel: { color: "#8b9cb3", rotate: 20 } },
+        yAxis: { type: "value", axisLabel: { color: "#8b9cb3" }, splitLine: { lineStyle: { color: "#2d3a4d" } } },
+        series: [{ type: "bar", data: data.map((d) => d[yField]), itemStyle: { color: "#10b981" } }],
+      });
+    } else if (data.length) {
+      const xField = spec.x_field || spec.xField || "time";
+      const yField = spec.y_field || spec.yField || "value";
+      inst.setOption({
+        backgroundColor: "transparent",
+        textStyle: { color: "#e6edf3" },
+        grid: { left: 48, right: 16, top: 24, bottom: 36 },
+        tooltip: { trigger: "axis" },
+        xAxis: { type: "category", data: data.map((d) => d[xField]), axisLabel: { color: "#8b9cb3", rotate: 30 } },
+        yAxis: { type: "value", axisLabel: { color: "#8b9cb3" }, splitLine: { lineStyle: { color: "#2d3a4d" } } },
+        series: [{
+          type: ct === "bar" ? "bar" : "line",
+          data: data.map((d) => d[yField] ?? d.temperature),
+          smooth: true,
+          showSymbol: false,
+        }],
+      });
+    }
+    window.addEventListener("resize", () => inst.resize(), { passive: true });
+  }
+
+  function appendStructJson(kind, ev) {
+    if ($("structuredBlocks").textContent.startsWith("（尚未")) {
+      $("structuredBlocks").replaceChildren();
+    }
+    const item = document.createElement("div");
+    item.className = "struct-item";
+    const body = ev.table != null ? ev.table : ev.chart;
+    item.textContent =
+      "[" + new Date().toISOString().slice(11, 23) + "] " + kind +
+      (ev.slot_id ? " slot=" + ev.slot_id : "") + "\n" +
+      JSON.stringify(body, null, 2).slice(0, 3000);
+    $("structuredBlocks").appendChild(item);
+  }
+
+  async function readSseStream(response, onEvent) {
+    const reader = response.body.getReader();
+    const dec = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const raw = buffer.slice(0, idx).trimEnd();
+        buffer = buffer.slice(idx + 2);
+        const dataLines = raw.split("\n").filter((l) => l.startsWith("data:"));
+        if (!dataLines.length) continue;
+        const payload = dataLines.map((l) => l.slice(5).trimStart()).join("\n");
+        try {
+          onEvent(JSON.parse(payload));
+        } catch (e) {
+          onEvent({ event: "parse_error", error: String(e), raw: payload });
+        }
+      }
+    }
+  }
+
+  function handleStreamEvent(ev) {
+    const kind = ev.event;
+    logEvent(kind || "?");
+
+    if (kind === "parse_error") {
+      showErr("SSE JSON 解析失败: " + ev.error);
+      return;
+    }
+    if (kind === "analysis_agent_error") {
+      showErr(ev.message || JSON.stringify(ev));
+      appendStatus("错误");
+      setSlotLoading(false);
+      return;
+    }
+    if (kind === "analysis_agent_meta") {
+      $("meta").textContent =
+        "request_id: " + (ev.request_id || "") + "\n" +
+        "analysis_type: " + (ev.analysis_type || "") + "\n" +
+        "slots_total: " + (ev.slots_total != null ? ev.slots_total : "—") + "\n" +
+        "plan_template_version: " + (ev.plan_template_version || "—") + "\n" +
+        JSON.stringify(ev, null, 2).slice(0, 2000);
+      appendStatus("已连接 · " + (ev.slots_total || "?") + " 章");
+      return;
+    }
+    if (kind === "analysis_agent_slot_start") {
+      setSlotLoading(true, "章节 " + (ev.slot_id || "") + " · " + (ev.title || ""));
+      appendStatus("章节开始: " + (ev.title || ev.slot_id));
+      return;
+    }
+    if (kind === "analysis_agent_nl2sql_done") {
+      const cached = ev.cached ? " [cached]" : "";
+      logNl2sql(
+        (ev.item_id || "?") + cached +
+        " rows=" + (ev.row_count != null ? ev.row_count : "—") +
+        " ms=" + (ev.latency_ms != null ? ev.latency_ms : "—")
+      );
+      return;
+    }
+    if (kind === "analysis_agent_summary_delta") {
+      setSlotLoading(false);
+      StreamReportRenderer.appendDelta(ev.text || "");
+      return;
+    }
+    if (kind === "analysis_agent_table_payload") {
+      if (ev.table) structuredStore.tables.push(ev.table);
+      if (StreamReportRenderer.lite) {
+        appendStructJson("table_payload", ev);
+      } else {
+        renderTableDom(ev.table, ev.slot_id);
+      }
+      return;
+    }
+    if (kind === "analysis_agent_chart_payload") {
+      if (ev.chart) structuredStore.charts.push(ev.chart);
+      if (StreamReportRenderer.lite) {
+        appendStructJson("chart_payload", ev);
+      }
+      renderEchartsChart(ev.chart);
+      return;
+    }
+    if (kind === "analysis_agent_slot_complete") {
+      setSlotLoading(false);
+      appendStatus("章节完成: " + (ev.slot_id || ""));
+      return;
+    }
+    if (kind === "analysis_agent_user_input_required") {
+      setBusy(false);
+      setSlotLoading(false);
+      showHitl(ev);
+      return;
+    }
+    if (kind === "analysis_agent_human_resumed") {
+      hideHitl();
+      appendStatus("HITL 已恢复: " + (ev.action || ""));
+      return;
+    }
+    if (kind === "analysis_agent_report_complete") {
+      StreamReportRenderer.flushNow();
+      const sr = ev.structured_report || {};
+      $("meta").textContent =
+        ($("meta").textContent || "") + "\n\n--- report_complete ---\n" +
+        "summary_len: " + ((ev.summary || "").length) + "\n" +
+        "sections: " + ((sr.sections || []).length) + "\n" +
+        "tables: " + ((sr.tables || []).length) + "\n" +
+        "charts: " + ((sr.charts || []).length);
+      appendStatus("report_complete");
+      return;
+    }
+    if (kind === "analysis_agent_finished") {
+      StreamReportRenderer.flushNow();
+      StreamReportRenderer.renderMarkdownFinish();
+      hideHitl();
+      const result = ev.result || {};
+      const sr = result.structured_report || {};
+      (sr.charts || structuredStore.charts).forEach((ch) => renderEchartsChart(ch));
+      $("meta").textContent =
+        ($("meta").textContent || "") + "\n\n--- finished ---\n" +
+        "request_id: " + (ev.request_id || result.request_id || "") + "\n" +
+        JSON.stringify(result.evidence || {}, null, 2).slice(0, 4000);
+      appendStatus("finished · request_id=" + (ev.request_id || result.request_id || ""));
+      setSlotLoading(false);
+      return;
+    }
+  }
+
+  async function runStream(url, body, opts) {
+    const isResume = opts && opts.isResume;
+    const hitlBackup = isResume && resumeContext ? { ...resumeContext } : null;
+    abortCtrl = new AbortController();
+    setBusy(true);
+    showErr("");
+    if (isResume) {
+      setHitlResuming(true);
+      appendStatus("resume-stream 续流中…");
+    } else {
+      hideHitl();
+    }
+
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(body),
+        signal: abortCtrl.signal,
+        credentials: "omit",
+      });
+      if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error("HTTP " + resp.status + "\n" + t.slice(0, 4000));
+      }
+      await readSseStream(resp, handleStreamEvent);
+    } catch (e) {
+      if (e.name === "AbortError") {
+        appendStatus("已中断");
+      } else {
+        showErr(String(e.message || e));
+        appendStatus(isResume ? "resume 失败" : "失败");
+        if (isResume && hitlBackup) {
+          resumeContext = hitlBackup;
+          showHitl({
+            request_id: hitlBackup.request_id,
+            resume_token: hitlBackup.resume_token,
+            slot_id: hitlBackup.slot_id,
+            prompt: hitlBackup.prompt,
+            suggested_actions: hitlBackup.suggested_actions,
+          });
+        }
+      }
+    } finally {
+      setBusy(false);
+      abortCtrl = null;
+      setSlotLoading(false);
+      if (isResume) setHitlResuming(false);
+    }
+  }
+
+  $("btnClear").addEventListener("click", () => {
+    StreamReportRenderer.reset();
+    clearCharts();
+    hideHitl();
+    $("structuredBlocks").textContent = "（尚未开始）";
+    $("nl2sqlLog").textContent = "（尚未开始）";
+    $("meta").textContent = "（尚未开始）";
+    $("eventLog").textContent = "";
+    showErr("");
+    appendStatus("已清空");
+    setBusy(false);
+    abortCtrl = null;
+    lastRunContext = null;
+  });
+
+  $("btnStop").addEventListener("click", () => {
+    if (abortCtrl) abortCtrl.abort();
+  });
+
+  $("btnSend").addEventListener("click", async () => {
+    const body = buildBody();
+    if (!body.user_id || !body.session_id || !body.query) {
+      showErr("请填写 user_id、session_id、query。");
+      return;
+    }
+    lastRunContext = { user_id: body.user_id, session_id: body.session_id };
+    StreamReportRenderer.reset();
+    StreamReportRenderer.lite = $("liteStream").checked;
+    clearCharts();
+    $("structuredBlocks").textContent = "…";
+    $("nl2sqlLog").textContent = "…";
+    $("meta").textContent = "…";
+    $("eventLog").textContent = "";
+    const atLabel = (TYPE_CONFIG[body.analysis_type] && TYPE_CONFIG[body.analysis_type].label) || body.analysis_type;
+    appendStatus("连接中 [" + atLabel + "]…");
+    await runStream(baseUrl() + "/analysis-agent/run-stream", body);
+  });
+
+  async function doResume(action) {
+    if (!resumeContext || !resumeContext.resume_token) {
+      showErr("无 resume_token，请先触发 HITL（mandatory 取数失败且 enable_human_in_the_loop=true）");
+      return;
+    }
+    let payload = {};
+    const raw = $("hitlPayload").value.trim();
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch (e) {
+        showErr("payload 须为合法 JSON：" + e.message);
+        return;
+      }
+    }
+    await runStream(
+      baseUrl() + "/analysis-agent/resume-stream",
+      {
+        resume_token: resumeContext.resume_token,
+        user_id: resumeContext.user_id,
+        session_id: resumeContext.session_id,
+        action,
+        payload,
+      },
+      { isResume: true }
+    );
+  }
+})();
   </script>
 </body>
 </html>

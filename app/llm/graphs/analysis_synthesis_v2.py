@@ -2052,13 +2052,16 @@ class AnalysisSynthesisV2Engine:
         planning_context: str | None,
         chart_mode: str,
         task_status: dict[str, str] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[tuple[dict[str, Any], SynthesisV2RunResult | None]]:
         """
         后台并行生成各槽位，按槽位顺序就绪即推送（小块 summary_delta + 空闲心跳）；
         表/图可额外推送 table_payload / chart_payload。
+        Yields (event_dict, None)；最后一次 yield (_, result)。
         """
         slots = get_synthesis_v2_slots(analysis_type)
         if not slots:
+            result = SynthesisV2RunResult(summary="", synthesis_version="v2:empty")
+            yield ({}, result)
             return
         outputs: list[SynthesisV2SlotOutput | None] = [None] * len(slots)
         sem = asyncio.Semaphore(self._max_parallel_llm)
@@ -2092,7 +2095,10 @@ class AnalysisSynthesisV2Engine:
                 chunk_queue=bg_queues[i],
                 last_emit_at=last_emit_at,
             ):
-                yield ev
+                yield (ev, None)
+
+        filled = [o for o in outputs if o is not None]
+        yield ({}, self._assemble_result(filled, analysis_type=analysis_type))
 
     async def iter_stream_events_live_first(
         self,
