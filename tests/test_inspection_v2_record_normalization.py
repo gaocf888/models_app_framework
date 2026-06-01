@@ -18,10 +18,41 @@ def test_tube_strip_negative_when_down_marker() -> None:
     assert w
 
 
-def test_tube_unchanged_for_non_integer() -> None:
-    loc, row, tube, w = normalize_location_row_tube("右墙", "2-6", "5-1", evidence="向上")
-    assert tube == "5-1"
-    assert not w
+def test_tube_unchanged_for_non_integer_non_combo() -> None:
+    """非纯整数且非「数字-数字」组合形态时，跳过管号正负号校正。"""
+    loc, row, tube, w = normalize_location_row_tube("右墙", "向上第1根", "12B", evidence="")
+    assert tube == "12B"
+    assert not any("tube_sign" in x for x in w)
+
+
+def test_combo_index_splits_and_skips_wall_rules() -> None:
+    loc, row, tube, w = normalize_location_row_tube("水冷壁右墙B02吹灰器", "2-1", "1", evidence="")
+    assert row == "2"
+    assert tube == "1"
+    assert any("combo_index" in x for x in w)
+    assert not any("row_fix" in x for x in w)
+
+
+def test_combo_index_in_tube_field() -> None:
+    loc, row, tube, w = normalize_location_row_tube("水冷壁左墙", "1", "3-5", evidence="")
+    assert row == "3"
+    assert tube == "5"
+    assert any("combo_index" in x for x in w)
+
+
+def test_combo_index_skips_reheater_corruption() -> None:
+    loc, row, tube, w = normalize_device_row_tube_by_location("高温过热器", "2-1", "1")
+    assert row == "2"
+    assert tube == "1"
+    assert any("combo_index" in x for x in w)
+    assert not any("row_digits" in x for x in w)
+
+
+def test_combo_index_skips_tube_sign() -> None:
+    loc, row, tube, w = normalize_location_row_tube("水冷壁右墙", "2-1", "1", evidence="向上")
+    assert row == "2"
+    assert tube == "1"
+    assert not any("tube_sign" in x for x in w)
 
 
 def test_wall_type_forces_row_one_and_migrates_number_to_tube() -> None:

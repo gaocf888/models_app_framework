@@ -3,7 +3,7 @@
 
 - 管号符号：表格语境含「上/向上/上数…」时对纯整数管号补负号；含「下/向下…」时去掉多余负号。
 - 设备语义：水冷壁/包墙/后竖井/冷灰斗 → 行号固定为 1；再热器/过热器/省煤器等 → 管号固定为 1。
-不改动「2-1」「5-2」等非纯整数形式（除非整条规则明确允许迁移）。
+- 组合编号（如 2-1）：前行号、后管号；命中时跳过设备语义校正与管号正负号校正。
 """
 
 from __future__ import annotations
@@ -28,6 +28,27 @@ def _is_pure_int(s: str) -> bool:
     return bool(re.fullmatch(r"-?\d+", (s or "").strip()))
 
 
+_COMBO_INDEX_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
+
+
+def _parse_combo_index(s: str) -> tuple[str, str] | None:
+    m = _COMBO_INDEX_RE.fullmatch((s or "").strip())
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def _resolve_combo_row_tube(row: str, tube: str) -> tuple[str, str, bool]:
+    """组合编号 2-1 → (行号=2, 管号=1)；行号字段优先于管号字段。"""
+    from_row = _parse_combo_index(row)
+    if from_row:
+        return from_row[0], from_row[1], True
+    from_tube = _parse_combo_index(tube)
+    if from_tube:
+        return from_tube[0], from_tube[1], True
+    return row, tube, False
+
+
 def _loc_has(loc: str, markers: tuple[str, ...]) -> bool:
     return any(m in (loc or "") for m in markers)
 
@@ -47,11 +68,17 @@ def normalize_device_row_tube_by_location(
 
     - 水冷壁系：行号 → "1"；若 LLM 将编号误写入行号且管号为 1/空，迁到管号。
     - 再热器/过热器/省煤器系：管号 → "1"；行号去字母；若编号误写入管号且行号为 1/空，迁到行号。
+    - 组合编号（如 2-1）：跳过本函数内全部设备语义校正。
     """
     warns: list[str] = []
     loc = _collapse_ws(location)
     row = _collapse_ws(row_no)
     tube = (tube_no or "").strip()
+
+    row, tube, is_combo = _resolve_combo_row_tube(row, tube)
+    if is_combo:
+        warns.append("deterministic_combo_index:跳过设备语义校正")
+        return loc, row, tube, warns
 
     if _loc_has(loc, _WALL_ROW1_MARKERS):
         if row != "1":
@@ -103,6 +130,11 @@ def normalize_location_row_tube(
     loc = _collapse_ws(location)
     row = _collapse_ws(row_no)
     tube = (tube_no or "").strip()
+
+    row, tube, is_combo = _resolve_combo_row_tube(row, tube)
+    if is_combo:
+        warns.append("deterministic_combo_index:跳过设备语义校正")
+        return loc, row, tube, warns
 
     loc, row, tube, dev_warns = normalize_device_row_tube_by_location(loc, row, tube)
     warns.extend(dev_warns)

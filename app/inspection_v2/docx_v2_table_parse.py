@@ -1,0 +1,315 @@
+"""
+DOCX V2 分块内 [DOCX_V2_TABLE] 行文本解析（供 color_guard / tube_thickness_bind_guard 共用）。
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+TABLE_MARK = "[DOCX_V2_TABLE"
+ROW_RE = re.compile(r"^r(\d+):\s*(.+)$")
+COL_GROUP_RE = re.compile(
+    r"(c(\d+))(?:-c(\d+))?='([^']*)'(?:\[hmerge×\d+\])?",
+)
+CELL_RE = re.compile(
+    r"(c(\d+))(?:-c(\d+))?='([^']*)'"
+    r"(?:\[hmerge×\d+\])?"
+    r"(?:\[颜色标注:([^\]]+)\])?"
+    r"(?:\[超标候选[^]]*\])?",
+)
+
+_UP_LABELS = frozenset({"上", "向上", "上数", "上部"})
+_DOWN_LABELS = frozenset({"下", "向下", "下数", "下部"})
+_THK_TOLERANCE = 0.03
+
+
+def thk_close(a: float, b: float, tol: float = _THK_TOLERANCE) -> bool:
+    return abs(a - b) <= tol
+
+
+def parse_float_cell(text: str) -> float | None:
+    m = re.search(r"-?\d+(?:\.\d+)?", (text or "").strip())
+    if not m:
+        return None
+    return float(m.group(0))
+
+
+def parse_int_cell(text: str) -> int | None:
+    t = (text or "").strip()
+    if not re.fullmatch(r"-?\d+", t):
+        return None
+    return int(t)
+
+
+def cell_defect_by_markup(color_note: str | None, part: str) -> bool:
+    if color_note and "高亮" in color_note:
+        return True
+    if "[超标候选" in part:
+        return True
+    if color_note and "底纹=" in color_note:
+        return True
+    return False
+
+
+@dataclass
+class DirectionGroup:
+    direction: str  # 上 | 下
+    idx_col: int
+    thk_col: int
+    header_row: int
+
+
+@dataclass
+class ScopeSegment:
+    header_row: int
+    col_lo: int
+    col_hi: int
+    label: str
+
+
+@dataclass
+class IndexPair:
+    """表格中一组「编号列+壁厚列」事实。"""
+
+    scope_label: str
+    direction: str
+    row_ri: int
+    idx_col: int
+    thk_col: int
+    index_val: int
+    thickness: float
+    defect_by_color: bool = False
+
+
+@dataclass
+class ParsedTable:
+    lines: list[str]
+    cells: dict[tuple[int, int], dict[str, Any]] = field(default_factory=dict)
+    pairs: list[IndexPair] = field(default_factory=list)
+    groups: list[DirectionGroup] = field(default_factory=list)
+
+
+def _parse_column_groups_from_row(body: str, header_row: int) -> list[DirectionGroup]:
+    groups: list[DirectionGroup] = []
+    for gm in COL_GROUP_RE.finditer(body):
+        c0 = int(gm.group(2))
+        c1 = int(gm.group(3)) if gm.group(3) else c0
+        label = (gm.group(4) or "").strip()
+        if label in _UP_LABELS:
+            direction = "上"
+        elif label in _DOWN_LABELS:
+            direction = "下"
+        else:
+            continue
+        if c1 - c0 >= 1:
+            groups.append(
+                DirectionGroup(
+                    direction=direction,
+                    idx_col=c0,
+                    thk_col=c1,
+                    header_row=header_row,
+                )
+            )
+    return groups
+
+
+def parse_column_groups(lines: list[str]) -> list[DirectionGroup]:
+    """全表扫描上/下行（向后兼容 color_guard）。"""
+    out: list[DirectionGroup] = []
+    for line in lines:
+        if not line.startswith("r"):
+            continue
+        m = ROW_RE.match(line)
+        if not m:
+            continue
+        out.extend(_parse_column_groups_from_row(m.group(2), int(m.group(1))))
+    if not out:
+        out = [
+            DirectionGroup("上", 0, 1, -1),
+            DirectionGroup("下", 2, 3, -1),
+        ]
+    return out
+
+
+def parse_table_rows(lines: list[str]) -> dict[tuple[int, int], dict[str, Any]]:
+    cells: dict[tuple[int, int], dict[str, Any]] = {}
+    for line in lines:
+        m = ROW_RE.match(line)
+        if not m:
+            continue
+        ri = int(m.group(1))
+        body = m.group(2)
+        for part in body.split(" | "):
+            part = part.strip()
+            cm = CELL_RE.search(part)
+            if not cm:
+                continue
+            c0 = int(cm.group(2))
+            c1 = int(cm.group(3)) if cm.group(3) else c0
+            text = (cm.group(4) or "").strip()
+            color_note = cm.group(5)
+            defect = cell_defect_by_markup(color_note, part)
+            for ci in range(c0, c1 + 1):
+                cells[(ri, ci)] = {"text": text, "defect_by_color": defect}
+    return cells
+
+
+def _parse_hmerge_segments_from_line(line: str) -> list[ScopeSegment]:
+    m = ROW_RE.match(line)
+    if not m:
+        return []
+    ri = int(m.group(1))
+    body = m.group(2)
+    segs: list[ScopeSegment] = []
+    for part in body.split(" | "):
+        part = part.strip()
+        if "[hmerge" not in part:
+            continue
+        cm = CELL_RE.search(part)
+        if not cm:
+            continue
+        c0 = int(cm.group(2))
+        c1 = int(cm.group(3)) if cm.group(3) else c0
+        label = (cm.group(4) or "").strip()
+        if label in _UP_LABELS or label in _DOWN_LABELS:
+            continue
+        if not label:
+            continue
+        segs.append(ScopeSegment(ri, c0, c1, label))
+    return segs
+
+
+def _max_row_index(lines: list[str]) -> int:
+    mx = 0
+    for line in lines:
+        m = ROW_RE.match(line)
+        if m:
+            mx = max(mx, int(m.group(1)))
+    return mx
+
+
+def _scope_label_for_col(
+    col: int,
+    major: list[ScopeSegment],
+    minor: list[ScopeSegment],
+) -> str:
+    parts: list[str] = []
+    for seg in major:
+        if seg.col_lo <= col <= seg.col_hi:
+            parts.append(seg.label)
+    for seg in minor:
+        if seg.col_lo <= col <= seg.col_hi:
+            parts.append(seg.label)
+    return "".join(parts) if parts else ""
+
+
+def _is_major_title(seg: ScopeSegment) -> bool:
+    if len(seg.label) >= 8:
+        return True
+    return any(k in seg.label for k in ("水冷壁", "包墙", "过热器", "再热器", "省煤器", "吹灰器", "风孔"))
+
+
+def _row_bands(lines: list[str]) -> list[tuple[int, int]]:
+    title_rows: list[int] = []
+    for line in lines:
+        for seg in _parse_hmerge_segments_from_line(line):
+            if _is_major_title(seg):
+                title_rows.append(seg.header_row)
+                break
+    title_rows = sorted(set(title_rows))
+    if not title_rows:
+        return [(0, _max_row_index(lines))]
+    bands: list[tuple[int, int]] = []
+    max_r = _max_row_index(lines)
+    for i, tr in enumerate(title_rows):
+        end = title_rows[i + 1] - 1 if i + 1 < len(title_rows) else max_r
+        bands.append((tr, end))
+    return bands
+
+
+def build_index_pairs(lines: list[str], cells: dict[tuple[int, int], dict[str, Any]]) -> list[IndexPair]:
+    pairs: list[IndexPair] = []
+    bands = _row_bands(lines)
+    all_hmerge: list[ScopeSegment] = []
+    for line in lines:
+        all_hmerge.extend(_parse_hmerge_segments_from_line(line))
+
+    for band_start, band_end in bands:
+        major = [s for s in all_hmerge if s.header_row == band_start and _is_major_title(s)]
+        minor: list[ScopeSegment] = []
+        for s in all_hmerge:
+            if band_start < s.header_row < band_end and not _is_major_title(s):
+                minor.append(s)
+
+        dir_row: int | None = None
+        groups: list[DirectionGroup] = []
+        for ri in range(band_start + 1, band_end + 1):
+            line = next((ln for ln in lines if ln.startswith(f"r{ri}:")), "")
+            if not line:
+                continue
+            gs = _parse_column_groups_from_row(line.split(":", 1)[1], ri)
+            if gs:
+                dir_row = ri
+                groups = gs
+                break
+
+        if not groups:
+            groups = [
+                DirectionGroup("上", 0, 1, band_start),
+                DirectionGroup("下", 2, 3, band_start),
+            ]
+
+        data_start = (dir_row + 1) if dir_row is not None else band_start + 1
+        for ri in range(data_start, band_end + 1):
+            for g in groups:
+                idx_info = cells.get((ri, g.idx_col))
+                thk_info = cells.get((ri, g.thk_col))
+                if not idx_info or not thk_info:
+                    continue
+                idx_val = parse_int_cell(idx_info.get("text", ""))
+                thk_val = parse_float_cell(thk_info.get("text", ""))
+                if idx_val is None or thk_val is None:
+                    continue
+                scope = _scope_label_for_col(g.idx_col, major, minor)
+                pairs.append(
+                    IndexPair(
+                        scope_label=scope,
+                        direction=g.direction,
+                        row_ri=ri,
+                        idx_col=g.idx_col,
+                        thk_col=g.thk_col,
+                        index_val=abs(idx_val),
+                        thickness=thk_val,
+                        defect_by_color=bool(thk_info.get("defect_by_color")),
+                    )
+                )
+    return pairs
+
+
+def parse_tables_from_chunk(chunk: str) -> list[ParsedTable]:
+    tables: list[ParsedTable] = []
+    current: list[str] = []
+    for line in (chunk or "").splitlines():
+        if line.strip().startswith(TABLE_MARK):
+            if current:
+                tables.append(_finalize_table(current))
+            current = [line]
+            continue
+        if current:
+            if line.strip().startswith(TABLE_MARK) and len(current) > 1:
+                tables.append(_finalize_table(current))
+                current = [line]
+            else:
+                current.append(line)
+    if current:
+        tables.append(_finalize_table(current))
+    return tables
+
+
+def _finalize_table(lines: list[str]) -> ParsedTable:
+    cells = parse_table_rows(lines)
+    groups = parse_column_groups(lines)
+    pairs = build_index_pairs(lines, cells)
+    return ParsedTable(lines=lines, cells=cells, pairs=pairs, groups=groups)

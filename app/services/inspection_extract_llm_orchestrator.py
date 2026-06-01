@@ -649,6 +649,37 @@ class InspectionExtractLlmOrchestrator:
                         after_defect,
                     )
             records_i = _apply_parse_deterministic_rules(records_i)
+            if bool(getattr(self._cfg, "v2_bind_guard_enabled", True)) and "[DOCX_V2_TABLE" in (chunk or ""):
+                from app.inspection_v2.tube_thickness_bind_guard import apply_docx_v2_tube_thickness_bind_guard
+
+                before_fix = sum(
+                    1
+                    for r in records_i
+                    if isinstance(r, dict)
+                    and any(
+                        str(w).startswith("bind_guard:")
+                        for w in (r.get("warnings") or [])
+                        if isinstance(r.get("warnings"), list)
+                    )
+                )
+                records_i = apply_docx_v2_tube_thickness_bind_guard(records_i, chunk)
+                after_fix = sum(
+                    1
+                    for r in records_i
+                    if isinstance(r, dict)
+                    and any(
+                        str(w).startswith("bind_guard:")
+                        for w in (r.get("warnings") or [])
+                        if isinstance(r.get("warnings"), list)
+                    )
+                )
+                if after_fix > before_fix:
+                    logger.info(
+                        "inspection_extract bind_guard chunk=%s/%s bind_fixes=%s",
+                        idx,
+                        total,
+                        after_fix - before_fix,
+                    )
             logger.info("inspection_extract llm stage=parse chunk=%s result_records=%s", idx, len(records_i))
             logger.info("inspection_extract parse chunk=%s parse_format=%s", idx, parse_format)
             if records_i and isinstance(records_i[0], dict):
