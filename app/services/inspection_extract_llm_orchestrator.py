@@ -379,7 +379,7 @@ class InspectionExtractLlmOrchestrator:
                 continue
             rows = data.get("records") if isinstance(data, dict) else None
             if isinstance(rows, list):
-                stage1_records.extend([x for x in rows if isinstance(x, dict)])
+                stage1_records.extend(_apply_parse_deterministic_rules([x for x in rows if isinstance(x, dict)]))
 
         logger.info(
             "inspection_extract job_dir stage1_from_chunks records=%s total_work=%s",

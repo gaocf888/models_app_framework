@@ -81,3 +81,15 @@ def test_apply_deterministic_rules_on_dict() -> None:
     )
     assert out["行号"] == "1"
     assert out["管号"] == "3"
+
+
+def test_apply_deterministic_rules_english_keys_get_chinese_fields() -> None:
+    from app.inspection_v2.record_normalization import apply_deterministic_rules_to_record
+
+    out = apply_deterministic_rules_to_record(
+        {"location": "水冷壁右墙", "row_no": "2", "tube_no": "-2", "thickness": 7.4}
+    )
+    assert out["row_no"] == "1"
+    assert out["行号"] == "1"
+    assert out["tube_no"] == "-2"
+    assert out["管号"] == "-2"

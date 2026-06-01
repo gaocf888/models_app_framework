@@ -137,18 +137,13 @@ def apply_deterministic_rules_to_record(item: dict[str, Any]) -> dict[str, Any]:
     ev = str(out.get("evidence") or out.get("证据") or "").strip()
 
     nloc, nrow, ntube, warns = normalize_location_row_tube(loc, row, tube, evidence=ev)
-    if "检测位置" in out:
-        out["检测位置"] = nloc
-    if "location" in out:
-        out["location"] = nloc
-    if "行号" in out:
-        out["行号"] = nrow
-    if "row_no" in out:
-        out["row_no"] = nrow
-    if "管号" in out:
-        out["管号"] = ntube
-    if "tube_no" in out:
-        out["tube_no"] = ntube
+    # 始终写入中英字段，避免仅有 row_no/location 时 API 仍返回未修正的「行号」
+    out["检测位置"] = nloc
+    out["location"] = nloc
+    out["行号"] = nrow
+    out["row_no"] = nrow
+    out["管号"] = ntube
+    out["tube_no"] = ntube
 
     if warns:
         w = out.get("warnings")
