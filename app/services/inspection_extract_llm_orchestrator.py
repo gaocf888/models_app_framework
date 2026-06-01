@@ -648,6 +648,7 @@ class InspectionExtractLlmOrchestrator:
                         before_defect,
                         after_defect,
                     )
+            records_i = _apply_parse_deterministic_rules(records_i)
             logger.info("inspection_extract llm stage=parse chunk=%s result_records=%s", idx, len(records_i))
             logger.info("inspection_extract parse chunk=%s parse_format=%s", idx, parse_format)
             if records_i and isinstance(records_i[0], dict):
@@ -811,6 +812,19 @@ def _ensure_debug_fields(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             y["warnings"] = [str(w)]
         out.append(y)
+    return out
+
+
+def _apply_parse_deterministic_rules(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """parse 阶段：行号/管号设备语义 + 管号正负号（与 canonicalize 前规则一致）。"""
+    from app.inspection_v2.record_normalization import apply_deterministic_rules_to_record
+
+    out: list[dict[str, Any]] = []
+    for rec in records or []:
+        if isinstance(rec, dict):
+            out.append(apply_deterministic_rules_to_record(dict(rec)))
+        else:
+            out.append(rec)
     return out
 
 

@@ -1235,11 +1235,13 @@ class InspectionExtractJobScheduler:
         if not isinstance(recs, list):
             recs = []
         public_rows: list[dict[str, Any]] = []
+        from app.inspection_v2.record_normalization import apply_deterministic_rules_to_record
+
         for row in recs:
             if not isinstance(row, dict):
                 continue
-            # API 不对外暴露调试字段；落盘与日志仍保留 evidence/warnings 便于排障。
-            y = dict(row)
+            # 分块落盘早于 post_process；读取时对旧任务补做行号/管号确定性校正
+            y = apply_deterministic_rules_to_record(dict(row))
             y.pop("evidence", None)
             y.pop("warnings", None)
             public_rows.append(y)

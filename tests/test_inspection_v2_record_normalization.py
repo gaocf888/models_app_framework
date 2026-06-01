@@ -50,8 +50,34 @@ def test_reheater_type_strips_letters_from_row() -> None:
     assert tube == "1"
 
 
+def test_wall_type_row_forced_one_when_tube_already_has_index() -> None:
+    """LLM 将编号同时写入行号与管号时，行号仍应强制为 1。"""
+    loc, row, tube, w = normalize_location_row_tube(
+        "水冷壁右墙第1层第1贴壁风孔", "2", "-2", evidence=""
+    )
+    assert row == "1"
+    assert tube == "-2"
+    assert any("row_fix" in x for x in w)
+
+
+def test_wall_type_left_wall_row5_tube6() -> None:
+    loc, row, tube, w = normalize_location_row_tube("水冷壁左墙第1层第1贴壁风孔", "5", "6", evidence="")
+    assert row == "1"
+    assert tube == "6"
+
+
 def test_neutral_location_unchanged() -> None:
     loc, row, tube, w = normalize_location_row_tube("右墙B02吹灰器", "2", "8", evidence="")
     assert row == "2"
     assert tube == "8"
     assert not any("row_fix" in x or "tube_fix" in x for x in w)
+
+
+def test_apply_deterministic_rules_on_dict() -> None:
+    from app.inspection_v2.record_normalization import apply_deterministic_rules_to_record
+
+    out = apply_deterministic_rules_to_record(
+        {"检测位置": "水冷壁右墙第1层第1贴壁风孔", "行号": "3", "管号": "3", "壁厚": 7.3}
+    )
+    assert out["行号"] == "1"
+    assert out["管号"] == "3"
