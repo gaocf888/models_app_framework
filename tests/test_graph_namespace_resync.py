@@ -9,6 +9,7 @@ class TestGraphNamespaceResync(unittest.TestCase):
     @patch("app.rag.graph_namespace_resync.get_app_config")
     def test_resync_deletes_old_and_ingests_new(self, mock_cfg, mock_ing_cls) -> None:
         mock_cfg.return_value.rag.graph.enabled = True
+        mock_cfg.return_value.rag.graph.ingest_on_rag = True
 
         graph = MagicMock()
         store = MagicMock()
@@ -48,6 +49,21 @@ class TestGraphNamespaceResync(unittest.TestCase):
     @patch("app.rag.graph_namespace_resync.get_app_config")
     def test_skips_when_graph_disabled(self, mock_cfg) -> None:
         mock_cfg.return_value.rag.graph.enabled = False
+        mock_cfg.return_value.rag.graph.ingest_on_rag = False
+        with patch("app.rag.graph_namespace_resync.RAGIngestionService") as mock_ing_cls:
+            run_graph_resync_after_namespace_move(
+                doc_name="x",
+                from_namespace="a",
+                to_namespace="b",
+                doc_version=None,
+                dataset_id="ds",
+            )
+        mock_ing_cls.assert_not_called()
+
+    @patch("app.rag.graph_namespace_resync.get_app_config")
+    def test_skips_when_ingest_on_rag_disabled(self, mock_cfg) -> None:
+        mock_cfg.return_value.rag.graph.enabled = True
+        mock_cfg.return_value.rag.graph.ingest_on_rag = False
         with patch("app.rag.graph_namespace_resync.RAGIngestionService") as mock_ing_cls:
             run_graph_resync_after_namespace_move(
                 doc_name="x",
