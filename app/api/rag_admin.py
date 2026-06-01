@@ -1568,7 +1568,7 @@ async def move_document_namespace(
         raise HTTPException(status_code=500, detail=f"RAG move_document_namespace failed: {e}") from e
 
     graph_repair_scheduled = False
-    if req.repair_graph_async and get_app_config().rag.graph.enabled:
+    if req.repair_graph_async and get_app_config().rag.graph.enabled and get_app_config().rag.graph.ingest_on_rag:
         ds = str(payload.get("dataset_id") or "").strip()
         if ds:
             background_tasks.add_task(

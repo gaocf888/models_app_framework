@@ -27,7 +27,7 @@ def run_graph_resync_after_namespace_move(
     """
     try:
         cfg = get_app_config().rag
-        if not cfg.graph.enabled:
+        if not cfg.graph.enabled or not cfg.graph.ingest_on_rag:
             return
         ds = (dataset_id or "").strip()
         if not ds:

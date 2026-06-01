@@ -4,81 +4,42 @@ from __future__ import annotations
 GraphIngestionService
 
 负责在 RAG 摄入阶段，将文本分片转换为图结构（实体 + 关系），并写入图数据库。
-
-当前版本：
-- 仅初始化 Neo4jGraph 连接与接口骨架；
-- 实体/关系抽取策略留作后续扩展（可结合 LLM / 规则等实现）。
+默认使用 LLM 抽取；规则抽取仅作可配置回退。
 """
 
-from dataclasses import dataclass
-import re
 from typing import Any, List, Optional
 
 from app.core.config import GraphRAGConfig, get_app_config
 from app.core.logging import get_logger
+from app.graph.client import Neo4jGraphClient
+from app.graph.extraction.llm_extractor import LLMGraphExtractor
+from app.graph.extraction.rule_extractor import RuleGraphExtractor
+from app.graph.extraction.types import ExtractedEntity, ExtractedGraphPayload, ExtractedRelation
 
 logger = get_logger(__name__)
-
-try:
-    # LangChain Graph 封装（可选依赖，实际使用前需在环境中安装）
-    from langchain_community.graphs import Neo4jGraph  # type: ignore[import-untyped]
-except Exception:  # pragma: no cover - 可选依赖
-    Neo4jGraph = None  # type: ignore[assignment]
-
-
-@dataclass
-class ExtractedEntity:
-    type: str
-    id: str | None
-    name: str | None
-    properties: dict
-
-
-@dataclass
-class ExtractedRelation:
-    type: str
-    source_id: str
-    target_id: str
-    properties: dict
 
 
 class GraphIngestionService:
     """
     GraphRAG 摄入服务：将文本分片转换为图结构并写入 Neo4j。
-
-    说明：
-    - 具体的实体/关系抽取逻辑目前预留接口，后续可接入 LLM 抽取链或规则；
-    - Schema 映射行为由 GraphRAGConfig.schema 控制，未启用 Schema 时采用宽松模式。
     """
 
     def __init__(self, cfg: GraphRAGConfig | None = None) -> None:
         app_cfg = get_app_config()
         self._cfg = cfg or app_cfg.rag.graph  # type: ignore[attr-defined]
+        self._client = Neo4jGraphClient(self._cfg)
 
         if not self._cfg.enabled:
-            self._graph = None
             logger.info("GraphIngestionService initialized but GraphRAG is disabled.")
             return
 
-        if Neo4jGraph is None:
-            raise ImportError(
-                "GraphRAG enabled but langchain-community[neo4j] is not installed. "
-                "Install dependencies from requirements-大模型应用.txt."
-            )
-
-        if not self._cfg.uri or not self._cfg.username or not self._cfg.password:
-            raise ValueError(
-                "GraphRAG enabled but Neo4j connection info is incomplete. "
-                "Please configure NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD."
-            )
-
-        self._graph = Neo4jGraph(
-            url=self._cfg.uri,
-            username=self._cfg.username,
-            password=self._cfg.password,
-            database=self._cfg.database,
+        self._llm_extractor = LLMGraphExtractor(self._cfg)
+        self._rule_extractor = RuleGraphExtractor(self._cfg)
+        logger.info(
+            "GraphIngestionService ready (extraction_mode=%s, uri=%s).",
+            self._cfg.extraction_mode,
+            self._cfg.uri,
         )
-        logger.info("GraphIngestionService initialized with Neo4jGraph (uri=%s).", self._cfg.uri)
 
     # Public API -------------------------------------------------------------
 
@@ -91,18 +52,9 @@ class GraphIngestionService:
         doc_version: str = "v1",
         replace_if_exists: bool = True,
     ) -> None:
-        """
-        从一批文本分片中抽取实体与关系并写入图数据库。
-
-        企业可用轻量实现：
-        - 基于规则抽取候选实体（中英混合）；
-        - 将 chunk 作为 Document 节点，将实体作为 Entity 节点；
-        - 写入 MENTION / CO_OCCUR 关系，支持后续图检索召回事实。
-        """
-        if not self._cfg.enabled or self._graph is None:
-            # GraphRAG 未启用，直接返回
+        """从一批文本分片中抽取实体与关系并写入图数据库。"""
+        if not self._cfg.enabled:
             return
-
         if not texts:
             return
 
@@ -116,10 +68,17 @@ class GraphIngestionService:
         effective_doc_name = doc_name or dataset_id
         doc_key = self._build_doc_key(ns, effective_doc_name, doc_version)
         if replace_if_exists:
-            # 与向量侧“同名文档先删后灌”保持一致，避免旧 chunk 残留导致图检索漂移。
             self.delete_document(doc_name=effective_doc_name, namespace=ns, doc_version=doc_version)
+
+        schema = self._cfg.schema
+        mode = (self._cfg.extraction_mode or "llm").lower()
+        if mode == "llm":
+            payloads = self._extract_payloads_llm(texts, schema=schema)
+        else:
+            payloads = [self._rule_extractor.extract(t, schema=schema) for t in texts]
+
         for idx, chunk_text in enumerate(texts):
-            entities = self._extract_entities(chunk_text)
+            payload = payloads[idx] if idx < len(payloads) else ExtractedGraphPayload()
             chunk_id = f"{dataset_id}:{ns}:{effective_doc_name}:{doc_version}:{idx}"
             self._upsert_chunk(
                 dataset_id=dataset_id,
@@ -130,24 +89,33 @@ class GraphIngestionService:
                 doc_version=doc_version,
                 doc_key=doc_key,
             )
-            if not entities:
+            if not payload.entities:
                 continue
-            for ent in entities:
+            for ent in payload.entities:
                 self._upsert_entity(ns, ent)
                 self._link_chunk_entity(ns=ns, chunk_id=chunk_id, entity_id=ent.id or "")
-            # 在同一 chunk 中建立共现关系
-            for i in range(len(entities)):
-                for j in range(i + 1, len(entities)):
-                    self._link_cooccur(ns, entities[i].id or "", entities[j].id or "")
+            for rel in payload.relations:
+                self._link_entity_relation(ns, rel)
+            if mode == "rule" and len(payload.entities) >= 2:
+                for i in range(len(payload.entities)):
+                    for j in range(i + 1, len(payload.entities)):
+                        self._link_cooccur(ns, payload.entities[i].id or "", payload.entities[j].id or "")
+
+    def _extract_payloads_llm(
+        self,
+        texts: list[str],
+        schema: Any,
+    ) -> list[ExtractedGraphPayload]:
+        """LLM 批量抽取；批量失败时逐条抽取并应用回退策略。"""
+        try:
+            return self._llm_extractor.extract_batch(texts, schema=schema)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM batch extraction failed, falling back per-chunk: %s", exc)
+        return [self._extract_payload(text) for text in texts]
 
     def delete_document(self, doc_name: str, namespace: Optional[str] = None, doc_version: str | None = None) -> None:
-        """
-        删除图侧文档相关节点与关系。
-
-        - 指定 doc_version：删除指定版本；
-        - 不指定 doc_version：按 doc_name 删除该 namespace 下所有版本。
-        """
-        if not self._cfg.enabled or self._graph is None:
+        """删除图侧文档相关节点与关系。"""
+        if not self._cfg.enabled:
             return
         ns = namespace or "__default__"
         if doc_version:
@@ -167,7 +135,6 @@ class GraphIngestionService:
                 """,
                 {"namespace": ns, "doc_name": doc_name},
             )
-        # 清理无入边实体，避免图持续膨胀。
         self._cypher(
             """
             MATCH (e:Entity {namespace: $namespace})
@@ -177,44 +144,22 @@ class GraphIngestionService:
             {"namespace": ns},
         )
 
-    def _extract_entities(self, text: str) -> List[ExtractedEntity]:
-        # 规则：中英文实体候选（保守提取，避免噪声）。
-        # 参数全部来自 GraphRAGConfig，便于线上按行业语料调整。
-        min_len = max(1, self._cfg.entity_min_len)
-        max_len = max(min_len, self._cfg.entity_max_len)
-        zh_max = max(min_len, min(max_len, self._cfg.zh_entity_max_len))
-        en_min = max(1, self._cfg.en_entity_min_len)
-        en_max = max(en_min, min(max_len, self._cfg.en_entity_max_len))
-        zh_terms = re.findall(rf"[\u4e00-\u9fff]{{{min_len},{zh_max}}}", text or "")
-        en_terms = re.findall(rf"\b[A-Z][a-zA-Z0-9]{{{en_min - 1},{en_max}}}\b", text or "")
-        seen: set[str] = set()
-        out: List[ExtractedEntity] = []
-        for term in zh_terms + en_terms:
-            name = term.strip()
-            if len(name) < min_len or len(name) > max_len:
-                continue
-            key = name.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(
-                ExtractedEntity(
-                    type="Concept",
-                    id=key,
-                    name=name,
-                    properties={"name": name, "norm_name": key},
-                )
-            )
-            if len(out) >= max(1, self._cfg.max_entities_per_chunk):
-                break
-        return out
+    def _extract_payload(self, text: str) -> ExtractedGraphPayload:
+        schema = self._cfg.schema
+        mode = (self._cfg.extraction_mode or "llm").lower()
+        if mode == "rule":
+            return self._rule_extractor.extract(text, schema=schema)
+        try:
+            return self._llm_extractor.extract(text, schema=schema)
+        except Exception as exc:  # noqa: BLE001
+            if self._cfg.extraction_fallback_rule:
+                logger.warning("LLM extraction failed, fallback to rule: %s", exc)
+                return self._rule_extractor.extract(text, schema=schema)
+            logger.warning("LLM extraction failed (no fallback): %s", exc)
+            return ExtractedGraphPayload()
 
     def _cypher(self, query: str, params: dict[str, Any]) -> None:
-        # 兼容不同 Neo4jGraph 版本方法名
-        if hasattr(self._graph, "query"):
-            self._graph.query(query, params=params)  # type: ignore[union-attr]
-            return
-        self._graph.run(query, params)  # type: ignore[union-attr]
+        self._client.execute_cypher(query, params)
 
     @staticmethod
     def _build_doc_key(namespace: str, doc_name: str, doc_version: str) -> str:
@@ -277,11 +222,24 @@ class GraphIngestionService:
             {"chunk_id": chunk_id, "entity_id": entity_id, "namespace": ns},
         )
 
+    def _link_entity_relation(self, ns: str, rel: ExtractedRelation) -> None:
+        self._cypher(
+            """
+            MATCH (a:Entity {entity_id: $source_id, namespace: $namespace})
+            MATCH (b:Entity {entity_id: $target_id, namespace: $namespace})
+            MERGE (a)-[r:GRAPH_REL {rel_type: $rel_type}]->(b)
+            SET r.updated_at = datetime(),
+                r.source = coalesce(r.source, 'llm')
+            """,
+            {
+                "source_id": rel.source_id,
+                "target_id": rel.target_id,
+                "namespace": ns,
+                "rel_type": rel.type,
+            },
+        )
+
     def _link_cooccur(self, ns: str, e1: str, e2: str) -> None:
-        if self._cfg.min_cooccur_weight > 1:
-            # 预留：目前每次共现+1，权重阈值通过查询侧控制即可。
-            # 这里保留参数注释，避免误以为未接入配置。
-            pass
         self._cypher(
             """
             MATCH (a:Entity {entity_id: $e1, namespace: $namespace})
@@ -292,4 +250,3 @@ class GraphIngestionService:
             """,
             {"e1": e1, "e2": e2, "namespace": ns},
         )
-

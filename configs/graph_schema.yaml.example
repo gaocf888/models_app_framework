@@ -1,0 +1,39 @@
+# GraphRAG 领域本体示例（复制为 configs/graph_schema.yaml 后按需修改）
+#
+# enabled=false 时采用 schema-less 宽松模式，不影响默认关闭的 GraphRAG 行为。
+
+enabled: false
+
+nodes:
+  Equipment:
+    name: Equipment
+    labels: ["Entity", "Equipment"]
+    key_fields: ["name"]
+    properties: ["name", "category", "location"]
+
+  Fault:
+    name: Fault
+    labels: ["Entity", "Fault"]
+    key_fields: ["name"]
+    properties: ["name", "severity"]
+
+  Procedure:
+    name: Procedure
+    labels: ["Entity", "Procedure"]
+    key_fields: ["name"]
+    properties: ["name", "step_no"]
+
+relations:
+  HAS_FAULT:
+    name: HAS_FAULT
+    type: HAS_FAULT
+    from_node: Equipment
+    to_node: Fault
+    properties: ["confidence"]
+
+  MITIGATED_BY:
+    name: MITIGATED_BY
+    type: MITIGATED_BY
+    from_node: Fault
+    to_node: Procedure
+    properties: ["confidence"]

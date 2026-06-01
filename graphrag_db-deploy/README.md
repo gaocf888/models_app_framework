@@ -180,3 +180,33 @@ networks:
 
 二者可独立部署，也可在同一项目中同时启用（应用栈分别通过 `RAG_ES_*` 与 `NEO4J_*` 环境变量接入）。
 
+---
+
+## 8. Init 脚本（约束 / 索引）
+
+首次部署空库后，建议执行：
+
+- 脚本：`init/01-constraints-indexes.cypher`
+- 说明：`init/README.md`
+
+执行完成后，再在应用 `.env` 中按需开启 `GRAPH_RAG_ENABLED=true`。
+
+---
+
+## 9. 与应用知识图谱配置段对照
+
+| 部署侧（本目录 `.env`） | 应用侧（`app/app-deploy/.env`） |
+|-------------------------|----------------------------------|
+| `NEO4J_USERNAME` / `NEO4J_PASSWORD` | 同名 |
+| `NEO4J_BOLT_PORT` / `NEO4J_HTTP_PORT` | `NEO4J_URI=bolt://graph-neo4j:7687` |
+| `NEO4J_NETWORK` | `GRAPH_DOCKER_NETWORK`（Compose 专用） |
+
+应用侧额外开关（默认关）：
+
+- `GRAPH_RAG_ENABLED=false`
+- `GRAPH_RAG_INGEST_ON_RAG=false` — RAG 摄入是否联动写图
+- `GRAPH_RAG_MODE=vector` — 检索模式
+- `GRAPH_EXTRACTION_MODE=llm` — LLM 实体关系抽取
+
+运维 API：`GET /graph/health`（应用启动且 Graph 开启后）。详见 `framework-guide/GraphRAG整体实现技术说明.md`。
+

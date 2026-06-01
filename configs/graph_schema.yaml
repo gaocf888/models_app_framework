@@ -1,0 +1,38 @@
+# GraphRAG 领域本体（默认 enabled=false，schema-less 宽松模式）
+# 参考 configs/graph_schema.yaml.example 按需扩展。
+
+enabled: false
+
+nodes:
+  Equipment:
+    name: Equipment
+    labels: ["Entity", "Equipment"]
+    key_fields: ["name"]
+    properties: ["name", "category", "location"]
+
+  Fault:
+    name: Fault
+    labels: ["Entity", "Fault"]
+    key_fields: ["name"]
+    properties: ["name", "severity"]
+
+  Procedure:
+    name: Procedure
+    labels: ["Entity", "Procedure"]
+    key_fields: ["name"]
+    properties: ["name", "step_no"]
+
+relations:
+  HAS_FAULT:
+    name: HAS_FAULT
+    type: HAS_FAULT
+    from_node: Equipment
+    to_node: Fault
+    properties: ["confidence"]
+
+  MITIGATED_BY:
+    name: MITIGATED_BY
+    type: MITIGATED_BY
+    from_node: Fault
+    to_node: Procedure
+    properties: ["confidence"]

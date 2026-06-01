@@ -109,6 +109,10 @@ class GraphRAGConfig:
     """
 
     enabled: bool = False
+    # RAG 摄入成功后是否联动写图（与 enabled 独立，默认关）
+    ingest_on_rag: bool = False
+    # RAG 删文档时是否同步清理图侧数据（与 ingest_on_rag 独立，默认关）
+    delete_on_rag: bool = False
 
     # Neo4j 连接信息（如未配置，则禁用 GraphRAG）
     uri: str | None = None
@@ -118,13 +122,25 @@ class GraphRAGConfig:
 
     # 可选：配置文件路径（如 graph_schema.yaml），便于通过外部 YAML 定义 schema
     schema_config_path: str | None = None
+    schema_hot_reload: bool = False
 
     # 领域本体 / Schema（可选）
     schema: GraphSchemaConfig = field(default_factory=GraphSchemaConfig)
 
     # 混合检索策略
     strategy: GraphHybridStrategyConfig = field(default_factory=GraphHybridStrategyConfig)
-    # 实体抽取与图事实输出策略（工程化可调参数）
+
+    # 实体关系抽取：llm（默认）| rule（调试）
+    extraction_mode: str = "llm"
+    extraction_fallback_rule: bool = False
+    llm_endpoint: str | None = None
+    llm_model: str | None = None
+    llm_timeout_s: float = 120.0
+    llm_max_tokens: int = 2048
+    llm_batch_size: int = 4
+    llm_max_retries: int = 2
+
+    # 实体抽取与图事实输出策略（工程化可调参数；规则抽取回退时使用）
     entity_min_len: int = 2
     entity_max_len: int = 24
     zh_entity_max_len: int = 8
@@ -134,6 +150,7 @@ class GraphRAGConfig:
     min_cooccur_weight: int = 1
     fact_template_entity: str = "[Graph] 实体 {entity} 相关片段: {text}"
     fact_template_cooccur: str = "[Graph] 实体共现: {a} -> {b} (weight={weight})"
+    fact_template_relation: str = "[Graph] 关系 {rel_type}: {source} -> {target}"
 
 
 @dataclass
@@ -879,12 +896,23 @@ def _load_from_env() -> AppConfig:
     )
     graph_cfg = GraphRAGConfig(
         enabled=os.getenv("GRAPH_RAG_ENABLED", "false").lower() == "true",
+        ingest_on_rag=os.getenv("GRAPH_RAG_INGEST_ON_RAG", "false").lower() == "true",
+        delete_on_rag=os.getenv("GRAPH_RAG_DELETE_ON_RAG", "false").lower() == "true",
         uri=os.getenv("NEO4J_URI"),
         username=os.getenv("NEO4J_USERNAME"),
         password=os.getenv("NEO4J_PASSWORD"),
         database=os.getenv("NEO4J_DATABASE") or None,
-        schema_config_path=os.getenv("GRAPH_SCHEMA_CONFIG_PATH") or None,
+        schema_config_path=os.getenv("GRAPH_SCHEMA_CONFIG_PATH") or "configs/graph_schema.yaml",
+        schema_hot_reload=os.getenv("GRAPH_SCHEMA_HOT_RELOAD", "false").lower() == "true",
         strategy=graph_strategy,
+        extraction_mode=os.getenv("GRAPH_EXTRACTION_MODE", "llm").lower(),
+        extraction_fallback_rule=os.getenv("GRAPH_EXTRACTION_FALLBACK_RULE", "false").lower() == "true",
+        llm_endpoint=os.getenv("GRAPH_LLM_ENDPOINT") or None,
+        llm_model=os.getenv("GRAPH_LLM_MODEL") or None,
+        llm_timeout_s=float(os.getenv("GRAPH_LLM_TIMEOUT_S", "120")),
+        llm_max_tokens=int(os.getenv("GRAPH_LLM_MAX_TOKENS", "2048")),
+        llm_batch_size=max(1, int(os.getenv("GRAPH_LLM_BATCH_SIZE", "4"))),
+        llm_max_retries=max(0, int(os.getenv("GRAPH_LLM_MAX_RETRIES", "2"))),
         entity_min_len=int(os.getenv("GRAPH_ENTITY_MIN_LEN", "2")),
         entity_max_len=int(os.getenv("GRAPH_ENTITY_MAX_LEN", "24")),
         zh_entity_max_len=int(os.getenv("GRAPH_ZH_ENTITY_MAX_LEN", "8")),
@@ -896,7 +924,14 @@ def _load_from_env() -> AppConfig:
         fact_template_cooccur=os.getenv(
             "GRAPH_FACT_TEMPLATE_COOCCUR", "[Graph] 实体共现: {a} -> {b} (weight={weight})"
         ),
+        fact_template_relation=os.getenv(
+            "GRAPH_FACT_TEMPLATE_RELATION", "[Graph] 关系 {rel_type}: {source} -> {target}"
+        ),
     )
+    if graph_cfg.enabled:
+        from app.graph.schema_loader import apply_schema_to_graph_config
+
+        graph_cfg = apply_schema_to_graph_config(graph_cfg)
 
     ingestion_cfg = RAGIngestionConfig(
         ingest_async_enabled=os.getenv("RAG_INGEST_ASYNC_ENABLED", "true").lower() == "true",

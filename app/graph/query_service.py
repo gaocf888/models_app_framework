@@ -132,6 +132,29 @@ class GraphQueryService:
                         )
                     )
 
+        if len(facts) < limit:
+            rel_rows = self._cypher_rows(
+                """
+                MATCH (a:Entity {namespace: $namespace})-[r:GRAPH_REL]->(b:Entity {namespace: $namespace})
+                WHERE a.entity_id IN $terms OR toLower(a.name) IN $terms
+                RETURN a.name AS source, b.name AS target, r.rel_type AS rel_type
+                LIMIT $limit
+                """,
+                {"namespace": ns, "terms": terms, "limit": limit},
+            )
+            for r in rel_rows:
+                source = r.get("source")
+                target = r.get("target")
+                rel_type = r.get("rel_type") or "RELATED"
+                if source and target:
+                    facts.append(
+                        self._cfg.fact_template_relation.format(
+                            rel_type=rel_type,
+                            source=source,
+                            target=target,
+                        )
+                    )
+
         seen = set()
         unique: List[str] = []
         for f in facts:

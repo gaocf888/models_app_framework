@@ -47,17 +47,20 @@ class RAGIngestionService:
         self._rag_service = RAGService(embedding_service=self._embedding_service, store_provider=self._store_provider)
         self._datasets: Dict[str, RAGDatasetMeta] = {}
 
-        # 按配置决定是否启用 GraphRAG 摄入
         cfg = get_app_config().rag  # type: ignore[attr-defined]
+        graph_cfg = cfg.graph
+        self._graph_cfg = graph_cfg
+        self._graph_injected = graph_ingestion is not None
         if graph_ingestion is not None:
             self._graph_ingestion = graph_ingestion
-        else:
-            # 如果配置开启了 GraphRAG，则尝试初始化默认 GraphIngestionService
+        elif graph_cfg.enabled and (graph_cfg.ingest_on_rag or graph_cfg.delete_on_rag):
             try:
-                self._graph_ingestion = GraphIngestionService(cfg.graph) if cfg.graph.enabled else None
+                self._graph_ingestion = GraphIngestionService(graph_cfg)
             except Exception as e:
                 logger.warning("failed to initialize GraphIngestionService: %s", e, exc_info=True)
                 self._graph_ingestion = None
+        else:
+            self._graph_ingestion = None
 
     def ingest_texts(
         self,
@@ -164,9 +167,9 @@ class RAGIngestionService:
         self, doc_name: str, namespace: str | None = None, doc_version: str | None = None
     ) -> int:
         deleted = self._rag_service.delete_by_doc_name(doc_name=doc_name, namespace=namespace, doc_version=doc_version)
-        if getattr(self, "_graph_ingestion", None) is not None:
+        if self._graph_ingestion is not None and self._should_sync_graph_delete():
             try:
-                self._graph_ingestion.delete_document(  # type: ignore[call-arg]
+                self._graph_ingestion.delete_document(  # type: ignore[union-attr]
                     doc_name=doc_name, namespace=namespace, doc_version=doc_version
                 )
             except Exception as e:  # noqa: BLE001
@@ -180,6 +183,21 @@ class RAGIngestionService:
                 )
         return deleted
 
+    def _should_sync_graph_ingest(self) -> bool:
+        if self._graph_ingestion is None:
+            return False
+        if self._graph_injected:
+            return True
+        return bool(self._graph_cfg.enabled and self._graph_cfg.ingest_on_rag)
+
+    def _should_sync_graph_delete(self) -> bool:
+        if self._graph_ingestion is None:
+            return False
+        if self._graph_injected:
+            return True
+        g = self._graph_cfg
+        return bool(g.enabled and (g.ingest_on_rag or g.delete_on_rag))
+
     def post_index_hook(
         self,
         dataset_id: str,
@@ -192,9 +210,9 @@ class RAGIngestionService:
         """
         摄入后钩子：用于承接图侧写入、后续审计/通知等扩展能力。
         """
-        if getattr(self, "_graph_ingestion", None) is not None:
+        if self._graph_ingestion is not None and self._should_sync_graph_ingest():
             try:
-                self._graph_ingestion.ingest_from_chunks(  # type: ignore[call-arg]
+                self._graph_ingestion.ingest_from_chunks(  # type: ignore[union-attr]
                     dataset_id=dataset_id,
                     texts=texts,
                     namespace=namespace,
