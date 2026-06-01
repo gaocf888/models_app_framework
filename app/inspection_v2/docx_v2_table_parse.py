@@ -23,6 +23,7 @@ CELL_RE = re.compile(
 _UP_LABELS = frozenset({"上", "向上", "上数", "上部"})
 _DOWN_LABELS = frozenset({"下", "向下", "下数", "下部"})
 _THK_TOLERANCE = 0.03
+_COMBO_INDEX_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
 
 
 def thk_close(a: float, b: float, tol: float = _THK_TOLERANCE) -> bool:
@@ -41,6 +42,14 @@ def parse_int_cell(text: str) -> int | None:
     if not re.fullmatch(r"-?\d+", t):
         return None
     return int(t)
+
+
+def parse_combo_cell(text: str) -> tuple[str, str] | None:
+    """组合编号单元格（如 2-1）→ (行号段, 管号段)。"""
+    m = _COMBO_INDEX_RE.fullmatch((text or "").strip())
+    if not m:
+        return None
+    return m.group(1), m.group(2)
 
 
 def cell_defect_by_markup(color_note: str | None, part: str) -> bool:
@@ -84,10 +93,26 @@ class IndexPair:
 
 
 @dataclass
+class ComboIndexCell:
+    """编号列为组合编号（如 2-1）的单元格事实。"""
+
+    scope_label: str
+    direction: str
+    row_ri: int
+    idx_col: int
+    thk_col: int
+    raw: str
+    row_part: str
+    tube_part: str
+    thickness: float | None = None
+
+
+@dataclass
 class ParsedTable:
     lines: list[str]
     cells: dict[tuple[int, int], dict[str, Any]] = field(default_factory=dict)
     pairs: list[IndexPair] = field(default_factory=list)
+    combo_cells: list[ComboIndexCell] = field(default_factory=list)
     groups: list[DirectionGroup] = field(default_factory=list)
 
 
@@ -288,6 +313,69 @@ def build_index_pairs(lines: list[str], cells: dict[tuple[int, int], dict[str, A
     return pairs
 
 
+def build_combo_cells(lines: list[str], cells: dict[tuple[int, int], dict[str, Any]]) -> list[ComboIndexCell]:
+    """扫描编号列上的组合编号单元格（与 build_index_pairs 列组/作用域一致）。"""
+    out: list[ComboIndexCell] = []
+    bands = _row_bands(lines)
+    all_hmerge: list[ScopeSegment] = []
+    for line in lines:
+        all_hmerge.extend(_parse_hmerge_segments_from_line(line))
+
+    for band_start, band_end in bands:
+        major = [s for s in all_hmerge if s.header_row == band_start and _is_major_title(s)]
+        minor: list[ScopeSegment] = []
+        for s in all_hmerge:
+            if band_start < s.header_row < band_end and not _is_major_title(s):
+                minor.append(s)
+
+        dir_row: int | None = None
+        groups: list[DirectionGroup] = []
+        for ri in range(band_start + 1, band_end + 1):
+            line = next((ln for ln in lines if ln.startswith(f"r{ri}:")), "")
+            if not line:
+                continue
+            gs = _parse_column_groups_from_row(line.split(":", 1)[1], ri)
+            if gs:
+                dir_row = ri
+                groups = gs
+                break
+
+        if not groups:
+            groups = [
+                DirectionGroup("上", 0, 1, band_start),
+                DirectionGroup("下", 2, 3, band_start),
+            ]
+
+        data_start = (dir_row + 1) if dir_row is not None else band_start + 1
+        for ri in range(data_start, band_end + 1):
+            for g in groups:
+                idx_info = cells.get((ri, g.idx_col))
+                if not idx_info:
+                    continue
+                raw = (idx_info.get("text") or "").strip()
+                combo = parse_combo_cell(raw)
+                if not combo:
+                    continue
+                row_part, tube_part = combo
+                thk_info = cells.get((ri, g.thk_col))
+                thk_val = parse_float_cell(thk_info.get("text", "")) if thk_info else None
+                scope = _scope_label_for_col(g.idx_col, major, minor)
+                out.append(
+                    ComboIndexCell(
+                        scope_label=scope,
+                        direction=g.direction,
+                        row_ri=ri,
+                        idx_col=g.idx_col,
+                        thk_col=g.thk_col,
+                        raw=raw,
+                        row_part=row_part,
+                        tube_part=tube_part,
+                        thickness=thk_val,
+                    )
+                )
+    return out
+
+
 def parse_tables_from_chunk(chunk: str) -> list[ParsedTable]:
     tables: list[ParsedTable] = []
     current: list[str] = []
@@ -312,4 +400,5 @@ def _finalize_table(lines: list[str]) -> ParsedTable:
     cells = parse_table_rows(lines)
     groups = parse_column_groups(lines)
     pairs = build_index_pairs(lines, cells)
-    return ParsedTable(lines=lines, cells=cells, pairs=pairs, groups=groups)
+    combo_cells = build_combo_cells(lines, cells)
+    return ParsedTable(lines=lines, cells=cells, pairs=pairs, combo_cells=combo_cells, groups=groups)

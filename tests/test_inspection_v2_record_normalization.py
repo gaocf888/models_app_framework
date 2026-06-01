@@ -124,3 +124,21 @@ def test_apply_deterministic_rules_english_keys_get_chinese_fields() -> None:
     assert out["行号"] == "1"
     assert out["tube_no"] == "-2"
     assert out["管号"] == "-2"
+
+
+def test_combo_flag_skips_wall_rules_on_replay() -> None:
+    from app.inspection_v2.record_normalization import (
+        COMBO_INDEX_FROM_CHUNK,
+        apply_deterministic_rules_to_record,
+    )
+
+    out = apply_deterministic_rules_to_record(
+        {
+            "检测位置": "水冷壁左墙第1层第1贴壁风孔",
+            "行号": "2",
+            "管号": "1",
+            COMBO_INDEX_FROM_CHUNK: True,
+        }
+    )
+    assert out["行号"] == "2"
+    assert out["管号"] == "1"

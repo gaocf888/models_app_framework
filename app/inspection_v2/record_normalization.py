@@ -3,7 +3,7 @@
 
 - 管号符号：表格语境含「上/向上/上数…」时对纯整数管号补负号；含「下/向下…」时去掉多余负号。
 - 设备语义：水冷壁/包墙/后竖井/冷灰斗 → 行号固定为 1；再热器/过热器/省煤器等 → 管号固定为 1。
-- 组合编号（如 2-1）：前行号、后管号；命中时跳过设备语义校正与管号正负号校正。
+- 组合编号（如 2-1）：combo_index_guard 基于 chunk 编号列判定；无 chunk 时字段字面量兜底。
 """
 
 from __future__ import annotations
@@ -18,6 +18,10 @@ _DOWN_MARKERS = ("向下", "下数", "下排", "下行", "下测", "下部")
 _WALL_ROW1_MARKERS = ("水冷壁", "包墙", "后竖井", "冷灰斗")
 # 检测位置含下列词时：管号必须为 1，表格编号列语义为行号
 _REHEATER_TUBE1_MARKERS = ("再热器", "低再", "高再", "过热器", "低过", "高过", "省煤器")
+
+# parse 阶段 combo_index_guard 写入；落盘供 post_process / GET chunks 重放（公开 API 需 strip）
+COMBO_INDEX_FROM_CHUNK = "combo_index_from_chunk"
+_COMBO_GUARD_PREFIX = "combo_index_guard:"
 
 
 def _collapse_ws(s: str) -> str:
@@ -47,6 +51,28 @@ def _resolve_combo_row_tube(row: str, tube: str) -> tuple[str, str, bool]:
     if from_tube:
         return from_tube[0], from_tube[1], True
     return row, tube, False
+
+
+def is_combo_index_protected(item: dict[str, Any]) -> bool:
+    """record 已由 chunk 组合编号守卫标记，跳过设备语义与管号符号校正。"""
+    if item.get(COMBO_INDEX_FROM_CHUNK):
+        return True
+    warns = item.get("warnings")
+    if isinstance(warns, list):
+        return any(str(w).startswith(_COMBO_GUARD_PREFIX) for w in warns)
+    return False
+
+
+def _sync_row_tube_fields(out: dict[str, Any]) -> None:
+    loc = str(out.get("检测位置") or out.get("location") or "").strip()
+    row = str(out.get("行号") or out.get("row_no") or "").strip()
+    tube = str(out.get("管号") or out.get("tube_no") or "").strip()
+    out["检测位置"] = loc
+    out["location"] = loc
+    out["行号"] = row
+    out["row_no"] = row
+    out["管号"] = tube
+    out["tube_no"] = tube
 
 
 def _loc_has(loc: str, markers: tuple[str, ...]) -> bool:
@@ -163,6 +189,10 @@ def normalize_location_row_tube(
 def apply_deterministic_rules_to_record(item: dict[str, Any]) -> dict[str, Any]:
     """对单条原始 dict（中英字段混用）做规范化，供 canonicalize 前调用。"""
     out = dict(item)
+    if is_combo_index_protected(out):
+        _sync_row_tube_fields(out)
+        return out
+
     loc = str(out.get("检测位置") or out.get("location") or "").strip()
     row = str(out.get("行号") or out.get("row_no") or "").strip()
     tube = str(out.get("管号") or out.get("tube_no") or "").strip()

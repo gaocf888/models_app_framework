@@ -18,6 +18,7 @@ from app.inspection_v2.docx_v2_table_parse import (
 from app.inspection_v2.record_normalization import (
     _REHEATER_TUBE1_MARKERS,
     _WALL_ROW1_MARKERS,
+    is_combo_index_protected,
 )
 
 _REHEATER_LOC = _REHEATER_TUBE1_MARKERS
@@ -333,6 +334,9 @@ def apply_docx_v2_tube_thickness_bind_guard(
             out.append(rec)
             continue
         item = dict(rec)
+        if is_combo_index_protected(item):
+            out.append(item)
+            continue
         mode = _device_mode(_record_location(item))
         if mode == "wall":
             item = _bind_wall_record(item, all_pairs)

@@ -667,6 +667,8 @@ class InspectionExtractConfig:
     v2_color_guard_enabled: bool = True
     # DOCX V2：parse 后按分块网格校正管号+壁厚绑定（方案 C）
     v2_bind_guard_enabled: bool = True
+    # DOCX V2：parse 后按 chunk 组合编号（2-1）标记并校正行号/管号
+    v2_combo_guard_enabled: bool = True
     # 异步检修任务（断点续跑）根目录：每任务子目录含 request.json、chunks/*.json、job_meta.json
     async_jobs_state_dir: str = "./data/inspection_extract_jobs"
     # REDIS_URL 启用时：检修异步队列 worker 线程数（与摄入队列分离 key_prefix）
@@ -1288,6 +1290,8 @@ def _load_from_env() -> AppConfig:
         v2_color_guard_enabled=os.getenv("INSPECT_EXTRACT_V2_COLOR_GUARD", "true").lower()
         in ("1", "true", "yes", "on"),
         v2_bind_guard_enabled=os.getenv("INSPECT_EXTRACT_V2_BIND_GUARD", "true").lower()
+        in ("1", "true", "yes", "on"),
+        v2_combo_guard_enabled=os.getenv("INSPECT_EXTRACT_V2_COMBO_GUARD", "true").lower()
         in ("1", "true", "yes", "on"),
         async_jobs_state_dir=(
             os.getenv("INSPECT_EXTRACT_ASYNC_JOBS_DIR", "./data/inspection_extract_jobs") or "./data/inspection_extract_jobs"

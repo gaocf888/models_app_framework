@@ -1244,6 +1244,7 @@ class InspectionExtractJobScheduler:
             y = apply_deterministic_rules_to_record(dict(row))
             y.pop("evidence", None)
             y.pop("warnings", None)
+            y.pop("combo_index_from_chunk", None)
             for en_key in ("location", "row_no", "tube_no"):
                 y.pop(en_key, None)
             public_rows.append(y)
