@@ -31,6 +31,7 @@ from app.llm.graphs.analysis_synthesis_v2 import (
 )
 from app.llm.graphs.overheat_synthesis_render import (
     OVERHEAT_CH1_INTRO,
+    OVERHEAT_DOCX_AUTHORING_RULES,
     build_overheat_distribution_note,
     filter_overheat_slot_ids,
     infer_overheat_report_context,
@@ -100,10 +101,26 @@ class TestOverheatReportContext(unittest.TestCase):
         self.assertEqual("weekly", ctx["analysis_mode"])
 
 
+class TestSanitizeNarrative(unittest.TestCase):
+    def test_strips_docx_instruction_lines(self):
+        raw = (
+            "关联本次出现的超温区域，根据知识片段出具针对性措施，以下内容为示例：\n\n"
+            "紧急处置\n适当降低机组负荷。"
+        )
+        cleaned = _sanitize_report_narrative(raw)
+        self.assertNotIn("以下内容为示例", cleaned)
+        self.assertIn("紧急处置", cleaned)
+
+
 class TestOverheatRenderers(unittest.TestCase):
-    def test_ch1_intro_contains_rules(self):
-        self.assertIn("异常等级分为", OVERHEAT_CH1_INTRO)
-        self.assertIn("Query 中如果是问今天", OVERHEAT_CH1_INTRO)
+    def test_ch1_intro_is_section_header_only(self):
+        self.assertEqual("## 超温情况概览\n\n", OVERHEAT_CH1_INTRO)
+        self.assertNotIn("Query 中如果是问今天", OVERHEAT_CH1_INTRO)
+        self.assertNotIn("该章节数据和报告要求", OVERHEAT_CH1_INTRO)
+
+    def test_authoring_rules_separate_from_report_body(self):
+        self.assertIn("禁止出现在报告正文", OVERHEAT_DOCX_AUTHORING_RULES)
+        self.assertIn("以下内容为示例", OVERHEAT_DOCX_AUTHORING_RULES)
 
     def test_daily_section_structure(self):
         rows = [
@@ -357,6 +374,9 @@ class TestAnalysisSynthesisV2Engine(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--按日超温分析--", result.summary)
         self.assertIn("机组信息：1号锅炉", result.summary)
         self.assertIn("## 超温原因剖析", result.summary)
+        self.assertNotIn("该章节数据和报告要求", result.summary)
+        self.assertNotIn("以下内容为示例", result.summary)
+        self.assertNotIn("Query 中如果是问", result.summary)
         self.assertNotIn("--按周超温分析--", result.summary)
         self.assertNotIn("### 超温原因剖析", result.summary)
         self.assertGreaterEqual(llm.chat.await_count, 1)

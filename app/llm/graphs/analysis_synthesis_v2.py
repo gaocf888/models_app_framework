@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator, Callable, Literal
 from app.core.logging import get_logger
 from app.llm.graphs.overheat_synthesis_render import (
     OVERHEAT_CH1_INTRO,
+    OVERHEAT_DOCX_AUTHORING_RULES,
     build_overheat_distribution_note,
     filter_overheat_slot_ids,
     overheat_data_source_label,
@@ -85,8 +86,23 @@ def _data_source_label(item_id: str) -> str:
     return overheat_data_source_label(item_id)
 
 
+_OVERHEAT_INSTRUCTION_LINE_PATTERNS = (
+    r"没有询问具体锅炉时，需要输出所有锅炉内容。?",
+    r"异常等级分为[：:].*",
+    r"该章节数据和报告要求[：:]?",
+    r"Query\s*中如果是问.*",
+    r"Query\s*中如果是指定了机组.*",
+    r"（查询\s*sql\s*首先按照机组进行排序.*）",
+    r"对具体锅炉的每条超温数据进行详细分析.*",
+    r"2、若查询为周超温，则需要分析日超温趋势.*",
+    r"关联本次出现的超温区域，根据知识片段出具针对性措施[，,]?以下内容为示例[：:]?",
+    r"以下内容为示例[：:]?",
+    r"关联本次超温出现的问题，拉取知识片段并推理评估",
+)
+
+
 def _sanitize_report_narrative(text: str) -> str:
-    """移除正文中不应出现的置信度/依据/q 编号等（对齐 docx 实战示例口径）。"""
+    """移除正文中不应出现的置信度/依据/q 编号及 docx 红色说明文字。"""
     if not (text or "").strip():
         return text or ""
     out = text
@@ -98,6 +114,8 @@ def _sanitize_report_narrative(text: str) -> str:
     out = re.sub(r"[（(]依据[：:][^）)\n]+[）)]", "", out)
     out = re.sub(r"依据[：:][^\n。；;]+", "", out)
     out = re.sub(r"数据依据[：:][^\n]+", "", out)
+    for pat in _OVERHEAT_INSTRUCTION_LINE_PATTERNS:
+        out = re.sub(rf"(?m)^\s*{pat}\s*$", "", out)
     # 多余空行
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip()
@@ -157,12 +175,14 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             source_item_ids=("q1", "q4", "q5", "q6", "q7"),
             narrative_instruction=(
                 "撰写「超温原因剖析」正文（禁止输出 # / ## / ### 标题行；章节标题已由系统输出）。"
+                "禁止输出 docx 模板红色说明文字或示例段落（如「对具体锅炉的每条超温数据进行详细分析…」"
+                "「2、若查询为周超温…」及模板中烟气侧/介质侧示例长句），仅输出基于查库与 RAG 的分析结论。"
                 "结构须对齐模板："
-                "1) 对具体锅炉每条超温数据综合分析负荷、主汽压力、主汽温度、炉膛负压、氧量等工况；"
+                "1) 结合 q4 与 q5 综合分析负荷、主汽压力、主汽温度、炉膛负压、氧量等工况；"
                 "2) 提取集中式/分散式/混合型分布特征并说明判据；"
                 "3) 若为周超温，须分析日超温趋势并推导核心诱因；"
                 "4) 按锅炉分段（多机组时），以「导致本次#N锅炉超温的原因大致为…」起笔，"
-                "再分烟气侧、介质侧、运行操作、设备本体四方面归纳共性原因；"
+                "再分烟气侧、介质侧、运行操作、设备本体四方面归纳共性原因（仅作小标题分类，内容须有数据依据）；"
                 "运行操作侧须结合 q6 吹灰区域汇总（吹灰次数/天数/时长）判断吹灰频次是否不足，"
                 "并结合 q7 磨煤机运行汇总（给煤量/负荷波动）分析启停磨或煤质波动影响，"
                 "结合 q5 SIS 六类关联参数汇总（减温水/烟温/排烟/总风量/氧量/炉膛负压，按参数类型 min/max/avg）分析工况联动；"
@@ -187,7 +207,8 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             source_item_ids=("q1", "q2"),
             narrative_instruction=(
                 "撰写「超温风险评估」正文（禁止输出 # / ## / ### 标题行）。"
-                "须关联本次超温问题，结合 RAG 知识片段推理评估："
+                "禁止输出 docx 红色说明句「关联本次超温出现的问题，拉取知识片段并推理评估」。"
+                "须结合 q1/q2 极值与 RAG 知识片段推理："
                 "说明诱因、最大瞬时超温值、连续超温时长是否超标、异常等级（尤其Ⅲ/Ⅳ级）；"
                 "并连贯叙述管材蠕变、氧化皮、金相劣化、爆管泄漏等风险。"
                 "无数据写待补充；禁止置信度、依据、措施建议、额外章节。"
@@ -197,10 +218,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s09_ch4_hdr",
             kind="static_markdown",
             title="",
-            static_body=(
-                "## 总结和推荐措施\n\n"
-                "关联本次出现的超温区域，根据知识片段出具针对性措施，以下内容为示例：\n\n"
-            ),
+            static_body="## 总结和推荐措施\n\n",
         ),
         SynthesisV2Slot(
             id="s10_measures",
@@ -209,6 +227,8 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             source_item_ids=("q1", "q2", "q4", "q5"),
             narrative_instruction=(
                 "撰写「总结和推荐措施」正文（禁止输出 # / ## / ### 标题行）。"
+                "禁止输出 docx 红色说明「关联本次…以下内容为示例」及模板示例措施全文；"
+                "须基于本次超温区域、严重测点与 RAG 知识自行撰写可执行措施。"
                 "须严格按模板输出四个 plain 小节（每节标题单独一行，后接正文，勿加 Markdown 标题符号）："
                 "紧急处置（可含整体调控、差异化降温、紧急调整等要点）；"
                 "运行优化调整（可含共性优化、专项优化）；"
@@ -1790,12 +1810,18 @@ class AnalysisSynthesisV2Engine:
         ):
             tpl = self._prompts.get_template(scene=scene, version="v1")
             if tpl and tpl.content.strip():
-                return tpl.content.strip()
-        return (
+                base = tpl.content.strip()
+                if analysis_type == "overheat_guidance":
+                    return f"{base}\n\n{OVERHEAT_DOCX_AUTHORING_RULES}"
+                return base
+        fallback = (
             "你是《锅炉管壁超温智能分析报告》撰写专家。严格按【本章写作任务】输出指定章节正文；"
             "禁止编造数值；禁止 Markdown 标题行；禁止出现置信度、依据、q 编号；"
             "禁止增删模板章节或额外「结论摘要/综合评估/建议措施」结构。"
         )
+        if analysis_type == "overheat_guidance":
+            return f"{fallback}\n\n{OVERHEAT_DOCX_AUTHORING_RULES}"
+        return fallback
 
     def _build_segment_user_content(
         self,
