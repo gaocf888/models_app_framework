@@ -61,6 +61,7 @@ from app.llm.graphs.analysis_synthesis_v2 import (
     AnalysisSynthesisV2Engine,
     synthesis_v2_registry_available,
 )
+from app.llm.graphs.overheat_synthesis_render import infer_overheat_report_context
 
 logger = get_logger(__name__)
 
@@ -169,6 +170,41 @@ class AnalysisGraphRunner:
     def _mark_node(node_latency_ms: dict[str, int], node_status: dict[str, str], node: str, started: float, ok: bool) -> None:
         node_latency_ms[node] = int((perf_counter() - started) * 1000)
         node_status[node] = "success" if ok else "failed"
+
+    @staticmethod
+    def _should_skip_optional_overheat_q5(
+        task: _PlanTask,
+        analysis_type: str,
+        gathered_data: dict[str, list[dict]],
+    ) -> bool:
+        """q1 无超温行时跳过 optional q5，避免对 sis_pi_data 做无效大表扫描。"""
+        if task.item_id != "q5" or task.mandatory:
+            return False
+        if "overheat" not in (analysis_type or ""):
+            return False
+        return not (gathered_data.get("q1") or [])
+
+    @staticmethod
+    def _skipped_plan_call(task: _PlanTask, *, error: str) -> AnalysisNL2SQLCall:
+        return AnalysisNL2SQLCall(
+            item_id=task.item_id,
+            purpose=task.purpose,
+            question=task.question,
+            sql="",
+            row_count=0,
+            status="skipped",
+            attempts=0,
+            dependency_ids=task.dependency_ids,
+            error=error,
+        )
+
+    @staticmethod
+    def _task_status_from_call(task: _PlanTask, call: AnalysisNL2SQLCall) -> str:
+        if call.status == "success":
+            return "success"
+        if call.status == "skipped":
+            return "mandatory_failed" if task.mandatory else "optional_skipped"
+        return "mandatory_failed" if task.mandatory else "optional_failed"
 
     @staticmethod
     def _safe_doc_id(chunk: Any) -> str:
@@ -1915,6 +1951,13 @@ class AnalysisGraphRunner:
             json_fallback=self._json_fallback,
         )
 
+    def _resolve_overheat_report_context(
+        self, analysis_type: str, query: str
+    ) -> dict[str, Any] | None:
+        if analysis_type != "overheat_guidance":
+            return None
+        return infer_overheat_report_context(query)
+
     async def _execute_synthesis(
         self,
         *,
@@ -1934,6 +1977,7 @@ class AnalysisGraphRunner:
         if effective == "v2":
             engine = self._make_synthesis_v2_engine()
             gathered = data_blob if isinstance(data_blob, dict) else {}
+            report_context = self._resolve_overheat_report_context(analysis_type, query)
             v2_result = await engine.run_sync(
                 analysis_type=analysis_type,
                 query=query,
@@ -1943,6 +1987,7 @@ class AnalysisGraphRunner:
                 planning_context=planning_context,
                 chart_mode=chart_mode,
                 task_status=task_status,
+                report_context=report_context,
             )
             return _SynthesisRunOutcome(
                 summary=v2_result.summary,
@@ -1990,6 +2035,7 @@ class AnalysisGraphRunner:
         task_status: dict[str, str] | None = None,
     ) -> AsyncIterator[tuple[dict[str, Any], _SynthesisRunOutcome | None]]:
         engine = self._make_synthesis_v2_engine()
+        report_context = self._resolve_overheat_report_context(analysis_type, query)
         if self._analysis_cfg.synthesis_v2_stream_live_first:
             event_source = engine.iter_stream_events_live_first(
                 analysis_type=analysis_type,
@@ -2000,6 +2046,7 @@ class AnalysisGraphRunner:
                 planning_context=planning_context,
                 chart_mode=chart_mode,
                 task_status=task_status,
+                report_context=report_context,
             )
         else:
             event_source = engine.iter_stream_events(
@@ -2011,6 +2058,7 @@ class AnalysisGraphRunner:
                 planning_context=planning_context,
                 chart_mode=chart_mode,
                 task_status=task_status,
+                report_context=report_context,
             )
         async for event, result in event_source:
             if result is not None:
@@ -3424,6 +3472,15 @@ class AnalysisGraphRunner:
                     analysis_type=req.analysis_type, status="skipped"
                 ).inc()
                 continue
+            if self._should_skip_optional_overheat_q5(task, req.analysis_type, gathered_data):
+                calls.append(
+                    self._skipped_plan_call(task, error="no_overheat_events_q1_empty")
+                )
+                task_status[task.item_id] = "optional_skipped"
+                ANALYSIS_NL2SQL_CALL_COUNT.labels(
+                    analysis_type=req.analysis_type, status="skipped"
+                ).inc()
+                continue
             call, gd = await self._run_single_nl2sql_plan_task(
                 req,
                 task,
@@ -3432,10 +3489,7 @@ class AnalysisGraphRunner:
             )
             calls.append(call)
             gathered_data.update(gd)
-            if call.status == "success":
-                task_status[task.item_id] = "success"
-            else:
-                task_status[task.item_id] = "mandatory_failed" if task.mandatory else "optional_failed"
+            task_status[task.item_id] = self._task_status_from_call(task, call)
         return calls, gathered_data, task_status
 
     async def _execute_data_plan(
@@ -3471,6 +3525,8 @@ class AnalysisGraphRunner:
         sem = asyncio.Semaphore(max_par)
 
         async def bounded(task: _PlanTask) -> tuple[AnalysisNL2SQLCall, dict[str, list[dict]]]:
+            if self._should_skip_optional_overheat_q5(task, req.analysis_type, gathered_data):
+                return self._skipped_plan_call(task, error="no_overheat_events_q1_empty"), {}
             async with sem:
                 return await self._run_single_nl2sql_plan_task(
                     req,
@@ -3513,10 +3569,11 @@ class AnalysisGraphRunner:
                     tid = call.item_id
                     unfinished.discard(tid)
                     pt = task_by_id[tid]
-                    if call.status == "success":
-                        task_status[tid] = "success"
-                    else:
-                        task_status[tid] = "mandatory_failed" if pt.mandatory else "optional_failed"
+                    task_status[tid] = self._task_status_from_call(pt, call)
+                    if call.status == "skipped":
+                        ANALYSIS_NL2SQL_CALL_COUNT.labels(
+                            analysis_type=req.analysis_type, status="skipped"
+                        ).inc()
                 continue
             for t in tasks:
                 if t.item_id not in unfinished:

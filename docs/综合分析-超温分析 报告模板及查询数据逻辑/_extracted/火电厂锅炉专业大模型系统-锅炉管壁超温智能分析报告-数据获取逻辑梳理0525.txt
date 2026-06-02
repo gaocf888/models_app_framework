@@ -1,0 +1,399 @@
+火电厂锅炉专业大模型系统-锅炉管壁超温智能分析报告（多测点版·模板+示例）
+一、报告基础信息（大模型自动抓取填报）
+报告编号：GL-CW-YYYYMMDD-XXX
+生成时间：____年__月__日 __时__分
+机组信息：#__机组 锅炉型号：________ 额定负荷：____MW   SELECT
+-- 直接对应报告格式
+boiler_name AS 机组名称,
+boiler_model AS 锅炉型号,
+edfh AS 额定负荷_MW
+FROM account_boiler
+WHERE boiler_name LIKE '%1号锅炉%'
+LIMIT 1;
+监测部位：（按超温区域分类）水冷壁（左/右/前/后）、过热器（屏式/末级/低温，分区域）、再热器（高/低温）、省煤器（上/下）
+数据来源：锅炉壁温测点、DCS实时数据、烟气温度、负荷参数、吹灰记录、减温水流量、煤质分析数据
+分析主体：锅炉智能大模型超温诊断模块
+异常等级：综合判定（按最严重测点定级）Ⅰ级（轻微超温）/Ⅱ级（中度超温）/Ⅲ级（严重超温）/Ⅳ级（临界爆管）
+超温测点数量：共____个，其中轻微超温____个、中度超温____个、严重超温____个
+-- 先按测点取最高超温等级，再汇总统计
+SELECT
+COUNT( DISTINCT pi_code ) AS 超温测点总数,
+SUM( CASE WHEN LEVEL = '轻微超温' THEN 1 ELSE 0 END ) AS 轻微超温数量,
+SUM( CASE WHEN LEVEL = '中度超温' THEN 1 ELSE 0 END ) AS 中度超温数量,
+SUM( CASE WHEN LEVEL = '严重超温' THEN 1 ELSE 0 END ) AS 严重超温数量
+FROM
+(-- 子查询：每个测点取最高超温等级
+SELECT
+pi_code,
+CASE
+WHEN MAX( highest_temp ) > limit_temp
+AND MAX( highest_temp ) <= limit_temp + 10 THEN '轻微超温' WHEN MAX( highest_temp ) > limit_temp + 10
+AND MAX( highest_temp ) <= limit_temp + 30 THEN '中度超温' WHEN MAX( highest_temp ) > limit_temp + 30 THEN
+'严重超温' ELSE '正常'
+END AS LEVEL
+FROM
+monitor_hotarea_temp -- 只统计超温的记录（可选，看你是否要排除正常数据）
+WHERE
+highest_temp > limit_temp
+GROUP BY
+pi_code,
+limit_temp
+) t
+WHERE
+LEVEL != '正常';
+超温等级划分视情况而定，上述只是示例
+二、超温事件概况（多测点汇总）
+超温起止时段：起始____ 结束____ 持续时长：____（若多测点超温时段不一致，需分别标注核心测点时段）
+每个测点的超温时段汇总
+SELECT
+pi_code AS 测点号,
+boiler_id AS 锅炉 ID,
+device_id AS 受热面 ID,
+MIN( start_time ) AS 最早超温起始,
+MAX( end_time ) AS 最晚超温结束,
+SUM( limit_duration ) AS 超温总时长 _秒,-- 也可以算最长的一次超温时长
+MAX( limit_duration ) AS 单次最长超温 _秒,-- 合并显示时段，方便直接复制到报告里
+CONCAT( MIN( start_time ), ' 至 ', MAX( end_time ), '，持续 ', SUM( limit_duration ), ' 秒' ) AS 时段说明
+FROM
+monitor_hotarea_temp
+WHERE-- 限定你要统计的超温范围（比如超温事件所在的时间段）
+start_time >= '2026-01-01 00:00:00'
+AND highest_temp > limit_temp -- 确保是超温记录
+GROUP BY
+pi_code,
+boiler_id,
+device_id
+ORDER BY
+超温总时长 _秒 DESC;-- 按超温时长排序，核心测点排在前面
+运行工况：当前机组负荷____%、主汽压力____MPa、主汽温度____℃、炉膛负压____Pa、氧量____%（统一工况，若工况波动需标注波动范围）
+SELECT-- 锅炉基础信息
+b.boiler_code AS 锅炉编号,
+b.boiler_name AS 锅炉名称,
+b.edfh AS 额定负荷 _MW,-- 当前机组负荷（MW）
+ROUND( AVG( t.mw_value ), 2 ) AS 当前负荷 _MW,-- 当前机组负荷（%，自动计算，避免手动输入）
+ROUND( AVG( t.mw_value ) / b.edfh * 100, 2 ) AS 当前机组负荷 _percent,-- 主汽压力（MPa）
+ROUND( AVG( t.steam_pressure_value ), 2 ) AS 主汽压力 _MPa
+FROM
+monitor_hotarea_temp t -- 关联锅炉表获取额定负荷
+LEFT JOIN boiler b ON t.boiler_id = b.boiler_id
+WHERE-- 限定超温事件的时间范围
+t.start_time >= '2026-01-01 00:00:00'
+AND t.highest_temp > t.limit_temp
+AND b.boiler_id = '你的锅炉ID' -- 可选，指定单台锅炉
+GROUP BY
+b.boiler_id,
+b.boiler_code,
+b.boiler_name,
+b.edfh;
+超温测点汇总（按区域/严重程度分类）：
+严重超温（超温≥20℃）：测点编号____（位置：____）、____（位置：____），共____个
+中度超温（10℃≤超温<20℃）：测点编号____（位置：____）、____（位置：____），共____个
+轻微超温（5℃≤超温<10℃）：测点编号____（位置：____）、____（位置：____），共____个
+--  按超温等级统计测点+位置
+WITH over_temp_level AS (
+SELECT
+t.pi_code,
+btp.point_name,
+ab.boiler_name,
+t.device_id,
+btp.row_num,
+btp.pipe_num,
+(t.highest_temp - t.limit_temp) AS over_temp_degree,
+CASE
+WHEN (t.highest_temp - t.limit_temp) >= 20 THEN '严重超温'
+WHEN (t.highest_temp - t.limit_temp) >= 10 AND (t.highest_temp - t.limit_temp) < 20 THEN '中度超温'
+WHEN (t.highest_temp - t.limit_temp) >= 5 AND (t.highest_temp - t.limit_temp) < 10 THEN '轻微超温'
+ELSE '正常'
+END AS over_level
+FROM monitor_hotarea_temp t
+LEFT JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+LEFT JOIN base_temp_point btp ON t.pi_code = btp.point_code
+WHERE
+-- 替换为你的超温事件时间范围
+t.start_time >= '2026-01-01 00:00:00'
+AND t.highest_temp > t.limit_temp
+)
+SELECT
+over_level,
+GROUP_CONCAT(
+CONCAT(pi_code, '（位置：', boiler_name, '-',  point_name, '，第', row_num, '排第', pipe_num, '根）'),
+'、'
+) AS 测点及位置列表,
+COUNT(DISTINCT pi_code) AS 测点数量
+FROM over_temp_level
+WHERE over_level != '正常'
+GROUP BY over_level
+ORDER BY
+CASE over_level
+WHEN '严重超温' THEN 1
+WHEN '中度超温' THEN 2
+WHEN '轻微超温' THEN 3
+END;
+设计允许壁温&实际温度：各区域设计壁温____℃（若不同区域设计值不同，分区域标注）；实测最高壁温____℃（测点____），最大超温差值____℃；各超温测点平均超温差值____℃
+WITH temp_stats AS (
+SELECT
+ab.boiler_name,
+asd.device_id,
+asd.device_name,
+asd.device_type,
+btd.over_hot_limit AS design_temp,
+t.highest_temp AS actual_temp,
+t.pi_code,
+btp.point_name,
+( t.highest_temp - btd.over_hot_limit ) AS over_diff
+FROM
+monitor_hotarea_temp t
+LEFT JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+LEFT JOIN account_static_device asd ON t.device_id = asd.device_id
+LEFT JOIN base_temp_device btd ON t.device_id = btd.device_id
+LEFT JOIN base_temp_point btp ON t.pi_code = btp.point_code
+WHERE-- 替换为你的超温事件时间范围
+t.start_time >= '2026-01-01 00:00:00'
+AND t.highest_temp > t.limit_temp
+) SELECT
+boiler_name,-- 分区域设计壁温（带设备名称和类型）
+GROUP_CONCAT( DISTINCT CONCAT( device_type, '（', device_name, '）：', design_temp, '℃' ), '；' ) AS 分区域设计壁温,-- 实测最高壁温及测点
+MAX( actual_temp ) AS 实测最高壁温,
+SUBSTRING_INDEX( GROUP_CONCAT( DISTINCT CONCAT( pi_code, '（', point_name, '）' ) ORDER BY actual_temp DESC ), ',', 1 ) AS 最高壁温测点,-- 最大超温差值
+MAX( over_diff ) AS 最大超温差值,-- 各超温测点平均超温差值
+ROUND( AVG( over_diff ), 2 ) AS 平均超温差值
+FROM
+temp_stats
+GROUP BY
+boiler_name;
+超温分布特征：集中式（同一区域多个测点超温）/分散式（不同区域零散测点超温）/混合型（部分区域集中、部分区域零散）
+三、超温数据统计分析（大模型量化分析·多测点联动）
+多测点温度统计：
+各超温区域（测点组）：最大值、最小值、平均值、超温持续时长统计（可附表格）
+SELECT
+ab.boiler_name,
+asd.device_name AS 超温区域,
+COUNT(DISTINCT t.pi_code) AS 测点数量,
+MAX(t.highest_temp) AS 最高壁温_℃,
+MIN(t.highest_temp) AS 最低壁温_℃,
+ROUND(AVG(t.highest_temp),1) AS 平均壁温_℃,
+ROUND(AVG(t.highest_temp - t.limit_temp),1) AS 平均超温差值_℃,
+SUM(t.limit_duration) AS 累计超温时长_秒
+FROM monitor_hotarea_temp t
+JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+LEFT JOIN account_static_device asd ON t.device_id = asd.device_id
+WHERE
+t.start_time BETWEEN '2026-01-01 00:00:00' AND '2026-05-25 23:59:59'
+AND t.highest_temp > t.limit_temp
+GROUP BY ab.boiler_name, asd.device_name
+ORDER BY 累计超温时长_秒 DESC;
+超温频次：各测点瞬时尖峰超温（超温≥15℃）次数、累计超温时长排序
+-- 超温频次统计（超温≥15℃的次数、累计时长排序）
+SELECT
+t.pi_code AS 测点编号,
+CONCAT(asd.device_name, '-', btp.point_name) AS 测点名称,
+COUNT(CASE WHEN t.highest_temp - t.limit_temp >= 15 THEN 1 END) AS 瞬时尖峰超温次数,
+SUM(CASE WHEN t.highest_temp - t.limit_temp >= 15 THEN t.limit_duration ELSE 0 END) AS 尖峰超温累计时长_秒
+FROM monitor_hotarea_temp t
+JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+LEFT JOIN account_static_device asd ON t.device_id = asd.device_id
+LEFT JOIN base_temp_point btp ON t.pi_code = btp.point_code
+WHERE
+t.start_time BETWEEN '2026-05-01 00:00:00' AND '2026-05-25 23:59:59'
+GROUP BY t.pi_code, asd.device_name, btp.point_name
+ORDER BY 瞬时尖峰超温次数 DESC, 尖峰超温累计时长_秒 DESC;
+关联参数联动分析：
+减温水：各超温区域对应减温水回路投入量、开度、调节响应速度，与壁温变化时序对应关系
+烟气侧：各区域炉膛烟温、出口烟温、烟气流速，判断是否存在区域烟温偏差、烟气偏流
+运行参数：负荷波动、启停磨煤机、增减燃料、吹灰作业的时间节点，与多测点超温的关联性（区分“共同诱因”和“区域专属诱因”）
+-- 减温水+壁温时序联动分析
+SELECT
+DATE_FORMAT(t.start_time, '%Y-%m-%d %H:%i') AS 采集时间,
+t.pi_code AS 测点编号,
+t.highest_temp AS 壁温_℃,
+-- 假设你有减温水流量字段，这里用mw_value示例，实际替换为对应字段
+t.mw_value AS 机组负荷_MW,
+t.steam_pressure_value AS 主汽压力_MPa
+FROM monitor_hotarea_temp t
+JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+WHERE
+t.start_time BETWEEN '2026-05-01 00:00:00' AND '2026-05-25 23:59:59'
+ORDER BY 采集时间;
+多测点对比分析：同区域正常测点与超温测点的参数差异、不同超温区域的共性与个性特征（大模型自动对标历史数据）
+-- 超温测点+关联参数（同一时段）
+WITH over_temp_tags AS (
+-- 这里写你超温的壁温测点编码
+SELECT 'T_01' AS tag UNION ALL
+SELECT 'T_02' AS tag
+)
+SELECT
+spd.data_time AS 数据时间,
+spd.tag AS 测点编码,
+btp.point_name AS 测点名称,
+spd.value AS 测点值
+FROM sis_pi_data spd
+LEFT JOIN base_temp_point btp ON spd.tag = btp.point_code
+WHERE
+spd.data_time BETWEEN '2026-05-01 00:00:00' AND '2026-05-02 00:00:00'
+AND (
+spd.tag IN (SELECT tag FROM over_temp_tags)
+OR spd.tag IN ('FW_01', 'MW_01', 'FT_01') -- 减温水、负荷、烟温等关联参数
+)
+ORDER BY spd.data_time, spd.tag;
+四、锅炉超温核心原因智能诊断（大模型推理·多测点分类归因）
+说明：按“共性原因（所有超温测点共同诱因）+ 区域专属原因（特定区域测点超温诱因）”分类，避免单一归因，贴合多测点场景
+（一）共性原因（多测点超温共同诱因）
+烟气侧：炉膛整体火焰中心上移，上部受热面整体烟温偏高；炉膛整体积灰、结焦，换热效率下降，导致多区域受热面超温
+介质侧：整体减温水系统调节滞后，或总减温水投入量不足，无法满足全炉膛控温需求；机组负荷波动过大，介质流量整体分配不均
+运行操作：煤质波动（高挥发分、高灰分），导致整体燃烧工况异常；风量配比不合理，炉膛氧量控制偏差，影响整体换热
+设备本体：多区域受热面管材老化，耐热性能整体下降；测温元件批量漂移（若多测点误报，需单独标注）
+（二）区域专属原因（按超温区域分类）
+区域1（如：右侧末级过热器）：
+烟气侧：局部火焰偏斜，右侧烟温偏高，冲刷该区域受热面；局部结焦严重，换热变差
+介质侧：该区域减温水调门开度不足、调节失效，或管内结垢、氧化皮堆积，通流截面减小
+设备侧：该区域导流装置异常，介质流量分配偏小
+区域2（如：前墙水冷壁）：
+烟气侧：前墙火焰冲刷剧烈，局部烟温过高；积灰未及时清理，换热受阻
+运行侧：该区域吹灰频次不足，积灰累积；启停磨煤机时，局部燃料堆积，燃烧不均
+区域3（如：低温再热器）：（按需补充，对应具体超温区域）
+五、超温带来的安全危害评估（多测点叠加影响）
+短期危害：多区域受热面金属蠕变加速，氧化皮大量脱落，可能堵塞局部管道，加剧局部超温，形成“超温-堵塞-更严重超温”恶性循环
+中期危害：不同区域管材金相组织劣化、疲劳损伤累积，检修范围扩大，检修周期缩短，增加检修成本
+长期危害：多个超温测点对应区域管壁易出现鼓包、裂纹，若未及时处置，可能引发多区域受热面同时爆管，导致机组非计划停机，损失严重
+经济影响：非计划停机损失、抢修成本、发电量损失、能耗上升（多区域超温导致换热效率下降，能耗增幅高于单一测点超温）
+环保影响：超温工况下燃烧不完全，NOx、粉尘排放波动超标，且多区域超温易导致燃烧工况不稳定，排放超标持续时间更长
+六、大模型智能处置调控措施（分优先级·多测点差异化处置）
+核心原则：先处置严重超温测点，再优化中度/轻微超温测点；兼顾共性问题整改，同步解决区域专属问题，避免顾此失彼
+（一）紧急处置（严重超温测点立即执行）
+整体调控：适当降低机组负荷，放缓升温速率，避免整体工况进一步扰动，缓解所有超温测点压力
+差异化降温：对严重超温测点对应区域，开大该回路减温水，精准控温；若多区域严重超温，优先保障关键受热面（如末级过热器、再热器）减温水供应
+紧急调整：调整炉膛配风，压低火焰中心，消除局部烟气偏流，缓解集中超温区域的烟温压力
+（二）运行优化调整（兼顾所有超温测点）
+共性优化：优化煤种掺烧，稳定入炉煤热值；调整炉膛氧量、二次风配比，消除整体烟气偏流；平稳升降负荷，杜绝大幅参数扰动
+区域优化：
+对集中超温区域，增加吹灰频次，重点清理结焦、积灰；对零散超温测点，排查局部吹灰盲区
+针对不同区域专属问题，调整对应回路减温水调节参数，优化介质流量分配；对管内可能结垢的区域，加强水质监测
+（三）检修预防措施（分区域落实）
+重点检修：停机后对严重超温区域管壁进行测厚、金相检测，排查裂纹、鼓包隐患；清理管内氧化皮、管道疏通
+全面排查：对所有超温测点对应区域的受热面、焊口、导流装置进行全面检查，更换老化管材、失效测温元件
+测点校验：批量校验所有壁温测点，消除测点失真、误报/漏报问题，确保多测点数据准确性
+（四）长效防控方案（适配多测点监测）
+大模型优化：增设多测点联动预警阈值，对同一区域多个测点同时超温、不同区域零散超温分别设置预警逻辑，提前预判超温
+分区管控：建立机组不同负荷下，各区域受热面最优温度工况模型，实现分区域精准控温
+制度完善：制定分区域受热面防超温标准操作卡，明确不同超温场景（集中/分散）的处置流程，规范运行操作
+七、整改完成情况&效果验证（多测点全覆盖）
+已执行调控操作：（分区域列明）如“右侧末级过热器减温水开度调整至55%、前墙水冷壁补充吹灰1次、整体负荷下调至450MW”等
+全测点效果验证：
+严重超温测点：____个已降至允许范围（当前温度____℃），剩余____个（若有）的降温进度
+中度/轻微超温测点：全部降至允许范围，当前平均壁温____℃
+关联参数验证：烟温、汽温、减温水参数恢复稳定性，各区域烟气偏差、介质流量分配趋于合理
+后续跟踪监测时长：____小时，重点跟踪原超温测点及同区域关联测点，防止复温
+WITH temp_after AS (
+SELECT
+t.pi_code,
+t.limit_temp,
+t.highest_temp,-- 判定超温等级
+CASE
+WHEN ( t.highest_temp - t.limit_temp ) >= 20 THEN
+'严重超温'
+WHEN ( t.highest_temp - t.limit_temp ) >= 10
+AND ( t.highest_temp - t.limit_temp ) < 20 THEN '中度超温' WHEN ( t.highest_temp - t.limit_temp ) >= 5
+AND ( t.highest_temp - t.limit_temp ) < 10 THEN
+'轻微超温' ELSE '正常'
+END AS over_level
+FROM
+monitor_hotarea_temp t -- 关联锅炉表，用名称过滤
+JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+WHERE-- 【这里只改机组名称就行，例如 #1机组、#2机组】
+ab.boiler_name = '#1号锅炉' -- 替换为你调控后的时间
+AND t.start_time >= '2026-01-01 12:00:00'
+) SELECT-- 严重超温恢复情况
+COUNT( CASE WHEN over_level = '严重超温' AND highest_temp <= limit_temp THEN 1 END ) AS 已恢复严重超温数,
+MAX( CASE WHEN over_level = '严重超温' AND highest_temp <= limit_temp THEN highest_temp END ) AS 恢复后最高壁温,
+COUNT( CASE WHEN over_level = '严重超温' AND highest_temp > limit_temp THEN 1 END ) AS 剩余未恢复严重超温数,-- 中/轻度超温恢复情况
+CASE
+WHEN COUNT( CASE WHEN over_level IN ( '中度超温', '轻微超温' ) AND highest_temp > limit_temp THEN 1 END ) = 0 THEN
+'是' ELSE '否'
+END AS 中轻度是否全部恢复,
+ROUND( AVG( CASE WHEN over_level IN ( '中度超温', '轻微超温' ) THEN highest_temp END ), 1 ) AS 中轻度当前平均壁温
+FROM
+temp_after;
+八、总结结论&后续管控建议（多测点场景适配）
+本次超温事件定性结论：明确多测点超温的核心共性诱因（如“炉膛整体积灰+局部配风不均”）和区域专属诱因，判定事件严重程度及影响范围
+同类工况重复超温风险等级：结合多测点超温的分布特征、诱因稳定性，判定风险等级（高/中/低）
+日常运行重点盯防：明确重点盯防区域（原超温集中区域）、重点盯防测点（原严重超温测点）、重点盯防参数（烟温、减温水开度、介质流量）
+大模型后续优化建议：完善多测点联动诊断逻辑，增加区域专属诱因识别模块，优化预警阈值，提升多测点超温的提前预判能力
+九、附件
+超温时段各测点壁温趋势曲线图（按区域分组展示）
+-- 超温时段各测点壁温趋势数据
+SELECT
+t.pi_code AS 测点编号,
+btp.point_name AS 测点名称,
+asd.device_name AS 设备名称,
+t.start_time AS 采集时间, -- 或用实际的时间字段，如 collect_time
+t.highest_temp AS 壁温值,
+t.limit_temp AS 限值,
+(t.highest_temp - t.limit_temp) AS 超温差值
+FROM monitor_hotarea_temp t
+LEFT JOIN base_temp_point btp ON t.pi_code = btp.point_code
+LEFT JOIN account_static_device asd ON t.device_id = asd.device_id
+WHERE
+-- 【关键】替换为你的超温事件时间范围
+t.start_time >= '2026-01-01 00:00:00'
+AND t.end_time <= '2026-06-02 00:00:00'
+AND t.highest_temp > t.limit_temp -- 仅保留超温数据
+ORDER BY t.start_time, t.pi_code;
+DCS参数联动趋势图（负荷、烟温、减温水等）
+SELECT
+start_time AS 采集时间,
+pi_code AS 测点编号,
+mw_value AS 机组负荷_MW,
+steam_pressure_value AS 主汽压力_MPa,
+highest_temp AS 壁温_℃,
+limit_temp AS 设计限值_℃,
+(highest_temp - limit_temp) AS 超温差值_℃
+FROM monitor_hotarea_temp
+WHERE
+-- 替换为你的超温事件时间范围
+start_time >= '2026-01-01 00:00:00'
+AND end_time <= '2026-06-02 00:00:00'
+AND highest_temp > limit_temp
+ORDER BY start_time, pi_code;
+多测点温度对照表（含设计值、实测值、超温差值、持续时长）
+SELECT
+t.pi_code AS 测点编号,
+CONCAT(ab.boiler_name,'-',asd.device_name,'-',btp.point_name) AS 测点位置,
+btd.over_hot_limit AS 设计壁温_℃,
+MAX(t.highest_temp) AS 实测最高壁温_℃,
+MAX(t.highest_temp) - btd.over_hot_limit AS 超温差值_℃,
+SUM(t.limit_duration) AS 累计持续时长_秒
+FROM monitor_hotarea_temp t
+LEFT JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+LEFT JOIN account_static_device asd ON t.device_id = asd.device_id
+LEFT JOIN base_temp_device btd ON t.device_id = btd.device_id
+LEFT JOIN base_temp_point btp ON t.pi_code = btp.point_code
+WHERE
+t.start_time BETWEEN '2026-01-01 00:00:00' AND '2026-06-02 00:00:00'
+AND t.highest_temp > t.limit_temp
+GROUP BY t.pi_code,ab.boiler_name,asd.device_name,btp.point_name,btd.over_hot_limit
+ORDER BY 超温差值_℃ DESC;
+历史同类多测点超温案例对标分析
+第一步：查询【本次超温】数据
+SELECT
+t1.pi_code AS 测点编号,
+CONCAT(ab1.boiler_name, '-', asd1.device_name) AS 所属区域,
+DATE_FORMAT(t1.start_time, '%Y-%m-%d') AS 超温日期,
+MAX(t1.highest_temp) AS 最高壁温,
+MAX(t1.highest_temp) - t1.limit_temp AS 最大超温,
+SUM(t1.limit_duration) AS 超温时长,
+AVG(t1.mw_value) AS 平均负荷FROM monitor_hotarea_temp t1LEFT JOIN account_boiler ab1 ON t1.boiler_id = ab1.boiler_idLEFT JOIN account_static_device asd1 ON t1.device_id = asd1.device_idWHERE
+t1.start_time BETWEEN '2026-05-01 00:00:00' AND '2026-05-25 23:59:59'
+AND t1.highest_temp > t1.limit_tempGROUP BY t1.pi_code, t1.device_id, DATE(t1.start_time)ORDER BY 最大超温 DESC;
+第二步：查询【历史同类超温】数据（同测点 / 同区域）
+SELECT
+t2.pi_code AS 测点编号,
+CONCAT(ab2.boiler_name, '-', asd2.device_name) AS 所属区域,
+DATE_FORMAT(t2.start_time, '%Y-%m-%d') AS 历史超温日期,
+MAX(t2.highest_temp) AS 历史最高壁温,
+MAX(t2.highest_temp) - t2.limit_temp AS 历史最大超温,
+SUM(t2.limit_duration) AS 历史超温时长,
+AVG(t2.mw_value) AS 历史平均负荷FROM monitor_hotarea_temp t2LEFT JOIN account_boiler ab2 ON t2.boiler_id = ab2.boiler_idLEFT JOIN account_static_device asd2 ON t2.device_id = asd2.device_idWHERE
+-- 历史时间（比本次早30天以上）
+t2.start_time < '2026-05-01 00:00:00'
+AND t2.highest_temp > t2.limit_tempGROUP BY t2.pi_code, t2.device_id, DATE(t2.start_time)ORDER BY 历史最大超温 DESC;
+超温区域受热面现场检查照片（若有）

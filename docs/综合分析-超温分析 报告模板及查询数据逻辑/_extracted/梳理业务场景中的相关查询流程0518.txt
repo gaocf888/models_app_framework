@@ -1,0 +1,286 @@
+1 场景1(超温预警)
+问题：1号锅炉水冷壁前墙区域的某个时间段内的的壁温超限情况
+对应sgl:
+SELECT
+t.*,
+b.boiler_type,
+b.producer,
+b.boiler_model,
+b.capacity,
+b.edzfl,
+p.point_name,
+p.row_num,
+p.pipe_num,
+d.device_name,
+d.device_descrip,
+r.piperow_name,
+r.transverse_pitch,
+r.longitudinal_pitch,
+r.row_count,
+r.pipe_count,
+r.model,
+r.piperow_diameter,
+r.piperow_spacing,
+r.piperow_thickness,
+x.pipebox_name,
+x.design_pressure,
+x.design_temp,
+x.work_pressure,
+x.model
+FROM
+monitor_hotarea_temp t,
+account_boiler b,
+base_temp_point p,
+account_static_device d,
+account_device_piperow r,
+account_device_pipebox x
+WHERE
+t.boiler_id = b.boiler_id
+AND t.pi_code = p.point_code
+AND t.device_id = d.device_id
+AND t.device_id = r.device_id
+AND t.device_id = x.device_id
+调用逻辑:
+1：以壁温超限表 monitor_hotarea_temp 作为主查询表；
+2：通过 boiler_id 关联锅炉表 account_boiler，获取锅炉基础信息；:
+3：通过 pi_code = point_code 关联温度测点表 base_temp_point，获取测点信息；
+4：通过 device_id 分别关联设备表 account_static_device、管排表 account_device_piperow、集箱表 account_device_pipebox，获取设备、管排、集箱的详细属性信息；
+5：组合所有表字段，返回完整的壁温超限详情数据。
+这个表要单独查询sis_pi_data，是按超温时间段获取其他测点数据的
+主要是超温记录表monitor_hotarea_temp,根据超温记录表中的相关字段关联其他表获取所需要的信息：
+1: pi_code(测点编码)：
+根据这个字段查询base_temp_point表获取到这个测点相关描述信息，包括所在受热面的排号(row_num)和管号(pipe_num)，测点的描述信息(point_name)
+2: start_time: 超温开始时间
+3: end_time: 超温结束时间
+4: limit_duration: 超温时长(秒)
+5: highest_temp：超温时间段内的最高值
+6: number: 周期内超限计数
+7: limit_temp：当前受热面的壁温限值
+8: mw_value: 获取壁温超限时锅炉运行时的当前负荷
+9: steam_pressure_value : 获取壁温超限时锅炉运行时的主汽压力值
+10: boiler_id (锅炉id):
+根据这个字段查询account_boiler表，获取是哪个锅炉,锅炉的型号，一些基本参数信息:
+1: boiler_code: 锅炉编号
+2: boiler_name: 锅炉名称
+3: boiler_type: 锅炉类型
+4: boiler_describe: 锅炉描述
+5: producer: 生产厂家
+6: boiler_model: 型号
+7: capacity: 容量
+8: run_date: 投产日期
+9: boiler_intro: 设备简介
+10: structure: 锅炉布置结构
+11: fire_type: 点火方式
+12: made_date: 制造日期
+13: edfh: 额定负荷
+14: edzfl: 额定蒸发量
+11: device_id (设备id):
+1：查询account_static_device表
+根据这个字段查询account_static_device表，可以获取到受热面的描述信息,包括：
+1:device_name : 受热面名称
+2:device_descrip : 受热面的描述信息，依据说明书中的内容
+2：查询account_device_piperow表
+根据这个字段查询account_device_piperow表可以获取到受热面管材信息，包括横向节距，纵向节距，排数，规格材质，管直径，管间距，管厚度信息：
+1: piperow_name: 管排名称
+2: transverse_pitch: 横向节距
+3: longitudinal_pitch: 纵向节距
+4: row_count: 排数
+5: pipe_count: 管数
+6: model: 规格材质
+7: piperow_diameter: 管直径
+8: piperow_spacing: 管间距
+9: piperow_thickness: 管厚度
+3：查询account_device_pipebox表
+根据这个字段查询account_device_pipebox表，可以获取到受热面集箱信息：
+1: pipebox_name: 集箱名称
+2: design_pressure: 设计压力
+3: design_temp: 设计温度
+4: work_pressure: 工作压力
+5: model: 规格材质
+12 查询sis_pi_data表获取其他测点的运行数据
+根据sis_pi_data表，可以获取壁温超限时间段其他关联测点的数据：
+1: data_time: 数据时间
+2: tag: 测点编码
+根据这个字段查询base_temp_point表获取到这个测点相关描述信息，包括所在受热面的排号(row_num)和管号(pipe_num)，测点的描述信息(point_name)
+3: value: 测点值
+4: create_time: 创建时间
+场景2 遗留问题
+对应sgl:
+SELECT
+p.problem_descrip,
+p.deal_content,
+p.STATUS,
+p.inspector2,
+p.inspector1,
+p.inspector3,
+b.overhaul_name,
+d.device_name,
+a.boiler_name
+FROM
+overhaul_legacy_problem p,
+overhaul_boiler b,
+account_boiler a,
+account_static_device d
+WHERE
+p.overhaul_id = b.overhaul_id
+AND p.boiler_id = a.boiler_id
+AND p.device_id = d.device_id
+调用逻辑:
+1：以历史缺陷表 overhaul_legacy_problem 作为主查询表；
+2：通过 overhaul_id 关联检修表 overhaul_boiler，获取检修名称信息；
+3：通过 boiler_id 关联锅炉表 account_boiler，获取锅炉名称信息；
+4：通过 device_id 关联设备表 account_static_device，获取设备名称信息；
+5：组合所有表字段，返回完整的历史缺陷处理详情数据。
+主要遗留问题表overhaul_legacy_problem,根据遗留问题表中的相关字段关联其他表获取所需要的信息：
+·  boiler_id：锅炉 id
+·  overhaul_id：检修项目 id
+·  device_id：受热面 id
+·  row_num：排数
+·  pipe_num：管数
+·  soot_blower_id：吹灰器 id
+·  problem_descrip：问题描述
+·  deal_content：处理描述
+·  status：处理状态
+·  sort_by：排序号
+·  record_time：问题记录时间
+·  relation_overhaul_id：关联检修项目 id
+·  relation_problem_id：关联问题 id
+·  create_by：创建人
+·  create_time：创建时间
+·  update_by：更新人
+·  update_time：更新时间
+·  defect_img：缺陷照片
+·  handle_img：处理后照片
+·  relative_position：相对位置
+·  tube_length：问题管长度
+·  dimension：规格尺寸
+·  material：材质
+·  problem_type：原因分类
+·  inspector1：检查人
+·  inspector2：消缺人
+·  inspector3：验收人
+·  remark：备注
+·  mark_info：标记信息
+场景3 泄爆问题
+对应sgl:
+SELECT
+r.overhaul_id,
+r.defect_type,
+r.row_num,
+t.tube_position,
+t.is_change,
+b.overhaul_name,
+c.name,
+d.device_name
+FROM
+overhaul_record r,
+overhaul_record_tubes t,
+overhaul_boiler b,
+overhaul_new_checklocation c,
+account_static_device d
+WHERE
+r.id = t.overhaul_record_id
+AND r.overhaul_id = b.overhaul_id
+and t.location_id =c.id
+and r.device_id = d.device_id
+AND r.mark_type = '2'
+And r.is_change=’1’
+调用逻辑:
+1：以锅炉泄漏记录表 overhual_leakage 作为主查询表；
+2：通过 boiler_id 关联锅炉表 account_boiler，获取锅炉名称信息；
+3：通过 device_id 关联设备表 account_static_device，获取设备名称信息；
+4：组合所有表字段，返回完整的锅炉泄漏详情数据。
+主要泄爆问题表overhual_leakage,根据泄爆问题表中的相关字段关联其他表获取所需要的信息：
+·  boiler_id：锅炉 id
+·  overhaul_id：锅炉检修 id
+·  device_id：设备 id
+·  check_date：检修时间
+·  leakage_date：泄漏时间
+·  leakage_descrip：位置描述
+·  row_num：第几排
+·  pipe_num：第几根
+·  relative_pipe_num：从吹灰器数第几根
+·  soot_blower_id：吹灰器 id
+·  leakage_reason：泄漏原因
+·  handling_method：处理方法
+·  reason_type：原因分类
+·  is_abnormal_stop：是否非停
+·  file_url：附件 url
+·  file_name：附件名称
+·  create_by：创建人
+·  create_time：创建时间
+·  update_by：更新人
+·  update_time：更新时间
+·  mark_info：三维标记
+场景4 换管问题
+对应sgl:
+SELECT
+r.overhaul_id,
+r.defect_type,
+r.row_num,
+t.tube_position,
+t.is_change,
+b.overhaul_name,
+c.name,
+d.device_name
+FROM
+overhaul_record r,
+overhaul_record_tubes t,
+overhaul_boiler b,
+overhaul_new_checklocation c,
+account_static_device d
+WHERE
+r.id = t.overhaul_record_id
+AND r.overhaul_id = b.overhaul_id
+and t.location_id =c.id
+and r.device_id = d.device_id
+AND r.mark_type = '2'
+And r.is_change=’1’
+调用逻辑:
+1：以检修记录表 overhaul_record 作为主查询表；
+2：通过 id 关联管子明细表 overhaul_record_tubes，获取管子位置、是否换管信息；
+3：通过 overhaul_id 关联锅炉检修表 overhaul_boiler，获取检修名称信息；
+4：通过 t.location_id 关联检测位置表 overhaul_new_checklocation，获取检测位置名称；
+5：通过 r.device_id 关联设备表 account_static_device，获取设备名称信息；
+6：过滤条件为标记类型是缺陷（mark_type='2'）且已换管（is_change='1'）；
+7：组合所有表字段，返回完整的受热面缺陷换管详情数据。
+主要检修记录主子表overhaul_record,overhaul_record_tubes,根据检修记录表中的相关字段关联其他表获取所需要的信息：
+overhaul_record主表：
+· overhaul_id：检修计划 id
+· device_id：受热面 id
+· check_id：检测位置 id
+· mark_type：检测类型 1 - 测厚，2 - 缺陷（字典）
+· defect_type：缺陷类型 1 - 高温腐蚀，2 - 磨损，3 - 结渣，4 - 蠕变，5 - 管道变形
+· mark_area：面积
+· row_num：管屏号
+· hole_code：定位孔编码 peep - 观察孔，burner - 燃烧器，soot - 吹灰孔
+· mark_time：测量时间
+· file_path：文件路径
+· create_by：创建人
+· create_time：创建时间
+· update_by：更新人
+· update_time：更新时间
+· del_flag：删除标志（0 - 存在，1 - 删除）
+· reserve1：冗余字段 1
+· reserve2：冗余字段 2
+· data_type：数据来源：MAN - 手动标记、IMP - 文件导入、ROB - 同步
+overhaul_record_tubes子表：
+· overhaul_record_id：测量 id
+· name：管子描述
+· tube_code：管位置编号
+· tube_position：管位置描述
+· tube_path：管三维坐标
+· is_change：是否换管 (0 - 否，1 - 是)
+· start：开始位置
+· end：结束位置
+· length：长度
+· thickness：管子壁厚
+· image：图片 base64
+· create_by：创建人
+· create_time：创建时间
+· update_by：更新人
+· update_time：更新时间
+· reserve1：冗余字段 1
+· reserve2：冗余字段 2
+· location_id：检测位置 id
+· remark：描述信息
