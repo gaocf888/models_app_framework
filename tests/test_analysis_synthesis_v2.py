@@ -33,8 +33,10 @@ from app.llm.graphs.analysis_synthesis_v2 import (
 from app.llm.graphs.overheat_synthesis_render import (
     OVERHEAT_CH1_INTRO,
     OVERHEAT_DOCX_AUTHORING_RULES,
+    build_boiler_time_ranges_from_q0,
     build_overheat_distribution_note,
-    filter_overheat_slot_ids,
+    enrich_overheat_report_context_from_gathered,
+    expand_overheat_cause_slots,
     infer_overheat_report_context,
     render_overheat_daily_section,
     render_overheat_weekly_section,
@@ -57,7 +59,7 @@ class TestSynthesisV2Registry(unittest.TestCase):
     def test_overheat_registry_slot_count(self):
         self.assertTrue(synthesis_v2_registry_available("overheat_guidance"))
         slots = get_synthesis_v2_slots("overheat_guidance")
-        self.assertEqual(12, len(slots))
+        self.assertEqual(19, len(slots))
         by_id = {s.id: s for s in slots}
         self.assertIn("超温情况概览", OVERHEAT_CH1_INTRO)
         self.assertEqual("q1", by_id["s03_daily_section"].source_item_ids[0])
@@ -65,6 +67,7 @@ class TestSynthesisV2Registry(unittest.TestCase):
         self.assertEqual(("q1", "q2", "q3"), by_id["s04_weekly_section"].source_item_ids)
         self.assertTrue(by_id["s06_cause"].stream_live)
         self.assertEqual("", by_id["s06_cause"].title)
+        self.assertEqual("紧急处置\n\n", by_id["s10a_emergency_hdr"].static_body)
 
     def test_daily_mode_skips_weekly_slots(self):
         slots = get_effective_synthesis_v2_slots(
@@ -112,6 +115,12 @@ class TestSanitizeNarrative(unittest.TestCase):
         self.assertNotIn("以下内容为示例", cleaned)
         self.assertIn("紧急处置", cleaned)
 
+    def test_strips_risk_duplicate_heading(self):
+        raw = "超温风险评估\n\n风险量化：管材存在蠕变风险。"
+        cleaned = _sanitize_report_narrative(raw)
+        self.assertNotIn("超温风险评估", cleaned)
+        self.assertIn("风险量化", cleaned)
+
 
 class TestOverheatRenderers(unittest.TestCase):
     def test_ch1_intro_is_section_header_only(self):
@@ -122,6 +131,41 @@ class TestOverheatRenderers(unittest.TestCase):
     def test_authoring_rules_separate_from_report_body(self):
         self.assertIn("禁止出现在报告正文", OVERHEAT_DOCX_AUTHORING_RULES)
         self.assertIn("以下内容为示例", OVERHEAT_DOCX_AUTHORING_RULES)
+
+    def test_daily_section_uses_q0_boiler_time_ranges(self):
+        rows = [
+            {
+                "机组名称": "1号锅炉",
+                "区域名称": "水冷壁 限540℃",
+                "测点编号": "P1",
+                "测点名称": "测点1",
+                "最大超温值_℃": 569,
+                "最小超温值_℃": 499,
+                "最大连续超温时长_分钟": 301,
+                "超温日期": "2026.05.02 10:00:01",
+                "异常等级": "Ⅰ级（轻微超温）",
+            }
+        ]
+        ctx = enrich_overheat_report_context_from_gathered(
+            {"analysis_mode": "daily"},
+            {
+                "q0": [{
+                    "机组名称": "1号锅炉",
+                    "最早超温开始时间": "2026-05-01 08:15:00",
+                    "最晚超温结束时间": "2026-05-01 22:40:00",
+                }],
+            },
+        )
+        md = render_overheat_daily_section(
+            rows,
+            report_context=ctx,
+            render_table=render_markdown_table,
+            max_rows=50,
+            empty_message="（无数据）",
+        )
+        self.assertIn("开始时间：2026-05-01 08:15:00", md)
+        self.assertIn("结束时间：2026-05-01 22:40:00", md)
+        self.assertNotIn("____年__月__日", md)
 
     def test_daily_section_structure(self):
         rows = [
@@ -226,7 +270,7 @@ class TestOverheatRenderers(unittest.TestCase):
 class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
     def test_q5_audit_preview_limit_for_cause_slot(self):
         self.assertEqual(24, _audit_preview_row_limit("q5", 100, slot_id="s06_cause"))
-        self.assertEqual(24, _audit_preview_row_limit("q5", 100, slot_id="s10_measures"))
+        self.assertEqual(24, _audit_preview_row_limit("q5", 100, slot_id="s10a_emergency"))
 
     def test_q5_sis_agg_audit_hint(self):
         lines: list[str] = []
@@ -324,9 +368,39 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
         self.assertIn("P1", text)
 
     def test_live_slot_is_cause(self):
-        slots = get_synthesis_v2_slots("overheat_guidance")
+        gathered = {
+            "q1": [{"机组名称": "1号锅炉", "测点编号": "P1", "最大超温值_℃": 569}],
+        }
+        slots = get_effective_synthesis_v2_slots(
+            "overheat_guidance",
+            report_context={"analysis_mode": "daily"},
+            gathered_data=gathered,
+        )
         idx = _resolve_live_slot_index(slots)
-        self.assertEqual("s06_cause", slots[idx].id)
+        self.assertEqual("s06_cause__0", slots[idx].id)
+        self.assertEqual("1号锅炉", slots[idx].boiler_name)
+
+    def test_expand_cause_slots_per_boiler(self):
+        base = get_synthesis_v2_slots("overheat_guidance")
+        gathered = {
+            "q1": [
+                {"机组名称": "1号锅炉"},
+                {"机组名称": "2号锅炉"},
+            ],
+        }
+        expanded = expand_overheat_cause_slots(base, gathered)
+        cause_ids = [s.id for s in expanded if s.id.startswith("s06_cause")]
+        self.assertEqual(["s06_cause__0", "s06_cause__1"], cause_ids)
+        self.assertEqual("1号锅炉", expanded[[s.id for s in expanded].index("s06_cause__0")].boiler_name)
+        self.assertEqual("2号锅炉", expanded[[s.id for s in expanded].index("s06_cause__1")].boiler_name)
+
+    def test_build_boiler_time_ranges_from_q0(self):
+        ranges = build_boiler_time_ranges_from_q0([
+            {"机组名称": "1号锅炉", "最早超温开始时间": "2026-05-01 08:00", "最晚超温结束时间": "2026-05-01 20:00"},
+            {"机组名称": "2号锅炉", "最早超温开始时间": "2026-05-01 09:00", "最晚超温结束时间": "2026-05-01 21:00"},
+        ])
+        self.assertEqual("2026-05-01 08:00", ranges["1号锅炉"]["t_start"])
+        self.assertEqual("2026-05-01 20:00", ranges["1号锅炉"]["t_end"])
 
 
 class TestJoinSlotMarkdown(unittest.TestCase):
@@ -353,6 +427,11 @@ class TestAnalysisSynthesisV2Engine(unittest.IsolatedAsyncioTestCase):
             emit_structured_sse=False,
         )
         gathered = {
+            "q0": [{
+                "机组名称": "1号锅炉",
+                "最早超温开始时间": "2026-05-01 08:15:00",
+                "最晚超温结束时间": "2026-05-01 22:40:00",
+            }],
             "q1": [{
                 "机组名称": "1号锅炉",
                 "区域名称": "水冷壁 限540℃",
@@ -375,13 +454,18 @@ class TestAnalysisSynthesisV2Engine(unittest.IsolatedAsyncioTestCase):
             context_snippets=[],
             planning_context=None,
             chart_mode="off",
-            report_context={"analysis_mode": "daily"},
+            report_context=enrich_overheat_report_context_from_gathered(
+                {"analysis_mode": "daily"}, gathered
+            ),
         )
         self.assertIn("锅炉管壁超温智能分析报告", result.summary)
         self.assertIn("超温情况概览", result.summary)
         self.assertIn("--按日超温分析--", result.summary)
         self.assertIn("机组信息：1号锅炉", result.summary)
+        self.assertIn("开始时间：2026-05-01 08:15:00", result.summary)
+        self.assertNotIn("____年__月__日", result.summary)
         self.assertIn("## 超温原因剖析", result.summary)
+        self.assertIn("紧急处置", result.summary)
         self.assertNotIn("该章节数据和报告要求", result.summary)
         self.assertNotIn("以下内容为示例", result.summary)
         self.assertNotIn("Query 中如果是问", result.summary)

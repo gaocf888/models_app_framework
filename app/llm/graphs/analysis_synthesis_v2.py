@@ -19,7 +19,7 @@ from app.llm.graphs.overheat_synthesis_render import (
     OVERHEAT_CH1_INTRO,
     OVERHEAT_DOCX_AUTHORING_RULES,
     build_overheat_distribution_note,
-    filter_overheat_slot_ids,
+    filter_overheat_synthesis_slots,
     overheat_data_source_label,
     render_overheat_daily_section,
     render_overheat_weekly_section,
@@ -53,6 +53,7 @@ class SynthesisV2Slot:
     template_id: str = ""
     static_body: str = ""
     stream_live: bool = False
+    boiler_name: str = ""
 
 
 @dataclass
@@ -98,6 +99,13 @@ _OVERHEAT_INSTRUCTION_LINE_PATTERNS = (
     r"关联本次出现的超温区域，根据知识片段出具针对性措施[，,]?以下内容为示例[：:]?",
     r"以下内容为示例[：:]?",
     r"关联本次超温出现的问题，拉取知识片段并推理评估",
+    r"^负荷分析[：:].*",
+    r"^主汽压力分析[：:].*",
+    r"^炉膛负压分析[：:].*",
+    r"^氧量分析[：:].*",
+    r"^超温分布特征[：:].*",
+    r"^日超温趋势分析[：:].*",
+    r"^风险量化与后续建议[：:].*",
 )
 
 
@@ -116,6 +124,9 @@ def _sanitize_report_narrative(text: str) -> str:
     out = re.sub(r"数据依据[：:][^\n]+", "", out)
     for pat in _OVERHEAT_INSTRUCTION_LINE_PATTERNS:
         out = re.sub(rf"(?m)^\s*{pat}\s*$", "", out)
+    out = re.sub(r"(?m)^\s*#+\s*超温风险评估\s*$", "", out)
+    out = re.sub(r"(?m)^\s*超温风险评估\s*$", "", out)
+    out = re.sub(r"(?m)^\s*【内部分析参考·禁止写入报告】.*$", "", out)
     # 多余空行
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip()
@@ -173,25 +184,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             kind="llm_narrative",
             title="",
             source_item_ids=("q1", "q4", "q5", "q6", "q7"),
-            narrative_instruction=(
-                "撰写「超温原因剖析」正文（禁止输出 # / ## / ### 标题行；章节标题已由系统输出）。"
-                "禁止输出 docx 模板红色说明文字或示例段落（如「对具体锅炉的每条超温数据进行详细分析…」"
-                "「2、若查询为周超温…」及模板中烟气侧/介质侧示例长句），仅输出基于查库与 RAG 的分析结论。"
-                "结构须对齐模板："
-                "1) 结合 q4 与 q5 综合分析负荷、主汽压力、主汽温度、炉膛负压、氧量等工况；"
-                "2) 提取集中式/分散式/混合型分布特征并说明判据；"
-                "3) 若为周超温，须分析日超温趋势并推导核心诱因；"
-                "4) 按锅炉分段（多机组时），以「导致本次#N锅炉超温的原因大致为…」起笔，"
-                "再分烟气侧、介质侧、运行操作、设备本体四方面归纳共性原因（仅作小标题分类，内容须有数据依据）；"
-                "运行操作侧须结合 q6 吹灰区域汇总（吹灰次数/天数/时长）判断吹灰频次是否不足，"
-                "并结合 q7 磨煤机运行汇总（给煤量/负荷波动）分析启停磨或煤质波动影响，"
-                "结合 q5 SIS 六类关联参数汇总（减温水/烟温/排烟/总风量/氧量/炉膛负压，按参数类型 min/max/avg）分析工况联动；"
-                "q5 某类无数据时该类须写待补充，禁止臆造时序；"
-                "须与 q1 超温区域对照，禁止臆造逐条吹灰或磨煤机采样时刻；"
-                "5) 「综上：」后按区域（如高温过热器、水冷壁螺旋段前墙）分别归纳专属诱因，"
-                "每条须关联代表测点名称或编号。"
-                "无数据写待补充，禁止编造；禁止置信度、依据、q 编号、结论摘要。"
-            ),
+            narrative_instruction="（运行时按机组展开为多槽；见 overheat_cause_narrative_instruction）",
             stream_live=True,
         ),
         SynthesisV2Slot(
@@ -206,12 +199,13 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             source_item_ids=("q1", "q2"),
             narrative_instruction=(
-                "撰写「超温风险评估」正文（禁止输出 # / ## / ### 标题行）。"
+                "撰写本章正文（禁止输出「超温风险评估」及任何 # / ## / ### 标题行；章节标题已由系统输出）。"
                 "禁止输出 docx 红色说明句「关联本次超温出现的问题，拉取知识片段并推理评估」。"
-                "须结合 q1/q2 极值与 RAG 知识片段推理："
-                "说明诱因、最大瞬时超温值、连续超温时长是否超标、异常等级（尤其Ⅲ/Ⅳ级）；"
-                "并连贯叙述管材蠕变、氧化皮、金相劣化、爆管泄漏等风险。"
-                "无数据写待补充；禁止置信度、依据、措施建议、额外章节。"
+                "仅输出 plain 小节行「风险量化：」后接连贯段落，须结合 q1/q2 极值与 RAG 知识："
+                "说明诱因、最大瞬时超温值、连续超温时长是否超标、异常等级（尤其Ⅲ/Ⅳ级），"
+                "并叙述管材蠕变、氧化皮、金相劣化、爆管泄漏等风险。"
+                "禁止处置建议、运行优化、检修措施、后续建议、额外章节。"
+                "无数据写待补充；禁止置信度、依据、q 编号。"
             ),
         ),
         SynthesisV2Slot(
@@ -221,20 +215,71 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             static_body="## 总结和推荐措施\n\n",
         ),
         SynthesisV2Slot(
-            id="s10_measures",
+            id="s10a_emergency_hdr",
+            kind="static_markdown",
+            title="",
+            static_body="紧急处置\n\n",
+        ),
+        SynthesisV2Slot(
+            id="s10a_emergency",
             kind="llm_narrative",
             title="",
             source_item_ids=("q1", "q2", "q4", "q5"),
             narrative_instruction=(
-                "撰写「总结和推荐措施」正文（禁止输出 # / ## / ### 标题行）。"
-                "禁止输出 docx 红色说明「关联本次…以下内容为示例」及模板示例措施全文；"
-                "须基于本次超温区域、严重测点与 RAG 知识自行撰写可执行措施。"
-                "须严格按模板输出四个 plain 小节（每节标题单独一行，后接正文，勿加 Markdown 标题符号）："
-                "紧急处置（可含整体调控、差异化降温、紧急调整等要点）；"
-                "运行优化调整（可含共性优化、专项优化）；"
-                "后续检修预防措施（可含重点检修、全面排查、测点校验）；"
-                "计划长效防控方案（可含优化措施、分区管控、制度完善）。"
-                "须结合本次超温区域与严重测点；禁止编造已执行操作；"
+                "撰写「紧急处置」措施正文（禁止重复输出「紧急处置」标题行，标题已由系统输出）。"
+                "禁止输出 docx 示例措施全文。须基于本次超温区域与严重测点自行撰写，"
+                "可含：整体调控、差异化降温、紧急调整燃烧工况等要点（plain 叙述或短列表）。"
+                "禁止置信度、依据、额外章节标题。"
+            ),
+        ),
+        SynthesisV2Slot(
+            id="s10b_optimize_hdr",
+            kind="static_markdown",
+            title="",
+            static_body="运行优化调整\n\n",
+        ),
+        SynthesisV2Slot(
+            id="s10b_optimize",
+            kind="llm_narrative",
+            title="",
+            source_item_ids=("q1", "q2", "q4", "q5"),
+            narrative_instruction=(
+                "撰写「运行优化调整」正文（禁止重复输出该小节标题行）。"
+                "可含共性优化、专项优化等要点；须结合本次超温区域。"
+                "禁止置信度、依据、额外章节。"
+            ),
+        ),
+        SynthesisV2Slot(
+            id="s10c_maintenance_hdr",
+            kind="static_markdown",
+            title="",
+            static_body="后续检修预防措施\n\n",
+        ),
+        SynthesisV2Slot(
+            id="s10c_maintenance",
+            kind="llm_narrative",
+            title="",
+            source_item_ids=("q1", "q2", "q4", "q5"),
+            narrative_instruction=(
+                "撰写「后续检修预防措施」正文（禁止重复输出该小节标题行）。"
+                "可含重点检修、全面排查、测点校验等要点。"
+                "禁止置信度、依据、额外章节。"
+            ),
+        ),
+        SynthesisV2Slot(
+            id="s10d_longterm_hdr",
+            kind="static_markdown",
+            title="",
+            static_body="计划长效防控方案\n\n",
+        ),
+        SynthesisV2Slot(
+            id="s10d_longterm",
+            kind="llm_narrative",
+            title="",
+            source_item_ids=("q1", "q2", "q4", "q5"),
+            narrative_instruction=(
+                "撰写「计划长效防控方案」正文（禁止重复输出该小节标题行）。"
+                "可含优化措施、分区管控、制度完善等要点。"
                 "禁止置信度、依据、额外总结章节。"
             ),
         ),
@@ -258,10 +303,11 @@ def get_effective_synthesis_v2_slots(
     analysis_type: str,
     *,
     report_context: dict[str, Any] | None = None,
+    gathered_data: dict[str, list[dict]] | None = None,
 ) -> list[SynthesisV2Slot]:
     slots = get_synthesis_v2_slots(analysis_type)
     if analysis_type == "overheat_guidance":
-        return filter_overheat_slot_ids(slots, report_context)
+        return filter_overheat_synthesis_slots(slots, report_context, gathered_data)
     return slots
 
 
@@ -415,25 +461,44 @@ def _gather_item_rows(gathered_data: dict[str, list[dict]], item_ids: tuple[str,
     return out
 
 
+def _filter_rows_by_boiler(rows: list[dict], boiler_name: str) -> list[dict]:
+    if not boiler_name:
+        return rows
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("机组名称") or "").strip() == boiler_name:
+            out.append(row)
+    return out
+
+
 def _resolve_data_subset(
     gathered_data: dict[str, list[dict]],
     item_ids: tuple[str, ...],
     *,
     strict: bool,
+    boiler_name: str = "",
 ) -> dict[str, list[dict]]:
     """按槽位绑定查询项切片；strict 时不再回退为全量 gathered_data。"""
     if not item_ids:
-        return dict(gathered_data) if gathered_data else {}
-    subset: dict[str, list[dict]] = {}
-    for iid in item_ids:
-        chunk = gathered_data.get(iid)
-        if isinstance(chunk, list):
-            subset[iid] = [r for r in chunk if isinstance(r, dict)]
-        else:
-            subset[iid] = []
-    if subset or strict:
-        return subset
-    return dict(gathered_data)
+        subset = dict(gathered_data) if gathered_data else {}
+    else:
+        subset = {}
+        for iid in item_ids:
+            chunk = gathered_data.get(iid)
+            if isinstance(chunk, list):
+                subset[iid] = [r for r in chunk if isinstance(r, dict)]
+            else:
+                subset[iid] = []
+        if not subset and not strict:
+            subset = dict(gathered_data)
+    if boiler_name:
+        for iid in list(subset.keys()):
+            if iid == "q5":
+                continue
+            subset[iid] = _filter_rows_by_boiler(subset.get(iid) or [], boiler_name)
+    return subset
 
 
 _CHAPTER_PREFIX_RE = re.compile(r"^[一二三四五六七八九十百]+、")
@@ -1853,6 +1918,7 @@ class AnalysisSynthesisV2Engine:
             gathered_data,
             item_ids,
             strict=slot.kind == "llm_narrative",
+            boiler_name=slot.boiler_name,
         )
         audit_facts = _build_audit_facts(subset, query, slot_id=slot.id, task_status=task_status)
         coverage = _build_data_coverage_note(subset, task_status=task_status)
@@ -1865,9 +1931,16 @@ class AnalysisSynthesisV2Engine:
         planning_block = f"\n分阶段规划意图(结构化要点):\n{pc[:2000]}\n" if pc else ""
         coverage_block = f"\n{coverage}\n" if coverage else ""
         dist_block = ""
-        if slot.id == "s06_cause":
-            q1_rows = gathered_data.get("q1") or []
-            dist_block = build_overheat_distribution_note(q1_rows, _infer_overheat_distribution) + "\n"
+        if slot.id == "s06_cause" or slot.id.startswith("s06_cause__"):
+            q1_rows = subset.get("q1") or []
+            dist_block = (
+                "【内部分析参考·禁止写入报告】"
+                + build_overheat_distribution_note(q1_rows, _infer_overheat_distribution)
+                + "\n"
+            )
+        boiler_block = ""
+        if slot.boiler_name:
+            boiler_block = f"本章目标机组: {slot.boiler_name}\n"
         mode_block = ""
         if report_context:
             mode = report_context.get("analysis_mode", "weekly")
@@ -1876,6 +1949,7 @@ class AnalysisSynthesisV2Engine:
             f"分析类型: {analysis_type}\n"
             f"数据来源模式: {data_mode}\n"
             f"{mode_block}"
+            f"{boiler_block}"
             f"用户问题: {query}\n"
             f"{planning_block}"
             f"{coverage_block}"
@@ -2144,7 +2218,7 @@ class AnalysisSynthesisV2Engine:
         report_context: dict[str, Any] | None = None,
     ) -> SynthesisV2RunResult:
         slots = get_effective_synthesis_v2_slots(
-            analysis_type, report_context=report_context
+            analysis_type, report_context=report_context, gathered_data=gathered_data
         )
         outputs = await self._fill_all_slots_parallel(
             slots=slots,
@@ -2178,7 +2252,9 @@ class AnalysisSynthesisV2Engine:
         表/图可额外推送 table_payload / chart_payload。
         Yields (event_dict, None)；最后一次 yield (_, result)。
         """
-        slots = get_effective_synthesis_v2_slots(analysis_type, report_context=report_context)
+        slots = get_effective_synthesis_v2_slots(
+            analysis_type, report_context=report_context, gathered_data=gathered_data
+        )
         if not slots:
             result = SynthesisV2RunResult(summary="", synthesis_version="v2:empty")
             yield ({}, result)
@@ -2238,7 +2314,9 @@ class AnalysisSynthesisV2Engine:
         首槽 LLM 真流式；其余槽后台并行、按注册表顺序就绪即推送（token/小块 + 空闲心跳）。
         Yields (event_dict, None) ；最后一次 yield (_, result)。
         """
-        slots = get_effective_synthesis_v2_slots(analysis_type, report_context=report_context)
+        slots = get_effective_synthesis_v2_slots(
+            analysis_type, report_context=report_context, gathered_data=gathered_data
+        )
         if not slots:
             result = SynthesisV2RunResult(summary="", synthesis_version="v2:empty")
             yield ({"event": "summary_delta", "text": ""}, result)

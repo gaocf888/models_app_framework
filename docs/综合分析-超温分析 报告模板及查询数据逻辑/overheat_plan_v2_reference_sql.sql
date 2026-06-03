@@ -7,6 +7,22 @@
 -- 约束：每条 plan 问句单条可执行 SQL；禁止 WITH/CTE
 
 -- =============================================================================
+-- q0 超温事件时间包络（按机组：最早开始 / 最晚结束，供概览章起止时间展示）
+-- =============================================================================
+SELECT
+  ab.boiler_name AS 机组名称,
+  DATE_FORMAT(MIN(t.start_time), '%Y.%m.%d %H:%i:%s') AS 最早超温开始时间,
+  DATE_FORMAT(MAX(IFNULL(t.end_time, t.start_time)), '%Y.%m.%d %H:%i:%s') AS 最晚超温结束时间
+FROM monitor_hotarea_temp t
+INNER JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
+WHERE t.start_time >= @t_start
+  AND t.start_time < @t_end
+  AND t.highest_temp > t.limit_temp
+  AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
+GROUP BY ab.boiler_name
+ORDER BY ab.boiler_name;
+
+-- =============================================================================
 -- q1 超温情况概览-测点明细（按日表 / 周详情共用）
 -- =============================================================================
 SELECT

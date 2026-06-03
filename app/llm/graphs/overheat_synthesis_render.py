@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 OVERHEAT_DATA_SOURCE_LABELS: dict[str, str] = {
+    "q0": "超温事件时间包络",
     "q1": "测点超温明细",
     "q2": "周区域概览",
     "q3": "周趋势按日",
@@ -98,6 +99,16 @@ def filter_overheat_slot_ids(slots: list[Any], report_context: dict[str, Any] | 
     return [s for s in slots if getattr(s, "id", "") not in skip]
 
 
+def filter_overheat_synthesis_slots(
+    slots: list[Any],
+    report_context: dict[str, Any] | None,
+    gathered_data: dict[str, list[dict]] | None = None,
+) -> list[Any]:
+    """按日/周过滤 + 按机组展开原因剖析槽。"""
+    filtered = filter_overheat_slot_ids(slots, report_context)
+    return expand_overheat_cause_slots(filtered, gathered_data)
+
+
 def _partition_by_boiler(rows: list[dict], key: str = "机组名称") -> dict[str, list[dict]]:
     buckets: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
@@ -114,6 +125,125 @@ def _fmt_time_range(ctx: dict[str, Any]) -> tuple[str, str]:
     if t0 and t1:
         return t0, t1
     return "____年__月__日 __时__分", "____年__月__日 __时__分"
+
+
+def _fmt_boiler_time_range(ctx: dict[str, Any], boiler: str) -> tuple[str, str]:
+    """优先 q0 按机组包络；否则回落 report_context 全局或占位符。"""
+    ranges = ctx.get("boiler_time_ranges")
+    if isinstance(ranges, dict) and boiler in ranges:
+        entry = ranges[boiler]
+        if isinstance(entry, dict):
+            t0 = str(entry.get("t_start") or entry.get("最早超温开始时间") or "").strip()
+            t1 = str(entry.get("t_end") or entry.get("最晚超温结束时间") or "").strip()
+            if t0 and t1:
+                return t0, t1
+    return _fmt_time_range(ctx)
+
+
+def build_boiler_time_ranges_from_q0(q0_rows: list[dict]) -> dict[str, dict[str, str]]:
+    """从 q0 行构建 {机组名称: {t_start, t_end}}。"""
+    out: dict[str, dict[str, str]] = {}
+    for row in q0_rows:
+        if not isinstance(row, dict):
+            continue
+        boiler = str(row.get("机组名称") or "").strip()
+        if not boiler:
+            continue
+        t0 = str(
+            row.get("最早超温开始时间") or row.get("最早开始时间") or row.get("t_start") or ""
+        ).strip()
+        t1 = str(
+            row.get("最晚超温结束时间") or row.get("最晚结束时间") or row.get("t_end") or ""
+        ).strip()
+        if t0 and t1:
+            out[boiler] = {"t_start": t0, "t_end": t1}
+    return out
+
+
+def enrich_overheat_report_context_from_gathered(
+    ctx: dict[str, Any],
+    gathered_data: dict[str, list[dict]] | None,
+) -> dict[str, Any]:
+    """将 q0 包络时间写入 report_context.boiler_time_ranges。"""
+    if not gathered_data:
+        return ctx
+    q0_rows = gathered_data.get("q0") or []
+    if not isinstance(q0_rows, list):
+        return ctx
+    ranges = build_boiler_time_ranges_from_q0([r for r in q0_rows if isinstance(r, dict)])
+    if ranges:
+        ctx = dict(ctx)
+        ctx["boiler_time_ranges"] = ranges
+    return ctx
+
+
+def list_overheat_boilers_from_gathered(gathered_data: dict[str, list[dict]] | None) -> list[str]:
+    """与第一章概览一致：从 q0/q1 去重机组名称并排序。"""
+    if not gathered_data:
+        return []
+    names: set[str] = set()
+    for key in ("q0", "q1"):
+        for row in gathered_data.get(key) or []:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("机组名称") or "").strip()
+            if name:
+                names.add(name)
+    return sorted(names)
+
+
+def overheat_cause_narrative_instruction(boiler_name: str) -> str:
+    """单机组原因剖析 LLM 任务（docx 97～110 行结构）。"""
+    return (
+        f"撰写「{boiler_name}」的超温原因剖析正文（禁止输出 # / ## / ### 标题行；"
+        f"禁止输出 docx 模板红色说明或示例段落）。"
+        "【内部分析·禁止写入报告正文】须结合 q4/q5 理解负荷、主汽压力、炉膛负压、氧量，"
+        "并结合超温分布特征与日趋势（周报告时）形成判断；"
+        "上述内容不得单独成段，禁止出现「负荷分析」「主汽压力分析」「炉膛负压分析」"
+        "「氧量分析」「超温分布特征」「日超温趋势分析」等小节标题或编号列表。"
+        f"正文必须以「导致本次{boiler_name}超温的原因大致为…」起笔（1～3 句概括性综合分析）。"
+        "然后依次输出 plain 小标题行（勿加 #）："
+        "烟气侧："
+        "介质侧："
+        "运行操作："
+        "设备本体："
+        "（各段须有数据依据；运行操作须结合 q6 吹灰汇总、q7 磨煤机汇总、q5 六类 SIS 参数；"
+        "q5 某类无数据写待补充；禁止臆造时序）"
+        "最后单独以「综上：」起头，按区域（如高温过热器、水冷壁螺旋段前墙）归纳专属诱因，"
+        "每条关联代表测点名称或编号。"
+        "无数据写待补充；禁止置信度、依据、q 编号、结论摘要。"
+    )
+
+
+def expand_overheat_cause_slots(
+    slots: list[Any],
+    gathered_data: dict[str, list[dict]] | None,
+) -> list[Any]:
+    """将 s06_cause 按 q0/q1 机组列表展开为多槽 LLM 调用。"""
+    boilers = list_overheat_boilers_from_gathered(gathered_data)
+    if not boilers:
+        return slots
+    out: list[Any] = []
+    for slot in slots:
+        if getattr(slot, "id", "") != "s06_cause":
+            out.append(slot)
+            continue
+        for idx, boiler in enumerate(boilers):
+            out.append(
+                slot.__class__(
+                    id=f"s06_cause__{idx}",
+                    kind=slot.kind,
+                    title=slot.title,
+                    source_item_ids=slot.source_item_ids,
+                    narrative_instruction=overheat_cause_narrative_instruction(boiler),
+                    table_id=slot.table_id,
+                    template_id=slot.template_id,
+                    static_body=slot.static_body,
+                    stream_live=bool(slot.stream_live and idx == 0),
+                    boiler_name=boiler,
+                )
+            )
+    return out
 
 
 def _fmt_temp_cell(val: Any) -> str:
@@ -300,8 +430,9 @@ def render_overheat_daily_section(
     for idx, (boiler, chunk) in enumerate(sorted(_partition_by_boiler(rows).items())):
         if idx > 0:
             parts.append("\n")
+        b_start, b_end = _fmt_boiler_time_range(report_context or {}, boiler)
         parts.append(f"机组信息：{boiler}\n")
-        parts.append(f"开始时间：{t_start}     结束时间：{t_end}\n\n")
+        parts.append(f"开始时间：{b_start}     结束时间：{b_end}\n\n")
         mapped = [_map_point_row(r) for r in chunk if isinstance(r, dict)]
         parts.append(
             _render_data_table(
@@ -341,12 +472,13 @@ def render_overheat_weekly_section(
     for idx, boiler in enumerate(boilers):
         if idx > 0:
             parts.append("\n周超温详情：\n\n")
+        b_start, b_end = _fmt_boiler_time_range(ctx, boiler)
         parts.append(f"机组信息：{boiler}\n")
-        parts.append(f"周超温概览：开始时间：{t_start}     结束时间：{t_end}\n\n")
+        parts.append(f"周超温概览：开始时间：{b_start}     结束时间：{b_end}\n\n")
 
         region_rows = q2_by_boiler.get(boiler) or []
         mapped_region = [
-            _map_weekly_region_row(r, boiler=boiler, q3_rows=q3_rows, t_start=t_start, t_end=t_end)
+            _map_weekly_region_row(r, boiler=boiler, q3_rows=q3_rows, t_start=b_start, t_end=b_end)
             for r in region_rows if isinstance(r, dict)
         ]
         parts.append(

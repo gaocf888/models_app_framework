@@ -61,7 +61,6 @@ from app.llm.graphs.analysis_synthesis_v2 import (
     AnalysisSynthesisV2Engine,
     synthesis_v2_registry_available,
 )
-from app.llm.graphs.overheat_synthesis_render import infer_overheat_report_context
 
 logger = get_logger(__name__)
 
@@ -1952,11 +1951,22 @@ class AnalysisGraphRunner:
         )
 
     def _resolve_overheat_report_context(
-        self, analysis_type: str, query: str
+        self,
+        analysis_type: str,
+        query: str,
+        gathered_data: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if analysis_type != "overheat_guidance":
             return None
-        return infer_overheat_report_context(query)
+        from app.llm.graphs.overheat_synthesis_render import (
+            enrich_overheat_report_context_from_gathered,
+            infer_overheat_report_context,
+        )
+
+        ctx = infer_overheat_report_context(query)
+        if gathered_data and isinstance(gathered_data, dict):
+            ctx = enrich_overheat_report_context_from_gathered(ctx, gathered_data)
+        return ctx
 
     async def _execute_synthesis(
         self,
@@ -1977,7 +1987,9 @@ class AnalysisGraphRunner:
         if effective == "v2":
             engine = self._make_synthesis_v2_engine()
             gathered = data_blob if isinstance(data_blob, dict) else {}
-            report_context = self._resolve_overheat_report_context(analysis_type, query)
+            report_context = self._resolve_overheat_report_context(
+                analysis_type, query, gathered
+            )
             v2_result = await engine.run_sync(
                 analysis_type=analysis_type,
                 query=query,
@@ -2035,7 +2047,9 @@ class AnalysisGraphRunner:
         task_status: dict[str, str] | None = None,
     ) -> AsyncIterator[tuple[dict[str, Any], _SynthesisRunOutcome | None]]:
         engine = self._make_synthesis_v2_engine()
-        report_context = self._resolve_overheat_report_context(analysis_type, query)
+        report_context = self._resolve_overheat_report_context(
+            analysis_type, query, gathered_data
+        )
         if self._analysis_cfg.synthesis_v2_stream_live_first:
             event_source = engine.iter_stream_events_live_first(
                 analysis_type=analysis_type,
