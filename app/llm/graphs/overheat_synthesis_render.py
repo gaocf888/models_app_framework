@@ -201,18 +201,186 @@ def overheat_cause_narrative_instruction(boiler_name: str) -> str:
         "并结合超温分布特征与日趋势（周报告时）形成判断；"
         "上述内容不得单独成段，禁止出现「负荷分析」「主汽压力分析」「炉膛负压分析」"
         "「氧量分析」「超温分布特征」「日超温趋势分析」等小节标题或编号列表。"
-        f"正文必须以「导致本次{boiler_name}超温的原因大致为…」起笔（1～3 句概括性综合分析）。"
+        f"正文必须以「导致本次{boiler_name}超温的原因大致为…」起笔（1～3 句概括性综合分析；"
+        "跨区关联仅可在此概括句简述，不得展开）。"
         "然后依次输出 plain 小标题行（勿加 #）："
         "烟气侧："
         "介质侧："
         "运行操作："
         "设备本体："
-        "（各段须有数据依据；运行操作须结合 q6 吹灰汇总、q7 磨煤机汇总、q5 六类 SIS 参数；"
-        "q5 某类无数据写待补充；禁止臆造时序）"
-        "最后单独以「综上：」起头，按区域（如高温过热器、水冷壁螺旋段前墙）归纳专属诱因，"
-        "每条关联代表测点名称或编号。"
-        "无数据写待补充；禁止置信度、依据、q 编号、结论摘要。"
+        "（以上四段写全炉/多测点共性诱因，须结合 q4/q5/q7 及机组级工况；"
+        "可概括性提及吹灰/磨煤机整体情况，但禁止按区域逐条展开，禁止在此四段写「综上」内容）。"
+        "最后单独以「综上：」起头，严格按用户消息中【按区域事实包】逐区输出专属诱因分析；"
+        "每个区域块必须以事实包中的区域名起头，仅允许引用该块「本区测点」与「本区吹灰」；"
+        "禁止在 A 区域块出现 B 区域名称、B 区域测点编号或 B 区域吹灰次数；"
+        "禁止「A 区域积灰间接导致 B 区域超温」等跨区因果（除非开头概括句已简述）。"
+        "本区无吹灰记录时禁止写吹灰频次诱因；无数据写待补充。"
+        "禁止置信度、依据、q 编号、结论摘要。"
     )
+
+
+_LIMIT_SUFFIX_RE = re.compile(r"\s+限[\d.]+\s*℃?\s*$")
+
+
+def normalize_overheat_region_key(row: dict) -> str:
+    """从 q1 行提取区域分组键（优先受热面名称，否则剥离区域名称中的限温后缀）。"""
+    device = str(row.get("受热面名称") or "").strip()
+    if device:
+        return device
+    region = str(row.get("区域名称") or "").strip()
+    if region:
+        return _LIMIT_SUFFIX_RE.sub("", region).strip() or region
+    return "未知区域"
+
+
+def _row_numeric(val: Any) -> float | None:
+    if val is None or str(val).strip() == "":
+        return None
+    s = str(val).strip().replace("℃", "").replace("分", "")
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _match_q6_for_region(region_key: str, q6_rows: list[dict]) -> dict | None:
+    """将 q6 吹灰汇总行与 q1 区域键匹配（精确优先，其次包含关系）。"""
+    key = (region_key or "").strip()
+    if not key or not q6_rows:
+        return None
+    exact: dict | None = None
+    partial: dict | None = None
+    for row in q6_rows:
+        if not isinstance(row, dict):
+            continue
+        dev = str(row.get("受热面名称") or "").strip()
+        if not dev:
+            continue
+        if dev == key:
+            exact = row
+            break
+        if key in dev or dev in key:
+            if partial is None or len(dev) < len(str(partial.get("受热面名称") or "")):
+                partial = row
+    return exact or partial
+
+
+def group_q1_rows_by_region(q1_rows: list[dict]) -> dict[str, list[dict]]:
+    buckets: dict[str, list[dict]] = defaultdict(list)
+    for row in q1_rows:
+        if not isinstance(row, dict):
+            continue
+        buckets[normalize_overheat_region_key(row)].append(row)
+    return dict(buckets)
+
+
+def _format_region_point(row: dict) -> str:
+    code = str(row.get("测点编号") or row.get("测点名称") or "").strip()
+    name = str(row.get("测点名称") or "").strip()
+    label = code or name or "未知测点"
+    if name and code and name != code:
+        label = f"{code}({name})"
+    max_t = row.get("最大超温值_℃") or row.get("最大超温值")
+    delta = row.get("最大监测超温差值_℃")
+    level = str(row.get("异常等级") or "").strip()
+    parts = [label]
+    if max_t is not None and str(max_t).strip():
+        parts.append(f"最高{max_t}℃" if "℃" not in str(max_t) else f"最高{max_t}")
+    if level:
+        parts.append(level)
+    if delta is not None and str(delta).strip():
+        parts.append(f"差值{delta}℃" if "℃" not in str(delta) else f"差值{delta}")
+    return "、".join(parts)
+
+
+def _format_q6_summary(row: dict | None) -> str:
+    if not row:
+        return "无对应吹灰汇总记录→综上块禁止写该区域吹灰频次诱因"
+    try:
+        n = int(row.get("吹灰次数") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    days = row.get("吹灰天数")
+    dur = row.get("总吹灰时长_分钟")
+    parts = [f"吹灰{n}次"]
+    if days is not None and str(days).strip() != "":
+        parts.append(f"{days}天")
+    if dur is not None and str(dur).strip() != "":
+        parts.append(f"总时长{dur}分")
+    return "，".join(parts)
+
+
+def build_overheat_region_fact_packages(
+    q1_rows: list[dict],
+    q6_rows: list[dict] | None = None,
+) -> str:
+    """
+    按 q1 区域分组构建「综上」专用事实包（方案 A）。
+    每区仅含本区测点与本区 q6 吹灰匹配结果，供 LLM 逐区归因。
+    """
+    grouped = group_q1_rows_by_region([r for r in q1_rows if isinstance(r, dict)])
+    if not grouped:
+        return (
+            "【按区域事实包·综上块仅可引用下列分区数据】\n"
+            "（无 q1 测点明细，综上须写待补充）\n"
+            "【跨区域禁令】综上每个区域块仅允许引用该区域「本区测点」与「本区吹灰」；"
+            "禁止在 A 区域块出现 B 区域名称、测点或吹灰数据。"
+        )
+
+    def _region_sort_key(item: tuple[str, list[dict]]) -> float:
+        _name, rows = item
+        best = 0.0
+        for r in rows:
+            d = _row_numeric(r.get("最大监测超温差值_℃"))
+            if d is not None:
+                best = max(best, d)
+            t = _row_numeric(r.get("最大超温值_℃") or r.get("最大超温值"))
+            if t is not None:
+                best = max(best, t)
+        return best
+
+    q6_list = [r for r in (q6_rows or []) if isinstance(r, dict)]
+    lines: list[str] = [
+        "【按区域事实包·综上块仅可引用下列分区数据】",
+        "（「烟气侧/介质侧/运行操作/设备本体」四段写共性；「综上」须逐区复述下列分区，不得串区）",
+    ]
+    for idx, (region_key, rows) in enumerate(
+        sorted(grouped.items(), key=_region_sort_key, reverse=True), start=1
+    ):
+        region_label = region_key
+        for r in rows:
+            rn = str(r.get("区域名称") or "").strip()
+            if rn:
+                region_label = rn
+                break
+        point_parts = [_format_region_point(r) for r in rows[:8]]
+        if len(rows) > 8:
+            point_parts.append(f"…共{len(rows)}个测点")
+        max_temp = max(
+            (t for t in (_row_numeric(r.get("最大超温值_℃") or r.get("最大超温值")) for r in rows) if t is not None),
+            default=None,
+        )
+        max_dur = max(
+            (d for d in (_row_numeric(r.get("最大连续超温时长_分钟") or r.get("最大连续超温时长")) for r in rows) if d is not None),
+            default=None,
+        )
+        q6_row = _match_q6_for_region(region_key, q6_list)
+        lines.append(f"区域{idx}：{region_key}（表格区域名称：{region_label}）")
+        lines.append(f"- 本区测点（仅此区域，综上块仅可引用下列测点）: {'；'.join(point_parts)}")
+        stat_parts: list[str] = []
+        if max_temp is not None:
+            stat_parts.append(f"本区最高壁温{int(max_temp) if max_temp == int(max_temp) else max_temp}℃")
+        if max_dur is not None:
+            stat_parts.append(f"本区最长连续超温{int(max_dur)}分")
+        if stat_parts:
+            lines.append(f"- 本区极值: {'；'.join(stat_parts)}")
+        lines.append(f"- 本区吹灰: {_format_q6_summary(q6_row)}")
+    lines.append(
+        "【跨区域禁令】综上每个区域块仅允许引用该区域「本区测点」与「本区吹灰」；"
+        "禁止在 A 区域块出现 B 区域名称、B 区域测点编号或 B 区域吹灰次数；"
+        "禁止「A 区域问题间接导致 B 区域超温」类跨区因果（跨区关联仅可在开头概括句一句带过）。"
+    )
+    return "\n".join(lines)
 
 
 def expand_overheat_cause_slots(

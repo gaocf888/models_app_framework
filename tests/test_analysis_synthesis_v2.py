@@ -35,9 +35,12 @@ from app.llm.graphs.overheat_synthesis_render import (
     OVERHEAT_DOCX_AUTHORING_RULES,
     build_boiler_time_ranges_from_q0,
     build_overheat_distribution_note,
+    build_overheat_region_fact_packages,
     enrich_overheat_report_context_from_gathered,
     expand_overheat_cause_slots,
+    group_q1_rows_by_region,
     infer_overheat_report_context,
+    normalize_overheat_region_key,
     render_overheat_daily_section,
     render_overheat_weekly_section,
 )
@@ -266,6 +269,46 @@ class TestOverheatRenderers(unittest.TestCase):
         note = build_overheat_distribution_note(rows, _infer_overheat_distribution)
         self.assertIn("混合型", note)
 
+    def test_region_fact_packages_isolate_soot_by_region(self):
+        q1 = [
+            {
+                "区域名称": "低温再热器 限569℃",
+                "受热面名称": "低温再热器",
+                "测点编号": "R1",
+                "最大超温值_℃": 600,
+                "最大监测超温差值_℃": 31,
+                "异常等级": "Ⅲ级（严重超温）",
+            },
+            {
+                "区域名称": "水冷壁螺旋段后墙 限540℃",
+                "受热面名称": "水冷壁螺旋段后墙",
+                "测点编号": "W1",
+                "最大超温值_℃": 555,
+                "最大监测超温差值_℃": 15,
+                "异常等级": "Ⅱ级（中度超温）",
+            },
+        ]
+        q6 = [
+            {"受热面名称": "低温再热器", "吹灰次数": 8, "吹灰天数": 3},
+            {"受热面名称": "水冷壁螺旋段后墙", "吹灰次数": 2, "吹灰天数": 1},
+            {"受热面名称": "水冷壁螺旋段前墙", "吹灰次数": 2, "吹灰天数": 1},
+        ]
+        grouped = group_q1_rows_by_region(q1)
+        self.assertEqual({"低温再热器", "水冷壁螺旋段后墙"}, set(grouped.keys()))
+        self.assertEqual("低温再热器", normalize_overheat_region_key(q1[0]))
+        pkg = build_overheat_region_fact_packages(q1, q6)
+        self.assertIn("区域1：低温再热器", pkg)
+        self.assertIn("本区测点（仅此区域", pkg)
+        self.assertIn("R1", pkg)
+        self.assertIn("本区吹灰: 吹灰8次", pkg)
+        self.assertIn("区域2：水冷壁螺旋段后墙", pkg)
+        self.assertIn("W1", pkg)
+        self.assertIn("本区吹灰: 吹灰2次", pkg)
+        self.assertIn("跨区域禁令", pkg)
+        reheater_block = pkg.split("区域2：")[0]
+        self.assertNotIn("水冷壁螺旋段", reheater_block.split("区域1：", 1)[1])
+        self.assertNotIn("W1", reheater_block)
+
 
 class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
     def test_q5_audit_preview_limit_for_cause_slot(self):
@@ -326,6 +369,14 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
             slot_id="s06_cause",
         )
         self.assertIn("吹灰区域汇总", text)
+        self.assertNotIn("吹灰频次偏低", text)
+
+    def test_audit_facts_q6_global_hint_for_non_cause_slot(self):
+        text = _build_audit_facts(
+            {"q6": [{"机组名称": "1号锅炉", "受热面名称": "水冷壁", "吹灰次数": 1}]},
+            "1号锅炉",
+            slot_id="s10a_emergency",
+        )
         self.assertIn("吹灰频次偏低", text)
 
     def test_q7_audit_preview_limit_for_cause_slot(self):

@@ -19,6 +19,7 @@ from app.llm.graphs.overheat_synthesis_render import (
     OVERHEAT_CH1_INTRO,
     OVERHEAT_DOCX_AUTHORING_RULES,
     build_overheat_distribution_note,
+    build_overheat_region_fact_packages,
     filter_overheat_synthesis_slots,
     overheat_data_source_label,
     render_overheat_daily_section,
@@ -1329,7 +1330,7 @@ def _build_audit_facts(
                     break
         if len(rows) > preview_n:
             lines.append(f"  ……共 {len(rows)} 行，以上仅预览前 {preview_n} 行")
-        if iid == "q1":
+        if iid == "q1" and not slot_id.startswith("s06_cause"):
             _append_q1_top_points(lines, rows)
         if iid == "q2a":
             _append_q2a_top_points(lines, rows)
@@ -1337,7 +1338,7 @@ def _build_audit_facts(
             _append_q3b_top_points(lines, rows)
         if iid == "q5":
             _append_q5_sis_agg_hint(lines, rows)
-        if iid == "q6":
+        if iid == "q6" and not slot_id.startswith("s06_cause"):
             _append_q6_soot_agg_hint(lines, rows)
         if iid == "q7":
             _append_q7_mill_agg_hint(lines, rows)
@@ -1931,13 +1932,16 @@ class AnalysisSynthesisV2Engine:
         planning_block = f"\n分阶段规划意图(结构化要点):\n{pc[:2000]}\n" if pc else ""
         coverage_block = f"\n{coverage}\n" if coverage else ""
         dist_block = ""
+        region_block = ""
         if slot.id == "s06_cause" or slot.id.startswith("s06_cause__"):
             q1_rows = subset.get("q1") or []
+            q6_rows = subset.get("q6") or []
             dist_block = (
                 "【内部分析参考·禁止写入报告】"
                 + build_overheat_distribution_note(q1_rows, _infer_overheat_distribution)
                 + "\n"
             )
+            region_block = build_overheat_region_fact_packages(q1_rows, q6_rows) + "\n"
         boiler_block = ""
         if slot.boiler_name:
             boiler_block = f"本章目标机组: {slot.boiler_name}\n"
@@ -1954,6 +1958,7 @@ class AnalysisSynthesisV2Engine:
             f"{planning_block}"
             f"{coverage_block}"
             f"{dist_block}"
+            f"{region_block}"
             f"{audit_facts}\n"
             f"数据摘要(JSON截断): {data_preview}\n"
             f"RAG参考片段（仅规范/方法，不可作数值来源）:\n{rag_text}\n\n"
