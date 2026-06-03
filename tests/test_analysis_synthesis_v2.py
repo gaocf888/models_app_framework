@@ -440,10 +440,15 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
             ],
         }
         expanded = expand_overheat_cause_slots(base, gathered)
-        cause_ids = [s.id for s in expanded if s.id.startswith("s06_cause")]
-        self.assertEqual(["s06_cause__0", "s06_cause__1"], cause_ids)
-        self.assertEqual("1号锅炉", expanded[[s.id for s in expanded].index("s06_cause__0")].boiler_name)
-        self.assertEqual("2号锅炉", expanded[[s.id for s in expanded].index("s06_cause__1")].boiler_name)
+        ids = [s.id for s in expanded]
+        self.assertEqual(
+            ["s06_cause_hdr__0", "s06_cause__0", "s06_cause_hdr__1", "s06_cause__1"],
+            [i for i in ids if i.startswith("s06_cause")],
+        )
+        hdr0 = next(s for s in expanded if s.id == "s06_cause_hdr__0")
+        self.assertEqual("### 1号锅炉超温原因剖析\n\n", hdr0.static_body)
+        self.assertEqual("1号锅炉", next(s for s in expanded if s.id == "s06_cause__0").boiler_name)
+        self.assertEqual("2号锅炉", next(s for s in expanded if s.id == "s06_cause__1").boiler_name)
 
     def test_build_boiler_time_ranges_from_q0(self):
         ranges = build_boiler_time_ranges_from_q0([
@@ -516,6 +521,7 @@ class TestAnalysisSynthesisV2Engine(unittest.IsolatedAsyncioTestCase):
         self.assertIn("开始时间：2026-05-01 08:15:00", result.summary)
         self.assertNotIn("____年__月__日", result.summary)
         self.assertIn("## 超温原因剖析", result.summary)
+        self.assertIn("### 1号锅炉超温原因剖析", result.summary)
         self.assertIn("紧急处置", result.summary)
         self.assertNotIn("该章节数据和报告要求", result.summary)
         self.assertNotIn("以下内容为示例", result.summary)

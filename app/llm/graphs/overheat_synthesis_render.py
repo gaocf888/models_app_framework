@@ -195,7 +195,8 @@ def list_overheat_boilers_from_gathered(gathered_data: dict[str, list[dict]] | N
 def overheat_cause_narrative_instruction(boiler_name: str) -> str:
     """单机组原因剖析 LLM 任务（docx 97～110 行结构）。"""
     return (
-        f"撰写「{boiler_name}」的超温原因剖析正文（禁止输出 # / ## / ### 标题行；"
+        f"撰写「{boiler_name}」的超温原因剖析正文（禁止输出 # / ## / ### 标题行，"
+        f"含「{boiler_name}超温原因剖析」等机组标题已由系统静态输出；禁止重复）。"
         f"禁止输出 docx 模板红色说明或示例段落）。"
         "【内部分析·禁止写入报告正文】须结合 q4/q5 理解负荷、主汽压力、炉膛负压、氧量，"
         "并结合超温分布特征与日趋势（周报告时）形成判断；"
@@ -216,6 +217,8 @@ def overheat_cause_narrative_instruction(boiler_name: str) -> str:
         "禁止「A 区域积灰间接导致 B 区域超温」等跨区因果（除非开头概括句已简述）。"
         "本区无吹灰记录时禁止写吹灰频次诱因；无数据写待补充。"
         "禁止置信度、依据、q 编号、结论摘要。"
+        "禁止「可能、或许、大概、疑似、或与…有关、一般、通常、倾向于」等无数据支撑的泛化措辞；"
+        "每条归因须点名测点/数值/等级/时长或工况字段，数据不足写「待补充」。"
     )
 
 
@@ -397,6 +400,14 @@ def expand_overheat_cause_slots(
             out.append(slot)
             continue
         for idx, boiler in enumerate(boilers):
+            out.append(
+                slot.__class__(
+                    id=f"s06_cause_hdr__{idx}",
+                    kind="static_markdown",
+                    title="",
+                    static_body=f"### {boiler}超温原因剖析\n\n",
+                )
+            )
             out.append(
                 slot.__class__(
                     id=f"s06_cause__{idx}",
