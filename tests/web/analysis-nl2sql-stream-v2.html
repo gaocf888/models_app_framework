@@ -105,7 +105,16 @@
     .report-stream.rendered-md {
       white-space: normal;
     }
-    .report-stream.rendered-md table {
+    .report-stream.rendered-md h1,
+    .report-stream.rendered-md h2 {
+      margin: 0.75rem 0 0.35rem;
+      font-size: 1.05rem;
+    }
+    .report-stream.rendered-md h1 { font-size: 1.15rem; }
+    .report-stream.rendered-md .md-section-marker {
+      color: var(--muted);
+      margin: 0.5rem 0;
+    }
       border-collapse: collapse;
       width: 100%;
       font-size: 0.85rem;
@@ -560,6 +569,20 @@
       $("answer").textContent = this.buffer;
     },
 
+    /** 用服务端最终 Markdown 覆盖流式缓冲（修正 SSE 分块与 LLM 裸 token 拼接导致的格式粘连） */
+    setFullMarkdown(md) {
+      if (md == null || md === "") return;
+      this.stopTypewriter();
+      this.pending = "";
+      this.buffer = String(md);
+      this.streamEnded = true;
+    },
+
+    async finalizeReport() {
+      await this.drainPending(true);
+      this.renderMarkdownFinish();
+    },
+
     async drainPending(accelerated) {
       if (!this.typewriter) {
         this.flushNow();
@@ -642,17 +665,26 @@
   function simpleMarkdownToHtml(md) {
     const esc = (s) =>
       s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const lines = md.split("\n");
+    const lines = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
     const out = [];
     let inTable = false;
     for (const line of lines) {
       const t = line.trim();
-      if (t.startsWith("### ")) {
+      if (t.startsWith("# ")) {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        out.push("<h1>" + esc(t.slice(2)) + "</h1>");
+      } else if (t.startsWith("## ")) {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        out.push("<h2>" + esc(t.slice(3)) + "</h2>");
+      } else if (t.startsWith("### ")) {
         if (inTable) { out.push("</table>"); inTable = false; }
         out.push("<h3>" + esc(t.slice(4)) + "</h3>");
       } else if (t.startsWith("#### ")) {
         if (inTable) { out.push("</table>"); inTable = false; }
         out.push("<h4>" + esc(t.slice(5)) + "</h4>");
+      } else if (/^--.+--$/.test(t)) {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        out.push("<p class=\"md-section-marker\"><em>" + esc(t) + "</em></p>");
       } else if (t.startsWith("|") && t.includes("|")) {
         const cells = t.split("|").slice(1, -1).map((c) => c.trim());
         if (/^[-:\s|]+$/.test(t.replace(/\|/g, ""))) continue;
@@ -1004,6 +1036,13 @@
         }
         if (kind === "summary_complete") {
           StreamReportRenderer.markStreamEnded();
+          if (ev.markdown) {
+            StreamReportRenderer.setFullMarkdown(ev.markdown);
+            await StreamReportRenderer.finalizeReport();
+            appendStatus("summary 已完成（已用服务端最终 Markdown 渲染）");
+          } else {
+            appendStatus("summary 流结束，打字机继续展示剩余内容…");
+          }
           const tail =
             "chars: " +
             (ev.chars != null ? ev.chars : StreamReportRenderer.buffer.length + StreamReportRenderer.pending.length) +
@@ -1012,13 +1051,14 @@
             "\nrequest_id: " +
             (ev.request_id || "");
           $("meta").textContent = ($("meta").textContent || "") + "\n\n--- summary_complete ---\n" + tail;
-          appendStatus("summary 流结束，打字机继续展示剩余内容…");
           return;
         }
         if (kind === "finished") {
           const m = ev.meta || {};
-          await StreamReportRenderer.drainPending(true);
-          StreamReportRenderer.renderMarkdownFinish();
+          if (ev.markdown && !StreamReportRenderer.buffer) {
+            StreamReportRenderer.setFullMarkdown(ev.markdown);
+          }
+          await StreamReportRenderer.finalizeReport();
           StreamReportRenderer.finalizeStructured(m);
           const cites = Array.isArray(m.rag_citations) ? m.rag_citations : [];
           renderRagCitations($("ragCitations"), cites);
@@ -1038,6 +1078,7 @@
           return;
         }
         if (kind === "structured_async_enqueued") {
+          await StreamReportRenderer.finalizeReport();
           $("meta").textContent =
             ($("meta").textContent || "") +
             "\n\n--- structured_async_enqueued ---\nrequest_id: " +
@@ -1057,6 +1098,7 @@
     } finally {
       setBusy(false);
       abortCtrl = null;
+      await StreamReportRenderer.finalizeReport();
     }
   });
 })();

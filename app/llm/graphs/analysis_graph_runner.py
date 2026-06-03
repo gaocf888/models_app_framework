@@ -2325,6 +2325,7 @@ class AnalysisGraphRunner:
                 "request_id": ctx.request_id,
                 "chars": len(summary),
                 "synthesis_ms": synthesis_ms,
+                "markdown": summary,
             }
 
             yield {

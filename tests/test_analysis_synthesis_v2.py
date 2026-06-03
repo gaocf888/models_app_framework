@@ -19,6 +19,7 @@ from app.llm.graphs.analysis_synthesis_v2 import (
     _audit_preview_row_limit,
     _build_audit_facts,
     _infer_overheat_distribution,
+    _join_slot_markdown,
     _rag_snippets_for_slot,
     _resolve_data_subset,
     _resolve_live_slot_index,
@@ -326,6 +327,13 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
         slots = get_synthesis_v2_slots("overheat_guidance")
         idx = _resolve_live_slot_index(slots)
         self.assertEqual("s06_cause", slots[idx].id)
+
+
+class TestJoinSlotMarkdown(unittest.TestCase):
+    def test_join_inserts_blank_line_between_slots(self):
+        md = _join_slot_markdown(["# 标题\n", "## 章节\n", "| a | b |\n| --- | --- |\n"])
+        self.assertIn("# 标题\n\n## 章节", md)
+        self.assertIn("## 章节\n\n| a | b |", md)
 
 
 class TestAnalysisSynthesisV2Engine(unittest.IsolatedAsyncioTestCase):

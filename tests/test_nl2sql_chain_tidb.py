@@ -291,6 +291,87 @@ def test_rewrite_entity_scope_boiler_like_concat_global() -> None:
     assert "entity_scope_boiler_name" in notes
 
 
+def _q1_unit_keyword_sql_template() -> str:
+    return (
+        "SELECT ab.boiler_name FROM monitor_hotarea_temp t "
+        "INNER JOIN account_boiler ab ON t.boiler_id = ab.boiler_id "
+        "WHERE t.start_time >= DATE_SUB(CURDATE(), INTERVAL 2 DAY) "
+        "AND t.start_time < DATE_SUB(CURDATE(), INTERVAL 1 DAY) "
+        "AND t.highest_temp > t.limit_temp "
+        "AND (@unit_keyword IS NULL OR @unit_keyword = '' "
+        "OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))"
+    )
+
+
+def test_extract_unit_keyword_single_boiler() -> None:
+    chain = _build_chain_for_unit()
+    assert chain._extract_unit_keyword_from_question("请分析1号锅炉前天的超温") == "1号锅炉"
+    assert chain._extract_unit_keyword_from_question("请分析2号机组昨天的超温") == "2号锅炉"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "请分析所有锅炉前天的超温情况",
+        "请分析全部机组昨天的超温",
+        "请分析各锅炉本周超温",
+        "请分析全厂锅炉超温",
+        "请分析前天超温情况",
+        "",
+    ],
+)
+def test_extract_unit_keyword_all_plants_returns_none(question: str) -> None:
+    chain = _build_chain_for_unit()
+    assert chain._extract_unit_keyword_from_question(question) is None
+
+
+def test_rewrite_unit_keyword_placeholder_single_boiler() -> None:
+    chain = _build_chain_for_unit()
+    user_q = "请帮我分析1号锅炉前天的超温情况"
+    rewritten, notes = chain._rewrite_query_filters(
+        _q1_unit_keyword_sql_template(),
+        question=user_q,
+        time_intent_source=user_q,
+    )
+    assert "@unit_keyword" not in rewritten
+    assert "'' IS NULL OR '' = ''" not in rewritten
+    assert "'1号锅炉' = ''" in rewritten or "'' = '' OR ab.boiler_name LIKE CONCAT('%', '1号锅炉', '%')" in rewritten
+    assert "unit_keyword_placeholder_single" in notes
+
+
+def test_rewrite_unit_keyword_placeholder_all_plants_explicit() -> None:
+    chain = _build_chain_for_unit()
+    user_q = "请分析所有锅炉前天的超温情况"
+    rewritten, notes = chain._rewrite_query_filters(
+        _q1_unit_keyword_sql_template(),
+        question=user_q,
+        time_intent_source=user_q,
+    )
+    assert "@unit_keyword" not in rewritten
+    assert "'' IS NULL OR '' = ''" in rewritten
+    assert "unit_keyword_placeholder_all_plants" in notes
+
+
+def test_rewrite_unit_keyword_placeholder_all_plants_implicit() -> None:
+    """未指定机组时 @unit_keyword 落为 ''，等价全厂。"""
+    chain = _build_chain_for_unit()
+    user_q = "请分析前天的超温情况"
+    rewritten, notes = chain._rewrite_query_filters(
+        _q1_unit_keyword_sql_template(),
+        question=user_q,
+        time_intent_source=user_q,
+    )
+    assert "@unit_keyword" not in rewritten
+    assert "'' = ''" in rewritten
+    assert "unit_keyword_placeholder_all_plants" in notes
+
+
+def test_single_boiler_wins_over_full_plant_phrase_in_same_query() -> None:
+    chain = _build_chain_for_unit()
+    user_q = "请对比1号锅炉与所有机组前天的超温"
+    assert chain._extract_unit_keyword_from_question(user_q) == "1号锅炉"
+
+
 def test_today_wins_over_iso_date_in_long_plan_question() -> None:
     """plan 长问句含 2026-05-27 等示例日期时，仍应用用户 time_intent 的「今天」。"""
     chain = _build_chain_for_unit()

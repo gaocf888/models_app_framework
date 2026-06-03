@@ -1739,19 +1739,88 @@ class NL2SQLChain:
                 return f"{m.group(1)}号锅炉"
         return None
 
-    @staticmethod
-    def _extract_scope_literals_from_question(question: str) -> dict[str, str]:
-        """从问句提取锅炉/机组等范围，用于替换 QA 模板中的示例字面量。"""
-        scopes: dict[str, str] = {}
-        boiler = NL2SQLChain._extract_boiler_scope_label_from_question(question)
+    # 显式全厂/全机组意图（须在单机组解析之后判定，避免「1号锅炉」误触）
+    _EXPLICIT_FULL_PLANT_SCOPE_RE = re.compile(
+        r"(?:"
+        r"全厂"
+        r"|(?:所有|全部|各).{0,6}(?:锅炉|机组|单元)"
+        r"|(?:锅炉|机组).{0,4}(?:整体|全部|所有)"
+        r"|全.{0,2}(?:锅炉|机组)"
+        r")"
+    )
+
+    @classmethod
+    def _has_explicit_full_plant_scope(cls, question: str) -> bool:
+        """问句是否显式要求全厂/所有机组（不含「N号锅炉」类单机组表述）。"""
+        q = (question or "").strip()
+        if not q:
+            return False
+        if cls._extract_boiler_scope_label_from_question(q):
+            return False
+        return bool(cls._EXPLICIT_FULL_PLANT_SCOPE_RE.search(q))
+
+    @classmethod
+    def _extract_unit_keyword_from_question(cls, question: str) -> str | None:
+        """
+        解析机组过滤关键字，供 @unit_keyword 占位符与 boiler_name LIKE 使用。
+
+        返回值语义（与参考 SQL「空则全厂」一致）：
+        - ``str``：单机组，如 ``1号锅炉``（归一化后的 boiler_name 片段）；
+        - ``None``：全厂——含显式「所有机组/全厂/…」，或问句未指定任何机组。
+
+        全厂返回 None 而非空串：解析层用 None 表达「无需过滤」；
+        SQL 改写时将 None 落为 ``''``，使
+        ``(@unit_keyword IS NULL OR @unit_keyword = '' OR … LIKE …)`` 中第二支为真。
+        """
+        q = (question or "").strip()
+        if not q:
+            return None
+        boiler = cls._extract_boiler_scope_label_from_question(q)
         if boiler:
-            scopes["boiler"] = boiler
-        return scopes
+            return boiler
+        if cls._has_explicit_full_plant_scope(q):
+            return None
+        return None
+
+    @staticmethod
+    def _extract_scope_literals_from_question(question: str) -> dict[str, str | None]:
+        """从问句提取锅炉/机组范围；unit_keyword/boiler 为 None 表示全厂。"""
+        unit_kw = NL2SQLChain._extract_unit_keyword_from_question(question)
+        return {"unit_keyword": unit_kw, "boiler": unit_kw}
 
     # QA 模板中常见的示例锅炉名字面量（strict replay 需按问句全局替换）
     _BOILER_UNIT_LITERAL_IN_QUOTES = re.compile(
         r"'(\d+号锅炉|[一二两三四五六七八九十百]+号锅炉)'"
     )
+
+    @staticmethod
+    def _sql_has_unit_keyword_placeholder(sql: str) -> bool:
+        return bool(re.search(r"@unit_keyword\b", sql, re.IGNORECASE))
+
+    @classmethod
+    def _rewrite_unit_keyword_placeholders(
+        cls,
+        sql: str,
+        unit_keyword: str | None,
+    ) -> tuple[str, list[str]]:
+        """
+        将 @unit_keyword 替换为 SQL 字面量（与 @t_start/@t_end 时间占位符改写对称）。
+
+        - 单机组：``'1号锅炉'``；
+        - 全厂（None）：``''``，使模板中 ``@unit_keyword = ''`` 为真、跳过后续 LIKE。
+        """
+        if not cls._sql_has_unit_keyword_placeholder(sql):
+            return sql, []
+        notes: list[str] = []
+        if unit_keyword is None:
+            replacement = "''"
+            notes.append("unit_keyword_placeholder_all_plants")
+        else:
+            safe = unit_keyword.replace("'", "''")
+            replacement = f"'{safe}'"
+            notes.append("unit_keyword_placeholder_single")
+        rewritten = re.sub(r"@unit_keyword\b", replacement, sql, flags=re.IGNORECASE)
+        return rewritten, notes
 
     def _rewrite_entity_scope_literals(
         self,
@@ -1760,15 +1829,21 @@ class NL2SQLChain:
         question: str,
         time_intent_source: str | None = None,
     ) -> tuple[str, list[str]]:
-        """将 QA 中示例锅炉名/机组名替换为当前问句中的实体范围。"""
+        """将 QA/LLM SQL 中示例锅炉名与 @unit_keyword 占位符替换为当前问句实体范围。"""
         notes: list[str] = []
         scope_q = self._resolve_entity_scope_question(
             question=question, time_intent_source=time_intent_source
         )
         scopes = self._extract_scope_literals_from_question(scope_q)
-        if not scopes:
-            return sql, notes
+        unit_keyword = scopes.get("unit_keyword")
         rewritten = sql
+
+        if self._sql_has_unit_keyword_placeholder(rewritten):
+            rewritten, uk_notes = self._rewrite_unit_keyword_placeholders(
+                rewritten, unit_keyword
+            )
+            notes.extend(uk_notes)
+
         if boiler := scopes.get("boiler"):
             safe = boiler.replace("'", "''")
             boiler_pat = re.compile(
