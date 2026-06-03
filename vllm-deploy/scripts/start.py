@@ -38,6 +38,7 @@ class VLLMService:
         "max_num_batched_tokens": ("performance", "max_num_batched_tokens"),
         "enable_prefix_caching": ("performance", "enable_prefix_caching"),
         "enforce_eager": ("hardware", "enforce_eager"),
+        "enable_expert_parallel": ("hardware", "enable_expert_parallel"),
         "attention_backend": ("hardware", "attention_backend"),
         "attention-backend": ("hardware", "attention_backend"),
         "default_chat_template_kwargs": ("model", "default_chat_template_kwargs"),
@@ -317,6 +318,8 @@ class VLLMService:
         cmd.extend(["--block-size", str(hardware.get("block_size", 32))])
         if hardware.get("enforce_eager"):
             cmd.append("--enforce-eager")
+        if hardware.get("enable_expert_parallel"):
+            cmd.append("--enable-expert-parallel")
         attention_backend = self._normalize_attention_backend(hardware.get("attention_backend"))
         if attention_backend:
             cmd.extend(["--attention-backend", attention_backend])

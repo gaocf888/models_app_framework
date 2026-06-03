@@ -22,8 +22,11 @@ CELL_RE = re.compile(
 
 _UP_LABELS = frozenset({"上", "向上", "上数", "上部"})
 _DOWN_LABELS = frozenset({"下", "向下", "下数", "下部"})
+_IDX_HEADER_LABELS = frozenset({"编号", "根数", "序号"})
+_THK_HEADER_LABELS = frozenset({"测量值", "测厚", "厚度", "壁厚"})
 _THK_TOLERANCE = 0.03
 _COMBO_INDEX_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
+_WIDE_DIRECTION_SPAN = 4  # hmerge 跨度 ≥4 列时，在 span 内按「编号|测量值」拆列组
 
 
 def thk_close(a: float, b: float, tol: float = _THK_TOLERANCE) -> bool:
@@ -60,6 +63,14 @@ def cell_defect_by_markup(color_note: str | None, part: str) -> bool:
     if color_note and "底纹=" in color_note:
         return True
     return False
+
+
+@dataclass
+class DirectionSpan:
+    direction: str
+    col_lo: int
+    col_hi: int
+    header_row: int
 
 
 @dataclass
@@ -116,8 +127,8 @@ class ParsedTable:
     groups: list[DirectionGroup] = field(default_factory=list)
 
 
-def _parse_column_groups_from_row(body: str, header_row: int) -> list[DirectionGroup]:
-    groups: list[DirectionGroup] = []
+def _parse_direction_spans_from_row(body: str, header_row: int) -> list[DirectionSpan]:
+    spans: list[DirectionSpan] = []
     for gm in COL_GROUP_RE.finditer(body):
         c0 = int(gm.group(2))
         c1 = int(gm.group(3)) if gm.group(3) else c0
@@ -129,27 +140,195 @@ def _parse_column_groups_from_row(body: str, header_row: int) -> list[DirectionG
         else:
             continue
         if c1 - c0 >= 1:
+            spans.append(DirectionSpan(direction=direction, col_lo=c0, col_hi=c1, header_row=header_row))
+    return spans
+
+
+def _parse_column_groups_from_row(body: str, header_row: int) -> list[DirectionGroup]:
+    """窄跨度 上/下（hmerge×2）：直接 (c0,c1) 列组。宽跨度由 _build_direction_groups_for_band 处理。"""
+    groups: list[DirectionGroup] = []
+    for span in _parse_direction_spans_from_row(body, header_row):
+        width = span.col_hi - span.col_lo + 1
+        if width == 2:
             groups.append(
                 DirectionGroup(
-                    direction=direction,
-                    idx_col=c0,
-                    thk_col=c1,
+                    direction=span.direction,
+                    idx_col=span.col_lo,
+                    thk_col=span.col_lo + 1,
+                    header_row=header_row,
+                )
+            )
+        elif width < _WIDE_DIRECTION_SPAN:
+            groups.append(
+                DirectionGroup(
+                    direction=span.direction,
+                    idx_col=span.col_lo,
+                    thk_col=span.col_hi,
                     header_row=header_row,
                 )
             )
     return groups
 
 
+def _find_number_header_row(
+    cells: dict[tuple[int, int], dict[str, Any]],
+    band_start: int,
+    band_end: int,
+    *,
+    after_row: int | None,
+) -> int | None:
+    start = (after_row + 1) if after_row is not None else band_start + 1
+    for ri in range(start, min(band_end, start + 6) + 1):
+        for ci in range(0, 32):
+            text = (cells.get((ri, ci)) or {}).get("text", "").strip()
+            if text in _IDX_HEADER_LABELS:
+                return ri
+    return None
+
+
+def _idx_thk_pairs_in_span(
+    cells: dict[tuple[int, int], dict[str, Any]],
+    header_ri: int,
+    col_lo: int,
+    col_hi: int,
+) -> list[tuple[int, int]]:
+    """在列范围内识别「编号|测量值」相邻列对。"""
+    pairs: list[tuple[int, int]] = []
+    ci = col_lo
+    while ci + 1 <= col_hi:
+        t0 = (cells.get((header_ri, ci)) or {}).get("text", "").strip()
+        t1 = (cells.get((header_ri, ci + 1)) or {}).get("text", "").strip()
+        if t0 in _IDX_HEADER_LABELS and (t1 in _THK_HEADER_LABELS or ci + 1 <= col_hi):
+            pairs.append((ci, ci + 1))
+            ci += 2
+        else:
+            ci += 1
+    return pairs
+
+
+def _groups_for_direction_span(
+    span: DirectionSpan,
+    *,
+    cells: dict[tuple[int, int], dict[str, Any]],
+    header_row: int | None,
+) -> list[DirectionGroup]:
+    width = span.col_hi - span.col_lo + 1
+    if width == 2:
+        return [
+            DirectionGroup(
+                direction=span.direction,
+                idx_col=span.col_lo,
+                thk_col=span.col_lo + 1,
+                header_row=span.header_row,
+            )
+        ]
+    if width >= _WIDE_DIRECTION_SPAN and header_row is not None:
+        pairs = _idx_thk_pairs_in_span(cells, header_row, span.col_lo, span.col_hi)
+        if pairs:
+            return [
+                DirectionGroup(
+                    direction=span.direction,
+                    idx_col=idx_col,
+                    thk_col=thk_col,
+                    header_row=span.header_row,
+                )
+                for idx_col, thk_col in pairs
+            ]
+    if width >= _WIDE_DIRECTION_SPAN:
+        out: list[DirectionGroup] = []
+        c = span.col_lo
+        while c + 1 <= span.col_hi:
+            out.append(
+                DirectionGroup(
+                    direction=span.direction,
+                    idx_col=c,
+                    thk_col=c + 1,
+                    header_row=span.header_row,
+                )
+            )
+            c += 2
+        return out
+    return [
+        DirectionGroup(
+            direction=span.direction,
+            idx_col=span.col_lo,
+            thk_col=span.col_hi,
+            header_row=span.header_row,
+        )
+    ]
+
+
+def _max_col_in_band(cells: dict[tuple[int, int], dict[str, Any]], band_start: int, band_end: int) -> int:
+    mx = 0
+    for ri, ci in cells:
+        if band_start <= ri <= band_end:
+            mx = max(mx, ci)
+    return mx
+
+
+def _build_direction_groups_for_band(
+    lines: list[str],
+    cells: dict[tuple[int, int], dict[str, Any]],
+    band_start: int,
+    band_end: int,
+) -> tuple[list[DirectionGroup], int]:
+    """
+    按 band 解析 DirectionGroup 列表与数据区起始行。
+
+    优先级：窄 上/下(hmerge×2) → 宽 上/下+编号|测量值表头 → 无方向仅编号表头 → 默认 (0,1)(2,3)。
+    """
+    dir_row: int | None = None
+    direction_spans: list[DirectionSpan] = []
+    for ri in range(band_start + 1, band_end + 1):
+        line = next((ln for ln in lines if ln.startswith(f"r{ri}:")), "")
+        if not line:
+            continue
+        spans = _parse_direction_spans_from_row(line.split(":", 1)[1], ri)
+        if spans:
+            dir_row = ri
+            direction_spans = spans
+            break
+
+    if direction_spans:
+        header_row = _find_number_header_row(
+            cells, band_start, band_end, after_row=dir_row
+        )
+        groups: list[DirectionGroup] = []
+        for span in direction_spans:
+            groups.extend(
+                _groups_for_direction_span(span, cells=cells, header_row=header_row)
+            )
+        if groups:
+            data_start = (header_row + 1) if header_row is not None else (dir_row + 1)
+            return groups, data_start
+
+    header_row = _find_number_header_row(
+        cells, band_start, band_end, after_row=band_start
+    )
+    if header_row is not None:
+        col_hi = _max_col_in_band(cells, band_start, band_end)
+        pairs = _idx_thk_pairs_in_span(cells, header_row, 0, col_hi)
+        if pairs:
+            groups = [
+                DirectionGroup("下", idx_col, thk_col, header_row)
+                for idx_col, thk_col in pairs
+            ]
+            return groups, header_row + 1
+
+    return [
+        DirectionGroup("上", 0, 1, band_start),
+        DirectionGroup("下", 2, 3, band_start),
+    ], band_start + 1
+
+
 def parse_column_groups(lines: list[str]) -> list[DirectionGroup]:
-    """全表扫描上/下行（向后兼容 color_guard）。"""
+    """全表按 band 解析列组（供 color_guard 等使用）。"""
+    cells = parse_table_rows(lines)
+    bands = _row_bands(lines)
     out: list[DirectionGroup] = []
-    for line in lines:
-        if not line.startswith("r"):
-            continue
-        m = ROW_RE.match(line)
-        if not m:
-            continue
-        out.extend(_parse_column_groups_from_row(m.group(2), int(m.group(1))))
+    for band_start, band_end in bands:
+        groups, _ = _build_direction_groups_for_band(lines, cells, band_start, band_end)
+        out.extend(groups)
     if not out:
         out = [
             DirectionGroup("上", 0, 1, -1),
@@ -268,25 +447,8 @@ def build_index_pairs(lines: list[str], cells: dict[tuple[int, int], dict[str, A
             if band_start < s.header_row < band_end and not _is_major_title(s):
                 minor.append(s)
 
-        dir_row: int | None = None
-        groups: list[DirectionGroup] = []
-        for ri in range(band_start + 1, band_end + 1):
-            line = next((ln for ln in lines if ln.startswith(f"r{ri}:")), "")
-            if not line:
-                continue
-            gs = _parse_column_groups_from_row(line.split(":", 1)[1], ri)
-            if gs:
-                dir_row = ri
-                groups = gs
-                break
+        groups, data_start = _build_direction_groups_for_band(lines, cells, band_start, band_end)
 
-        if not groups:
-            groups = [
-                DirectionGroup("上", 0, 1, band_start),
-                DirectionGroup("下", 2, 3, band_start),
-            ]
-
-        data_start = (dir_row + 1) if dir_row is not None else band_start + 1
         for ri in range(data_start, band_end + 1):
             for g in groups:
                 idx_info = cells.get((ri, g.idx_col))
@@ -328,25 +490,8 @@ def build_combo_cells(lines: list[str], cells: dict[tuple[int, int], dict[str, A
             if band_start < s.header_row < band_end and not _is_major_title(s):
                 minor.append(s)
 
-        dir_row: int | None = None
-        groups: list[DirectionGroup] = []
-        for ri in range(band_start + 1, band_end + 1):
-            line = next((ln for ln in lines if ln.startswith(f"r{ri}:")), "")
-            if not line:
-                continue
-            gs = _parse_column_groups_from_row(line.split(":", 1)[1], ri)
-            if gs:
-                dir_row = ri
-                groups = gs
-                break
+        groups, data_start = _build_direction_groups_for_band(lines, cells, band_start, band_end)
 
-        if not groups:
-            groups = [
-                DirectionGroup("上", 0, 1, band_start),
-                DirectionGroup("下", 2, 3, band_start),
-            ]
-
-        data_start = (dir_row + 1) if dir_row is not None else band_start + 1
         for ri in range(data_start, band_end + 1):
             for g in groups:
                 idx_info = cells.get((ri, g.idx_col))

@@ -205,6 +205,56 @@ presets:
         - "./videos"
     description: "Qwen3.5 27B 原生多模态模型，支持图像理解与多轮对话"
 
+  # Qwen3.5 35B-A3B MoE 多模态模型（256 专家 / 每 token 约 3B 激活）
+  # 沐曦 N260 双卡 64GB：TP=2 + Expert Parallel；FP16 权重约 70GB，双卡可支撑 32K 上下文与高并发
+  qwen3.5-35b-a3b:
+    path: "./models/Qwen3.5-35B-A3B"
+    served_model_name: "qwen3.5-35b-a3b"
+    dtype: "half"
+    max_model_len: 32768
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.85
+    max_num_seqs: 64
+    max_num_batched_tokens: 16384
+    enable_prefix_caching: true
+    enable_expert_parallel: true
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.5 35B-A3B MoE 多模态，N260 双卡 64G 推荐预设（TP2+EP，32K 上下文）"
+
+  # Qwen3.5 35B-A3B AWQ（约 25GiB 权重，显存更宽裕，可进一步提高上下文或并发）
+  qwen3.5-35b-a3b-awq:
+    path: "./models/Qwen3.5-35B-A3B-AWQ"
+    served_model_name: "qwen3.5-35b-a3b-awq"
+    dtype: "half"
+    quantization: "awq"
+    max_model_len: 40960
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.88
+    max_num_seqs: 96
+    max_num_batched_tokens: 20480
+    enable_prefix_caching: true
+    enable_expert_parallel: true
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.5 35B-A3B AWQ 多模态，N260 双卡 64G 高上下文/高并发预设"
+
   # ==================== 额外常用模型 ====================
 
   # Llama 3 8B

@@ -167,6 +167,24 @@ def _apply_tube_fix(item: dict[str, Any], new_tube: str, msg: str) -> None:
     item["warnings"] = warn_list
 
 
+def _record_matches_index_pair(
+    tube_n: int | None,
+    thk: float | None,
+    pair: IndexPair,
+) -> bool:
+    if tube_n is None or thk is None:
+        return False
+    if pair.index_val != abs(tube_n):
+        return False
+    if not thk_close(pair.thickness, thk):
+        return False
+    if tube_n < 0 and pair.direction != "上":
+        return False
+    if tube_n > 0 and pair.direction != "下":
+        return False
+    return True
+
+
 def _bind_wall_record(
     item: dict[str, Any],
     pairs: list[IndexPair],
@@ -186,6 +204,11 @@ def _bind_wall_record(
 
     if not scoped:
         return item
+
+    if tube_n is not None:
+        matched = [p for p in scoped if _record_matches_index_pair(tube_n, thk, p)]
+        if matched:
+            return item
 
     tube_abs = abs(tube_n) if tube_n is not None else None
 
@@ -224,11 +247,18 @@ def _bind_wall_record(
             )
         return item
 
-    if (tube_n is None or tube_n >= 0) and len(down_vals) == 1:
-        if len(up_vals) == 1 and tube_abs == up_vals[0] and tube_n is not None and tube_n >= 0:
-            expected = _format_tube(up_vals[0], "上")
+    if (
+        tube_n is not None
+        and tube_n >= 0
+        and len(up_vals) == 1
+        and tube_abs == up_vals[0]
+    ):
+        expected = _format_tube(up_vals[0], "上")
+        if str(item.get("管号") or item.get("tube_no") or "").strip() != expected:
             _apply_tube_fix(item, expected, f"bind_guard:上侧管号+壁厚→{expected}")
-            return item
+        return item
+
+    if (tube_n is None or tube_n >= 0) and len(down_vals) == 1 and len(up_vals) != 1:
         expected = _format_tube(down_vals[0], "下")
         if tube_abs != down_vals[0]:
             _apply_tube_fix(
