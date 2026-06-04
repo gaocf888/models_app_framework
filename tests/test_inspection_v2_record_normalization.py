@@ -6,21 +6,50 @@ from app.inspection_v2.record_normalization import (
 )
 
 
-def test_tube_negative_when_up_marker_in_row() -> None:
-    loc, row, tube, w = normalize_location_row_tube("右墙", "向上第1根", "5", evidence="")
+def test_tube_negative_when_up_marker_in_evidence() -> None:
+    loc, row, tube, w = normalize_location_row_tube("右墙", "1", "5", evidence="向上第1根")
     assert tube == "-5"
     assert any("上" in x for x in w)
 
 
-def test_tube_strip_negative_when_down_marker() -> None:
-    loc, row, tube, w = normalize_location_row_tube("左墙", "向下", "-3", evidence="")
+def test_tube_strip_negative_when_down_marker_in_evidence() -> None:
+    loc, row, tube, w = normalize_location_row_tube("左墙", "1", "-3", evidence="下侧 c2-c3")
     assert tube == "3"
     assert w
 
 
+def test_tube_sign_ignored_when_only_row_has_up_marker() -> None:
+    """行号含「向上」但 evidence 为空时，不再改正负号。"""
+    loc, row, tube, w = normalize_location_row_tube("右墙", "向上第1根", "5", evidence="")
+    assert tube == "5"
+    assert not any("tube_sign" in x for x in w)
+
+
+def test_tube_sign_not_stripped_when_location_has_down_but_evidence_empty() -> None:
+    loc, row, tube, w = normalize_location_row_tube(
+        "2-6 贴壁风下部测点中心孔向下（2024）",
+        "1",
+        "-5",
+        evidence="",
+    )
+    assert tube == "-5"
+    assert not any("tube_sign" in x for x in w)
+
+
+def test_tube_sign_applied_when_evidence_up_despite_down_in_location() -> None:
+    loc, row, tube, w = normalize_location_row_tube(
+        "2-6 贴壁风下部测点中心孔向下（2024）",
+        "1",
+        "5",
+        evidence="r5 c0-c1 上列",
+    )
+    assert tube == "-5"
+    assert any("tube_sign" in x for x in w)
+
+
 def test_tube_unchanged_for_non_integer_non_combo() -> None:
     """非纯整数且非「数字-数字」组合形态时，跳过管号正负号校正。"""
-    loc, row, tube, w = normalize_location_row_tube("右墙", "向上第1根", "12B", evidence="")
+    loc, row, tube, w = normalize_location_row_tube("右墙", "1", "12B", evidence="向上")
     assert tube == "12B"
     assert not any("tube_sign" in x for x in w)
 

@@ -1,7 +1,7 @@
 """
 检修记录确定性规范化（与 configs/prompts.yaml · inspection_extract_parse 对齐）。
 
-- 管号符号：表格语境含「上/向上/上数…」时对纯整数管号补负号；含「下/向下…」时去掉多余负号。
+- 管号符号：仅从 evidence 文本识别「上/向上/上数…」「下/向下/下数…」；上侧补负号、下侧去负号（不用行号/检测位置推断）。
 - 设备语义：水冷壁/包墙/后竖井/冷灰斗 → 行号固定为 1；再热器/过热器/省煤器等 → 管号固定为 1。
 - 组合编号（如 2-1）：combo_index_guard 基于 chunk 编号列判定；无 chunk 时字段字面量兜底。
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-_UP_MARKERS = ("向上", "上数", "上排", "上行", "上测", "上部")
-_DOWN_MARKERS = ("向下", "下数", "下排", "下行", "下测", "下部")
+_UP_MARKERS = ("向上", "上数", "上排", "上行", "上测", "上部", "上")
+_DOWN_MARKERS = ("向下", "下数", "下排", "下行", "下测", "下部", "下")
 
 # 检测位置含下列词时：行号必须为 1，表格编号列语义为管号
 _WALL_ROW1_MARKERS = ("水冷壁", "包墙", "后竖井", "冷灰斗")
@@ -129,20 +129,22 @@ def normalize_device_row_tube_by_location(
     return loc, row, tube, warns
 
 
-def _has_up_context(row_no: str, location: str, evidence: str) -> bool:
-    s = f"{row_no}{location}{evidence}"
+def _has_up_context_in_evidence(evidence: str) -> bool:
+    s = (evidence or "").strip()
+    if not s:
+        return False
     if any(m in s for m in _UP_MARKERS):
         return True
-    r = (row_no or "").strip()
-    return bool(r.startswith("上"))
+    return s.startswith("上")
 
 
-def _has_down_context(row_no: str, location: str, evidence: str) -> bool:
-    s = f"{row_no}{location}{evidence}"
+def _has_down_context_in_evidence(evidence: str) -> bool:
+    s = (evidence or "").strip()
+    if not s:
+        return False
     if any(m in s for m in _DOWN_MARKERS):
         return True
-    r = (row_no or "").strip()
-    return bool(r.startswith("下"))
+    return s.startswith("下")
 
 
 def normalize_location_row_tube(
@@ -169,8 +171,8 @@ def normalize_location_row_tube(
     if not int_only:
         return loc, row, tube, warns
 
-    up = _has_up_context(row, loc, evidence)
-    down = _has_down_context(row, loc, evidence)
+    up = _has_up_context_in_evidence(evidence)
+    down = _has_down_context_in_evidence(evidence)
     if up and down:
         warns.append("deterministic_tube_sign_skipped:上下并存")
         return loc, row, tube, warns
