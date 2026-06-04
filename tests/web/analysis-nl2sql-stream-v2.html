@@ -115,6 +115,7 @@
       color: var(--muted);
       margin: 0.5rem 0;
     }
+    .report-stream.rendered-md table {
       border-collapse: collapse;
       width: 100%;
       font-size: 0.85rem;
@@ -327,6 +328,7 @@
           <label><input type="checkbox" id="strict" /> strict</label>
           <label><input type="checkbox" id="liteStream" checked /> 轻量流式（防卡死，推荐）</label>
           <label><input type="checkbox" id="typewriterStream" checked /> 打字机效果（按序逐字展示）</label>
+          <label><input type="checkbox" id="renderHtmlMd" /> 完成后渲染 HTML（实验；大表格易乱，默认关）</label>
           <label><input type="checkbox" id="debugSse" /> 调试 SSE 日志</label>
         </div>
         <label>max_nl2sql_calls（空则服务端默认）</label>
@@ -346,7 +348,7 @@
         <span class="spinner" aria-hidden="true"></span>
         <span id="slotLoadingText">正在生成下一章节…</span>
       </div>
-      <h2>summary（流式 Markdown；完成后可渲染 HTML）</h2>
+      <h2>summary（流式 Markdown 原文；默认不转 HTML）</h2>
       <div id="answer" class="report-stream"></div>
       <h2 style="margin-top:1rem;">趋势图（ECharts · chart_payload）</h2>
       <div id="chartPanels"></div>
@@ -580,7 +582,12 @@
 
     async finalizeReport() {
       await this.drainPending(true);
-      this.renderMarkdownFinish();
+      if ($("renderHtmlMd").checked) {
+        this.renderMarkdownFinish();
+      } else {
+        this.flushNow();
+        $("answer").classList.remove("rendered-md");
+      }
     },
 
     async drainPending(accelerated) {
@@ -1039,7 +1046,11 @@
           if (ev.markdown) {
             StreamReportRenderer.setFullMarkdown(ev.markdown);
             await StreamReportRenderer.finalizeReport();
-            appendStatus("summary 已完成（已用服务端最终 Markdown 渲染）");
+            if ($("renderHtmlMd").checked) {
+              appendStatus("summary 已完成（已渲染 HTML）");
+            } else {
+              appendStatus("summary 已完成（Markdown 原文展示）");
+            }
           } else {
             appendStatus("summary 流结束，打字机继续展示剩余内容…");
           }
