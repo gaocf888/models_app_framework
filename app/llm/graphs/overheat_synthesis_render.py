@@ -432,7 +432,7 @@ def expand_overheat_cause_slots(
             out.append(slot)
             continue
         for idx, boiler in enumerate(boilers):
-            if len(boiler) > 1:
+            if len(boilers) > 1:
                 out.append(
                     slot.__class__(
                         id=f"s06_cause_hdr__{idx}",
