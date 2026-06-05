@@ -13,6 +13,7 @@ from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
 from app.llm.graphs.analysis_synthesis_v2 import (
     AnalysisSynthesisV2Engine,
     SynthesisV2Slot,
+    _append_q1_top_points,
     _append_q5_sis_agg_hint,
     _append_q6_soot_agg_hint,
     _append_q7_mill_agg_hint,
@@ -38,6 +39,7 @@ from app.llm.graphs.overheat_synthesis_render import (
     build_overheat_region_fact_packages,
     enrich_overheat_report_context_from_gathered,
     expand_overheat_cause_slots,
+    format_overheat_entity_label,
     group_q1_rows_by_region,
     infer_overheat_report_context,
     normalize_overheat_region_key,
@@ -62,7 +64,7 @@ class TestSynthesisV2Registry(unittest.TestCase):
     def test_overheat_registry_slot_count(self):
         self.assertTrue(synthesis_v2_registry_available("overheat_guidance"))
         slots = get_synthesis_v2_slots("overheat_guidance")
-        self.assertEqual(19, len(slots))
+        self.assertEqual(17, len(slots))
         by_id = {s.id: s for s in slots}
         self.assertIn("超温情况概览", OVERHEAT_CH1_INTRO)
         self.assertEqual("q1", by_id["s03_daily_section"].source_item_ids[0])
@@ -78,7 +80,6 @@ class TestSynthesisV2Registry(unittest.TestCase):
             report_context={"analysis_mode": "daily"},
         )
         ids = {s.id for s in slots}
-        self.assertIn("s02_daily_marker", ids)
         self.assertIn("s03_daily_section", ids)
         self.assertNotIn("s02_weekly_marker", ids)
         self.assertNotIn("s04_weekly_section", ids)
@@ -91,7 +92,6 @@ class TestSynthesisV2Registry(unittest.TestCase):
         ids = {s.id for s in slots}
         self.assertNotIn("s02_daily_marker", ids)
         self.assertNotIn("s03_daily_section", ids)
-        self.assertIn("s02_weekly_marker", ids)
         self.assertIn("s04_weekly_section", ids)
 
     def test_unknown_type_no_registry(self):
@@ -282,6 +282,7 @@ class TestOverheatRenderers(unittest.TestCase):
                 "区域名称": "低温再热器 限569℃",
                 "受热面名称": "低温再热器",
                 "测点编号": "R1",
+                "测点名称": "再热器测点1",
                 "最大超温值_℃": 600,
                 "最大监测超温差值_℃": 31,
                 "异常等级": "Ⅲ级（严重超温）",
@@ -290,6 +291,7 @@ class TestOverheatRenderers(unittest.TestCase):
                 "区域名称": "水冷壁螺旋段后墙 限540℃",
                 "受热面名称": "水冷壁螺旋段后墙",
                 "测点编号": "W1",
+                "测点名称": "螺旋段测点1",
                 "最大超温值_℃": 555,
                 "最大监测超温差值_℃": 15,
                 "异常等级": "Ⅱ级（中度超温）",
@@ -306,15 +308,41 @@ class TestOverheatRenderers(unittest.TestCase):
         pkg = build_overheat_region_fact_packages(q1, q6)
         self.assertIn("区域1：低温再热器", pkg)
         self.assertIn("本区测点（仅此区域", pkg)
-        self.assertIn("R1", pkg)
+        self.assertIn("再热器测点1（R1）", pkg)
+        self.assertNotIn("R1(再热器测点1)", pkg)
         self.assertIn("本区吹灰: 吹灰8次", pkg)
         self.assertIn("区域2：水冷壁螺旋段后墙", pkg)
-        self.assertIn("W1", pkg)
+        self.assertIn("螺旋段测点1（W1）", pkg)
         self.assertIn("本区吹灰: 吹灰2次", pkg)
         self.assertIn("跨区域禁令", pkg)
         reheater_block = pkg.split("区域2：")[0]
         self.assertNotIn("水冷壁螺旋段", reheater_block.split("区域1：", 1)[1])
-        self.assertNotIn("W1", reheater_block)
+        self.assertNotIn("螺旋段测点1", reheater_block)
+
+
+class TestOverheatEntityLabel(unittest.TestCase):
+    def test_format_name_with_code(self):
+        self.assertEqual("测点A（P001）", format_overheat_entity_label("测点A", "P001"))
+
+    def test_format_name_only(self):
+        self.assertEqual("测点A", format_overheat_entity_label("测点A", None))
+
+    def test_format_code_only(self):
+        self.assertEqual("P001", format_overheat_entity_label(None, "P001"))
+
+    def test_q1_top_points_use_display_label(self):
+        lines = ["【可引用事实】"]
+        rows = [
+            {
+                "测点编号": "P1",
+                "测点名称": "壁温测点1",
+                "最大监测超温差值_℃": 25,
+            }
+        ]
+        _append_q1_top_points(lines, rows)
+        joined = "\n".join(lines)
+        self.assertIn("壁温测点1（P1）", joined)
+        self.assertNotIn("P1(壁温测点1)", joined)
 
 
 class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
@@ -523,8 +551,8 @@ class TestAnalysisSynthesisV2Engine(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("锅炉管壁超温智能分析报告", result.summary)
         self.assertIn("超温情况概览", result.summary)
-        self.assertIn("--按日超温分析--", result.summary)
-        self.assertIn("机组信息：1号锅炉", result.summary)
+        self.assertNotIn("--按日超温分析--", result.summary)
+        self.assertIn("**机组信息：1号锅炉", result.summary)
         self.assertIn("开始时间：2026-05-01 08:15:00", result.summary)
         self.assertNotIn("____年__月__日", result.summary)
         self.assertIn("## 超温原因剖析", result.summary)

@@ -93,9 +93,13 @@ def filter_overheat_slot_ids(slots: list[Any], report_context: dict[str, Any] | 
     mode = ctx.get("analysis_mode", "weekly")
     skip: set[str] = set()
     if mode == "daily":
-        skip = {"s02_weekly_marker", "s04_weekly_section"}
+        # 去掉 ”--按日超温分析“静态槽位的渲染
+        # skip = {"s02_weekly_marker", "s04_weekly_section"}
+        skip = {"s04_weekly_section"}
     else:
-        skip = {"s02_daily_marker", "s03_daily_section"}
+        # 去掉 ”--按周超温分析“静态槽位的渲染
+        # skip = {"s02_daily_marker", "s03_daily_section"}
+        skip = {"s03_daily_section"}
     return [s for s in slots if getattr(s, "id", "") not in skip]
 
 
@@ -213,12 +217,14 @@ def overheat_cause_narrative_instruction(boiler_name: str) -> str:
         "可概括性提及吹灰/磨煤机整体情况，但禁止按区域逐条展开，禁止在此四段写「综上」内容）。"
         "最后单独以「综上：」起头，严格按用户消息中【按区域事实包】逐区输出专属诱因分析；"
         "每个区域块必须以事实包中的区域名起头，仅允许引用该块「本区测点」与「本区吹灰」；"
-        "禁止在 A 区域块出现 B 区域名称、B 区域测点编号或 B 区域吹灰次数；"
+        "禁止在 A 区域块出现 B 区域名称、B 区域测点或 B 区域吹灰次数；"
         "禁止「A 区域积灰间接导致 B 区域超温」等跨区因果（除非开头概括句已简述）。"
         "本区无吹灰记录时禁止写吹灰频次诱因；无数据写待补充。"
         "禁止置信度、依据、q 编号、结论摘要。"
+        "正文引用机组/受热面/测点/SIS 参数时须用中文名称，编号或编码放全角括号内（如 测点名称（测点编号））；"
+        "禁止正文单独使用测点编号/测点编码作为主称谓（无名称时方可仅写编号）。"
         "禁止「可能、或许、大概、疑似、或与…有关、一般、通常、倾向于」等无数据支撑的泛化措辞；"
-        "每条归因须点名测点/数值/等级/时长或工况字段，数据不足写「待补充」。"
+        "每条归因须点名测点展示名/数值/等级/时长或工况字段，数据不足写「待补充」。"
     )
 
 
@@ -277,12 +283,37 @@ def group_q1_rows_by_region(q1_rows: list[dict]) -> dict[str, list[dict]]:
     return dict(buckets)
 
 
+def format_overheat_entity_label(
+    name: str | None,
+    code: str | None,
+    *,
+    fallback: str = "未知测点",
+) -> str:
+    """
+    叙述章引用格式：优先中文名称，括号内标注编号/编码（与概览表口径一致）。
+    仅有名称或仅有编号时单列；均无则 fallback。
+    """
+    n = (name or "").strip()
+    c = (code or "").strip()
+    if n and c and n != c:
+        return f"{n}（{c}）"
+    if n:
+        return n
+    if c:
+        return c
+    return fallback
+
+
+def _point_display_label(row: dict) -> str:
+    """从 q1 行提取测点展示名：测点名称（测点编号）。"""
+    return format_overheat_entity_label(
+        str(row.get("测点名称") or "").strip() or None,
+        str(row.get("测点编号") or "").strip() or None,
+    )
+
+
 def _format_region_point(row: dict) -> str:
-    code = str(row.get("测点编号") or row.get("测点名称") or "").strip()
-    name = str(row.get("测点名称") or "").strip()
-    label = code or name or "未知测点"
-    if name and code and name != code:
-        label = f"{code}({name})"
+    label = _point_display_label(row)
     max_t = row.get("最大超温值_℃") or row.get("最大超温值")
     delta = row.get("最大监测超温差值_℃")
     level = str(row.get("异常等级") or "").strip()
@@ -380,7 +411,8 @@ def build_overheat_region_fact_packages(
         lines.append(f"- 本区吹灰: {_format_q6_summary(q6_row)}")
     lines.append(
         "【跨区域禁令】综上每个区域块仅允许引用该区域「本区测点」与「本区吹灰」；"
-        "禁止在 A 区域块出现 B 区域名称、B 区域测点编号或 B 区域吹灰次数；"
+        "禁止在 A 区域块出现 B 区域名称、B 区域测点或 B 区域吹灰次数；"
+        "本区测点展示格式为「测点名称（测点编号）」，正文引用须与此一致；"
         "禁止「A 区域问题间接导致 B 区域超温」类跨区因果（跨区关联仅可在开头概括句一句带过）。"
     )
     return "\n".join(lines)
@@ -601,8 +633,9 @@ def render_overheat_daily_section(
     t_start, t_end = _fmt_time_range(report_context or {})
     parts: list[str] = []
     if not rows:
-        parts.append("机组信息：（待补充）\n")
-        parts.append(f"开始时间：{t_start}     结束时间：{t_end}\n\n")
+        # parts.append("机组信息：（待补充）\n")
+        # parts.append(f"开始时间：{t_start}     结束时间：{t_end}\n\n")
+        parts.append(f"**机组信息：（待补充）        开始时间：{t_start}     结束时间：{t_end}**\n\n")
         parts.append(_render_data_table([], POINT_TABLE_COLUMNS, render_table=render_table, max_rows=max_rows, empty_message=empty_message))
         return "".join(parts)
 
@@ -610,8 +643,9 @@ def render_overheat_daily_section(
         if idx > 0:
             parts.append("\n")
         b_start, b_end = _fmt_boiler_time_range(report_context or {}, boiler)
-        parts.append(f"机组信息：{boiler}\n")
-        parts.append(f"开始时间：{b_start}     结束时间：{b_end}\n\n")
+        # parts.append(f"机组信息：{boiler}\n")
+        # parts.append(f"开始时间：{b_start}     结束时间：{b_end}\n\n")
+        parts.append(f"**机组信息：{boiler}        开始时间：{b_start}     结束时间：{b_end}**\n\n")
         mapped = [_map_point_row(r) for r in chunk if isinstance(r, dict)]
         parts.append(
             _render_data_table(
@@ -640,10 +674,11 @@ def render_overheat_weekly_section(
     boilers = sorted(set(q1_by_boiler) | set(q2_by_boiler))
     if not boilers:
         parts = [
-            "机组信息：（待补充）\n",
-            f"周超温概览：开始时间：{t_start}     结束时间：{t_end}\n\n",
+            # "机组信息：（待补充）\n",
+            # f"周超温概览：开始时间：{t_start}     结束时间：{t_end}\n\n",
+            f"**机组信息：（待补充）        周超温概览：开始时间：{t_start}     结束时间：{t_end}**\n\n",
             _render_data_table([], WEEKLY_REGION_COLUMNS, render_table=render_table, max_rows=max_rows, empty_message=empty_message),
-            "\n\n周超温详情：\n\n",
+            "\n\n**周超温详情：**\n\n",
             _render_data_table([], POINT_TABLE_COLUMNS, render_table=render_table, max_rows=max_rows, empty_message=empty_message),
         ]
         return "".join(parts)
@@ -653,8 +688,9 @@ def render_overheat_weekly_section(
         if idx > 0:
             parts.append("\n")
         b_start, b_end = _fmt_boiler_time_range(ctx, boiler)
-        parts.append(f"机组信息：{boiler}\n")
-        parts.append(f"周超温概览：开始时间：{b_start}     结束时间：{b_end}\n\n")
+        # parts.append(f"机组信息：{boiler}\n")
+        # parts.append(f"周超温概览：开始时间：{b_start}     结束时间：{b_end}\n\n")
+        parts.append(f"**机组信息：{boiler}        周超温概览：开始时间：{b_start}     结束时间：{b_end}**\n\n")
 
         region_rows = q2_by_boiler.get(boiler) or []
         mapped_region = [
@@ -667,7 +703,7 @@ def render_overheat_weekly_section(
                 render_table=render_table, max_rows=max_rows, empty_message=empty_message,
             )
         )
-        parts.append("\n\n周超温详情：\n\n")
+        parts.append("\n\n**周超温详情：**\n\n")
         point_rows = q1_by_boiler.get(boiler) or []
         mapped_points = [_map_point_row(r) for r in point_rows if isinstance(r, dict)]
         parts.append(

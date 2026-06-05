@@ -21,6 +21,7 @@ from app.llm.graphs.overheat_synthesis_render import (
     build_overheat_distribution_note,
     build_overheat_region_fact_packages,
     filter_overheat_synthesis_slots,
+    format_overheat_entity_label,
     overheat_data_source_label,
     render_overheat_daily_section,
     render_overheat_weekly_section,
@@ -148,12 +149,13 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             static_body=OVERHEAT_CH1_INTRO,
         ),
-        SynthesisV2Slot(
-            id="s02_daily_marker",
-            kind="static_markdown",
-            title="",
-            static_body="--按日超温分析--\n\n",
-        ),
+        # 去掉 “--按日超温分析--“静态槽位
+        # SynthesisV2Slot(
+        #     id="s02_daily_marker",
+        #     kind="static_markdown",
+        #     title="",
+        #     static_body="--按日超温分析--\n\n",
+        # ),
         SynthesisV2Slot(
             id="s03_daily_section",
             kind="template_deterministic",
@@ -161,12 +163,13 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             source_item_ids=("q1",),
             template_id="overheat_daily_section",
         ),
-        SynthesisV2Slot(
-            id="s02_weekly_marker",
-            kind="static_markdown",
-            title="",
-            static_body="--按周超温分析--\n\n",
-        ),
+        # 去掉 “--按周超温分析--“静态槽位
+        # SynthesisV2Slot(
+        #     id="s02_weekly_marker",
+        #     kind="static_markdown",
+        #     title="",
+        #     static_body="--按周超温分析--\n\n",
+        # ),
         SynthesisV2Slot(
             id="s04_weekly_section",
             kind="template_deterministic",
@@ -208,7 +211,8 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
                 "禁止处置建议、运行优化、检修措施、后续建议、额外章节。"
                 "无数据写待补充；禁止置信度、依据、q 编号。"
                 "禁止「可能、或许、大概、疑似、或与…有关、一般、通常」等无数据支撑的泛化表述；"
-                "每条风险陈述须引用具体测点、壁温、差值、时长或等级，数据不足写「待补充」。"
+                "每条风险陈述须引用具体测点展示名（测点名称（测点编号））、壁温、差值、时长或等级，"
+                "禁止正文单独以测点编号作主称谓；数据不足写「待补充」。"
             ),
         ),
         SynthesisV2Slot(
@@ -233,7 +237,8 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
                 "禁止输出 docx 示例措施全文。须基于本次超温区域与严重测点自行撰写，"
                 "可含：整体调控、差异化降温、紧急调整燃烧工况等要点（plain 叙述或短列表）。"
                 "禁止置信度、依据、额外章节标题。"
-                "措施须对应 q1/q2 中具体区域、测点、等级与极值，禁止「可能/或许/大概/一般/通常」等泛化表述；"
+                "措施须对应 q1/q2 中具体区域、测点展示名（测点名称（测点编号））、等级与极值，"
+                "禁止正文单独以测点编号作主称谓；禁止「可能/或许/大概/一般/通常」等泛化表述；"
                 "无数据支撑的操作写「待补充」。"
             ),
         ),
@@ -252,7 +257,9 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
                 "撰写「运行优化调整」正文（禁止重复输出该小节标题行）。"
                 "可含共性优化、专项优化等要点；须结合本次超温区域。"
                 "禁止置信度、依据、额外章节。"
-                "须点名区域/测点/参数依据，禁止「可能/或许/大概/一般/通常」等泛化表述；无依据写「待补充」。"
+                "须点名区域/测点展示名（测点名称（测点编号））/参数依据，"
+                "禁止正文单独以测点编号或测点编码作主称谓；"
+                "禁止「可能/或许/大概/一般/通常」等泛化表述；无依据写「待补充」。"
             ),
         ),
         SynthesisV2Slot(
@@ -270,7 +277,9 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
                 "撰写「后续检修预防措施」正文（禁止重复输出该小节标题行）。"
                 "可含重点检修、全面排查、测点校验等要点。"
                 "禁止置信度、依据、额外章节。"
-                "须对应严重超温区域/测点/等级，禁止「可能/或许/大概/一般/通常」等泛化表述；无依据写「待补充」。"
+                "须对应严重超温区域/测点展示名（测点名称（测点编号））/等级，"
+                "禁止正文单独以测点编号作主称谓；"
+                "禁止「可能/或许/大概/一般/通常」等泛化表述；无依据写「待补充」。"
             ),
         ),
         SynthesisV2Slot(
@@ -288,7 +297,9 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
                 "撰写「计划长效防控方案」正文（禁止重复输出该小节标题行）。"
                 "可含优化措施、分区管控、制度完善等要点。"
                 "禁止置信度、依据、额外总结章节。"
-                "须结合本次超温分布与重复发生区域，禁止「可能/或许/大概/一般/通常」等泛化表述；无依据写「待补充」。"
+                "须结合本次超温分布与重复发生区域（引用区域名称与测点展示名），"
+                "禁止正文单独以测点编号作主称谓；"
+                "禁止「可能/或许/大概/一般/通常」等泛化表述；无依据写「待补充」。"
             ),
         ),
     ]
@@ -1153,9 +1164,12 @@ def _append_q1_top_points(lines: list[str], rows: list[dict]) -> None:
         if not isinstance(row, dict):
             continue
         delta = _q2_numeric(row.get("最大监测超温差值_℃")) or 0.0
-        code = str(row.get("测点编号") or row.get("测点名称") or "").strip()
-        if code:
-            scored.append((delta, code))
+        label = format_overheat_entity_label(
+            str(row.get("测点名称") or "").strip() or None,
+            str(row.get("测点编号") or "").strip() or None,
+        )
+        if label != "未知测点":
+            scored.append((delta, label))
     if not scored:
         return
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -1169,9 +1183,12 @@ def _append_q2a_top_points(lines: list[str], rows: list[dict]) -> None:
         if not isinstance(row, dict):
             continue
         dur = _q2_numeric(row.get("超温总时长_秒")) or 0.0
-        code = str(row.get("测点编号") or "").strip()
-        if code:
-            scored.append((dur, code))
+        label = format_overheat_entity_label(
+            str(row.get("测点名称") or "").strip() or None,
+            str(row.get("测点编号") or "").strip() or None,
+        )
+        if label != "未知测点":
+            scored.append((dur, label))
     if not scored:
         return
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -1185,9 +1202,12 @@ def _append_q3b_top_points(lines: list[str], rows: list[dict]) -> None:
         if not isinstance(row, dict):
             continue
         cnt = _q2_numeric(row.get("瞬时尖峰超温次数")) or 0.0
-        code = str(row.get("测点编号") or "").strip()
-        if code:
-            scored.append((cnt, code))
+        label = format_overheat_entity_label(
+            str(row.get("测点名称") or "").strip() or None,
+            str(row.get("测点编号") or "").strip() or None,
+        )
+        if label != "未知测点":
+            scored.append((cnt, label))
     if not scored:
         return
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -1241,17 +1261,20 @@ def _append_q5_sis_agg_hint(lines: list[str], rows: list[dict]) -> None:
             continue
         ptype = str(row.get("参数类型") or "").strip()
         tag = str(row.get("测点编码") or "").strip()
+        pname = str(row.get("测点名称") or "").strip()
         try:
             samples = int(row.get("采样点数") or 0)
         except (TypeError, ValueError):
             samples = 0
-        seg = f"{tag}{samples}点" if tag else f"{samples}点"
+        tag_label = format_overheat_entity_label(pname or None, tag or None, fallback="")
+        seg = f"{tag_label}{samples}点" if tag_label else f"{samples}点"
         if ptype in by_type:
             by_type[ptype].append(seg)
         vmin = _q2_numeric(row.get("最小值"))
         vmax = _q2_numeric(row.get("最大值"))
-        if vmin is not None and vmax is not None and tag:
-            by_swing.append((vmax - vmin, f"{ptype}/{tag} {vmin:.2g}~{vmax:.2g}"))
+        if vmin is not None and vmax is not None and (tag or pname):
+            swing_label = format_overheat_entity_label(pname or None, tag or None)
+            by_swing.append((vmax - vmin, f"{ptype}/{swing_label} {vmin:.2g}~{vmax:.2g}"))
     present_parts: list[str] = []
     for ptype in expected_types:
         items = by_type.get(ptype) or []
