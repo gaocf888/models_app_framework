@@ -178,7 +178,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s05_ch2_hdr",
             kind="static_markdown",
             title="",
-            static_body="## 超温原因剖析\n\n",
+            static_body="\n\n## 超温原因剖析\n\n",
         ),
         SynthesisV2Slot(
             id="s06_cause",
@@ -192,7 +192,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s07_ch3_hdr",
             kind="static_markdown",
             title="",
-            static_body="## 超温风险评估\n\n",
+            static_body="\n\n## 超温风险评估\n\n",
         ),
         SynthesisV2Slot(
             id="s08_risk",
@@ -215,7 +215,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s09_ch4_hdr",
             kind="static_markdown",
             title="",
-            static_body="## 总结和推荐措施\n\n",
+            static_body="\n\n## 总结和推荐措施\n\n",
         ),
         SynthesisV2Slot(
             id="s10a_emergency_hdr",
