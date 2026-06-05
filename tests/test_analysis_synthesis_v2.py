@@ -119,10 +119,10 @@ class TestSanitizeNarrative(unittest.TestCase):
         self.assertIn("紧急处置", cleaned)
 
     def test_strips_risk_duplicate_heading(self):
-        raw = "超温风险评估\n\n风险量化：管材存在蠕变风险。"
+        raw = "超温风险评估\n\n**风险量化：**管材存在蠕变风险。"
         cleaned = _sanitize_report_narrative(raw)
         self.assertNotIn("超温风险评估", cleaned)
-        self.assertIn("风险量化", cleaned)
+        self.assertIn("**风险量化：**", cleaned)
 
 
 class TestOverheatRenderers(unittest.TestCase):

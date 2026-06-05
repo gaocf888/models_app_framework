@@ -205,9 +205,10 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             narrative_instruction=(
                 "撰写本章正文（禁止输出「超温风险评估」及任何 # / ## / ### 标题行；章节标题已由系统输出）。"
                 "禁止输出 docx 红色说明句「关联本次超温出现的问题，拉取知识片段并推理评估」。"
-                "仅输出 plain 小节行「风险量化：」后接连贯段落，须结合 q1/q2 极值与 RAG 知识："
-                "说明诱因、最大瞬时超温值、连续超温时长是否超标、异常等级（尤其Ⅲ/Ⅳ级），"
-                "并叙述管材蠕变、氧化皮、金相劣化、爆管泄漏等风险。"
+                "首行必须单独输出加粗小节标题「**风险量化：**」（使用 Markdown 加粗，禁止 # 标题）；"
+                "其后接连贯段落（可按区域列举测点/极值/等级/时长，再衔接管材蠕变、氧化皮、金相劣化、爆管泄漏等风险机理），"
+                "须结合 q1/q2 极值与 RAG 知识，说明诱因、最大瞬时超温值、连续超温时长是否超标、异常等级（尤其Ⅲ/Ⅳ级）。"
+                "禁止单独输出「风险评估：」小标题或按区域拆分「风险评估」小节；量化事实与风险叙述均写在 **风险量化：** 之后 **总体风险评估** 小节中输出。"
                 "禁止处置建议、运行优化、检修措施、后续建议、额外章节。"
                 "无数据写待补充；禁止置信度、依据、q 编号。"
                 "禁止「可能、或许、大概、疑似、或与…有关、一般、通常」等无数据支撑的泛化表述；"
@@ -225,7 +226,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s10a_emergency_hdr",
             kind="static_markdown",
             title="",
-            static_body="紧急处置\n\n",
+            static_body="\n\n### 紧急处置\n\n",
         ),
         SynthesisV2Slot(
             id="s10a_emergency",
@@ -233,7 +234,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             source_item_ids=("q1", "q2", "q4", "q5"),
             narrative_instruction=(
-                "撰写「紧急处置」措施正文（禁止重复输出「紧急处置」标题行，标题已由系统输出）。"
+                "撰写「紧急处置」措施正文（禁止重复输出「紧急处置」或 **紧急处置措施** 标题行，标题已由系统输出。直接按条目输出处置措施(第四级标题结构)）。"
                 "禁止输出 docx 示例措施全文。须基于本次超温区域与严重测点自行撰写，"
                 "可含：整体调控、差异化降温、紧急调整燃烧工况等要点（plain 叙述或短列表）。"
                 "禁止置信度、依据、额外章节标题。"
@@ -246,7 +247,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s10b_optimize_hdr",
             kind="static_markdown",
             title="",
-            static_body="运行优化调整\n\n",
+            static_body="\n\n### 运行优化调整\n\n",
         ),
         SynthesisV2Slot(
             id="s10b_optimize",
@@ -256,6 +257,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             narrative_instruction=(
                 "撰写「运行优化调整」正文（禁止重复输出该小节标题行）。"
                 "可含共性优化、专项优化等要点；须结合本次超温区域。"
+                "具体 优化调整建议 条目，按照第四级标题结构输出"
                 "禁止置信度、依据、额外章节。"
                 "须点名区域/测点展示名（测点名称（测点编号））/参数依据，"
                 "禁止正文单独以测点编号或测点编码作主称谓；"
@@ -266,7 +268,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s10c_maintenance_hdr",
             kind="static_markdown",
             title="",
-            static_body="后续检修预防措施\n\n",
+            static_body="\n\n### 后续检修预防措施\n\n",
         ),
         SynthesisV2Slot(
             id="s10c_maintenance",
@@ -274,8 +276,9 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             title="",
             source_item_ids=("q1", "q2", "q4", "q5"),
             narrative_instruction=(
-                "撰写「后续检修预防措施」正文（禁止重复输出该小节标题行）。"
+                "撰写「后续检修预防措施」正文（禁止重复输出「后续检修预防措施」标题行，标题已由系统输出）。"
                 "可含重点检修、全面排查、测点校验等要点。"
+                "具体的 预防措施 条目，按照第四级标题结构输出"
                 "禁止置信度、依据、额外章节。"
                 "须对应严重超温区域/测点展示名（测点名称（测点编号））/等级，"
                 "禁止正文单独以测点编号作主称谓；"
@@ -286,7 +289,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s10d_longterm_hdr",
             kind="static_markdown",
             title="",
-            static_body="计划长效防控方案\n\n",
+            static_body="\n\n### 计划长效防控方案\n\n",
         ),
         SynthesisV2Slot(
             id="s10d_longterm",
@@ -296,6 +299,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             narrative_instruction=(
                 "撰写「计划长效防控方案」正文（禁止重复输出该小节标题行）。"
                 "可含优化措施、分区管控、制度完善等要点。"
+                "具体的 计划长效防控方案 条目，按照第四级标题结构输出"
                 "禁止置信度、依据、额外总结章节。"
                 "须结合本次超温分布与重复发生区域（引用区域名称与测点展示名），"
                 "禁止正文单独以测点编号作主称谓；"
