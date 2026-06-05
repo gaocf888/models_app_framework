@@ -23,7 +23,7 @@ OVERHEAT_DATA_SOURCE_LABELS: dict[str, str] = {
 }
 
 # 报告正文仅输出章节标题；下列规则来自 docx 红色底纹/红字说明，仅供程序与 LLM 参考，禁止写入报告。
-OVERHEAT_CH1_INTRO = "## 超温情况概览\n\n"
+OVERHEAT_CH1_INTRO = "## 一、超温情况概览\n\n"
 
 OVERHEAT_DOCX_AUTHORING_RULES = (
     "【docx 模板红色说明文字（禁止出现在报告正文）】\n"
