@@ -126,6 +126,8 @@ def _sanitize_report_narrative(text: str) -> str:
     out = re.sub(r"数据依据[：:][^\n]+", "", out)
     for pat in _OVERHEAT_INSTRUCTION_LINE_PATTERNS:
         out = re.sub(rf"(?m)^\s*{pat}\s*$", "", out)
+    out = re.sub(r"(?m)^\s*#+\s*超温原因剖析\s*$", "", out)
+    out = re.sub(r"(?m)^\s*超温原因剖析\s*$", "", out)
     out = re.sub(r"(?m)^\s*#+\s*超温风险评估\s*$", "", out)
     out = re.sub(r"(?m)^\s*超温风险评估\s*$", "", out)
     out = re.sub(r"(?m)^\s*#+\s*紧急处置\s*$", "", out)
