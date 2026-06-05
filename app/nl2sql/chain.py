@@ -1387,9 +1387,9 @@ class NL2SQLChain:
             )
         if "今天" in q or "今日" in q:
             return ("CURDATE()", "DATE_ADD(CURDATE(), INTERVAL 1 DAY)", "today")
-        if "昨天" in q:
+        if "昨天" in q or "昨日" in q:
             return ("DATE_SUB(CURDATE(), INTERVAL 1 DAY)", "CURDATE()", "yesterday")
-        if "前天" in q:
+        if "前天" in q or "前日" in q:
             return (
                 "DATE_SUB(CURDATE(), INTERVAL 2 DAY)",
                 "DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
