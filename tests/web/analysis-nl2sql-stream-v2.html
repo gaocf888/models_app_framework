@@ -571,7 +571,16 @@
       $("answer").textContent = this.buffer;
     },
 
-    /** 用服务端最终 Markdown 覆盖流式缓冲（修正 SSE 分块与 LLM 裸 token 拼接导致的格式粘连） */
+    /** 流式缓冲已接近完整时保留原文，避免 summary_complete 覆盖后格式回退 */
+    shouldKeepStreamBuffer(ev) {
+      const streamed = this.buffer.length + this.pending.length;
+      const expected = ev && ev.chars != null ? Number(ev.chars) : 0;
+      if (streamed <= 0) return false;
+      if (expected <= 0) return streamed > 200;
+      return streamed >= expected * 0.92;
+    },
+
+    /** 用服务端最终 Markdown 覆盖流式缓冲（仅当流式不完整时） */
     setFullMarkdown(md) {
       if (md == null || md === "") return;
       this.stopTypewriter();
@@ -1043,16 +1052,20 @@
         }
         if (kind === "summary_complete") {
           StreamReportRenderer.markStreamEnded();
-          if (ev.markdown) {
+          const keptStream =
+            !!ev.markdown && StreamReportRenderer.shouldKeepStreamBuffer(ev);
+          if (ev.markdown && !keptStream) {
             StreamReportRenderer.setFullMarkdown(ev.markdown);
-            await StreamReportRenderer.finalizeReport();
-            if ($("renderHtmlMd").checked) {
-              appendStatus("summary 已完成（已渲染 HTML）");
-            } else {
-              appendStatus("summary 已完成（Markdown 原文展示）");
-            }
-          } else {
+          }
+          await StreamReportRenderer.finalizeReport();
+          if (!ev.markdown) {
             appendStatus("summary 流结束，打字机继续展示剩余内容…");
+          } else if ($("renderHtmlMd").checked) {
+            appendStatus("summary 已完成（已渲染 HTML）");
+          } else if (keptStream) {
+            appendStatus("summary 已完成（保留流式 Markdown 原文）");
+          } else {
+            appendStatus("summary 已完成（Markdown 原文展示）");
           }
           const tail =
             "chars: " +

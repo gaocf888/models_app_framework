@@ -237,6 +237,7 @@ class TestOverheatRenderers(unittest.TestCase):
             empty_message="（无数据）",
         )
         self.assertIn("周超温概览：开始时间", md)
+        self.assertIn("周超温详情：", md)
         self.assertIn("12日", md)
         self.assertIn("Ⅰ级（轻微超温）1个", md)
         self.assertIn("测点1", md)
@@ -257,8 +258,14 @@ class TestOverheatRenderers(unittest.TestCase):
             empty_message="（无数据）",
         )
         self.assertIn("机组信息：1号锅炉", md)
-        self.assertIn("周超温详情：", md)
+        # 每台锅炉：概览表后、测点详情表前各有「周超温详情：」
+        self.assertEqual(2, md.count("周超温详情："))
         self.assertIn("机组信息：2号锅炉", md)
+        overview_pos = md.find("周超温概览")
+        detail_pos = md.find("周超温详情：")
+        p1_pos = md.find("P1")
+        self.assertLess(overview_pos, detail_pos)
+        self.assertLess(detail_pos, p1_pos)
 
     def test_distribution_from_q1(self):
         rows = [

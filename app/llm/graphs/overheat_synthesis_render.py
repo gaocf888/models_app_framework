@@ -643,6 +643,7 @@ def render_overheat_weekly_section(
             "机组信息：（待补充）\n",
             f"周超温概览：开始时间：{t_start}     结束时间：{t_end}\n\n",
             _render_data_table([], WEEKLY_REGION_COLUMNS, render_table=render_table, max_rows=max_rows, empty_message=empty_message),
+            "\n\n周超温详情：\n\n",
             _render_data_table([], POINT_TABLE_COLUMNS, render_table=render_table, max_rows=max_rows, empty_message=empty_message),
         ]
         return "".join(parts)
@@ -650,7 +651,7 @@ def render_overheat_weekly_section(
     parts: list[str] = []
     for idx, boiler in enumerate(boilers):
         if idx > 0:
-            parts.append("\n周超温详情：\n\n")
+            parts.append("\n")
         b_start, b_end = _fmt_boiler_time_range(ctx, boiler)
         parts.append(f"机组信息：{boiler}\n")
         parts.append(f"周超温概览：开始时间：{b_start}     结束时间：{b_end}\n\n")
@@ -666,7 +667,7 @@ def render_overheat_weekly_section(
                 render_table=render_table, max_rows=max_rows, empty_message=empty_message,
             )
         )
-        parts.append("\n\n")
+        parts.append("\n\n周超温详情：\n\n")
         point_rows = q1_by_boiler.get(boiler) or []
         mapped_points = [_map_point_row(r) for r in point_rows if isinstance(r, dict)]
         parts.append(

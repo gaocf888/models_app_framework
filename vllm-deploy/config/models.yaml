@@ -211,6 +211,7 @@ presets:
     path: "./models/Qwen3.5-35B-A3B"
     served_model_name: "qwen3.5-35b-a3b"
     dtype: "half"
+    enforce_eager: true
     max_model_len: 32768
     tensor_parallel_size: 2
     gpu_memory_utilization: 0.85
