@@ -72,6 +72,9 @@ class ChatbotGraphState(TypedDict, total=False):
     rag_citations: List[Dict[str, Any]]
     retrieval_score: float
     retrieval_attempts: int
+    # 高分 FAQ 软直通：为 true 时 kb_build_messages 不注入 history_messages（见 chatbot_faq_soft_direct.py）
+    faq_soft_direct: bool
+    faq_soft_direct_reason: str
 
     # ===== 生成域（模型输入输出）=====
     llm_messages: List[Dict[str, Any]]

@@ -10,6 +10,11 @@ from app.core.logging import get_logger
 from app.models.chatbot import ChatRequest, ChatResponse
 from app.llm.client import VLLMHttpClient
 from app.llm.graphs import ChatbotLangGraphRunner
+from app.llm.graphs.chatbot_faq_soft_direct import (
+    evaluate_faq_soft_direct,
+    format_rag_snippets_for_generation,
+    snippets_for_llm_generation,
+)
 from app.llm.graphs.chatbot_rag_scope import augment_retrieval_query_for_plant_kb, resolve_rag_namespace
 from app.llm.graphs.chatbot_follow_up import build_suggested_questions
 from app.llm.graphs.chatbot_intent_rules import classify_chatbot_intent
@@ -291,7 +296,11 @@ class ChatbotService:
                 history=history,
                 context_snippets=context_snippets,
                 anaphora_type=anaphora_type,
+                anaphora_rule_type=anaphora_type,
                 anaphora_slot_bullets=slot_bullets,
+                rag_citations=rag_citations,
+                intent_label=ilabel,
+                enable_rag=req.enable_rag,
             )
 
             try:
@@ -555,7 +564,11 @@ class ChatbotService:
             history=history,
             context_snippets=context_snippets,
             anaphora_type=anaphora_type,
+            anaphora_rule_type=anaphora_type,
             anaphora_slot_bullets=slot_bullets,
+            rag_citations=rag_citations,
+            intent_label="kb_qa",
+            enable_rag=req.enable_rag,
         )
         parts: list[str] = []
         gate_sources: list[str] = []
@@ -685,14 +698,33 @@ class ChatbotService:
         context_snippets: list[str],
         *,
         anaphora_type: str | None = None,
+        anaphora_rule_type: str | None = None,
         anaphora_slot_bullets: list[str] | None = None,
+        rag_citations: list[dict[str, Any]] | None = None,
+        intent_label: str = "kb_qa",
+        enable_rag: bool = True,
     ) -> list[Dict[str, Any]]:
         """
         构建发送给 vLLM/OpenAI 兼容接口的 messages。
         若提供 image_urls，则使用多模态 content（text + image_url）。
+
+        高分 FAQ 软直通（CHATBOT_FAQ_SOFT_DIRECT_*）：与 LangGraph ``kb_build_messages`` 对齐，
+        满足条件时不注入 history，避免旧 assistant 回答干扰高分问答复述。
         """
         messages: list[Dict[str, Any]] = []
         cfg = self._chatbot_cfg
+        faq_decision = evaluate_faq_soft_direct(
+            enabled=bool(cfg.faq_soft_direct_enabled),
+            min_score=float(cfg.faq_soft_direct_min_score),
+            enable_rag=bool(enable_rag),
+            intent_label=intent_label,
+            anaphora_type=anaphora_type,
+            anaphora_rule_type=anaphora_rule_type if anaphora_rule_type is not None else anaphora_type,
+            query=req.query,
+            rag_citations=rag_citations,
+            context_snippets=context_snippets,
+        )
+        history_for_llm = [] if faq_decision.active else list(history)
         if req.prompt_version:
             tpl = self._prompts.get_template(scene="chatbot", user_id=req.user_id, version=str(req.prompt_version))
         else:
@@ -708,9 +740,9 @@ class ChatbotService:
         if tpl and tpl.content:
             system_chunks.append(tpl.content)
         at = (anaphora_type or "").strip()
-        if cfg.anaphora_anchor_block_enabled and at and at != "none":
+        if cfg.anaphora_anchor_block_enabled and at and at != "none" and not faq_decision.active:
             anchor = build_dialogue_anchor_block(
-                history,
+                history_for_llm,
                 req.query,
                 at,
                 config_path=cfg.anaphora_config_path,
@@ -719,9 +751,20 @@ class ChatbotService:
             )
             if anchor:
                 system_chunks.append(anchor)
-        if context_snippets:
-            system_chunks.append(format_rag_snippets_system_block(context_snippets))
-        for h in history:
+        snippets_for_llm = snippets_for_llm_generation(
+            context_snippets,
+            soft_direct=faq_decision.active,
+            snippet_top_n=cfg.faq_soft_direct_snippet_top_n,
+        )
+        if snippets_for_llm:
+            system_chunks.append(
+                format_rag_snippets_for_generation(
+                    snippets_for_llm,
+                    soft_direct=faq_decision.active,
+                    base_formatter=format_rag_snippets_system_block,
+                )
+            )
+        for h in history_for_llm:
             role = (h.get("role", "user") or "user").lower()
             raw_c = h.get("content", "")
             content = raw_c if isinstance(raw_c, str) else (str(raw_c) if raw_c is not None else "")

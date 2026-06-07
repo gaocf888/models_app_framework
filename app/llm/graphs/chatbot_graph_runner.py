@@ -22,6 +22,11 @@ from .chatbot_intent_rules import classify_chatbot_intent
 from .chatbot_nl2sql_answer import summarize_nl2sql_with_llm
 from .chatbot_rag_citations import chunks_to_rag_citations, filter_rag_citation_dicts
 from .chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
+from .chatbot_faq_soft_direct import (
+    evaluate_faq_soft_direct,
+    format_rag_snippets_for_generation,
+    snippets_for_llm_generation,
+)
 from .chatbot_rag_scope import augment_retrieval_query_for_plant_kb, resolve_rag_namespace
 from .chatbot_dialogue_anchor import build_dialogue_anchor_block
 from .chatbot_anaphora_detect import classify_anaphora_rules
@@ -118,6 +123,10 @@ class ChatbotLangGraphRunner:
         self._plant_kb_namespace = (cfg.plant_kb_namespace or "Power_plant_knowledge").strip()
         self._plant_kb_query_boost = (cfg.plant_kb_query_boost_name or "").strip()
         self._plant_kb_fallback_on_empty = bool(cfg.plant_kb_fallback_on_empty)
+        # 高分 FAQ 软直通：生成阶段跳过 history_messages，避免旧 assistant 答案带偏复述（默认开）
+        self._faq_soft_direct_enabled = bool(cfg.faq_soft_direct_enabled)
+        self._faq_soft_direct_min_score = float(cfg.faq_soft_direct_min_score)
+        self._faq_soft_direct_snippet_top_n = max(1, int(cfg.faq_soft_direct_snippet_top_n))
 
         self._graph = None
         if self._graph_enabled:
@@ -900,13 +909,38 @@ class ChatbotLangGraphRunner:
         # 单条合并 system（模板 + RAG + 历史中的 system）-> 其余历史 -> 当前 user（文本/多模态）
         # 说明：Qwen 等 chat_template 仅允许首条为 system，连续两条 role=system 会报
         # TemplateError: System message must be at the beginning.
+        #
+        # 高分 FAQ 软直通（CHATBOT_FAQ_SOFT_DIRECT_*）：满足条件时不注入 history_messages，
+        # 仅影响生成上下文；检索与 rag_citations 已在 kb_retrieve 完成。
+        faq_decision = evaluate_faq_soft_direct(
+            enabled=self._faq_soft_direct_enabled,
+            min_score=self._faq_soft_direct_min_score,
+            enable_rag=bool(state.get("enable_rag", True)),
+            intent_label=str(state.get("intent_label") or "kb_qa"),
+            anaphora_type=str(state.get("anaphora_type") or "none"),
+            anaphora_rule_type=str(state.get("anaphora_rule_type") or "none"),
+            query=str(state.get("query") or ""),
+            rag_citations=list(state.get("rag_citations") or []),
+            context_snippets=list(state.get("context_snippets") or []),
+        )
+        if faq_decision.active:
+            logger.info(
+                "chatbot.faq_soft_direct active reason=%s query_len=%s top_score=%s",
+                faq_decision.reason,
+                len(str(state.get("query") or "")),
+                (list(state.get("rag_citations") or [{}])[0] or {}).get("score")
+                if state.get("rag_citations")
+                else None,
+            )
+
         messages: List[Dict[str, Any]] = []
         system_chunks: List[str] = []
         sp = str(state.get("system_prompt") or "").strip()
         if sp:
             system_chunks.append(sp)
         anchor_block_out = ""
-        if self._anaphora_anchor_enabled:
+        # 软直通时不注入对话锚块（锚块依赖 history；与跳过 history 策略一致）
+        if self._anaphora_anchor_enabled and not faq_decision.active:
             anchor = build_dialogue_anchor_block(
                 list(state.get("history_messages") or []),
                 str(state.get("query") or ""),
@@ -918,10 +952,24 @@ class ChatbotLangGraphRunner:
             if anchor:
                 system_chunks.append(anchor)
                 anchor_block_out = anchor
-        snippets = state.get("context_snippets") or []
-        if snippets:
-            system_chunks.append(format_rag_snippets_system_block(list(snippets)))
-        for h in state.get("history_messages") or []:
+        snippets_for_llm = snippets_for_llm_generation(
+            state.get("context_snippets") or [],
+            soft_direct=faq_decision.active,
+            snippet_top_n=self._faq_soft_direct_snippet_top_n,
+        )
+        if snippets_for_llm:
+            system_chunks.append(
+                format_rag_snippets_for_generation(
+                    snippets_for_llm,
+                    soft_direct=faq_decision.active,
+                    base_formatter=format_rag_snippets_system_block,
+                )
+            )
+        # 软直通：不注入 history_messages；否则保持原有多轮上下文
+        history_for_llm: List[Dict[str, Any]] = (
+            [] if faq_decision.active else list(state.get("history_messages") or [])
+        )
+        for h in history_for_llm:
             role = (h.get("role", "user") or "user")
             role_l = str(role).lower()
             content = h.get("content", "")
@@ -944,7 +992,11 @@ class ChatbotLangGraphRunner:
             messages.append({"role": "user", "content": blocks})
         else:
             messages.append({"role": "user", "content": query})
-        out: ChatbotGraphState = {"llm_messages": messages}
+        out: ChatbotGraphState = {
+            "llm_messages": messages,
+            "faq_soft_direct": faq_decision.active,
+            "faq_soft_direct_reason": faq_decision.reason,
+        }
         if anchor_block_out:
             out["anaphora_anchor_block"] = anchor_block_out
         return out
@@ -1162,6 +1214,8 @@ class ChatbotLangGraphRunner:
             "rag_namespace": state.get("rag_namespace"),
             "rag_scope_reason": state.get("rag_scope_reason"),
             "rag_scope_fallback": bool(state.get("rag_scope_fallback")),
+            "faq_soft_direct": bool(state.get("faq_soft_direct", False)),
+            "faq_soft_direct_reason": str(state.get("faq_soft_direct_reason") or ""),
             "status": state.get("status"),
             "duration_ms": int((time.perf_counter() - start_ts) * 1000),
             "terminate_reason": state.get("terminate_reason"),
