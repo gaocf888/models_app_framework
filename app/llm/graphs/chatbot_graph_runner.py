@@ -924,13 +924,13 @@ class ChatbotLangGraphRunner:
             context_snippets=list(state.get("context_snippets") or []),
         )
         if faq_decision.active:
+            top_cite = (list(state.get("rag_citations") or [{}])[0] or {}) if state.get("rag_citations") else {}
             logger.info(
-                "chatbot.faq_soft_direct active reason=%s query_len=%s top_score=%s",
+                "chatbot.faq_soft_direct active reason=%s query_len=%s top_rerank_score=%s top_score=%s",
                 faq_decision.reason,
                 len(str(state.get("query") or "")),
-                (list(state.get("rag_citations") or [{}])[0] or {}).get("score")
-                if state.get("rag_citations")
-                else None,
+                top_cite.get("rerank_score"),
+                top_cite.get("score"),
             )
 
         messages: List[Dict[str, Any]] = []

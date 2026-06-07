@@ -478,6 +478,7 @@ class ChatbotConfig:
     plant_kb_fallback_on_empty: bool = False
     # 高分 FAQ 软直通：首条 citation 高分且 anaphora=none 时，生成阶段不注入 history_messages（默认开）
     faq_soft_direct_enabled: bool = True
+    # 软直通闸门：首条 citation 的 rerank_score（CrossEncoder），非 Agentic 融合后的 score
     faq_soft_direct_min_score: float = 0.95
     # 软直通时注入 LLM 的片段条数上限（rag_citations 展示条数不变）
     faq_soft_direct_snippet_top_n: int = 1

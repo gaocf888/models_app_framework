@@ -7,11 +7,21 @@ from app.llm.graphs.chatbot_faq_soft_direct import (
 )
 
 
-def _citations(score: float, preview: str = "问：A 答：B") -> list[dict]:
-    return [{"score": score, "text_preview": preview, "doc_name": "锅炉运行与检修1000问"}]
+def _citations(
+    *,
+    rerank_score: float | None,
+    fused_score: float | None = None,
+    preview: str = "问：A 答：B",
+) -> list[dict]:
+    item: dict = {"text_preview": preview, "doc_name": "锅炉运行与检修1000问"}
+    if fused_score is not None:
+        item["score"] = fused_score
+    if rerank_score is not None:
+        item["rerank_score"] = rerank_score
+    return [item]
 
 
-def test_soft_direct_active_on_high_score_and_none_anaphora():
+def test_soft_direct_active_on_high_rerank_and_none_anaphora():
     d = evaluate_faq_soft_direct(
         enabled=True,
         min_score=0.95,
@@ -20,11 +30,43 @@ def test_soft_direct_active_on_high_score_and_none_anaphora():
         anaphora_type="none",
         anaphora_rule_type="none",
         query="燃烧管理系统有哪些功能",
-        rag_citations=_citations(0.9999),
+        rag_citations=_citations(rerank_score=0.9999, fused_score=1.98),
         context_snippets=["#807 燃烧管理系统主要功能…"],
     )
     assert d.active is True
-    assert "active" in d.reason
+    assert "rerank_score" in d.reason
+
+
+def test_soft_direct_ignores_high_fused_score_when_rerank_low():
+    d = evaluate_faq_soft_direct(
+        enabled=True,
+        min_score=0.95,
+        enable_rag=True,
+        intent_label="kb_qa",
+        anaphora_type="none",
+        anaphora_rule_type="none",
+        query="燃烧管理系统有哪些功能",
+        rag_citations=_citations(rerank_score=0.5, fused_score=1.99),
+        context_snippets=["x"],
+    )
+    assert d.active is False
+    assert "rerank_below_threshold" in d.reason
+
+
+def test_soft_direct_requires_rerank_score_not_fused_only():
+    d = evaluate_faq_soft_direct(
+        enabled=True,
+        min_score=0.95,
+        enable_rag=True,
+        intent_label="kb_qa",
+        anaphora_type="none",
+        anaphora_rule_type="none",
+        query="燃烧管理系统有哪些功能",
+        rag_citations=_citations(rerank_score=None, fused_score=1.99),
+        context_snippets=["x"],
+    )
+    assert d.active is False
+    assert d.reason == "no_top_rerank_score"
 
 
 def test_soft_direct_disabled_by_config():
@@ -36,7 +78,7 @@ def test_soft_direct_disabled_by_config():
         anaphora_type="none",
         anaphora_rule_type="none",
         query="燃烧管理系统有哪些功能",
-        rag_citations=_citations(0.99),
+        rag_citations=_citations(rerank_score=0.99),
         context_snippets=["x"],
     )
     assert d.active is False
@@ -52,7 +94,7 @@ def test_soft_direct_blocked_by_meta_confirm_anaphora():
         anaphora_type="meta_confirm",
         anaphora_rule_type="meta_confirm",
         query="确定吗",
-        rag_citations=_citations(0.99),
+        rag_citations=_citations(rerank_score=0.99),
         context_snippets=["x"],
     )
     assert d.active is False
@@ -68,27 +110,11 @@ def test_soft_direct_blocked_by_anaphora_query_prefix():
         anaphora_type="none",
         anaphora_rule_type="none",
         query="这个系统有哪些功能",
-        rag_citations=_citations(0.99),
+        rag_citations=_citations(rerank_score=0.99),
         context_snippets=["x"],
     )
     assert d.active is False
     assert d.reason == "query_anaphora_prefix"
-
-
-def test_soft_direct_blocked_by_low_score():
-    d = evaluate_faq_soft_direct(
-        enabled=True,
-        min_score=0.95,
-        enable_rag=True,
-        intent_label="kb_qa",
-        anaphora_type="none",
-        anaphora_rule_type="none",
-        query="燃烧管理系统有哪些功能",
-        rag_citations=_citations(0.5),
-        context_snippets=["x"],
-    )
-    assert d.active is False
-    assert "score_below_threshold" in d.reason
 
 
 def test_snippets_for_llm_top_n_when_soft_direct():

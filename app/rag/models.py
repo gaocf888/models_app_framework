@@ -39,6 +39,8 @@ class RetrievedChunk:
     namespace: str | None = None
     chunk_id: str | None = None
     score: float | None = None
+    # CrossEncoder 重排原始分（与 Agentic 融合后的 score 解耦；软直通闸门使用本字段）
+    rerank_score: float | None = None
     section_path: str | None = None
     doc_version: str | None = None
     pipeline_version: str | None = None

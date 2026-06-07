@@ -35,6 +35,20 @@ def test_chunks_to_rag_citations_shape():
     assert cites[0]["score"] == 0.91
 
 
+def test_chunks_to_rag_citations_includes_rerank_score():
+    chunks = [
+        RetrievedChunk(
+            text="FAQ 答案",
+            doc_name="1000问",
+            score=1.98,
+            rerank_score=0.999,
+        )
+    ]
+    cites = chunks_to_rag_citations(chunks)
+    assert cites[0]["score"] == 1.98
+    assert cites[0]["rerank_score"] == 0.999
+
+
 def test_chunks_to_rag_citations_original_content_url_from_metadata():
     chunks = [
         RetrievedChunk(

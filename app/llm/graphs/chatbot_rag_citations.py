@@ -127,6 +127,8 @@ def chunks_to_rag_citations(
         }
         if c.score is not None:
             item["score"] = round(float(c.score), 6)
+        if getattr(c, "rerank_score", None) is not None:
+            item["rerank_score"] = round(float(c.rerank_score), 6)
         if c.pipeline_version:
             item["pipeline_version"] = c.pipeline_version
         preview = tx if len(tx) <= 280 else tx[:277] + "..."

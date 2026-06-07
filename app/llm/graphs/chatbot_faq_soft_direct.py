@@ -13,7 +13,7 @@
 - ``enable_rag`` 且 ``intent_label == kb_qa``；
 - ``anaphora_type == none`` 且 ``anaphora_rule_type == none``（避免 single_entity 等被压成 none 的误判）；
 - 用户问句不以常见指代词开头（这个/该/上述/它…）；
-- ``rag_citations[0].score >= CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE``（默认 0.95）；
+- ``rag_citations[0].rerank_score >= CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE``（默认 0.95，CrossEncoder 重排分；非 Agentic 融合分）；
 - 首条 citation 有非空 ``text_preview``，且存在至少一条 context_snippet。
 
 软直通行为
@@ -56,13 +56,14 @@ def query_starts_with_anaphora_marker(query: str) -> bool:
     return bool(_ANAPHORA_QUERY_PREFIX_RE.search((query or "").strip()))
 
 
-def _top_citation_score(rag_citations: Sequence[Dict[str, Any]] | None) -> float | None:
+def _top_citation_rerank_score(rag_citations: Sequence[Dict[str, Any]] | None) -> float | None:
+    """首条 citation 的 CrossEncoder 重排分（与展示用 score / Agentic 融合分无关）。"""
     if not rag_citations:
         return None
     first = rag_citations[0]
     if not isinstance(first, dict):
         return None
-    raw = first.get("score")
+    raw = first.get("rerank_score")
     if raw is None:
         return None
     try:
@@ -103,17 +104,17 @@ def evaluate_faq_soft_direct(
     snippets = [str(s).strip() for s in (context_snippets or []) if str(s).strip()]
     if not snippets:
         return FaqSoftDirectDecision(False, "no_context_snippets")
-    score = _top_citation_score(rag_citations)
-    if score is None:
-        return FaqSoftDirectDecision(False, "no_top_citation_score")
-    if score < float(min_score):
-        return FaqSoftDirectDecision(False, f"score_below_threshold:{score:.4f}<{min_score}")
+    rerank_score = _top_citation_rerank_score(rag_citations)
+    if rerank_score is None:
+        return FaqSoftDirectDecision(False, "no_top_rerank_score")
+    if rerank_score < float(min_score):
+        return FaqSoftDirectDecision(False, f"rerank_below_threshold:{rerank_score:.4f}<{min_score}")
     cites = list(rag_citations or [])
     if cites and isinstance(cites[0], dict):
         preview = str(cites[0].get("text_preview") or "").strip()
         if not preview:
             return FaqSoftDirectDecision(False, "empty_top_citation_preview")
-    return FaqSoftDirectDecision(True, f"active:score={score:.4f}")
+    return FaqSoftDirectDecision(True, f"active:rerank_score={rerank_score:.4f}")
 
 
 def snippets_for_llm_generation(

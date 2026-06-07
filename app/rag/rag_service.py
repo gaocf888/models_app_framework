@@ -146,9 +146,12 @@ class RAGService:
     @staticmethod
     def _hit_to_chunk(hit: dict, pipeline_version: str | None) -> RetrievedChunk:
         meta = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
-        score = None
+        rerank_score = None
         if hit.get("_rerank_score") is not None:
-            score = float(hit["_rerank_score"])
+            rerank_score = float(hit["_rerank_score"])
+        score = None
+        if rerank_score is not None:
+            score = rerank_score
         elif hit.get("_fused_score") is not None:
             score = float(hit["_fused_score"])
         elif hit.get("score") is not None:
@@ -161,6 +164,7 @@ class RAGService:
             namespace=hit.get("namespace"),
             chunk_id=str(hit.get("ext_id")) if hit.get("ext_id") is not None else None,
             score=score,
+            rerank_score=rerank_score,
             section_path=str(section) if section is not None else None,
             doc_version=str(dver) if dver is not None else None,
             pipeline_version=pipeline_version,

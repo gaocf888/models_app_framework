@@ -214,8 +214,12 @@ class AgenticRAGService:
                     logger.exception("AgenticRAGService: subquery retrieval failed, query=%s", step.query)
                     chunks = []
                 for idx, c in enumerate(chunks):
-                    base_score = c.score if c.score is not None else 0.0
-                    # rank 越靠前加分越高，叠加 step 权重
+                    # 融合排序用分；rerank_score 保留供 citation / 软直通闸门，勿覆盖
+                    base_score = (
+                        c.rerank_score
+                        if c.rerank_score is not None
+                        else (c.score if c.score is not None else 0.0)
+                    )
                     rank_bonus = 1.0 / float(idx + 1)
                     fused = (base_score + rank_bonus) * step.weight
                     merged_candidates.append((c, fused))
