@@ -232,7 +232,8 @@ presets:
     description: "Qwen3.5 35B-A3B MoE 多模态，N260 双卡 64G 推荐预设（TP2+EP，32K 上下文）"
 
   # Qwen3.5 35B-A3B FP8（官方细粒度 FP8 量化，权重约 35GiB，精度接近 BF16）
-  # 沐曦 N260 双卡 64GB：显存较 FP16 宽裕，可提升上下文与并发；权重已内置 FP8，无需 quantization 字段
+  # ⚠️ 平台限制：沐曦 vllm_metax 当前未实现 FP8 MoE 内核（backend_to_kernel_cls -> NotImplementedError）
+  #    N260/mthreads 请改用 qwen3.5-35b-a3b（FP16）或 qwen3.5-35b-a3b-awq；本预设仅适用于 NVIDIA 等支持 FP8 MoE 的平台
   qwen3.5-35b-a3b-fp8:
     path: "./models/Qwen3.5-35B-A3B-FP8"
     served_model_name: "qwen3.5-35b-a3b-fp8"
@@ -255,7 +256,34 @@ presets:
       media_paths:
         - "./images"
         - "./videos"
-    description: "Qwen3.5 35B-A3B FP8 多模态，N260 双卡 64G 高上下文预设（TP2+EP，64K 上下文）"
+    description: "Qwen3.5 35B-A3B FP8 多模态（仅 NVIDIA 等平台；沐曦 N260 不可用，请用 a3b 或 awq 预设）"
+
+  # Qwen3.5 35B-A3B GPTQ-Int4（官方 4-bit GPTQ 量化，权重约 22GiB）
+  # MoE + GPTQ 须使用 vLLM 的 moe_wna16（勿用 quantization: gptq）；沐曦 N260 双卡 64GB 推荐 TP2+EP
+  qwen3.5-35b-a3b-gptq-int4:
+    path: "./models/Qwen3.5-35B-A3B-GPTQ-Int4"
+    served_model_name: "qwen3.5-35b-a3b-gptq-int4"
+    dtype: "half"
+    quantization: "moe_wna16"
+    enforce_eager: true
+    max_model_len: 40960
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.88
+    max_num_seqs: 96
+    max_num_batched_tokens: 20480
+    enable_prefix_caching: true
+    enable_expert_parallel: true
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.5 35B-A3B GPTQ-Int4 多模态，N260 双卡 64G 预设（moe_wna16，TP2+EP）"
 
   # Qwen3.5 35B-A3B AWQ（约 25GiB 权重，显存更宽裕，可进一步提高上下文或并发）
   qwen3.5-35b-a3b-awq:
