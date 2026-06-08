@@ -132,6 +132,7 @@ class ChatbotService:
             plant_kb_namespace=cfg.plant_kb_namespace,
             history_messages=hist if enable_context else None,
             enable_context=enable_context,
+            history_continuation=bool(cfg.plant_kb_history_continuation),
             query_boost_name=cfg.plant_kb_query_boost_name or None,
         )
         rag_ns = scope.rag_namespace

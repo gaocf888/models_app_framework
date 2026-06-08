@@ -2,6 +2,9 @@
 智能客服 RAG 检索范围解析：本厂/该厂等问句锁定电厂专属知识库 namespace。
 
 与 intent 三分流解耦：仅在 kb_qa → RAG 链路内，由 `rag_scope_resolve` 节点写入 state。
+
+默认（``CHATBOT_PLANT_KB_HISTORY_CONTINUATION=false``）仅根据**本轮** user query 判定；
+设为 true 时才会扫描近几轮 user 历史做延续锁定。
 """
 
 from __future__ import annotations
@@ -93,6 +96,7 @@ def resolve_rag_namespace(
     plant_kb_namespace: str,
     history_messages: List[Dict[str, Any]] | None = None,
     enable_context: bool = True,
+    history_continuation: bool = False,
     query_boost_name: str | None = _DEFAULT_PLANT_QUERY_BOOST,
 ) -> RagScopeResult:
     """
@@ -100,8 +104,9 @@ def resolve_rag_namespace(
 
     规则：
     - 本轮含厂别指代 → 锁定 plant_kb_namespace；
-    - 本轮无厂别指代，但近几轮 user 含厂别指代 → 多轮延续锁定；
-    - 否则走全库。
+    - 当 ``history_continuation=True``（``CHATBOT_PLANT_KB_HISTORY_CONTINUATION``）且
+      ``enable_context`` 时：本轮无厂别指代，但近几轮 user 含厂别指代 → 多轮延续锁定；
+    - 否则走全库（默认仅看本轮，不扫历史）。
     """
     if not enabled:
         return RagScopeResult(None, "plant_kb_disabled", None)
@@ -118,7 +123,7 @@ def resolve_rag_namespace(
     if _has_plant_pronoun(q):
         return RagScopeResult(ns, "plant_pronoun", boost)
 
-    if enable_context:
+    if history_continuation and enable_context:
         for prev in _recent_user_texts(history_messages):
             if _has_plant_pronoun(prev):
                 return RagScopeResult(ns, "plant_pronoun_history_continuation", boost)

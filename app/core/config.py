@@ -476,6 +476,8 @@ class ChatbotConfig:
     plant_kb_namespace: str = "Power_plant_knowledge"
     plant_kb_query_boost_name: str = "华电五彩湾北一发电有限公司"
     plant_kb_fallback_on_empty: bool = False
+    # 厂别指代是否延续到近几轮 user 历史；默认 false=仅本轮 query 含本厂/本公司等才锁 namespace
+    plant_kb_history_continuation: bool = False
     # 高分 FAQ 软直通：首条 citation 高分且 anaphora=none 时，生成阶段不注入 history_messages（默认开）
     faq_soft_direct_enabled: bool = True
     # 软直通闸门：首条 citation 的 rerank_score（CrossEncoder），非 Agentic 融合后的 score
@@ -1084,6 +1086,7 @@ def _load_from_env() -> AppConfig:
             os.getenv("CHATBOT_PLANT_KB_QUERY_BOOST_NAME", "华电五彩湾北一发电有限公司") or "华电五彩湾北一发电有限公司"
         ).strip(),
         plant_kb_fallback_on_empty=os.getenv("CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY", "false").lower() == "true",
+        plant_kb_history_continuation=os.getenv("CHATBOT_PLANT_KB_HISTORY_CONTINUATION", "false").lower() == "true",
         faq_soft_direct_enabled=os.getenv("CHATBOT_FAQ_SOFT_DIRECT_ENABLED", "true").lower() == "true",
         faq_soft_direct_min_score=max(0.0, min(1.0, float(os.getenv("CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE", "0.95")))),
         faq_soft_direct_snippet_top_n=max(1, min(10, int(os.getenv("CHATBOT_FAQ_SOFT_DIRECT_SNIPPET_TOP_N", "1")))),

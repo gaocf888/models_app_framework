@@ -123,6 +123,7 @@ class ChatbotLangGraphRunner:
         self._plant_kb_namespace = (cfg.plant_kb_namespace or "Power_plant_knowledge").strip()
         self._plant_kb_query_boost = (cfg.plant_kb_query_boost_name or "").strip()
         self._plant_kb_fallback_on_empty = bool(cfg.plant_kb_fallback_on_empty)
+        self._plant_kb_history_continuation = bool(cfg.plant_kb_history_continuation)
         # 高分 FAQ 软直通：生成阶段跳过 history_messages，避免旧 assistant 答案带偏复述（默认开）
         self._faq_soft_direct_enabled = bool(cfg.faq_soft_direct_enabled)
         self._faq_soft_direct_min_score = float(cfg.faq_soft_direct_min_score)
@@ -685,6 +686,7 @@ class ChatbotLangGraphRunner:
             plant_kb_namespace=self._plant_kb_namespace,
             history_messages=hist,
             enable_context=bool(state.get("enable_context", True)),
+            history_continuation=self._plant_kb_history_continuation,
             query_boost_name=self._plant_kb_query_boost or None,
         )
         logger.info(

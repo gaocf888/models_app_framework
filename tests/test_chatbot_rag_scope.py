@@ -41,13 +41,27 @@ def test_extended_plant_pronoun_markers():
         assert r.rag_scope_reason == "plant_pronoun", q
 
 
-def test_history_pronoun_continuation():
+def test_history_pronoun_not_continued_by_default():
+    """默认 history_continuation=false：历史含本厂、本轮无，不锁 namespace。"""
     hist = [{"role": "user", "content": "我们厂的设备配置是怎样的？"}, {"role": "assistant", "content": "…"}]
     r = resolve_rag_namespace(
         "那工艺参数呢",
         enabled=True,
         plant_kb_namespace=_NS,
         history_messages=hist,
+    )
+    assert r.rag_namespace is None
+    assert r.rag_scope_reason == "default_all_namespaces"
+
+
+def test_history_pronoun_continuation_when_enabled():
+    hist = [{"role": "user", "content": "我们厂的设备配置是怎样的？"}, {"role": "assistant", "content": "…"}]
+    r = resolve_rag_namespace(
+        "那工艺参数呢",
+        enabled=True,
+        plant_kb_namespace=_NS,
+        history_messages=hist,
+        history_continuation=True,
     )
     assert r.rag_namespace == _NS
     assert r.rag_scope_reason == "plant_pronoun_history_continuation"

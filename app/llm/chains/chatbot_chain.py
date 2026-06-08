@@ -122,6 +122,7 @@ class ChatbotChain:
                 plant_kb_namespace=cfg_cb.plant_kb_namespace,
                 history_messages=list(hist) if hist else None,
                 enable_context=enable_context,
+                history_continuation=bool(cfg_cb.plant_kb_history_continuation),
                 query_boost_name=cfg_cb.plant_kb_query_boost_name or None,
             )
             rag_q = query
