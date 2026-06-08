@@ -213,6 +213,58 @@ def _char_len(lines: list[str]) -> int:
     return len("\n".join(lines))
 
 
+def _window_table_char_len(
+    *,
+    table_idx: int,
+    n_cols: int,
+    header: list[TableRowSlice],
+    data_window: list[TableRowSlice],
+    col_lo: int,
+    col_hi: int,
+    col_label: str,
+) -> int:
+    return _char_len(
+        _assemble_table_part(
+            table_idx=table_idx,
+            n_cols=n_cols,
+            header=header,
+            data_window=data_window,
+            sub="1/1",
+            data_span="",
+            col_lo=col_lo,
+            col_hi=col_hi,
+            col_label=col_label,
+            col_span="",
+        )
+    )
+
+
+def _max_window_table_char_len(
+    *,
+    table_idx: int,
+    n_cols: int,
+    header: list[TableRowSlice],
+    windows: list[list[TableRowSlice]],
+    col_lo: int,
+    col_hi: int,
+    col_label: str,
+) -> int:
+    if not windows:
+        return 0
+    return max(
+        _window_table_char_len(
+            table_idx=table_idx,
+            n_cols=n_cols,
+            header=header,
+            data_window=w,
+            col_lo=col_lo,
+            col_hi=col_hi,
+            col_label=col_label,
+        )
+        for w in windows
+    )
+
+
 def split_table_lines_by_row_windows(
     table_lines: list[str],
     *,
@@ -264,24 +316,20 @@ def split_table_lines_by_row_windows(
         for i in range(0, len(data), per_window):
             windows.append(data[i : i + per_window])
 
-        # 若单窗仍超长，缩小窗口
-        while len(windows) > 1 or (
-            windows
-            and _char_len(
-                _assemble_table_part(
+        # 仅当某一窗（表头+数据）仍超 table 字符预算时缩小行窗口；不因「多窗」本身而缩小
+        while per_window > 1:
+            if (
+                _max_window_table_char_len(
                     table_idx=table_idx,
                     n_cols=n_cols,
                     header=header,
-                    data_window=windows[0],
-                    sub="1/1",
+                    windows=windows,
                     col_lo=col_lo,
                     col_hi=col_hi,
                     col_label=col_label,
                 )
-            )
-            > max_table_chars
-        ):
-            if per_window <= 1:
+                <= max_table_chars
+            ):
                 break
             per_window = max(1, per_window // 2)
             windows = [data[i : i + per_window] for i in range(0, len(data), per_window)]

@@ -75,3 +75,46 @@ def test_split_docx_v2_with_heading_and_prelude() -> None:
     assert table_chunks[0].count("低再第二层") == 1
     assert all("处理单元 heading_path=" in c for c in table_chunks)
     assert all("r0:" in c and "r1:" in c for c in table_chunks)
+
+
+def _build_wide_sample_table(n_data_rows: int) -> list[str]:
+    """8 列组合编号表，用于回归「多窗但每窗未超长时不应压到 1 行/窗」。"""
+    lines = [
+        "[DOCX_V2_TABLE idx=6 rows=99 cols=8]",
+        "r0: c0..c7='低温再热器第二层L14吹灰器上水平管'[重复表题×8]",
+        "r1: c0='编号' | c1='测量值' | c2='编号' | c3='测量值' | c4='编号' | c5='测量值' | c6='编号' | c7='测量值'",
+    ]
+    for i in range(n_data_rows):
+        ri = i + 2
+        n = i + 1
+        lines.append(
+            f"r{ri}: c0='{n}-1' | c1='4.31' | c2='{n + 32}-1' | c3='3.79' | "
+            f"c4='{n}-2' | c5='4.10' | c6='{n + 32}-2' | c7='3.80'"
+        )
+    return lines
+
+
+def test_row_window_not_collapsed_when_multiple_windows_fit_budget() -> None:
+    """52 行数据 + rows_per_window=20：应约 3 窗，不应缩成 52 窗各 1 行。"""
+    lines = _build_wide_sample_table(52)
+    parts = split_table_lines_by_row_windows(
+        lines,
+        max_table_chars=3000,
+        data_rows_per_window=20,
+    )
+    assert len(parts) == 3
+    assert " data=r2-r21" in "\n".join(parts[0])
+    assert " data=r42-r" in "\n".join(parts[2]) or "r53:" in "\n".join(parts[2])
+
+
+def test_row_window_still_shrinks_when_single_window_exceeds_budget() -> None:
+    lines = _build_wide_sample_table(25)
+    parts = split_table_lines_by_row_windows(
+        lines,
+        max_table_chars=600,
+        data_rows_per_window=20,
+    )
+    assert len(parts) > 3
+    for part in parts:
+        body = "\n".join(part)
+        assert "r0:" in body and "编号" in body
