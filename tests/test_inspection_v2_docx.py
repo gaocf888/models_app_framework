@@ -177,21 +177,44 @@ def test_parse_document_v2_returns_docx_v2_route() -> None:
         Path(path).unlink(missing_ok=True)
 
 
-def test_docx_v2_single_chunk_per_logical_table() -> None:
-    """整表必须在同一 chunk；不因 max_chunk_chars 较小而拆成多块。"""
+def test_docx_v2_single_chunk_when_table_fits_budget() -> None:
+    """整表未超预算时保持单块。"""
+    text = "\n".join(
+        [
+            "1、测试小节标题",
+            "[DOCX_V2_TABLE idx=1 rows=3 cols=2]",
+            "r0: c0='列A' | c1='列B'",
+            "r1: c0='说明' | c1='数值'",
+            "r2: c0='位置1' | c1='1.5'",
+        ]
+    )
+    chunks = split_docx_v2_by_processing_units(text, max_chunk_chars=8000)
+    table_chunks = [c for c in chunks if "[DOCX_V2_TABLE" in c]
+    assert len(table_chunks) == 1
+    assert table_chunks[0].count("r2:") == 1
+
+
+def test_docx_v2_splits_oversized_table_by_row_window() -> None:
+    """整表超预算时按行窗口拆成多块，每块保留表头。"""
     lines = [
         "1、测试小节标题",
         "[DOCX_V2_TABLE idx=1 rows=99 cols=2]",
         "r0: c0='列A' | c1='列B'",
-        "r1: c0='说明' | c1='数值'",
+        "r1: c0='编号' | c1='测量值'",
     ]
     for i in range(2, 40):
         lines.append(f"r{i}: c0='位置{i}' | c1='{i}.5'")
     text = "\n".join(lines)
-    chunks = split_docx_v2_by_processing_units(text, max_chunk_chars=320)
+    chunks = split_docx_v2_by_processing_units(
+        text,
+        max_chunk_chars=320,
+        table_data_rows_per_window=8,
+    )
     table_chunks = [c for c in chunks if "[DOCX_V2_TABLE" in c]
-    assert len(table_chunks) == 1
-    assert table_chunks[0].count("r39:") == 1
+    assert len(table_chunks) >= 2
+    for c in table_chunks:
+        assert "r0:" in c and "r1:" in c
+    assert sum(c.count("r39:") for c in table_chunks) == 1
 
 
 def test_parse_document_v2_pdf_delegates_to_v1() -> None:

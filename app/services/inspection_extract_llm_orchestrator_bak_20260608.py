@@ -18,7 +18,7 @@ from typing import Any
 from app.core.config import InspectionExtractConfig
 from app.core.logging import get_logger
 from app.inspection_v2.chunk_table_filter import filter_table_work_items
-from app.inspection_v2.orchestrator import split_parse_chunks, v2_docx_chunk_params
+from app.inspection_v2.orchestrator import split_parse_chunks
 from app.llm.client import VLLMHttpClient
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.models.inspection_extract import InspectionExtractRequest
@@ -182,16 +182,15 @@ class InspectionExtractLlmOrchestrator:
 
         max_chars = 6000
         pr = (parse_route or "text").strip().lower()
-        chunk_kwargs: dict[str, int | bool] = {"max_chunk_chars": max_chars}
         if pr == "docx_v2":
-            chunk_kwargs = v2_docx_chunk_params(self._cfg)
-        chunks = split_parse_chunks(parsed_text, parse_route=parse_route, **chunk_kwargs)
+            max_chars = max(2000, int(getattr(self._cfg, "v2_parse_unit_max_chars", 6000)))
+        chunks = split_parse_chunks(parsed_text, parse_route=parse_route, max_chunk_chars=max_chars)
         total_chunks = len(chunks)
         logger.info(
             "inspection_extract parse chunk_count=%s parse_route=%s max_chunk_chars=%s",
             total_chunks,
             parse_route,
-            chunk_kwargs["max_chunk_chars"],
+            max_chars,
         )
         logger.info("【检修提取】Parse阶段分块数量=%s", total_chunks)
         parse_concurrency = max(1, int(getattr(self._cfg, "parse_concurrency", 1)))
@@ -283,10 +282,9 @@ class InspectionExtractLlmOrchestrator:
 
         max_chars = 6000
         pr = (parse_route or "text").strip().lower()
-        chunk_kwargs: dict[str, int | bool] = {"max_chunk_chars": max_chars}
         if pr == "docx_v2":
-            chunk_kwargs = v2_docx_chunk_params(self._cfg)
-        chunks = split_parse_chunks(parsed_text, parse_route=parse_route, **chunk_kwargs)
+            max_chars = max(2000, int(getattr(self._cfg, "v2_parse_unit_max_chars", 6000)))
+        chunks = split_parse_chunks(parsed_text, parse_route=parse_route, max_chunk_chars=max_chars)
         work_items = filter_table_work_items(chunks, parse_route=parse_route)
         total_work = len(work_items)
         logger.info(
@@ -294,7 +292,7 @@ class InspectionExtractLlmOrchestrator:
             len(chunks),
             total_work,
             parse_route,
-            chunk_kwargs["max_chunk_chars"],
+            max_chars,
         )
 
         chunks_dir = job_dir / "chunks"

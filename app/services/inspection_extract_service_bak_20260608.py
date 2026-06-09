@@ -1039,16 +1039,14 @@ class InspectionExtractJobScheduler:
         if self._is_cancel_requested(jd, job_id):
             raise InspectionExtractJobCancelled()
 
-        from app.inspection_v2.chunk_table_filter import filter_table_work_items
-        from app.inspection_v2.orchestrator import split_parse_chunks, v2_docx_chunk_params
-
         max_chars = 6000
         pr = (parse_route or "text").strip().lower()
-        chunk_kwargs: dict[str, int | bool] = {"max_chunk_chars": max_chars}
         if pr == "docx_v2":
-            chunk_kwargs = v2_docx_chunk_params(self._svc._cfg)
+            max_chars = max(2000, int(getattr(self._svc._cfg, "v2_parse_unit_max_chars", 6000)))
+        from app.inspection_v2.chunk_table_filter import filter_table_work_items
+        from app.inspection_v2.orchestrator import split_parse_chunks
 
-        chunks = split_parse_chunks(parsed_text, parse_route=parse_route, **chunk_kwargs)
+        chunks = split_parse_chunks(parsed_text, parse_route=parse_route, max_chunk_chars=max_chars)
         work_items = filter_table_work_items(chunks, parse_route=parse_route)
         chunks_total = len(work_items)
 

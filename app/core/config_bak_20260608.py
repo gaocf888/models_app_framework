@@ -670,10 +670,6 @@ class InspectionExtractConfig:
     v2_shading_candidate_fills: list[str] = field(default_factory=_default_inspection_v2_shading_fills)
     # V2：Processing Unit 分块后每块最大字符；classify 批大小（与文档 20～40 条建议对齐）
     v2_parse_unit_max_chars: int = 6000
-    # V2：大表按「表头 + 数据行窗口」切分（单表超 max-chars 时启用）
-    v2_table_row_window_enabled: bool = True
-    v2_table_data_rows_per_window: int = 20
-    v2_table_column_split_enabled: bool = False
     v2_classify_batch_size: int = 40
     # DOCX V2：parse 后按分块内 [颜色标注] 校正检测类型，避免同行/跨列误标缺陷
     v2_color_guard_enabled: bool = True
@@ -1302,13 +1298,6 @@ def _load_from_env() -> AppConfig:
         pipeline_version=(os.getenv("INSPECT_EXTRACT_PIPELINE_VERSION", "v1") or "v1").strip().lower(),
         v2_shading_candidate_fills=_v2_fills_list,
         v2_parse_unit_max_chars=max(2000, int(os.getenv("INSPECT_EXTRACT_V2_PARSE_UNIT_MAX_CHARS", "6000"))),
-        v2_table_row_window_enabled=os.getenv("INSPECT_EXTRACT_V2_TABLE_ROW_WINDOW_ENABLED", "true").lower()
-        in ("1", "true", "yes", "on"),
-        v2_table_data_rows_per_window=max(
-            1, int(os.getenv("INSPECT_EXTRACT_V2_TABLE_DATA_ROWS_PER_WINDOW", "20"))
-        ),
-        v2_table_column_split_enabled=os.getenv("INSPECT_EXTRACT_V2_TABLE_COLUMN_SPLIT_ENABLED", "false").lower()
-        in ("1", "true", "yes", "on"),
         v2_classify_batch_size=max(8, min(200, int(os.getenv("INSPECT_EXTRACT_V2_CLASSIFY_BATCH_SIZE", "40")))),
         v2_color_guard_enabled=os.getenv("INSPECT_EXTRACT_V2_COLOR_GUARD", "true").lower()
         in ("1", "true", "yes", "on"),

@@ -2,8 +2,8 @@
 检修 docx V2 序列化文本 → Processing Unit 分块。
 
 原则：
-- 含表的块以「表」为单元：紧邻该表上方的正文与该表同块（首块带 prelude）。
-- 单表超过字符预算时按「表头 + 数据行窗口」切分（可配置 rows-per-window）。
+- 同一逻辑表格完整落在单个块中（不跨块拆表）。
+- 含表的块以「表」为单元：紧邻该表上方的正文与该表同块。
 - 不含表的纯文本按 max_chunk_chars 切分。
 """
 
@@ -13,7 +13,6 @@ import re
 from typing import NamedTuple
 
 from app.core.logging import get_logger
-from app.inspection_v2.table_row_window_split import split_table_lines_by_row_windows
 
 logger = get_logger(__name__)
 
@@ -90,9 +89,6 @@ def _pack_segments_to_chunks(
     segments: list[_Segment],
     *,
     max_chunk_chars: int,
-    table_row_window_enabled: bool = True,
-    table_data_rows_per_window: int = 20,
-    table_column_split_enabled: bool = False,
 ) -> list[str]:
     header = f"[处理单元 heading_path={heading_label}]\n"
     body_budget = max(64, max_chunk_chars - len(header))
@@ -111,34 +107,6 @@ def _pack_segments_to_chunks(
             continue
         prelude = "\n\n".join(pending_text_parts).strip()
         pending_text_parts.clear()
-
-        if table_row_window_enabled:
-            table_budget = body_budget
-            if prelude:
-                table_budget = max(256, body_budget - len(prelude) - 2)
-
-            table_parts = split_table_lines_by_row_windows(
-                tbl,
-                max_table_chars=table_budget,
-                data_rows_per_window=max(1, table_data_rows_per_window),
-                enable_column_split=table_column_split_enabled,
-            )
-
-            for pi, part_lines in enumerate(table_parts):
-                tbl_full = "\n".join(part_lines).strip()
-                use_prelude = prelude if pi == 0 else ""
-                body = f"{use_prelude}\n{tbl_full}".strip() if use_prelude else tbl_full
-                full_chunk = (header + body).rstrip()
-                if len(full_chunk) > max_chunk_chars:
-                    logger.warning(
-                        "docx_v2 table chunk exceeds max_chunk_chars len=%s max=%s sub=%s",
-                        len(full_chunk),
-                        max_chunk_chars,
-                        part_lines[0] if part_lines else "",
-                    )
-                chunks.append(full_chunk)
-            continue
-
         tbl_full = "\n".join(tbl).strip()
         body = f"{prelude}\n{tbl_full}".strip() if prelude else tbl_full
         full_chunk = (header + body).rstrip()
@@ -184,14 +152,7 @@ def segment_docx_v2_by_headings(lines: list[str]) -> list[tuple[str, list[str]]]
     return units
 
 
-def split_docx_v2_by_processing_units(
-    parsed_text: str,
-    *,
-    max_chunk_chars: int,
-    table_row_window_enabled: bool = True,
-    table_data_rows_per_window: int = 20,
-    table_column_split_enabled: bool = False,
-) -> list[str]:
+def split_docx_v2_by_processing_units(parsed_text: str, *, max_chunk_chars: int) -> list[str]:
     text = (parsed_text or "").strip()
     if not text:
         return []
@@ -202,13 +163,6 @@ def split_docx_v2_by_processing_units(
         if not body_lines:
             continue
         segs = _segment_unit_lines(body_lines)
-        packed = _pack_segments_to_chunks(
-            label,
-            segs,
-            max_chunk_chars=max_chunk_chars,
-            table_row_window_enabled=table_row_window_enabled,
-            table_data_rows_per_window=table_data_rows_per_window,
-            table_column_split_enabled=table_column_split_enabled,
-        )
+        packed = _pack_segments_to_chunks(label, segs, max_chunk_chars=max_chunk_chars)
         chunks.extend(packed)
     return chunks or [text[:max_chunk_chars]]

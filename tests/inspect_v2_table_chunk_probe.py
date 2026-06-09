@@ -25,20 +25,17 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _ROOT = _SCRIPT_DIR.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
-if str(_SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPT_DIR))
 
 from app.core.config import get_app_config
 from app.inspection_v2.chunk_table_filter import filter_table_work_items
 from app.inspection_v2.docx_rich_text import serialize_docx_for_inspection_v2
 from app.inspection_v2.processing_units import split_docx_v2_by_processing_units
 
-from inspect_v2_table_chunk_split import (
-    split_docx_v2_with_row_windows,
-    table_only_chunks,
-)
-
 logger = logging.getLogger("app.services.inspection_extract_llm_orchestrator")
+
+
+def _table_only_chunks(chunks: list[str]) -> list[str]:
+    return [c for c in chunks if "[DOCX_V2_TABLE" in c]
 
 
 def _log_parse_chunk_full(*, idx: int, total: int, chunk: str, max_log_chars: int = 0) -> None:
@@ -95,7 +92,7 @@ def _resolve_docx_path(arg: str | None, script_dir: Path) -> Path:
 
 
 def _summarize_chunks(label: str, chunks: list[str]) -> None:
-    table_chunks = table_only_chunks(chunks)
+    table_chunks = _table_only_chunks(chunks)
     logger.info(
         "【切块探针】%s total_chunks=%s table_chunks=%s",
         label,
@@ -128,8 +125,8 @@ def main() -> int:
     parser.add_argument(
         "--rows-per-window",
         type=int,
-        default=20,
-        help="行窗口：每块最多包含的数据行数（表头行每块复制）",
+        default=None,
+        help="行窗口：每块最多包含的数据行数（表头行每块复制；默认与配置一致）",
     )
     parser.add_argument(
         "--enable-column-split",
@@ -139,7 +136,7 @@ def main() -> int:
     parser.add_argument(
         "--compare-baseline",
         action="store_true",
-        help="同时打印现网 atomic 切块数量对比",
+        help="同时打印关闭行窗口（atomic 整表）切块数量对比",
     )
     parser.add_argument(
         "--log-max-chars",
@@ -162,6 +159,9 @@ def main() -> int:
     max_chars = args.max_chars
     if max_chars is None:
         max_chars = max(2000, int(getattr(cfg, "v2_parse_unit_max_chars", 6000)))
+    rows_per_window = args.rows_per_window
+    if rows_per_window is None:
+        rows_per_window = max(1, int(getattr(cfg, "v2_table_data_rows_per_window", 20)))
 
     fills = set(getattr(cfg, "v2_shading_candidate_fills", []) or [])
     logger.info("【切块探针】serialize docx=%s", docx_path)
@@ -169,15 +169,20 @@ def main() -> int:
     logger.info("【切块探针】serialized_chars=%s", len(parsed_text))
 
     if args.compare_baseline:
-        baseline = split_docx_v2_by_processing_units(parsed_text, max_chunk_chars=max_chars)
+        baseline = split_docx_v2_by_processing_units(
+            parsed_text,
+            max_chunk_chars=max_chars,
+            table_row_window_enabled=False,
+        )
         work_baseline = filter_table_work_items(baseline, parse_route="docx_v2")
         _summarize_chunks("baseline(atomic_table)", work_baseline)
 
-    chunks = split_docx_v2_with_row_windows(
+    chunks = split_docx_v2_by_processing_units(
         parsed_text,
         max_chunk_chars=max_chars,
-        data_rows_per_window=max(1, args.rows_per_window),
-        enable_column_split=bool(args.enable_column_split),
+        table_row_window_enabled=True,
+        table_data_rows_per_window=max(1, rows_per_window),
+        table_column_split_enabled=bool(args.enable_column_split),
     )
     work_items = filter_table_work_items(chunks, parse_route="docx_v2")
     _summarize_chunks("row_window_split", work_items)
@@ -186,7 +191,7 @@ def main() -> int:
     logger.info(
         "【切块探针】begin parse_chunk_full logs (table chunks only) max_chars=%s rows_per_window=%s",
         max_chars,
-        args.rows_per_window,
+        rows_per_window,
     )
     for idx, (_, chunk) in enumerate(work_items, start=1):
         _log_parse_chunk_full(

@@ -1,20 +1,9 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-_ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-_TESTS_DIR = Path(__file__).resolve().parent
-if str(_TESTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_TESTS_DIR))
-
-from inspect_v2_table_chunk_split import (
+from app.inspection_v2.processing_units import split_docx_v2_by_processing_units
+from app.inspection_v2.table_row_window_split import (
     detect_table_data_start,
-    split_docx_v2_with_row_windows,
     split_table_lines_by_row_windows,
-    table_only_chunks,
 )
 
 # 低再 8 列组合编号表（与现网日志样例结构一致，14 行）
@@ -35,6 +24,10 @@ r11: c0='5-2' | c1='3.50' | c2='37-2' | c3='3.20' | c4='5-3' | c5='3.50' | c6='3
 r12: c0='6-1' | c1='3.45' | c2='38-1' | c3='3.15' | c4='6-2' | c5='3.45' | c6='38-2' | c7='3.15'
 r13: c0='6-2' | c1='3.40' | c2='38-2' | c3='3.12'[颜色标注:高亮=red] | c4='6-3' | c5='3.40' | c6='38-3' | c7='3.12'[颜色标注:高亮=red]
 """.strip()
+
+
+def _table_only_chunks(chunks: list[str]) -> list[str]:
+    return [c for c in chunks if "[DOCX_V2_TABLE" in c]
 
 
 def test_detect_data_start_after_index_header_row() -> None:
@@ -65,12 +58,12 @@ def test_split_docx_v2_with_heading_and_prelude() -> None:
             SAMPLE_TABLE,
         ]
     )
-    chunks = split_docx_v2_with_row_windows(
+    chunks = split_docx_v2_by_processing_units(
         text,
         max_chunk_chars=900,
-        data_rows_per_window=4,
+        table_data_rows_per_window=4,
     )
-    table_chunks = table_only_chunks(chunks)
+    table_chunks = _table_only_chunks(chunks)
     assert len(table_chunks) >= 2
     assert table_chunks[0].count("低再第二层") == 1
     assert all("处理单元 heading_path=" in c for c in table_chunks)
