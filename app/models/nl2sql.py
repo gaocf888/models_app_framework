@@ -23,7 +23,7 @@ class NL2SQLQueryRequest(BaseModel):
     plan_template_version: str | None = Field(
         default=None,
         description=(
-            "可选：NL2SQL 数据计划模板版本（prompts.yaml analysis_plan_<type> 的 version，如 v1/v2）；"
+            "可选：NL2SQL 数据计划模板版本（prompts_bak_new.yaml analysis_plan_<type> 的 version，如 v1/v2）；"
             "综合分析 acquire_data 传入，用于 QA 向量闭环五元组去重"
         ),
     )

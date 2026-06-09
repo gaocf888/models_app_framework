@@ -425,7 +425,7 @@ class ChatbotConfig:
     # 主问答流式 LLM 的 sampling temperature（环境变量 CHATBOT_MAIN_LLM_TEMPERATURE）。
     # None 表示不在请求中覆盖，沿用 LLMModelConfig.temperature；仅作用于主答 stream_chat，不影响指代/相似案例等硬编码子调用。
     main_llm_temperature: float | None = None
-    # 未传 prompt_version 时使用的客服模板版本（与 configs/prompts.yaml 中 chatbot.version 对齐）
+    # 未传 prompt_version 时使用的客服模板版本（与 configs/prompts_bak_new.yaml 中 chatbot.version 对齐）
     default_prompt_version: str = "boiler_v1"
     # 回答结束后关联问题推荐（规则 + 片段 + LLM）
     suggested_questions_enabled: bool = True

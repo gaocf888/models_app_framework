@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 综合分析 nl2sql 路径下「意图 / 数据计划」两阶段 LLM 的结构化输出模型与 JSON 抽取工具。
 
-与 `configs/prompts.yaml` 中 `analysis_intent`、`analysis_data_plan` 提示词配合使用。
+与 `configs/prompts_bak_new.yaml` 中 `analysis_intent`、`analysis_data_plan` 提示词配合使用。
 """
 
 import json

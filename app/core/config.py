@@ -425,7 +425,7 @@ class ChatbotConfig:
     # 主问答流式 LLM 的 sampling temperature（环境变量 CHATBOT_MAIN_LLM_TEMPERATURE）。
     # None 表示不在请求中覆盖，沿用 LLMModelConfig.temperature；仅作用于主答 stream_chat，不影响指代/相似案例等硬编码子调用。
     main_llm_temperature: float | None = None
-    # 未传 prompt_version 时使用的客服模板版本（与 configs/prompts.yaml 中 chatbot.version 对齐）
+    # 未传 prompt_version 时使用的客服模板版本（与 configs/prompts_bak_new.yaml 中 chatbot.version 对齐）
     default_prompt_version: str = "boiler_v1"
     # 回答结束后关联问题推荐（规则 + 片段 + LLM）
     suggested_questions_enabled: bool = True
@@ -681,6 +681,9 @@ class InspectionExtractConfig:
     v2_bind_guard_enabled: bool = True
     # DOCX V2：parse 后按 chunk 组合编号（2-1）标记并校正行号/管号
     v2_combo_guard_enabled: bool = True
+    # DOCX V2：parse 后按 chunk 列组 direction 校正管号正负（上数/下数等）
+    v2_tube_direction_sign_guard_enabled: bool = True
+    v2_tube_direction_sign_allow_fallback_4col: bool = False
     # 异步检修任务（断点续跑）根目录：每任务子目录含 request.json、chunks/*.json、job_meta.json
     async_jobs_state_dir: str = "./data/inspection_extract_jobs"
     # REDIS_URL 启用时：检修异步队列 worker 线程数（与摄入队列分离 key_prefix）
@@ -1315,6 +1318,14 @@ def _load_from_env() -> AppConfig:
         v2_bind_guard_enabled=os.getenv("INSPECT_EXTRACT_V2_BIND_GUARD", "true").lower()
         in ("1", "true", "yes", "on"),
         v2_combo_guard_enabled=os.getenv("INSPECT_EXTRACT_V2_COMBO_GUARD", "true").lower()
+        in ("1", "true", "yes", "on"),
+        v2_tube_direction_sign_guard_enabled=os.getenv(
+            "INSPECT_EXTRACT_V2_TUBE_DIRECTION_SIGN_GUARD", "true"
+        ).lower()
+        in ("1", "true", "yes", "on"),
+        v2_tube_direction_sign_allow_fallback_4col=os.getenv(
+            "INSPECT_EXTRACT_V2_TUBE_DIRECTION_SIGN_ALLOW_FALLBACK_4COL", "false"
+        ).lower()
         in ("1", "true", "yes", "on"),
         async_jobs_state_dir=(
             os.getenv("INSPECT_EXTRACT_ASYNC_JOBS_DIR", "./data/inspection_extract_jobs") or "./data/inspection_extract_jobs"

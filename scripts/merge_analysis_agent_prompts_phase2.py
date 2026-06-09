@@ -1,4 +1,4 @@
-"""将现网模板块复制为 analysis_agent_* 并追加到 prompts.yaml 末尾。
+"""将现网模板块复制为 analysis_agent_* 并追加到 prompts_bak_new.yaml 末尾。
 
 禁止对整文件 yaml.safe_dump，以免破坏多行 content 与注释。
 """
@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PROMPTS = ROOT / "configs" / "prompts.yaml"
+PROMPTS = ROOT / "configs" / "prompts_bak_new.yaml"
 
 MAPPINGS = [
     ("analysis_plan_overheat_guidance", "analysis_agent_plan_overheat_guidance"),

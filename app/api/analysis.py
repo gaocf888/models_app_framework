@@ -12,7 +12,7 @@ from __future__ import annotations
     - **联系**：二者编排中均含 **NL2SQL 数据臂**（按计划多次 `NL2SQLService.query`）。看图诊断由 **`AnalysisImgDiagGraphRunner`**
       基于 **`AnalysisGraphRunner`** 调度，NL2SQL 子链 **复用父类节点**（含 **`acquire_data` / `_execute_data_plan`** 及默认同层并行取数）。
       响应均为 **`AnalysisV2Result`**，`evidence.nl2sql_calls` 与 trace 字段语义一致；子查询层同样 **`record_conversation=False`**。
-    - **区别**：NL2SQL 以 **`analysis_type`** + **`query`** 驱动 **`analysis_plan_<type>`** 数据计划（见 **`configs/prompts.yaml`**）。
+    - **区别**：NL2SQL 以 **`analysis_type`** + **`query`** 驱动 **`analysis_plan_<type>`** 数据计划（见 **`configs/prompts_bak_new.yaml`**）。
       看图诊断以 **机组、泄漏位置、图片 URL、提问** 为主，无 **`analysis_type`**，走 **`run_with_img_diag`**（同步）或 **`iter_img_diag_stream_events`**（流式 synthesis）：以 **`asyncio.gather`**
       并行 **视觉 ‖ NL2SQL 臂 ‖ 业务 RAG**，过 **`data_quality_gate`** 后再合成。证据侧多看 **`vision_findings`**，**`data_coverage.mode`**
       为 **`img_diag`**；图片可先 **`img-diag/upload`** 换预签名 URL。
@@ -108,7 +108,7 @@ async def run_analysis_with_nl2sql(data: AnalysisNL2SQLRequest) -> AnalysisV2Res
     **请求体 `AnalysisNL2SQLRequest`（Schema 为准，以下为速查）**
     - `user_id`：**必填**。与 NL2SQL 子调用及会话写入一致。
     - `session_id`：**必填**。
-    - `analysis_type`：**必填**。影响 `configs/prompts.yaml` 中 `analysis_plan_<type>` 与内置默认取数任务；取值含
+    - `analysis_type`：**必填**。影响 `configs/prompts_bak_new.yaml` 中 `analysis_plan_<type>` 与内置默认取数任务；取值含
       `overheat_guidance`、`maintenance_strategy`、`four_tube_health_interpretation`、`leakage_burst_analysis`、`custom` 等（与 OpenAPI Schema 一致）。
     - `query`：**必填**。总体分析需求描述。
     - `data_requirements_hint`：可选，默认 `[]`。额外数据维度提示，编排器会合并为补充查询任务（非强制项）。

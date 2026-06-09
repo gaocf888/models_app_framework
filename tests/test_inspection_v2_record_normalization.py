@@ -155,6 +155,22 @@ def test_apply_deterministic_rules_english_keys_get_chinese_fields() -> None:
     assert out["管号"] == "-2"
 
 
+def test_normalization_skips_evidence_sign_after_direction_guard() -> None:
+    from app.inspection_v2.record_normalization import apply_deterministic_rules_to_record
+
+    out = apply_deterministic_rules_to_record(
+        {
+            "检测位置": "右墙",
+            "行号": "1",
+            "管号": "5",
+            "壁厚": 7.0,
+            "evidence": "向上第1根",
+            "warnings": ["direction_sign_guard:下→去负号(r1)"],
+        }
+    )
+    assert out["管号"] == "5"
+
+
 def test_combo_flag_skips_wall_rules_on_replay() -> None:
     from app.inspection_v2.record_normalization import (
         COMBO_INDEX_FROM_CHUNK,

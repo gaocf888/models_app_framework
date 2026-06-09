@@ -5,7 +5,7 @@ from __future__ import annotations
 
 - 对外入口：`AnalysisGraphRunner.run_with_payload`、`run_with_nl2sql`（由 `AnalysisService` 调用）。
 - 两套 LangGraph `StateGraph(AnalysisGraphState)`（payload / nl2sql）；`langgraph` 不可用时走 `_run_with_*_sequential`。
-- 数据计划：优先 `configs/prompts.yaml` 中 `analysis_plan_<analysis_type>`，可选 LLM 意图/计划合并，最后才用内置默认任务。
+- 数据计划：优先 `configs/prompts_bak_new.yaml` 中 `analysis_plan_<analysis_type>`，可选 LLM 意图/计划合并，最后才用内置默认任务。
 - **acquire_data / `_execute_data_plan`**：默认按 **`dependency_ids` 分层**，同层任务 **`asyncio.gather` 并行**调用 `NL2SQLService.query`（单任务内仍为「生成 SQL → 执行」串行）；可通过 **`ANALYSIS_NL2SQL_ACQUIRE_PARALLEL_ENABLED`** / **`ANALYSIS_NL2SQL_ACQUIRE_MAX_PARALLEL`** 关闭或限流（见 `AnalysisConfig`）。
 - 阶段模板加载优先级（`_resolve_stage_template`）：
   `stage_<analysis_type>` -> `stage` -> `analysis`。
@@ -3149,7 +3149,7 @@ class AnalysisGraphRunner:
             return templated
         hints = req.data_requirements_hint or []
         if req.analysis_type == "overheat_guidance":
-            # 与 prompts.yaml · analysis_plan_overheat_guidance 语义对齐（模板缺失时的兜底）
+            # 与 prompts_bak_new.yaml · analysis_plan_overheat_guidance 语义对齐（模板缺失时的兜底）
             base = [
                 _PlanTask(
                     "q1",
@@ -3195,7 +3195,7 @@ class AnalysisGraphRunner:
                 ),
             ]
         elif req.analysis_type == "four_tube_health_interpretation":
-            # 与 prompts.yaml · analysis_plan_four_tube_health_interpretation 语义对齐（模板缺失时的兜底）
+            # 与 prompts_bak_new.yaml · analysis_plan_four_tube_health_interpretation 语义对齐（模板缺失时的兜底）
             base = [
                 _PlanTask(
                     "q1",
@@ -3230,7 +3230,7 @@ class AnalysisGraphRunner:
                 ),
             ]
         elif req.analysis_type == "leakage_burst_analysis":
-            # 与 prompts.yaml · analysis_plan_leakage_burst_analysis 语义对齐（模板缺失时的兜底）
+            # 与 prompts_bak_new.yaml · analysis_plan_leakage_burst_analysis 语义对齐（模板缺失时的兜底）
             base = [
                 _PlanTask(
                     "q1",

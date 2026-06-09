@@ -626,6 +626,24 @@ class InspectionExtractLlmOrchestrator:
                 if records_i:
                     parse_format = "json_salvage"
             records_i = _ensure_debug_fields(records_i)
+            if bool(getattr(self._cfg, "v2_combo_guard_enabled", True)) and "[DOCX_V2_TABLE" in (chunk or ""):
+                from app.inspection_v2.combo_index_guard import apply_docx_v2_combo_index_guard
+
+                records_i = apply_docx_v2_combo_index_guard(records_i, chunk)
+            if bool(getattr(self._cfg, "v2_tube_direction_sign_guard_enabled", True)) and "[DOCX_V2_TABLE" in (
+                chunk or ""
+            ):
+                from app.inspection_v2.tube_direction_sign_guard import (
+                    apply_docx_v2_tube_direction_sign_guard,
+                )
+
+                records_i = apply_docx_v2_tube_direction_sign_guard(
+                    records_i,
+                    chunk,
+                    allow_fallback_4col=bool(
+                        getattr(self._cfg, "v2_tube_direction_sign_allow_fallback_4col", False)
+                    ),
+                )
             if bool(getattr(self._cfg, "v2_color_guard_enabled", True)) and "[DOCX_V2_TABLE" in (chunk or ""):
                 from app.inspection_v2.detection_type_color_guard import apply_docx_v2_color_guard
 
@@ -650,10 +668,6 @@ class InspectionExtractLlmOrchestrator:
                         before_defect,
                         after_defect,
                     )
-            if bool(getattr(self._cfg, "v2_combo_guard_enabled", True)) and "[DOCX_V2_TABLE" in (chunk or ""):
-                from app.inspection_v2.combo_index_guard import apply_docx_v2_combo_index_guard
-
-                records_i = apply_docx_v2_combo_index_guard(records_i, chunk)
             records_i = _apply_parse_deterministic_rules(records_i)
             if bool(getattr(self._cfg, "v2_bind_guard_enabled", True)) and "[DOCX_V2_TABLE" in (chunk or ""):
                 from app.inspection_v2.tube_thickness_bind_guard import apply_docx_v2_tube_thickness_bind_guard

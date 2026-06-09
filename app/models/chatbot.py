@@ -48,7 +48,7 @@ class ChatRequest(BaseModel):
     prompt_version: str | None = Field(
         None,
         description=(
-            "客服 system 模板版本，对应 configs/prompts.yaml 中 chatbot 条目的 version。"
+            "客服 system 模板版本，对应 configs/prompts_bak_new.yaml 中 chatbot 条目的 version。"
             "为空时使用服务端 CHATBOT_PROMPT_DEFAULT_VERSION（默认 boiler_v1）。"
         ),
     )

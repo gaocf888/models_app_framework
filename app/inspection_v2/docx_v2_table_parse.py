@@ -20,10 +20,33 @@ CELL_RE = re.compile(
     r"(?:\[超标候选[^]]*\])?",
 )
 
-_UP_LABELS = frozenset({"上", "向上", "上数", "上部"})
-_DOWN_LABELS = frozenset({"下", "向下", "下数", "下部"})
+_UP_LABELS = frozenset({"上", "向上", "上数", "上部", "上排", "上行", "上测"})
+_DOWN_LABELS = frozenset({"下", "向下", "下数", "下部", "下排", "下行", "下测"})
 _IDX_HEADER_LABELS = frozenset({"编号", "根数", "序号"})
 _THK_HEADER_LABELS = frozenset({"测量值", "测厚", "厚度", "壁厚"})
+# sign_guard 置信度来源（与 tube_direction_sign_guard 对齐）
+DIRECTION_SOURCE_EXPLICIT = "explicit_nearest"
+DIRECTION_SOURCE_DEFAULT_DOWN = "default_down"
+DIRECTION_SOURCE_LOCATION_SKIP = "location_only_skip"
+DIRECTION_SOURCE_FALLBACK_4COL = "fallback_4col"
+DIRECTION_SOURCE_NONE = "none"
+_LOCATION_SCOPE_MARKERS = (
+    "水冷壁",
+    "包墙",
+    "过热器",
+    "再热器",
+    "省煤器",
+    "吹灰器",
+    "风孔",
+    "层",
+    "段",
+    "φ",
+    "mm",
+    "测厚",
+    "蠕胀",
+    "水平",
+    "垂直",
+)
 _THK_TOLERANCE = 0.03
 _COMBO_INDEX_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
 _WIDE_DIRECTION_SPAN = 4  # hmerge 跨度 ≥4 列时，在 span 内按「编号|测量值」拆列组
@@ -101,6 +124,7 @@ class IndexPair:
     index_val: int
     thickness: float
     defect_by_color: bool = False
+    direction_source: str = DIRECTION_SOURCE_NONE
 
 
 @dataclass
@@ -127,6 +151,37 @@ class ParsedTable:
     groups: list[DirectionGroup] = field(default_factory=list)
 
 
+def _row_body(lines: list[str], ri: int) -> str:
+    line = next((ln for ln in lines if ln.startswith(f"r{ri}:")), "")
+    if ":" not in line:
+        return ""
+    return line.split(":", 1)[1]
+
+
+def _is_exact_direction_label(label: str) -> bool:
+    t = (label or "").strip()
+    return t in _UP_LABELS or t in _DOWN_LABELS
+
+
+def _is_location_scope_label(label: str) -> bool:
+    t = (label or "").strip()
+    if not t or _is_exact_direction_label(t):
+        return False
+    if len(t) >= 8:
+        return True
+    return any(m in t for m in _LOCATION_SCOPE_MARKERS)
+
+
+def _row_has_location_header(body: str) -> bool:
+    if "重复表题" in body:
+        return True
+    for gm in COL_GROUP_RE.finditer(body):
+        label = (gm.group(4) or "").strip()
+        if _is_location_scope_label(label):
+            return True
+    return False
+
+
 def _parse_direction_spans_from_row(body: str, header_row: int) -> list[DirectionSpan]:
     spans: list[DirectionSpan] = []
     for gm in COL_GROUP_RE.finditer(body):
@@ -139,7 +194,7 @@ def _parse_direction_spans_from_row(body: str, header_row: int) -> list[Directio
             direction = "下"
         else:
             continue
-        if c1 - c0 >= 1:
+        if c1 >= c0:
             spans.append(DirectionSpan(direction=direction, col_lo=c0, col_hi=c1, header_row=header_row))
     return spans
 
@@ -177,7 +232,7 @@ def _find_number_header_row(
     *,
     after_row: int | None,
 ) -> int | None:
-    start = (after_row + 1) if after_row is not None else band_start + 1
+    start = (after_row + 1) if after_row is not None else band_start
     for ri in range(start, min(band_end, start + 6) + 1):
         for ci in range(0, 32):
             text = (cells.get((ri, ci)) or {}).get("text", "").strip()
@@ -271,54 +326,67 @@ def _build_direction_groups_for_band(
     cells: dict[tuple[int, int], dict[str, Any]],
     band_start: int,
     band_end: int,
-) -> tuple[list[DirectionGroup], int]:
+) -> tuple[list[DirectionGroup], int, str]:
     """
-    按 band 解析 DirectionGroup 列表与数据区起始行。
+    按 band 解析 DirectionGroup、数据区起始行、direction_source。
 
-    优先级：窄 上/下(hmerge×2) → 宽 上/下+编号|测量值表头 → 无方向仅编号表头 → 默认 (0,1)(2,3)。
+    方向表头：整格精确匹配 上/下/上数/下数 等；多级表头取离 data_anchor 最近的一行。
+    一级检测位置表头（长 scope / 重复表题）且无任何专用方向行 → location_only_skip。
     """
-    dir_row: int | None = None
-    direction_spans: list[DirectionSpan] = []
-    for ri in range(band_start + 1, band_end + 1):
-        line = next((ln for ln in lines if ln.startswith(f"r{ri}:")), "")
-        if not line:
+    header_row = _find_number_header_row(
+        cells, band_start, band_end, after_row=None
+    )
+    scan_hi = header_row if header_row is not None else band_end
+
+    nearest_dir_row: int | None = None
+    nearest_spans: list[DirectionSpan] = []
+    has_location_header = False
+
+    for ri in range(band_start, scan_hi + 1):
+        body = _row_body(lines, ri)
+        if not body:
             continue
-        spans = _parse_direction_spans_from_row(line.split(":", 1)[1], ri)
+        if _row_has_location_header(body):
+            has_location_header = True
+        spans = _parse_direction_spans_from_row(body, ri)
         if spans:
-            dir_row = ri
-            direction_spans = spans
-            break
+            nearest_dir_row = ri
+            nearest_spans = spans
 
-    if direction_spans:
-        header_row = _find_number_header_row(
-            cells, band_start, band_end, after_row=dir_row
+    if nearest_spans and nearest_dir_row is not None:
+        idx_header_row = _find_number_header_row(
+            cells, band_start, band_end, after_row=nearest_dir_row
         )
         groups: list[DirectionGroup] = []
-        for span in direction_spans:
+        for span in nearest_spans:
             groups.extend(
-                _groups_for_direction_span(span, cells=cells, header_row=header_row)
+                _groups_for_direction_span(
+                    span, cells=cells, header_row=idx_header_row
+                )
             )
         if groups:
-            data_start = (header_row + 1) if header_row is not None else (dir_row + 1)
-            return groups, data_start
+            data_start = (
+                (idx_header_row + 1) if idx_header_row is not None else nearest_dir_row + 1
+            )
+            return groups, data_start, DIRECTION_SOURCE_EXPLICIT
 
-    header_row = _find_number_header_row(
-        cells, band_start, band_end, after_row=band_start
-    )
     if header_row is not None:
         col_hi = _max_col_in_band(cells, band_start, band_end)
-        pairs = _idx_thk_pairs_in_span(cells, header_row, 0, col_hi)
-        if pairs:
+        idx_thk = _idx_thk_pairs_in_span(cells, header_row, 0, col_hi)
+        if idx_thk:
             groups = [
                 DirectionGroup("下", idx_col, thk_col, header_row)
-                for idx_col, thk_col in pairs
+                for idx_col, thk_col in idx_thk
             ]
-            return groups, header_row + 1
+            return groups, header_row + 1, DIRECTION_SOURCE_DEFAULT_DOWN
+
+    if has_location_header:
+        return [], band_start + 1, DIRECTION_SOURCE_LOCATION_SKIP
 
     return [
         DirectionGroup("上", 0, 1, band_start),
         DirectionGroup("下", 2, 3, band_start),
-    ], band_start + 1
+    ], band_start + 1, DIRECTION_SOURCE_FALLBACK_4COL
 
 
 def parse_column_groups(lines: list[str]) -> list[DirectionGroup]:
@@ -327,7 +395,7 @@ def parse_column_groups(lines: list[str]) -> list[DirectionGroup]:
     bands = _row_bands(lines)
     out: list[DirectionGroup] = []
     for band_start, band_end in bands:
-        groups, _ = _build_direction_groups_for_band(lines, cells, band_start, band_end)
+        groups, _, _ = _build_direction_groups_for_band(lines, cells, band_start, band_end)
         out.extend(groups)
     if not out:
         out = [
@@ -447,7 +515,9 @@ def build_index_pairs(lines: list[str], cells: dict[tuple[int, int], dict[str, A
             if band_start < s.header_row < band_end and not _is_major_title(s):
                 minor.append(s)
 
-        groups, data_start = _build_direction_groups_for_band(lines, cells, band_start, band_end)
+        groups, data_start, direction_source = _build_direction_groups_for_band(
+            lines, cells, band_start, band_end
+        )
 
         for ri in range(data_start, band_end + 1):
             for g in groups:
@@ -470,6 +540,7 @@ def build_index_pairs(lines: list[str], cells: dict[tuple[int, int], dict[str, A
                         index_val=abs(idx_val),
                         thickness=thk_val,
                         defect_by_color=bool(thk_info.get("defect_by_color")),
+                        direction_source=direction_source,
                     )
                 )
     return pairs
@@ -490,7 +561,9 @@ def build_combo_cells(lines: list[str], cells: dict[tuple[int, int], dict[str, A
             if band_start < s.header_row < band_end and not _is_major_title(s):
                 minor.append(s)
 
-        groups, data_start = _build_direction_groups_for_band(lines, cells, band_start, band_end)
+        groups, data_start, _ = _build_direction_groups_for_band(
+            lines, cells, band_start, band_end
+        )
 
         for ri in range(data_start, band_end + 1):
             for g in groups:

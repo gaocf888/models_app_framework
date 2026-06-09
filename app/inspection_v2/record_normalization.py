@@ -1,5 +1,5 @@
 """
-检修记录确定性规范化（与 configs/prompts.yaml · inspection_extract_parse 对齐）。
+检修记录确定性规范化（与 configs/prompts_bak_new.yaml · inspection_extract_parse 对齐）。
 
 - 管号符号：仅从 evidence 文本识别「上/向上/上数…」「下/向下/下数…」；上侧补负号、下侧去负号（不用行号/检测位置推断）。
 - 设备语义：水冷壁/包墙/后竖井/冷灰斗 → 行号固定为 1；再热器/过热器/省煤器等 → 管号固定为 1。
@@ -153,6 +153,7 @@ def normalize_location_row_tube(
     tube_no: str,
     *,
     evidence: str = "",
+    prior_warnings: list[str] | None = None,
 ) -> tuple[str, str, str, list[str]]:
     warns: list[str] = []
     loc = _collapse_ws(location)
@@ -169,6 +170,9 @@ def normalize_location_row_tube(
 
     int_only = re.fullmatch(r"-?\d+", tube)
     if not int_only:
+        return loc, row, tube, warns
+
+    if any(str(w).startswith("direction_sign_guard:") for w in (prior_warnings or [])):
         return loc, row, tube, warns
 
     up = _has_up_context_in_evidence(evidence)
@@ -200,7 +204,11 @@ def apply_deterministic_rules_to_record(item: dict[str, Any]) -> dict[str, Any]:
     tube = str(out.get("管号") or out.get("tube_no") or "").strip()
     ev = str(out.get("evidence") or out.get("证据") or "").strip()
 
-    nloc, nrow, ntube, warns = normalize_location_row_tube(loc, row, tube, evidence=ev)
+    existing_warns = out.get("warnings")
+    prior_list = [str(x) for x in existing_warns] if isinstance(existing_warns, list) else []
+    nloc, nrow, ntube, warns = normalize_location_row_tube(
+        loc, row, tube, evidence=ev, prior_warnings=prior_list
+    )
     # 始终写入中英字段，避免仅有 row_no/location 时 API 仍返回未修正的「行号」
     out["检测位置"] = nloc
     out["location"] = nloc

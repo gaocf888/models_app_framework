@@ -30,7 +30,7 @@ def load_analysis_run_context(
     """
     加载报告运行上下文：章节来自 configs/analysis_agent_reports/{type}.{ver}.json
     或兜底 {type}.analysis_agent.json；数据计划优先 report 内 plan.items，
-    否则回退 analysis_agent_plan_{type}（prompts.yaml）。
+    否则回退 analysis_agent_plan_{type}（prompts_bak_new.yaml）。
     """
     ver = normalize_template_version(version)
     if analysis_type not in SUPPORTED_ANALYSIS_TYPES:
