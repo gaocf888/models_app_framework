@@ -214,9 +214,13 @@ def overheat_cause_narrative_instruction(boiler_name: str) -> str:
         "运行操作："
         "设备本体："
         "（以上四段写全炉/多测点共性诱因，须结合 q4/q5/q7 及机组级工况；"
+        "「设备本体」段须结合 q1/事实包中的规格材质分布，说明各材质在本次超温工况下的设备侧敏感性，"
+        "须挂钩具体区域或材质牌号，可引用 RAG 机理，无材质写「规格材质待补充」，禁止空泛罗列；"
         "可概括性提及吹灰/磨煤机整体情况，但禁止按区域逐条展开，禁止在此四段写「综上」内容）。"
         "最后单独以「综上：」起头，严格按用户消息中【按区域事实包】逐区输出专属诱因分析；"
-        "每个区域块必须以事实包中的区域名起头，仅允许引用该块「本区测点」与「本区吹灰」；"
+        "每个区域块必须以事实包中的区域名起头，须先写「本区规格材质：…」（来自事实包），"
+        "再写本区测点极值/等级/时长与诱因；"
+        "每个区域块仅允许引用该块「本区测点」「本区规格材质」与「本区吹灰」；"
         "禁止在 A 区域块出现 B 区域名称、B 区域测点或 B 区域吹灰次数；"
         "禁止「A 区域积灰间接导致 B 区域超温」等跨区因果（除非开头概括句已简述）。"
         "本区无吹灰记录时禁止写吹灰频次诱因；无数据写待补充。"
@@ -327,6 +331,22 @@ def _format_region_point(row: dict) -> str:
     return "、".join(parts)
 
 
+def _format_region_materials(rows: list[dict]) -> str:
+    """从 q1 行提取本区规格材质（去重）。"""
+    seen: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        mat = str(row.get("规格材质") or "").strip()
+        if mat and mat not in seen:
+            seen.append(mat)
+    if not seen:
+        return "待补充"
+    if len(seen) == 1:
+        return seen[0]
+    return f"{'、'.join(seen)}（本区存在多种材质，分析须分别说明）"
+
+
 def _format_q6_summary(row: dict | None) -> str:
     if not row:
         return "无对应吹灰汇总记录→综上块禁止写该区域吹灰频次诱因"
@@ -357,7 +377,7 @@ def build_overheat_region_fact_packages(
         return (
             "【按区域事实包·综上块仅可引用下列分区数据】\n"
             "（无 q1 测点明细，综上须写待补充）\n"
-            "【跨区域禁令】综上每个区域块仅允许引用该区域「本区测点」与「本区吹灰」；"
+            "【跨区域禁令】综上每个区域块仅允许引用该区域「本区测点」「本区规格材质」与「本区吹灰」；"
             "禁止在 A 区域块出现 B 区域名称、测点或吹灰数据。"
         )
 
@@ -408,9 +428,10 @@ def build_overheat_region_fact_packages(
             stat_parts.append(f"本区最长连续超温{int(max_dur)}分")
         if stat_parts:
             lines.append(f"- 本区极值: {'；'.join(stat_parts)}")
+        lines.append(f"- 本区规格材质: {_format_region_materials(rows)}")
         lines.append(f"- 本区吹灰: {_format_q6_summary(q6_row)}")
     lines.append(
-        "【跨区域禁令】综上每个区域块仅允许引用该区域「本区测点」与「本区吹灰」；"
+        "【跨区域禁令】综上每个区域块仅允许引用该区域「本区测点」「本区规格材质」与「本区吹灰」；"
         "禁止在 A 区域块出现 B 区域名称、B 区域测点或 B 区域吹灰次数；"
         "本区测点展示格式为「测点名称（测点编号）」，正文引用须与此一致；"
         "禁止「A 区域问题间接导致 B 区域超温」类跨区因果（跨区关联仅可在开头概括句一句带过）。"

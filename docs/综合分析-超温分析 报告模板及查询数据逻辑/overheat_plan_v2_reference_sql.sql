@@ -59,7 +59,7 @@ WHERE t.start_time >= @t_start
   AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
 GROUP BY
   ab.boiler_name, asd.device_name, btd.over_hot_limit, t.limit_temp,
-  t.pi_code, btp.point_name
+  adp.model, t.pi_code, btp.point_name
 ORDER BY ab.boiler_name, 最大监测超温差值_℃ DESC;
 
 -- =============================================================================

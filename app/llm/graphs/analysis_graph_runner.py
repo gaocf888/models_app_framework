@@ -81,6 +81,10 @@ _PLAN_GUIDE_MAX_SNIPPETS = 4
 _ANALYSIS_RAG_CITATIONS_EXCLUDED_NAMESPACES = frozenset(
     {"nl2sql_schema", "nl2sql_biz_knowledge", "nl2sql_qa_examples"}
 )
+# 超温专项 business RAG query boost（方案 B：仅追加检索词，不改 namespace）
+_OVERHEAT_BUSINESS_RAG_BOOST = (
+    "规格材质 受热面材质 管材 钢号 超温 蠕变 氧化皮 金相劣化 耐温性能 爆管"
+)
 
 
 @dataclass
@@ -3135,13 +3139,31 @@ class AnalysisGraphRunner:
                 chunks.extend(ns_chunks[:3])
         return results[:9], sources[:9], chunks
 
+    @staticmethod
+    def _build_business_rag_recall_query(user_query: str, analysis_type: str) -> str:
+        """构造 business RAG 召回句；超温专项追加材质-超温领域词（方案 B）。"""
+        q = (user_query or "").strip()
+        base = f"{analysis_type} {q}".strip()
+        if analysis_type != "overheat_guidance":
+            return base
+        return f"{base} {_OVERHEAT_BUSINESS_RAG_BOOST}".strip()
+
+    @staticmethod
+    def _build_business_rag_rerank_query(user_query: str, analysis_type: str) -> str | None:
+        """超温专项 business RAG 重排句；其它专项不重排。"""
+        if analysis_type != "overheat_guidance":
+            return None
+        uq = (user_query or "").strip()
+        return f"锅炉管壁超温 规格材质 受热面 {uq}".strip()
+
     def _retrieve_business_rag(
         self, query: str, analysis_type: str
     ) -> tuple[list[str], list[dict[str, Any]], list[RetrievedChunk]]:
         """结论前业务 RAG：全库检索但排除 nl2sql_* 命名空间，scene=analysis。"""
         try:
             return self._retrieve_rag_with_sources(
-                query=f"{analysis_type} {query}",
+                query=self._build_business_rag_recall_query(query, analysis_type),
+                rerank_query=self._build_business_rag_rerank_query(query, analysis_type),
                 namespace=None,
                 top_k=8,
                 scene="analysis",

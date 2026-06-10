@@ -281,6 +281,7 @@ class TestOverheatRenderers(unittest.TestCase):
             {
                 "区域名称": "低温再热器 限569℃",
                 "受热面名称": "低温再热器",
+                "规格材质": "12Cr1MoVG",
                 "测点编号": "R1",
                 "测点名称": "再热器测点1",
                 "最大超温值_℃": 600,
@@ -290,6 +291,7 @@ class TestOverheatRenderers(unittest.TestCase):
             {
                 "区域名称": "水冷壁螺旋段后墙 限540℃",
                 "受热面名称": "水冷壁螺旋段后墙",
+                "规格材质": "20G",
                 "测点编号": "W1",
                 "测点名称": "螺旋段测点1",
                 "最大超温值_℃": 555,
@@ -311,9 +313,11 @@ class TestOverheatRenderers(unittest.TestCase):
         self.assertIn("再热器测点1（R1）", pkg)
         self.assertNotIn("R1(再热器测点1)", pkg)
         self.assertIn("本区吹灰: 吹灰8次", pkg)
+        self.assertIn("本区规格材质: 12Cr1MoVG", pkg)
         self.assertIn("区域2：水冷壁螺旋段后墙", pkg)
         self.assertIn("螺旋段测点1（W1）", pkg)
         self.assertIn("本区吹灰: 吹灰2次", pkg)
+        self.assertIn("本区规格材质: 20G", pkg)
         self.assertIn("跨区域禁令", pkg)
         reheater_block = pkg.split("区域2：")[0]
         self.assertNotIn("水冷壁螺旋段", reheater_block.split("区域1：", 1)[1])

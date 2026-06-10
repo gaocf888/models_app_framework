@@ -39,3 +39,23 @@ def test_build_analysis_rag_citations_excludes_nl2sql_db_namespaces() -> None:
         business_chunks=[qa],
     )
     assert cites == []
+
+
+def test_build_business_rag_recall_query_overheat_boost() -> None:
+    q = AnalysisGraphRunner._build_business_rag_recall_query("昨日超温情况", "overheat_guidance")
+    assert q.startswith("overheat_guidance 昨日超温情况")
+    assert "规格材质" in q
+    assert "蠕变" in q
+
+
+def test_build_business_rag_recall_query_other_type_unchanged() -> None:
+    q = AnalysisGraphRunner._build_business_rag_recall_query("检修策略", "maintenance_strategy")
+    assert q == "maintenance_strategy 检修策略"
+    assert "规格材质" not in q
+
+
+def test_build_business_rag_rerank_query_overheat_only() -> None:
+    assert AnalysisGraphRunner._build_business_rag_rerank_query("昨日超温", "overheat_guidance") == (
+        "锅炉管壁超温 规格材质 受热面 昨日超温"
+    )
+    assert AnalysisGraphRunner._build_business_rag_rerank_query("检修", "maintenance_strategy") is None
