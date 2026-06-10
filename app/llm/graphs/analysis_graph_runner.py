@@ -479,10 +479,19 @@ class AnalysisGraphRunner:
             default_text="你是一名综合分析规划助手。",
         )
         ctx = "；".join(plan_context[:6]) if plan_context else "无"
-        schema = (
-            '{"goals":["string"],"key_entities":["string"],"time_scope_hint":"string",'
-            '"output_focus":["string"],"data_domains":["string"]}'
-        )
+        if req.analysis_type == "maintenance_strategy":
+            schema = (
+                '{"response_mode":"FULL|SCOPED|WINDOW|FEASIBILITY|RUN_ADVICE",'
+                '"goals":["string"],"key_entities":["string"],"time_scope_hint":"string",'
+                '"scope_devices":["string"],"target_window":"string",'
+                '"focus_entities":["string"],"output_focus":["string"],'
+                '"resource_hints":["string"],"data_domains":["string"]}'
+            )
+        else:
+            schema = (
+                '{"goals":["string"],"key_entities":["string"],"time_scope_hint":"string",'
+                '"output_focus":["string"],"data_domains":["string"]}'
+            )
         prompt = (
             f"{intent_prompt}\n\n"
             "你必须只输出一个 JSON 对象，不要输出 Markdown 围栏外的解释文字。JSON 必须符合下列字段结构：\n"

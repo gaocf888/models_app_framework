@@ -31,6 +31,7 @@ SELECT
     IFNULL(asd.device_name, '未知区域'),
     ' 限', IFNULL(btd.over_hot_limit, t.limit_temp), '℃'
   ) AS 区域名称,
+  adp.model AS 规格材质,
   t.pi_code AS 测点编号,
   IFNULL(btp.point_name, t.pi_code) AS 测点名称,
   MAX(t.highest_temp) AS 最大超温值_℃,
@@ -51,6 +52,7 @@ INNER JOIN account_boiler ab ON t.boiler_id = ab.boiler_id
 LEFT JOIN account_static_device asd ON t.device_id = asd.device_id
 LEFT JOIN base_temp_device btd ON t.device_id = btd.device_id
 LEFT JOIN base_temp_point btp ON t.pi_code = btp.point_code
+LEFT JOIN account_device_piperow adp ON t.device_id = adp.device_id
 WHERE t.start_time >= @t_start
   AND t.start_time < @t_end
   AND t.highest_temp > t.limit_temp

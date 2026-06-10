@@ -1,4 +1,4 @@
--- 检修策略数据计划参考 SQL（analysis_plan_maintenance_strategy · q0～q5）
+-- 检修策略数据计划参考 SQL（analysis_plan_maintenance_strategy · q0～q6）
 -- 对照：configs/prompts.yaml → analysis_plan_maintenance_strategy / analysis_synthesis_maintenance_strategy
 -- 需求对齐：高温过热器寿命<6月→1级(根)；水冷壁轻微磨损→2级(处)；省煤器低风险→3级(根)
 -- TiDB/MySQL 8；表名以部署 ANALYSIS_NL2SQL_TABLE_SCOPE / catalog 为准
@@ -402,3 +402,28 @@ FROM (
 ) ev
 GROUP BY ev.统计月份, ev.锅炉名称, ev.所属区域
 ORDER BY ev.统计月份 DESC, 总事件数 DESC;
+
+-- =============================================================================
+-- q6 检修策划窗口汇总（overhaul_boiler + overhaul_new_checklocation）
+-- WINDOW 模式必用；大修/小修窗口匹配、方案排程
+-- =============================================================================
+SELECT
+  ab.boiler_name AS 锅炉名称,
+  ob.overhaul_name AS 检修名称,
+  ob.overhaul_level AS 检修等级,
+  ob.begin_date AS 计划开始日期,
+  ob.end_date AS 计划结束日期,
+  ob.overhaul_year AS 检修年份,
+  ob.status AS 检修状态,
+  asd.device_name AS 策划受热面,
+  cl.name AS 检测位置名称,
+  cl.row_count AS 策划排数,
+  cl.wall_thickness AS 原始壁厚,
+  cl.wall_thickness_limit AS 壁厚限值
+FROM overhaul_boiler ob
+INNER JOIN account_boiler ab ON ob.boiler_id = ab.boiler_id
+LEFT JOIN overhaul_new_checklocation cl ON cl.boiler_id = ob.boiler_id
+LEFT JOIN account_static_device asd ON cl.device_id = asd.device_id
+WHERE (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
+ORDER BY ob.begin_date DESC, ab.boiler_name, asd.device_name, cl.name
+LIMIT 500;

@@ -27,8 +27,27 @@ class AnalysisIntentLLMOutput(BaseModel):
     time_scope_hint: str = Field("", max_length=500)
     output_focus: list[str] = Field(default_factory=list, max_length=12)
     data_domains: list[str] = Field(default_factory=list, max_length=16)
+    # 检修策略专项（maintenance_strategy intent 模板输出；其它 analysis_type 可留空）
+    response_mode: str = Field(
+        "",
+        max_length=32,
+        description="FULL|SCOPED|WINDOW|FEASIBILITY|RUN_ADVICE",
+    )
+    scope_devices: list[str] = Field(default_factory=list, max_length=16)
+    target_window: str = Field("", max_length=300)
+    focus_entities: list[str] = Field(default_factory=list, max_length=16)
+    resource_hints: list[str] = Field(default_factory=list, max_length=12)
 
-    @field_validator("goals", "key_entities", "output_focus", "data_domains", mode="before")
+    @field_validator(
+        "goals",
+        "key_entities",
+        "output_focus",
+        "data_domains",
+        "scope_devices",
+        "focus_entities",
+        "resource_hints",
+        mode="before",
+    )
     @classmethod
     def _coerce_str_list(cls, v: Any) -> list[str]:
         if v is None:
@@ -38,6 +57,13 @@ class AnalysisIntentLLMOutput(BaseModel):
         if isinstance(v, list):
             return [str(x).strip() for x in v if str(x).strip()]
         return []
+
+    @field_validator("response_mode", mode="before")
+    @classmethod
+    def _norm_response_mode(cls, v: Any) -> str:
+        s = str(v or "").strip().upper()
+        allowed = {"FULL", "SCOPED", "WINDOW", "FEASIBILITY", "RUN_ADVICE"}
+        return s if s in allowed else ""
 
 
 class AnalysisPlanTaskLLMItem(BaseModel):
