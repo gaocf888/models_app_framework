@@ -132,6 +132,8 @@ def _sanitize_report_narrative(text: str) -> str:
     out = re.sub(r"(?m)^\s*超温风险评估\s*$", "", out)
     out = re.sub(r"(?m)^\s*#+\s*紧急处置\s*$", "", out)
     out = re.sub(r"(?m)^\s*紧急处置\s*$", "", out)
+    out = re.sub(r"(?m)^\s*#+\s*紧急处置措施\s*$", "", out)
+    out = re.sub(r"(?m)^\s*紧急处置措施\s*$", "", out)
     out = re.sub(r"(?m)^\s*#+\s*运行优化调整\s*$", "", out)
     out = re.sub(r"(?m)^\s*运行优化调整\s*$", "", out)
     out = re.sub(r"(?m)^\s*#+\s*后续检修预防措施\s*$", "", out)
