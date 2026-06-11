@@ -219,12 +219,31 @@ def test_rewrite_entity_scope_boiler_from_question() -> None:
         ("请分析2号机组昨天的超温", "2号锅炉"),
         ("请分析2#机组昨天的超温", "2号锅炉"),
         ("请分析#2机组昨天的超温", "2号锅炉"),
-        ("请分析二号机组昨天的超温", "二号锅炉"),
+        ("请分析二号机组昨天的超温", "2号锅炉"),
+        ("请分析一号锅炉昨天的超温", "1号锅炉"),
+        ("请分析一号机组昨天的超温", "1号锅炉"),
     ],
 )
 def test_extract_boiler_scope_label_unit_aliases_to_boiler(question: str, expected: str) -> None:
     chain = _build_chain_for_unit()
     assert chain._extract_boiler_scope_label_from_question(question) == expected
+
+
+def test_rewrite_entity_scope_cn_boiler_index_to_arabic() -> None:
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "INNER JOIN account_boiler ab ON t.boiler_id = ab.boiler_id "
+        "WHERE ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%')"
+    )
+    rewritten, notes = chain._rewrite_query_filters(
+        sql,
+        question="请分析一号锅炉昨天的超温情况",
+        time_intent_source="请分析一号锅炉昨天的超温情况",
+    )
+    assert "'1号锅炉'" in rewritten
+    assert "一号锅炉" not in rewritten
+    assert "unit_keyword_placeholder_single" in notes
 
 
 def test_rewrite_entity_scope_unit_alias_rewrites_boiler_sql(question: str = "请分析2号机组昨天的超温") -> None:

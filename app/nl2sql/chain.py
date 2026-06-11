@@ -1716,17 +1716,61 @@ class NL2SQLChain:
         return strip_plan_context_guide_suffix(question)
 
     @staticmethod
-    def _extract_boiler_scope_label_from_question(question: str) -> str | None:
+    def _cn_unit_index_to_int(raw: str) -> int | None:
+        """机组/锅炉序号：阿拉伯或常见中文数字 → int（如 一→1、十二→12）。"""
+        s = (raw or "").strip()
+        if not s:
+            return None
+        if s.isdigit():
+            return int(s)
+        digit_map = {
+            "零": 0,
+            "一": 1,
+            "二": 2,
+            "两": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+        }
+        if s in digit_map:
+            return digit_map[s]
+        if s == "十":
+            return 10
+        if "十" in s:
+            left, _, right = s.partition("十")
+            lv = digit_map.get(left, 1 if left == "" else -1)
+            rv = digit_map.get(right, 0 if right == "" else -1)
+            if lv >= 0 and rv >= 0:
+                return lv * 10 + rv
+        return None
+
+    @classmethod
+    def _boiler_scope_label_from_index(cls, raw: str) -> str | None:
+        """序号归一化为 account_boiler.boiler_name 常用片段「阿拉伯数字+号锅炉」。"""
+        s = (raw or "").strip()
+        if not s:
+            return None
+        n = cls._cn_unit_index_to_int(s)
+        if n is not None and n > 0:
+            return f"{n}号锅炉"
+        return f"{s}号锅炉"
+
+    @classmethod
+    def _extract_boiler_scope_label_from_question(cls, question: str) -> str | None:
         """
         从问句解析锅炉范围（与 account_boiler.boiler_name 一致，统一为「N号锅炉」）。
-        用户若写「N号机组」「N#机组」「#N机组」等，均归一为「N号锅炉」。
+        用户若写「N号机组」「N#机组」「#N机组」「一号锅炉」等，均归一为「1号锅炉」形式。
         """
         q = (question or "").strip()
         if not q:
             return None
-        m_boiler = re.search(r"(\d+号锅炉|[一二两三四五六七八九十百]+号锅炉)", q)
+        m_boiler = re.search(r"(\d+|[一二两三四五六七八九十百]+)号锅炉", q)
         if m_boiler:
-            return m_boiler.group(1)
+            return cls._boiler_scope_label_from_index(m_boiler.group(1))
         unit_as_boiler_patterns = (
             r"(\d+)号机组",
             r"([一二两三四五六七八九十百]+)号机组",
@@ -1736,7 +1780,7 @@ class NL2SQLChain:
         for pat in unit_as_boiler_patterns:
             m = re.search(pat, q)
             if m:
-                return f"{m.group(1)}号锅炉"
+                return cls._boiler_scope_label_from_index(m.group(1))
         return None
 
     # 显式全厂/全机组意图（须在单机组解析之后判定，避免「1号锅炉」误触）
