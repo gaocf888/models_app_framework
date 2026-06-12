@@ -225,21 +225,22 @@ def _has_data(q: str) -> bool:
     return _STRONG_DATA_RE.search(qn) is not None
 
 
-def classify_chatbot_intent(
+def apply_intent_hard_gates(
     query: str,
     *,
     enable_nl2sql_route: bool,
     image_urls: List[str],
-    history_messages: List[Dict[str, Any]] | None = None,
-) -> IntentRuleResult:
+    history_summary: str,
+    prev_task_type: str,
+) -> IntentRuleResult | None:
     """
-    intent_label ∈ {clarify, data_query, kb_qa}
+    意图硬规则闸：BERT 与规则后端共用，保证多模态/空句/短句续问等行为一致。
 
-    history_messages：最近若干轮会话（与 load_history 同源）；用于短句/指代消解与路由，
-    不改变「查库 vs 文档」的主启发式，仅在边界场景结合摘要与前一轮任务类型。
+    返回非 None 时表示应直接采用该结果，不再走 BERT 或规则主启发式。
     """
     q = (query or "").strip()
-    h_sum, prev_task = build_intent_context_from_history(history_messages)
+    h_sum = history_summary
+    prev_task = prev_task_type
 
     def _out(label: str, reason: str, conf: float) -> IntentRuleResult:
         return IntentRuleResult(label, reason, conf, h_sum, prev_task)
@@ -247,11 +248,9 @@ def classify_chatbot_intent(
     if not q:
         return _out("clarify", "empty_query", 0.99)
 
-    # 多模态优先：避免「这个呢」等短句在命中长度阈值前先被判为 clarify，且与 NL2SQL 分流解耦
     if image_urls:
         return _out("kb_qa", f"has_images_default_kb_qa|ctx_task={prev_task}", 0.88)
 
-    # 极短纯文本（≤2 字）：若历史表明仍在同一客服问答线程，则延续 kb_qa（避免「呢/继续」误触 clarify）
     if len(q) <= 2:
         if (
             len(q) >= 2
@@ -271,6 +270,38 @@ def classify_chatbot_intent(
     if not enable_nl2sql_route:
         return _out("kb_qa", "nl2sql_route_disabled", 0.85)
 
+    return None
+
+
+def classify_chatbot_intent_by_rules(
+    query: str,
+    *,
+    enable_nl2sql_route: bool,
+    image_urls: List[str],
+    history_messages: List[Dict[str, Any]] | None = None,
+) -> IntentRuleResult:
+    """
+    intent_label ∈ {clarify, data_query, kb_qa}
+
+    history_messages：最近若干轮会话（与 load_history 同源）；用于短句/指代消解与路由，
+    不改变「查库 vs 文档」的主启发式，仅在边界场景结合摘要与前一轮任务类型。
+    """
+    q = (query or "").strip()
+    h_sum, prev_task = build_intent_context_from_history(history_messages)
+
+    def _out(label: str, reason: str, conf: float) -> IntentRuleResult:
+        return IntentRuleResult(label, reason, conf, h_sum, prev_task)
+
+    gated = apply_intent_hard_gates(
+        q,
+        enable_nl2sql_route=enable_nl2sql_route,
+        image_urls=image_urls,
+        history_summary=h_sum,
+        prev_task_type=prev_task,
+    )
+    if gated is not None:
+        return gated
+
     conceptual = _has_conceptual(q)
     data = _has_data(q)
 
@@ -285,3 +316,7 @@ def classify_chatbot_intent(
         return _out("data_query", "mixed_prefers_structured", 0.7)
 
     return _out("kb_qa", "default_kb_qa", 0.82)
+
+
+# 兼容历史 import；新代码请使用 chatbot_intent.classify_chatbot_intent
+classify_chatbot_intent = classify_chatbot_intent_by_rules

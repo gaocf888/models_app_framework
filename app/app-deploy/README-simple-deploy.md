@@ -87,6 +87,7 @@ CONV_MAX_HISTORY_MESSAGES=50
 ```env
 CHATBOT_GRAPH_ENABLED=true
 CHATBOT_INTENT_ENABLED=true
+CHATBOT_INTENT_BACKEND=rules
 CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query
 CHATBOT_NL2SQL_ROUTE_ENABLED=true
 CHATBOT_PROMPT_DEFAULT_VERSION=boiler_v1
@@ -173,10 +174,11 @@ MINERU_DOCKER_NETWORK=mineru-stack   # 启用 MinerU 时必须存在
 GRAPH_DOCKER_NETWORK=graph-stack     # 启用 GraphRAG 时
 EMBEDDING_MODELS_HOST_PATH=/aidata/models/embeddings
 RERANKER_MODELS_HOST_PATH=/aidata/models/reranker
+INTENT_MODELS_HOST_PATH=/aidata/models/intent   # 仅 CHATBOT_INTENT_BACKEND=bert 时需要
 ```
 
 - 网络名需与对应子项目的 `.env` / compose 一致（可用 `docker network ls` 核对）。  
-- 两个模型路径变量分别作为嵌入/重排模型根目录，compose 会自动拼接子目录 `bge-small-zh-v1.5` 与 `bge-reranker-large`。
+- 模型路径变量作为宿主机根目录，compose 会自动拼接子目录：`bge-small-zh-v1.5`（嵌入）、`bge-reranker-large`（重排）、`chatbot-intent-bert`（BERT 意图，可选）。
 
 ### 2.7 MinerU（可选，扫描件 PDF 建议开启）
 
@@ -218,14 +220,16 @@ LOG_FILE_COMPRESS=true
 - compose 将 `/workspace/logs` bind 到 **app-deploy/logs**（`docker-compose.yml` 为 `./logs`，`docker-mx/docker-compose-mx.yml` 为 `../logs`，宿主机目录一致），容器重建后日志仍保留在宿主机。
 
 ### 2.9 模型离线使用
-> 整个项目中包括 嵌入模型、重排序模型、mineru模型
+> 整个项目中包括 嵌入模型、重排序模型、智能客服 BERT 意图模型（可选）、mineru模型
 > 嵌入模型：RAG知识文档切块后转向量(本地离线路径下/aidata/models/embeddings/中存在离线模型文件时，自动走离线，否则自动走在线下载)
 > 重排序模型：RAG混合检索多路召回后，进行重排序(默认走在线下载，若走离线：首先需要修改.env中的RAG_RERANKER_MODEL_PATH（放开注释），然后离线下载模型到宿主机/aidata/models/reranker/路径中，注意：如果配置离线了，离线路径中没有有效模型文件，会报错，不会自动切换在线下载)
+> BERT 意图模型：智能客服 `intent_classify` 节点（仅 `CHATBOT_INTENT_BACKEND=bert` 时需要；默认 `rules` 无需下载）。**必须使用已完成 `kb_qa`/`data_query`/`clarify` 微调并导出的 HF 序列分类模型**；**不能**直接使用魔塔社区下载的通用预训练 BERT（如 `bert-base-chinese`）。模型放到宿主机 `/aidata/models/intent/chatbot-intent-bert/` 并配置 `CHATBOT_INTENT_BERT_MODEL_PATH`；加载失败且 `CHATBOT_INTENT_BERT_FALLBACK_TO_RULES=true` 时回退规则层。不想训练请保持 `CHATBOT_INTENT_BACKEND=rules`。
 > 若部署在多卡环境且重排耗时高，建议新增 `.env`：`RAG_RERANKER_DEVICE=cuda:1`（与 vLLM 分卡）。
 > mineru模型：使用mineru进行扫描图片格式PDF文件解析
 
 若部署环境**无法访问 Hugging Face Hub**，或希望避免在线下载，推荐将嵌入模型和重排序模型预先下载到宿主机统一离线路径，并通过挂载暴露给应用：
-> 嵌入模型和重排序模型离线下载方法：魔塔社区中搜索模型名称，然后使用git lfs下载到下述路径中
+> 嵌入模型和重排序模型离线下载方法：魔塔社区中搜索模型名称，然后使用 git lfs 下载到下述路径中。  
+> **例外**：BERT 意图模型**不适用**「直接魔塔下载通用预训练 BERT」的方式，须使用已微调三分类模型（见下文说明）。
 
 1. **在项目根目录准备离线模型目录**
 
@@ -244,7 +248,26 @@ LOG_FILE_COMPRESS=true
      reranker/
        bge-reranker-large/  # BAAI/bge-reranker-large 的完整模型文件
    ```
-   
+
+   下面是智能客服 BERT 意图模型路径（仅 `CHATBOT_INTENT_BACKEND=bert` 时需要；默认 `rules` 可跳过）
+   ```text
+   /aidata/models/
+     intent/
+       chatbot-intent-bert/  # 微调后的 HF 序列分类模型（非通用预训练 BERT）
+         config.json         # 含 id2label：kb_qa / data_query / clarify
+         pytorch_model.bin   # 或 model.safetensors
+         tokenizer.json
+         vocab.txt           # 以及 tokenizer 相关文件
+   ```
+   **模型要求（必读）**：
+   - **可以上线**：自训或第三方交付的、标签为 `kb_qa` / `data_query` / `clarify` 的 HF 序列分类导出目录；
+   - **不可直接上线**：魔塔 / HuggingFace 的通用预训练 BERT（`bert-base-chinese`、`hfl/chinese-bert-wwm` 等）— 无业务分类头，挂载后输出无意义；
+   - **不想训练**：保持 `CHATBOT_INTENT_BACKEND=rules`，无需准备本目录。
+
+   准备方式：
+   - 在训练环境以 `bert-base-chinese` 等为**基座**完成三分类微调 → 导出完整 HF 目录 → 拷贝到 `chatbot-intent-bert/`；
+   - 详细说明见 `docs/智能客服意图识别BERT接入说明.md`。
+
    下面是mineru模型下载路径
    ```text
    /aidata/mineru/models
@@ -277,6 +300,7 @@ LOG_FILE_COMPRESS=true
        volumes:
          - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
          - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+         - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
        environment:
          - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
 
@@ -285,11 +309,12 @@ LOG_FILE_COMPRESS=true
        volumes:
          - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
          - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+         - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
        environment:
          - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
    ```
 
-3. **在 `.env` 中指定嵌入/重排模型运行参数**
+3. **在 `.env` 中指定嵌入/重排/BERT 意图模型运行参数**
 
    在 `app/app-deploy/.env` 中确认或新增：
 
@@ -298,9 +323,19 @@ LOG_FILE_COMPRESS=true
    RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
    # 可选：显式指定重排设备（cpu / cuda / cuda:1）
    # RAG_RERANKER_DEVICE=cuda:1
+
+   # 宿主机意图模型根目录（compose 挂载用）
+   INTENT_MODELS_HOST_PATH=/aidata/models/intent
+   # 智能客服意图：默认 rules；启用 BERT 时改为 bert
+   CHATBOT_INTENT_BACKEND=rules
+   # CHATBOT_INTENT_BACKEND=bert
+   # CHATBOT_INTENT_BERT_MODEL_PATH=/workspace/models/intent/chatbot-intent-bert
+   # CHATBOT_INTENT_BERT_DEVICE=cpu
+   # CHATBOT_INTENT_BERT_FALLBACK_TO_RULES=true
    ```
 
-   应用启动后，`EmbeddingService` 会**直接从该本地路径加载模型**，不再尝试访问 Hugging Face；`RAGService` 会按 `RAG_RERANKER_DEVICE`（若配置）在指定设备执行重排。
+   应用启动后，`EmbeddingService` 会**直接从该本地路径加载模型**，不再尝试访问 Hugging Face；`RAGService` 会按 `RAG_RERANKER_DEVICE`（若配置）在指定设备执行重排。  
+   启用 BERT 意图时，`ChatbotIntentBertClassifier` 从 `CHATBOT_INTENT_BERT_MODEL_PATH` 加载**已微调**序列分类模型（非通用预训练 BERT）。
 
 4. **启动/重启应用栈**
 
@@ -309,11 +344,11 @@ LOG_FILE_COMPRESS=true
    docker compose up -d --build
    ```
 
-如果未来更换嵌入模型或重排序模型，只需：
+如果未来更换嵌入模型、重排序模型或 BERT 意图模型，只需：
 
-- 在宿主机 `${EMBEDDING_MODELS_HOST_PATH}` / `${RERANKER_MODELS_HOST_PATH}` 下新增对应子目录并放入新模型文件；  
+- 在宿主机 `${EMBEDDING_MODELS_HOST_PATH}` / `${RERANKER_MODELS_HOST_PATH}` / `${INTENT_MODELS_HOST_PATH}` 下新增对应子目录并放入新模型文件；  
 - 必要时调整 `docker-compose.yml` 对应挂载路径；  
-- 将 `.env` 中的 `EMBEDDING_MODEL_PATH` / `RAG_RERANKER_MODEL_PATH` 改为新的容器内路径。
+- 将 `.env` 中的 `EMBEDDING_MODEL_PATH` / `RAG_RERANKER_MODEL_PATH` / `CHATBOT_INTENT_BERT_MODEL_PATH` 改为新的容器内路径。
 
 ---
 

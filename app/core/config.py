@@ -396,7 +396,15 @@ class ChatbotConfig:
 
     graph_enabled: bool = True
     intent_enabled: bool = True
+    # 意图分类后端：rules（规则启发式，默认）| bert（微调 BERT 序列分类）
+    intent_backend: str = "rules"
     intent_output_labels: list[str] = field(default_factory=lambda: ["kb_qa", "clarify", "data_query"])
+    # BERT 意图模型：优先本地路径，其次 HuggingFace 模型名；未配置且 backend=bert 时回退 rules
+    intent_bert_model_path: str | None = None
+    intent_bert_model_name: str | None = None
+    intent_bert_device: str = "cpu"
+    intent_bert_max_length: int = 256
+    intent_bert_fallback_to_rules: bool = True
     crag_enabled: bool = True
     fallback_legacy_on_error: bool = True
     persist_partial_on_disconnect: bool = True
@@ -1034,7 +1042,13 @@ def _load_from_env() -> AppConfig:
     chatbot_cfg = ChatbotConfig(
         graph_enabled=os.getenv("CHATBOT_GRAPH_ENABLED", "true").lower() == "true",
         intent_enabled=os.getenv("CHATBOT_INTENT_ENABLED", "true").lower() == "true",
+        intent_backend=(os.getenv("CHATBOT_INTENT_BACKEND", "rules") or "rules").strip().lower(),
         intent_output_labels=_split_csv_env("CHATBOT_INTENT_OUTPUT_LABELS", "kb_qa,clarify,data_query"),
+        intent_bert_model_path=(os.getenv("CHATBOT_INTENT_BERT_MODEL_PATH") or "").strip() or None,
+        intent_bert_model_name=(os.getenv("CHATBOT_INTENT_BERT_MODEL_NAME") or "").strip() or None,
+        intent_bert_device=(os.getenv("CHATBOT_INTENT_BERT_DEVICE", "cpu") or "cpu").strip(),
+        intent_bert_max_length=max(32, int(os.getenv("CHATBOT_INTENT_BERT_MAX_LENGTH", "256"))),
+        intent_bert_fallback_to_rules=os.getenv("CHATBOT_INTENT_BERT_FALLBACK_TO_RULES", "true").lower() == "true",
         crag_enabled=os.getenv("CHATBOT_CRAG_ENABLED", "true").lower() == "true",
         fallback_legacy_on_error=os.getenv("CHATBOT_FALLBACK_LEGACY_ON_ERROR", "true").lower() == "true",
         persist_partial_on_disconnect=os.getenv("CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT", "true").lower() == "true",

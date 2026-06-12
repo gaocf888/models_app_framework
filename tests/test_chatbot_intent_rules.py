@@ -2,13 +2,13 @@
 
 from app.llm.graphs.chatbot_intent_rules import (
     build_intent_context_from_history,
-    classify_chatbot_intent,
+    classify_chatbot_intent_by_rules,
 )
 from app.services.chatbot_image_utils import PROCESSED_IMAGE_BLOCK_MARKER
 
 
 def test_conceptual_prefers_kb():
-    r = classify_chatbot_intent(
+    r = classify_chatbot_intent_by_rules(
         "过热爆管的常见原因有哪些？",
         enable_nl2sql_route=True,
         image_urls=[],
@@ -18,7 +18,7 @@ def test_conceptual_prefers_kb():
 
 
 def test_data_query_ledger():
-    r = classify_chatbot_intent(
+    r = classify_chatbot_intent_by_rules(
         "查询台账里1号炉最近一次检修记录",
         enable_nl2sql_route=True,
         image_urls=[],
@@ -28,7 +28,7 @@ def test_data_query_ledger():
 
 
 def test_images_force_kb():
-    r = classify_chatbot_intent(
+    r = classify_chatbot_intent_by_rules(
         "统计缺陷数量",
         enable_nl2sql_route=True,
         image_urls=["http://example.com/x.jpg"],
@@ -38,7 +38,7 @@ def test_images_force_kb():
 
 
 def test_nl2sql_disabled():
-    r = classify_chatbot_intent(
+    r = classify_chatbot_intent_by_rules(
         "列出本月缺陷单",
         enable_nl2sql_route=False,
         image_urls=[],
@@ -56,7 +56,7 @@ def test_short_followup_continues_kb_with_multimodal_history():
         },
         {"role": "assistant", "content": "从图像特征看可能是疲劳裂纹，建议结合运行记录复核。"},
     ]
-    r = classify_chatbot_intent(
+    r = classify_chatbot_intent_by_rules(
         "你呢",
         enable_nl2sql_route=True,
         image_urls=[],
@@ -68,7 +68,7 @@ def test_short_followup_continues_kb_with_multimodal_history():
 
 
 def test_short_query_cold_start_still_clarify():
-    r = classify_chatbot_intent(
+    r = classify_chatbot_intent_by_rules(
         "呢呢",
         enable_nl2sql_route=True,
         image_urls=[],

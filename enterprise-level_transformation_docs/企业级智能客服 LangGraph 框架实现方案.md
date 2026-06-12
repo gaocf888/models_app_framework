@@ -141,7 +141,7 @@ flowchart TB
     RUN --> RG["_run_graph 或 ainvoke"]
     RG --> N1["N: load_prompt_template\nregistry+CHATBOT_PROMPT_DEFAULT_VERSION"]
     N1 --> N2["N: load_history\nConversationManager"]
-    N2 --> N3["N: intent_classify\nchatbot_intent_rules.classify_chatbot_intent"]
+    N2 --> N3["N: intent_classify\nchatbot_intent.classify_chatbot_intent\n(rules|bert)"]
     N3 --> FG["N: fault_case_gate\nchatbot_similar_cases.run_fault_case_gate_decision"]
     FG --> R1{"_route_by_intent"}
     R1 -->|clarify| NC["clarify_build_response"]
@@ -186,7 +186,9 @@ flowchart TB
 | 开关与回退 | `app/services/chatbot_service.py` | `stream_chat_events`、`_stream_chat_legacy_events` |
 | 图编译与节点 | `app/llm/graphs/chatbot_graph_runner.py` | `_build_graph`、`_node_*`、`_route_by_intent`、`_route_after_quality_check` |
 | 顺序回退（无 LangGraph） | 同上 | `_run_graph` 内手动合并节点 |
-| 意图规则 | `app/llm/graphs/chatbot_intent_rules.py` | `classify_chatbot_intent` |
+| 意图分类 | `app/llm/graphs/chatbot_intent.py` | `classify_chatbot_intent`（`CHATBOT_INTENT_BACKEND=rules\|bert`） |
+| 意图规则 | `app/llm/graphs/chatbot_intent_rules.py` | `classify_chatbot_intent_by_rules` |
+| 意图 BERT | `app/llm/graphs/chatbot_intent_bert.py` | `classify_chatbot_intent_by_bert`（须已微调序列分类模型） |
 | 状态字段 | `app/llm/graphs/chatbot_graph_state.py` | `ChatbotGraphState` |
 | 相似案例门控/检索 | `app/llm/graphs/chatbot_similar_cases.py` | `run_fault_case_gate_decision`、`retrieve_similar_case_snippets` |
 | NL2SQL 服务 | `app/services/nl2sql_service.py` | `query(..., record_conversation=)` |
@@ -230,7 +232,7 @@ flowchart TB
 
 1. `load_prompt_template`：`PromptTemplateRegistry`；未传 `prompt_version` 时用 `CHATBOT_PROMPT_DEFAULT_VERSION`（`chatbot_graph_runner._node_load_prompt_template`）。
 2. `load_history`：`ConversationManager` 只读（`enable_context`）。
-3. `intent_classify`：`chatbot_intent_rules.classify_chatbot_intent` → `kb_qa` / `clarify` / `data_query`（可关 `CHATBOT_INTENT_ENABLED`）。
+3. `intent_classify`：`chatbot_intent.classify_chatbot_intent` → `kb_qa` / `clarify` / `data_query`（`CHATBOT_INTENT_BACKEND=rules|bert`；**bert 须已微调三分类 HF 模型，不可用魔塔通用预训练 BERT**；可关 `CHATBOT_INTENT_ENABLED`）。
 4. `fault_case_gate`：`chatbot_similar_cases`；见 **第 14 节**。
 5. **条件路由** `_route_by_intent`（非独立节点）。
 6. `nl2sql_answer`：`NL2SQLService` + `summarize_nl2sql_with_llm`（`data_query`）。

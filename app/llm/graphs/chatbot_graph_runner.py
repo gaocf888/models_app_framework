@@ -18,7 +18,7 @@ from app.rag.rag_service import RAGService
 
 from .chatbot_follow_up import build_suggested_questions
 from .chatbot_graph_state import ChatbotGraphState
-from .chatbot_intent_rules import classify_chatbot_intent
+from .chatbot_intent import classify_chatbot_intent
 from .chatbot_nl2sql_answer import summarize_nl2sql_with_llm
 from .chatbot_rag_citations import chunks_to_rag_citations, filter_rag_citation_dicts
 from .chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
@@ -583,8 +583,9 @@ class ChatbotLangGraphRunner:
             label = "kb_qa"
             conf = min(conf, 0.6)
         logger.info(
-            "chatbot.intent decision label=%s reason=%s conf=%.3f enable_nl2sql=%s has_images=%s "
+            "chatbot.intent decision backend=%s label=%s reason=%s conf=%.3f enable_nl2sql=%s has_images=%s "
             "query_len=%s prev_task=%s ctx_chars=%s",
+            get_app_config().chatbot.intent_backend,
             label,
             reason,
             conf,
