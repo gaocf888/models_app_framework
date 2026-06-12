@@ -278,7 +278,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s10a_emergency_hdr",
             kind="static_markdown",
             title="",
-            static_body="### 紧急处置措施\n\n",
+            static_body="### 1.紧急处置措施\n\n",
         ),
         SynthesisV2Slot(
             id="s10a_emergency",
@@ -289,6 +289,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
                 "撰写「紧急处置措施」正文（禁止输出「紧急处置」或 「紧急处置措施」 标题行，标题已由系统输出。直接按条目输出处置措施）。"
                 "禁止输出 docx 示例措施全文。须基于本次超温区域与严重测点自行撰写，"
                 "可含：整体调控、差异化降温、紧急调整燃烧工况等要点（plain 叙述或短列表）。"
+                "具体 紧急处置措施 条目，按照第四级标题结构输出（只用 ####，禁止 ###）"
                 "对Ⅲ/Ⅳ级且已知规格材质的测点/区域，处置须考虑材质耐温极限（如加强监视、限制升负荷）；无材质不写具体钢号。"
                 "禁止置信度、依据、额外章节标题。"
                 "措施须对应 q1/q2 中具体区域、测点展示名（测点名称（测点编号））、等级与极值，"
@@ -300,7 +301,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s10b_optimize_hdr",
             kind="static_markdown",
             title="",
-            static_body="\n\n### 运行优化调整\n\n",
+            static_body="\n\n### 2.运行优化调整\n\n",
         ),
         SynthesisV2Slot(
             id="s10b_optimize",
@@ -322,7 +323,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s10c_maintenance_hdr",
             kind="static_markdown",
             title="",
-            static_body="\n\n### 后续检修预防措施\n\n",
+            static_body="\n\n### 3.后续检修预防措施\n\n",
         ),
         SynthesisV2Slot(
             id="s10c_maintenance",
@@ -345,7 +346,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             id="s10d_longterm_hdr",
             kind="static_markdown",
             title="",
-            static_body="\n\n### 计划长效防控方案\n\n",
+            static_body="\n\n### 4.计划长效防控方案\n\n",
         ),
         SynthesisV2Slot(
             id="s10d_longterm",
