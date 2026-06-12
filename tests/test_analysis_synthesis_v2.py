@@ -3,6 +3,7 @@
 import asyncio
 import json
 import unittest
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -107,6 +108,19 @@ class TestOverheatReportContext(unittest.TestCase):
         ctx = infer_overheat_report_context("请分析1号锅炉本周超温")
         self.assertEqual("weekly", ctx["analysis_mode"])
 
+    def test_infer_statistical_time_range_yesterday(self):
+        from app.nl2sql import time_intent_display
+
+        fixed_now = datetime(2026, 6, 2, 12, 0, 0)
+        with patch.object(time_intent_display, "datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+            mock_dt.combine = datetime.combine
+            ctx = infer_overheat_report_context("请分析1号锅炉昨天的超温情况")
+        self.assertEqual("2026-06-01 00:00:00", ctx["t_start"])
+        self.assertEqual("2026-06-01 23:59:59", ctx["t_end"])
+        self.assertEqual("yesterday", ctx["time_window_tag"])
+
 
 class TestSanitizeNarrative(unittest.TestCase):
     def test_strips_docx_instruction_lines(self):
@@ -151,7 +165,47 @@ class TestOverheatRenderers(unittest.TestCase):
         self.assertIn("禁止出现在报告正文", OVERHEAT_DOCX_AUTHORING_RULES)
         self.assertIn("以下内容为示例", OVERHEAT_DOCX_AUTHORING_RULES)
 
-    def test_daily_section_uses_q0_boiler_time_ranges(self):
+    def test_daily_section_prefers_statistical_time_over_q0(self):
+        rows = [
+            {
+                "机组名称": "1号锅炉",
+                "区域名称": "水冷壁 限540℃",
+                "测点编号": "P1",
+                "测点名称": "测点1",
+                "最大超温值_℃": 569,
+                "最小超温值_℃": 499,
+                "最大连续超温时长_分钟": 301,
+                "超温日期": "2026.05.02 10:00:01",
+                "异常等级": "Ⅰ级（轻微超温）",
+            }
+        ]
+        ctx = enrich_overheat_report_context_from_gathered(
+            {
+                "analysis_mode": "daily",
+                "t_start": "2026-05-01 00:00:00",
+                "t_end": "2026-05-01 23:59:59",
+            },
+            {
+                "q0": [{
+                    "机组名称": "1号锅炉",
+                    "最早超温开始时间": "2026-05-01 08:15:00",
+                    "最晚超温结束时间": "2026-05-01 22:40:00",
+                }],
+            },
+        )
+        md = render_overheat_daily_section(
+            rows,
+            report_context=ctx,
+            render_table=render_markdown_table,
+            max_rows=50,
+            empty_message="（无数据）",
+        )
+        self.assertIn("开始时间：2026-05-01 00:00:00", md)
+        self.assertIn("结束时间：2026-05-01 23:59:59", md)
+        self.assertNotIn("08:15:00", md)
+        self.assertNotIn("____年__月__日", md)
+
+    def test_daily_section_falls_back_to_q0_when_no_statistical_window(self):
         rows = [
             {
                 "机组名称": "1号锅炉",
@@ -184,7 +238,6 @@ class TestOverheatRenderers(unittest.TestCase):
         )
         self.assertIn("开始时间：2026-05-01 08:15:00", md)
         self.assertIn("结束时间：2026-05-01 22:40:00", md)
-        self.assertNotIn("____年__月__日", md)
 
     def test_daily_section_structure(self):
         rows = [

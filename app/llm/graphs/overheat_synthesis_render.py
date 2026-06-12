@@ -69,7 +69,12 @@ def overheat_data_source_label(item_id: str) -> str:
 
 
 def infer_overheat_report_context(query: str) -> dict[str, Any]:
-    """从用户问题推断按日/按周模式（默认 weekly）。"""
+    """从用户问题推断按日/按周模式（默认 weekly）及统计口径时间窗。"""
+    from app.nl2sql.time_intent_display import (
+        extract_time_window_tag,
+        resolve_statistical_time_range_display,
+    )
+
     q = (query or "").strip()
     mode = "weekly"
     if any(k in q for k in _DAILY_KW):
@@ -79,11 +84,18 @@ def infer_overheat_report_context(query: str) -> dict[str, Any]:
     unit_scope = "all" if re.search(r"(所有|全部|各|全厂).{0,6}(锅炉|机组)", q) else "single"
     if re.search(r"未指定.{0,4}机组", q):
         unit_scope = "all"
+    t_start, t_end = "", ""
+    time_window_tag = ""
+    stat_range = resolve_statistical_time_range_display(q)
+    if stat_range:
+        t_start, t_end = stat_range
+        time_window_tag = extract_time_window_tag(q) or ""
     return {
         "analysis_mode": mode,
         "unit_scope": unit_scope,
-        "t_start": "",
-        "t_end": "",
+        "t_start": t_start,
+        "t_end": t_end,
+        "time_window_tag": time_window_tag,
     }
 
 
@@ -132,15 +144,19 @@ def _fmt_time_range(ctx: dict[str, Any]) -> tuple[str, str]:
 
 
 def _fmt_boiler_time_range(ctx: dict[str, Any], boiler: str) -> tuple[str, str]:
-    """优先 q0 按机组包络；否则回落 report_context 全局或占位符。"""
+    """优先 report_context 统计口径时间窗；无则回落 q0 事件包络；再则占位符。"""
+    t0 = str(ctx.get("t_start") or "").strip()
+    t1 = str(ctx.get("t_end") or "").strip()
+    if t0 and t1:
+        return t0, t1
     ranges = ctx.get("boiler_time_ranges")
     if isinstance(ranges, dict) and boiler in ranges:
         entry = ranges[boiler]
         if isinstance(entry, dict):
-            t0 = str(entry.get("t_start") or entry.get("最早超温开始时间") or "").strip()
-            t1 = str(entry.get("t_end") or entry.get("最晚超温结束时间") or "").strip()
-            if t0 and t1:
-                return t0, t1
+            q0_start = str(entry.get("t_start") or entry.get("最早超温开始时间") or "").strip()
+            q0_end = str(entry.get("t_end") or entry.get("最晚超温结束时间") or "").strip()
+            if q0_start and q0_end:
+                return q0_start, q0_end
     return _fmt_time_range(ctx)
 
 

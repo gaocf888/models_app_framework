@@ -1295,125 +1295,14 @@ class NL2SQLChain:
 
     @staticmethod
     def _extract_numeric_window(q: str, unit_keys: tuple[str, ...]) -> int | None:
-        pat = re.compile(
-            rf"(?:近|最近|过去|recent|last|past)\s*([0-9]{{1,3}})\s*({'|'.join(unit_keys)})",
-            re.IGNORECASE,
-        )
-        m = pat.search(q)
-        if m:
-            return max(1, int(m.group(1)))
-        zh_pat = re.compile(rf"(?:近|最近|过去)\s*([一二两三四五六七八九十百]+)\s*({'|'.join(unit_keys)})")
-        m2 = zh_pat.search(q)
-        if not m2:
-            return None
-        zh = m2.group(1)
-        zh_map = {
-            "一": 1,
-            "二": 2,
-            "两": 2,
-            "三": 3,
-            "四": 4,
-            "五": 5,
-            "六": 6,
-            "七": 7,
-            "八": 8,
-            "九": 9,
-            "十": 10,
-        }
-        if zh == "十":
-            return 10
-        if zh.endswith("十") and len(zh) == 2:
-            return zh_map.get(zh[0], 1) * 10
-        if "十" in zh and len(zh) == 2:
-            return 10 + zh_map.get(zh[1], 0)
-        return zh_map.get(zh)
+        from app.nl2sql.time_intent_display import extract_numeric_window
+
+        return extract_numeric_window(q, unit_keys)
 
     def _extract_time_window_from_question(self, question: str) -> tuple[str, str, str] | None:
-        q = (question or "").strip().lower()
-        if not q:
-            return None
-        this_month_start = "DATE_FORMAT(CURDATE(), '%Y-%m-01')"
-        this_year_start = "DATE_FORMAT(CURDATE(), '%Y-01-01')"
-        this_week_start = "DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)"
-        # 长窗 / 日历周期优先于「今天」，避免 plan 问句同时含用户「今天」与子任务「近一年」时误用短窗。
-        if "近一年" in q or "最近一年" in q or "过去一年" in q:
-            return (
-                "DATE_SUB(CURDATE(), INTERVAL 1 YEAR)",
-                "DATE_ADD(CURDATE(), INTERVAL 1 DAY)",
-                "recent_1_year",
-            )
-        if "最近一周" in q or "近一周" in q:
-            return ("DATE_SUB(NOW(), INTERVAL 7 DAY)", "NOW()", "recent_7_days")
-        if "最近七天" in q or "近七天" in q:
-            return ("DATE_SUB(NOW(), INTERVAL 7 DAY)", "NOW()", "recent_7_days")
-        if "最近半年" in q or "近半年" in q:
-            return ("DATE_SUB(NOW(), INTERVAL 6 MONTH)", "NOW()", "recent_6_months")
+        from app.nl2sql.time_intent_display import extract_time_window_from_question
 
-        n_day = self._extract_numeric_window(q, ("天", "day", "days"))
-        if n_day:
-            return (f"DATE_SUB(NOW(), INTERVAL {n_day} DAY)", "NOW()", f"recent_{n_day}_days")
-        n_week = self._extract_numeric_window(q, ("周", "week", "weeks"))
-        if n_week:
-            return (f"DATE_SUB(NOW(), INTERVAL {n_week} WEEK)", "NOW()", f"recent_{n_week}_weeks")
-        n_month = self._extract_numeric_window(q, ("月", "month", "months"))
-        if n_month:
-            return (f"DATE_SUB(NOW(), INTERVAL {n_month} MONTH)", "NOW()", f"recent_{n_month}_months")
-        n_hour = self._extract_numeric_window(q, ("小时", "hour", "hours", "h"))
-        if n_hour:
-            return (f"DATE_SUB(NOW(), INTERVAL {n_hour} HOUR)", "NOW()", f"recent_{n_hour}_hours")
-        n_min = self._extract_numeric_window(q, ("分钟", "minute", "minutes", "min"))
-        if n_min:
-            return (f"DATE_SUB(NOW(), INTERVAL {n_min} MINUTE)", "NOW()", f"recent_{n_min}_minutes")
-
-        if "本周" in q or "这周" in q:
-            return (this_week_start, f"DATE_ADD({this_week_start}, INTERVAL 7 DAY)", "this_week")
-        if "上周" in q:
-            return (f"DATE_SUB({this_week_start}, INTERVAL 7 DAY)", this_week_start, "last_week")
-        if "本月" in q or "这个月" in q:
-            return (this_month_start, f"DATE_ADD({this_month_start}, INTERVAL 1 MONTH)", "this_month")
-        if "上月" in q or "上个月" in q:
-            return (
-                f"DATE_SUB({this_month_start}, INTERVAL 1 MONTH)",
-                this_month_start,
-                "last_month",
-            )
-        if "今年" in q or "本年" in q:
-            return (this_year_start, f"DATE_ADD({this_year_start}, INTERVAL 1 YEAR)", "this_year")
-        if "去年" in q:
-            return (
-                f"DATE_SUB({this_year_start}, INTERVAL 1 YEAR)",
-                this_year_start,
-                "last_year",
-            )
-        if "今天" in q or "今日" in q:
-            return ("CURDATE()", "DATE_ADD(CURDATE(), INTERVAL 1 DAY)", "today")
-        if "昨天" in q or "昨日" in q:
-            return ("DATE_SUB(CURDATE(), INTERVAL 1 DAY)", "CURDATE()", "yesterday")
-        if "前天" in q or "前日" in q:
-            return (
-                "DATE_SUB(CURDATE(), INTERVAL 2 DAY)",
-                "DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
-                "day_before_yesterday",
-            )
-
-        m_year = re.search(r"(20\d{2})年", q)
-        if m_year:
-            y = m_year.group(1)
-            return (f"'{y}-01-01 00:00:00'", f"'{int(y)+1}-01-01 00:00:00'", f"year_{y}")
-        m_ym = re.search(r"(20\d{2})年(0?[1-9]|1[0-2])月", q)
-        if not m_ym:
-            m_ym = re.search(r"(20\d{2})-(0?[1-9]|1[0-2])(?!-\d{2})", q)
-        if m_ym:
-            y = int(m_ym.group(1))
-            mon = int(m_ym.group(2))
-            next_y = y + 1 if mon == 12 else y
-            next_m = 1 if mon == 12 else mon + 1
-            return (
-                f"'{y:04d}-{mon:02d}-01 00:00:00'",
-                f"'{next_y:04d}-{next_m:02d}-01 00:00:00'",
-                f"month_{y:04d}_{mon:02d}",
-            )
-        return None
+        return extract_time_window_from_question(question)
 
     def _rewrite_dynamic_time_window(
         self,
