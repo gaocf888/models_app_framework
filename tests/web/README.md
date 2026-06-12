@@ -202,7 +202,7 @@ V0 单段异步任务 **`work_idx` 一般为 `1`**；`strict` 可不传，走 `I
 
 - 切换专项后可点「填入当前专项示例 query」快速联调  
 - **取数、质量门、RAG** 阶段仍阻塞在首包之前  
-- SSE：`meta` → 多条 `summary_delta` → `summary_complete` → `finished` → `structured_async_enqueued`  
+- SSE：`meta` → 多条 `summary_delta` → `summary_complete` → `structured_async_enqueued` → `finished`（尾帧）  
 - 完整 `AnalysisV2Result` 异步落日志与 trace；`GET /analysis/traces/{request_id}`  
 
 ### 5.4 相关页面

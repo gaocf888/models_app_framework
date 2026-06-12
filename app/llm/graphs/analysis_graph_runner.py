@@ -2241,7 +2241,7 @@ class AnalysisGraphRunner:
         - `meta`：取数完成后首条
         - `summary_delta`：Markdown 增量（v1 整篇 LLM token；v2 按槽位顺序，见 `iter_stream_events`）
         - `synthesis_loading` / `table_payload` / `chart_payload`：仅 v2 且配置开启
-        - `summary_complete` → `finished` → `structured_async_enqueued`：收尾三连
+        - `summary_complete` → `structured_async_enqueued` → `finished`：收尾三连（`finished` 为尾帧，与 AI 问答一致）
 
         结束后 `create_task(_nl2sql_stream_background_finalize)` 异步写完整 JSON + trace。
         """
@@ -2355,6 +2355,22 @@ class AnalysisGraphRunner:
                 "markdown": summary,
             }
 
+            asyncio.create_task(
+                self._nl2sql_stream_background_finalize(
+                    req,
+                    ctx,
+                    summary=summary,
+                    synthesis_version=(
+                        syn_outcome.synthesis_version if syn_outcome else synthesis_version
+                    ),
+                    report_version=report_version,
+                    synthesis_started=t_syn,
+                    on_complete=on_complete,
+                    syn_outcome=syn_outcome,
+                )
+            )
+            yield {"event": "structured_async_enqueued", "request_id": ctx.request_id}
+
             yield {
                 "event": "finished",
                 "meta": {
@@ -2371,22 +2387,6 @@ class AnalysisGraphRunner:
                     ),
                 },
             }
-
-            asyncio.create_task(
-                self._nl2sql_stream_background_finalize(
-                    req,
-                    ctx,
-                    summary=summary,
-                    synthesis_version=(
-                        syn_outcome.synthesis_version if syn_outcome else synthesis_version
-                    ),
-                    report_version=report_version,
-                    synthesis_started=t_syn,
-                    on_complete=on_complete,
-                    syn_outcome=syn_outcome,
-                )
-            )
-            yield {"event": "structured_async_enqueued", "request_id": ctx.request_id}
 
             ANALYSIS_REQUEST_COUNT.labels(
                 analysis_type=req.analysis_type, data_mode="nl2sql", status="success"

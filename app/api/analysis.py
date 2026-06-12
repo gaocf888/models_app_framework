@@ -133,7 +133,7 @@ async def run_analysis_with_nl2sql(data: AnalysisNL2SQLRequest) -> AnalysisV2Res
     response_class=StreamingResponse,
     response_description=(
         "`text/event-stream`：每条 `data: {json}\\n\\n`，JSON 内 `event` 字段标识类型；"
-        "顺序 meta → summary_delta/… → summary_complete → finished → structured_async_enqueued；"
+        "顺序 meta → summary_delta/… → summary_complete → structured_async_enqueued → finished；"
         "完整 AnalysisV2Result 不在 SSE 内，见 trace。"
     ),
 )
@@ -157,10 +157,10 @@ async def run_analysis_with_nl2sql_stream(data: AnalysisNL2SQLRequest) -> Stream
     | `table_payload` | 表格json返回 v2 + 结构化 SSE 开启；`slot_id` + `table`（columns/rows，非 HTML） |
     | `chart_payload` | 统计图表json返回 v2 + 结构化 SSE 开启 + `chart_mode≠off`；`slot_id` + `chart`（JSON spec+data，前端 ECharts 渲染） |
     | `summary_complete` | 正文流结束；`chars`/`synthesis_ms`/`request_id` |
-    | `finished` | 结束帧；`meta` 含 RAG 开关与 `rag_citations`（**不含** nl2sql 库表/QA 命名空间）；**无** `structured_report` |
-    | `structured_async_enqueued` | 末条；完整 JSON 已排队后台写日志/trace |
+    | `structured_async_enqueued` | 完整 JSON 已排队后台写日志/trace（trace 在后台任务完成后可用） |
+    | `finished` | **尾帧**；`meta` 含 RAG 开关与 `rag_citations`（**不含** nl2sql 库表/QA 命名空间）；**无** `structured_report` |
 
-    v1 synthesis 仅含：meta、summary_delta、summary_complete、finished、structured_async_enqueued。
+    v1 synthesis 仅含：meta、summary_delta、summary_complete、structured_async_enqueued、finished。
 
     **前端要点**
     - 正文 = 全部 `summary_delta.text` 拼接；表格/图优先收 `table_payload`/`chart_payload`
@@ -243,7 +243,7 @@ async def run_analysis_img_diag(data: AnalysisImgDiagRequest) -> AnalysisV2Resul
     "/run-img-diag-stream",
     summary="看图诊断执行（并行视觉 + NL2SQL + RAG · 流式 summary）",
     response_class=StreamingResponse,
-    response_description="`text/event-stream`：先 `meta`，再流式 `summary_delta`，最后 `summary_complete` 与 `structured_async_enqueued`；完整 JSON 异步落日志 / trace。",
+    response_description="`text/event-stream`：先 `meta`，再流式 `summary_delta`，最后 `summary_complete`、`structured_async_enqueued` 与尾帧 `finished`；完整 JSON 异步落日志 / trace。",
 )
 async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> StreamingResponse:
     """
@@ -254,6 +254,7 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
     - 多条 `summary_delta`：增量文本；
     - `summary_complete`：`chars`、`synthesis_ms`；
     - `structured_async_enqueued`：已排队后台组装完整 **`AnalysisV2Result`**（与应用日志、`register_analysis_nl2sql_stream_structured_hook` 钩子**一致**，trace 由 **`_save_trace`** 写入）。
+    - `finished`：**尾帧**（与 AI 问答一致）；`meta` 含 RAG 引用等会话元数据。
 
     **同步接口** **`/run-img-diag`** 保持不变。
     """
@@ -273,7 +274,7 @@ async def get_analysis_trace(
     按 `request_id` 查询单次分析的持久化 trace（后端由 `ANALYSIS_TRACE_BACKEND` 决定：Redis / ES / 内存等）。
 
     **路径参数**
-    - `request_id`：**必填**。来自同步 **`run-with-payload`** / **`run-with-nl2sql`** / **`run-img-diag`** 响应体，或流式 **`run-with-nl2sql-stream`** / **`run-img-diag-stream`** 首包 **`meta.request_id`**（完整 JSON 不在 SSE 内返回时，trace 在 **`structured_async_enqueued`** 之后异步写入）。
+    - `request_id`：**必填**。来自同步 **`run-with-payload`** / **`run-with-nl2sql`** / **`run-img-diag`** 响应体，或流式 **`run-with-nl2sql-stream`** / **`run-img-diag-stream`** 首包 **`meta.request_id`**（完整 JSON 不在 SSE 内返回时，trace 在 **`structured_async_enqueued`** 触发后台任务后异步写入，宜在收到 **`finished`** 后拉取）。
 
     **响应体 `AnalysisTraceView`（200）**
     - `request_id`、`analysis_type`、`summary`、`data_mode`（**`payload`** | **`nl2sql`** | **`img_diag`**）。

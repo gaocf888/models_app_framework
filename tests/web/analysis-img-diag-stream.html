@@ -527,7 +527,7 @@
             "\nrequest_id: " +
             (ev.request_id || "");
           $("meta").textContent = ($("meta").textContent || "") + "\n\n--- summary_complete ---\n" + tail;
-          setStatus("summary 流结束，结构化结果后台处理中");
+          setStatus("summary 流结束，等待 structured_async / finished");
           return;
         }
         if (kind === "structured_async_enqueued") {
@@ -535,7 +535,28 @@
             ($("meta").textContent || "") +
             "\n\n--- structured_async_enqueued ---\nrequest_id: " +
             (ev.request_id || "");
-          setStatus("完成（完整 JSON 已排队；见服务端日志与 GET /analysis/traces/{request_id}）", true);
+          setStatus("完整 JSON 已排队后台处理…");
+          return;
+        }
+        if (kind === "finished") {
+          const m = ev.meta || {};
+          const cites = Array.isArray(m.rag_citations) ? m.rag_citations : [];
+          const tail =
+            "--- finished ---\n" +
+            "used_rag: " +
+            m.used_rag +
+            "\nused_plan_rag: " +
+            m.used_plan_rag +
+            "\nused_business_rag: " +
+            m.used_business_rag +
+            "\nrag_citations: " +
+            cites.length +
+            " 条";
+          $("meta").textContent = ($("meta").textContent || "") + "\n\n" + tail;
+          setStatus(
+            "完成（知识来源 " + cites.length + " 条；trace 见 GET /analysis/traces/{request_id}）",
+            true
+          );
           return;
         }
       });

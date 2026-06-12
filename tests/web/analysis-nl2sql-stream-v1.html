@@ -166,7 +166,7 @@
       <code>four_tube_health_interpretation</code>、<code>leakage_burst_analysis</code>。
       服务端未配置 v2 或专项无 v2 槽位时均走本页对应行为。
       事件序：<code>meta</code> → <code>summary_delta</code> → <code>summary_complete</code> →
-      <code>finished</code> → <code>structured_async_enqueued</code>。
+      <code>structured_async_enqueued</code> → <code>finished</code>（尾帧）。
       完整 <code>structured_report</code> 见服务端日志 / <code>GET /analysis/traces/{request_id}</code>。
       超温 v1 专用页：<a href="analysis-nl2sql-overheat-stream-v1.html" style="color:var(--accent)">analysis-nl2sql-overheat-stream-v1.html</a>；
       超温 v2 多槽位页：<a href="analysis-nl2sql-stream-v2.html" style="color:var(--accent)">analysis-nl2sql-stream-v2.html</a>。
@@ -550,7 +550,15 @@
             "\nrequest_id: " +
             (ev.request_id || "");
           $("meta").textContent = ($("meta").textContent || "") + "\n\n--- summary_complete ---\n" + tail;
-          appendStatus("summary 流结束，等待 finished…");
+          appendStatus("summary 流结束，等待 structured_async / finished…");
+          return;
+        }
+        if (kind === "structured_async_enqueued") {
+          $("meta").textContent =
+            ($("meta").textContent || "") +
+            "\n\n--- structured_async_enqueued ---\nrequest_id: " +
+            (ev.request_id || "");
+          appendStatus("完整 JSON 已排队后台处理…");
           return;
         }
         if (kind === "finished") {
@@ -569,15 +577,7 @@
             cites.length +
             " 条";
           $("meta").textContent = ($("meta").textContent || "") + "\n\n" + tail;
-          appendStatus("已收 finished（知识来源 " + cites.length + " 条）");
-          return;
-        }
-        if (kind === "structured_async_enqueued") {
-          $("meta").textContent =
-            ($("meta").textContent || "") +
-            "\n\n--- structured_async_enqueued ---\nrequest_id: " +
-            (ev.request_id || "");
-          appendStatus("完成（完整 JSON 已排队；见服务端日志与 trace）");
+          appendStatus("完成（知识来源 " + cites.length + " 条；trace 见服务端日志）");
           return;
         }
       });

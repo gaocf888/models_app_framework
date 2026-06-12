@@ -521,6 +521,16 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 "synthesis_ms": synthesis_ms,
             }
 
+            asyncio.create_task(
+                self._img_diag_stream_background_finalize(
+                    pack,
+                    summary=summary,
+                    synthesis_ms=synthesis_ms,
+                    on_complete=on_complete,
+                )
+            )
+            yield {"event": "structured_async_enqueued", "request_id": request_id}
+
             yield {
                 "event": "finished",
                 "meta": {
@@ -534,16 +544,6 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                     "rag_citations": pack.rag_citations,
                 },
             }
-
-            asyncio.create_task(
-                self._img_diag_stream_background_finalize(
-                    pack,
-                    summary=summary,
-                    synthesis_ms=synthesis_ms,
-                    on_complete=on_complete,
-                )
-            )
-            yield {"event": "structured_async_enqueued", "request_id": request_id}
 
             ANALYSIS_REQUEST_COUNT.labels(analysis_type="img_diag", data_mode="img_diag", status="success").inc()
         except Exception:

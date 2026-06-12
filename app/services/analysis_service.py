@@ -138,7 +138,7 @@ class AnalysisService:
         **`app.api.analysis.run_analysis_with_nl2sql_stream`** 文档。
 
         典型顺序：meta →（summary_delta | synthesis_loading | table_payload | chart_payload）×N
-        → summary_complete → finished → structured_async_enqueued。
+        → summary_complete → structured_async_enqueued → finished。
 
         流内不含完整 `AnalysisV2Result`；结束后 `_nl2sql_stream_background_finalize` 异步组装并
         `_save_trace`（钩子 `analysis_stream_hooks`）。

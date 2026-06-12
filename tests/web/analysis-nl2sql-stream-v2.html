@@ -1077,6 +1077,14 @@
           $("meta").textContent = ($("meta").textContent || "") + "\n\n--- summary_complete ---\n" + tail;
           return;
         }
+        if (kind === "structured_async_enqueued") {
+          $("meta").textContent =
+            ($("meta").textContent || "") +
+            "\n\n--- structured_async_enqueued ---\nrequest_id: " +
+            (ev.request_id || "");
+          appendStatus("完整 JSON 已排队后台处理…");
+          return;
+        }
         if (kind === "finished") {
           const m = ev.meta || {};
           if (ev.markdown && !StreamReportRenderer.buffer) {
@@ -1098,16 +1106,7 @@
             cites.length +
             " 条";
           $("meta").textContent = ($("meta").textContent || "") + "\n\n" + tail;
-          appendStatus("已收 finished（知识来源 " + cites.length + " 条）");
-          return;
-        }
-        if (kind === "structured_async_enqueued") {
-          await StreamReportRenderer.finalizeReport();
-          $("meta").textContent =
-            ($("meta").textContent || "") +
-            "\n\n--- structured_async_enqueued ---\nrequest_id: " +
-            (ev.request_id || "");
-          appendStatus("完成（完整 JSON 已排队；见服务端日志与 trace）");
+          appendStatus("完成（知识来源 " + cites.length + " 条；trace 见 GET /analysis/traces/{request_id}）");
           return;
         }
       });
