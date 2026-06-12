@@ -20,6 +20,10 @@ from uuid import uuid4
 
 from app.core.logging import get_logger
 from app.core.metrics import ANALYSIS_REQUEST_COUNT
+from app.llm.graphs.analysis_finished_meta import (
+    analysis_finished_sse_event,
+    build_analysis_finished_meta,
+)
 from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
 from app.models.analysis import (
     AnalysisEvidence,
@@ -475,6 +479,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         """
         ANALYSIS_REQUEST_COUNT.labels(analysis_type="img_diag", data_mode="img_diag", status="started").inc()
         try:
+            t_pipeline = perf_counter()
             pack = await self._gather_img_diag_pack(req)
             request_id = pack.request_id
             plan_id = pack.plan_id
@@ -531,19 +536,28 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             )
             yield {"event": "structured_async_enqueued", "request_id": request_id}
 
-            yield {
-                "event": "finished",
-                "meta": {
-                    "request_id": request_id,
-                    "plan_id": plan_id,
-                    "analysis_type": "img_diag",
-                    "data_mode": "img_diag",
-                    "used_rag": pack.used_rag,
-                    "used_plan_rag": pack.used_plan_rag,
-                    "used_business_rag": pack.used_business_rag,
-                    "rag_citations": pack.rag_citations,
-                },
-            }
+            image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
+            first_nl2sql_sql = next(
+                (c.sql for c in pack.calls if c.status == "success" and (c.sql or "").strip()),
+                None,
+            )
+            finished_meta = build_analysis_finished_meta(
+                request_id=request_id,
+                plan_id=plan_id,
+                analysis_type="img_diag",
+                data_mode="img_diag",
+                used_rag=pack.used_rag,
+                used_plan_rag=pack.used_plan_rag,
+                used_business_rag=pack.used_business_rag,
+                rag_citations=pack.rag_citations,
+                start_ts=t_pipeline,
+                synthesis_ms=synthesis_ms,
+                used_nl2sql=bool(pack.calls),
+                nl2sql_sql=first_nl2sql_sql,
+                processed_image_urls=image_urls,
+                original_image_urls=image_urls,
+            )
+            yield analysis_finished_sse_event(finished_meta)
 
             ANALYSIS_REQUEST_COUNT.labels(analysis_type="img_diag", data_mode="img_diag", status="success").inc()
         except Exception:

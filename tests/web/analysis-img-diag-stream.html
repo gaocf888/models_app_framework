@@ -538,20 +538,17 @@
           setStatus("完整 JSON 已排队后台处理…");
           return;
         }
-        if (kind === "finished") {
+        if (ev.finished === true) {
           const m = ev.meta || {};
           const cites = Array.isArray(m.rag_citations) ? m.rag_citations : [];
           const tail =
             "--- finished ---\n" +
             "used_rag: " +
             m.used_rag +
-            "\nused_plan_rag: " +
-            m.used_plan_rag +
-            "\nused_business_rag: " +
-            m.used_business_rag +
             "\nrag_citations: " +
             cites.length +
-            " 条";
+            " 条\nstream_id: " +
+            (m.stream_id || m.request_id || "");
           $("meta").textContent = ($("meta").textContent || "") + "\n\n" + tail;
           setStatus(
             "完成（知识来源 " + cites.length + " 条；trace 见 GET /analysis/traces/{request_id}）",

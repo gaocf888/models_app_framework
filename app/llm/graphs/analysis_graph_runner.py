@@ -52,6 +52,10 @@ from app.models.analysis_nl2sql_llm import (
     extract_json_object_from_llm_text,
 )
 from app.models.nl2sql import NL2SQLQueryRequest
+from app.llm.graphs.analysis_finished_meta import (
+    analysis_finished_sse_event,
+    build_analysis_finished_meta,
+)
 from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_citations
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.models import RetrievedChunk
@@ -2241,7 +2245,7 @@ class AnalysisGraphRunner:
         - `meta`：取数完成后首条
         - `summary_delta`：Markdown 增量（v1 整篇 LLM token；v2 按槽位顺序，见 `iter_stream_events`）
         - `synthesis_loading` / `table_payload` / `chart_payload`：仅 v2 且配置开启
-        - `summary_complete` → `structured_async_enqueued` → `finished`：收尾三连（`finished` 为尾帧，与 AI 问答一致）
+        - `summary_complete` → `structured_async_enqueued` → `finished`：收尾三连（`finished` 为尾帧，与 AI 问答同形 `{"finished":true,"meta":{...}}`）
 
         结束后 `create_task(_nl2sql_stream_background_finalize)` 异步写完整 JSON + trace。
         """
@@ -2250,6 +2254,7 @@ class AnalysisGraphRunner:
         ).inc()
         try:
             stream_request_id = f"anl_{uuid4().hex[:12]}"
+            t_pipeline = perf_counter()
             logger.info(
                 "analysis_nl2sql_stream_pipeline_start request_id=%s analysis_type=%s user_id=%s session_id=%s",
                 stream_request_id,
@@ -2371,22 +2376,28 @@ class AnalysisGraphRunner:
             )
             yield {"event": "structured_async_enqueued", "request_id": ctx.request_id}
 
-            yield {
-                "event": "finished",
-                "meta": {
-                    "request_id": ctx.request_id,
-                    "plan_id": ctx.plan_id,
-                    "analysis_type": req.analysis_type,
-                    "data_mode": "nl2sql",
-                    "used_rag": ctx.used_rag,
-                    "used_plan_rag": ctx.used_plan_rag,
-                    "used_business_rag": ctx.used_business_rag,
-                    "rag_citations": ctx.rag_citations,
-                    "synthesis_strategy_effective": (
-                        syn_outcome.strategy_effective if syn_outcome else effective_strategy
-                    ),
-                },
-            }
+            first_nl2sql_sql = next(
+                (c.sql for c in ctx.nl2sql_calls if c.status == "success" and (c.sql or "").strip()),
+                None,
+            )
+            finished_meta = build_analysis_finished_meta(
+                request_id=ctx.request_id,
+                plan_id=ctx.plan_id,
+                analysis_type=req.analysis_type,
+                data_mode="nl2sql",
+                used_rag=ctx.used_rag,
+                used_plan_rag=ctx.used_plan_rag,
+                used_business_rag=ctx.used_business_rag,
+                rag_citations=ctx.rag_citations,
+                start_ts=t_pipeline,
+                synthesis_strategy_effective=(
+                    syn_outcome.strategy_effective if syn_outcome else effective_strategy
+                ),
+                synthesis_ms=synthesis_ms,
+                used_nl2sql=True,
+                nl2sql_sql=first_nl2sql_sql,
+            )
+            yield analysis_finished_sse_event(finished_meta)
 
             ANALYSIS_REQUEST_COUNT.labels(
                 analysis_type=req.analysis_type, data_mode="nl2sql", status="success"

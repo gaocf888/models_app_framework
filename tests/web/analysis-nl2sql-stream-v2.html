@@ -1085,7 +1085,7 @@
           appendStatus("完整 JSON 已排队后台处理…");
           return;
         }
-        if (kind === "finished") {
+        if (ev.finished === true) {
           const m = ev.meta || {};
           if (ev.markdown && !StreamReportRenderer.buffer) {
             StreamReportRenderer.setFullMarkdown(ev.markdown);
@@ -1104,7 +1104,8 @@
             m.used_business_rag +
             "\nrag_citations: " +
             cites.length +
-            " 条";
+            " 条\nstream_id: " +
+            (m.stream_id || m.request_id || "");
           $("meta").textContent = ($("meta").textContent || "") + "\n\n" + tail;
           appendStatus("完成（知识来源 " + cites.length + " 条；trace 见 GET /analysis/traces/{request_id}）");
           return;

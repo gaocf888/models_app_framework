@@ -158,9 +158,9 @@ async def run_analysis_with_nl2sql_stream(data: AnalysisNL2SQLRequest) -> Stream
     | `chart_payload` | 统计图表json返回 v2 + 结构化 SSE 开启 + `chart_mode≠off`；`slot_id` + `chart`（JSON spec+data，前端 ECharts 渲染） |
     | `summary_complete` | 正文流结束；`chars`/`synthesis_ms`/`request_id` |
     | `structured_async_enqueued` | 完整 JSON 已排队后台写日志/trace（trace 在后台任务完成后可用） |
-    | `finished` | **尾帧**；`meta` 含 RAG 开关与 `rag_citations`（**不含** nl2sql 库表/QA 命名空间）；**无** `structured_report` |
+    | `finished` | **尾帧**；`{"finished":true,"meta":{...}}`，与 AI 问答同形；`meta` 含 RAG/`rag_citations` 及 `request_id`/`analysis_type` 等分析扩展字段 |
 
-    v1 synthesis 仅含：meta、summary_delta、summary_complete、structured_async_enqueued、finished。
+    v1 synthesis 仅含：meta、summary_delta、summary_complete、structured_async_enqueued、finished（尾帧）。
 
     **前端要点**
     - 正文 = 全部 `summary_delta.text` 拼接；表格/图优先收 `table_payload`/`chart_payload`
@@ -254,7 +254,7 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
     - 多条 `summary_delta`：增量文本；
     - `summary_complete`：`chars`、`synthesis_ms`；
     - `structured_async_enqueued`：已排队后台组装完整 **`AnalysisV2Result`**（与应用日志、`register_analysis_nl2sql_stream_structured_hook` 钩子**一致**，trace 由 **`_save_trace`** 写入）。
-    - `finished`：**尾帧**（与 AI 问答一致）；`meta` 含 RAG 引用等会话元数据。
+    - `finished`：**尾帧** `{"finished":true,"meta":{...}}`（与 **`/chatbot/chat/stream`** 结束帧同形）；`meta` 含 RAG 引用及 `request_id`/`analysis_type`/`synthesis_strategy_effective` 等分析字段。
 
     **同步接口** **`/run-img-diag`** 保持不变。
     """

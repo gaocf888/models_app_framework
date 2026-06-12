@@ -63,7 +63,7 @@ def _sse_event_json_default(value: Any) -> Any:
 
 
 def _encode_sse_event(event: dict[str, Any]) -> bytes:
-    """SSE 单帧：`data: {json}\\n\\n`；`event` 类型见 `run_analysis_with_nl2sql_stream` 路由文档。"""
+    """SSE 单帧：`data: {json}\\n\\n`；中间帧用 `event` 字段，尾帧为 `{"finished":true,"meta":{...}}`。"""
     return f"data: {json.dumps(event, ensure_ascii=False, default=_sse_event_json_default)}\n\n".encode(
         "utf-8"
     )
@@ -138,7 +138,7 @@ class AnalysisService:
         **`app.api.analysis.run_analysis_with_nl2sql_stream`** 文档。
 
         典型顺序：meta →（summary_delta | synthesis_loading | table_payload | chart_payload）×N
-        → summary_complete → structured_async_enqueued → finished。
+        → summary_complete → structured_async_enqueued → finished（尾帧，与 AI 问答同形）。
 
         流内不含完整 `AnalysisV2Result`；结束后 `_nl2sql_stream_background_finalize` 异步组装并
         `_save_trace`（钩子 `analysis_stream_hooks`）。
