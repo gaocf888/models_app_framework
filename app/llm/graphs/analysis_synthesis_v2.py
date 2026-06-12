@@ -110,6 +110,57 @@ _OVERHEAT_INSTRUCTION_LINE_PATTERNS = (
     r"^风险量化与后续建议[：:].*",
 )
 
+# 第二～四章 LLM 槽正文禁止重复输出的章节/小节标题（静态槽已渲染）
+_OVERHEAT_CH2_CH3_SECTION_TITLES: tuple[str, ...] = (
+    "超温原因剖析",
+    "超温风险评估",
+)
+_OVERHEAT_CH4_SECTION_TITLES: tuple[str, ...] = (
+    "紧急处置措施",
+    "紧急处置",
+    "运行优化调整",
+    "后续检修预防措施",
+    "计划长效防控方案",
+)
+
+
+def _strip_duplicate_section_heading_lines(text: str, titles: tuple[str, ...]) -> str:
+    """移除正文中重复的章节标题行（# / plain / **bold**，可选末尾冒号）。"""
+    out = text
+    for title in titles:
+        esc = re.escape(title)
+        patterns = (
+            rf"(?m)^\s*#+\s*{esc}\s*[：:]?\s*$",
+            rf"(?m)^\s*#+\s*\*\*{esc}\*\*\s*[：:]?\s*$",
+            rf"(?m)^\s*\*\*{esc}\*\*\s*[：:]?\s*$",
+            rf"(?m)^\s*{esc}\s*[：:]?\s*$",
+        )
+        for pat in patterns:
+            out = re.sub(pat, "", out)
+    return out
+
+
+def _strip_duplicate_overheat_ch4_section_headings(text: str) -> str:
+    return _strip_duplicate_section_heading_lines(text, _OVERHEAT_CH4_SECTION_TITLES)
+
+
+def _strip_duplicate_overheat_ch2_ch3_section_headings(text: str) -> str:
+    out = _strip_duplicate_section_heading_lines(text, _OVERHEAT_CH2_CH3_SECTION_TITLES)
+    # 多机组静态槽为「### {机组}超温原因剖析」，LLM 偶发复写带机组前缀的标题行
+    boiler_cause = (
+        r"(?:[\d#][0-9]*号(?:锅炉|机组)|[一二三四五六七八九十百千万两]+号(?:锅炉|机组))"
+        r"超温原因剖析"
+    )
+    boiler_cause_patterns = (
+        rf"(?m)^\s*#+\s*{boiler_cause}\s*[：:]?\s*$",
+        rf"(?m)^\s*#+\s*\*\*{boiler_cause}\*\*\s*[：:]?\s*$",
+        rf"(?m)^\s*\*\*{boiler_cause}\*\*\s*[：:]?\s*$",
+        rf"(?m)^\s*{boiler_cause}\s*[：:]?\s*$",
+    )
+    for pat in boiler_cause_patterns:
+        out = re.sub(pat, "", out)
+    return out
+
 
 def _sanitize_report_narrative(text: str) -> str:
     """移除正文中不应出现的置信度/依据/q 编号及 docx 红色说明文字。"""
@@ -126,20 +177,8 @@ def _sanitize_report_narrative(text: str) -> str:
     out = re.sub(r"数据依据[：:][^\n]+", "", out)
     for pat in _OVERHEAT_INSTRUCTION_LINE_PATTERNS:
         out = re.sub(rf"(?m)^\s*{pat}\s*$", "", out)
-    out = re.sub(r"(?m)^\s*#+\s*超温原因剖析\s*$", "", out)
-    out = re.sub(r"(?m)^\s*超温原因剖析\s*$", "", out)
-    out = re.sub(r"(?m)^\s*#+\s*超温风险评估\s*$", "", out)
-    out = re.sub(r"(?m)^\s*超温风险评估\s*$", "", out)
-    out = re.sub(r"(?m)^\s*#+\s*紧急处置\s*$", "", out)
-    out = re.sub(r"(?m)^\s*紧急处置\s*$", "", out)
-    out = re.sub(r"(?m)^\s*#+\s*紧急处置措施\s*$", "", out)
-    out = re.sub(r"(?m)^\s*紧急处置措施\s*$", "", out)
-    out = re.sub(r"(?m)^\s*#+\s*运行优化调整\s*$", "", out)
-    out = re.sub(r"(?m)^\s*运行优化调整\s*$", "", out)
-    out = re.sub(r"(?m)^\s*#+\s*后续检修预防措施\s*$", "", out)
-    out = re.sub(r"(?m)^\s*后续检修预防措施\s*$", "", out)
-    out = re.sub(r"(?m)^\s*#+\s*计划长效防控方案\s*$", "", out)
-    out = re.sub(r"(?m)^\s*计划长效防控方案\s*$", "", out)
+    out = _strip_duplicate_overheat_ch2_ch3_section_headings(out)
+    out = _strip_duplicate_overheat_ch4_section_headings(out)
     out = re.sub(r"(?m)^\s*【内部分析参考·禁止写入报告】.*$", "", out)
     # 多余空行
     out = re.sub(r"\n{3,}", "\n\n", out)
@@ -315,7 +354,7 @@ def _overheat_v2_slots() -> list[SynthesisV2Slot]:
             source_item_ids=("q1", "q2", "q4", "q5"),
             narrative_instruction=(
                 "撰写「计划长效防控方案」正文（禁止输出「计划长效防控方案」标题行，标题已由系统输出）。"
-                "可含优化措施、分区管控、制度完善等要点。"
+                "可含优化措施、分区管控等要点。"
                 "具体的 计划长效防控方案 条目，按照第四级标题结构输出（只用 ####，禁止 ###）"
                 "禁止置信度、依据、额外总结章节。"
                 "须结合本次超温分布与重复发生区域（引用区域名称与测点展示名），"

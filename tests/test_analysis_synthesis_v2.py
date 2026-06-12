@@ -112,17 +112,33 @@ class TestSanitizeNarrative(unittest.TestCase):
     def test_strips_docx_instruction_lines(self):
         raw = (
             "关联本次出现的超温区域，根据知识片段出具针对性措施，以下内容为示例：\n\n"
-            "紧急处置\n适当降低机组负荷。"
+            "适当降低机组负荷，并加强重点区域监视。"
         )
         cleaned = _sanitize_report_narrative(raw)
         self.assertNotIn("以下内容为示例", cleaned)
-        self.assertIn("紧急处置", cleaned)
+        self.assertIn("适当降低机组负荷", cleaned)
 
     def test_strips_risk_duplicate_heading(self):
         raw = "超温风险评估\n\n**风险量化：**管材存在蠕变风险。"
         cleaned = _sanitize_report_narrative(raw)
         self.assertNotIn("超温风险评估", cleaned)
         self.assertIn("**风险量化：**", cleaned)
+
+    def test_strips_ch2_ch3_duplicate_section_headings(self):
+        cases = [
+            ("**超温原因剖析**\n\n概括句。", "概括句。"),
+            ("### 超温原因剖析：\n\n概括句。", "概括句。"),
+            ("### 2号锅炉超温原因剖析\n\n概括句。", "概括句。"),
+            ("**2号锅炉超温原因剖析**：\n\n概括句。", "概括句。"),
+            ("**超温风险评估**\n\n风险描述。", "风险描述。"),
+            ("### 超温风险评估：\n\n风险描述。", "风险描述。"),
+        ]
+        for raw, want_start in cases:
+            out = _sanitize_report_narrative(raw)
+            self.assertTrue(
+                out.startswith(want_start),
+                msg=f"unexpected sanitize output: {out!r} from {raw!r}",
+            )
 
 
 class TestOverheatRenderers(unittest.TestCase):
@@ -447,6 +463,22 @@ class TestSynthesisV2NarrativeHelpers(unittest.TestCase):
         out = _sanitize_report_narrative(raw)
         self.assertNotIn("置信度", out)
         self.assertNotIn("q1", out.lower())
+
+    def test_sanitize_strips_ch4_duplicate_section_headings(self):
+        cases = [
+            ("**后续检修预防措施**\n\n1. 氧化皮检测", "1. 氧化皮检测"),
+            ("### 后续检修预防措施：\n\n1. 氧化皮检测", "1. 氧化皮检测"),
+            ("### 运行优化调整\n\n建议A", "建议A"),
+            ("**计划长效防控方案**：\n\n方案A", "方案A"),
+            ("紧急处置措施\n\n处置A", "处置A"),
+            ("### **紧急处置措施**\n\n处置B", "处置B"),
+        ]
+        for raw, want_start in cases:
+            out = _sanitize_report_narrative(raw)
+            self.assertTrue(
+                out.startswith(want_start),
+                msg=f"unexpected sanitize output: {out!r} from {raw!r}",
+            )
 
     def test_audit_facts_q1(self):
         text = _build_audit_facts(
