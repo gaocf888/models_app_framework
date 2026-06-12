@@ -684,6 +684,10 @@ class InspectionExtractConfig:
     # DOCX V2：parse 后按 chunk 列组 direction 校正管号正负（上数/下数等）
     v2_tube_direction_sign_guard_enabled: bool = True
     v2_tube_direction_sign_allow_fallback_4col: bool = False
+    # DOCX V2：Parse 送 LLM 时仅保留 [DOCX_V2_TABLE] 表格块（guard/落盘仍用完整 chunk）
+    v2_llm_parse_table_only: bool = True
+    # DOCX V2：LLM 表格块裁掉从右起连续全空列并更新 cols=N（guard 仍用完整 chunk）
+    v2_llm_strip_trailing_empty_cols: bool = True
     # 异步检修任务（断点续跑）根目录：每任务子目录含 request.json、chunks/*.json、job_meta.json
     async_jobs_state_dir: str = "./data/inspection_extract_jobs"
     # REDIS_URL 启用时：检修异步队列 worker 线程数（与摄入队列分离 key_prefix）
@@ -1325,6 +1329,12 @@ def _load_from_env() -> AppConfig:
         in ("1", "true", "yes", "on"),
         v2_tube_direction_sign_allow_fallback_4col=os.getenv(
             "INSPECT_EXTRACT_V2_TUBE_DIRECTION_SIGN_ALLOW_FALLBACK_4COL", "false"
+        ).lower()
+        in ("1", "true", "yes", "on"),
+        v2_llm_parse_table_only=os.getenv("INSPECT_EXTRACT_V2_LLM_PARSE_TABLE_ONLY", "true").lower()
+        in ("1", "true", "yes", "on"),
+        v2_llm_strip_trailing_empty_cols=os.getenv(
+            "INSPECT_EXTRACT_V2_LLM_STRIP_TRAILING_EMPTY_COLS", "true"
         ).lower()
         in ("1", "true", "yes", "on"),
         async_jobs_state_dir=(

@@ -17,7 +17,7 @@ from typing import Any
 
 from app.core.config import InspectionExtractConfig
 from app.core.logging import get_logger
-from app.inspection_v2.chunk_table_filter import filter_table_work_items
+from app.inspection_v2.chunk_table_filter import filter_table_work_items, resolve_llm_parse_chunk_body
 from app.inspection_v2.orchestrator import split_parse_chunks, v2_docx_chunk_params
 from app.llm.client import VLLMHttpClient
 from app.llm.prompt_registry import PromptTemplateRegistry
@@ -591,8 +591,24 @@ class InspectionExtractLlmOrchestrator:
             "若你无法输出 NDJSON，则回退输出 JSON：{\"records\":[...]}。\n"
             "用户消息中将给出当前文档分块正文，请仅基于该分块抽取。"
         )
+        llm_chunk_body = resolve_llm_parse_chunk_body(
+            chunk,
+            table_only=bool(getattr(self._cfg, "v2_llm_parse_table_only", True)),
+            strip_trailing_empty_cols=bool(
+                getattr(self._cfg, "v2_llm_strip_trailing_empty_cols", True)
+            ),
+        )
+        if llm_chunk_body != chunk:
+            logger.info(
+                "inspection_extract llm parse chunk_shaped chunk=%s/%s full_chars=%s llm_chars=%s stripped=%s",
+                idx,
+                total,
+                len(chunk),
+                len(llm_chunk_body),
+                len(chunk) - len(llm_chunk_body),
+            )
         for attempt in range(parse_chunk_retry + 1):
-            parse_user = f"文档分块如下（第{idx}/{total}块）：\n{chunk}"
+            parse_user = f"文档分块如下（第{idx}/{total}块）：\n{llm_chunk_body}"
             prompt_total_chars = len(parse_system) + len(parse_user) + _CHAT_MESSAGES_SLO_CHARS
             logger.info(
                 "inspection_extract llm stage=parse chunk=%s/%s model=%s prompt_chars=%s timeout_s=%.1f",
