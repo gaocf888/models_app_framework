@@ -113,6 +113,7 @@ def test_format_rag_block_numbered_citation_rule():
     block = format_rag_snippets_system_block(
         ["[1] 《规程》\n条文内容", "[2] 《标准》 2.3\n另一段"]
     )
-    assert "[n]" in block or "[n]" in block.replace("``", "")
-    assert "禁止编造" in block
+    assert "片段引用标注" in block
+    assert "宽泛问题" in block
+    assert "逐条" in block
     assert "《规程》" in block

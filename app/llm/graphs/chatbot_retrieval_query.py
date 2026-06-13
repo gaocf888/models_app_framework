@@ -158,8 +158,18 @@ def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
             "禁止用片段顺序顶替会话内容）。"
         )
         cite_rule = (
-            "引用片段中的事实或条文时，须在相关表述句末标注对应编号，格式为 [n]。"
+            "【片段引用标注】凡直接复述或改写片段中的现象、数据、条文、处置步骤，且与某一 [n] 片段内容一一对应时，"
+            "须在相关句子或条目末标注 [n]（不同条目可标不同编号）。"
+            "纯综合归纳、过渡句、通用安全提醒可不标；但不得将未标注 [n] 的表述写成片段原文或规程条文。"
             "禁止编造未列出的文档名或 http 链接；链接由系统另行提供，正文中只需标注 [n]。"
+        )
+        granularity_rule = (
+            "【宽泛问题作答粒度】若用户问题较宽（如「常见…有哪些」「概述」「列举」「分别说明」等），且下列有多条编号片段："
+            "须**仅依据下列片段逐条组织回答**——每条被使用的片段单独成节（标题可取该片段主题或《文档名》），"
+            "节内来自该片段的现象/原因/措施句末标对应 [n]；"
+            "禁止用模型自带知识扩写片段未覆盖的故障类型、设备条目或规程内容；"
+            "片段未涉及的主题可集中一句说明「知识库本轮未检索到相关条文」。"
+            "若用户问题较窄且只命中单条片段，针对该问作答并标好 [n] 即可。"
         )
     else:
         ctx = "\n".join(f"- {c}" for c in blocks)
@@ -176,5 +186,5 @@ def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
         "须先复述并回应对话历史中**紧邻的上一轮** assistant 的主要结论与依据，再引用下述片段作补充；"
         "不得以「请明确指代」「没有具体上下文」「请说明指什么」等话术敷衍回避。"
     )
-    parts = [intro, cite_rule, common, ctx]
+    parts = [intro, cite_rule, granularity_rule if numbered else "", common, ctx]
     return "\n".join(p for p in parts if p)
