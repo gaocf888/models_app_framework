@@ -33,6 +33,7 @@ def test_build_retrieval_no_hist():
 
 
 def test_format_rag_block_contains_short_confirm_rule():
-    block = format_rag_snippets_system_block(["片段A", "片段B"])
+    block = format_rag_snippets_system_block(["[1] 《手册》\n片段A", "[2] 《标准》\n片段B"])
     assert "确定吗" in block
     assert "片段A" in block
+    assert "禁止编造" in block

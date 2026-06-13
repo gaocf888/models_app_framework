@@ -133,19 +133,48 @@ def build_retrieval_query_for_chatbot(
     return rag_q
 
 
+def _snippets_use_numbered_ref_format(context_snippets: List[str]) -> bool:
+    """是否已为 ``[n] 《文档名》`` 编号块（与 ``chunks_to_numbered_llm_snippets`` 输出一致）。"""
+    for s in context_snippets or []:
+        t = str(s).strip()
+        if not t:
+            continue
+        return t.startswith("[") and "]" in t[:8]
+    return False
+
+
 def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
     """
     与 `ChatbotLangGraphRunner._node_kb_build_messages` / legacy `_build_llm_messages` 对齐的
     「知识片段」system 段全文（含对「确定吗」类短句的硬性说明）。
     """
-    ctx = "\n".join(f"- {c}" for c in (context_snippets or []) if str(c).strip())
-    return (
-        "以下为检索得到的知识片段（列表顺序仅为检索结果顺序，与用户所指会话中的小节、主题或「第N点」"
-        "均无对应关系，禁止用片段顺序顶替会话内容）。用户泛指上文（如「上述现场排查/检修建议」）时，"
+    blocks = [str(c).strip() for c in (context_snippets or []) if str(c).strip()]
+    numbered = _snippets_use_numbered_ref_format(blocks)
+    if numbered:
+        ctx = "\n\n".join(blocks)
+        intro = (
+            "以下为带编号的检索知识片段（方括号内数字 n 与片段标题 ``[n]`` 一一对应；"
+            "列表顺序仅为检索结果顺序，与用户所指会话中的小节、主题或「第N点」均无对应关系，"
+            "禁止用片段顺序顶替会话内容）。"
+        )
+        cite_rule = (
+            "引用片段中的事实或条文时，须在相关表述句末标注对应编号，格式为 [n]。"
+            "禁止编造未列出的文档名或 http 链接；链接由系统另行提供，正文中只需标注 [n]。"
+        )
+    else:
+        ctx = "\n".join(f"- {c}" for c in blocks)
+        intro = (
+            "以下为检索得到的知识片段（列表顺序仅为检索结果顺序，与用户所指会话中的小节、主题或「第N点」"
+            "均无对应关系，禁止用片段顺序顶替会话内容）。"
+        )
+        cite_rule = ""
+    common = (
+        "用户泛指上文（如「上述现场排查/检修建议」）时，"
         "请先在对话历史中按语义对齐助手较近一轮的相关段落再展开；仅当用户明确说「第N点/条」时再对齐编号。"
         "再以片段补充条文或机理。"
         "当用户本轮仅为「确定吗」「真的吗」「靠谱吗」「有依据吗」「你确定吗」「您确定吗」等极短追问时，"
         "须先复述并回应对话历史中**紧邻的上一轮** assistant 的主要结论与依据，再引用下述片段作补充；"
-        "不得以「请明确指代」「没有具体上下文」「请说明指什么」等话术敷衍回避。\n"
-        f"{ctx}"
+        "不得以「请明确指代」「没有具体上下文」「请说明指什么」等话术敷衍回避。"
     )
+    parts = [intro, cite_rule, common, ctx]
+    return "\n".join(p for p in parts if p)

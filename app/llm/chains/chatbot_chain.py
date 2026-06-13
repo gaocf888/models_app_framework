@@ -23,7 +23,9 @@ from app.llm.prompt_registry import PromptTemplateRegistry
 from app.llm.langsmith_tracker import LangSmithTracker
 from app.rag.rag_service import RAGService
 from app.rag.agentic import AgenticRAGService, RAGContext, RAGMode
+from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_context
 from app.llm.graphs.chatbot_rag_scope import augment_retrieval_query_for_plant_kb, resolve_rag_namespace
+from app.llm.graphs.chatbot_retrieval_query import format_rag_snippets_system_block
 
 logger = get_logger(__name__)
 
@@ -136,7 +138,10 @@ class ChatbotChain:
                 top_k=None,
                 namespace=scope.rag_namespace,
             )
-            ctx_snippets = list(rag_result.context_snippets or [])
+            chunks = list(rag_result.chunks) if rag_result.chunks else self._rag.retrieve_chunks(
+                rag_q, scene="chatbot", namespace=scope.rag_namespace
+            )
+            ctx_snippets, _ = chunks_to_rag_context(chunks)
             if scope.rag_namespace and cfg_cb.plant_kb_fallback_on_empty and not ctx_snippets:
                 rag_result = await self._agentic_rag.retrieve(
                     query=rag_q,
@@ -145,7 +150,10 @@ class ChatbotChain:
                     top_k=None,
                     namespace=None,
                 )
-                ctx_snippets = list(rag_result.context_snippets or [])
+                chunks = list(rag_result.chunks) if rag_result.chunks else self._rag.retrieve_chunks(
+                    rag_q, scene="chatbot", namespace=None
+                )
+                ctx_snippets, _ = chunks_to_rag_context(chunks)
 
         system_chunks: list[str] = [system_prompt]
         if intent_summary:
@@ -154,14 +162,7 @@ class ChatbotChain:
                 f"{intent_summary}"
             )
         if ctx_snippets:
-            ctx_text = "\n".join(f"- {t}" for t in ctx_snippets)
-            system_chunks.append(
-                "以下为检索得到的知识片段（列表顺序仅为检索结果顺序，与用户所指会话中的小节、主题或「第N点」"
-                "均无对应关系，禁止用片段顺序顶替会话内容）。用户泛指上文（如「上述现场排查/检修建议」）时，"
-                "请先在对话历史中按语义对齐助手较近一轮的相关段落再展开；仅当用户明确说「第N点/条」时再对齐编号。"
-                "再以片段补充条文或机理。\n"
-                f"{ctx_text}"
-            )
+            system_chunks.append(format_rag_snippets_system_block(ctx_snippets))
 
         messages: List[object] = [SystemMessage(content="\n\n".join(system_chunks))]
 

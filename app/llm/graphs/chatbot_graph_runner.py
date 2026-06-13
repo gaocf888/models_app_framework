@@ -20,7 +20,7 @@ from .chatbot_follow_up import build_suggested_questions
 from .chatbot_graph_state import ChatbotGraphState
 from .chatbot_intent import classify_chatbot_intent_async
 from .chatbot_nl2sql_answer import summarize_nl2sql_with_llm
-from .chatbot_rag_citations import chunks_to_rag_citations, filter_rag_citation_dicts
+from .chatbot_rag_citations import chunks_to_rag_context, filter_rag_citation_dicts
 from .chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
 from .chatbot_faq_soft_direct import (
     evaluate_faq_soft_direct,
@@ -732,22 +732,16 @@ class ChatbotLangGraphRunner:
                     mode=RAGMode.AGENTIC,
                     namespace=rag_namespace,
                 )
-                snippets = list(res.context_snippets or [])
-                if res.chunks:
-                    citations = chunks_to_rag_citations(list(res.chunks))
-                elif snippets:
-                    citations = chunks_to_rag_citations(
-                        self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
-                    )
+                chunks = list(res.chunks) if res.chunks else self._rag.retrieve_chunks(
+                    rag_query, scene="chatbot", namespace=rag_namespace
+                )
+                snippets, citations = chunks_to_rag_context(chunks)
             elif not graph_active:
                 chunks = self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
-                snippets = [c.text for c in chunks if c.text]
-                citations = chunks_to_rag_citations(chunks)
+                snippets, citations = chunks_to_rag_context(chunks)
             else:
-                snippets = self._hybrid_rag.retrieve(rag_query, namespace=rag_namespace)
-                citations = chunks_to_rag_citations(
-                    self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
-                )
+                chunks = self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
+                snippets, citations = chunks_to_rag_context(chunks)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "kb_retrieve failed on engine=%s ns=%s fallback=%s err=%s",
@@ -764,13 +758,10 @@ class ChatbotLangGraphRunner:
                 )
                 if not graph_active:
                     chunks = self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
-                    snippets = [c.text for c in chunks if c.text]
-                    citations = chunks_to_rag_citations(chunks)
+                    snippets, citations = chunks_to_rag_context(chunks)
                 else:
-                    snippets = self._hybrid_rag.retrieve(rag_query, namespace=rag_namespace)
-                    citations = chunks_to_rag_citations(
-                        self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
-                    )
+                    chunks = self._rag.retrieve_chunks(rag_query, scene="chatbot", namespace=rag_namespace)
+                    snippets, citations = chunks_to_rag_context(chunks)
         return snippets, citations, effective_engine
 
     async def _node_kb_retrieve(self, state: ChatbotGraphState) -> ChatbotGraphState:

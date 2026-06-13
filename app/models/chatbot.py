@@ -120,8 +120,9 @@ class SessionMessageItem(BaseModel):
     rag_citations: list[dict[str, Any]] = Field(
         default_factory=list,
         description=(
-            "知识来源引用（与流式 finished.meta.rag_citations 同形；含 original_content_url 等）。"
-            "非 RAG/非 assistant 路径为空列表。"
+            "知识来源引用（与流式 finished.meta.rag_citations 同形）。"
+            "每项含 ref_index（从 1 起，与 answer 正文中 [n] 标记对齐）、doc_name、section_path 等；"
+            "有 original_content_url 时可渲染外链。非 RAG/非 assistant 路径为空列表。"
         ),
     )
     ts: float | None = Field(None, description="写入时时间戳（秒，可能为空）")
@@ -247,13 +248,19 @@ class ChatResponse(BaseModel):
     )
     context_snippets: list[str] = Field(
         default_factory=list,
-        description="注入到提示词前的检索片段文本列表（与 /rag/query 的 snippets 同源业务数据，封装形态不同）",
+        description=(
+            "注入 LLM 前的检索片段列表（与 rag_citations 同源、同序）。"
+            "每项为 ``[n] 《文档名》`` 开头的编号块，供调试/审计；前端展示来源请用 rag_citations。"
+        ),
     )
     rag_citations: list[dict[str, Any]] = Field(
         default_factory=list,
         description=(
-            "本轮向量知识库引用的结构化来源列表（namespace、doc_name、doc_version 等）；"
-            "与流式结束 SSE `meta.rag_citations` 对齐；无检索或非向量片段时为空。"
+            "本轮向量知识库引用的结构化来源列表。"
+            "ref_index 从 1 起，与 answer 正文中的 [n] 内联引用标记一一对应；"
+            "namespace、doc_name、doc_version、section_path、text_preview 等；"
+            "original_content_url 有则可用于外链（LLM 不输出 URL，由前端解析）。"
+            "与流式结束 SSE meta.rag_citations 对齐；无检索或非向量片段时为空。"
         ),
     )
 

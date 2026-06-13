@@ -1,13 +1,14 @@
 """
-智能客服：将检索分片转为 SSE meta 用的结构化引用列表。
+智能客服：将检索分片转为 SSE meta 用的结构化引用列表，以及带编号的 LLM 上下文块。
 
 字段与 `RetrievedChunk` 对齐，便于前端展示「知识来源」；列表顺序与传入 chunks 一致（去重后）。
-若向量 metadata 中带有摄入时的原始 URL，则 citation 中会包含 `original_content_url`。
+`ref_index`（从 1 起）与注入 LLM 的 ``[n]`` 编号一致，供正文内联引用解析。
+若向量 metadata 中带有摄入时的原始 URL，则 citation 中会包含 `original_content_url`（由前端挂载链接，不写入 LLM prompt）。
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List, Tuple
 
 from app.rag.models import RetrievedChunk
 
@@ -81,25 +82,33 @@ def _original_content_url_from_chunk_metadata(meta: Any) -> str | None:
     return None
 
 
-def chunks_to_rag_citations(
+def _format_doc_header(chunk: RetrievedChunk) -> str:
+    """LLM 可见的文档标签（仅名称 + 章节，不含 URL）。"""
+    dn = (chunk.doc_name or "").strip() or "未知文档"
+    section = (chunk.section_path or "").strip()
+    label = f"《{dn}》"
+    if section:
+        label += f" {section}"
+    return label
+
+
+def _format_numbered_llm_snippet(ref_index: int, chunk: RetrievedChunk) -> str:
+    body = (chunk.text or "").strip()
+    return f"[{ref_index}] {_format_doc_header(chunk)}\n{body}"
+
+
+def _iter_eligible_chunks(
     chunks: List[RetrievedChunk] | None,
     *,
     max_items: int = 24,
     exclude_namespaces: frozenset[str] | None = RAG_CITATIONS_EXCLUDED_NAMESPACES,
-) -> List[Dict[str, Any]]:
-    """
-    将 `RetrievedChunk` 转为可 JSON 序列化的 dict 列表（用于 `finished.meta.rag_citations`）。
-
-    - 按 (namespace, doc_name, chunk_id, text 前缀) 去重，保留首次出现顺序；
-    - `text_preview` 为片段摘要，避免 meta 过大；
-    - 若 chunk 的 metadata 中含摄入原始 URL（见 `_original_content_url_from_chunk_metadata`），则增加 `original_content_url`；
-    - 默认排除 ``nl2sql_schema`` / ``nl2sql_biz_knowledge`` / ``nl2sql_qa_examples``（传 ``exclude_namespaces=()`` 可关闭）。
-    """
+) -> Iterator[RetrievedChunk]:
+    """与 citations / 编号 LLM 片段共用的过滤与去重迭代器（保序）。"""
     if not chunks:
-        return []
+        return
     max_items = max(1, min(50, max_items))
     seen: set[tuple[str, str, str, str]] = set()
-    out: List[Dict[str, Any]] = []
+    count = 0
     for c in chunks:
         if not c:
             continue
@@ -117,7 +126,32 @@ def chunks_to_rag_citations(
         if key in seen:
             continue
         seen.add(key)
+        yield c
+        count += 1
+        if count >= max_items:
+            break
+
+
+def chunks_to_rag_context(
+    chunks: List[RetrievedChunk] | None,
+    *,
+    max_items: int = 24,
+    exclude_namespaces: frozenset[str] | None = RAG_CITATIONS_EXCLUDED_NAMESPACES,
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """
+    同时生成注入 LLM 的编号片段与 ``rag_citations``，保证 ``[n]`` 与 ``ref_index`` 一一对应。
+
+    :return: (numbered_llm_snippets, rag_citations)
+    """
+    snippets: List[str] = []
+    citations: List[Dict[str, Any]] = []
+    for ref_index, c in enumerate(
+        _iter_eligible_chunks(chunks, max_items=max_items, exclude_namespaces=exclude_namespaces),
+        start=1,
+    ):
+        tx = (c.text or "").strip()
         item: Dict[str, Any] = {
+            "ref_index": ref_index,
             "namespace": c.namespace,
             "doc_name": c.doc_name,
             "doc_version": c.doc_version,
@@ -136,7 +170,40 @@ def chunks_to_rag_citations(
         orig_url = _original_content_url_from_chunk_metadata(c.metadata)
         if orig_url:
             item["original_content_url"] = orig_url
-        out.append(item)
-        if len(out) >= max_items:
-            break
-    return out
+        citations.append(item)
+        snippets.append(_format_numbered_llm_snippet(ref_index, c))
+    return snippets, citations
+
+
+def chunks_to_numbered_llm_snippets(
+    chunks: List[RetrievedChunk] | None,
+    *,
+    max_items: int = 24,
+    exclude_namespaces: frozenset[str] | None = RAG_CITATIONS_EXCLUDED_NAMESPACES,
+) -> List[str]:
+    """将 chunks 转为 ``[n] 《文档名》`` 开头的 LLM 上下文块列表。"""
+    snippets, _ = chunks_to_rag_context(
+        chunks, max_items=max_items, exclude_namespaces=exclude_namespaces
+    )
+    return snippets
+
+
+def chunks_to_rag_citations(
+    chunks: List[RetrievedChunk] | None,
+    *,
+    max_items: int = 24,
+    exclude_namespaces: frozenset[str] | None = RAG_CITATIONS_EXCLUDED_NAMESPACES,
+) -> List[Dict[str, Any]]:
+    """
+    将 `RetrievedChunk` 转为可 JSON 序列化的 dict 列表（用于 `finished.meta.rag_citations`）。
+
+    - 按 (namespace, doc_name, chunk_id, text 前缀) 去重，保留首次出现顺序；
+    - `ref_index` 从 1 起，与 LLM 正文中的 ``[n]`` 及 ``chunks_to_numbered_llm_snippets`` 对齐；
+    - `text_preview` 为片段摘要，避免 meta 过大；
+    - 若 chunk 的 metadata 中含摄入原始 URL（见 `_original_content_url_from_chunk_metadata`），则增加 `original_content_url`；
+    - 默认排除 ``nl2sql_schema`` / ``nl2sql_biz_knowledge`` / ``nl2sql_qa_examples``（传 ``exclude_namespaces=()`` 可关闭）。
+    """
+    _, citations = chunks_to_rag_context(
+        chunks, max_items=max_items, exclude_namespaces=exclude_namespaces
+    )
+    return citations

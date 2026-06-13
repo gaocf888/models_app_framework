@@ -18,7 +18,7 @@ from app.llm.graphs.chatbot_faq_soft_direct import (
 from app.llm.graphs.chatbot_rag_scope import augment_retrieval_query_for_plant_kb, resolve_rag_namespace
 from app.llm.graphs.chatbot_follow_up import build_suggested_questions
 from app.llm.graphs.chatbot_intent import classify_chatbot_intent_async
-from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_citations
+from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_context
 from app.llm.graphs.chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
 from app.llm.graphs.chatbot_anaphora_detect import classify_anaphora_rules
 from app.llm.graphs.chatbot_dialogue_anchor import build_dialogue_anchor_block
@@ -146,13 +146,11 @@ class ChatbotService:
             chunks = self._rag.retrieve_chunks(rag_q, scene="chatbot", namespace=rag_ns)
             if rag_ns and cfg.plant_kb_fallback_on_empty and not chunks:
                 chunks = self._rag.retrieve_chunks(rag_q, scene="chatbot", namespace=None)
-            return [c.text for c in chunks if c.text], chunks_to_rag_citations(chunks), rule.anaphora_type, slot_bullets
-        snippets = self._hybrid_rag.retrieve(rag_q, namespace=rag_ns)
-        vec = self._rag.retrieve_chunks(rag_q, scene="chatbot", namespace=rag_ns)
-        if rag_ns and cfg.plant_kb_fallback_on_empty and not snippets and not vec:
-            snippets = self._hybrid_rag.retrieve(rag_q, namespace=None)
-            vec = self._rag.retrieve_chunks(rag_q, scene="chatbot", namespace=None)
-        return snippets, chunks_to_rag_citations(vec), rule.anaphora_type, slot_bullets
+            return *chunks_to_rag_context(chunks), rule.anaphora_type, slot_bullets
+        chunks = self._rag.retrieve_chunks(rag_q, scene="chatbot", namespace=rag_ns)
+        if rag_ns and cfg.plant_kb_fallback_on_empty and not chunks:
+            chunks = self._rag.retrieve_chunks(rag_q, scene="chatbot", namespace=None)
+        return *chunks_to_rag_context(chunks), rule.anaphora_type, slot_bullets
 
     def _maybe_update_anaphora_slots(
         self,

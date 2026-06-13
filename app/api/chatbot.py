@@ -130,9 +130,30 @@ async def chat_stream(req: ChatRequest, request: Request):
         StreamingResponse: `Content-Type: text/event-stream; charset=utf-8`。
             每条事件为 `data: ` + JSON + 换行 + 空行（符合 SSE 事件分隔约定），JSON 形态包括：
             - `{"started": true, "stream_id": "..."}`：流式已建立，可用于 `/chat/stop` 中断；
-            - `{"delta": "...", "finished": false}`：增量文本；
-            - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag`、`used_nl2sql`、`nl2sql_sql`（仅 NL2SQL 路径有值，否则为 null）、`intent_label`、`suggested_questions`、`rag_citations`（向量库引用：namespace/doc_name/doc_version/`original_content_url`（有则含摄入原始 URL）等）等；
+            - `{"delta": "...", "finished": false}`：增量文本（`delta` 为助手回答片段；可能含内联引用标记 `[n]`）；
+            - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag`、`used_nl2sql`、`nl2sql_sql`（仅 NL2SQL 路径有值，否则为 null）、`intent_label`、`suggested_questions`、`rag_citations` 等；
             - `{"error": "...", "finished": true}`：异常时错误事件。
+
+    **RAG 内联引用（方案 1 + 方案 2，前端用法）**
+
+    1. **结束帧** `meta.rag_citations`：结构化来源列表（与 `GET /sessions/messages` 中 assistant 消息的 `rag_citations` 同形）。
+       每项常见字段：
+       - `ref_index`（int，从 1 起）：与正文中 `[n]` 标记一一对应；
+       - `doc_name`、`section_path`、`namespace`、`doc_version`、`chunk_id`；
+       - `text_preview`：片段摘要；
+       - `original_content_url`（可选）：摄入时的原始文档 URL，有则可渲染为外链。
+
+    2. **正文内联 `[n]`**：模型在引用知识时可能在 `delta` 拼接后的 `answer` 中输出 `[1]`、`[2]` 等标记
+       （LLM prompt 仅注入文档名，不注入 URL）。
+
+    3. **前端渲染建议**（流式结束后，或拉取历史消息时）：
+       - 保留现有能力：在回答下方展示 `rag_citations` 来源列表（方案 1）；
+       - 内联可点（方案 2）：解析 `answer` 中的 `\\[(\d+)\\]`，用 `ref_index === n`（或数组下标 `n - 1`）
+         在 `rag_citations` 中查找对应项；有 `original_content_url` 则渲染为链接，否则仅展示 `doc_name` / `section_path` _tooltip；
+       - 软直通（FAQ）时注入 LLM 的片段可能少于 `rag_citations` 条数，内联 `[n]` 应只映射到实际出现在 prompt 中的编号
+         （通常 `n <= meta` 中可见的片段数；以 `ref_index` 为准）。
+
+    4. **NL2SQL 路径**（`intent_label=data_query`）：`rag_citations` 为空，无需解析内联引用。
 
     Raises:
         HTTPException: 本函数不直接抛出；校验失败时 422。
@@ -244,7 +265,8 @@ async def get_session_messages(
 
     Returns:
         SessionMessagesResponse: `title`/`title_source` 与 `GET /sessions` 列表同源；`messages` 按时间顺序；
-        助手消息在 RAG 路径下可含 `rag_citations`（与流式 `finished.meta.rag_citations` 同形，含 `original_content_url` 等）。
+        助手消息在 RAG 路径下可含 `rag_citations`（含 `ref_index` 与 `original_content_url` 等，与流式 `finished.meta.rag_citations` 同形）。
+        正文 `content` 中可能出现 `[n]` 内联引用，解析方式同 `/chat/stream` 文档「RAG 内联引用」一节。
 
     Raises:
         HTTPException: 本函数不直接抛出；参数校验失败时 422。
