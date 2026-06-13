@@ -234,7 +234,7 @@ def apply_intent_hard_gates(
     prev_task_type: str,
 ) -> IntentRuleResult | None:
     """
-    意图硬规则闸：BERT 与规则后端共用，保证多模态/空句/短句续问等行为一致。
+    意图硬规则闸：rules / llm / bert 后端共用，保证多模态/空句/短句续问等行为一致。
 
     返回非 None 时表示应直接采用该结果，不再走 BERT 或规则主启发式。
     """

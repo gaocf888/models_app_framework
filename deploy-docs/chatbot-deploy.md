@@ -299,7 +299,7 @@ CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph
 
 - `CHATBOT_HISTORY_LIMIT` 控制“单轮读取历史窗口”，`CONV_MAX_HISTORY_MESSAGES` 控制“会话总保留上限”；
 - `CHATBOT_INTENT_OUTPUT_LABELS` 默认建议仅放量 `kb_qa,clarify`；
-- `CHATBOT_INTENT_BACKEND` 默认 `rules`；切换 `bert` 前须准备**已完成三分类微调**的 BERT 序列分类模型（**不可用**魔塔/HF 通用预训练 `bert-base-chinese` 等直接替代）、完成宿主机挂载与 `CHATBOT_INTENT_BERT_MODEL_PATH`（详见 `docs/智能客服意图识别BERT接入说明.md`）；不想训练请保持 `rules`；
+- `CHATBOT_INTENT_BACKEND` 默认 `rules`；轻量 LLM 灰度为 `llm`（进程内 CPU + 模式 B，见 `docs/智能客服意图识别轻量LLM接入说明.md`）；`bert` 须微调模型；
 - 生产场景建议先保持 `CHATBOT_FALLBACK_LEGACY_ON_ERROR=true`，用于图异常兜底。
 
 #### 6.1.5 业务数据库（NL2SQL，可选）

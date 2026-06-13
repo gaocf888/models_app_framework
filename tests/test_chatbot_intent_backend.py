@@ -12,9 +12,15 @@ def test_resolve_intent_backend_defaults_rules():
         assert resolve_intent_backend() == "rules"
 
 
-def test_resolve_intent_backend_invalid_falls_back_rules():
+def test_resolve_intent_backend_llm_valid():
     with patch("app.llm.graphs.chatbot_intent.get_app_config") as mock_cfg:
         mock_cfg.return_value.chatbot.intent_backend = "llm"
+        assert resolve_intent_backend() == "llm"
+
+
+def test_resolve_intent_backend_invalid_falls_back_rules():
+    with patch("app.llm.graphs.chatbot_intent.get_app_config") as mock_cfg:
+        mock_cfg.return_value.chatbot.intent_backend = "unknown"
         assert resolve_intent_backend() == "rules"
 
 
@@ -27,6 +33,17 @@ def test_facade_rules_backend_matches_rules_module():
     )
     assert r.intent_label == "data_query"
     assert "structured" in r.intent_reason
+
+
+def test_sync_classify_llm_backend_falls_back_rules():
+    r = classify_chatbot_intent(
+        "查台账记录并解释过热原因",
+        enable_nl2sql_route=True,
+        image_urls=[],
+        backend="llm",
+    )
+    # sync 路径不调用 Ollama，回退 rules（混合句 rules 初判）
+    assert r.intent_label in {"kb_qa", "data_query"}
 
 
 def test_facade_bert_hard_gate_images_still_kb():

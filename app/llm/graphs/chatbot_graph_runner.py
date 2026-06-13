@@ -18,7 +18,7 @@ from app.rag.rag_service import RAGService
 
 from .chatbot_follow_up import build_suggested_questions
 from .chatbot_graph_state import ChatbotGraphState
-from .chatbot_intent import classify_chatbot_intent
+from .chatbot_intent import classify_chatbot_intent_async
 from .chatbot_nl2sql_answer import summarize_nl2sql_with_llm
 from .chatbot_rag_citations import chunks_to_rag_citations, filter_rag_citation_dicts
 from .chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
@@ -570,7 +570,7 @@ class ChatbotLangGraphRunner:
         q = (state.get("query") or "").strip()
         imgs = [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()]
         hist = state.get("history_messages") if state.get("enable_context", True) else None
-        ir = classify_chatbot_intent(
+        ir = await classify_chatbot_intent_async(
             q,
             enable_nl2sql_route=bool(state.get("enable_nl2sql_route")),
             image_urls=imgs,

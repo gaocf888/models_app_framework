@@ -136,8 +136,10 @@ services:
       - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 重排模型离线挂载
       - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/workspace/models/rerank/bge-reranker-large:ro
-      # BERT 意图：须为已微调三分类 HF 目录（非魔塔通用预训练 BERT）；CHATBOT_INTENT_BACKEND=bert 时使用
+      # BERT 意图：须为已微调三分类 HF 目录；CHATBOT_INTENT_BACKEND=bert 时使用
       - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
+      # 意图轻量 LLM（HF 目录直挂）；CHATBOT_INTENT_BACKEND=llm 时使用
+      - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
       # MinerU 与 models-app 共享 IO（须与 mineru-deploy 中 MINERU_IO_HOST_PATH 指向同一宿主目录）
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
     environment:
@@ -203,8 +205,10 @@ services:
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
       # 重排模型离线挂载
       - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
-      # BERT 意图：须为已微调三分类 HF 目录（非魔塔通用预训练 BERT）；CHATBOT_INTENT_BACKEND=bert 时使用
+      # BERT 意图：须为已微调三分类 HF 目录；CHATBOT_INTENT_BACKEND=bert 时使用
       - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
+      # 意图轻量 LLM（HF 目录直挂）；CHATBOT_INTENT_BACKEND=llm 时使用
+      - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
 
 networks:
   # 本栈内部：Redis ↔ 应用

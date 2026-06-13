@@ -62,7 +62,7 @@
 
 | 层级 | 作用 | 典型变量 |
 |------|------|----------|
-| **Docker Compose 在宿主机解析** | 用于 `docker-compose.yml` 里的**插值**（镜像、端口、网络名、数据卷源路径）。只在执行 `docker compose` 的 shell 环境 + **本目录 `.env`** 中取值（Compose 会自动加载同目录 `.env`）。 | `APP_PORT`、`APP_PORT_GPU`、`VLLM_DOCKER_NETWORK`、`RAG_DOCKER_NETWORK`、`MINERU_DOCKER_NETWORK`、`EMBEDDING_MODELS_HOST_PATH`、`RERANKER_MODELS_HOST_PATH`、`INTENT_MODELS_HOST_PATH`、`SMALL_MODEL_WEIGHTS_HOST_PATH`、`SMALL_MODEL_NVIDIA_VISIBLE_DEVICES` |
+| **Docker Compose 在宿主机解析** | 用于 `docker-compose.yml` 里的**插值**（镜像、端口、网络名、数据卷源路径）。只在执行 `docker compose` 的 shell 环境 + **本目录 `.env`** 中取值。 | `APP_PORT`、`EMBEDDING_MODELS_HOST_PATH`、`RERANKER_MODELS_HOST_PATH`、`INTENT_MODELS_HOST_PATH`、`INTENT_LLM_MODELS_HOST_PATH`、`SMALL_MODEL_WEIGHTS_HOST_PATH` 等 |
 | **注入应用容器的环境变量** | **`env_file: .env`** 把整个 `.env` 打进 **`models-app` / `models-app-gpu` 进程**，由 **`app/core/config.py`** 的 `os.getenv` 读取。应用**不会**自己 `load_dotenv` 读磁盘上的 `.env`。 | `SERVICE_API_KEYS` / `SERVICE_API_KEY`、`LLM_*`、`RAG_*`、`REDIS_URL`、`DB_*`、`GRAPH_*`、`MINERU_*`、`EMBEDDING_*` 等 |
 
 **配置策略建议**
@@ -304,7 +304,8 @@ docker compose --profile small-model-gpu up -d --build
 | `SMALL_MODEL_WEIGHTS_HOST_PATH` → `/workspace/models/small:ro` | **仅 models-app-gpu** | 只读权重；未设置时用占位卷 **`small-model-weights-dummy`**（空卷，仅开发联调 compose） |
 | `${EMBEDDING_MODELS_HOST_PATH}/bge-small-zh-v1.5`（默认 `/aidata/models/embeddings/...`） → `/workspace/models/embeddings/bge-small-zh-v1.5:ro` | `models-app` / `models-app-gpu` | **离线嵌入模型权重目录**；配合 `EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5` 使用，实现完全离线加载 |
 | `${RERANKER_MODELS_HOST_PATH}/bge-reranker-large`（默认 `/aidata/models/reranker/...`） → `/models/rerank/bge-reranker-large:ro` | `models-app` / `models-app-gpu` | **离线重排模型目录**；`RAG_RERANKER_MODEL_PATH` 指向该容器路径 |
-| `${INTENT_MODELS_HOST_PATH}/chatbot-intent-bert` → `/workspace/models/intent/chatbot-intent-bert:ro` | `models-app` / `models-app-gpu` | **BERT 意图模型**（仅 `CHATBOT_INTENT_BACKEND=bert`）；**须为已微调三分类 HF 目录，不可用魔塔通用预训练 BERT**；详见 `docs/智能客服意图识别BERT接入说明.md` |
+| `${INTENT_MODELS_HOST_PATH}/chatbot-intent-bert` → `.../chatbot-intent-bert:ro` | `models-app` / `models-app-gpu` | **BERT 意图**（`backend=bert`）；须微调 HF 目录 |
+| `${INTENT_LLM_MODELS_HOST_PATH}/qwen2.5-0.5b-instruct` → `.../qwen2.5-0.5b-instruct:ro` | `models-app` / `models-app-gpu` | **轻量意图 LLM**（`backend=llm`）；HF 目录直挂，见 `docs/智能客服意图识别轻量LLM接入说明.md` |
 
 > 若多卡环境出现重排慢或与 vLLM 争卡，建议在 `.env` 显式设置 `RAG_RERANKER_DEVICE`（如 `cuda:1`），用于指定 CrossEncoder 重排设备。
 
@@ -418,7 +419,14 @@ docker compose --profile small-model-gpu down
          pytorch_model.bin  # 或 model.safetensors（须为微调后权重，非通用预训练基座）
          tokenizer.json
          vocab.txt          # 以及 tokenizer 相关文件（与 HF 导出目录一致）
+     llm/
+       qwen2.5-0.5b-instruct/   # 轻量意图 LLM（仅 CHATBOT_INTENT_BACKEND=llm 时需要）
+         config.json
+         model.safetensors      # 标准 HuggingFace 目录，与嵌入模型相同直挂
+         tokenizer.json
    ```
+
+   > **轻量意图 LLM**：`huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct --local-dir /aidata/models/llm/qwen2.5-0.5b-instruct`；见 `docs/智能客服意图识别轻量LLM接入说明.md`。
 
    > **注意**：`chatbot-intent-bert` **不能**直接放魔塔下载的 `bert-base-chinese` 等通用预训练模型。  
    > 当前代码使用 `AutoModelForSequenceClassification`，**必须**是已完成三分类微调并导出的模型。  
@@ -429,6 +437,7 @@ docker compose --profile small-model-gpu down
    - `EMBEDDING_MODELS_HOST_PATH=/aidata/models/embeddings`
    - `RERANKER_MODELS_HOST_PATH=/aidata/models/reranker`
    - `INTENT_MODELS_HOST_PATH=/aidata/models/intent`（启用 BERT 意图时）
+   - `INTENT_LLM_MODELS_HOST_PATH=/aidata/models/llm`（启用轻量意图 LLM 时）
 
 2. **在 compose 中挂载到应用容器**
 
@@ -442,6 +451,7 @@ docker compose --profile small-model-gpu down
          - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
          - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
          - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
+         - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
 
      models-app-gpu:
        # ...
@@ -449,6 +459,7 @@ docker compose --profile small-model-gpu down
          - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
          - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
          - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
+         - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
    ```
 
 3. **在 `.env` 中指定嵌入/重排/BERT 意图模型运行参数**

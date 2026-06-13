@@ -17,7 +17,7 @@ from app.llm.graphs.chatbot_faq_soft_direct import (
 )
 from app.llm.graphs.chatbot_rag_scope import augment_retrieval_query_for_plant_kb, resolve_rag_namespace
 from app.llm.graphs.chatbot_follow_up import build_suggested_questions
-from app.llm.graphs.chatbot_intent import classify_chatbot_intent
+from app.llm.graphs.chatbot_intent import classify_chatbot_intent_async
 from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_citations
 from app.llm.graphs.chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
 from app.llm.graphs.chatbot_anaphora_detect import classify_anaphora_rules
@@ -193,7 +193,7 @@ class ChatbotService:
             if req.enable_context
             else None
         )
-        ir = classify_chatbot_intent(
+        ir = await classify_chatbot_intent_async(
             model_req.query,
             enable_nl2sql_route=enable_nl2sql,
             image_urls=[u for u in model_req.image_urls if isinstance(u, str) and u.strip()],
@@ -433,7 +433,7 @@ class ChatbotService:
             if req.enable_context
             else None
         )
-        ir = classify_chatbot_intent(
+        ir = await classify_chatbot_intent_async(
             req.query,
             enable_nl2sql_route=enable_nl2sql,
             image_urls=imgs,
