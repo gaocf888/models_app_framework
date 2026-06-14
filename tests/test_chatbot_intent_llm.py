@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.llm.graphs.chatbot_intent_llm import (
+    _build_intent_llm_messages,
     classify_chatbot_intent_by_llm,
+    resolve_intent_llm_trigger,
     should_invoke_intent_llm,
 )
 from app.llm.graphs.chatbot_intent_rules import IntentRuleResult
@@ -24,6 +26,58 @@ def test_should_not_invoke_high_confidence_structured():
 def test_should_invoke_mixed_marker_even_if_conf_ok():
     r = IntentRuleResult("data_query", "mixed_prefers_structured", 0.8, "", "unknown")
     assert should_invoke_intent_llm(r, conf_threshold=0.78) is True
+    assert resolve_intent_llm_trigger(r, conf_threshold=0.78) == "mixed"
+
+
+def test_resolve_trigger_low_confidence_default_kb_qa():
+    r = IntentRuleResult("kb_qa", "default_kb_qa", 0.82, "", "text_kb_qa")
+    assert resolve_intent_llm_trigger(r, conf_threshold=0.83) == "low_confidence"
+    assert resolve_intent_llm_trigger(r, conf_threshold=0.78) is None
+
+
+def test_resolve_trigger_ambiguous_over_low_confidence():
+    r = IntentRuleResult("kb_qa", "ambiguous_pattern_resolved_by_ctx|ctx_task=text_kb_qa", 0.72, "h", "text_kb_qa")
+    assert resolve_intent_llm_trigger(r, conf_threshold=0.78) == "ambiguous_ctx"
+
+
+def test_build_messages_low_confidence_omits_rule_label():
+    msgs = _build_intent_llm_messages(
+        query="1号机组管子数量",
+        history_summary="",
+        enable_nl2sql_route=True,
+        trigger="low_confidence",
+    )
+    sys = msgs[0]["content"]
+    assert "规则层初判" not in sys
+    assert "独立分类" in sys
+    assert "default_kb_qa" not in sys
+    assert "1号机组管子数量" in sys
+    assert "data_query" in sys
+
+
+def test_build_messages_mixed_weak_hint_no_rule_label():
+    msgs = _build_intent_llm_messages(
+        query="查台账并解释过热原因",
+        history_summary="",
+        enable_nl2sql_route=True,
+        trigger="mixed",
+    )
+    sys = msgs[0]["content"]
+    assert "混合意图" in sys
+    assert "规则层初判" not in sys
+    assert "mixed_prefers" not in sys
+
+
+def test_build_messages_ambiguous_weak_hint():
+    msgs = _build_intent_llm_messages(
+        query="上述原因",
+        history_summary="assistant: 过热原因…",
+        enable_nl2sql_route=True,
+        trigger="ambiguous_ctx",
+    )
+    sys = msgs[0]["content"]
+    assert "指代上文" in sys
+    assert "规则层初判" not in sys
 
 
 @pytest.mark.asyncio
