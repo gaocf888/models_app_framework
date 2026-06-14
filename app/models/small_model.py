@@ -156,6 +156,47 @@ class SmallModelChannelConfig(BaseModel):
         None,
         description="L3 禁区多边形顶点，覆盖 YAML",
     )
+    gallery_id: str | None = Field(None, description="人脸识别：目标人脸库 ID")
+    match_threshold: float | None = Field(None, ge=0.0, le=1.0, description="人脸识别相似度阈值")
+    face_model_pack: str | None = Field(None, description="InsightFace 模型包，如 buffalo_l")
+    face_model_root: str | None = Field(None, description="InsightFace 模型根目录")
+    face_gallery_dir: str | None = Field(None, description="人脸库数据目录，默认 data/face_galleries")
+    det_size: list[int] | None = Field(None, description="人脸检测输入尺寸 [w,h]")
+    min_face_size: int | None = Field(None, description="最小人脸边长（像素）")
+    max_faces: int | None = Field(None, description="单帧最多处理人脸数")
+    unknown_alert: bool | None = Field(None, description="是否对未命中库的人脸告警")
+    draw_boxes: bool | None = Field(None, description="存证图是否绘制人脸框与姓名")
+    face_alert_mode: str | None = Field(
+        None,
+        description="告警模式：identified | unknown | both；未设时 unknown_alert=true 等价 both",
+    )
+    unknown_cooldown_seconds: int | None = Field(
+        None,
+        description="陌生人告警冷却（秒）；未设则与 cooldown_seconds 相同",
+    )
+    calling_mode: str | None = Field(
+        None,
+        description="接打电话：spatial（人+手机空间规则）| end_to_end（自训 call 类单模型）",
+    )
+    calling_person_class_id: int | None = Field(None, description="spatial 模式：person 类 id，默认 0")
+    calling_phone_class_id: int | None = Field(None, description="spatial 模式：phone 类 id，默认 67")
+    calling_upper_body_ratio: float | None = Field(
+        None,
+        description="spatial：手机中心须在 person 框上部占比，默认 0.45",
+    )
+    calling_min_phone_conf: float | None = Field(None, description="spatial：手机最低置信度，默认 0.5")
+    calling_fallback_end_to_end: bool | None = Field(
+        None,
+        description="spatial 无命中时是否回落 end_to_end 自训权重",
+    )
+    calling_fallback_weights_path: str | None = Field(
+        None,
+        description="回落 end_to_end 使用的权重，如 call.pt",
+    )
+    calling_fallback_class_filter: dict | None = Field(
+        None,
+        description="回落 end_to_end 时的 class_filter",
+    )
     extra_params: dict | None = Field(
         None,
         description="其余覆盖项（JSON）；与顶层同名字段同时存在时，服务层以顶层字段为准写入 extra_params",

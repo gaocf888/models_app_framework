@@ -44,6 +44,28 @@ class AlgorithmConfig:
     dwell_polygon: Optional[List[List[float]]] = None
     line_cross_line: Optional[List[List[float]]] = None
     zone_intrusion_polygon: Optional[List[List[float]]] = None
+    # 人脸识别（FaceRecognitionStrategy）
+    gallery_id: Optional[str] = None
+    match_threshold: Optional[float] = None
+    face_model_pack: Optional[str] = None
+    face_model_root: Optional[str] = None
+    face_gallery_dir: Optional[str] = None
+    det_size: Optional[List[int]] = None
+    min_face_size: Optional[int] = None
+    max_faces: Optional[int] = None
+    unknown_alert: Optional[bool] = None
+    draw_boxes: Optional[bool] = None
+    face_alert_mode: Optional[str] = None
+    unknown_cooldown_seconds: Optional[int] = None
+    # 接打电话（CallingDetectionStrategy）
+    calling_mode: Optional[str] = None
+    calling_person_class_id: Optional[int] = None
+    calling_phone_class_id: Optional[int] = None
+    calling_upper_body_ratio: Optional[float] = None
+    calling_min_phone_conf: Optional[float] = None
+    calling_fallback_end_to_end: Optional[bool] = None
+    calling_fallback_weights_path: Optional[str] = None
+    calling_fallback_class_filter: Optional[dict] = None
 
 
 def _algorithm_config_from_mapping(algor_type: str, cfg: dict) -> AlgorithmConfig:
@@ -70,6 +92,26 @@ def _algorithm_config_from_mapping(algor_type: str, cfg: dict) -> AlgorithmConfi
         dwell_polygon=cfg.get("dwell_polygon"),
         line_cross_line=cfg.get("line_cross_line"),
         zone_intrusion_polygon=cfg.get("zone_intrusion_polygon"),
+        gallery_id=cfg.get("gallery_id"),
+        match_threshold=cfg.get("match_threshold"),
+        face_model_pack=cfg.get("face_model_pack"),
+        face_model_root=cfg.get("face_model_root"),
+        face_gallery_dir=cfg.get("face_gallery_dir"),
+        det_size=cfg.get("det_size"),
+        min_face_size=cfg.get("min_face_size"),
+        max_faces=cfg.get("max_faces"),
+        unknown_alert=cfg.get("unknown_alert"),
+        draw_boxes=cfg.get("draw_boxes"),
+        face_alert_mode=cfg.get("face_alert_mode"),
+        unknown_cooldown_seconds=cfg.get("unknown_cooldown_seconds"),
+        calling_mode=cfg.get("calling_mode"),
+        calling_person_class_id=cfg.get("calling_person_class_id"),
+        calling_phone_class_id=cfg.get("calling_phone_class_id"),
+        calling_upper_body_ratio=cfg.get("calling_upper_body_ratio"),
+        calling_min_phone_conf=cfg.get("calling_min_phone_conf"),
+        calling_fallback_end_to_end=cfg.get("calling_fallback_end_to_end"),
+        calling_fallback_weights_path=cfg.get("calling_fallback_weights_path"),
+        calling_fallback_class_filter=cfg.get("calling_fallback_class_filter"),
     )
 
 

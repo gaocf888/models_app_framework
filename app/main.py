@@ -135,7 +135,7 @@ def create_app() -> FastAPI:
     async def health_api_prefix() -> dict:
         return {"status": "ok"}
 
-    from app.api import analysis, analysis_agent, chatbot, graph_admin, inspection_extract, inspection_extract_v0, llm_inference, nl2sql, rag_admin, small_model, train_admin
+    from app.api import analysis, analysis_agent, chatbot, face_gallery, graph_admin, inspection_extract, inspection_extract_v0, llm_inference, nl2sql, rag_admin, small_model, train_admin
 
     _auth = [Depends(require_service_api_key)]
 
@@ -168,6 +168,12 @@ def create_app() -> FastAPI:
         small_model.router,
         prefix="/small-model",
         tags=["small-model"],
+        dependencies=_auth,
+    )
+    app.include_router(
+        face_gallery.router,
+        prefix="/face",
+        tags=["face"],
         dependencies=_auth,
     )
     app.include_router(

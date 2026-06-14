@@ -139,6 +139,9 @@ services:
       - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
       # MinerU 与 models-app 共享 IO（须与 mineru-deploy 中 MINERU_IO_HOST_PATH 指向同一宿主目录）
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
+      # 人脸识别（CPU）：/face/* API + 人脸库持久化（主镜像 models-app 已含 InsightFace CPU 依赖）
+      - face-galleries-data:/workspace/data/face_galleries
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
     environment:
       - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-large
 
@@ -195,6 +198,10 @@ services:
       - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 小模型证据输出（与 configs 中 evidence_dir 为 workspace 相对路径时一致）
       - small-model-data:/workspace/data/small_model_evidence
+      # 人脸库（录入 embedding + 图片）；与 face_gallery_dir 默认路径一致
+      - face-galleries-data:/workspace/data/face_galleries
+      # InsightFace 模型（buffalo_l 等）；可选宿主机预下载目录覆盖
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
       # 权重：宿主机目录 -> 容器内 /workspace/models/small（只读）
       # 未设置 SMALL_MODEL_WEIGHTS_HOST_PATH 时使用命名卷占位，见文件末尾 volumes
       - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro
@@ -235,6 +242,9 @@ networks:
 volumes:
   huggingface-cache: {}
   small-model-data: {}
+  face-galleries-data: {}
+  insightface-models-dummy:
+    driver: local
   # 占位卷：未配置 SMALL_MODEL_WEIGHTS_HOST_PATH 时避免 compose 报错；无真实权重，生产请务必配置宿主机路径
   small-model-weights-dummy:
     driver: local

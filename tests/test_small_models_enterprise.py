@@ -32,23 +32,25 @@ def test_apply_class_filter() -> None:
     assert len(out) == 1 and out[0].label == "person"
 
 
-def test_strategy_table_three_classes() -> None:
+def test_strategy_table_includes_all_classes() -> None:
     assert set(_STRATEGY_CLASSES) == {
         "ObjectDetectionStrategy",
         "RegularBehaviorDetectionStrategy",
         "ComplexBehaviorDetectionStrategy",
+        "FaceRecognitionStrategy",
+        "CallingDetectionStrategy",
     }
 
 
 def test_calling_strategy_alias_same_singleton() -> None:
     eng = SmallModelInferenceEngine()
     a = eng._get_strategy("CallingStrategy")
-    b = eng._get_strategy("RegularBehaviorDetectionStrategy")
+    b = eng._get_strategy("CallingDetectionStrategy")
     assert a is b
 
 
 def test_canonical_name() -> None:
-    assert _canonical_strategy_name("CallingStrategy") == "RegularBehaviorDetectionStrategy"
+    assert _canonical_strategy_name("CallingStrategy") == "CallingDetectionStrategy"
     assert _canonical_strategy_name("ObjectDetectionStrategy") == "ObjectDetectionStrategy"
 
 

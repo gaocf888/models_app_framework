@@ -9,7 +9,8 @@
 #   - app/ 源码
 #   - configs/（prompt_registry、small_model 等 YAML 运行时相对工作目录 /workspace）
 #
-# 不包含：小模型 GPU 推理依赖 → 使用 Dockerfile.small-model-gpu + profile small-model-gpu
+# 不包含：小模型 GPU 推理依赖（YOLO/Ultralytics）→ profile small-model-gpu
+# 包含：CPU 人脸识别（/face/*）→ requirements-人脸识别-CPU.txt
 # =============================================================================
 
 FROM python:3.11-slim-bookworm
@@ -26,6 +27,7 @@ WORKDIR /workspace
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libglib2.0-0 libsm6 libxext6 libgl1 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # 构建阶段若出现 json.decoder.JSONDecodeError（解析 PyPI 索引 JSON 失败），多为响应被截断/超时；
@@ -36,11 +38,12 @@ ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
 
 COPY requirements-大模型应用.txt /workspace/requirements-app.txt
+COPY requirements-人脸识别-CPU.txt /workspace/requirements-face-cpu.txt
 RUN pip install --upgrade pip setuptools wheel \
     && pip install --no-cache-dir --timeout=300 --retries=15 \
         ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
         ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
-        -r /workspace/requirements-app.txt
+        -r /workspace/requirements-app.txt -r /workspace/requirements-face-cpu.txt
 
 COPY app /workspace/app
 COPY configs /workspace/configs

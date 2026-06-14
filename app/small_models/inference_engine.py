@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Dict, Type
+from typing import Any, Dict, List, Type
 
 from app.core.logging import get_logger
 from app.small_models.algorithm_registry import (
@@ -16,8 +16,13 @@ from app.small_models.callback_client import CallbackClient
 from app.small_models.evidence import ClipRecorder, EvidenceStore
 from app.small_models.registry import SmallModelRegistry
 from app.small_models.strategy.base import SmallModelStrategy, StrategyResult
+from app.small_models.strategy.calling_detection import (
+    CallingDetectionStrategy,
+    resolve_strategy_name_for_algor,
+)
 from app.small_models.strategy.complex_behavior_detection import ComplexBehaviorDetectionStrategy
 from app.small_models.strategy.object_detection import ObjectDetectionStrategy
+from app.small_models.strategy.face_recognition import FaceRecognitionStrategy
 from app.small_models.strategy.regular_behavior_detection import RegularBehaviorDetectionStrategy
 
 logger = get_logger(__name__)
@@ -27,12 +32,14 @@ _STRATEGY_CLASSES: Dict[str, Type[SmallModelStrategy]] = {
     "ObjectDetectionStrategy": ObjectDetectionStrategy,
     "RegularBehaviorDetectionStrategy": RegularBehaviorDetectionStrategy,
     "ComplexBehaviorDetectionStrategy": ComplexBehaviorDetectionStrategy,
+    "FaceRecognitionStrategy": FaceRecognitionStrategy,
+    "CallingDetectionStrategy": CallingDetectionStrategy,
 }
 
 # 历史/兼容别名 → 与规范名共用同一策略单例（避免重复加载模型）
 _STRATEGY_ALIASES: Dict[str, str] = {
-    # 旧 YAML 常用名；与 L2 行为检测同实现（YOLO 检测管线一致）
-    "CallingStrategy": "RegularBehaviorDetectionStrategy",
+    # 旧 YAML / 历史名 → 接打电话专用策略（spatial + 可回落 end_to_end）
+    "CallingStrategy": "CallingDetectionStrategy",
 }
 
 
@@ -43,6 +50,9 @@ def _canonical_strategy_name(name: str) -> str:
 def _default_strategy_for_cfg(cfg: AlgorithmConfig) -> AlgorithmConfig:
     if cfg.strategy:
         return cfg
+    resolved = resolve_strategy_name_for_algor(None, cfg.algor_type)
+    if resolved:
+        return replace(cfg, strategy=resolved)
     return replace(cfg, strategy="ObjectDetectionStrategy")
 
 
@@ -60,6 +70,26 @@ def _config_to_infer_dict(cfg: AlgorithmConfig) -> Dict[str, Any]:
         "dwell_polygon": cfg.dwell_polygon,
         "line_cross_line": cfg.line_cross_line,
         "zone_intrusion_polygon": cfg.zone_intrusion_polygon,
+        "gallery_id": cfg.gallery_id,
+        "match_threshold": cfg.match_threshold,
+        "face_model_pack": cfg.face_model_pack,
+        "face_model_root": cfg.face_model_root,
+        "face_gallery_dir": cfg.face_gallery_dir,
+        "det_size": cfg.det_size,
+        "min_face_size": cfg.min_face_size,
+        "max_faces": cfg.max_faces,
+        "unknown_alert": cfg.unknown_alert,
+        "draw_boxes": cfg.draw_boxes,
+        "face_alert_mode": cfg.face_alert_mode,
+        "unknown_cooldown_seconds": cfg.unknown_cooldown_seconds,
+        "calling_mode": cfg.calling_mode,
+        "calling_person_class_id": cfg.calling_person_class_id,
+        "calling_phone_class_id": cfg.calling_phone_class_id,
+        "calling_upper_body_ratio": cfg.calling_upper_body_ratio,
+        "calling_min_phone_conf": cfg.calling_min_phone_conf,
+        "calling_fallback_end_to_end": cfg.calling_fallback_end_to_end,
+        "calling_fallback_weights_path": cfg.calling_fallback_weights_path,
+        "calling_fallback_class_filter": cfg.calling_fallback_class_filter,
     }
 
 
@@ -146,13 +176,15 @@ class SmallModelInferenceEngine:
         if not result.triggered:
             return
 
-        self._last_trigger_ts[f"{channel_id}:{algor_type}"] = time.time()
+        if result.extra.get("algorithm") != "face_recognition":
+            self._last_trigger_ts[f"{channel_id}:{algor_type}"] = time.time()
 
         evidence_dir = resolve_path(cfg.evidence_dir or "data/small_model_evidence") or "data/small_model_evidence"
         store = EvidenceStore(evidence_dir)
         image_path = None
+        evidence_frame = result.extra.get("annotated_frame") or frame
         try:
-            image_path = store.save_frame_jpg(frame, channel_id=channel_id, algor_type=algor_type)
+            image_path = store.save_frame_jpg(evidence_frame, channel_id=channel_id, algor_type=algor_type)
         except Exception as exc:  # noqa: BLE001
             logger.warning("save frame failed: channel=%s algor=%s err=%s", channel_id, algor_type, exc)
 
@@ -177,17 +209,34 @@ class SmallModelInferenceEngine:
             "model_name": cfg.model_name or model_name,
             "weights_path": resolve_path(cfg.weights_path),
             "detections": [
-                {"label": d.label, "score": d.score, "bbox_xyxy": d.bbox_xyxy} for d in result.detections
+                {
+                    "label": d.label,
+                    "score": d.score,
+                    "bbox_xyxy": d.bbox_xyxy,
+                    **({"person_id": d.person_id} if d.person_id is not None else {}),
+                }
+                for d in result.detections
             ],
             "evidence": {"image_path": image_path, "video_path": video_path},
             "extra": result.extra,
         }
+        if result.extra.get("algorithm") == "face_recognition":
+            payload["alert_types"] = result.extra.get("alert_types") or []
+            payload["face_alerts"] = result.extra.get("face_alerts") or []
+            payload["face_alert_mode"] = result.extra.get("face_alert_mode")
+        if result.extra.get("algorithm") == "calling_detection":
+            payload["calling_mode"] = result.extra.get("calling_mode")
+            payload["calling_fallback_used"] = bool(result.extra.get("calling_fallback_used"))
+            payload["calling_match_count"] = result.extra.get("calling_match_count")
         if cfg.callback_url:
             self._callback.post(cfg.callback_url, payload)
 
     def _apply_cooldown(
         self, channel_id: str, algor_type: str, cfg: AlgorithmConfig, result: StrategyResult
     ) -> StrategyResult:
+        if result.extra.get("algorithm") == "face_recognition":
+            return self._apply_face_cooldown(channel_id, algor_type, cfg, result)
+
         cooldown = int(cfg.cooldown_seconds or 0)
         key = f"{channel_id}:{algor_type}"
         now = time.time()
@@ -196,3 +245,40 @@ class SmallModelInferenceEngine:
             if last is not None and (now - last) < cooldown:
                 return StrategyResult(triggered=False, detections=result.detections, extra=result.extra)
         return result
+
+    def _apply_face_cooldown(
+        self, channel_id: str, algor_type: str, cfg: AlgorithmConfig, result: StrategyResult
+    ) -> StrategyResult:
+        """人脸识别：白名单与陌生人分键冷却。"""
+        if not result.triggered:
+            return result
+
+        alert_types: List[str] = list(result.extra.get("alert_types") or [])
+        if not alert_types:
+            return result
+
+        now = time.time()
+        allowed: List[str] = []
+        for at in alert_types:
+            key = f"{channel_id}:{algor_type}:{at}"
+            if at == "unknown":
+                cooldown = int(cfg.unknown_cooldown_seconds if cfg.unknown_cooldown_seconds is not None else cfg.cooldown_seconds or 0)
+            else:
+                cooldown = int(cfg.cooldown_seconds or 0)
+            if cooldown > 0:
+                last = self._last_trigger_ts.get(key)
+                if last is not None and (now - last) < cooldown:
+                    continue
+            allowed.append(at)
+
+        if not allowed:
+            return StrategyResult(triggered=False, detections=result.detections, extra=result.extra)
+
+        for at in allowed:
+            self._last_trigger_ts[f"{channel_id}:{algor_type}:{at}"] = now
+
+        extra = dict(result.extra)
+        face_alerts = [a for a in (extra.get("face_alerts") or []) if a.get("match_type") in allowed]
+        extra["alert_types"] = allowed
+        extra["face_alerts"] = face_alerts
+        return StrategyResult(triggered=True, detections=result.detections, extra=extra)

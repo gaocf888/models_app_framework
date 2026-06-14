@@ -3,10 +3,11 @@
 # =============================================================================
 # 调用链：InferenceEngine → app/small_models/strategy/*.py → _yolo_utils.py → Ultralytics YOLOv8
 #
-# 【策略类】三选一（YAML 中 strategy 字段）：
+# 【策略类】四选一（YAML 中 strategy 字段）：
 #   - ObjectDetectionStrategy           — L1 常规目标（框 + class_filter + roi）
 #   - RegularBehaviorDetectionStrategy  — L2 常规行为（多为自训检测头）
 #   - ComplexBehaviorDetectionStrategy  — L3 复杂时空（complex_mode: dwell / line_cross / zone_intrusion）
+#   - FaceRecognitionStrategy           — L4 人脸识别（InsightFace + gallery_id 1:N）
 #
 # 【权重 weights_path】
 #   - 相对路径以项目根目录为基准（与 algorithm_registry.resolve_path 一致）。
@@ -21,9 +22,11 @@
 #   40xxx — L1 常规目标
 #   41xxx — L2 常规行为
 #   42xxx — L3 复杂时空
+#   43xxx — L4 人脸识别（InsightFace）
 #   40417 — 历史示例 ID（接打电话），保留兼容
 #
-# 旧配置若写 CallingStrategy，引擎内映射为 RegularBehaviorDetectionStrategy（与 L2 同一单例）。
+# 旧配置若写 CallingStrategy，引擎内映射为 CallingDetectionStrategy。
+# 接打电话 algor_type（40417/41101/40422）未写 strategy 时默认 CallingDetectionStrategy。
 # =============================================================================
 
 _meta:
@@ -33,6 +36,42 @@ _meta:
     conf: 0.25
     iou: 0.7
   behavior_evidence: &behavior_evidence
+    cooldown_seconds: 300
+    evidence_dir: data/small_model_evidence
+    clip_seconds: 10
+    callback_url: null
+  face_infer: &face_infer
+    device: "cpu"
+    conf: 0.5
+    face_model_pack: buffalo_l
+    face_model_root: app/small_models/pretrained/insightface
+    face_gallery_dir: data/face_galleries
+    det_size: [640, 640]
+    min_face_size: 40
+    max_faces: 10
+    match_threshold: 0.45
+    draw_boxes: true
+    unknown_alert: false
+  face_evidence: &face_evidence
+    cooldown_seconds: 60
+    unknown_cooldown_seconds: 30
+    evidence_dir: data/small_model_evidence
+    clip_seconds: 0
+    callback_url: null
+  calling_spatial: &calling_spatial
+    device: "cpu"
+    imgsz: 640
+    conf: 0.25
+    iou: 0.7
+    strategy: CallingDetectionStrategy
+    calling_mode: spatial
+    calling_person_class_id: 0
+    calling_phone_class_id: 67
+    calling_upper_body_ratio: 0.45
+    calling_min_phone_conf: 0.5
+    calling_fallback_end_to_end: true
+    calling_fallback_weights_path: app/small_models/pretrained/call.pt
+  calling_evidence: &calling_evidence
     cooldown_seconds: 300
     evidence_dir: data/small_model_evidence
     clip_seconds: 10
@@ -139,20 +178,33 @@ algorithms:
 
   "40417":
     name: calling
-    description: 接打电话检测（历史 ID）；自训权重 call.pt。可按数据集重训后仅替换 weights_path。
-    strategy: RegularBehaviorDetectionStrategy
+    description: |
+      接打电话（历史 ID）。默认 spatial：yolov8s 检 person+phone + 上半身空间约束；
+      无命中时回落 call.pt 端到端。可 API 覆盖 calling_mode=end_to_end 仅用自训头。
+    strategy: CallingDetectionStrategy
     model_name: calling_yolo
-    weights_path: app/small_models/pretrained/call.pt
-    <<: [*yolo_infer, *behavior_evidence]
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: [*calling_spatial, *calling_evidence]
 
   "41101":
     name: 接打电话检测
     description: |
-      与 40417 同能力、不同编号，便于新业务统一 41xxx。自训 call 类；重训后替换 weights_path。
-    strategy: RegularBehaviorDetectionStrategy
+      与 40417 同实现；spatial 优先，fallback call.pt。新业务推荐此编号。
+    strategy: CallingDetectionStrategy
     model_name: calling_yolo_v2
+    weights_path: app/small_models/pretrained/yolov8s.pt
+    <<: [*calling_spatial, *calling_evidence]
+
+  "41201":
+    name: 接打电话_纯端到端
+    description: |
+      仅使用自训 call.pt（L2 等价路径），不做 person+phone 空间规则。兼容旧部署或 call 专模场景。
+    strategy: CallingDetectionStrategy
+    model_name: calling_e2e_only
+    calling_mode: end_to_end
+    calling_fallback_end_to_end: false
     weights_path: app/small_models/pretrained/call.pt
-    <<: [*yolo_infer, *behavior_evidence]
+    <<: [*yolo_infer, *calling_evidence]
 
   "41102":
     name: 口罩佩戴
@@ -229,3 +281,50 @@ algorithms:
     zone_intrusion_polygon: [[0, 0], [300, 0], [300, 300], [0, 300]]
     class_filter:
       class_ids: [0]
+
+  # ----- L4 人脸识别（43xxx；InsightFace buffalo_l）-----
+
+  "43101":
+    name: 人脸识别_白名单
+    description: |
+      InsightFace 检测 + 对齐 + 1:N 比对。face_alert_mode=identified，仅白名单命中触发回调。
+    strategy: FaceRecognitionStrategy
+    model_name: face_recognition_insightface
+    gallery_id: default
+    face_alert_mode: identified
+    <<: [*face_infer, *face_evidence]
+
+  "43102":
+    name: 人脸识别_白名单与陌生人
+    description: |
+      face_alert_mode=both：白名单与陌生人均触发回调；陌生人冷却可用 unknown_cooldown_seconds。
+    strategy: FaceRecognitionStrategy
+    model_name: face_recognition_both_alert
+    gallery_id: default
+    face_alert_mode: both
+    unknown_alert: true
+    <<: [*face_infer, *face_evidence]
+
+  "43103":
+    name: 人脸识别_仅陌生人告警
+    description: |
+      face_alert_mode=unknown：只对未命中库的人脸告警（安防陌生人场景）。
+    strategy: FaceRecognitionStrategy
+    model_name: face_recognition_unknown_only
+    gallery_id: default
+    face_alert_mode: unknown
+    <<: [*face_infer, *face_evidence]
+
+  "43104":
+    name: 人脸识别_ROI区域
+    description: |
+      仅处理 ROI 内人脸（框中心点在区域内）；roi 坐标请按实际分辨率修改或通过通道 API 覆盖。
+    strategy: FaceRecognitionStrategy
+    model_name: face_recognition_roi
+    gallery_id: default
+    face_alert_mode: identified
+    roi:
+      mode: rect
+      xyxy: [100, 100, 900, 700]
+      match_mode: center
+    <<: [*face_infer, *face_evidence]

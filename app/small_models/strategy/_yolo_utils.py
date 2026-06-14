@@ -44,11 +44,20 @@ def predict_detections(
     imgsz: int,
     conf: float,
     iou: float,
+    classes: List[int] | None = None,
 ) -> List[Detection]:
-    """对单帧 BGR 图执行 predict，解析为 Detection 列表。"""
-    results = model.predict(
-        source=frame_bgr, imgsz=imgsz, conf=conf, iou=iou, device=device, verbose=False
-    )
+    """对单帧 BGR 图执行 predict，解析为 Detection 列表。classes 为 YOLO 推理类别过滤。"""
+    predict_kwargs: Dict[str, Any] = {
+        "source": frame_bgr,
+        "imgsz": imgsz,
+        "conf": conf,
+        "iou": iou,
+        "device": device,
+        "verbose": False,
+    }
+    if classes:
+        predict_kwargs["classes"] = classes
+    results = model.predict(**predict_kwargs)
     out: List[Detection] = []
     for r in results:
         if r.boxes is None:

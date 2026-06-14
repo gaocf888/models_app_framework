@@ -9,7 +9,8 @@
 #   - app/ 源码
 #   - configs/（prompt_registry、small_model 等 YAML 运行时相对工作目录 /workspace）
 #
-# 不包含：小模型 GPU 推理依赖 → 使用 Dockerfile.small-model-gpu + profile small-model-gpu
+# 不包含：小模型 GPU 推理依赖（YOLO/Ultralytics）→ profile small-model-gpu
+# 包含：CPU 人脸识别（/face/*）→ requirements-人脸识别-CPU.txt
 # =============================================================================
 
 # FROM python:3.11-slim-bookworm
@@ -35,6 +36,8 @@ RUN yum update -y && \
     gcc-c++ \
     make \
     libxcb \
+    mesa-libGL \
+    libgomp \
     && yum clean all && \
     rm -rf /var/cache/yum
 
@@ -49,12 +52,13 @@ ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
 
 COPY requirements-大模型应用.txt /workspace/requirements-app.txt
+COPY requirements-人脸识别-CPU.txt /workspace/requirements-face-cpu.txt
 # 显式使用 conda 的 pip，与下文 CMD / compose 中的 /opt/conda/bin/python 为同一 site-packages。
 RUN /opt/conda/bin/pip install --upgrade pip setuptools wheel \
     && /opt/conda/bin/pip install --no-cache-dir --timeout=300 --retries=15 \
         ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
         ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
-        -r /workspace/requirements-app.txt
+        -r /workspace/requirements-app.txt -r /workspace/requirements-face-cpu.txt
 
 COPY app /workspace/app
 COPY configs /workspace/configs

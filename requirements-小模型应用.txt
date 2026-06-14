@@ -14,6 +14,11 @@ prometheus-client>=0.20.0  # 暴露小模型相关指标，如 small_model_frame
 # === 在线推理（YOLOv8）===
 ultralytics>=8.0.0         # 小模型策略 _yolo_utils / InferenceEngine 加载 .pt 并推理（与训练侧版本建议一致）
 
+# === 人脸识别（InsightFace）===
+insightface>=0.7.3         # FaceRecognitionStrategy：检测 + 对齐 + ArcFace 特征
+onnxruntime>=1.16.0        # InsightFace 默认 ONNX 推理后端；GPU 镜像内可换 onnxruntime-gpu
+faiss-cpu>=1.7.4           # 人脸库 ≥32 样本时 1:N 加速（可选，未安装则回退 numpy）
+
 # === 可选工具（按需启用） ===
 Pillow>=10.0.0             # 如需对图像做格式转换/简易绘制，可按需使用
 pyyaml>=6.0.0              # 读取 dataset.yaml（如 app/train/yolo/video_rtsp_yolo_queue_test.py 中类别名 names）

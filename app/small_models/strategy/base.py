@@ -13,6 +13,7 @@ class Detection:
     bbox_xyxy: tuple[int, int, int, int] | None = None
     class_id: int | None = None
     track_id: int | None = None
+    person_id: str | None = None
 
 
 @dataclass(frozen=True)

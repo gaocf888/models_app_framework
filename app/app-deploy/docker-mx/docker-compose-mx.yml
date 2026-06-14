@@ -142,11 +142,13 @@ services:
       - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
       # MinerU 与 models-app 共享 IO（须与 mineru-deploy 中 MINERU_IO_HOST_PATH 指向同一宿主目录）
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
+      - face-galleries-data:/workspace/data/face_galleries
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
     environment:
       - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-large
 
   # ---------------------------------------------------------------------------
-  # models-app-gpu：仅当 docker compose --profile small-model-gpu 时启动
+  # models-app-gpu
   # - 镜像含 cu121 PyTorch、ultralytics、小模型依赖；需宿主机 GPU + NVIDIA Container Toolkit
   # - 默认宿主机端口 APP_PORT_GPU=8081，避免与 models-app 的 APP_PORT 冲突
   # - 仅要一个对外实例时：stop models-app，并将 APP_PORT_GPU 设为 8080
@@ -199,6 +201,8 @@ services:
       - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 小模型证据输出（与 configs 中 evidence_dir 为 workspace 相对路径时一致）
       - small-model-data:/workspace/data/small_model_evidence
+      - face-galleries-data:/workspace/data/face_galleries
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
       # 权重：宿主机目录 -> 容器内 /workspace/models/small（只读）
       # 未设置 SMALL_MODEL_WEIGHTS_HOST_PATH 时使用命名卷占位，见文件末尾 volumes
       - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro
@@ -239,6 +243,9 @@ networks:
 volumes:
   huggingface-cache: {}
   small-model-data: {}
+  face-galleries-data: {}
+  insightface-models-dummy:
+    driver: local
   # 占位卷：未配置 SMALL_MODEL_WEIGHTS_HOST_PATH 时避免 compose 报错；无真实权重，生产请务必配置宿主机路径
   small-model-weights-dummy:
     driver: local

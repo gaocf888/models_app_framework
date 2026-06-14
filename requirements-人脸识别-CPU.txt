@@ -1,0 +1,9 @@
+# 主镜像（models-app）CPU 人脸识别：/face/* API，不含 YOLO/Ultralytics
+#
+# 与 requirements-小模型应用.txt 中的人脸部分一致；GPU 小模型 profile 仍安装完整小模型依赖。
+
+numpy>=1.26.0
+opencv-python>=4.9.0.80
+insightface>=0.7.3
+onnxruntime>=1.16.0
+faiss-cpu>=1.7.4

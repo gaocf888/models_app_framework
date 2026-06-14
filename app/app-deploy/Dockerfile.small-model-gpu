@@ -25,7 +25,7 @@ WORKDIR /workspace
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    libglib2.0-0 libsm6 libxext6 libgl1 \
+    libglib2.0-0 libsm6 libxext6 libgl1 libgomp1 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
@@ -46,7 +46,7 @@ RUN pip install --no-cache-dir --timeout=300 --retries=15 \
     && pip install --no-cache-dir --timeout=300 --retries=15 \
         ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
         ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
-        ultralytics
+        ultralytics onnxruntime-gpu
 
 COPY app /workspace/app
 COPY configs /workspace/configs

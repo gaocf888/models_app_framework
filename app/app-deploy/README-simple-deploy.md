@@ -430,6 +430,47 @@ docker compose --profile small-model-gpu up -d --build
 
 > GPU profile 的详细说明见 `README.md`，简化版只需知道：不加 `--profile small-model-gpu` 时不会占用 GPU。
 
+### 3.1 人脸识别（InsightFace，`/face/*`）
+
+**主镜像 `models-app`（端口 `${APP_PORT:-8083}`）已内置 CPU 版 InsightFace**，无需 `--profile small-model-gpu` 即可使用人脸库录入与 `/face/identify` 等 API。
+
+视频流通道（`/small-model/channel/start` + `algor_type=431xx`）仍需 **small-model-gpu** profile（含解码线程 + YOLO 等完整小模型栈）；若仅做人脸库管理与单图识别，用主端口即可。
+
+容器内人脸库卷：`face-galleries-data` → `/workspace/data/face_galleries`。
+
+```bash
+# 1) 创建库（主端口 8083，无需 GPU profile）
+curl -X POST "http://127.0.0.1:${APP_PORT:-8083}/face/gallery" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: ${SERVICE_API_KEY}" \
+  -d '{"gallery_id":"default","name":"默认库"}'
+
+# 2) 录入
+curl -X POST "http://127.0.0.1:${APP_PORT:-8083}/face/gallery/default/enroll" \
+  -H "X-API-Key: ${SERVICE_API_KEY}" \
+  -F "person_id=emp001" -F "name=张三" -F "file=@/path/to/face.jpg"
+
+# 3) 单图识别（可选 face_alert_mode=unknown 仅陌生人）
+curl -X POST "http://127.0.0.1:${APP_PORT:-8083}/face/identify" \
+  -H "X-API-Key: ${SERVICE_API_KEY}" \
+  -F "gallery_id=default" -F "face_alert_mode=both" -F "file=@/path/to/scene.jpg"
+
+# 4) 视频通道（需 GPU profile，43102=白名单+陌生人，43103=仅陌生人，43104=ROI）
+curl -X POST "http://127.0.0.1:${APP_PORT_GPU:-8081}/small-model/channel/start" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: ${SERVICE_API_KEY}" \
+  -d '{
+    "channel_id": "cam01",
+    "algor_type": "43102",
+    "gallery_id": "default",
+    "video_source": "rtsp://user:pass@192.168.1.10/stream1"
+  }'
+```
+
+回调 payload 含 `alert_types`（`identified` / `unknown`）、`face_alerts`（实际触发告警的人脸列表）；陌生人与白名单使用独立冷却键（`unknown_cooldown_seconds`）。
+
+生产建议预下载 InsightFace 模型并设置 `INSIGHTFACE_MODELS_HOST_PATH`（见 `.env.example`）。
+
 ---
 
 ## 4. 联通性验证（智能客服）

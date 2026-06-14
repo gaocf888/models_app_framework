@@ -48,6 +48,46 @@ def _merge_channel_extra_params(cfg: SmallModelChannelConfig) -> dict:
         extra_params["line_cross_line"] = cfg.line_cross_line
     if cfg.zone_intrusion_polygon is not None:
         extra_params["zone_intrusion_polygon"] = cfg.zone_intrusion_polygon
+    if cfg.gallery_id is not None:
+        extra_params["gallery_id"] = cfg.gallery_id
+    if cfg.match_threshold is not None:
+        extra_params["match_threshold"] = cfg.match_threshold
+    if cfg.face_model_pack is not None:
+        extra_params["face_model_pack"] = cfg.face_model_pack
+    if cfg.face_model_root is not None:
+        extra_params["face_model_root"] = cfg.face_model_root
+    if cfg.face_gallery_dir is not None:
+        extra_params["face_gallery_dir"] = cfg.face_gallery_dir
+    if cfg.det_size is not None:
+        extra_params["det_size"] = cfg.det_size
+    if cfg.min_face_size is not None:
+        extra_params["min_face_size"] = cfg.min_face_size
+    if cfg.max_faces is not None:
+        extra_params["max_faces"] = cfg.max_faces
+    if cfg.unknown_alert is not None:
+        extra_params["unknown_alert"] = cfg.unknown_alert
+    if cfg.draw_boxes is not None:
+        extra_params["draw_boxes"] = cfg.draw_boxes
+    if cfg.face_alert_mode is not None:
+        extra_params["face_alert_mode"] = cfg.face_alert_mode
+    if cfg.unknown_cooldown_seconds is not None:
+        extra_params["unknown_cooldown_seconds"] = cfg.unknown_cooldown_seconds
+    if cfg.calling_mode is not None:
+        extra_params["calling_mode"] = cfg.calling_mode
+    if cfg.calling_person_class_id is not None:
+        extra_params["calling_person_class_id"] = cfg.calling_person_class_id
+    if cfg.calling_phone_class_id is not None:
+        extra_params["calling_phone_class_id"] = cfg.calling_phone_class_id
+    if cfg.calling_upper_body_ratio is not None:
+        extra_params["calling_upper_body_ratio"] = cfg.calling_upper_body_ratio
+    if cfg.calling_min_phone_conf is not None:
+        extra_params["calling_min_phone_conf"] = cfg.calling_min_phone_conf
+    if cfg.calling_fallback_end_to_end is not None:
+        extra_params["calling_fallback_end_to_end"] = cfg.calling_fallback_end_to_end
+    if cfg.calling_fallback_weights_path is not None:
+        extra_params["calling_fallback_weights_path"] = cfg.calling_fallback_weights_path
+    if cfg.calling_fallback_class_filter is not None:
+        extra_params["calling_fallback_class_filter"] = cfg.calling_fallback_class_filter
     return extra_params
 
 
