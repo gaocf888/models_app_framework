@@ -60,6 +60,7 @@ from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_citations
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.models import RetrievedChunk
 from app.services.analysis_stream_hooks import dispatch_analysis_nl2sql_stream_structured
+from app.nl2sql.errors import NL2SQLExecutionError
 from app.services.nl2sql_service import NL2SQLService
 from app.llm.graphs.analysis_synthesis_v2 import (
     AnalysisSynthesisV2Engine,
@@ -3473,6 +3474,16 @@ class AnalysisGraphRunner:
                 )
                 ANALYSIS_NL2SQL_CALL_COUNT.labels(analysis_type=req.analysis_type, status="success").inc()
                 return call, {task.item_id: rows}
+            except NL2SQLExecutionError as exc:
+                last_error = exc.brief_message
+                logger.error(
+                    "analysis nl2sql task failed item=%s attempt=%s analysis_request_id=%s error_code=%s detail=%s",
+                    task.item_id,
+                    attempt,
+                    analysis_request_id or "-",
+                    exc.error_code,
+                    exc.log_detail(),
+                )
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 logger.exception(

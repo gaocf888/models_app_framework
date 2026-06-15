@@ -8,6 +8,7 @@ from app.core.logging import get_logger
 from app.core.metrics import NL2SQL_QUERY_COUNT, NL2SQL_QUERY_ERROR_COUNT
 from app.models.nl2sql import NL2SQLQueryRequest, NL2SQLQueryResponse
 from app.nl2sql.chain import NL2SQLChain
+from app.nl2sql.errors import NL2SQLExecutionError
 from app.nl2sql.executor import SQLExecutor
 
 logger = get_logger(__name__)
@@ -112,10 +113,13 @@ class NL2SQLService:
                             refine_attempts_left -= 1
                             continue
                     if record_conversation:
+                        explain_code = NL2SQLExecutionError.from_executor_failure(
+                            sql=sql, cause=exc_explain
+                        ).error_code
                         self._conv.append_assistant_message(
                             req.user_id,
                             req.session_id,
-                            f"SQL EXPLAIN error: {exc_explain}",
+                            f"SQL EXPLAIN error: {explain_code}",
                         )
                     break
             try:
@@ -156,14 +160,39 @@ class NL2SQLService:
                         refine_attempts_left -= 1
                         continue
                 if record_conversation:
+                    exec_code = NL2SQLExecutionError.from_executor_failure(
+                        sql=sql, cause=exc
+                    ).error_code
                     self._conv.append_assistant_message(
-                        req.user_id, req.session_id, f"SQL execution error: {exc}"
+                        req.user_id,
+                        req.session_id,
+                        f"SQL execution error: {exec_code}",
                     )
                 break
 
         if (sql or "").strip() and not execute_succeeded:
-            err_msg = str(last_execute_error) if last_execute_error else "sql_execution_failed"
-            raise RuntimeError(f"SQL execution failed: {err_msg}") from last_execute_error
+            exc = NL2SQLExecutionError.from_executor_failure(
+                sql=sql or "",
+                cause=last_execute_error,
+            )
+            logger.error(
+                "NL2SQLService.query execution failed user_id=%s session_id=%s sql_len=%d "
+                "analysis_request_id=%s plan_item_id=%s detail=%s",
+                req.user_id,
+                req.session_id,
+                len(sql or ""),
+                arid,
+                piid,
+                exc.log_detail(),
+            )
+            if sql:
+                logger.error(
+                    "NL2SQLService.query failed SQL (log only) user_id=%s session_id=%s\n%s",
+                    req.user_id,
+                    req.session_id,
+                    sql[:8000] + ("..." if len(sql) > 8000 else ""),
+                )
+            raise exc from last_execute_error
 
         if record_conversation:
             self._conv.append_assistant_message(req.user_id, req.session_id, f"SQL: {sql}")

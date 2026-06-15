@@ -2,13 +2,118 @@
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass
 from typing import Any, List
 
 from app.core.logging import get_logger
+from app.models.nl2sql import NL2SQLQueryRequest
+from app.nl2sql.errors import NL2SQLExecutionError
+from app.services.nl2sql_service import NL2SQLService
 
 logger = get_logger(__name__)
 
 _MAX_ROWS_IN_PROMPT = 80
+
+_DEFAULT_USER_ERROR_MESSAGE = (
+    "暂时无法完成本次数据查询，请尝试缩小范围（如指定锅炉、时间）或改用知识库问答。"
+    "若问题持续，请联系管理员并提供提问时间。"
+)
+
+_USER_ERROR_MESSAGES: dict[str, str] = {
+    "unknown_column": (
+        "暂时无法完成本次数据查询（查询字段配置异常，已记录）。"
+        "请尝试缩小查询范围或改用知识库问答。"
+    ),
+    "unknown_table": (
+        "暂时无法完成本次数据查询（相关数据表未配置或不可用，已记录）。"
+        "请尝试缩小查询范围或改用知识库问答。"
+    ),
+    "sql_syntax_error": (
+        "暂时无法完成本次数据查询（查询语句未能正确生成，已记录）。"
+        "请换一种方式描述要查的台账或记录条件。"
+    ),
+    "db_access_denied": (
+        "暂时无法完成本次数据查询（数据访问权限异常，已记录）。请联系管理员。"
+    ),
+    "default": _DEFAULT_USER_ERROR_MESSAGE,
+}
+
+
+def _chatbot_expose_nl2sql_sql_in_meta() -> bool:
+    return os.getenv("CHATBOT_EXPOSE_NL2SQL_SQL_IN_META", "false").lower() == "true"
+
+
+def format_nl2sql_user_error(exc: NL2SQLExecutionError | None = None) -> str:
+    """将 NL2SQL 执行失败映射为客服用户可见文案（无 SQL、无堆栈）。"""
+    if exc is None:
+        return _DEFAULT_USER_ERROR_MESSAGE
+    key = exc.user_message_key if exc.user_message_key in _USER_ERROR_MESSAGES else "default"
+    return _USER_ERROR_MESSAGES.get(key, _DEFAULT_USER_ERROR_MESSAGE)
+
+
+@dataclass
+class ChatbotNL2SQLOutcome:
+    answer_text: str
+    nl2sql_sql: str | None = None
+    nl2sql_failed: bool = False
+    nl2sql_error_code: str | None = None
+    terminate_reason: str | None = None
+
+
+async def run_chatbot_nl2sql_query(
+    nl2sql: NL2SQLService,
+    llm_client: Any,
+    *,
+    user_id: str,
+    session_id: str,
+    question: str,
+) -> ChatbotNL2SQLOutcome:
+    """智能客服 NL2SQL 统一入口：成功则整理结果，失败则友好文案且不向上抛异常。"""
+    req = NL2SQLQueryRequest(user_id=user_id, session_id=session_id, question=question)
+    try:
+        resp = await nl2sql.query(req, record_conversation=False)
+        text = await summarize_nl2sql_with_llm(
+            llm_client,
+            user_query=question,
+            sql=resp.sql,
+            rows=list(resp.rows or []),
+        )
+        return ChatbotNL2SQLOutcome(answer_text=text, nl2sql_sql=resp.sql or None)
+    except NL2SQLExecutionError as exc:
+        logger.warning(
+            "智能客服 NL2SQL 执行失败 error_code=%s question=%s detail=%s",
+            exc.error_code,
+            (question or "")[:400],
+            exc.log_detail(),
+        )
+        if exc.sql:
+            logger.info(
+                "智能客服 NL2SQL 失败 SQL（仅日志）\n%s",
+                exc.sql[:8000] + ("..." if len(exc.sql) > 8000 else ""),
+            )
+        sql_meta = (exc.sql or None) if _chatbot_expose_nl2sql_sql_in_meta() else None
+        return ChatbotNL2SQLOutcome(
+            answer_text=format_nl2sql_user_error(exc),
+            nl2sql_sql=sql_meta,
+            nl2sql_failed=True,
+            nl2sql_error_code=exc.error_code,
+            terminate_reason="nl2sql_exec_failed",
+        )
+    except RuntimeError as exc:
+        if "SQL execution failed" not in str(exc):
+            raise
+        logger.warning(
+            "智能客服 NL2SQL 执行失败（兼容 RuntimeError） question=%s err=%s",
+            (question or "")[:400],
+            str(exc)[:240],
+        )
+        return ChatbotNL2SQLOutcome(
+            answer_text=format_nl2sql_user_error(),
+            nl2sql_failed=True,
+            nl2sql_error_code="sql_exec_failed",
+            terminate_reason="nl2sql_exec_failed",
+        )
 
 
 def _row_to_mapping(row: Any) -> dict[str, Any]:

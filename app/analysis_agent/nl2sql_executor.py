@@ -5,6 +5,7 @@ from typing import Any
 
 from app.core.logging import get_logger
 from app.models.nl2sql import NL2SQLQueryRequest
+from app.nl2sql.errors import NL2SQLExecutionError
 from app.services.nl2sql_service import NL2SQLService
 
 logger = get_logger(__name__)
@@ -31,19 +32,30 @@ async def run_nl2sql_for_plan_item(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """经 NL2SQL 公共基座取数：五元组对齐 QA 沉淀与 RAG 召回。"""
     t0 = time.perf_counter()
-    resp = await nl2sql.query(
-        NL2SQLQueryRequest(
-            user_id=user_id,
-            session_id=session_id,
-            question=question,
-            analysis_type=analysis_type,
-            analysis_request_id=analysis_request_id,
-            plan_item_id=item_id,
-            plan_template_version=plan_template_version,
-            time_intent_text=(query or "").strip(),
-        ),
-        record_conversation=False,
-    )
+    try:
+        resp = await nl2sql.query(
+            NL2SQLQueryRequest(
+                user_id=user_id,
+                session_id=session_id,
+                question=question,
+                analysis_type=analysis_type,
+                analysis_request_id=analysis_request_id,
+                plan_item_id=item_id,
+                plan_template_version=plan_template_version,
+                time_intent_text=(query or "").strip(),
+            ),
+            record_conversation=False,
+        )
+    except NL2SQLExecutionError as exc:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        logger.error(
+            "analysis_agent nl2sql execution failed item_id=%s latency_ms=%s error_code=%s detail=%s",
+            item_id,
+            latency_ms,
+            exc.error_code,
+            exc.log_detail(),
+        )
+        raise
     latency_ms = int((time.perf_counter() - t0) * 1000)
     rows = list(resp.rows or [])
     call_rec = {

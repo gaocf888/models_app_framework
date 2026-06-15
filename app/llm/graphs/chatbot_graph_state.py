@@ -94,6 +94,8 @@ class ChatbotGraphState(TypedDict, total=False):
     # ===== NL2SQL 分支 =====
     used_nl2sql: bool
     nl2sql_sql: str
+    nl2sql_failed: bool
+    nl2sql_error_code: Optional[str]
 
     # ===== 关联问题推荐 =====
     suggested_questions: List[str]

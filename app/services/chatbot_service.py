@@ -23,14 +23,13 @@ from app.llm.graphs.chatbot_retrieval_query import build_retrieval_query_with_an
 from app.llm.graphs.chatbot_anaphora_detect import classify_anaphora_rules
 from app.llm.graphs.chatbot_dialogue_anchor import build_dialogue_anchor_block
 from app.llm.graphs.chatbot_anaphora_store import get_anaphora_slots, slot_bullets_list, update_anaphora_slots_after_assistant
-from app.llm.graphs.chatbot_nl2sql_answer import summarize_nl2sql_with_llm
+from app.llm.graphs.chatbot_nl2sql_answer import run_chatbot_nl2sql_query
 from app.llm.graphs.chatbot_similar_cases import (
     FaultCaseGateInput,
     format_similar_cases_block,
     retrieve_similar_case_snippets,
     run_fault_case_gate_decision,
 )
-from app.models.nl2sql import NL2SQLQueryRequest
 from app.services.nl2sql_service import NL2SQLService
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
@@ -202,14 +201,14 @@ class ChatbotService:
             ilabel = "kb_qa"
 
         if ilabel == "data_query":
-            nreq = NL2SQLQueryRequest(user_id=req.user_id, session_id=req.session_id, question=req.query)
-            nresp = await self._nl2sql.query(nreq, record_conversation=False)
-            answer = await summarize_nl2sql_with_llm(
+            outcome = await run_chatbot_nl2sql_query(
+                self._nl2sql,
                 self._llm,
-                user_query=req.query,
-                sql=nresp.sql,
-                rows=list(nresp.rows or []),
+                user_id=req.user_id,
+                session_id=req.session_id,
+                question=req.query,
             )
+            answer = outcome.answer_text
             suggested: list[str] = []
             if cfg.suggested_questions_enabled:
                 suggested = await build_suggested_questions(
@@ -451,18 +450,14 @@ class ChatbotService:
         duration_ms = lambda: int((time.perf_counter() - start_ts) * 1000)
 
         if ilabel == "data_query":
-            nreq = NL2SQLQueryRequest(
+            outcome = await run_chatbot_nl2sql_query(
+                self._nl2sql,
+                self._llm,
                 user_id=req.user_id,
                 session_id=req.session_id,
                 question=(original_query or req.query),
             )
-            nresp = await self._nl2sql.query(nreq, record_conversation=False)
-            answer = await summarize_nl2sql_with_llm(
-                self._llm,
-                user_query=(original_query or req.query),
-                sql=nresp.sql,
-                rows=list(nresp.rows or []),
-            )
+            answer = outcome.answer_text
             # data_query：不在 finished.meta 中下发关联问句（与 LangGraph 路径一致，且不调用推荐问 LLM）。
             suggested: list[str] = []
             if answer:
@@ -475,13 +470,15 @@ class ChatbotService:
                 "meta": {
                     "used_rag": False,
                     "used_nl2sql": True,
-                    "nl2sql_sql": nresp.sql or None,
+                    "nl2sql_failed": outcome.nl2sql_failed or None,
+                    "nl2sql_error_code": outcome.nl2sql_error_code,
+                    "nl2sql_sql": outcome.nl2sql_sql,
                     "intent_label": ilabel,
                     "retrieval_attempts": 0,
                     "rag_engine": None,
                     "status": "answered",
                     "duration_ms": duration_ms(),
-                    "terminate_reason": None,
+                    "terminate_reason": outcome.terminate_reason,
                     "similar_cases_appended": False,
                     "similar_case_namespace": None,
                     "fault_detect_sources": [],

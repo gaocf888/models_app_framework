@@ -19,7 +19,7 @@ from app.rag.rag_service import RAGService
 from .chatbot_follow_up import build_suggested_questions
 from .chatbot_graph_state import ChatbotGraphState
 from .chatbot_intent import classify_chatbot_intent_async
-from .chatbot_nl2sql_answer import summarize_nl2sql_with_llm
+from .chatbot_nl2sql_answer import run_chatbot_nl2sql_query
 from .chatbot_rag_citations import chunks_to_rag_context, filter_rag_citation_dicts
 from .chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
 from .chatbot_faq_soft_direct import (
@@ -38,7 +38,6 @@ from .chatbot_similar_cases import (
     retrieve_similar_case_snippets,
     run_fault_case_gate_decision,
 )
-from app.models.nl2sql import NL2SQLQueryRequest
 from app.services.nl2sql_service import NL2SQLService
 from app.services.chatbot_image_utils import build_user_message_with_images, strip_image_block_from_history
 from app.services.chatbot_outline import ChatbotOutlineStore
@@ -443,6 +442,8 @@ class ChatbotLangGraphRunner:
             "used_rag": False,
             "used_nl2sql": False,
             "nl2sql_sql": "",
+            "nl2sql_failed": False,
+            "nl2sql_error_code": None,
             "suggested_questions": [],
             "error": None,
             "answer_parts": [],
@@ -607,22 +608,26 @@ class ChatbotLangGraphRunner:
     async def _node_nl2sql_answer(self, state: ChatbotGraphState) -> ChatbotGraphState:
         """结构化问数：NL2SQL + 结果自然语言化（会话写入由 Runner 层统一 persist）。"""
         q = str(state.get("query") or "")
-        req = NL2SQLQueryRequest(user_id=state["user_id"], session_id=state["session_id"], question=q)
-        resp = await self._nl2sql.query(req, record_conversation=False)
-        text = await summarize_nl2sql_with_llm(
+        outcome = await run_chatbot_nl2sql_query(
+            self._nl2sql,
             self._llm,
-            user_query=q,
-            sql=resp.sql,
-            rows=list(resp.rows or []),
+            user_id=state["user_id"],
+            session_id=state["session_id"],
+            question=q,
         )
-        return {
-            "answer_text": text,
+        patch: ChatbotGraphState = {
+            "answer_text": outcome.answer_text,
             "used_nl2sql": True,
-            "nl2sql_sql": resp.sql or "",
+            "nl2sql_sql": outcome.nl2sql_sql or "",
             "used_rag": False,
             "llm_messages": [],
             "context_snippets": [],
         }
+        if outcome.nl2sql_failed:
+            patch["nl2sql_failed"] = True
+            patch["nl2sql_error_code"] = outcome.nl2sql_error_code
+            patch["terminate_reason"] = outcome.terminate_reason
+        return patch
 
     async def _node_fault_case_gate(self, state: ChatbotGraphState) -> ChatbotGraphState:
         """锅炉/管材故障域判定 + 是否在本轮末尾追加相似案例（检索在 Runner 层执行）。"""
@@ -1200,6 +1205,15 @@ class ChatbotLangGraphRunner:
             if is_data_query
             else filter_rag_citation_dicts(list(state.get("rag_citations") or []))
         )
+        used_nl2sql = bool(state.get("used_nl2sql", False))
+        nl2sql_failed = bool(state.get("nl2sql_failed", False))
+        nl2sql_sql_meta: str | None
+        if used_nl2sql:
+            nl2sql_sql_meta = (state.get("nl2sql_sql") or "") or None
+            if nl2sql_failed and not (state.get("nl2sql_sql") or "").strip():
+                nl2sql_sql_meta = None
+        else:
+            nl2sql_sql_meta = None
         return {
             "used_rag": bool(state.get("used_rag", False)),
             "intent_label": state.get("intent_label"),
@@ -1219,8 +1233,10 @@ class ChatbotLangGraphRunner:
             "fault_detect_sources": list(state.get("fault_detect_sources") or []),
             "fault_detect_confidence": float(state.get("fault_detect_confidence") or 0.0),
             "need_similar_cases": bool(state.get("need_similar_cases")),
-            "used_nl2sql": bool(state.get("used_nl2sql", False)),
-            "nl2sql_sql": (state.get("nl2sql_sql") or "") if state.get("used_nl2sql") else None,
+            "used_nl2sql": used_nl2sql,
+            "nl2sql_failed": nl2sql_failed if used_nl2sql else None,
+            "nl2sql_error_code": (state.get("nl2sql_error_code") or None) if nl2sql_failed else None,
+            "nl2sql_sql": nl2sql_sql_meta,
             "suggested_questions": suggested,
             "rag_citations": citations,
             "processed_image_urls": [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],

@@ -12,10 +12,13 @@ NL2SQL HTTP 接口（`/nl2sql/query`）。
     - `user_id`、`session_id` 由调用方传入，用于会话轨迹与生成 SQL 时的侧写（若链中使用）。
 """
 
-from fastapi import APIRouter
+import os
+
+from fastapi import APIRouter, HTTPException
 
 from app.core.logging import get_logger
 from app.models.nl2sql import NL2SQLQueryRequest, NL2SQLQueryResponse
+from app.nl2sql.errors import NL2SQLExecutionError
 from app.services.nl2sql_service import NL2SQLService
 
 router = APIRouter()
@@ -53,7 +56,25 @@ async def nl2sql_query(req: NL2SQLQueryRequest) -> NL2SQLQueryResponse:
         len(req.question or ""),
         _question_preview(req.question or ""),
     )
-    resp = await service.query(req)
+    try:
+        resp = await service.query(req)
+    except NL2SQLExecutionError as exc:
+        expose_sql = os.getenv("NL2SQL_API_EXPOSE_SQL_ON_ERROR", "true").lower() == "true"
+        logger.error(
+            "NL2SQL HTTP /query execution failed user_id=%s session_id=%s error_code=%s detail=%s",
+            req.user_id,
+            req.session_id,
+            exc.error_code,
+            exc.log_detail(),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "SQL execution failed",
+                "error_code": exc.error_code,
+                "sql": exc.sql if expose_sql else None,
+            },
+        ) from exc
     logger.info(
         "NL2SQL HTTP /query done user_id=%s session_id=%s sql_len=%d row_count=%d sql_empty=%s",
         req.user_id,
