@@ -1,5 +1,6 @@
 """chatbot_intent_llm 模式 B 与窄触发单测。"""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -135,6 +136,29 @@ async def test_llm_fallback_on_local_llm_error(monkeypatch):
                 history_messages=None,
             )
     assert "intent_llm_fallback_rules" in r.intent_reason
+
+
+@pytest.mark.asyncio
+async def test_llm_logs_raw_on_json_parse_failure(caplog):
+    mock_runner = MagicMock()
+    mock_runner.generate = AsyncMock(return_value="抱歉，我无法判断意图")
+    with patch(
+        "app.llm.graphs.chatbot_intent_llm.ChatbotIntentLocalLlm.get_instance",
+        return_value=mock_runner,
+    ):
+        with patch("app.llm.graphs.chatbot_intent_llm.get_app_config") as mock_cfg:
+            mock_cfg.return_value.chatbot.intent_llm_conf_threshold = 0.78
+            mock_cfg.return_value.chatbot.intent_llm_fallback_to_rules = True
+            with caplog.at_level(logging.DEBUG, logger="app.llm.graphs.chatbot_intent_llm"):
+                r = await classify_chatbot_intent_by_llm(
+                    "查台账记录并解释过热原因",
+                    enable_nl2sql_route=True,
+                    image_urls=[],
+                    history_messages=None,
+                )
+    assert "intent_llm_fallback_rules" in r.intent_reason
+    assert "json_parse_failed" in caplog.text
+    assert "抱歉，我无法判断意图" in caplog.text
 
 
 @pytest.mark.asyncio
