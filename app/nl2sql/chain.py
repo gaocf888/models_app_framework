@@ -99,7 +99,9 @@ class NL2SQLChain:
     _tidb_date_call_rhs = rf"DATE_[A-Z_]+\({_tidb_date_call_arg}\)"
     # 动态时间窗仅替换 QA/模板中的日期字面量，避免误改 SQL 内已有的 DATE_SUB/CURDATE() 表达式。
     _TIME_LITERAL_RHS = r"'[^']+'"
-    _DAY_WINDOW_TAGS = frozenset({"today", "yesterday", "day_before_yesterday"})
+    _DAY_WINDOW_TAGS = frozenset(
+        {"today", "yesterday", "day_before_yesterday", "three_days_ago"}
+    )
     _PLAN_OVERRIDE_WINDOW_TAGS = frozenset(
         {
             "recent_1_year",
@@ -115,6 +117,11 @@ class NL2SQLChain:
             "last_month",
             "this_year",
             "last_year",
+            "year_before_last",
+            "this_quarter",
+            "last_quarter",
+            "half_first",
+            "half_second",
         }
     )
 
@@ -1414,7 +1421,13 @@ class NL2SQLChain:
             return False
         if tag in cls._HALF_OPEN_WINDOW_TAGS:
             return True
-        return tag.startswith("month_") or tag.startswith("year_")
+        return (
+            tag.startswith("month_")
+            or tag.startswith("year_")
+            or tag.startswith("quarter_")
+            or tag.startswith("day_")
+            or tag.startswith("month_cur_")
+        )
 
     @classmethod
     def _time_clause_local_region(cls, sql: str, ge_end: int, *, max_len: int = 640) -> str:

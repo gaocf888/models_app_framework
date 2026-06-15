@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
 from app.nl2sql.sql_cache import normalize_nl2sql_question, strip_plan_context_guide_suffix
+from app.nl2sql.time_intent_display import extract_numeric_window
 
 _DATE_SUB_RX = re.compile(
     r"DATE_SUB\s*\(\s*CURDATE\s*\(\s*\)\s*,\s*INTERVAL\s+(\d+)\s+DAY\s*\)",
@@ -35,6 +36,14 @@ _REL_WORD_ORDER: tuple[tuple[str, int], ...] = (
 # normalize：先长词、避免「上个月」被「上月」截断
 _INTENT_STATIC_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("上个月", "<MONTH_-1>"),
+    ("本季度", "<QUARTER_0>"),
+    ("上季度", "<QUARTER_-1>"),
+    ("第一季度", "<QUARTER_1>"),
+    ("第二季度", "<QUARTER_2>"),
+    ("第三季度", "<QUARTER_3>"),
+    ("第四季度", "<QUARTER_4>"),
+    ("上半年", "<HALF_1>"),
+    ("下半年", "<HALF_2>"),
     ("大前天", "<R>"),
     ("前天", "<R>"),
     ("昨天", "<R>"),
@@ -46,6 +55,7 @@ _INTENT_STATIC_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("上周", "<ISO_WEEK>"),
     ("本月", "<MONTH_0>"),
     ("上月", "<MONTH_-1>"),
+    ("前年", "<YEAR_-2>"),
 )
 
 
@@ -53,20 +63,35 @@ _INTENT_STATIC_REPLACEMENTS: tuple[tuple[str, str], ...] = (
 class TimeIntent:
     """从问句解析出的时间语义（与 L1 键占位对应）。"""
 
-    mode: Literal["day", "iso_week", "month", "rolling"]
+    mode: Literal[
+        "day", "iso_week", "month", "rolling", "rolling_year", "quarter", "half_year", "year_rel"
+    ]
     day_off: int | None = None
     iso_which: Literal["this", "last"] | None = None
     month_rel: Literal[0, -1] | None = None
     rolling_n: int | None = None
+    quarter_rel: Literal["this", "last"] | int | None = None
+    half_which: Literal["first", "second"] | None = None
+    year_rel: Literal[-2] | None = None
 
 
 def normalize_nl2sql_question_intent(text: str) -> str:
     """
     折叠时间说法为稳定占位符，使同类意图在 L1 键上对齐。
-    顺序：近 N 天正则 → 静态词表（含近义与长度序）。
+    顺序：近 N 天/年正则 → 静态词表（含近义与长度序）。
     """
     s = normalize_nl2sql_question(text)
     s = re.sub(r"近\s*(\d+)\s*天", lambda m: f"<ROLLING_N:{m.group(1)}>", s)
+    n_year = extract_numeric_window(s, ("年", "year", "years"))
+    if n_year:
+        s = re.sub(
+            r"(?:近|最近|过去)\s*(?:[0-9]{1,3}|[一二两三四五六七八九十百]+)\s*年",
+            f"<ROLLING_Y:{n_year}>",
+            s,
+            count=1,
+        )
+    else:
+        s = re.sub(r"近\s*(\d+)\s*年", lambda m: f"<ROLLING_Y:{m.group(1)}>", s)
     for old, new in _INTENT_STATIC_REPLACEMENTS:
         s = s.replace(old, new)
     return s
@@ -75,7 +100,7 @@ def normalize_nl2sql_question_intent(text: str) -> str:
 def resolve_time_intent(question: str) -> TimeIntent | None:
     """
     从问句解析时间语义（首命中优先）。
-    优先级：近 N 天 → 本周/这周/上周 → 本月 → 上月/上个月 → 相对日。
+    优先级：近 N 天 → 近 N 年 → 本周/上周 → 季度 → 半年 → 本月/上月 → 前年 → 相对日。
     """
     s = normalize_nl2sql_question(question)
     m = re.search(r"近\s*(\d+)\s*天", s)
@@ -86,14 +111,39 @@ def resolve_time_intent(question: str) -> TimeIntent | None:
                 return TimeIntent(mode="rolling", rolling_n=n)
         except ValueError:
             pass
+    my = re.search(r"近\s*(\d+)\s*年", s)
+    if not my:
+        n_year = extract_numeric_window(question, ("年", "year", "years"))
+        if n_year:
+            return TimeIntent(mode="rolling_year", rolling_n=n_year)
+    elif my:
+        try:
+            n = int(my.group(1))
+            if 1 <= n <= 20:
+                return TimeIntent(mode="rolling_year", rolling_n=n)
+        except ValueError:
+            pass
     if "本周" in s or "这周" in s:
         return TimeIntent(mode="iso_week", iso_which="this")
     if "上周" in s:
         return TimeIntent(mode="iso_week", iso_which="last")
+    if "本季度" in s or "这个季度" in s:
+        return TimeIntent(mode="quarter", quarter_rel="this")
+    if "上季度" in s:
+        return TimeIntent(mode="quarter", quarter_rel="last")
+    for qn, token in ((1, "一"), (2, "二"), (3, "三"), (4, "四")):
+        if f"第{token}季度" in s or f"第{qn}季度" in s:
+            return TimeIntent(mode="quarter", quarter_rel=qn)
+    if "上半年" in s:
+        return TimeIntent(mode="half_year", half_which="first")
+    if "下半年" in s:
+        return TimeIntent(mode="half_year", half_which="second")
     if "本月" in s:
         return TimeIntent(mode="month", month_rel=0)
     if "上个月" in s or "上月" in s:
         return TimeIntent(mode="month", month_rel=-1)
+    if "前年" in s:
+        return TimeIntent(mode="year_rel", year_rel=-2)
     for word, off in _REL_WORD_ORDER:
         if word in s:
             return TimeIntent(mode="day", day_off=off)

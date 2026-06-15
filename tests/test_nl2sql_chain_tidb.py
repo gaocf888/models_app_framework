@@ -574,3 +574,59 @@ def test_join_whitelist_rejects_unknown_join() -> None:
     assert not ok
     assert reason is not None
     assert "join key not in whitelist" in reason
+
+
+def test_rewrite_quarter_not_whole_year() -> None:
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "WHERE t.start_time >= '2025-01-01 00:00:00' AND t.start_time < '2026-01-01 00:00:00'"
+    )
+    rewritten, notes = chain._rewrite_query_filters(sql, question="2025年第一季度超温统计")
+    assert "2025-01-01" in rewritten
+    assert "2025-04-01" in rewritten
+    assert "2026-01-01" not in rewritten
+    assert notes
+
+
+def test_rewrite_this_quarter_half_open() -> None:
+    chain = _build_chain_for_unit()
+    sql = "SELECT * FROM monitor_hotarea_temp WHERE record_time >= '2024-01-01'"
+    rewritten, notes = chain._rewrite_query_filters(sql, question="本季度超温情况")
+    assert "INTERVAL ((MONTH(CURDATE()) - 1) % 3) MONTH)" in rewritten or "DATE_ADD" in rewritten
+    assert notes
+
+
+def test_rewrite_three_days_ago() -> None:
+    chain = _build_chain_for_unit()
+    sql = "SELECT * FROM monitor_hotarea_temp WHERE data_time = '2024-03-01'"
+    rewritten, notes = chain._rewrite_query_filters(sql, question="大前天超温记录")
+    assert "INTERVAL 3 DAY" in rewritten
+    assert notes
+
+
+def test_rewrite_exact_day() -> None:
+    chain = _build_chain_for_unit()
+    sql = "SELECT * FROM monitor_hotarea_temp WHERE start_time >= '2020-01-01'"
+    rewritten, notes = chain._rewrite_query_filters(sql, question="2026-05-19超温")
+    assert "2026-05-19" in rewritten
+    assert "2026-05-20" in rewritten
+    assert notes
+
+
+def test_rewrite_month_only_current_year() -> None:
+    chain = _build_chain_for_unit()
+    sql = "SELECT * FROM monitor_hotarea_temp WHERE start_time >= '2020-06-01'"
+    rewritten, notes = chain._rewrite_query_filters(sql, question="6月份超温统计")
+    assert "YEAR(CURDATE())" in rewritten
+    assert "-06-01" in rewritten
+    assert notes
+
+
+def test_rewrite_year_before_last() -> None:
+    chain = _build_chain_for_unit()
+    sql = "SELECT * FROM monitor_hotarea_temp WHERE start_time BETWEEN '2018-01-01' AND '2018-12-31'"
+    rewritten, notes = chain._rewrite_query_filters(sql, question="前年超温对比")
+    assert "INTERVAL 2 YEAR" in rewritten
+    assert notes
+

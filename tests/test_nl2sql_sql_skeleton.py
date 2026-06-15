@@ -97,6 +97,21 @@ def test_intent_normalize_iso_week_and_rolling() -> None:
     assert normalize_nl2sql_question_intent("上个月收入") == normalize_nl2sql_question_intent("上月收入")
 
 
+def test_intent_normalize_quarter_and_half_year() -> None:
+    assert "<QUARTER_0>" in normalize_nl2sql_question_intent("本季度超温")
+    assert "<HALF_1>" in normalize_nl2sql_question_intent("上半年统计")
+    assert "<ROLLING_Y:3>" in normalize_nl2sql_question_intent("近三年趋势")
+
+
+def test_resolve_time_intent_quarter_and_year_rel() -> None:
+    q = resolve_time_intent("上季度数据")
+    assert q is not None and q.mode == "quarter" and q.quarter_rel == "last"
+    y = resolve_time_intent("前年对比")
+    assert y is not None and y.mode == "year_rel"
+    ry = resolve_time_intent("近5年趋势")
+    assert ry is not None and ry.mode == "rolling_year" and ry.rolling_n == 5
+
+
 def test_resolve_time_intent_priority() -> None:
     r = resolve_time_intent("本周近7天")  # 歧义：近 N 天优先
     assert r is not None and r.mode == "rolling" and r.rolling_n == 7
