@@ -535,12 +535,16 @@ class AnalysisConfig:
     plan_template_version_maintenance_strategy: str | None = None
     plan_template_version_four_tube_health_interpretation: str | None = None
     plan_template_version_leakage_burst_analysis: str | None = None
+    plan_template_version_img_diag_defect_ident: str | None = "v1"
+    plan_template_version_img_diag_leakage_burst: str | None = "v1"
     plan_template_version_custom: str | None = None
     synthesis_template_version: str | None = None
     synthesis_template_version_overheat_guidance: str | None = None
     synthesis_template_version_maintenance_strategy: str | None = None
     synthesis_template_version_four_tube_health_interpretation: str | None = None
     synthesis_template_version_leakage_burst_analysis: str | None = None
+    synthesis_template_version_img_diag_defect_ident: str | None = "v1"
+    synthesis_template_version_img_diag_leakage_burst: str | None = "v1"
     synthesis_template_version_custom: str | None = None
     synthesis_v2_max_parallel_llm: int = 3
     synthesis_v2_segment_max_tokens: int = 4096
@@ -597,6 +601,8 @@ class AnalysisConfig:
     img_diag_vision_timeout_seconds: float = 120.0
     img_diag_lane_timeout_seconds: float = 180.0
     img_diag_upload_max_mb: int = 15
+    # 看图诊断业务 RAG：vision_augmented（默认，视觉完成后串行 RAG）| parallel | hybrid
+    img_diag_rag_mode: str = "vision_augmented"
 
 
 @dataclass
@@ -607,7 +613,7 @@ class NL2SQLIntentConfig:
     对应环境变量见 ``app/app-deploy/.env.example`` 中 NL2SQL_SCOPE_* / NL2SQL_INTENT_* 段。
     """
 
-    scope_sql_rewrite_enabled: bool = False
+    scope_sql_rewrite_enabled: bool = True
     scope_lexicon_file: str | None = None
     intent_parse_mode: str = "rule"  # rule | llm | rule_with_llm_fallback
     scope_parse_llm_timeout_ms: int = 8000
@@ -1190,6 +1196,14 @@ def _load_from_env() -> AppConfig:
         plan_template_version_leakage_burst_analysis=_env_analysis_template_version_type(
             "PLAN", "LEAKAGE_BURST_ANALYSIS"
         ),
+        plan_template_version_img_diag_defect_ident=_env_analysis_template_version_type(
+            "PLAN", "IMG_DIAG_DEFECT_IDENT"
+        )
+        or "v1",
+        plan_template_version_img_diag_leakage_burst=_env_analysis_template_version_type(
+            "PLAN", "IMG_DIAG_LEAKAGE_BURST"
+        )
+        or "v1",
         plan_template_version_custom=_env_analysis_template_version_type("PLAN", "CUSTOM"),
         synthesis_template_version=_env_analysis_template_version_global(
             "ANALYSIS_SYNTHESIS_TEMPLATE_VERSION"
@@ -1206,6 +1220,14 @@ def _load_from_env() -> AppConfig:
         synthesis_template_version_leakage_burst_analysis=_env_analysis_template_version_type(
             "SYNTHESIS", "LEAKAGE_BURST_ANALYSIS"
         ),
+        synthesis_template_version_img_diag_defect_ident=_env_analysis_template_version_type(
+            "SYNTHESIS", "IMG_DIAG_DEFECT_IDENT"
+        )
+        or "v1",
+        synthesis_template_version_img_diag_leakage_burst=_env_analysis_template_version_type(
+            "SYNTHESIS", "IMG_DIAG_LEAKAGE_BURST"
+        )
+        or "v1",
         synthesis_template_version_custom=_env_analysis_template_version_type("SYNTHESIS", "CUSTOM"),
         synthesis_v2_max_parallel_llm=max(
             1, int(os.getenv("ANALYSIS_SYNTHESIS_V2_MAX_PARALLEL_LLM", "3"))
@@ -1284,6 +1306,7 @@ def _load_from_env() -> AppConfig:
             10.0, float(os.getenv("ANALYSIS_IMG_DIAG_LANE_TIMEOUT_SECONDS", "180"))
         ),
         img_diag_upload_max_mb=max(1, int(os.getenv("ANALYSIS_IMG_DIAG_UPLOAD_MAX_MB", "15"))),
+        img_diag_rag_mode=(os.getenv("ANALYSIS_IMG_DIAG_RAG_MODE") or "vision_augmented").strip().lower(),
     )
     _app_env = (os.getenv("APP_ENV", "dev") or "dev").strip().lower()
     _aa_persist_default = "redis" if _app_env in ("production", "prod") else "memory"
@@ -1420,7 +1443,7 @@ def _load_from_env() -> AppConfig:
 
     _scope_lexicon_file = (os.getenv("NL2SQL_SCOPE_LEXICON_FILE") or "").strip() or None
     nl2sql_intent_cfg = NL2SQLIntentConfig(
-        scope_sql_rewrite_enabled=os.getenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", "false").lower() == "true",
+        scope_sql_rewrite_enabled=os.getenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", "true").lower() == "true",
         scope_lexicon_file=_scope_lexicon_file,
         intent_parse_mode=(os.getenv("NL2SQL_INTENT_PARSE_MODE", "rule") or "rule").strip().lower(),
         scope_parse_llm_timeout_ms=max(500, int(os.getenv("NL2SQL_SCOPE_PARSE_LLM_TIMEOUT_MS", "8000"))),

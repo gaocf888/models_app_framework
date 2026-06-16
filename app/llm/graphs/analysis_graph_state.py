@@ -15,9 +15,10 @@ AnalysisType = Literal[
     "four_tube_health_interpretation",
     "leakage_burst_analysis",
     "custom",
-    "img_diag",
+    "img_diag_defect_ident",
+    "img_diag_leakage_burst",
 ]
-DataMode = Literal["payload", "nl2sql", "img_diag"]
+DataMode = Literal["payload", "nl2sql", "img_diag_defect_ident", "img_diag_leakage_burst"]
 
 
 class NL2SQLPlanItem(TypedDict, total=False):

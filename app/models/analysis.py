@@ -8,7 +8,7 @@ HTTP 契约见 `app/api/analysis.py`；编排与证据填充见 `AnalysisGraphRu
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.conversation.ids import validate_session_id, validate_user_id
 
@@ -58,9 +58,11 @@ AnalysisType = Literal[
     "four_tube_health_interpretation",
     "leakage_burst_analysis",
     "custom",
-    "img_diag",
+    "img_diag_defect_ident",
+    "img_diag_leakage_burst",
 ]
-DataMode = Literal["payload", "nl2sql", "img_diag"]
+ImgDiagSubtype = Literal["defect_ident", "leakage_burst"]
+DataMode = Literal["payload", "nl2sql", "img_diag_defect_ident", "img_diag_leakage_burst"]
 
 
 class AnalysisOptions(BaseModel):
@@ -99,23 +101,39 @@ class AnalysisPayloadRequest(BaseModel):
 
 
 class AnalysisImgDiagRequest(BaseModel):
-    """看图诊断（随手拍）：图像理解 ‖ NL2SQL ‖ 业务 RAG 并行后合成。
+    """看图诊断（缺陷识别 / 泄爆分析）：视觉理解 ‖ NL2SQL 取数（并行）→ 业务 RAG（串行）→ 合成。
 
-    HTTP：**`POST /analysis/run-img-diag`**（同步 **`AnalysisV2Result`**）与 **`POST /analysis/run-img-diag-stream`**（`text/event-stream`，字段语义对齐 **`run-with-nl2sql-stream`**）共用本模型。
+    业务入参：**`query`（用户问题，承载时间/位置/范围语义）** 与 **`image_urls`（缺陷/爆口图片）**；
+    机组/锅炉、受热面、管排、排数、管数由 NL2SQL 基座从 `query` 解析并改写 SQL。
+
+    - `defect_ident`：缺陷识别，**图片必填**；
+    - `leakage_burst`：泄爆分析，**图片可选**（无图时仅依赖 query + NL2SQL + RAG）。
+
+    HTTP：**`POST /analysis/run-img-diag`** / **`POST /analysis/run-img-diag-stream`** 共用本模型。
     """
 
     user_id: str = Field(..., description="用户唯一标识（由调用方后台传入）")
     session_id: str = Field(..., description="会话唯一标识")
-    unit_id: str = Field(..., description="机组 ID（用于 NL2SQL 与 RAG 检索上下文）")
-    leak_location_text: str = Field(..., description="泄漏/拍照位置文本描述（如 #2炉高温过热器B侧第4排）")
-    leak_location_struct: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="可选结构化位置字段（炉号、受热面、侧别、排号等），参与占位符替换",
+    img_diag_subtype: ImgDiagSubtype = Field(
+        default="defect_ident",
+        description="看图诊断子场景：defect_ident（缺陷识别）| leakage_burst（泄爆分析）",
     )
-    query: str = Field(..., description="用户自然语言提问")
-    image_urls: List[str] = Field(..., description="现场照片 URL 列表（建议先通过 img-diag/upload 上传）")
-    data_requirements_hint: List[str] = Field(default_factory=list, description="可选的补充数据维度提示")
-    options: AnalysisOptions = Field(default_factory=AnalysisOptions, description="执行选项；看图诊断默认开启 enable_rag")
+    query: str = Field(
+        ...,
+        description="用户自然语言问题（须含或可解析区域/管段位置；泄爆须含或可解析事故发生时间）",
+    )
+    image_urls: List[str] = Field(
+        default_factory=list,
+        description="缺陷/爆口现场照片 URL 列表（defect_ident 必填；leakage_burst 可选）",
+    )
+    data_requirements_hint: List[str] = Field(
+        default_factory=list,
+        description="可选的补充数据维度提示，合并进 NL2SQL 计划任务",
+    )
+    options: AnalysisOptions = Field(
+        default_factory=AnalysisOptions,
+        description="执行选项；看图诊断默认开启 enable_rag",
+    )
 
     @field_validator("user_id")
     @classmethod
@@ -127,21 +145,24 @@ class AnalysisImgDiagRequest(BaseModel):
     def _v_sid(cls, v: str) -> str:
         return validate_session_id(v)
 
-    @field_validator("unit_id", "leak_location_text", "query")
+    @field_validator("query")
     @classmethod
-    def _v_strip(cls, v: str) -> str:
+    def _v_query(cls, v: str) -> str:
         text = (v or "").strip()
         if not text:
-            raise ValueError("must not be empty")
+            raise ValueError("query must not be empty")
         return text
 
     @field_validator("image_urls")
     @classmethod
     def _v_images(cls, v: List[str]) -> List[str]:
-        cleaned = [u.strip() for u in v if isinstance(u, str) and u.strip()]
-        if not cleaned:
-            raise ValueError("image_urls must contain at least one URL")
-        return cleaned
+        return [u.strip() for u in v if isinstance(u, str) and u.strip()]
+
+    @model_validator(mode="after")
+    def _validate_subtype_images(self) -> AnalysisImgDiagRequest:
+        if self.img_diag_subtype == "defect_ident" and not self.image_urls:
+            raise ValueError("defect_ident requires at least one image in image_urls")
+        return self
 
 
 class AnalysisNL2SQLRequest(BaseModel):

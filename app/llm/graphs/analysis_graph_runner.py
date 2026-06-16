@@ -76,7 +76,8 @@ _PLAN_RAG_ANALYSIS_TYPE_CN: dict[str, str] = {
     "maintenance_strategy": "检修策略分析",
     "four_tube_health_interpretation": "四管健康报告智能解读",
     "leakage_burst_analysis": "泄爆分析",
-    "img_diag": "看图诊断",
+    "img_diag_defect_ident": "缺陷识别看图诊断",
+    "img_diag_leakage_burst": "泄爆分析看图诊断",
 }
 
 # 数据计划子任务送 NL2SQL 时的额外约束（抑制臆造机组/墙别 WHERE）
@@ -90,6 +91,15 @@ _ANALYSIS_RAG_CITATIONS_EXCLUDED_NAMESPACES = frozenset(
 # 超温专项 business RAG query boost（方案 B：仅追加检索词，不改 namespace）
 _OVERHEAT_BUSINESS_RAG_BOOST = (
     "规格材质 受热面材质 管材 钢号 超温 蠕变 氧化皮 金相劣化 耐温性能 爆管"
+)
+_DEFECT_IDENT_BUSINESS_RAG_BOOST = (
+    "缺陷识别 飞灰冲刷 点蚀 腐蚀 胀粗 裂纹 焊口 防磨瓦 氧化皮 "
+    "打磨补焊 换管 防磨护瓦 运行监护 复测周期 测厚 无损检测 处置案例"
+)
+_LEAKAGE_BURST_IMG_DIAG_BUSINESS_RAG_BOOST = (
+    "泄爆分析 爆管 泄漏 超温热应力 飞灰冲刷磨损 烟气腐蚀 水汽侧腐蚀 "
+    "焊接缺陷 材质缺陷 运行操作偏差 直接原因 劣化因素 根因 "
+    "历史事故案例 典型故障处理 标准规程 防控技术 同类爆管预防 同区域改造"
 )
 
 
@@ -1845,7 +1855,7 @@ class AnalysisGraphRunner:
         return None
 
     def _configured_synthesis_strategy(self, analysis_type: str) -> str:
-        if analysis_type == "img_diag":
+        if analysis_type in ("img_diag_defect_ident", "img_diag_leakage_burst"):
             return "v1"
         per = self._synthesis_strategy_for_type(analysis_type)
         if per:
@@ -1869,6 +1879,8 @@ class AnalysisGraphRunner:
                 self._analysis_cfg.plan_template_version_four_tube_health_interpretation
             ),
             "leakage_burst_analysis": self._analysis_cfg.plan_template_version_leakage_burst_analysis,
+            "img_diag_defect_ident": self._analysis_cfg.plan_template_version_img_diag_defect_ident,
+            "img_diag_leakage_burst": self._analysis_cfg.plan_template_version_img_diag_leakage_burst,
             "custom": self._analysis_cfg.plan_template_version_custom,
         }
         per = (mapping.get(analysis_type) or "").strip()
@@ -1883,6 +1895,12 @@ class AnalysisGraphRunner:
             ),
             "leakage_burst_analysis": (
                 self._analysis_cfg.synthesis_template_version_leakage_burst_analysis
+            ),
+            "img_diag_defect_ident": (
+                self._analysis_cfg.synthesis_template_version_img_diag_defect_ident
+            ),
+            "img_diag_leakage_burst": (
+                self._analysis_cfg.synthesis_template_version_img_diag_leakage_burst
             ),
             "custom": self._analysis_cfg.synthesis_template_version_custom,
         }
@@ -2596,25 +2614,55 @@ class AnalysisGraphRunner:
                     "action": "核查事发区域壁温轨迹、配风与负荷波动，必要时优化燃烧配风并加强该区域壁温监视。",
                 },
             ]
-        if analysis_type == "img_diag":
+        if analysis_type == "img_diag_defect_ident":
             return [
                 {
                     "priority": 1,
                     "category": "inspection",
                     "owner": "检修班组",
                     "eta": "immediate",
-                    "trigger": "pipe_leak_photo",
-                    "rationale": "爆管后需扩大排查同类损伤管段并留存证据。",
-                    "action": "对相邻排管子开展宏观检查与测厚/硬度抽检，记录缺口形态与壁厚最小值。",
+                    "trigger": "defect_identified",
+                    "rationale": "图像识别缺陷后需按风险等级开展扩检并留存证据。",
+                    "action": "对缺陷管段及相邻管子开展宏观检查、测厚/硬度抽检，记录形貌与壁厚最小值并拍照归档。",
                 },
                 {
                     "priority": 2,
-                    "category": "operation_review",
+                    "category": "operation_monitoring",
                     "owner": "运行专工",
                     "eta": "24h",
-                    "trigger": "local_overheat_pattern",
-                    "rationale": "火焰偏斜或烟温偏差常与局部失效机理一致，需复核运行边界条件。",
-                    "action": "核查该区域燃烧配风、壁温测点可靠性与近期壁温轨迹，必要时优化二次风配比。",
+                    "trigger": "moderate_or_high_risk_defect",
+                    "rationale": "中高风险缺陷需加强运行监护并明确复测周期。",
+                    "action": "按处置方案加强该区域壁温与工况监视，落实监护频次与报警阈值复核。",
+                },
+            ]
+        if analysis_type == "img_diag_leakage_burst":
+            return [
+                {
+                    "priority": 1,
+                    "category": "inspection",
+                    "owner": "检修班组",
+                    "eta": "immediate",
+                    "trigger": "leak_or_burst_event",
+                    "rationale": "泄爆后应优先扩大同区域与同类型管段排查并留存爆口证据。",
+                    "action": "对事件相邻排管开展宏观检查与测厚抽检，核对爆口形貌、最小壁厚并拍照归档。",
+                },
+                {
+                    "priority": 2,
+                    "category": "operation_adjustment",
+                    "owner": "运行专工",
+                    "eta": "24h",
+                    "trigger": "pre_event_overheat_or_operation",
+                    "rationale": "事故近3天若存在超温或运行偏差，应复核运行边界以防同类复发。",
+                    "action": "核查事发区域壁温轨迹、吹灰与配风记录，必要时优化燃烧配风并加强监视。",
+                },
+                {
+                    "priority": 3,
+                    "category": "prevention",
+                    "owner": "技术专工",
+                    "eta": "7d",
+                    "trigger": "root_cause_identified",
+                    "rationale": "三层溯源完成后应落实同类爆管预防与同区域改造评估。",
+                    "action": "依据根因类别制定防磨/防腐/运行优化措施，参考知识库同类案例编制预防清单。",
                 },
             ]
         return [
@@ -2970,6 +3018,10 @@ class AnalysisGraphRunner:
             return ["time"]
         if analysis_type == "leakage_burst_analysis":
             return ["time", "zone"]
+        if analysis_type == "img_diag_defect_ident":
+            return ["time", "zone", "thickness", "temperature"]
+        if analysis_type == "img_diag_leakage_burst":
+            return ["time", "zone", "thickness", "temperature"]
         return ["time"]
 
     @staticmethod
@@ -3157,17 +3209,27 @@ class AnalysisGraphRunner:
         """构造 business RAG 召回句；超温专项追加材质-超温领域词（方案 B）。"""
         q = (user_query or "").strip()
         base = f"{analysis_type} {q}".strip()
-        if analysis_type != "overheat_guidance":
-            return base
-        return f"{base} {_OVERHEAT_BUSINESS_RAG_BOOST}".strip()
+        if analysis_type == "overheat_guidance":
+            return f"{base} {_OVERHEAT_BUSINESS_RAG_BOOST}".strip()
+        if analysis_type == "img_diag_defect_ident":
+            return f"{base} {_DEFECT_IDENT_BUSINESS_RAG_BOOST}".strip()
+        if analysis_type == "img_diag_leakage_burst":
+            return f"{base} {_LEAKAGE_BURST_IMG_DIAG_BUSINESS_RAG_BOOST}".strip()
+        return base
 
     @staticmethod
     def _build_business_rag_rerank_query(user_query: str, analysis_type: str) -> str | None:
         """超温专项 business RAG 重排句；其它专项不重排。"""
-        if analysis_type != "overheat_guidance":
-            return None
-        uq = (user_query or "").strip()
-        return f"锅炉管壁超温 规格材质 受热面 {uq}".strip()
+        if analysis_type == "overheat_guidance":
+            uq = (user_query or "").strip()
+            return f"锅炉管壁超温 规格材质 受热面 {uq}".strip()
+        if analysis_type == "img_diag_defect_ident":
+            uq = (user_query or "").strip()
+            return f"锅炉缺陷识别 处置方案 检修工序 {uq}".strip()
+        if analysis_type == "img_diag_leakage_burst":
+            uq = (user_query or "").strip()
+            return f"锅炉泄爆溯源 爆管原因 事故案例 规程条文 {uq}".strip()
+        return None
 
     def _retrieve_business_rag(
         self, query: str, analysis_type: str
@@ -3308,42 +3370,100 @@ class AnalysisGraphRunner:
                     mandatory=False,
                 ),
             ]
-        elif req.analysis_type == "img_diag":
+        elif req.analysis_type == "img_diag_defect_ident":
             base = [
                 _PlanTask(
                     "q1",
-                    "位置台账与缺陷履历",
+                    "管段基础参数",
                     self._compose_plan_task_question(
-                        req.query, "查询机组设备台账、受热面定位信息及该区域历史缺陷与检修记录"
+                        req.query,
+                        "查询用户问题指定区域的管段基础参数：规格材质、壁厚限值、胀粗率限值、壁温限值、累计运行时长",
                     ),
                     mandatory=True,
                 ),
                 _PlanTask(
                     "q2",
-                    "壁温与泄漏关联工况",
+                    "检修处置历史",
                     self._compose_plan_task_question(
-                        req.query, "查询与该区域相关的壁温趋势、超温累计时长及同期负荷与烟气参数摘要"
+                        req.query,
+                        "查询近3次壁厚记录、遗留问题处置、年平均减薄速率、泄爆记录、补焊记录、同区域换管记录",
                     ),
                     mandatory=True,
-                    dependency_ids=["q1"],
                 ),
                 _PlanTask(
                     "q3",
-                    "测厚与磨损线索",
+                    "壁温超温数据",
                     self._compose_plan_task_question(
-                        req.query, "查询该区域测厚结果、最小壁厚趋势及若有记载的吹灰或烟气走廊相关信息"
+                        req.query,
+                        "查询对应管段累计超温时长、超温峰值、壁温偏差",
                     ),
-                    mandatory=False,
-                    dependency_ids=["q1"],
+                    mandatory=True,
                 ),
                 _PlanTask(
                     "q4",
-                    "告警与同类记录",
+                    "吹灰运行数据",
                     self._compose_plan_task_question(
-                        req.query, "查询关联告警事件及同类受热面邻近区域的缺陷案例摘要（若有）"
+                        req.query,
+                        "查询对应区域吹灰器吹灰频次、吹扫压力、累计吹扫时长",
                     ),
                     mandatory=False,
-                    dependency_ids=["q1"],
+                ),
+                _PlanTask(
+                    "q5",
+                    "烟气煤质数据",
+                    self._compose_plan_task_question(
+                        req.query,
+                        "查询对应区域烟温、烟速、飞灰浓度等烟气煤质相关测点数据摘要",
+                    ),
+                    mandatory=False,
+                ),
+            ]
+        elif req.analysis_type == "img_diag_leakage_burst":
+            base = [
+                _PlanTask(
+                    "q1",
+                    "管段基础参数",
+                    self._compose_plan_task_question(
+                        req.query,
+                        "以用户问题解析的事故时刻为锚点向前3天，查询该区域管段基础参数：规格材质、壁厚限值、胀粗率限值、壁温限值、累计运行时长",
+                    ),
+                    mandatory=True,
+                ),
+                _PlanTask(
+                    "q2",
+                    "检修处置历史",
+                    self._compose_plan_task_question(
+                        req.query,
+                        "事故近3天内查询近3次壁厚记录、遗留问题处置、年平均减薄速率、泄爆记录、补焊记录、同区域换管记录",
+                    ),
+                    mandatory=True,
+                ),
+                _PlanTask(
+                    "q3",
+                    "壁温超温数据",
+                    self._compose_plan_task_question(
+                        req.query,
+                        "事故近3天内查询对应管段累计超温时长、超温峰值、壁温偏差",
+                    ),
+                    mandatory=True,
+                ),
+                _PlanTask(
+                    "q4",
+                    "吹灰运行数据",
+                    self._compose_plan_task_question(
+                        req.query,
+                        "事故近3天内查询对应区域吹灰器吹灰频次、吹扫压力、累计吹扫时长",
+                    ),
+                    mandatory=False,
+                ),
+                _PlanTask(
+                    "q5",
+                    "烟气煤质数据",
+                    self._compose_plan_task_question(
+                        req.query,
+                        "事故近3天内查询对应区域烟温、烟速、飞灰浓度等烟气煤质相关测点数据摘要",
+                    ),
+                    mandatory=False,
                 ),
             ]
         else:

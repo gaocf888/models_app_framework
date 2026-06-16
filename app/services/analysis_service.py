@@ -390,7 +390,10 @@ class AnalysisService:
                 key = ts.replace(second=0, microsecond=0)
                 if bucket == "hour":
                     key = key.replace(minute=0)
-                row = agg.setdefault(key, {"total": 0, "payload": 0, "nl2sql": 0, "img_diag": 0})
+                row = agg.setdefault(
+                    key,
+                    {"total": 0, "payload": 0, "nl2sql": 0, "img_diag_defect_ident": 0, "img_diag_leakage_burst": 0},
+                )
                 row["total"] += 1
                 row[mode] = row.get(mode, 0) + 1
 
@@ -404,7 +407,8 @@ class AnalysisService:
                         by_data_mode={
                             "payload": int(row.get("payload", 0)),
                             "nl2sql": int(row.get("nl2sql", 0)),
-                            "img_diag": int(row.get("img_diag", 0)),
+                            "img_diag_defect_ident": int(row.get("img_diag_defect_ident", 0)),
+                            "img_diag_leakage_burst": int(row.get("img_diag_leakage_burst", 0)),
                         },
                     )
                 )

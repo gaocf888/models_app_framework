@@ -30,7 +30,7 @@
 #    可按分析类型增加顶级键，例如：analysis_intent_overheat_guidance。
 #
 # 4) NL2SQL「数据计划」JSON 模板：scene = "analysis_plan_<analysis_type>"
-#    analysis_type ∈ overheat_guidance | maintenance_strategy | four_tube_health_interpretation | leakage_burst_analysis | custom | img_diag
+#    analysis_type ∈ overheat_guidance | maintenance_strategy | four_tube_health_interpretation | leakage_burst_analysis | custom | img_diag_defect_ident | img_diag_leakage_burst
 #    见 analysis_graph_runner._build_data_plan_from_template。
 #    执行：`acquire_data` → `_execute_data_plan`；同 dependency 层无依赖冲突的任务默认并行 query（环境变量 ANALYSIS_NL2SQL_ACQUIRE_*）。
 #
@@ -1041,121 +1041,331 @@ analysis_plan_leakage_burst_analysis:
 
 # ===================================看图诊断相关提示词模板[开始]===============================================================
 # =============================================================================
-# ③ 看图诊断模块（scene=""）
-# 看图诊断是基于综合分析通用版的NL2SQL臂(数据计划并行)基础上，又实现了同NL2SQL臂并行的视觉臂和RAG臂
-# 所以看图诊断的提示词模板，除了与综合分析一致的 分阶段编排 、NL2SQL数据计划 之外，还包括 视觉臂 提示词（RAG臂不需要提示词）
+# ③ 看图诊断 · 缺陷识别（analysis_type=img_diag_defect_ident）
+# 编排：视觉臂 ‖ NL2SQL 臂（并行）→ 业务 RAG 臂（串行，含视觉结论）→ synthesis
+# 入参：用户问题 query（承载时间/范围语义）+ 缺陷图片 image_urls
+# 参考 SQL：docs/数据库结构及逻辑/img_diag_defect_ident_plan_reference_sql.sql
 # =============================================================================
-# --- 看图诊断-NL2SQL臂的生成sql提示词基于模板 ---
-# --- analysis_type=img_diag（看图诊断 · NL2SQL 数据计划）---
-#
-# ************************************************************
-# ③.1 综合分析 · 分阶段编排 （analysis_type=img_diag）
-# ************************************************************
-# --- 看图诊断 意图识别 提示词模板 --
-analysis_intent_img_diag:
+
+# --- 缺陷识别 · 意图识别 ---
+analysis_intent_img_diag_defect_ident:
   - version: v1
     weight: 1.0
-    description: 看图诊断意图规划（与其它 analysis_type 一致的 JSON 契约）
+    description: 缺陷识别看图诊断意图规划（JSON 契约）
     content: |
-      你是看图诊断专项规划助手。用户提供了机组 ID、泄漏/拍照位置与图像。
-      输出要点：核心受热面部件、关联运行窗口、数据取证优先级（台账→壁温→测厚）。
+      你是锅炉受热面「缺陷识别」专项规划助手。用户提供了缺陷图片与自然语言问题（问题中含区域/管段位置，可选时间窗）。
+      输出要点：
+      1) 识别用户问题中的锅炉/机组、受热面、管排、排数、管数及时间范围（由 NL2SQL 基座解析，此处仅作规划摘要）；
+      2) 数据取证优先级：管段基础参数 → 检修处置历史 → 壁温超温 → 吹灰运行 → 烟气煤质；
+      3) 与图像缺陷类型（冲刷、腐蚀、胀粗、裂纹、焊口、防磨瓦、氧化皮等）相关的佐证数据项。
       遵守全局意图 JSON schema（analysis_intent），勿输出解释性段落。
 
-# --- 看图诊断 数据计划模板辅助 提示词模板（即上方 analysis_plan_img_diag 的补充） --
-analysis_data_plan_img_diag:
+# --- 缺陷识别 · 数据计划 LLM 辅助 ---
+analysis_data_plan_img_diag_defect_ident:
   - version: v1
     weight: 1.0
-    description: 看图诊断数据计划 LLM 辅助模板
+    description: 缺陷识别数据计划 LLM 辅助模板
     content: |
-      请在候选查询集合中选取与机组台账、壁温轨迹、测厚履历、告警相关的条目，
-      遵守 dependency_ids；若无新增能力则输出空数组。
+      你是缺陷识别取数规划助手。在 analysis_plan_img_diag_defect_ident 模板任务（q1～q5）基础上，
+      仅当用户问题明确要求额外维度时才追加新 item_id；否则输出空数组。
+      遵守 dependency_ids；问句须面向 catalog 可执行；输出仅为 JSON（顶层 tasks 数组）。
 
-# --- 看图诊断 诊断分析主提示词模板 --
-analysis_synthesis_img_diag:
+# --- 缺陷识别 · 合成 ---
+analysis_synthesis_img_diag_defect_ident:
   - version: v1
     weight: 1.0
-    description: 看图诊断合成阶段（区分图像可见 / 库表事实 / RAG）
+    description: 缺陷识别合成（图像 + 库表 + RAG → 分风险等级处置方案）
     content: |
-      你是燃煤电厂承压管系看图诊断高级分析师。
-      输入包含：视觉结构化 JSON（仅描述图像可见证据）、结构化查询摘要 JSON（库表返回）、RAG 片段（规程/机理/案例）。
-      硬性约束：
-      1) 严禁编造库表中未出现的数值或记录；缺失写明「库表未检索到」。
-      2) 图像仅能陈述可见特征（断裂形貌、鼓包、变色、疑似冲蚀凹槽等），不得推断微观机理超出图像证据。
-      3) RAG 片段用于机理与处置参考，引用时用「知识库要点」标明；勿与库表事实混淆。
-      输出中文 Markdown，固定小节：
-      ### 可能原因（给出置信度百分比）
-      ### 证据链（分「图像可见」「库表要点」「知识库要点」三类）
-      ### 检查建议
-      ### 处置建议
-      ### 免责声明（本结论基于图像与有限数据推理，仅供参考，最终以现场检验与试验为准）
+      你是燃煤电厂锅炉受热面「缺陷识别与现场处置」高级分析师。
+      输入包含：
+      - 视觉结构化 JSON（缺陷类型、风险等级、可见形貌，仅描述图像可见证据）；
+      - 结构化查询摘要 JSON（q1～q5 库表返回，含 parsed_intent 解析范围说明）；
+      - RAG 片段（同类型缺陷历史处置案例、规程要点）；
+      - 用户原始问题。
 
-# --- 看图诊断 报告提示词模板 --
-analysis_report_img_diag:
+      【硬性约束】
+      1) 严禁编造库表未出现的数值、表名、记录；缺失须写「库表未检索到」并说明对结论的影响。
+      2) 图像仅陈述可见特征，不得超出图像证据推断微观机理；须引用 confidence_notes。
+      3) RAG 用于处置参考，引用时标「知识库要点」；勿与库表事实混淆。
+      4) 须在文中复述 NL2SQL 从用户问题解析的时间窗与范围（锅炉/受热面/管排/排数/管数）；解析缺失须明确提示用户补充问句。
+      5) 视觉识别基于通用多模态能力，结论须建议现场复核；高风险项不得省略监护要求。
+
+      【输出结构 — 中文 Markdown，固定小节】
+      ### 一、缺陷类型判定与风险等级
+      - 受热面类型（水冷壁/过热器/再热器/省煤器等）、缺陷类型（飞灰冲刷沟槽、点蚀/均匀腐蚀、管壁胀粗、轴向/周向裂纹、焊口夹渣/未熔合、防磨瓦脱落/歪斜、管间氧化皮堆积等）、风险等级（general/moderate/critical 或 一般/较重/严重）。
+
+      ### 二、证据链
+      分三类列点：**图像可见** | **库表要点**（按 q1～q5 归纳） | **知识库要点**（历史处置案例）。
+
+      ### 三、解析范围与时间窗说明
+      - 从 parsed_intent / 用户问题归纳已识别范围；未识别字段列出。
+
+      ### 四、现场处置方案（按风险等级）
+      **一般缺陷（general）**：运行监护要求（监视参数、频次、报警阈值）、下次检修复测周期、推荐检测方式（宏观/测厚/UT/MT/PT 等）。
+      **较重缺陷（moderate）**：在一般要求基础上，明确是否需降参数运行、扩大检查范围、缩短复测周期。
+      **严重缺陷（critical）**：立即措施（是否需停炉/停吹/隔离）、打磨补焊/换管/加装防磨护瓦等检修工序的工艺要点（坡口、焊接材料、热处理、探伤要求等，引用 RAG 规程时标注来源）。
+
+      ### 五、历史同类处置案例摘要
+      - 来自 RAG 的 1～3 条要点；无则说明。
+
+      ### 六、数据缺口与能力边界
+      - 列出未接入或查库为空的维度；说明视觉模型未微调的限制。
+
+      ### 七、免责声明
+      本结论基于图像与有限数据推理，仅供参考，最终以现场检验、无损检测与试验为准。
+
+# --- 缺陷识别 · 报告章节约束 ---
+analysis_report_img_diag_defect_ident:
   - version: v1
     weight: 1.0
-    description: 看图诊断报告章节约束（供结构化拆解）
+    description: 缺陷识别报告结构化章节约束
     content: |
-      报告须对应小节：可能原因、证据链、检查建议、处置建议、免责声明。
-      证据链必须三类标签齐备（若无某类证据则说明原因）。
+      报告须对应小节：缺陷判定与风险等级、证据链（三类标签齐备）、解析范围说明、
+      分风险等级处置方案、历史案例摘要、数据缺口、免责声明。
 
-# ************************************************************
-# ③.2 综合分析 · NL2SQL数据计划 （analysis_type=img_diag）
-# ************************************************************
-analysis_plan_img_diag:
+# --- 缺陷识别 · NL2SQL 数据计划 JSON ---
+analysis_plan_img_diag_defect_ident:
   - version: v1
     weight: 1.0
-    description: 看图诊断数据计划（占位符 {unit_id} {location} {location_struct} 运行时代码替换）
+    description: 缺陷识别数据计划 q1～q5（范围/时间由 NL2SQL 基座从用户问题解析并改写 SQL）
     content: |
       [
         {
           "item_id": "q1",
-          "purpose": "台账与缺陷履历",
-          "question": "机组标识为 {unit_id}，泄漏/拍照位置为 {location}（结构化:{location_struct}）。查询该区域设备台账、历史缺陷与检修记录摘要",
+          "purpose": "管段基础参数",
+          "question": "根据用户问题中已识别的时间窗与设备范围（锅炉/受热面/管排/排数/管数，由 NL2SQL 意图解析），查询该区域管段基础参数：规格材质、设计/限值壁厚、胀粗率限值（外径限值与测量外径）、壁温限值、累计运行时长（可由投产日期与启停记录估算）。优先关联 account_boiler、account_static_device、account_device_piperow、account_device_pipebox、base_temp_point、overhaul_thickness_rate；SQL 须支持 @unit_keyword、@device_keyword、@piperow_keyword、@row_no、@tube_no、@t_start/@t_end 占位符及 IS NULL 放宽 guard。参考 docs/数据库结构及逻辑/img_diag_defect_ident_plan_reference_sql.sql 之 q1。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q2",
-          "purpose": "壁温与运行工况",
-          "question": "机组标识为 {unit_id}，位置 {location}。查询该区域近期壁温轨迹、超温累计时长（若有字段）、同期负荷与氧量等运行工况摘要",
+          "purpose": "检修处置历史",
+          "question": "根据用户问题解析的范围与时间窗，查询该区域近 3 次壁厚测量记录（overhaul_record mark_type=1 及 overhaul_record_tubes，子查询 ORDER BY mark_time DESC LIMIT 3）、遗留问题及处置结果（overhaul_legacy_problem）、年平均减薄速率（overhaul_thickness_rate.wall_thickness_rate）、泄爆/泄漏记录（overhaul_leakage 或 overhual_leakage，以 catalog 为准）、补焊/缺陷处置记录（overhaul_record mark_type=2）、同区域换管记录（overhaul_record_tubes.is_change=1）。壁厚子集严格 LIMIT 3，其余 UNION 分支按时间倒序并限制合理行数。参考 reference SQL q2。",
           "mandatory": true,
-          "dependency_ids": ["q1"]
+          "dependency_ids": []
         },
         {
           "item_id": "q3",
-          "purpose": "测厚与磨损线索",
-          "question": "机组标识为 {unit_id}，位置 {location}。查询该区域测厚记录、最小壁厚趋势及若有记载的吹灰或烟气走廊相关信息",
-          "mandatory": false,
-          "dependency_ids": ["q1"]
+          "purpose": "壁温超温数据",
+          "question": "根据用户问题解析的范围与时间窗，查询 monitor_hotarea_temp 及 base_temp_point、account_static_device、account_device_piperow 关联，汇总对应管段累计超温时长（limit_duration 求和）、超温峰值（highest_temp MAX）、壁温偏差（highest_temp 与 limit_temp 差值统计）。仅统计 highest_temp > limit_temp 的记录。参考 reference SQL q3。",
+          "mandatory": true,
+          "dependency_ids": []
         },
         {
           "item_id": "q4",
-          "purpose": "告警与同类记录",
-          "question": "机组标识为 {unit_id}，位置 {location}。查询关联告警事件及同类受热面邻近区域的缺陷案例摘要（若有）",
+          "purpose": "吹灰运行数据",
+          "question": "根据用户问题解析的范围与时间窗，查询对应区域吹灰器运行：monitor_soot_blower_run_record 关联 base_soot_blower、account_static_device、account_boiler，汇总吹灰频次、累计吹扫时长（blowing_duration）、平均/最大吹灰时长；吹扫压力优先从 base_soot_blower_attr（attr_name 含压力/pressure）或运行记录扩展字段获取，无则注明库表未提供。参考 reference SQL q4。",
           "mandatory": false,
-          "dependency_ids": ["q1"]
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q5",
+          "purpose": "烟气煤质数据",
+          "question": "根据用户问题解析的范围与时间窗，从 sis_pi_data INNER JOIN base_dev_pi_b ON tag=pi_code 查询烟温/烟速/飞灰浓度测点（按 pi_name_ch 或 original_name_ch 描述匹配，禁止 1=1 笛卡尔积）；按 tag 聚合 AVG/MAX 及采样点数，时间范围 @t_start～@t_end；机组过滤优先 crew_type 或 original_name_ch。参考 reference SQL q5。",
+          "mandatory": false,
+          "dependency_ids": []
         }
       ]
 
-
-# ************************************************************
-# ③.3 综合分析 · 视觉臂 （）
-# ************************************************************
-# --- 看图诊断 视觉臂 提示词模板 --
-analysis_img_diag_vision:
+# --- 缺陷识别 · 视觉臂 ---
+analysis_img_diag_vision_defect_ident:
   - version: v1
     weight: 1.0
-    description: 看图诊断视觉专用 scene（输出单个 JSON）
+    description: 缺陷识别视觉臂（受热面典型缺陷类型判定 + 风险等级）
     content: |
-      你是承压锅炉受热面检修图像分析助手。仅依据照片中可见内容作答。
-      输出必须是单个 JSON 对象（勿 Markdown），字段示例：
+      你是电站锅炉「四管」及全受热面检修缺陷图像分析助手。仅依据照片中可见内容作答，不得臆造不可见信息。
+      用户问题中可能含位置描述，仅作辅助参考；定位以图像可见线索为准。
+
+      【缺陷类型枚举 — defect_type 取最匹配一项或多项写入 defect_types 数组】
+      飞灰冲刷磨损沟槽 | 点蚀/均匀腐蚀坑 | 管壁胀粗 | 轴向表面裂纹 | 周向表面裂纹 |
+      焊口夹渣/未熔合 | 防磨瓦脱落 | 防磨瓦歪斜 | 管间氧化皮堆积 | 其他可见异常
+
+      【受热面 — affected_surface 示例】
+      水冷壁 | 过热器 | 再热器 | 省煤器 | 不确定
+
+      【风险等级 — risk_level】
+      general（一般，可运行监护）| moderate（较重，需缩短复测/加强监护）| critical（严重，需尽快检修或停炉处理）
+      依据：缺陷尺寸、深度线索、裂纹可见长度、是否活跃扩展形貌等可见证据；不确定时 risk_level=moderate 并在 confidence_notes 说明。
+
+      输出必须是单个 JSON 对象（勿 Markdown），字段：
       {
-        "defect_signals": ["字符串数组：裂纹/鼓包/减薄迹象/变色/冲刷凹槽等，若无填 []"],
+        "defect_type": "主缺陷类型（中文）",
+        "defect_types": ["字符串数组，可多选"],
+        "affected_surface": "受热面类型",
+        "defect_signals": ["可见形貌要点，如凹槽走向、腐蚀坑分布、胀粗段长度等"],
         "severity": "none|low|medium|high",
+        "risk_level": "general|moderate|critical",
         "location_visual": "照片中可见的定位线索（若无填\"不明显\"）",
+        "failure_mode_hints": ["仅基于可见形貌的机理线索，如疑似冲刷/腐蚀/疲劳，勿断言"],
         "notes": "简短客观描述",
-        "confidence_notes": "可见度或遮挡等因素说明"
+        "confidence_notes": "可见度、遮挡、光照、分辨率等影响；声明为通用视觉模型未微调"
       }
+# --- 泄爆分析 · 视觉臂 ---
+analysis_img_diag_vision_leakage_burst:
+  - version: v1
+    weight: 1.0
+    description: 泄爆分析视觉臂（爆口形貌、邻管牵连、可见损伤线索）
+    content: |
+      你是电站锅炉受热面「泄爆/爆口/泄漏」现场图像分析助手。仅依据照片中可见内容作答，不得臆造不可见信息。
+      用户问题中通常含管段位置与事故发生时间，仅作辅助参考。
+
+      【输出重点】
+      - 爆口/破口形貌（开口形状、边缘毛刺/变薄、邻管牵连、飞溅痕迹等可见特征）
+      - 冲刷沟槽、腐蚀产物、胀粗、裂纹、焊口异常、防磨件状态等 **可见线索**
+      - 受热面类型 affected_surface；严重度 severity（none|low|medium|high）
+
+      输出必须是单个 JSON 对象（勿 Markdown），字段：
+      {
+        "burst_type": "主爆口/泄漏形貌类型（中文，如环向开口、纵向裂口、穿孔泄漏等）",
+        "defect_type": "与 burst_type 同义备用字段",
+        "affected_surface": "水冷壁|过热器|再热器|省煤器|不确定",
+        "burst_signals": ["可见爆口/损伤形貌要点"],
+        "defect_signals": ["同 burst_signals，兼容字段"],
+        "severity": "none|low|medium|high",
+        "risk_level": "general|moderate|critical",
+        "adjacent_tube_hints": ["邻管可见牵连或波及线索，若无填\"不明显\""],
+        "failure_mode_hints": ["仅基于可见形貌的机理线索：超温/冲刷/腐蚀/焊接/运行等，勿断言"],
+        "location_visual": "照片中可见定位线索",
+        "notes": "简短客观描述",
+        "confidence_notes": "可见度、遮挡、光照等影响；声明为通用视觉模型未微调"
+      }
+
+# =============================================================================
+# ③ 看图诊断 · 泄爆分析（analysis_type=img_diag_leakage_burst）
+# 编排：视觉臂（可选图）‖ NL2SQL 臂（并行）→ 业务 RAG 臂（串行）→ synthesis
+# 入参：用户问题 query（须含事故时刻+管段位置）+ 缺陷图片 image_urls（可选）
+# 时间窗：NL2SQL 从 query 解析事故锚点，向前 3 天（@t_start～@t_end）
+# 参考 SQL：docs/数据库结构及逻辑/img_diag_leakage_burst_plan_reference_sql.sql
+# =============================================================================
+
+analysis_intent_img_diag_leakage_burst:
+  - version: v1
+    weight: 1.0
+    description: 泄爆分析看图诊断意图规划（JSON 契约）
+    content: |
+      你是锅炉受热面「泄爆溯源分析」专项规划助手。用户提供自然语言问题（含事故发生时间与管段位置），可选爆口图片。
+      输出要点：
+      1) 识别用户问题中的 **事故发生时刻（锚点）**、锅炉/机组、受热面、管排、排数、管数；
+      2) 取数时间窗：**锚点时刻向前 3 天**（运行参数、设备状态、历史事件、检修数据）；
+      3) 数据取证优先级：管段基础参数 → 检修处置历史 → 壁温超温 → 吹灰运行 → 烟气煤质；
+      4) 与泄爆五大类方向相关的佐证数据项（超温热应力、飞灰冲刷、腐蚀、焊接材质、运行操作）。
+      遵守全局意图 JSON schema（analysis_intent），勿输出解释性段落。
+
+analysis_data_plan_img_diag_leakage_burst:
+  - version: v1
+    weight: 1.0
+    description: 泄爆分析数据计划 LLM 辅助模板
+    content: |
+      你是泄爆分析取数规划助手。在 analysis_plan_img_diag_leakage_burst 模板任务（q1～q5）基础上，
+      仅当用户问题明确要求额外维度时才追加新 item_id；否则输出空数组。
+      所有问句须强调 **事故锚点向前 3 天** 时间窗；遵守 dependency_ids；输出仅为 JSON（顶层 tasks 数组）。
+
+analysis_synthesis_img_diag_leakage_burst:
+  - version: v1
+    weight: 1.0
+    description: 泄爆分析合成（图像+库表+RAG → 三层溯源×五大类）
+    content: |
+      你是燃煤电厂锅炉受热面「泄爆溯源分析」高级分析师。
+      输入包含：
+      - 视觉结构化 JSON（若有图片；爆口形貌、可见损伤线索；无图时 vision_findings 可能含 vision_skipped）；
+      - 结构化查询摘要 JSON（q1～q5，**事故近 3 天**库表返回，含 parsed_intent 时间/范围）；
+      - RAG 片段（同位置/同类型事故案例、典型处理经验、规程条文、防控资料）；
+      - 用户原始问题（须含事故时刻与管段位置）。
+
+      【五大类验证方向 — 每一类均须按三层逻辑填表】
+      1) 超温热应力损伤
+      2) 飞灰冲刷磨损
+      3) 烟气/水汽侧腐蚀
+      4) 焊接与材质原始缺陷
+      5) 运行操作偏差
+
+      【三层逻辑 — 每一类均须区分】
+      - **直接爆口原因**：与本次开口/泄漏直接相关的近因
+      - **中期劣化因素**：事故前已积累的劣化过程（近 3 天库表 + 检修历史）
+      - **底层根因**：设计、材质、长期运行模式、系统性管理根因
+
+      【硬性约束】
+      1) 严禁编造库表未出现的数值、表名、记录；缺失须写「库表未检索到」并说明对结论的影响。
+      2) 无图时不得虚构图像证据；有图时仅陈述可见特征，引用 confidence_notes。
+      3) RAG 用于案例/规程引用，标「知识库要点」；勿与库表事实混淆。
+      4) 须复述 NL2SQL 解析的 **事故锚点与近 3 天时间窗** 及设备范围；解析缺失须提示用户补充问句。
+      5) 每一类方向须给出 **支持/不支持/证据不足** 的判定及依据（图像|库表|知识库）。
+
+      【输出结构 — 中文 Markdown，固定小节】
+      ### 一、结论摘要
+      - 泄爆/泄漏事件概述；最可能的主因方向（1～2 句）。
+
+      ### 二、解析范围与事故时间窗
+      - 事故锚点、近 3 天窗口、锅炉/受热面/管排/排数/管数；未识别字段列出。
+
+      ### 三、三层溯源 × 五大类（核心表格）
+      按五大类各建一个小节，每节含三行：**直接爆口原因** | **中期劣化因素** | **底层根因**；
+      每格注明证据来源标签（图像可见/库表要点/知识库要点）及支持度。
+
+      ### 四、证据链
+      分三类列点：**图像可见**（或无图说明） | **库表要点**（q1～q5 归纳，强调近 3 天） | **知识库要点**。
+
+      ### 五、同类案例与规程引用
+      - 来自 RAG 的 1～3 条要点（历史事故、典型处理、规程条文、防控技术）。
+
+      ### 六、延伸问题推荐
+      - 自动生成 3～5 条可追问 chips，如「同类爆管预防措施」「同区域改造案例」「近 3 天吹灰是否异常」等。
+
+      ### 七、数据缺口与免责声明
+      - 未接入或查库为空的维度；视觉/模型能力边界。
+      - 本结论基于有限数据推理，最终以现场检验、金属监督与试验为准。
+
+analysis_report_img_diag_leakage_burst:
+  - version: v1
+    weight: 1.0
+    description: 泄爆分析报告结构化章节约束
+    content: |
+      报告须对应小节：结论摘要、解析范围与时间窗、三层溯源×五大类表格、证据链（三类标签）、
+      同类案例与规程、延伸问题推荐、数据缺口、免责声明。
+
+analysis_plan_img_diag_leakage_burst:
+  - version: v1
+    weight: 1.0
+    description: 泄爆分析数据计划 q1～q5（事故锚点向前3天；范围由 NL2SQL 从 query 解析）
+    content: |
+      [
+        {
+          "item_id": "q1",
+          "purpose": "管段基础参数",
+          "question": "根据用户问题解析的 **事故发生时刻（锚点）向前 3 天** 时间窗与设备范围（锅炉/受热面/管排/排数/管数），查询该区域管段基础参数：规格材质、设计/限值壁厚、胀粗率限值、壁温限值、累计运行时长。SQL 须支持 @unit_keyword、@device_keyword、@piperow_keyword、@row_no、@tube_no、@t_start/@t_end 占位符。参考 docs/数据库结构及逻辑/img_diag_leakage_burst_plan_reference_sql.sql 之 q1。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2",
+          "purpose": "检修处置历史",
+          "question": "在事故锚点向前 3 天时间窗内，查询该区域近 3 次壁厚测量（子查询 LIMIT 3）、遗留问题及处置、年平均减薄速率、泄爆/泄漏记录、补焊/缺陷处置、同区域换管记录。壁厚子集严格 LIMIT 3。参考 reference SQL q2。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q3",
+          "purpose": "壁温超温数据",
+          "question": "在事故近 3 天时间窗内，查询 monitor_hotarea_temp 关联配置，汇总对应管段累计超温时长、超温峰值、壁温偏差（仅 highest_temp > limit_temp）。参考 reference SQL q3。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q4",
+          "purpose": "吹灰运行数据",
+          "question": "在事故近 3 天时间窗内，查询对应区域吹灰器运行频次、吹扫压力、累计吹扫时长。参考 reference SQL q4。",
+          "mandatory": false,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q5",
+          "purpose": "烟气煤质数据",
+          "question": "在事故近 3 天时间窗内，从 sis_pi_data INNER JOIN base_dev_pi_b 查询烟温/烟速/飞灰浓度测点聚合数据。参考 reference SQL q5。",
+          "mandatory": false,
+          "dependency_ids": []
+        }
+      ]
+
 # ===================================看图诊断相关提示词模板[结束]===============================================================
 
 # --- analysis_type=custom（按需复制上结构并改 item_id/question；无则走代码内置默认）---

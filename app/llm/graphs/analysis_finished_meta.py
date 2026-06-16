@@ -43,7 +43,11 @@ def build_analysis_finished_meta(
     if not ns and citations:
         ns = str(citations[0].get("namespace") or "").strip() or None
 
-    nl2sql_used = bool(used_nl2sql) if used_nl2sql is not None else data_mode in ("nl2sql", "img_diag")
+    nl2sql_used = bool(used_nl2sql) if used_nl2sql is not None else data_mode in (
+        "nl2sql",
+        "img_diag_defect_ident",
+        "img_diag_leakage_burst",
+    )
 
     meta: dict[str, Any] = {
         # 与智能客服 finished.meta 同形（无业务含义的字段置空/false，避免误导）

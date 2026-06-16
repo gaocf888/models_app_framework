@@ -48,6 +48,42 @@ def test_build_business_rag_recall_query_overheat_boost() -> None:
     assert "蠕变" in q
 
 
+def test_build_business_rag_recall_query_defect_ident_boost() -> None:
+    q = AnalysisGraphRunner._build_business_rag_recall_query(
+        "1号炉低温过热器A侧第2排缺陷处置",
+        "img_diag_defect_ident",
+    )
+    assert q.startswith("img_diag_defect_ident")
+    assert "打磨补焊" in q
+    assert "处置案例" in q
+
+
+def test_build_business_rag_rerank_query_defect_ident() -> None:
+    q = AnalysisGraphRunner._build_business_rag_rerank_query(
+        "缺陷识别", "img_diag_defect_ident"
+    )
+    assert q is not None
+    assert "处置方案" in q
+
+
+def test_build_business_rag_recall_query_leakage_burst_boost() -> None:
+    q = AnalysisGraphRunner._build_business_rag_recall_query(
+        "#2炉过热器泄爆原因",
+        "img_diag_leakage_burst",
+    )
+    assert q.startswith("img_diag_leakage_burst")
+    assert "历史事故案例" in q
+    assert "爆管" in q
+
+
+def test_build_business_rag_rerank_query_leakage_burst() -> None:
+    q = AnalysisGraphRunner._build_business_rag_rerank_query(
+        "泄爆溯源", "img_diag_leakage_burst"
+    )
+    assert q is not None
+    assert "规程条文" in q
+
+
 def test_build_business_rag_recall_query_other_type_unchanged() -> None:
     q = AnalysisGraphRunner._build_business_rag_recall_query("检修策略", "maintenance_strategy")
     assert q == "maintenance_strategy 检修策略"

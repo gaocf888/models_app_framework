@@ -170,14 +170,17 @@ V0 单段异步任务 **`work_idx` 一般为 `1`**；`strict` 可不传，走 `I
 
 1. 填写 API 根地址与 Service API Key、`user_id`、`session_id`  
 2. （可选）选择 jpeg/png/webp → 「1) 上传图片」→ 「将上传 URL 追加到 image_urls」（可多次上传多图）  
-3. 填写 **unit_id**、**leak_location_text**、**query**；按需编辑 **leak_location_struct**（JSON 对象）  
-4. **image_urls** 至少一行（预签名 URL）  
-5. 「2) 开始流式看图诊断」→ 区段内 **summary 增量**、`meta` / 事件 trace；完整 JSON 见服务端日志与 `GET /analysis/traces/{request_id}`（`request_id` 见首包 `meta`）
+3. 选择 **img_diag_subtype**：`defect_ident`（缺陷识别）或 `leakage_burst`（泄爆分析）
+4. 填写 **query**（须含区域/管段位置；泄爆须含事故发生时间）；按需编辑 **data_requirements_hint**
+5. **image_urls**：缺陷识别至少一行；泄爆分析可选（无图时视觉臂跳过）
+6. 「2) 开始流式看图诊断」→ 区段内 **summary 增量**、`meta` / 事件 trace；完整 JSON 见服务端日志与 `GET /analysis/traces/{request_id}`（`request_id` 见首包 `meta`）
 
 ### 4.4 请求体要点（与后端 `AnalysisImgDiagRequest` 对齐）
 
-- **必填**：`user_id`、`session_id`、`unit_id`、`leak_location_text`、`query`、`image_urls`  
-- **可选**：`leak_location_struct`（默认 `{}`）、`data_requirements_hint`、`options`（页面提供 `enable_rag`、`enable_context`、`strict`、`max_nl2sql_calls`）
+- **必填**：`user_id`、`session_id`、`img_diag_subtype`、`query`
+- **图片**：`defect_ident` 时 `image_urls` 至少一条；`leakage_burst` 可为空
+- **可选**：`data_requirements_hint`、`options`（页面提供 `enable_rag`、`enable_context`、`strict`、`max_nl2sql_calls`）
+- **位置/时间/范围**：写在 `query` 自然语言中，由 NL2SQL 基座解析；泄爆取 **事故锚点向前 3 天** 数据
 
 ### 4.5 延伸阅读
 
