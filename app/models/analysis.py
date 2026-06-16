@@ -177,6 +177,10 @@ class AnalysisNL2SQLCall(BaseModel):
     error: Optional[str] = Field(None, description="失败原因（若有）")
     attempts: int = Field(1, description="该调用执行尝试次数")
     dependency_ids: List[str] = Field(default_factory=list, description="该调用依赖的计划项 ID")
+    question_intent: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="问句结构化意图（时间+范围），供 trace 排障",
+    )
 
 
 class AnalysisEvidence(BaseModel):

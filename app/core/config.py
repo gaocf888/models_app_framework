@@ -600,6 +600,27 @@ class AnalysisConfig:
 
 
 @dataclass
+class NL2SQLIntentConfig:
+    """
+    NL2SQL 问句意图（时间 + 实体范围）解析、SQL 改写与可观测性。
+
+    对应环境变量见 ``app/app-deploy/.env.example`` 中 NL2SQL_SCOPE_* / NL2SQL_INTENT_* 段。
+    """
+
+    scope_sql_rewrite_enabled: bool = False
+    scope_lexicon_file: str | None = None
+    intent_parse_mode: str = "rule"  # rule | llm | rule_with_llm_fallback
+    scope_parse_llm_timeout_ms: int = 8000
+    scope_parse_prompt_version: str = "v1"
+    scope_parse_llm_max_tokens: int = 512
+    scope_parse_llm_temperature: float = 0.0
+    scope_parse_log_rule_llm_diff: bool = False
+    inject_parsed_intent: bool = False
+    response_include_parsed_intent: bool = False
+    trace_include_question_intent: bool = True
+
+
+@dataclass
 class AnalysisAgentConfig:
     """综合分析智能体（analysis_agent）独立配置。"""
 
@@ -754,6 +775,7 @@ class AppConfig:
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
     chatbot: ChatbotConfig = field(default_factory=ChatbotConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    nl2sql_intent: NL2SQLIntentConfig = field(default_factory=NL2SQLIntentConfig)
     analysis_agent: AnalysisAgentConfig = field(default_factory=AnalysisAgentConfig)
     inspection_extract: InspectionExtractConfig = field(default_factory=InspectionExtractConfig)
     inspection_extract_v0: InspectionExtractV0Config = field(default_factory=InspectionExtractV0Config)
@@ -1396,6 +1418,24 @@ def _load_from_env() -> AppConfig:
         async_queue_workers=max(1, int(os.getenv("INSPECT_EXTRACT_V0_ASYNC_QUEUE_WORKERS", "2"))),
     )
 
+    _scope_lexicon_file = (os.getenv("NL2SQL_SCOPE_LEXICON_FILE") or "").strip() or None
+    nl2sql_intent_cfg = NL2SQLIntentConfig(
+        scope_sql_rewrite_enabled=os.getenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", "false").lower() == "true",
+        scope_lexicon_file=_scope_lexicon_file,
+        intent_parse_mode=(os.getenv("NL2SQL_INTENT_PARSE_MODE", "rule") or "rule").strip().lower(),
+        scope_parse_llm_timeout_ms=max(500, int(os.getenv("NL2SQL_SCOPE_PARSE_LLM_TIMEOUT_MS", "8000"))),
+        scope_parse_prompt_version=(os.getenv("NL2SQL_SCOPE_PARSE_PROMPT_VERSION", "v1") or "v1").strip(),
+        scope_parse_llm_max_tokens=max(64, int(os.getenv("NL2SQL_SCOPE_PARSE_LLM_MAX_TOKENS", "512"))),
+        scope_parse_llm_temperature=float(os.getenv("NL2SQL_SCOPE_PARSE_LLM_TEMPERATURE", "0")),
+        scope_parse_log_rule_llm_diff=os.getenv("NL2SQL_SCOPE_PARSE_LOG_RULE_LLM_DIFF", "false").lower()
+        == "true",
+        inject_parsed_intent=os.getenv("NL2SQL_INJECT_PARSED_INTENT", "false").lower() == "true",
+        response_include_parsed_intent=os.getenv("NL2SQL_RESPONSE_INCLUDE_PARSED_INTENT", "false").lower()
+        == "true",
+        trace_include_question_intent=os.getenv("NL2SQL_TRACE_INCLUDE_QUESTION_INTENT", "true").lower()
+        == "true",
+    )
+
     cfg = AppConfig(
         env=env,
         llm=llm_cfg,
@@ -1404,6 +1444,7 @@ def _load_from_env() -> AppConfig:
         mineru=mineru_cfg,
         chatbot=chatbot_cfg,
         analysis=analysis_cfg,
+        nl2sql_intent=nl2sql_intent_cfg,
         analysis_agent=analysis_agent_cfg,
         inspection_extract=inspection_extract_cfg,
         inspection_extract_v0=inspection_extract_v0_cfg,

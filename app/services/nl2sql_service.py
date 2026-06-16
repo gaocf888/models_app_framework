@@ -10,6 +10,7 @@ from app.models.nl2sql import NL2SQLQueryRequest, NL2SQLQueryResponse
 from app.nl2sql.chain import NL2SQLChain
 from app.nl2sql.errors import NL2SQLExecutionError
 from app.nl2sql.executor import SQLExecutor
+from app.nl2sql.intent_config import response_include_parsed_intent
 
 logger = get_logger(__name__)
 
@@ -33,7 +34,13 @@ class NL2SQLService:
         self._executor = executor or SQLExecutor()
         self._conv = conv_manager or ConversationManager()
 
-    async def query(self, req: NL2SQLQueryRequest, *, record_conversation: bool = True) -> NL2SQLQueryResponse:
+    async def query(
+        self,
+        req: NL2SQLQueryRequest,
+        *,
+        record_conversation: bool = True,
+        include_parsed_intent: bool | None = None,
+    ) -> NL2SQLQueryResponse:
         if not req.user_id:
             raise ValueError("user_id is required (must be provided by the caller).")
         if record_conversation:
@@ -175,6 +182,8 @@ class NL2SQLService:
                 sql=sql or "",
                 cause=last_execute_error,
             )
+            if vctx.parsed_intent is not None:
+                exc.parsed_intent = vctx.parsed_intent
             logger.error(
                 "NL2SQLService.query execution failed user_id=%s session_id=%s sql_len=%d "
                 "analysis_request_id=%s plan_item_id=%s detail=%s",
@@ -197,5 +206,19 @@ class NL2SQLService:
         if record_conversation:
             self._conv.append_assistant_message(req.user_id, req.session_id, f"SQL: {sql}")
 
-        return NL2SQLQueryResponse(sql=sql, rows=rows)
+        expose_intent = (
+            include_parsed_intent
+            if include_parsed_intent is not None
+            else response_include_parsed_intent()
+        )
+        parsed_intent = vctx.parsed_intent if expose_intent else None
+        if vctx.parsed_intent:
+            logger.info(
+                "NL2SQLService.query parsed_intent plan_item_id=%s parse_mode=%s boiler=%s",
+                piid,
+                (vctx.parsed_intent or {}).get("parse_mode"),
+                ((vctx.parsed_intent or {}).get("scope") or {}).get("boiler"),
+            )
+
+        return NL2SQLQueryResponse(sql=sql, rows=rows, parsed_intent=parsed_intent)
 

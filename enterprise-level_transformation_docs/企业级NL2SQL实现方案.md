@@ -66,6 +66,7 @@ NL2SQL后续效果优化方向：
 | Prompt | `app/nl2sql/prompt_builder.py` + `configs/prompts.yaml` | 拼装 + `{{NL2SQL_SCHEMA_CATALOG}}` |
 | 业务实体规则 | `app/nl2sql/entity_rules.py` | 从环境变量加载 **否定规则**（问题关键词 + SQL 正则），与链上校验联动 |
 | 校验/执行 | `app/nl2sql/validator.py`、`executor.py` | 只读、表/列白名单、**列–表绑定**（`alias.col` 对照反射表→列）、引号外单行化；**`EXPLAIN` + `execute`** |
+| 问句意图 | `question_intent.py`、`time_intent_display.py`、`scope_parser_rule.py`、`scope_parser_llm.py` | 时间窗（程序规则）+ 实体范围（默认 rule，可选 LLM）；结果供 `_rewrite_query_filters` 与可选 trace/API |
 
 ---
 
@@ -83,7 +84,7 @@ NL2SQL后续效果优化方向：
    - **白名单**：真实库 → 反射表列集合；否则从片段抽取；同时构建 **`table_columns`（表→列集合）** 供绑定校验。  
    - **业务实体规则**：可选从 **`NL2SQL_ENTITY_RULES` / `NL2SQL_ENTITY_RULES_FILE`** 加载 JSON 规则列表（否定模式：问题含某关键词且 SQL 命中正则 → 校验失败）。  
    - **Prompt**：加载 `nl2sql` 场景模板，替换 **`{{NL2SQL_SCHEMA_CATALOG}}`** 为全库 enriched 目录（含 **FK:列→表.列**），或与 RAG hints/降级文案组合。  
-   - **LLM** 生成 SQL → **`normalize_sql`** → **校验**：只读安全 → 表/列白名单 →（真实库时）**`alias.column` / `table.column` 列–表绑定** →（若配置）**实体规则**；失败且 LangChain 可用则 **`_refine_sql`** 后再验。  
+   - **LLM** 生成 SQL → **`normalize_sql`** → **TiDB/过滤器改写**（时间占位符 `@t_*`、锅炉 `@unit_keyword`、可选 scope 占位符）→ **校验**：只读安全 → 表/列白名单 →（真实库时）**`alias.column` / `table.column` 列–表绑定** →（若配置）**实体规则**；失败且 LangChain 可用则 **`_refine_sql`** 后再验。  
    - 返回 **`(sql, NL2SQLValidationContext)`**：`ctx` 内含白名单与 `table_columns`，供服务层 **执行阶段 refine** 复用同一套校验标准。  
 4. **`NL2SQLService.query`** 在 SQL 非空时进入 **执行闭环**（受环境变量控制）：  
    - 若 **`NL2SQL_EXPLAIN_BEFORE_EXECUTE=true`**：先 **`SQLExecutor.explain`**（`EXPLAIN <sql>`），失败则（在 **`NL2SQL_REFINE_ON_EXEC_ERROR`** 允许且 LangChain 可用时）调用 **`refine_sql_after_executor_error`**，用错误信息修正 SQL，再 **最多重试 `NL2SQL_MAX_EXEC_REFINES` 次**；仍失败则记指标、写会话错误摘要，**不再执行 SELECT**。  
@@ -313,6 +314,7 @@ flowchart TB
 | **单行 SQL** | `normalize_sql` 在引号外折叠空白，接口返回紧凑单行，便于日志与下游复制。 |
 | **排障日志** | `app.api.nl2sql`、`nl2sql_service`、`chain`、`rag_service`、`executor`、`schema_service` 等 INFO/WARNING；用 `user_id`+`session_id`+时间关联。 |
 | **会话隔离** | 直连与 Chatbot 若共用 Redis，建议使用不同 `session_id` 前缀，避免消息混写（见 `系统会话管理实现方案.md`）。 |
+| **问句意图** | **`resolve_question_intent`**：时间 **始终程序规则**；范围默认 **`NL2SQL_INTENT_PARSE_MODE=rule`**，可选 vLLM（`configs/prompts.yaml` · `nl2sql_scope_parse`）。综合分析传 **`time_intent_text=req.query`** 防 plan 长问句污染。详设见 **`docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`**。 |
 
 ---
 
@@ -331,6 +333,10 @@ flowchart TB
 | `NL2SQL_ENTITY_RULES` | 可选；JSON 数组字符串，**否定实体规则**（`question_contains_any` + `sql_pattern`/`sql_regex` + `message`） |
 | `NL2SQL_ENTITY_RULES_FILE` | 可选；若配置了路径且文件存在则 **只从文件** 加载；若未配置文件或路径无效则 **不** 回退到内联（见 `app/nl2sql/entity_rules.py`）；未设 `FILE` 时才读 `NL2SQL_ENTITY_RULES` |
 | `RAG_SCENE_NL2SQL_*` | NL2SQL 场景检索 profile |
+| `NL2SQL_INTENT_PARSE_MODE` | 默认 `rule`；范围 LLM 解析：`llm` / `rule_with_llm_fallback` |
+| `NL2SQL_SCOPE_SQL_REWRITE_ENABLED` | 默认 `false`；设备/管排 SQL 占位符改写 |
+| `NL2SQL_SCOPE_PARSE_PROMPT_VERSION` | 范围 LLM 提示词版本（`prompts.yaml` · `nl2sql_scope_parse`） |
+| `NL2SQL_INJECT_PARSED_INTENT` / `NL2SQL_RESPONSE_INCLUDE_PARSED_INTENT` / `NL2SQL_TRACE_INCLUDE_QUESTION_INTENT` | 问句意图可观测（Prompt / API / 分析 trace） |
 
 完整列表见 `app/app-deploy/.env.example` 与 `framework-guide/NL2SQL整体实现技术说明.md` §4。
 
@@ -348,6 +354,7 @@ flowchart TB
 | `framework-guide/NL2SQL整体实现技术说明.md` | 模块映射、API、配置、日志 §8 |
 | `docs/大小模型应用技术架构与实现方案.md` | §1 基础能力、§4.6 NL2SQL |
 | `docs/NL2SQL系统概要设计.md` | 产品与模块概要 |
+| `docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md` | 问句时间/范围解析、SQL 改写与环境变量 |
 | `enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` | `data_query` 与 NL2SQL 节点 |
 | `enterprise-level_transformation_docs/企业级综合分析实现和使用说明.md` | **`run-with-nl2sql`** / **`run-with-nl2sql-stream`** / **`run-img-diag`** / **`run-img-diag-stream`** 编排、`acquire_data`、`_execute_data_plan` 与 NL2SQL 计划模板 |
 | `enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md` | **`img_diag`** 并行语义、占位符、`vision_findings` 与 **`parallel_lane_trace`** |

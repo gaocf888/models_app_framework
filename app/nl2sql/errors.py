@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 
 def classify_sql_executor_error(exc: BaseException | None) -> str:
@@ -46,11 +47,13 @@ class NL2SQLExecutionError(Exception):
         sql: str = "",
         cause: BaseException | None = None,
         user_message_key: str = "default",
+        parsed_intent: dict[str, Any] | None = None,
     ) -> None:
         self.error_code = error_code
         self.sql = (sql or "").strip()
         self.cause = cause
         self.user_message_key = user_message_key or "default"
+        self.parsed_intent = parsed_intent
         self.brief_message = f"NL2SQL {self.error_code}"
         super().__init__(self.brief_message)
 

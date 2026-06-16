@@ -1,7 +1,7 @@
 # NL2SQL 当前完整实现逻辑说明（代码对照版）
 
 > 本文描述**当前仓库真实代码行为**（而非理想化设计），用于评审、排障与运维交接。  
-> 关键入口：`app/api/nl2sql.py`、`app/services/nl2sql_service.py`、`app/nl2sql/chain.py`、`app/nl2sql/validator.py`、`app/nl2sql/executor.py`；生成阶段可选 **L2/L1 SQL 缓存**（L1 覆盖相对日 / 周 / 月 / 近 N 天等时间口径意图键 + SQL 时间骨架重渲染，环境变量 **`NL2SQL_CACHE_*`** / **`NL2SQL_L1_CACHE_ENABLED`**）见 `app/nl2sql/sql_cache.py`、`app/nl2sql/sql_skeleton.py` 与 **`docs/NL2SQL缓存实现方案.md`**；可选 **QA 向量闭环**（`nl2sql_qa_examples` 自动写入 + 检索指纹过滤 + RAG 管理 **`GET`/`PATCH /rag/nl2sql-auto-qa`**）见 **`app/nl2sql/qa_feedback.py`**、`NL2SQLRAGService.retrieve(..., nl2sql_qa_context=...)` 与 **`docs/NL2SQL缓存实现方案.md`** §七 ter。综合分析取数另见 `app/api/analysis.py`、`app/llm/graphs/analysis_graph_runner.py` 中 **`_execute_data_plan`**。
+> 关键入口：`app/api/nl2sql.py`、`app/services/nl2sql_service.py`、`app/nl2sql/chain.py`、`app/nl2sql/validator.py`、`app/nl2sql/executor.py`；**问句意图（时间窗 + 实体范围）**见 `app/nl2sql/question_intent.py`、`time_intent_display.py`、`scope_parser_rule.py` / `scope_parser_llm.py`（详设 **`docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`**）；生成阶段可选 **L2/L1 SQL 缓存**（L1 覆盖相对日 / 周 / 月 / 近 N 天等时间口径意图键 + SQL 时间骨架重渲染，环境变量 **`NL2SQL_CACHE_*`** / **`NL2SQL_L1_CACHE_ENABLED`**）见 `app/nl2sql/sql_cache.py`、`app/nl2sql/sql_skeleton.py` 与 **`docs/NL2SQL缓存实现方案.md`**；可选 **QA 向量闭环**（`nl2sql_qa_examples` 自动写入 + 检索指纹过滤 + RAG 管理 **`GET`/`PATCH /rag/nl2sql-auto-qa`**）见 **`app/nl2sql/qa_feedback.py`**、`NL2SQLRAGService.retrieve(..., nl2sql_qa_context=...)` 与 **`docs/NL2SQL缓存实现方案.md`** §七 ter。综合分析取数另见 `app/api/analysis.py`、`app/llm/graphs/analysis_graph_runner.py` 中 **`_execute_data_plan`**。
 
 ---
 
@@ -14,8 +14,8 @@
 3. **综合分析 V2（nl2sql 模式）**：`POST /analysis/run-with-nl2sql` → `AnalysisService.run_analysis_nl2sql` → `AnalysisGraphRunner.run_with_nl2sql`；在 **`acquire_data`** / **`_execute_data_plan`** 中按计划任务 **多次** 调用 `NL2SQLService.query(..., record_conversation=False)`（**默认同 dependency 层并行**调度，见 **`ANALYSIS_NL2SQL_ACQUIRE_*`**），结果进入分析质量门与 **`synthesis`**，不经过客服的 `summarize_nl2sql_with_llm`。
 
 请求/响应模型：
-- `NL2SQLQueryRequest(user_id, session_id, question)`
-- `NL2SQLQueryResponse(sql, rows)`
+- `NL2SQLQueryRequest(user_id, session_id, question)`；可选 **`time_intent_text`**（时间/范围抽取源，综合分析传用户原句 `query`）。
+- `NL2SQLQueryResponse(sql, rows)`；可选 **`parsed_intent`**（需 `NL2SQL_RESPONSE_INCLUDE_PARSED_INTENT=true` 或内部 `include_parsed_intent`）。
 
 ---
 
@@ -116,6 +116,19 @@
 
 若失败且 LangChain 可用，则进入生成期 refine。
 
+### 3.8 问句意图解析（时间 + 实体范围）
+
+`generate_sql_with_validation_context` 入口调用 **`resolve_question_intent`**（`question_intent.py`），**每请求解析一次**，结果写入 `NL2SQLValidationContext.parsed_intent` 并供 SQL 后处理复用（避免 LLM 模式重复解析）。
+
+| 维度 | 实现 | 配置 |
+|------|------|------|
+| **时间窗** | 始终程序规则：`time_intent_display.extract_time_window_from_question` | 无独立开关 |
+| **实体范围**（锅炉/受热面/管排/排数/管数） | 默认 **`scope_parser_rule`** + `configs/nl2sql_scope_device_aliases.json`；可选 LLM **`scope_parser_llm`** | **`NL2SQL_INTENT_PARSE_MODE=rule`**（默认）/ `llm` / `rule_with_llm_fallback` |
+| **SQL 占位符改写** | `@t_start/@t_end`、锅炉 `@unit_keyword` 始终改写；设备/管排 `@device_keyword` 等 **opt-in** | **`NL2SQL_SCOPE_SQL_REWRITE_ENABLED=false`**（默认） |
+| **可观测** | Prompt 注入 / API `parsed_intent` / 分析 trace `question_intent` | `NL2SQL_INJECT_PARSED_INTENT`、`NL2SQL_RESPONSE_INCLUDE_PARSED_INTENT`、`NL2SQL_TRACE_INCLUDE_QUESTION_INTENT` |
+
+**防污染**：综合分析等场景 plan 子任务 `question` 可能带 RAG 附录；范围与时间优先从 **`time_intent_text`**（未填则 `question`）经 **`_resolve_entity_scope_question`** 清洗后再解析。LLM 范围提示词：**`configs/prompts.yaml`** · scene=`nl2sql_scope_parse`（版本 **`NL2SQL_SCOPE_PARSE_PROMPT_VERSION`**）；锅炉字段 **始终由程序规则覆盖** LLM 输出。
+
 ---
 
 ## 4. refine 双闭环
@@ -170,6 +183,12 @@
 | `NL2SQL_DISABLE_PLANNER_WHEN_DB_SCHEMA` | `true` | 真实库就绪时默认跳过 planner |
 | `NL2SQL_ENTITY_RULES_FILE` | 空 | 实体规则文件（若设且存在则读文件） |
 | `NL2SQL_ENTITY_RULES` | 空 | 内联实体规则 JSON（仅在未使用文件时读取） |
+| `NL2SQL_INTENT_PARSE_MODE` | `rule` | 范围解析：`rule` / `llm` / `rule_with_llm_fallback` |
+| `NL2SQL_SCOPE_SQL_REWRITE_ENABLED` | `false` | 设备/管排 SQL 占位符改写 |
+| `NL2SQL_SCOPE_LEXICON_FILE` | 空 | 范围词典 JSON（默认 `configs/nl2sql_scope_device_aliases.json`） |
+| `NL2SQL_INJECT_PARSED_INTENT` | `false` | 是否将已识别意图块追加进 SQL 生成 Prompt |
+| `NL2SQL_RESPONSE_INCLUDE_PARSED_INTENT` | `false` | `/nl2sql/query` 是否返回 `parsed_intent` |
+| `NL2SQL_TRACE_INCLUDE_QUESTION_INTENT` | `true` | 综合分析 trace 是否写入 `question_intent` |
 
 ---
 
@@ -206,3 +225,4 @@
 - `enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`
 - `framework-guide/NL2SQL整体实现技术说明.md`
 - `docs/NL2SQL系统概要设计.md`
+- **`docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`**（问句时间/范围解析与 SQL 改写详设）

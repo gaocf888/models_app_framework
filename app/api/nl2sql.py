@@ -43,11 +43,16 @@ async def nl2sql_query(req: NL2SQLQueryRequest) -> NL2SQLQueryResponse:
             可选 `time_intent_text`：仅用于动态时间窗等从该文本抽取时间语义（未填则等同 `question`）。
 
     Returns:
-        NL2SQLQueryResponse: `sql` 为模型生成的语句，`rows` 为查询结果列表（执行失败时行为见服务层与会话记录）。
+        NL2SQLQueryResponse:
+            - ``sql``：模型生成并经 TiDB/时间/范围改写后的 SQL；
+            - ``rows``：执行结果行列表；
+            - ``parsed_intent``（可选）：问句意图 JSON。默认不返回；部署侧设置
+              ``NL2SQL_RESPONSE_INCLUDE_PARSED_INTENT=true`` 后包含，结构见
+              ``NL2SQLQueryResponse.parsed_intent`` 字段说明。
 
     Raises:
-        HTTPException: 路由层不直接抛出；校验失败 422。
-        ValueError: 服务层在 `user_id` 为空时可能抛出。
+        HTTPException: SQL 执行失败时 502，detail 含 ``error_code`` 与可选 ``sql``。
+        ValueError: 服务层在 ``user_id`` 为空时可能抛出。
     """
     logger.info(
         "NL2SQL HTTP /query start user_id=%s session_id=%s question_len=%d preview=%r",

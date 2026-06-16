@@ -48,5 +48,13 @@ class NL2SQLQueryRequest(BaseModel):
 
 class NL2SQLQueryResponse(BaseModel):
     sql: str = Field(..., description="生成的 SQL 语句")
-    rows: List[dict[str, Any]] = Field(default_factory=list, description="查询结果（占位）")
+    rows: List[dict[str, Any]] = Field(default_factory=list, description="查询结果行列表")
+    parsed_intent: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "结构化问句意图（时间窗 + 锅炉/受热面/管排/排数/管数）。"
+            "默认不返回；设置环境变量 NL2SQL_RESPONSE_INCLUDE_PARSED_INTENT=true 后包含。"
+            "字段含 parse_mode、scope_question、time_window_tag、time_window、statistical_time_range、scope。"
+        ),
+    )
 

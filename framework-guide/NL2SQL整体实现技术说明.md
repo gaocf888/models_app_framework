@@ -1,7 +1,7 @@
 # NL2SQL 整体实现技术说明
 
 > 本文描述**当前仓库已实现**的 NL2SQL（自然语言转 SQL）技术方案：基于 **LLM + RAG + Schema 元数据（含 DB 反射与外键提示）+ 安全执行** 的企业级实现。  
-> 配套文档：`docs/NL2SQL系统概要设计.md`（总体设计）、**`docs/NL2SQL缓存实现方案.md`（生成阶段 L2/L1 缓存与键策略）**、`docs/大小模型应用技术架构与实现方案.md`（4.6 节）、`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`（企业级流程与图示）、`enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md`（代码行为明细）、`memory-bank/02-components.md`（组件关系）。
+> 配套文档：`docs/NL2SQL系统概要设计.md`（总体设计）、**`docs/NL2SQL缓存实现方案.md`（生成阶段 L2/L1 缓存与键策略）**、**`docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`（问句时间/范围解析）**、`docs/大小模型应用技术架构与实现方案.md`（4.6 节）、`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`（企业级流程与图示）、`enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md`（代码行为明细）、`memory-bank/02-components.md`（组件关系）。
 
 **基座定位**：NL2SQL 与 **通用 RAG** 同属本应用的 **基础能力**（共享向量库基座、场景化检索策略、大模型与 Prompt 注册表、日志与指标）。不同之处在于：NL2SQL 面向 **结构化业务库只读查询**，并 **单独暴露** `POST /nl2sql/query`，供外部系统直接集成；智能客服在 **`data_query`** 意图下也会调用同一 `NL2SQLService`（通常 `record_conversation=False`），与 KB RAG 分流并行。
 
@@ -13,7 +13,7 @@
 |------|------|
 | **§1 总体技术概览** | 方案总体叙述、能力表、架构图与时序图 |
 | **§2 模块与文件映射** | 代码入口速查表 |
-| **§3 详细说明** | 按「Schema 元数据 → RAG → Prompt → **缓存（§3.4.1）** → LLM → 校验与修正 → 执行 → 会话与指标」展开 |
+| **§3 详细说明** | 按「Schema 元数据 → RAG → Prompt → **缓存（§3.4.1）** → LLM → **问句意图与 SQL 改写（§3.4.2）** → 校验与修正 → 执行 → 会话与指标」展开 |
 | **§4 配置与环境变量** | 与 `AppConfig.llm`、`DatabaseConfig` 对齐 |
 | **§5 HTTP API** | `/nl2sql/query` 行为说明 |
 | **§6 典型调用链** | 从 HTTP 到 DB 的端到端链路 |
@@ -86,6 +86,7 @@
 | **Prompt 编排** | `PromptBuilder` 按 NL2SQL 设计文档，将 Schema 片段、业务知识与示例拼装成结构化 Prompt，结合 `PromptTemplateRegistry` 中 scene=`nl2sql` 的模板。 |
 | **SQL 生成链路** | `NL2SQLChain` 将问题 →（可选）规划 `_plan` → **NL2SQL RAG 检索** → **可选 L2→L1 缓存命中** →（未命中）Prompt 构建 → LLM 生成 SQL → **安全 + 白名单 + 列–表绑定 + 实体规则** 与生成期 **`_refine_sql`**；对外 **`generate_sql` / `generate_sql_with_validation_context`** 与执行期 **`refine_sql_after_executor_error`**。 |
 | **生成阶段缓存** | **`NL2SQL_CACHE_ENABLED`** 时：进程内 **L2**（完整问题文本键）+ **L1**（时间意图折叠键，`sql_skeleton.py`）；查找 **L2 → L1 → LLM**，命中后仍走校验与 TiDB/过滤器改写；详见 **`docs/NL2SQL缓存实现方案.md`**。 |
+| **问句意图（时间+范围）** | **`resolve_question_intent`**：时间 **程序规则**；范围 **默认 rule**，可选 LLM（`NL2SQL_INTENT_PARSE_MODE`）；驱动 `_rewrite_query_filters`（`@t_*`、锅炉、可选 scope 占位符）。详设 **`docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`**。 |
 | **业务实体规则** | `app/nl2sql/entity_rules.py`：环境变量加载 **否定规则**（问题子串 + SQL 正则），在链上 `_validate_sql` 中与 `SQLValidator` 联动。 |
 | **SQL 校验与执行** | `SQLValidator`：只读、白名单、**主查询 FROM 别名下列绑定**（反射 `table→columns`）；`SQLExecutor`：**`explain` + `execute`**，只读查询。 |
 | **服务层与 API** | `NL2SQLService` 管理链路调用、执行、会话记录与指标；`/nl2sql/query` 作为统一 HTTP 入口。 |
@@ -225,6 +226,7 @@ sequenceDiagram
 | Prompt 构建器 | `app/nl2sql/prompt_builder.py` | 按 NL2SQL 设计，将问题、Schema 片段与业务知识拼为结构化 Prompt；对接 `PromptTemplateRegistry`。 |
 | SQL 校验 | `app/nl2sql/validator.py` | 只读 SQL；表/列白名单；**主查询 FROM 下列–表绑定**；`normalize_sql` 等。 |
 | 业务实体规则 | `app/nl2sql/entity_rules.py` | 从环境变量加载 **否定规则**（问题关键词 + SQL 正则）。 |
+| 问句意图 | `question_intent.py`、`time_intent_display.py`、`scope_parser_rule.py`、`scope_parser_llm.py` | 时间窗 + 实体范围解析；可选 LLM 提示词 **`prompts.yaml`** · `nl2sql_scope_parse`。 |
 | SQL 执行 | `app/nl2sql/executor.py` | AsyncEngine；**`explain`（EXPLAIN）** 与 **`execute`**（SELECT）。 |
 | 请求/响应模型 | `app/models/nl2sql.py` | `NL2SQLQueryRequest` / `NL2SQLQueryResponse` Pydantic 模型。 |
 | 共享配置 | `app/core/config.py` | `AppConfig.llm`（大模型 endpoint 等）；`DatabaseConfig`（`DB_URL` 等）被 `SchemaMetadataService` / `SQLExecutor` 使用。 |
@@ -312,6 +314,15 @@ index_qa_examples(snippets: List[str])
 - **代码**：**`app/nl2sql/qa_feedback.py`**；链上 **`NL2SQLChain._maybe_upsert_nl2sql_qa_feedback`**（成功后 **`asyncio.to_thread`** 调 **`NL2SQLRAGService.upsert_auto_feedback_qa_pair`**）。
 - **文档**：**`docs/NL2SQL缓存实现方案.md`** §七 ter。
 
+#### 问句意图解析与 SQL 后处理改写（§3.4.2）
+
+- **入口**：`generate_sql_with_validation_context` → **`resolve_question_intent`**；每请求解析一次，结果在 `parsed_intent` / `_rewrite_query_filters` 中复用。
+- **时间**：`time_intent_display` 程序规则；改写 `@t_start` / `@t_end` 等（无独立 env 开关）。
+- **范围**：默认 **`scope_parser_rule`** + `nl2sql_scope_device_aliases.json`；**`NL2SQL_INTENT_PARSE_MODE=llm`** 时 vLLM + **`prompts.yaml`** · `nl2sql_scope_parse`（锅炉仍程序解析）。
+- **请求字段**：`time_intent_text`（综合分析传 `req.query`，防 plan 长问句污染）。
+- **可选**：`NL2SQL_SCOPE_SQL_REWRITE_ENABLED`（scope 占位符，默认关）；`NL2SQL_INJECT_PARSED_INTENT` / `NL2SQL_RESPONSE_INCLUDE_PARSED_INTENT` / `NL2SQL_TRACE_INCLUDE_QUESTION_INTENT`。
+- 详设：**`docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`**。
+
 ### 3.5 SQLValidator、entity_rules 与 SQLExecutor
 
 - 文件：`app/nl2sql/validator.py`、`app/nl2sql/entity_rules.py`、`app/nl2sql/executor.py`  
@@ -389,13 +400,25 @@ index_qa_examples(snippets: List[str])
 
 策略与键维度详见 **`docs/NL2SQL缓存实现方案.md`**。
 
+**问句意图（时间 + 范围，`AppConfig.nl2sql_intent`）**：
+
+| 变量 | 含义 |
+|------|------|
+| `NL2SQL_INTENT_PARSE_MODE` | 默认 `rule`；范围 LLM：`llm` / `rule_with_llm_fallback` |
+| `NL2SQL_SCOPE_SQL_REWRITE_ENABLED` | 默认 `false`；设备/管排 SQL 占位符改写 |
+| `NL2SQL_SCOPE_LEXICON_FILE` | 范围词典 JSON 路径 |
+| `NL2SQL_SCOPE_PARSE_PROMPT_VERSION` | `nl2sql_scope_parse` 模板版本（`prompts.yaml`） |
+| `NL2SQL_INJECT_PARSED_INTENT` | 是否向 SQL 生成 Prompt 注入已识别意图 |
+| `NL2SQL_RESPONSE_INCLUDE_PARSED_INTENT` | API 是否返回 `parsed_intent` |
+| `NL2SQL_TRACE_INCLUDE_QUESTION_INTENT` | 综合分析 trace 是否含 `question_intent` |
+
 ---
 
 ## 5. HTTP API（NL2SQL 管理）
 
 - **`POST /nl2sql/query`**（`app/api/nl2sql.py`）  
-  - Request：`NL2SQLQueryRequest`（`user_id`、`session_id`、`question`）。  
-  - Response：`NL2SQLQueryResponse`（`sql`、`rows`）。  
+  - Request：`NL2SQLQueryRequest`（`user_id`、`session_id`、`question`；可选 **`time_intent_text`**、`analysis_type`、`plan_item_id` 等）。  
+  - Response：`NL2SQLQueryResponse`（`sql`、`rows`；可选 **`parsed_intent`**，需 `NL2SQL_RESPONSE_INCLUDE_PARSED_INTENT=true`）。  
   - 行为：调用 `NL2SQLService.query` 执行完整 NL2SQL 流程。
 
 ---

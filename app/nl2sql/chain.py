@@ -34,6 +34,7 @@ class NL2SQLValidationContext:
     schema_ok: bool
     table_columns: dict[str, frozenset[str]]
     join_whitelist: frozenset[str]
+    parsed_intent: dict[str, Any] | None = None
 
 NL2SQL_SCHEMA_CATALOG_PLACEHOLDER = "{{NL2SQL_SCHEMA_CATALOG}}"
 
@@ -208,6 +209,26 @@ class NL2SQLChain:
             if time_intent_text is not None
             else question
         )
+        from app.nl2sql.question_intent import resolve_question_intent, scope_literals_from_intent
+        from app.nl2sql.question_intent_display import (
+            format_parsed_intent_prompt_block,
+            inject_parsed_intent_enabled,
+            question_intent_to_dict,
+        )
+
+        question_intent = resolve_question_intent(
+            question,
+            time_intent_source=time_src,
+        )
+        scope_literals = scope_literals_from_intent(question_intent)
+        parsed_intent_dict = question_intent_to_dict(question_intent)
+        logger.info(
+            "NL2SQLChain parsed_intent parse_mode=%s boiler=%s device=%s time_tag=%s",
+            question_intent.parse_mode,
+            question_intent.scope.boiler,
+            question_intent.scope.device_name,
+            question_intent.time_window_tag,
+        )
         cache_key_for_store: str | None = None
         sql_cache_backend: Any = None
         l1_cache_key_for_store: str | None = None
@@ -302,6 +323,7 @@ class NL2SQLChain:
             schema_ok,
             {k: frozenset(v) for k, v in table_columns_map.items()},
             frozenset(join_whitelist),
+            parsed_intent=parsed_intent_dict,
         )
         entity_rules = load_entity_rules_from_env()
         if schema_ok != schema_from_db:
@@ -529,6 +551,8 @@ class NL2SQLChain:
             system_prefix=system_prefix,
             schema_catalog=prompt_catalog,
         )
+        if inject_parsed_intent_enabled():
+            prompt = f"{prompt}\n\n{format_parsed_intent_prompt_block(question_intent)}"
         logger.info(
             "NL2SQLChain prompt built version=%s catalog_in_template=%s catalog_source=%s "
             "replacement_chars=%d prompt_catalog_chars=%s prompt_total_chars=%d",
@@ -559,7 +583,10 @@ class NL2SQLChain:
         sql = self._validator.normalize_sql(sql)
         sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
         sql, filter_notes = self._rewrite_query_filters(
-            sql, question=question, time_intent_source=time_src
+            sql,
+            question=question,
+            time_intent_source=time_src,
+            scope_literals=scope_literals,
         )
         rewrite_notes.extend(filter_notes)
         if rewrite_notes:
@@ -590,7 +617,10 @@ class NL2SQLChain:
                     sql = self._validator.normalize_sql(sql)
                     sql, refine_notes = self._rewrite_tidb_compatible_sql(sql)
                     sql, filter_notes = self._rewrite_query_filters(
-                        sql, question=question, time_intent_source=time_src
+                        sql,
+                        question=question,
+                        time_intent_source=time_src,
+                        scope_literals=scope_literals,
                     )
                     refine_notes.extend(filter_notes)
                     if refine_notes:
@@ -646,7 +676,10 @@ class NL2SQLChain:
                     sql = self._validator.normalize_sql(sql)
                     sql, refine_notes = self._rewrite_tidb_compatible_sql(sql)
                     sql, filter_notes = self._rewrite_query_filters(
-                        sql, question=question, time_intent_source=time_src
+                        sql,
+                        question=question,
+                        time_intent_source=time_src,
+                        scope_literals=scope_literals,
                     )
                     refine_notes.extend(filter_notes)
                     if refine_notes:
@@ -838,6 +871,9 @@ class NL2SQLChain:
         plan_item_id: str | None = None,
     ) -> tuple[str, bool, str | None]:
         """normalize → TiDB 改写 → 时间/区域 filter → 方言与 whitelist 校验（L2/L1/QA replay 共用）。"""
+        from app.nl2sql.question_intent import scope_literals_from_parsed_intent
+
+        scope_literals = scope_literals_from_parsed_intent(validation_ctx.parsed_intent)
         sql = self._validator.normalize_sql(sql)
         sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
         sql, filter_notes = self._rewrite_query_filters(
@@ -845,6 +881,7 @@ class NL2SQLChain:
             question=question,
             time_intent_source=time_intent_source,
             plan_item_id=plan_item_id,
+            scope_literals=scope_literals,
         )
         rewrite_notes.extend(filter_notes)
         if rewrite_notes:
@@ -977,6 +1014,9 @@ class NL2SQLChain:
             else question
         )
         entity_rules = load_entity_rules_from_env()
+        from app.nl2sql.question_intent import scope_literals_from_parsed_intent
+
+        scope_literals = scope_literals_from_parsed_intent(ctx.parsed_intent)
         try:
             refined = await self._refine_sql(
                 question=question,
@@ -986,7 +1026,10 @@ class NL2SQLChain:
             refined = self._validator.normalize_sql(refined)
             refined, rewrite_notes = self._rewrite_tidb_compatible_sql(refined)
             refined, filter_notes = self._rewrite_query_filters(
-                refined, question=question, time_intent_source=time_src
+                refined,
+                question=question,
+                time_intent_source=time_src,
+                scope_literals=scope_literals,
             )
             rewrite_notes.extend(filter_notes)
             if rewrite_notes:
@@ -1194,6 +1237,7 @@ class NL2SQLChain:
         question: str,
         time_intent_source: str | None = None,
         plan_item_id: str | None = None,
+        scope_literals: dict[str, str | int | None] | None = None,
     ) -> tuple[str, list[str]]:
         """P2：优化口径（通用时间语义动态窗 + 机组/锅炉范围 + 区域放宽匹配）。"""
         notes: list[str] = []
@@ -1233,6 +1277,7 @@ class NL2SQLChain:
             rewritten,
             question=question,
             time_intent_source=time_intent_source,
+            scope_literals=scope_literals,
         )
         notes.extend(scope_notes)
         rewritten, region_notes = self._rewrite_relaxed_region_match(rewritten, question=question)
@@ -1729,10 +1774,18 @@ class NL2SQLChain:
         return None
 
     @staticmethod
-    def _extract_scope_literals_from_question(question: str) -> dict[str, str | None]:
-        """从问句提取锅炉/机组范围；unit_keyword/boiler 为 None 表示全厂。"""
-        unit_kw = NL2SQLChain._extract_unit_keyword_from_question(question)
-        return {"unit_keyword": unit_kw, "boiler": unit_kw}
+    def _extract_scope_literals_from_question(
+        question: str,
+        *,
+        time_intent_source: str | None = None,
+    ) -> dict[str, str | int | None]:
+        """从问句提取锅炉/机组与设备范围；unit_keyword/boiler 为 None 表示全厂。"""
+        from app.nl2sql.question_intent import scope_literals_from_question
+
+        return scope_literals_from_question(
+            question,
+            time_intent_source=time_intent_source,
+        )
 
     # QA 模板中常见的示例锅炉名字面量（strict replay 需按问句全局替换）
     _BOILER_UNIT_LITERAL_IN_QUOTES = re.compile(
@@ -1774,13 +1827,16 @@ class NL2SQLChain:
         *,
         question: str,
         time_intent_source: str | None = None,
+        scope_literals: dict[str, str | int | None] | None = None,
     ) -> tuple[str, list[str]]:
         """将 QA/LLM SQL 中示例锅炉名与 @unit_keyword 占位符替换为当前问句实体范围。"""
         notes: list[str] = []
-        scope_q = self._resolve_entity_scope_question(
-            question=question, time_intent_source=time_intent_source
-        )
-        scopes = self._extract_scope_literals_from_question(scope_q)
+        scopes = scope_literals
+        if scopes is None:
+            scopes = self._extract_scope_literals_from_question(
+                question,
+                time_intent_source=time_intent_source,
+            )
         unit_keyword = scopes.get("unit_keyword")
         rewritten = sql
 
@@ -1827,6 +1883,12 @@ class NL2SQLChain:
                 return f"'{safe}'"
 
             rewritten = self._BOILER_UNIT_LITERAL_IN_QUOTES.sub(_global_boiler_lit_repl, rewritten)
+
+        from app.nl2sql.scope_sql_rewrite import rewrite_scope_sql_placeholders
+
+        rewritten, scope_ph_notes = rewrite_scope_sql_placeholders(rewritten, scopes)
+        notes.extend(scope_ph_notes)
+
         return rewritten, notes
 
     def _rewrite_relaxed_region_match(self, sql: str, *, question: str) -> tuple[str, list[str]]:

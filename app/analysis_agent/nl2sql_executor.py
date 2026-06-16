@@ -6,6 +6,7 @@ from typing import Any
 from app.core.logging import get_logger
 from app.models.nl2sql import NL2SQLQueryRequest
 from app.nl2sql.errors import NL2SQLExecutionError
+from app.nl2sql.question_intent_display import trace_include_question_intent
 from app.services.nl2sql_service import NL2SQLService
 
 logger = get_logger(__name__)
@@ -32,6 +33,7 @@ async def run_nl2sql_for_plan_item(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """经 NL2SQL 公共基座取数：五元组对齐 QA 沉淀与 RAG 召回。"""
     t0 = time.perf_counter()
+    include_intent = trace_include_question_intent()
     try:
         resp = await nl2sql.query(
             NL2SQLQueryRequest(
@@ -45,6 +47,7 @@ async def run_nl2sql_for_plan_item(
                 time_intent_text=(query or "").strip(),
             ),
             record_conversation=False,
+            include_parsed_intent=include_intent,
         )
     except NL2SQLExecutionError as exc:
         latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -68,6 +71,7 @@ async def run_nl2sql_for_plan_item(
         "analysis_type": analysis_type,
         "plan_template_version": plan_template_version,
         "cache_hit": False,
+        "question_intent": resp.parsed_intent,
     }
     return rows, call_rec
 

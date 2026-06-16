@@ -1631,6 +1631,59 @@ inspection_extract_v0_extract:
 
 # ===================================NL2SQL主链路相关提示词模板[开始]===============================================================
 # =============================================================================
+# ⑤-b NL2SQL 问句范围解析（scene="nl2sql_scope_parse"）
+# 【谁用】app/nl2sql/scope_parser_llm.py；Phase 3 LLM 解析 device/piperow/row/tube（锅炉仍走程序规则）
+# 【版本】NL2SQL_SCOPE_PARSE_PROMPT_VERSION（默认 v1）
+# =============================================================================
+nl2sql_scope_parse:
+  - version: v1
+    weight: 1.0
+    description: NL2SQL 问句范围结构化解析（时间由程序侧处理，LLM 仅输出 scope 字段）
+    content: |
+      你是锅炉领域问句「实体范围」解析器。根据用户问题，仅输出一个 JSON 对象，不要 markdown 代码块，不要解释。
+
+      【范围解析规则】
+      1. 分级解析：问句只提到哪一层，就只填那一层；未出现的字段必须为 null。
+      2. 机组/锅炉：「N号锅炉」「N号机组」「N#机组」等统一输出为「N号锅炉」（阿拉伯数字+N号锅炉）。
+         显式全厂（全厂、所有机组、全部锅炉等）且未同时指定单个机组时，boiler 为 null。
+      3. 受热面简称须展开为全称：
+         低过→低温过热器，高过→高温过热器，高再→高温再热器，低再→低温再热器，屏过→屏式过热器。
+      4. 设备/受热面：提取完整受热面短语（如「水冷壁前墙垂直段」「水冷壁左墙」「屏式过热器」）。
+      5. 管排名称：如「第一层」「炉前向炉后数」「第一屏」「前屏（等同第一屏）」「后屏（等同第二屏）」、
+         「第一层炉右向炉左数」「炉后向炉前数」等，填入 piperow_name；前屏输出「第一屏」，后屏输出「第二屏」。
+      6. 排数：「第一排」「第1排」等 → row_no 为阿拉伯数字 1；问句未写排数则为 null。
+         特殊：受热面名称含水冷壁且问句未写排数时，row_no 输出 1。
+      7. 管数：「第一根」「第1根」等 → tube_no 为阿拉伯数字；未写则为 null。
+
+      【示例】
+      问：1号锅炉低温过热器第一层第一排第一根
+      {"boiler":"1号锅炉","device_name":"低温过热器","piperow_name":"第一层","row_no":1,"tube_no":1}
+
+      问：二号锅炉水冷壁前墙垂直段炉前向炉后数第一根
+      {"boiler":"2号锅炉","device_name":"水冷壁前墙垂直段","piperow_name":"炉前向炉后数","row_no":1,"tube_no":1}
+
+      问：一号机组屏式过热器第一屏第一排第一根
+      {"boiler":"1号锅炉","device_name":"屏式过热器","piperow_name":"第一屏","row_no":1,"tube_no":1}
+
+      问：2号机组屏式过热器前屏第一排第一根
+      {"boiler":"2号锅炉","device_name":"屏式过热器","piperow_name":"第一屏","row_no":1,"tube_no":1}
+
+      问：1号机组低温过热器第一层炉右向炉左数第一排第一根
+      {"boiler":"1号锅炉","device_name":"低温过热器","piperow_name":"第一层炉右向炉左数","row_no":1,"tube_no":1}
+
+      问：二号机组水冷壁左墙炉后向炉前数第一根
+      {"boiler":"2号锅炉","device_name":"水冷壁左墙","piperow_name":"炉后向炉前数","row_no":1,"tube_no":1}
+
+      问：请分析所有机组近一周超温
+      {"boiler":null,"device_name":null,"piperow_name":null,"row_no":null,"tube_no":null}
+
+      【输出 schema】
+      {"boiler":string|null,"device_name":string|null,"piperow_name":string|null,"row_no":number|null,"tube_no":number|null}
+
+      【用户问题】
+      {{QUESTION}}
+
+# =============================================================================
 # ⑤ NL2SQL 主链路模块（scene="nl2sql"）
 # 【谁用】app/nl2sql/chain.py 加载 SQL 生成前缀；与 ④「综合分析数据计划」不是同一调用链。
 # 【版本选择】环境变量 NL2SQL_PROMPT_DEFAULT_VERSION（见 app/app-deploy/.env.example）。

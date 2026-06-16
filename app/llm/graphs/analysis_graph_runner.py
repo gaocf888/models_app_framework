@@ -61,6 +61,7 @@ from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.models import RetrievedChunk
 from app.services.analysis_stream_hooks import dispatch_analysis_nl2sql_stream_structured
 from app.nl2sql.errors import NL2SQLExecutionError
+from app.nl2sql.question_intent_display import trace_include_question_intent
 from app.services.nl2sql_service import NL2SQLService
 from app.llm.graphs.analysis_synthesis_v2 import (
     AnalysisSynthesisV2Engine,
@@ -3445,6 +3446,8 @@ class AnalysisGraphRunner:
         max_attempts = 2
         last_error: str | None = None
         final_sql = ""
+        last_question_intent: dict[str, Any] | None = None
+        include_intent = trace_include_question_intent()
         for attempt in range(1, max_attempts + 1):
             try:
                 resp = await self._nl2sql.query(
@@ -3459,6 +3462,7 @@ class AnalysisGraphRunner:
                         time_intent_text=(req.query or "").strip(),
                     ),
                     record_conversation=False,
+                    include_parsed_intent=include_intent,
                 )
                 final_sql = resp.sql
                 rows = resp.rows[: req.options.max_rows_per_query]
@@ -3471,11 +3475,14 @@ class AnalysisGraphRunner:
                     status="success",
                     attempts=attempt,
                     dependency_ids=task.dependency_ids,
+                    question_intent=resp.parsed_intent,
                 )
                 ANALYSIS_NL2SQL_CALL_COUNT.labels(analysis_type=req.analysis_type, status="success").inc()
                 return call, {task.item_id: rows}
             except NL2SQLExecutionError as exc:
                 last_error = exc.brief_message
+                if exc.parsed_intent is not None:
+                    last_question_intent = exc.parsed_intent
                 logger.error(
                     "analysis nl2sql task failed item=%s attempt=%s analysis_request_id=%s error_code=%s detail=%s",
                     task.item_id,
@@ -3503,6 +3510,7 @@ class AnalysisGraphRunner:
             attempts=max_attempts,
             dependency_ids=task.dependency_ids,
             error=err_text,
+            question_intent=last_question_intent if include_intent else None,
         )
         ANALYSIS_NL2SQL_CALL_COUNT.labels(analysis_type=req.analysis_type, status="failed").inc()
         return call, {}

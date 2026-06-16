@@ -25,13 +25,13 @@ class PromptTemplateRegistry:
     """
     提示词模板与 A/B 策略中心。
 
-    - 从 configs/prompts_bak_new.yaml 加载多场景、多版本模板；
+    - 从 configs/prompts.yaml 加载多场景、多版本模板；
     - 支持按场景 + 用户 ID 做简单的哈希分流，实现 A/B 测试；
     - 也支持显式指定版本（便于灰度/回放）。
     """
 
     def __init__(self, config_path: str | None = None) -> None:
-        self._config_path = config_path or "configs/prompts_bak_new.yaml"
+        self._config_path = config_path or "configs/prompts.yaml"
         self._templates: Dict[str, List[PromptTemplate]] = {}
         self._load_from_yaml()
 

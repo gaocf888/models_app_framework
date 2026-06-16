@@ -315,15 +315,16 @@ _one(task):
 
 ```text
 NL2SQLChain.generate_sql_with_validation_context()
-  ① 可选 planner
-  ② NL2SQLRAGService 三库检索:
+  ① resolve_question_intent（时间程序规则 + 范围 rule/LLM；time_intent_text=上层 query）
+  ② 可选 planner
+  ③ NL2SQLRAGService 三库检索:
        nl2sql_schema / nl2sql_biz_knowledge / nl2sql_qa_examples
      - 有五元组时: QA slot lookup（精确取 1 条进 Prompt）
      - 默认不走 strict replay（仍由 LLM 生成 SQL）
-  ③ L2 → L1 SQL 缓存（NL2SQL_CACHE_ENABLED）
-  ④ Prompt scene=nl2sql + {{NL2SQL_SCHEMA_CATALOG}}
-  ⑤ LLM 生成 SQL → 校验 → EXPLAIN/execute → 可选 refine
-  ⑥ 可选 QA 自动写入 nl2sql_qa_examples（NL2SQL_QA_FEEDBACK_ENABLED）
+  ④ L2 → L1 SQL 缓存（NL2SQL_CACHE_ENABLED）
+  ⑤ Prompt scene=nl2sql + {{NL2SQL_SCHEMA_CATALOG}}（可选 NL2SQL_INJECT_PARSED_INTENT）
+  ⑥ LLM 生成 SQL → TiDB/时间/范围改写 → 校验 → EXPLAIN/execute → 可选 refine
+  ⑦ 可选 QA 自动写入 nl2sql_qa_examples（NL2SQL_QA_FEEDBACK_ENABLED）
 ```
 
 **两套 RAG 勿混淆**：
