@@ -47,7 +47,37 @@ class TestAnalysisFinishedMeta(unittest.TestCase):
         self.assertEqual([], m["suggested_questions"])
         self.assertEqual(1, len(m["rag_citations"]))
 
-    def test_encode_sse_finished_frame(self):
+    def test_finished_meta_img_diag_data_mode(self) -> None:
+        t0 = perf_counter()
+        meta = build_analysis_finished_meta(
+            request_id="anl_img_diag",
+            plan_id="plan_img",
+            analysis_type="img_diag_defect_ident",
+            data_mode="img_diag_defect_ident",
+            used_rag=True,
+            used_plan_rag=False,
+            used_business_rag=True,
+            rag_citations=[
+                {
+                    "ref_index": 1,
+                    "namespace": "Power_plant_knowledge",
+                    "doc_name": "缺陷处置规程",
+                    "text_preview": "补焊工艺…",
+                }
+            ],
+            start_ts=t0,
+            synthesis_ms=800,
+            used_nl2sql=True,
+            retrieval_attempts=1,
+            rag_namespace="Power_plant_knowledge",
+        )
+        self.assertEqual("analysis_img_diag_defect_ident", meta["intent_label"])
+        self.assertTrue(meta["used_nl2sql"])
+        self.assertEqual("img_diag_defect_ident", meta["data_mode"])
+        self.assertEqual(1, len(meta["rag_citations"]))
+        self.assertEqual("Power_plant_knowledge", meta["rag_namespace"])
+
+    def test_encode_sse_finished_frame(self) -> None:
         meta = build_analysis_finished_meta(
             request_id="anl_x",
             plan_id="p",

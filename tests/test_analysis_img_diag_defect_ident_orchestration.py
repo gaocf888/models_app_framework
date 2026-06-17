@@ -261,6 +261,106 @@ class TestImgDiagDefectIdentOrchestration(unittest.TestCase):
         self.assertEqual("img_diag_leakage_burst", result.evidence.data_coverage["mode"])
         self.assertEqual("leakage_burst", result.evidence.data_coverage["img_diag_subtype"])
 
+    def test_gather_pack_builds_rag_citations_from_business_rag(self) -> None:
+        from app.rag.models import RetrievedChunk
+
+        runner = _make_runner()
+        req = _sample_req(enable_rag=True)
+        nl_state = _sample_nl_state()
+        chunk = RetrievedChunk(
+            text="打磨补焊工艺要点",
+            doc_name="缺陷处置规程.docx",
+            namespace="Power_plant_knowledge",
+            chunk_id="c_diag_1",
+            score=0.88,
+            metadata={"content_fetched_from_url": "https://cdn.example.com/defect_guide.docx"},
+        )
+
+        async def fake_stream(**_kwargs: object):
+            yield "流式结论"
+
+        with (
+            patch.object(runner, "_lane_vision", new=AsyncMock(return_value=({"defect_type": "裂纹"}, 10))),
+            patch.object(runner, "_lane_nl2sql_until_gate", new=AsyncMock(return_value=nl_state)),
+            patch.object(
+                runner,
+                "_lane_business_rag",
+                new=AsyncMock(
+                    return_value=(
+                        ["打磨补焊工艺要点"],
+                        [{"namespace": "Power_plant_knowledge", "doc_id": "d1"}],
+                        [chunk],
+                        12,
+                        "success",
+                        "缺陷识别 RAG query",
+                    )
+                ),
+            ),
+            patch.object(runner, "_stream_summary_text", new=fake_stream),
+            patch(
+                "app.llm.graphs.analysis_img_diag_runner.dispatch_analysis_nl2sql_stream_structured",
+                new=AsyncMock(),
+            ),
+        ):
+            events = asyncio.run(self._collect_img_diag_stream_events(runner, req))
+
+        finished = [e for e in events if e.get("finished")]
+        self.assertEqual(1, len(finished))
+        meta = finished[0]["meta"]
+        self.assertTrue(meta.get("used_rag"))
+        self.assertTrue(meta.get("used_business_rag"))
+        cites = meta.get("rag_citations") or []
+        self.assertEqual(1, len(cites))
+        self.assertEqual(1, cites[0].get("ref_index"))
+        self.assertEqual("缺陷处置规程.docx", cites[0].get("doc_name"))
+        self.assertEqual("Power_plant_knowledge", cites[0].get("namespace"))
+        self.assertEqual(
+            "https://cdn.example.com/defect_guide.docx",
+            cites[0].get("original_content_url"),
+        )
+
+    def test_sync_result_evidence_rag_citations(self) -> None:
+        from app.rag.models import RetrievedChunk
+
+        runner = _make_runner()
+        req = _sample_req(enable_rag=True)
+        nl_state = _sample_nl_state()
+        chunk = RetrievedChunk(
+            text="同类爆管案例",
+            doc_name="leakage_case.pdf",
+            namespace="global",
+            chunk_id="c_leak_1",
+        )
+
+        with (
+            patch.object(runner, "_lane_vision", new=AsyncMock(return_value=({"burst_type": "环向开口"}, 10))),
+            patch.object(runner, "_lane_nl2sql_until_gate", new=AsyncMock(return_value=nl_state)),
+            patch.object(
+                runner,
+                "_lane_business_rag",
+                new=AsyncMock(
+                    return_value=(["同类爆管案例"], [], [chunk], 8, "success", "泄爆 RAG")
+                ),
+            ),
+            patch.object(runner, "_generate_summary", new=AsyncMock(return_value="泄爆分析结论。")),
+        ):
+            result = asyncio.run(runner.run_with_img_diag(req))
+
+        self.assertEqual(1, len(result.evidence.rag_citations or []))
+        self.assertEqual("leakage_case.pdf", result.evidence.rag_citations[0]["doc_name"])
+        runner._conv.append_assistant_message.assert_called_once()
+        _args, kwargs = runner._conv.append_assistant_message.call_args
+        self.assertEqual(1, len(kwargs.get("rag_citations") or []))
+
+    @staticmethod
+    async def _collect_img_diag_stream_events(
+        runner: AnalysisImgDiagGraphRunner, req: AnalysisImgDiagRequest
+    ) -> list[dict]:
+        out: list[dict] = []
+        async for ev in runner.iter_img_diag_stream_events(req):
+            out.append(ev)
+        return out
+
 
 if __name__ == "__main__":
     unittest.main()

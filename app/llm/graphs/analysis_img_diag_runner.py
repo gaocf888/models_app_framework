@@ -724,7 +724,12 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         node_status["vision_understanding_parallel"] = pack.vision_status
         node_status["business_rag_serial"] = pack.rag_status
 
-        self._conv.append_assistant_message(req.user_id, req.session_id, summary)
+        self._conv.append_assistant_message(
+            req.user_id,
+            req.session_id,
+            summary,
+            rag_citations=pack.rag_citations or None,
+        )
 
         evidence = AnalysisEvidence(
             used_rag=pack.used_rag,
@@ -920,6 +925,12 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 nl2sql_sql=first_nl2sql_sql,
                 processed_image_urls=image_urls,
                 original_image_urls=image_urls,
+                retrieval_attempts=int(pack.used_plan_rag) + int(pack.used_business_rag),
+                rag_namespace=(
+                    str(pack.rag_citations[0].get("namespace") or "").strip() or None
+                    if pack.rag_citations
+                    else None
+                ),
             )
             yield analysis_finished_sse_event(finished_meta)
 

@@ -221,7 +221,9 @@ async def run_analysis_img_diag(data: AnalysisImgDiagRequest) -> AnalysisV2Resul
     - `image_urls`：缺陷识别至少一张；泄爆分析可为空。
     - `options`：默认 **`enable_rag=true`**；含 `strict`、`max_nl2sql_calls` 等。
 
-    **响应**：`analysis_type` 为 `img_diag_defect_ident` 或 `img_diag_leakage_burst`；trace 含 `parsed_intent` / `parsed_time_intent` / `parsed_scope_intent`。
+    **响应**：`analysis_type` 为 `img_diag_defect_ident` 或 `img_diag_leakage_burst`；
+    `evidence.rag_citations` 与智能客服 `finished.meta.rag_citations` 同形（含 `ref_index`、`doc_name`、`original_content_url` 等）；
+    trace 含 `parsed_intent` / `parsed_time_intent` / `parsed_scope_intent`。
     """
     return await service.run_analysis_img_diag(data)
 
@@ -241,7 +243,9 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
     - 多条 `summary_delta`：增量文本；
     - `summary_complete`：`chars`、`synthesis_ms`；
     - `structured_async_enqueued`：已排队后台组装完整 **`AnalysisV2Result`**（与应用日志、`register_analysis_nl2sql_stream_structured_hook` 钩子**一致**，trace 由 **`_save_trace`** 写入）。
-    - `finished`：**尾帧** `{"finished":true,"meta":{...}}`（与 **`/chatbot/chat/stream`** 结束帧同形）；`meta` 含 RAG 引用及 `request_id`/`analysis_type`/`synthesis_strategy_effective` 等分析字段。
+    - `finished`：**尾帧** `{"finished":true,"meta":{...}}`（与 **`/chatbot/chat/stream`** 结束帧同形）；
+      `meta.rag_citations` 为知识库引用列表（与智能客服字段一致），并含 `used_rag`/`used_plan_rag`/`used_business_rag`、
+      `request_id`/`analysis_type`/`synthesis_ms` 等分析扩展字段。
 
     **同步接口** **`/run-img-diag`** 保持不变。
     """
