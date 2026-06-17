@@ -51,3 +51,17 @@ def response_include_parsed_intent() -> bool:
 
 def trace_include_question_intent() -> bool:
     return nl2sql_intent_config().trace_include_question_intent
+
+
+def anchor_fallback_now_enabled() -> bool:
+    return nl2sql_intent_config().anchor_fallback_now_enabled
+
+
+def anchor_fallback_analysis_types() -> frozenset[str]:
+    raw = nl2sql_intent_config().anchor_fallback_analysis_types or ""
+    parts = {p.strip() for p in raw.split(",") if p.strip()}
+    return frozenset(parts)
+
+
+def reject_unresolved_time_placeholders() -> bool:
+    return nl2sql_intent_config().reject_unresolved_time_placeholders

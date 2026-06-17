@@ -1066,7 +1066,7 @@ analysis_data_plan_img_diag_defect_ident:
     weight: 1.0
     description: 缺陷识别数据计划 LLM 辅助模板
     content: |
-      你是缺陷识别取数规划助手。在 analysis_plan_img_diag_defect_ident 模板任务（q1～q5）基础上，
+      你是缺陷识别取数规划助手。在 analysis_plan_img_diag_defect_ident 模板任务（q1、q2a～q2e、q3～q5）基础上，
       仅当用户问题明确要求额外维度时才追加新 item_id；否则输出空数组。
       遵守 dependency_ids；问句须面向 catalog 可执行；输出仅为 JSON（顶层 tasks 数组）。
 
@@ -1079,7 +1079,7 @@ analysis_synthesis_img_diag_defect_ident:
       你是燃煤电厂锅炉受热面「缺陷识别与现场处置」高级分析师。
       输入包含：
       - 视觉结构化 JSON（缺陷类型、风险等级、可见形貌，仅描述图像可见证据）；
-      - 结构化查询摘要 JSON（q1～q5 库表返回，含 parsed_intent 解析范围说明）；
+      - 结构化查询摘要 JSON（q1、q2a～q2e 检修处置、q3～q5 库表返回，含 parsed_intent 解析范围说明）；
       - RAG 片段（同类型缺陷历史处置案例、规程要点）；
       - 用户原始问题。
 
@@ -1087,7 +1087,7 @@ analysis_synthesis_img_diag_defect_ident:
       1) 严禁编造库表未出现的数值、表名、记录；缺失须写「库表未检索到」并说明对结论的影响。
       2) 图像仅陈述可见特征，不得超出图像证据推断微观机理；须引用 confidence_notes。
       3) RAG 用于处置参考，引用时标「知识库要点」；勿与库表事实混淆。
-      4) 须在文中复述 NL2SQL 从用户问题解析的时间窗与范围（锅炉/受热面/管排/排数/管数）；解析缺失须明确提示用户补充问句。
+      4) 须在文中复述 NL2SQL 从用户问题解析的时间窗与范围（锅炉/受热面/管排/排数/管数）；若 quality_report.warnings、parsed_intent.time_rewrite_warnings 或 parsed_intent 无 time_window_tag 且存在 anchor_lookback_skipped_no_anchor / no_parsed_time_window，须在报告显著位置提示用户补充问句中的时间或事故时刻；若含 anchor_fallback_now 须说明取数锚点为当前时刻的近似兜底。
       5) 视觉识别基于通用多模态能力，结论须建议现场复核；高风险项不得省略监护要求。
 
       【输出结构 — 中文 Markdown，固定小节】
@@ -1095,7 +1095,7 @@ analysis_synthesis_img_diag_defect_ident:
       - 受热面类型（水冷壁/过热器/再热器/省煤器等）、缺陷类型（飞灰冲刷沟槽、点蚀/均匀腐蚀、管壁胀粗、轴向/周向裂纹、焊口夹渣/未熔合、防磨瓦脱落/歪斜、管间氧化皮堆积等）、风险等级（general/moderate/critical 或 一般/较重/严重）。
 
       ### 二、证据链
-      分三类列点：**图像可见** | **库表要点**（按 q1～q5 归纳） | **知识库要点**（历史处置案例）。
+      分三类列点：**图像可见** | **库表要点**（按 q1、q2a～q2e、q3～q5 归纳） | **知识库要点**（历史处置案例）。
 
       ### 三、解析范围与时间窗说明
       - 从 parsed_intent / 用户问题归纳已识别范围；未识别字段列出。
@@ -1127,41 +1127,69 @@ analysis_report_img_diag_defect_ident:
 analysis_plan_img_diag_defect_ident:
   - version: v1
     weight: 1.0
-    description: 缺陷识别数据计划 q1～q5（范围/时间由 NL2SQL 基座从用户问题解析并改写 SQL）
+    description: 缺陷识别数据计划 q1 + q2a～e + q3～q5（每条对应单条 SQL；范围/时间由 NL2SQL 基座解析）
     content: |
       [
         {
           "item_id": "q1",
           "purpose": "管段基础参数",
-          "question": "根据用户问题中已识别的时间窗与设备范围（锅炉/受热面/管排/排数/管数，由 NL2SQL 意图解析），查询该区域管段基础参数：规格材质、设计/限值壁厚、胀粗率限值（外径限值与测量外径）、壁温限值、累计运行时长（可由投产日期与启停记录估算）。优先关联 account_boiler、account_static_device、account_device_piperow、account_device_pipebox、base_temp_point、overhaul_thickness_rate；SQL 须支持 @unit_keyword、@device_keyword、@piperow_keyword、@row_no、@tube_no、@t_start/@t_end 占位符及 IS NULL 放宽 guard。参考 docs/数据库结构及逻辑/img_diag_defect_ident_plan_reference_sql.sql 之 q1。",
+          "question": "根据用户问题中已识别的时间窗与设备范围（锅炉/受热面/管排/排数/管数，由 NL2SQL 意图解析），查询该区域管段基础参数：规格材质、设计壁厚、壁厚/胀粗限值（overhaul_new_checklocation.wall_thickness_limit/out_thickness_limit）、壁温限值（base_temp_device.over_hot_limit）、统计窗内与累计运行时长（monitor_boiler_start_stop 子查询须用 @t_start/@t_end，TIMESTAMPDIFF(SECOND)/3600）。关联 account_boiler、account_static_device、account_device_piperow。【SQL占位符强制】须使用 @t_start/@t_end 及 @unit_keyword、@device_keyword、@piperow_keyword、@row_no、@tube_no（IS NULL/空串 guard，禁止写死日期与示例锅炉名）；参考 docs/数据库结构及逻辑/img_diag_defect_ident_plan_reference_sql.sql 之 q1。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
-          "item_id": "q2",
-          "purpose": "检修处置历史",
-          "question": "根据用户问题解析的范围与时间窗，查询该区域近 3 次壁厚测量记录（overhaul_record mark_type=1 及 overhaul_record_tubes，子查询 ORDER BY mark_time DESC LIMIT 3）、遗留问题及处置结果（overhaul_legacy_problem）、年平均减薄速率（overhaul_thickness_rate.wall_thickness_rate）、泄爆/泄漏记录（overhaul_leakage 或 overhual_leakage，以 catalog 为准）、补焊/缺陷处置记录（overhaul_record mark_type=2）、同区域换管记录（overhaul_record_tubes.is_change=1）。壁厚子集严格 LIMIT 3，其余 UNION 分支按时间倒序并限制合理行数。参考 reference SQL q2。",
+          "item_id": "q2a",
+          "purpose": "检修处置-近3次壁厚",
+          "question": "根据用户问题解析的设备范围，查询近 3 次壁厚测量记录：overhaul_boiler→overhaul_record(mark_type=1)→overhaul_record_tubes，LEFT JOIN overhaul_new_checklocation ON check_id，ORDER BY ort.create_time DESC LIMIT 3。单条 SELECT，禁止 UNION。【SQL占位符强制】范围须 @unit_keyword、@device_keyword、@row_no 及 IS NULL/空串 guard；参考 docs/数据库结构及逻辑/img_diag_defect_ident_plan_reference_sql.sql 之 q2-a。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2b",
+          "purpose": "检修处置-减薄速率",
+          "question": "根据用户问题解析的设备范围，查询年平均减薄速率：overhaul_boiler JOIN overhaul_thickness_rate ON overhaul_id，LEFT JOIN overhaul_new_checklocation ON location_id，LEFT JOIN account_static_device ON device_id。单条 SELECT。【SQL占位符强制】范围须 @unit_keyword、@device_keyword、@row_no、@tube_no 及 guard；参考 reference SQL q2-b。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2c",
+          "purpose": "检修处置-泄爆泄漏履历",
+          "question": "根据用户问题解析的设备范围，查询近 50 次泄爆/泄漏记录（overhual_leakage），含泄漏时间、位置、原因、处置方式。单条 SELECT，ORDER BY leakage_date DESC LIMIT 50。【SQL占位符强制】范围须 @unit_keyword、@device_keyword、@row_no、@tube_no 及 guard；参考 reference SQL q2-c。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2d",
+          "purpose": "检修处置-遗留问题",
+          "question": "根据用户问题解析的设备范围，查询近 50 条遗留问题及处置结果（overhaul_legacy_problem）。单条 SELECT，ORDER BY record_time DESC LIMIT 50。【SQL占位符强制】范围须 @unit_keyword、@device_keyword、@row_no、@tube_no 及 guard；参考 reference SQL q2-d。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2e",
+          "purpose": "检修处置-补焊换管",
+          "question": "根据用户问题解析的设备范围，查询近 50 条补焊/换管记录：ort.is_change=1 或 mark_type=2，处置类型用 tube_position 与 CASE 判定。单条 SELECT，禁止 UNION。【SQL占位符强制】范围须 @unit_keyword、@device_keyword、@row_no 及 guard；参考 reference SQL q2-e。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q3",
           "purpose": "壁温超温数据",
-          "question": "根据用户问题解析的范围与时间窗，查询 monitor_hotarea_temp 及 base_temp_point、account_static_device、account_device_piperow 关联，汇总对应管段累计超温时长（limit_duration 求和）、超温峰值（highest_temp MAX）、壁温偏差（highest_temp 与 limit_temp 差值统计）。仅统计 highest_temp > limit_temp 的记录。参考 reference SQL q3。",
+          "question": "根据用户问题解析的范围与时间窗，以 monitor_hotarea_temp 为主表按 pi_code 聚合，LEFT JOIN base_temp_point 取排数/管数；汇总累计超温时长（limit_duration/3600 小时）、超温峰值、壁温偏差；仅统计 highest_temp > limit_temp。【SQL占位符强制】start_time 等时间列须 >= @t_start AND < @t_end；范围须 @unit_keyword、@device_keyword、@piperow_keyword、@row_no、@tube_no 及 guard；参考 reference SQL q3。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q4",
           "purpose": "吹灰运行数据",
-          "question": "根据用户问题解析的范围与时间窗，查询对应区域吹灰器运行：monitor_soot_blower_run_record 关联 base_soot_blower、account_static_device、account_boiler，汇总吹灰频次、累计吹扫时长（blowing_duration）、平均/最大吹灰时长；吹扫压力优先从 base_soot_blower_attr（attr_name 含压力/pressure）或运行记录扩展字段获取，无则注明库表未提供。参考 reference SQL q4。",
+          "question": "根据用户问题解析的范围与时间窗，以 base_soot_blower 为主表 LEFT JOIN monitor_soot_blower_run_record，汇总吹灰频次、累计吹扫时长（blowing_duration/3600 小时）、平均单次时长；吹扫压力库表无可靠采集时输出常量「无采集数据」。【SQL占位符强制】msrr.start_time 须 >= @t_start AND < @t_end；范围须 @unit_keyword、@device_keyword 等及 guard；参考 reference SQL q4。",
           "mandatory": false,
           "dependency_ids": []
         },
         {
           "item_id": "q5",
           "purpose": "烟气煤质数据",
-          "question": "根据用户问题解析的范围与时间窗，从 sis_pi_data INNER JOIN base_dev_pi_b ON tag=pi_code 查询烟温/烟速/飞灰浓度测点（按 pi_name_ch 或 original_name_ch 描述匹配，禁止 1=1 笛卡尔积）；按 tag 聚合 AVG/MAX 及采样点数，时间范围 @t_start～@t_end；机组过滤优先 crew_type 或 original_name_ch。参考 reference SQL q5。",
+          "question": "根据用户问题解析的范围与时间窗，从 sis_pi_data INNER JOIN base_dev_pi_b ON tag=pi_code 查询烟温/烟速/飞灰浓度测点（pi_name_ch IN 或 LIKE 匹配，禁止 ON 1=1）；按 pi_code 聚合 AVG/MAX/MIN 及采样点数。【SQL占位符强制】spd.data_time 须 >= @t_start AND < @t_end；机组过滤可用 @unit_keyword 匹配 crew_type/original_name_ch 及 guard；参考 reference SQL q5。",
           "mandatory": false,
           "dependency_ids": []
         }
@@ -1256,7 +1284,7 @@ analysis_data_plan_img_diag_leakage_burst:
     weight: 1.0
     description: 泄爆分析数据计划 LLM 辅助模板
     content: |
-      你是泄爆分析取数规划助手。在 analysis_plan_img_diag_leakage_burst 模板任务（q1～q5）基础上，
+      你是泄爆分析取数规划助手。在 analysis_plan_img_diag_leakage_burst 模板任务（q1、q2a～q2e、q3～q5）基础上，
       仅当用户问题明确要求额外维度时才追加新 item_id；否则输出空数组。
       所有问句须强调 **事故锚点向前 3 天** 时间窗；遵守 dependency_ids；输出仅为 JSON（顶层 tasks 数组）。
 
@@ -1268,7 +1296,7 @@ analysis_synthesis_img_diag_leakage_burst:
       你是燃煤电厂锅炉受热面「泄爆溯源分析」高级分析师。
       输入包含：
       - 视觉结构化 JSON（若有图片；爆口形貌、可见损伤线索；无图时 vision_findings 可能含 vision_skipped）；
-      - 结构化查询摘要 JSON（q1～q5，**事故近 3 天**库表返回，含 parsed_intent 时间/范围）；
+      - 结构化查询摘要 JSON（q1、q2a～q2e 检修处置、q3～q5，**事故近 3 天**库表返回，含 parsed_intent 时间/范围）；
       - RAG 片段（同位置/同类型事故案例、典型处理经验、规程条文、防控资料）；
       - 用户原始问题（须含事故时刻与管段位置）。
 
@@ -1288,7 +1316,7 @@ analysis_synthesis_img_diag_leakage_burst:
       1) 严禁编造库表未出现的数值、表名、记录；缺失须写「库表未检索到」并说明对结论的影响。
       2) 无图时不得虚构图像证据；有图时仅陈述可见特征，引用 confidence_notes。
       3) RAG 用于案例/规程引用，标「知识库要点」；勿与库表事实混淆。
-      4) 须复述 NL2SQL 解析的 **事故锚点与近 3 天时间窗** 及设备范围；解析缺失须提示用户补充问句。
+      4) 须复述 NL2SQL 解析的 **事故锚点与近 3 天时间窗** 及设备范围；若 quality_report.warnings、parsed_intent.time_rewrite_warnings 含 anchor_lookback_skipped_no_anchor / no_parsed_time_window，须显著提示用户补充事故时刻；若含 anchor_fallback_now 须说明以当前时刻近似兜底；effective_time_window 有值时优先复述其实际 SQL 回溯窗。
       5) 每一类方向须给出 **支持/不支持/证据不足** 的判定及依据（图像|库表|知识库）。
 
       【输出结构 — 中文 Markdown，固定小节】
@@ -1303,7 +1331,7 @@ analysis_synthesis_img_diag_leakage_burst:
       每格注明证据来源标签（图像可见/库表要点/知识库要点）及支持度。
 
       ### 四、证据链
-      分三类列点：**图像可见**（或无图说明） | **库表要点**（q1～q5 归纳，强调近 3 天） | **知识库要点**。
+      分三类列点：**图像可见**（或无图说明） | **库表要点**（q1、q2a～q2e、q3～q5 归纳，强调近 3 天） | **知识库要点**。
 
       ### 五、同类案例与规程引用
       - 来自 RAG 的 1～3 条要点（历史事故、典型处理、规程条文、防控技术）。
@@ -1326,41 +1354,69 @@ analysis_report_img_diag_leakage_burst:
 analysis_plan_img_diag_leakage_burst:
   - version: v1
     weight: 1.0
-    description: 泄爆分析数据计划 q1～q5（事故锚点向前3天；范围由 NL2SQL 从 query 解析）
+    description: 泄爆分析数据计划 q1 + q2a～e + q3～q5（每条单条 SQL；事故锚点向前3天；范围由 NL2SQL 从 query 解析）
     content: |
       [
         {
           "item_id": "q1",
           "purpose": "管段基础参数",
-          "question": "根据用户问题解析的 **事故发生时刻（锚点）向前 3 天** 时间窗与设备范围（锅炉/受热面/管排/排数/管数），查询该区域管段基础参数：规格材质、设计/限值壁厚、胀粗率限值、壁温限值、累计运行时长。SQL 须支持 @unit_keyword、@device_keyword、@piperow_keyword、@row_no、@tube_no、@t_start/@t_end 占位符。参考 docs/数据库结构及逻辑/img_diag_leakage_burst_plan_reference_sql.sql 之 q1。",
+          "question": "在事故锚点向前3天时间窗内，根据用户问题解析的设备范围，查询管段基础参数：规格材质、壁厚/胀粗限值（overhaul_new_checklocation）、壁温限值（base_temp_device）、运行时长（monitor_boiler_start_stop 子查询须用 @t_start/@t_end，SECOND/3600）。关联 account_boiler、account_static_device、account_device_piperow。【SQL占位符强制】须使用 @t_start/@t_end 及 @unit_keyword、@device_keyword、@piperow_keyword、@row_no、@tube_no（IS NULL/空串 guard）；plan 含「锚点向前N天」时 @t_start/@t_end 由 NL2SQL 按用户事故锚点合成回溯窗改写；禁止写死日期。参考 docs/数据库结构及逻辑/img_diag_leakage_burst_plan_reference_sql.sql 之 q1。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
-          "item_id": "q2",
-          "purpose": "检修处置历史",
-          "question": "在事故锚点向前 3 天时间窗内，查询该区域近 3 次壁厚测量（子查询 LIMIT 3）、遗留问题及处置、年平均减薄速率、泄爆/泄漏记录、补焊/缺陷处置、同区域换管记录。壁厚子集严格 LIMIT 3。参考 reference SQL q2。",
+          "item_id": "q2a",
+          "purpose": "检修处置-近3次壁厚",
+          "question": "在事故锚点向前3天时间窗内，根据用户问题解析的设备范围，查询近 3 次壁厚测量（ob→orc→ort，LIMIT 3）。单条 SELECT，禁止 UNION。【SQL占位符强制】范围须 @unit_keyword、@device_keyword、@row_no 及 guard；q1 类时间列可用 @t_start/@t_end；参考 docs/数据库结构及逻辑/img_diag_leakage_burst_plan_reference_sql.sql 之 q2-a。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2b",
+          "purpose": "检修处置-减薄速率",
+          "question": "在事故锚点向前3天时间窗内，查询减薄速率（ob JOIN overhaul_thickness_rate，location_id→onc）。单条 SELECT。【SQL占位符强制】范围须 @unit_keyword、@device_keyword、@row_no、@tube_no 及 guard；参考 reference SQL q2-b。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2c",
+          "purpose": "检修处置-泄爆泄漏履历",
+          "question": "在事故锚点向前3天时间窗内，查询近 50 次泄爆/泄漏（overhual_leakage），ORDER BY leakage_date DESC LIMIT 50。单条 SELECT。【SQL占位符强制】范围须 @unit_keyword、@device_keyword、@row_no、@tube_no 及 guard；参考 reference SQL q2-c。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2d",
+          "purpose": "检修处置-遗留问题",
+          "question": "在事故锚点向前3天时间窗内，查询遗留问题（overhaul_legacy_problem），ORDER BY record_time DESC LIMIT 50。单条 SELECT。【SQL占位符强制】范围须 @unit_keyword、@device_keyword、@row_no、@tube_no 及 guard；参考 reference SQL q2-d。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2e",
+          "purpose": "检修处置-补焊换管",
+          "question": "在事故锚点向前3天时间窗内，查询补焊/换管（is_change=1 或 mark_type=2，CASE 判定处置类型）。单条 SELECT，禁止 UNION。【SQL占位符强制】范围须 @unit_keyword、@device_keyword、@row_no 及 guard；参考 reference SQL q2-e。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q3",
           "purpose": "壁温超温数据",
-          "question": "在事故近 3 天时间窗内，查询 monitor_hotarea_temp 关联配置，汇总对应管段累计超温时长、超温峰值、壁温偏差（仅 highest_temp > limit_temp）。参考 reference SQL q3。",
+          "question": "在事故锚点向前3天时间窗内，以 monitor_hotarea_temp 按 pi_code 聚合超温时长（/3600）、峰值与偏差，LEFT JOIN base_temp_point；仅 highest_temp > limit_temp。【SQL占位符强制】start_time 须 >= @t_start AND < @t_end；范围须 @unit_keyword、@device_keyword、@piperow_keyword、@row_no、@tube_no 及 guard；参考 reference SQL q3。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q4",
           "purpose": "吹灰运行数据",
-          "question": "在事故近 3 天时间窗内，查询对应区域吹灰器运行频次、吹扫压力、累计吹扫时长。参考 reference SQL q4。",
+          "question": "在事故锚点向前3天时间窗内，base_soot_blower LEFT JOIN monitor_soot_blower_run_record，汇总吹灰频次与累计吹扫时长（/3600）；吹扫压力无采集则「无采集数据」。【SQL占位符强制】msrr.start_time 须 >= @t_start AND < @t_end；范围须 @unit_keyword、@device_keyword 等及 guard；参考 reference SQL q4。",
           "mandatory": false,
           "dependency_ids": []
         },
         {
           "item_id": "q5",
           "purpose": "烟气煤质数据",
-          "question": "在事故近 3 天时间窗内，从 sis_pi_data INNER JOIN base_dev_pi_b 查询烟温/烟速/飞灰浓度测点聚合数据。参考 reference SQL q5。",
+          "question": "在事故锚点向前3天时间窗内，sis_pi_data INNER JOIN base_dev_pi_b，按 pi_name_ch 匹配烟温/烟速/飞灰浓度测点并聚合。【SQL占位符强制】spd.data_time 须 >= @t_start AND < @t_end；机组过滤可用 @unit_keyword 及 guard；参考 reference SQL q5。",
           "mandatory": false,
           "dependency_ids": []
         }

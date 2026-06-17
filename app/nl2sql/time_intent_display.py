@@ -40,6 +40,119 @@ _EXACT_DAY_ISO_RE = re.compile(
     r"(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?!\d)"
 )
 _MONTH_ONLY_RE = re.compile(r"(?<![0-9年\-])(0?[1-9]|1[0-2])月(?:份)?(?![0-9日\-])")
+_PLAN_ANCHOR_LOOKBACK_RE = re.compile(
+    r"锚点\s*向前\s*(\d+|[一二两三四五六七八九十百]+)\s*天"
+)
+_ANCHOR_DATETIME_YMD_HM_RE = re.compile(
+    r"(20\d{2})年(0?[1-9]|1[0-2])月(0?[1-9]|[12]\d|3[01])日\s*(\d{1,2})[点时](?:\s*(\d{1,2})分)?"
+)
+_ANCHOR_DATETIME_ISO_RE = re.compile(
+    r"(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])[ T](\d{1,2}):(\d{2})(?::(\d{2}))?"
+)
+
+
+def _parse_cn_or_arabic_int(raw: str) -> int | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    if s.isdigit():
+        n = int(s)
+        return n if n > 0 else None
+    zh_map = {
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }
+    if s in zh_map:
+        return zh_map[s]
+    if s == "十":
+        return 10
+    if s.startswith("十") and len(s) == 2:
+        return 10 + zh_map.get(s[1], 0)
+    if "十" in s and len(s) == 2:
+        return zh_map.get(s[0], 1) * 10 + zh_map.get(s[1], 0)
+    return None
+
+
+def parse_plan_anchor_lookback_days(plan_question: str) -> int | None:
+    """从 plan 问句解析「锚点向前 N 天」中的 N；未命中返回 None。"""
+    m = _PLAN_ANCHOR_LOOKBACK_RE.search(plan_question or "")
+    if not m:
+        return None
+    return _parse_cn_or_arabic_int(m.group(1))
+
+
+def _try_anchor_datetime(q: str) -> tuple[str, str] | None:
+    """解析带时刻的事故锚点，返回 (end_expr, tag)。"""
+    m = _ANCHOR_DATETIME_YMD_HM_RE.search(q)
+    if m:
+        y, mon, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        hour = int(m.group(4))
+        minute = int(m.group(5)) if m.group(5) else 0
+        try:
+            datetime(y, mon, day, hour, minute, 0)
+        except ValueError:
+            return None
+        end_expr = f"'{y:04d}-{mon:02d}-{day:02d} {hour:02d}:{minute:02d}:00'"
+        return end_expr, f"anchor_datetime_{y:04d}{mon:02d}{day:02d}{hour:02d}{minute:02d}"
+    m2 = _ANCHOR_DATETIME_ISO_RE.search(q)
+    if m2:
+        y = int(m2.group(1))
+        mon = int(m2.group(2))
+        day = int(m2.group(3))
+        hour = int(m2.group(4))
+        minute = int(m2.group(5))
+        sec = int(m2.group(6)) if m2.group(6) else 0
+        try:
+            datetime(y, mon, day, hour, minute, sec)
+        except ValueError:
+            return None
+        end_expr = f"'{y:04d}-{mon:02d}-{day:02d} {hour:02d}:{minute:02d}:{sec:02d}'"
+        return end_expr, f"anchor_datetime_{y:04d}{mon:02d}{day:02d}{hour:02d}{minute:02d}"
+    return None
+
+
+def extract_time_anchor_from_question(question: str) -> tuple[str, str] | None:
+    """
+    从事故/用户问句解析锚点上界 end_expr（左闭右开区间的右端点）。
+
+    仅识别明确日期/时刻或相对日（今天/昨天/前天等），不把「近 N 天/月」等滚动窗当作锚点。
+    """
+    q = (question or "").strip().lower()
+    if not q:
+        return None
+    dt = _try_anchor_datetime(q)
+    if dt:
+        return dt
+    exact = _try_exact_day(q)
+    if exact:
+        _start, end_expr, tag = exact
+        return end_expr, f"anchor_{tag}"
+    win = extract_time_window_from_question(q)
+    if win is None:
+        return None
+    _start, end_expr, tag = win
+    if tag in DAY_WINDOW_TAGS or tag.startswith("day_"):
+        return end_expr, f"anchor_{tag}"
+    return None
+
+
+def build_anchor_lookback_time_window(
+    anchor_end_expr: str,
+    lookback_days: int,
+) -> tuple[str, str, str]:
+    """plan 触发锚点回溯：``[anchor_end - N 天, anchor_end)``。"""
+    n = max(1, int(lookback_days))
+    start_expr = f"DATE_SUB({anchor_end_expr}, INTERVAL {n} DAY)"
+    return start_expr, anchor_end_expr, f"anchor_lookback_{n}d"
 
 
 def extract_numeric_window(q: str, unit_keys: tuple[str, ...]) -> int | None:

@@ -250,6 +250,8 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         time_part = {
             "time_window": intent.get("time_window"),
             "time_window_tag": intent.get("time_window_tag"),
+            "time_anchor": intent.get("time_anchor"),
+            "time_anchor_tag": intent.get("time_anchor_tag"),
             "statistical_time_range": intent.get("statistical_time_range"),
             "scope_question": intent.get("scope_question"),
         }

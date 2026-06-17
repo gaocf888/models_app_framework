@@ -82,6 +82,32 @@ _PLAN_RAG_ANALYSIS_TYPE_CN: dict[str, str] = {
 
 # 数据计划子任务送 NL2SQL 时的额外约束（抑制臆造机组/墙别 WHERE）
 _PLAN_TASK_SCOPE_GUARD_CN = "若用户未指定机组/区域，则不要在 WHERE 中臆造具体锅炉名或墙别。"
+_TIME_REWRITE_WARNING_CN: dict[str, str] = {
+    "anchor_lookback_skipped_no_anchor": (
+        "用户未提供可解析的事故时刻，plan 要求的「锚点向前 N 天」回溯窗未生效；"
+        "请在用户问题中补充事故发生时间。"
+    ),
+    "anchor_fallback_now": (
+        "用户未提供事故时刻，已暂以当前时刻 NOW() 为锚点合成近 N 天回溯窗（结果仅供参考，"
+        "建议在报告中提示用户补充准确事故时间）。"
+    ),
+    "no_parsed_time_window": (
+        "用户问句未解析到时间窗；若 NL2SQL 含 @t_start/@t_end 将拒绝执行，"
+        "请在用户问题中补充时间范围或事故时刻。"
+    ),
+}
+_UNRESOLVED_TIME_PLACEHOLDER_WARNING = (
+    "部分 NL2SQL 因时间占位符未替换而失败，请在用户问题中补充明确时间或事故时刻。"
+)
+_IMG_DIAG_SQL_PLACEHOLDER_CN = (
+    "【SQL占位符强制】须使用 @t_start/@t_end（事实表/运行记录时间列写 >= @t_start AND < @t_end，左闭右开；"
+    "禁止写死日期字面量）及 @unit_keyword、@device_keyword、@piperow_keyword、@row_no、@tube_no"
+    "（须配 IS NULL/空串 guard，写法见 img_diag_*_plan_reference_sql.sql）；禁止硬编码示例锅炉名或区域。"
+)
+_IMG_DIAG_SQL_PLACEHOLDER_LEAKAGE_CN = (
+    f"{_IMG_DIAG_SQL_PLACEHOLDER_CN}"
+    "本场景 plan 含「锚点向前N天」时，@t_start/@t_end 由 NL2SQL 按用户 query 解析的事故锚点合成回溯窗后改写。"
+)
 # 规划前 RAG：写入「请结合以下规则线索」的条数（命名空间间轮询取值）
 _PLAN_GUIDE_MAX_SNIPPETS = 4
 # finished.meta.rag_citations：不展示 NL2SQL 取数链路的库表/QA 命名空间（与 acquire_data 内 RAG 一致）
@@ -384,6 +410,60 @@ class AnalysisGraphRunner:
         if not body:
             return ""
         return f"{body}。{_PLAN_TASK_SCOPE_GUARD_CN}"
+
+    @staticmethod
+    def _img_diag_q2_plan_tasks(*, query: str, ph: str, leakage: bool) -> list[_PlanTask]:
+        """检修处置 q2a～q2e：与 reference SQL 一一对应，每条独立 NL2SQL 调用。"""
+        compose = AnalysisGraphRunner._compose_plan_task_question
+        prefix = "在事故锚点向前3天内" if leakage else ""
+        p = f"{prefix}，" if prefix else ""
+        return [
+            _PlanTask(
+                "q2a",
+                "检修处置-近3次壁厚",
+                compose(
+                    query,
+                    f"{p}查询近3次壁厚测量记录（overhaul_boiler→overhaul_record mark_type=1→overhaul_record_tubes，LIMIT 3）。{ph}",
+                ),
+                mandatory=True,
+            ),
+            _PlanTask(
+                "q2b",
+                "检修处置-减薄速率",
+                compose(
+                    query,
+                    f"{p}查询年平均减薄速率（overhaul_boiler JOIN overhaul_thickness_rate）。{ph}",
+                ),
+                mandatory=True,
+            ),
+            _PlanTask(
+                "q2c",
+                "检修处置-泄爆泄漏履历",
+                compose(
+                    query,
+                    f"{p}查询近50次泄爆/泄漏记录（overhual_leakage）。{ph}",
+                ),
+                mandatory=True,
+            ),
+            _PlanTask(
+                "q2d",
+                "检修处置-遗留问题",
+                compose(
+                    query,
+                    f"{p}查询近50条遗留问题及处置结果（overhaul_legacy_problem）。{ph}",
+                ),
+                mandatory=True,
+            ),
+            _PlanTask(
+                "q2e",
+                "检修处置-补焊换管",
+                compose(
+                    query,
+                    f"{p}查询近50条补焊/换管记录（is_change=1 或 mark_type=2）。{ph}",
+                ),
+                mandatory=True,
+            ),
+        ]
 
     @staticmethod
     def _plan_context_snippets_for_guide(plan_context: list[str], *, max_items: int | None = None) -> list[str]:
@@ -2981,6 +3061,7 @@ class AnalysisGraphRunner:
             warnings.append("NL2SQL 查询成功但无结果，建议调整时间窗或过滤条件")
         if mandatory_failed > 0:
             warnings.append("存在关键数据步骤失败，分析结果可能偏保守")
+        warnings.extend(self._collect_nl2sql_time_intent_warnings(calls))
         threshold_result = self._nl2sql_threshold_result(
             coverage_rate=coverage_rate,
             anomaly_rate=anomaly_rate,
@@ -3006,6 +3087,25 @@ class AnalysisGraphRunner:
             "threshold_result": threshold_result,
             "warnings": warnings,
         }
+
+    @classmethod
+    def _collect_nl2sql_time_intent_warnings(cls, calls: list[AnalysisNL2SQLCall]) -> list[str]:
+        """从 NL2SQL 子调用 question_intent / error 汇总时间窗改写告警，供质量门与合成。"""
+        seen: set[str] = set()
+        out: list[str] = []
+        for call in calls:
+            intent = call.question_intent if isinstance(call.question_intent, dict) else {}
+            for code in intent.get("time_rewrite_warnings") or []:
+                if not isinstance(code, str) or code in seen:
+                    continue
+                seen.add(code)
+                out.append(_TIME_REWRITE_WARNING_CN.get(code, code))
+            err = (call.error or "").lower()
+            if "unresolved time placeholders" in err:
+                if _UNRESOLVED_TIME_PLACEHOLDER_WARNING not in seen:
+                    seen.add(_UNRESOLVED_TIME_PLACEHOLDER_WARNING)
+                    out.append(_UNRESOLVED_TIME_PLACEHOLDER_WARNING)
+        return out
 
     @staticmethod
     def _required_fields_by_type(analysis_type: str) -> list[str]:
@@ -3371,31 +3471,24 @@ class AnalysisGraphRunner:
                 ),
             ]
         elif req.analysis_type == "img_diag_defect_ident":
+            ph = _IMG_DIAG_SQL_PLACEHOLDER_CN
             base = [
                 _PlanTask(
                     "q1",
                     "管段基础参数",
                     self._compose_plan_task_question(
                         req.query,
-                        "查询用户问题指定区域的管段基础参数：规格材质、壁厚限值、胀粗率限值、壁温限值、累计运行时长",
+                        f"查询用户问题指定区域的管段基础参数：规格材质、壁厚限值、胀粗率限值、壁温限值、累计运行时长（monitor_boiler_start_stop 子查询用 @t_start/@t_end）。{ph}",
                     ),
                     mandatory=True,
                 ),
-                _PlanTask(
-                    "q2",
-                    "检修处置历史",
-                    self._compose_plan_task_question(
-                        req.query,
-                        "查询近3次壁厚记录、遗留问题处置、年平均减薄速率、泄爆记录、补焊记录、同区域换管记录",
-                    ),
-                    mandatory=True,
-                ),
+                *self._img_diag_q2_plan_tasks(query=req.query, ph=ph, leakage=False),
                 _PlanTask(
                     "q3",
                     "壁温超温数据",
                     self._compose_plan_task_question(
                         req.query,
-                        "查询对应管段累计超温时长、超温峰值、壁温偏差",
+                        f"查询对应管段累计超温时长、超温峰值、壁温偏差（monitor_hotarea_temp）。{ph}",
                     ),
                     mandatory=True,
                 ),
@@ -3404,7 +3497,7 @@ class AnalysisGraphRunner:
                     "吹灰运行数据",
                     self._compose_plan_task_question(
                         req.query,
-                        "查询对应区域吹灰器吹灰频次、吹扫压力、累计吹扫时长",
+                        f"查询对应区域吹灰器吹灰频次、吹扫压力、累计吹扫时长（base_soot_blower/monitor_soot_blower_run_record）。{ph}",
                     ),
                     mandatory=False,
                 ),
@@ -3413,37 +3506,30 @@ class AnalysisGraphRunner:
                     "烟气煤质数据",
                     self._compose_plan_task_question(
                         req.query,
-                        "查询对应区域烟温、烟速、飞灰浓度等烟气煤质相关测点数据摘要",
+                        f"查询对应区域烟温、烟速、飞灰浓度等烟气煤质相关测点数据摘要（sis_pi_data）。{ph}",
                     ),
                     mandatory=False,
                 ),
             ]
         elif req.analysis_type == "img_diag_leakage_burst":
+            ph = _IMG_DIAG_SQL_PLACEHOLDER_LEAKAGE_CN
             base = [
                 _PlanTask(
                     "q1",
                     "管段基础参数",
                     self._compose_plan_task_question(
                         req.query,
-                        "以用户问题解析的事故时刻为锚点向前3天，查询该区域管段基础参数：规格材质、壁厚限值、胀粗率限值、壁温限值、累计运行时长",
+                        f"以用户问题解析的事故时刻为锚点向前3天，查询该区域管段基础参数：规格材质、壁厚限值、胀粗率限值、壁温限值、累计运行时长。{ph}",
                     ),
                     mandatory=True,
                 ),
-                _PlanTask(
-                    "q2",
-                    "检修处置历史",
-                    self._compose_plan_task_question(
-                        req.query,
-                        "事故近3天内查询近3次壁厚记录、遗留问题处置、年平均减薄速率、泄爆记录、补焊记录、同区域换管记录",
-                    ),
-                    mandatory=True,
-                ),
+                *self._img_diag_q2_plan_tasks(query=req.query, ph=ph, leakage=True),
                 _PlanTask(
                     "q3",
                     "壁温超温数据",
                     self._compose_plan_task_question(
                         req.query,
-                        "事故近3天内查询对应管段累计超温时长、超温峰值、壁温偏差",
+                        f"事故锚点向前3天内查询对应管段累计超温时长、超温峰值、壁温偏差。{ph}",
                     ),
                     mandatory=True,
                 ),
@@ -3452,7 +3538,7 @@ class AnalysisGraphRunner:
                     "吹灰运行数据",
                     self._compose_plan_task_question(
                         req.query,
-                        "事故近3天内查询对应区域吹灰器吹灰频次、吹扫压力、累计吹扫时长",
+                        f"事故锚点向前3天内查询对应区域吹灰器吹灰频次、吹扫压力、累计吹扫时长。{ph}",
                     ),
                     mandatory=False,
                 ),
@@ -3461,7 +3547,7 @@ class AnalysisGraphRunner:
                     "烟气煤质数据",
                     self._compose_plan_task_question(
                         req.query,
-                        "事故近3天内查询对应区域烟温、烟速、飞灰浓度等烟气煤质相关测点数据摘要",
+                        f"事故锚点向前3天内查询对应区域烟温、烟速、飞灰浓度等烟气煤质相关测点数据摘要。{ph}",
                     ),
                     mandatory=False,
                 ),

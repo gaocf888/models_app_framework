@@ -1,8 +1,6 @@
--- 泄爆分析看图诊断数据计划参考 SQL（analysis_plan_img_diag_leakage_burst · q1 + q2a～e + q3～q5）
--- 对照：configs/prompts.yaml → analysis_plan_img_diag_leakage_burst
+-- 缺陷识别看图诊断数据计划参考 SQL（analysis_plan_img_diag_defect_ident · q1～q5）
+-- 对照：configs/prompts.yaml → analysis_plan_img_diag_defect_ident
 -- 字段/表关联对齐 DBA 文档：基于AI的锅炉四管防磨防爆智能系统升级研发202606161436-数据计划.docx
--- 时间窗：NL2SQL 从用户问题解析 **事故发生时刻（锚点）向前 3 天** → @t_start（含）～ @t_end（不含）
--- 数据计划 SQL 正文与 img_diag_defect_ident_plan_reference_sql.sql 一致（两场景 q1/q2a～e/q3～q5 同源）
 -- 数据库：fmfb · TiDB/MySQL 8 兼容
 -- 占位符（NL2SQL 基座从用户问题解析后改写）：
 --   @unit_keyword    锅炉名称关键字（空/NULL 则不过滤锅炉）
@@ -15,7 +13,7 @@
 -- 约束：每条 plan 问句对应单条可执行 SQL；禁止 WITH/CTE
 
 -- =============================================================================
--- q1 管段基础参数（规格材质、壁厚/胀粗/壁温限值、累计运行时长）(基础台账数据，无时间窗)
+-- q1 管段基础参数（规格材质、壁厚/胀粗/壁温限值、累计运行时长）
 -- =============================================================================
 SELECT
   ab.boiler_name AS 锅炉名称,
@@ -62,13 +60,14 @@ GROUP BY
   adp.piperow_thickness, adp.row_count, adp.pipe_count, ab.run_date,
   RUN_WIN.统计窗内运行时长_小时, RUN_ALL.累计运行时长_小时
 ORDER BY ab.boiler_name, asd.device_name, adp.piperow_name
-LIMIT 50;
+LIMIT 200;
 
 -- =============================================================================
 -- q2 检修处置历史（近3次壁厚、遗留问题、减薄速率、泄爆、补焊/换管）
+-- 拆分为多条参考 SQL，NL2SQL 可按问句择一或组合理解
 -- =============================================================================
 
--- q2-a 近 3 次测厚记录（mark_type=1）（时间窗口为用户问题中解析锚点时间，结合数据计划plan中锚点说明，查询指定范围 近 3 次测厚记录）
+-- q2-a 近 3 次测厚记录（mark_type=1）
 SELECT
   ab.boiler_name AS 锅炉名称,
   asd.device_name AS 受热面名称,
@@ -87,15 +86,15 @@ INNER JOIN account_boiler ab ON ob.boiler_id = ab.boiler_id
 INNER JOIN account_static_device asd ON orc.device_id = asd.device_id
 WHERE orc.del_flag = '0'
   AND orc.mark_type = '1'
-	AND (@t_start IS NULL OR @t_start = '' OR ort.create_time >= @t_start)
-  AND (@t_end IS NULL OR @t_end = '' OR ort.create_time < @t_end)
+  AND ort.create_time >= @t_start
+  AND ort.create_time < @t_end
   AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
   AND (@row_no IS NULL OR CAST(IFNULL(orc.row_num, '0') AS SIGNED) = @row_no)
 ORDER BY ort.create_time DESC
 LIMIT 3;
 
--- q2-b 年平均减薄速率(无时间窗口，查询指定范围的 年平均减薄速率)
+-- q2-b 年平均减薄速率（overhaul_thickness_rate，经检修策划关联）
 SELECT
   ab.boiler_name AS 锅炉名称,
   asd.device_name AS 受热面名称,
@@ -119,9 +118,9 @@ WHERE (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT
   AND (@row_no IS NULL OR otr.row_num = @row_no)
   AND (@tube_no IS NULL OR otr.pipe_num = @tube_no)
 ORDER BY otr.row_num, otr.pipe_num
-LIMIT 50;
+LIMIT 200;
 
--- q2-c 泄爆/泄漏记录(无时间窗口，查询指定机组受热面管排的最近50次泄爆记录)
+-- q2-c 泄爆/泄漏记录（表名 overhual_leakage）
 SELECT
   ab.boiler_name AS 锅炉名称,
   asd.device_name AS 受热面名称,
@@ -137,15 +136,16 @@ FROM overhual_leakage ol
 LEFT JOIN overhaul_boiler ob ON ol.overhaul_id = ob.overhaul_id
 INNER JOIN account_boiler ab ON ol.boiler_id = ab.boiler_id
 LEFT JOIN account_static_device asd ON ol.device_id = asd.device_id
-WHERE
-  (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
+WHERE ol.leakage_date >= DATE(@t_start)
+  AND ol.leakage_date < DATE(@t_end)
+  AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
   AND (@row_no IS NULL OR ol.row_num = @row_no)
   AND (@tube_no IS NULL OR ol.pipe_num = @tube_no)
 ORDER BY ol.leakage_date DESC
-LIMIT 50;
+LIMIT 200;
 
--- q2-d 遗留问题及处置结果(时间窗口为用户问题中解析锚点时间，结合数据计划plan中锚点说明，查询指定管排最近50条遗留问题及处置结果)
+-- q2-d 遗留问题及处置结果
 SELECT
   ab.boiler_name AS 锅炉名称,
   asd.device_name AS 受热面名称,
@@ -160,24 +160,23 @@ FROM overhaul_legacy_problem lp
 INNER JOIN account_boiler ab ON lp.boiler_id = ab.boiler_id
 LEFT JOIN account_static_device asd ON lp.device_id = asd.device_id
 LEFT JOIN overhaul_boiler ob ON lp.overhaul_id = ob.overhaul_id
-WHERE
-	(@t_start IS NULL OR @t_start = '' OR lp.record_time >= @t_start)
-  AND (@t_end IS NULL OR @t_end = '' OR lp.record_time < @t_end)
+WHERE lp.record_time >= @t_start
+  AND lp.record_time < @t_end
   AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
   AND (@row_no IS NULL OR lp.row_num = @row_no)
   AND (@tube_no IS NULL OR lp.pipe_num = @tube_no)
 ORDER BY lp.record_time DESC
-LIMIT 50;
+LIMIT 200;
 
--- q2-e 补焊/换管记录(时间窗口为用户问题中解析锚点时间，结合数据计划plan中锚点说明，查询指定管排最近50条补焊/换管记录)
+-- q2-e 补焊/换管记录（mark_type=2 或 is_change=1）
 SELECT
   ab.boiler_name AS 锅炉名称,
   asd.device_name AS 受热面名称,
   ob.overhaul_name AS 检修名称,
   onc.name AS 检测位置名称,
   ort.tube_position AS 管道位置描述,
-  orc.row_num AS 排数,
+  orc.row_num AS 管排号,
   ort.thickness AS 缺陷位置壁厚,
   ort.is_change AS 是否换管,
   CASE
@@ -195,16 +194,16 @@ LEFT JOIN overhaul_new_checklocation onc ON orc.check_id = onc.id
 INNER JOIN account_static_device asd ON orc.device_id = asd.device_id
 WHERE orc.del_flag = '0'
   AND (ort.is_change = 1 OR orc.mark_type = '2')
-	AND (@t_start IS NULL OR @t_start = '' OR ort.create_time >= @t_start)
-  AND (@t_end IS NULL OR @t_end = '' OR ort.create_time < @t_end)
+  AND ort.create_time >= @t_start
+  AND ort.create_time < @t_end
   AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
   AND (@row_no IS NULL OR CAST(IFNULL(orc.row_num, '0') AS SIGNED) = @row_no)
 ORDER BY ort.create_time DESC
-LIMIT 50;
+LIMIT 200;
 
 -- =============================================================================
--- q3 壁温超温数据（时间窗口为用户问题中解析锚点时间，结合数据计划plan中锚点说明，查询指定范围的近三天超温数据）
+-- q3 壁温超温数据（累计超温时长、峰值、壁温偏差）
 -- =============================================================================
 SELECT
   ab.boiler_name AS 锅炉名称,
@@ -222,9 +221,8 @@ FROM monitor_hotarea_temp mht
 INNER JOIN account_boiler ab ON mht.boiler_id = ab.boiler_id
 LEFT JOIN account_static_device asd ON mht.device_id = asd.device_id
 LEFT JOIN base_temp_point btp ON mht.pi_code = btp.point_code
-WHERE
-	(@t_start IS NULL OR @t_start = '' OR mht.start_time >= @t_start)
-  AND (@t_end IS NULL OR @t_end = '' OR mht.start_time < @t_end)
+WHERE mht.start_time >= @t_start
+  AND mht.start_time < @t_end
   AND mht.highest_temp > mht.limit_temp
   AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
@@ -233,10 +231,10 @@ WHERE
 GROUP BY
   ab.boiler_name, asd.device_name, mht.pi_code, btp.point_name, btp.row_num, btp.pipe_num, mht.limit_temp
 ORDER BY 累计超温时长_小时 DESC
-LIMIT 50;
+LIMIT 200;
 
 -- =============================================================================
--- q4 吹灰运行数据（时间窗口为用户问题中解析锚点时间，结合数据计划plan中锚点说明，查询指定范围的近三天吹灰运行数据）
+-- q4 吹灰运行数据（频次、累计吹扫时长；压力字段库表无统一采集，见注释）
 -- =============================================================================
 SELECT
   ab.boiler_name AS 锅炉名称,
@@ -250,18 +248,18 @@ SELECT
 FROM base_soot_blower bsb
 LEFT JOIN monitor_soot_blower_run_record msrr
   ON bsb.blower_id = msrr.blower_id
-	AND (@t_start IS NULL OR @t_start = '' OR msrr.start_time >= @t_start)
-  AND (@t_end IS NULL OR @t_end = '' OR msrr.start_time < @t_end)
+  AND msrr.start_time >= @t_start
+  AND msrr.start_time < @t_end
 INNER JOIN account_boiler ab ON bsb.boiler_id = ab.boiler_id
 LEFT JOIN account_static_device asd ON bsb.device_id = asd.device_id
 WHERE (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
 GROUP BY ab.boiler_name, asd.device_name, bsb.blower_name, bsb.blower_code
 ORDER BY 吹灰频次 DESC, 累计吹扫时长_小时 DESC
-LIMIT 50;
+LIMIT 200;
 
 -- =============================================================================
--- q5 烟气煤质数据（时间窗口为用户问题中解析锚点时间，结合数据计划plan中锚点说明，查询指定范围的近三天烟气煤质数据）
+-- q5 烟气煤质数据（烟温/烟速/飞灰浓度 — sis_pi_data + base_dev_pi_b）
 -- =============================================================================
 SELECT
   bpi.pi_code AS 测点编码,
@@ -274,9 +272,8 @@ SELECT
   DATE_FORMAT(MAX(spd.data_time), '%Y-%m-%d %H:%i:%s') AS 末样本时间
 FROM sis_pi_data spd
 INNER JOIN base_dev_pi_b bpi ON spd.tag = bpi.pi_code
-WHERE
-	(@t_start IS NULL OR @t_start = '' OR spd.data_time >= @t_start)
-  AND (@t_end IS NULL OR @t_end = '' OR spd.data_time < @t_end)
+WHERE spd.data_time >= @t_start
+  AND spd.data_time < @t_end
   AND (
     bpi.pi_name_ch IN ('烟气温度', '烟速', '飞灰浓度', '吹扫压力')
     OR IFNULL(bpi.pi_name_ch, '') LIKE '%烟温%'
@@ -296,4 +293,4 @@ WHERE
 GROUP BY bpi.pi_code, bpi.pi_name_ch
 HAVING 采样点数 >= 1
 ORDER BY 末样本时间 DESC
-LIMIT 50;
+LIMIT 200;

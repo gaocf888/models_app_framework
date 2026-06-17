@@ -35,6 +35,7 @@ class NL2SQLValidationContext:
     table_columns: dict[str, frozenset[str]]
     join_whitelist: frozenset[str]
     parsed_intent: dict[str, Any] | None = None
+    analysis_type: str | None = None
 
 NL2SQL_SCHEMA_CATALOG_PLACEHOLDER = "{{NL2SQL_SCHEMA_CATALOG}}"
 
@@ -324,6 +325,7 @@ class NL2SQLChain:
             {k: frozenset(v) for k, v in table_columns_map.items()},
             frozenset(join_whitelist),
             parsed_intent=parsed_intent_dict,
+            analysis_type=analysis_type,
         )
         entity_rules = load_entity_rules_from_env()
         if schema_ok != schema_from_db:
@@ -582,12 +584,18 @@ class NL2SQLChain:
         raw_out_len = len(sql or "")
         sql = self._validator.normalize_sql(sql)
         sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
+        rewrite_meta: dict[str, Any] = {}
         sql, filter_notes = self._rewrite_query_filters(
             sql,
             question=question,
             time_intent_source=time_src,
             scope_literals=scope_literals,
+            parsed_intent=parsed_intent_dict,
+            plan_item_id=plan_item_id,
+            analysis_type=analysis_type,
+            rewrite_meta=rewrite_meta,
         )
+        self._apply_rewrite_meta_to_parsed_intent(parsed_intent_dict, rewrite_meta)
         rewrite_notes.extend(filter_notes)
         if rewrite_notes:
             logger.info("NL2SQLChain TiDB rewrite applied: %s", "; ".join(rewrite_notes))
@@ -616,12 +624,18 @@ class NL2SQLChain:
                     )
                     sql = self._validator.normalize_sql(sql)
                     sql, refine_notes = self._rewrite_tidb_compatible_sql(sql)
+                    rewrite_meta = {}
                     sql, filter_notes = self._rewrite_query_filters(
                         sql,
                         question=question,
                         time_intent_source=time_src,
                         scope_literals=scope_literals,
+                        parsed_intent=parsed_intent_dict,
+                        plan_item_id=plan_item_id,
+                        analysis_type=analysis_type,
+                        rewrite_meta=rewrite_meta,
                     )
+                    self._apply_rewrite_meta_to_parsed_intent(parsed_intent_dict, rewrite_meta)
                     refine_notes.extend(filter_notes)
                     if refine_notes:
                         logger.info(
@@ -641,6 +655,45 @@ class NL2SQLChain:
                     return "", validation_ctx
             else:
                 logger.warning("NL2SQLChain TiDB dialect failed and no LangChain; return empty SQL")
+                return "", validation_ctx
+
+        ph_ok, ph_reason = self._validate_unresolved_time_placeholders(sql)
+        if not ph_ok:
+            logger.warning(
+                "NL2SQLChain unresolved time placeholders preview_question=%r reason=%s",
+                _text_preview(question, 80),
+                ph_reason,
+            )
+            validation_error = ph_reason
+            if self._lc_chat_model is not None:
+                try:
+                    sql = await self._refine_sql(
+                        question=question,
+                        original_sql=sql,
+                        validation_error=validation_error or "",
+                    )
+                    sql = self._validator.normalize_sql(sql)
+                    sql, refine_notes = self._rewrite_tidb_compatible_sql(sql)
+                    rewrite_meta = {}
+                    sql, filter_notes = self._rewrite_query_filters(
+                        sql,
+                        question=question,
+                        time_intent_source=time_src,
+                        scope_literals=scope_literals,
+                        parsed_intent=parsed_intent_dict,
+                        plan_item_id=plan_item_id,
+                        analysis_type=analysis_type,
+                        rewrite_meta=rewrite_meta,
+                    )
+                    self._apply_rewrite_meta_to_parsed_intent(parsed_intent_dict, rewrite_meta)
+                    refine_notes.extend(filter_notes)
+                    ph_ok, ph_reason = self._validate_unresolved_time_placeholders(sql)
+                    if not ph_ok:
+                        return "", validation_ctx
+                except Exception:
+                    logger.exception("NL2SQLChain: time placeholder refine failed, return empty SQL.")
+                    return "", validation_ctx
+            else:
                 return "", validation_ctx
 
         valid, validation_error = self._validate_sql(
@@ -675,12 +728,18 @@ class NL2SQLChain:
                     )
                     sql = self._validator.normalize_sql(sql)
                     sql, refine_notes = self._rewrite_tidb_compatible_sql(sql)
+                    rewrite_meta = {}
                     sql, filter_notes = self._rewrite_query_filters(
                         sql,
                         question=question,
                         time_intent_source=time_src,
                         scope_literals=scope_literals,
+                        parsed_intent=parsed_intent_dict,
+                        plan_item_id=plan_item_id,
+                        analysis_type=analysis_type,
+                        rewrite_meta=rewrite_meta,
                     )
+                    self._apply_rewrite_meta_to_parsed_intent(parsed_intent_dict, rewrite_meta)
                     refine_notes.extend(filter_notes)
                     if refine_notes:
                         logger.info(
@@ -693,6 +752,13 @@ class NL2SQLChain:
                             "NL2SQLChain refine_sql TiDB dialect invalid sql_preview=%r reason=%s",
                             _text_preview(sql, 0),
                             dialect_reason,
+                        )
+                        return "", validation_ctx
+                    ph_ok, ph_reason = self._validate_unresolved_time_placeholders(sql)
+                    if not ph_ok:
+                        logger.warning(
+                            "NL2SQLChain refine_sql unresolved time placeholders reason=%s",
+                            ph_reason,
                         )
                         return "", validation_ctx
                     valid, validation_error = self._validate_sql(
@@ -876,13 +942,18 @@ class NL2SQLChain:
         scope_literals = scope_literals_from_parsed_intent(validation_ctx.parsed_intent)
         sql = self._validator.normalize_sql(sql)
         sql, rewrite_notes = self._rewrite_tidb_compatible_sql(sql)
+        rewrite_meta: dict[str, Any] = {}
         sql, filter_notes = self._rewrite_query_filters(
             sql,
             question=question,
             time_intent_source=time_intent_source,
             plan_item_id=plan_item_id,
             scope_literals=scope_literals,
+            parsed_intent=validation_ctx.parsed_intent,
+            analysis_type=validation_ctx.analysis_type,
+            rewrite_meta=rewrite_meta,
         )
+        self._apply_rewrite_meta_to_parsed_intent(validation_ctx.parsed_intent, rewrite_meta)
         rewrite_notes.extend(filter_notes)
         if rewrite_notes:
             logger.info(
@@ -890,6 +961,9 @@ class NL2SQLChain:
                 log_label,
                 "; ".join(rewrite_notes),
             )
+        ph_ok, ph_reason = self._validate_unresolved_time_placeholders(sql)
+        if not ph_ok:
+            return sql, False, ph_reason
         dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
         if not dialect_ok:
             return sql, False, dialect_reason
@@ -1030,8 +1104,17 @@ class NL2SQLChain:
                 question=question,
                 time_intent_source=time_src,
                 scope_literals=scope_literals,
+                parsed_intent=ctx.parsed_intent,
+                analysis_type=ctx.analysis_type,
             )
             rewrite_notes.extend(filter_notes)
+            ph_ok, ph_reason = self._validate_unresolved_time_placeholders(refined)
+            if not ph_ok:
+                logger.warning(
+                    "NL2SQLChain refine_sql_after_executor_error unresolved placeholders reason=%s",
+                    ph_reason,
+                )
+                return ""
             if rewrite_notes:
                 logger.info(
                     "NL2SQLChain TiDB rewrite applied in refine_sql_after_executor_error: %s",
@@ -1238,13 +1321,20 @@ class NL2SQLChain:
         time_intent_source: str | None = None,
         plan_item_id: str | None = None,
         scope_literals: dict[str, str | int | None] | None = None,
+        parsed_intent: dict[str, Any] | None = None,
+        analysis_type: str | None = None,
+        rewrite_meta: dict[str, Any] | None = None,
     ) -> tuple[str, list[str]]:
         """P2：优化口径（通用时间语义动态窗 + 机组/锅炉范围 + 区域放宽匹配）。"""
         notes: list[str] = []
         rewritten = sql
+        meta = rewrite_meta if rewrite_meta is not None else {}
         time_window = self._resolve_time_window_for_rewrite(
             question=question,
             time_intent_source=time_intent_source,
+            parsed_intent=parsed_intent,
+            analysis_type=analysis_type,
+            rewrite_meta=meta,
         )
         if time_window is not None:
             start_expr, end_expr, tag = time_window
@@ -1315,35 +1405,151 @@ class NL2SQLChain:
                 notes.append(note)
         return rewritten, notes
 
+    @staticmethod
+    def _time_anchor_from_parsed_intent(
+        parsed_intent: dict[str, Any] | None,
+    ) -> tuple[str, str] | None:
+        if not parsed_intent:
+            return None
+        raw = parsed_intent.get("time_anchor")
+        if not isinstance(raw, dict):
+            return None
+        end_expr = raw.get("end_expr")
+        tag = raw.get("tag")
+        if not end_expr or not tag:
+            return None
+        return str(end_expr), str(tag)
+
+    @staticmethod
+    def _apply_rewrite_meta_to_parsed_intent(
+        parsed_intent: dict[str, Any] | None,
+        rewrite_meta: dict[str, Any],
+    ) -> None:
+        if parsed_intent is None:
+            return
+        warnings = rewrite_meta.get("time_rewrite_warnings")
+        if isinstance(warnings, list) and warnings:
+            parsed_intent["time_rewrite_warnings"] = list(warnings)
+        effective = rewrite_meta.get("effective_time_window")
+        if isinstance(effective, dict) and effective:
+            parsed_intent["effective_time_window"] = dict(effective)
+
+    @classmethod
+    def _anchor_fallback_now_allowed(cls, analysis_type: str | None) -> bool:
+        from app.nl2sql.intent_config import (
+            anchor_fallback_analysis_types,
+            anchor_fallback_now_enabled,
+        )
+
+        if not anchor_fallback_now_enabled():
+            return False
+        at = (analysis_type or "").strip()
+        if not at:
+            return False
+        return at in anchor_fallback_analysis_types()
+
+    @staticmethod
+    def _record_effective_time_window(
+        rewrite_meta: dict[str, Any],
+        start_expr: str,
+        end_expr: str,
+        tag: str,
+    ) -> None:
+        rewrite_meta["effective_time_window"] = {
+            "start_expr": start_expr,
+            "end_expr": end_expr,
+            "tag": tag,
+        }
+
+    @staticmethod
+    def _append_time_rewrite_warning(rewrite_meta: dict[str, Any], code: str) -> None:
+        warnings = rewrite_meta.setdefault("time_rewrite_warnings", [])
+        if code not in warnings:
+            warnings.append(code)
+
+    def _validate_unresolved_time_placeholders(self, sql: str) -> tuple[bool, str | None]:
+        from app.nl2sql.intent_config import reject_unresolved_time_placeholders
+
+        if not reject_unresolved_time_placeholders():
+            return True, None
+        if self._sql_has_time_placeholders(sql):
+            return (
+                False,
+                "unresolved time placeholders (@t_start/@t_end/@t_after): "
+                "用户问句未解析到可改写时间窗，请在问题中补充明确时间或事故时刻",
+            )
+        return True, None
+
     def _resolve_time_window_for_rewrite(
         self,
         *,
         question: str,
         time_intent_source: str | None,
+        parsed_intent: dict[str, Any] | None = None,
+        analysis_type: str | None = None,
+        rewrite_meta: dict[str, Any] | None = None,
     ) -> tuple[str, str, str] | None:
         """
         解析生效时间窗：
+        0) plan 含「锚点向前 N 天」且用户问句已解析锚点 → [anchor_end - N, anchor_end)；
+           无锚点且允许 fallback → [NOW()-N, NOW())（泄爆等）；
+           无锚点且不允许 fallback → 记录 anchor_lookback_skipped_no_anchor；
         1) plan 子任务显式长窗（近一年等）优先；
         2) 用户 time_intent 的 today/yesterday/前天 优先于问句内误触发的字面年月；
         3) 其余从 intent / task 问句回落。
         """
+        from app.nl2sql.time_intent_display import (
+            build_anchor_lookback_time_window,
+            parse_plan_anchor_lookback_days,
+        )
+
+        meta = rewrite_meta if rewrite_meta is not None else {}
+
         task_q = (question or "").strip()
+        lookback = parse_plan_anchor_lookback_days(task_q) if task_q else None
+        if lookback is not None:
+            anchor = self._time_anchor_from_parsed_intent(parsed_intent)
+            if anchor is not None:
+                anchor_end, _anchor_tag = anchor
+                win = build_anchor_lookback_time_window(anchor_end, lookback)
+                self._record_effective_time_window(meta, win[0], win[1], win[2])
+                return win
+            if self._anchor_fallback_now_allowed(analysis_type):
+                win = build_anchor_lookback_time_window("NOW()", lookback)
+                start, end, tag = win
+                self._record_effective_time_window(
+                    meta, start, end, f"{tag}_fallback_now"
+                )
+                self._append_time_rewrite_warning(meta, "anchor_fallback_now")
+                return win
+            self._append_time_rewrite_warning(meta, "anchor_lookback_skipped_no_anchor")
+            return None
+
         intent_q = (time_intent_source or "").strip() or task_q
         task_win = self._extract_time_window_from_question(task_q) if task_q else None
         intent_win = self._extract_time_window_from_question(intent_q) if intent_q else None
 
         if task_win and self._is_plan_override_window_tag(task_win[2]):
+            self._record_effective_time_window(meta, task_win[0], task_win[1], task_win[2])
             return task_win
 
         if intent_win and intent_win[2] in self._DAY_WINDOW_TAGS:
+            self._record_effective_time_window(meta, intent_win[0], intent_win[1], intent_win[2])
             return intent_win
 
         if task_win and task_win[2] in self._DAY_WINDOW_TAGS:
+            self._record_effective_time_window(meta, task_win[0], task_win[1], task_win[2])
             return task_win
 
         if intent_win:
+            self._record_effective_time_window(meta, intent_win[0], intent_win[1], intent_win[2])
             return intent_win
-        return task_win
+        if task_win:
+            self._record_effective_time_window(meta, task_win[0], task_win[1], task_win[2])
+            return task_win
+        if not parsed_intent or not parsed_intent.get("time_window_tag"):
+            self._append_time_rewrite_warning(meta, "no_parsed_time_window")
+        return None
 
     @staticmethod
     def _extract_numeric_window(q: str, unit_keys: tuple[str, ...]) -> int | None:
@@ -1462,6 +1668,8 @@ class NL2SQLChain:
 
     @classmethod
     def _should_inject_time_upper_bound(cls, tag: str) -> bool:
+        if tag.startswith("anchor_lookback_"):
+            return False
         if cls._is_plan_override_window_tag(tag) or tag.startswith("recent_"):
             return False
         if tag in cls._HALF_OPEN_WINDOW_TAGS:

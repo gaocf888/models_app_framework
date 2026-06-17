@@ -6,7 +6,10 @@ from app.nl2sql.chain import NL2SQLChain
 from app.nl2sql.intent_config import intent_parse_mode
 from app.nl2sql.question_scope_models import QuestionIntent
 from app.nl2sql.scope_parser_llm import resolve_scope_with_mode
-from app.nl2sql.time_intent_display import extract_time_window_from_question
+from app.nl2sql.time_intent_display import (
+    extract_time_anchor_from_question,
+    extract_time_window_from_question,
+)
 
 ParseMode = Literal["rule", "llm", "llm_fallback_rule"]
 
@@ -34,6 +37,7 @@ def resolve_question_intent(
     )
     scope, effective_mode = resolve_scope_with_mode(scope_q, mode=mode_raw)
     time_window = extract_time_window_from_question(scope_q)
+    time_anchor = extract_time_anchor_from_question(scope_q)
 
     parse_mode_out: ParseMode = "rule"
     if effective_mode == "llm":
@@ -46,6 +50,7 @@ def resolve_question_intent(
         scope_question=scope_q,
         time_window=time_window,
         scope=scope,
+        time_anchor=time_anchor,
         parse_mode=parse_mode_out,
     )
 

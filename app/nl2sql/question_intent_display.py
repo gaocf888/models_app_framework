@@ -26,12 +26,18 @@ def question_intent_to_dict(intent: QuestionIntent) -> dict[str, Any]:
     if intent.time_window is not None:
         start, end, tag = intent.time_window
         time_window = {"start_expr": start, "end_expr": end, "tag": tag}
+    time_anchor: dict[str, str] | None = None
+    if intent.time_anchor is not None:
+        end_expr, tag = intent.time_anchor
+        time_anchor = {"end_expr": end_expr, "tag": tag}
     stat_range = resolve_statistical_time_range_display(intent.scope_question)
     return {
         "parse_mode": intent.parse_mode,
         "scope_question": intent.scope_question,
         "time_window_tag": intent.time_window_tag,
         "time_window": time_window,
+        "time_anchor": time_anchor,
+        "time_anchor_tag": intent.time_anchor_tag,
         "statistical_time_range": (
             {"start": stat_range[0], "end": stat_range[1]} if stat_range else None
         ),
@@ -57,6 +63,12 @@ def format_parsed_intent_prompt_block(intent: QuestionIntent) -> str:
         lines.append(f"- 时间窗：{tag}")
     else:
         lines.append("- 时间窗：未识别")
+
+    if intent.time_anchor is not None:
+        _end, anchor_tag = intent.time_anchor
+        lines.append(f"- 事故锚点：{anchor_tag}（plan 含「锚点向前*天」时用于 SQL 回溯窗上界）")
+    else:
+        lines.append("- 事故锚点：未识别")
 
     scope = intent.scope
     lines.append(f"- 锅炉：{scope.boiler or '全厂/未指定'}")
