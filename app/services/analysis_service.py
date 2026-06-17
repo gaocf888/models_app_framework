@@ -34,10 +34,14 @@ from app.models.analysis import (
     AnalysisTraceTrendResponse,
     AnalysisTraceView,
     AnalysisV2Result,
+    ImgDiagScopeResumeRequest,
 )
 from app.models.inspection_extract import InspectionUploadResponse
 from app.llm.client import VLLMHttpClient
-from app.llm.graphs.analysis_img_diag_runner import AnalysisImgDiagGraphRunner
+from app.llm.graphs.analysis_img_diag_runner import (
+    AnalysisImgDiagGraphRunner,
+    ImgDiagScopeInterrupt,
+)
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
@@ -161,7 +165,10 @@ class AnalysisService:
 
     async def run_analysis_img_diag(self, data: AnalysisImgDiagRequest) -> AnalysisV2Result:
         req = self._apply_defaults_img_diag(data)
-        result = await self._graph_runner.run_with_img_diag(req)
+        try:
+            result = await self._graph_runner.run_with_img_diag(req)
+        except ImgDiagScopeInterrupt as exc:
+            raise exc
         self._save_trace(result)
         return result
 
@@ -178,6 +185,30 @@ class AnalysisService:
 
         async def event_gen():
             async for ev in self._graph_runner.iter_img_diag_stream_events(req, on_complete=on_complete):
+                yield _encode_sse_event(ev)
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+        return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
+
+    async def run_analysis_img_diag_scope_resume_stream(
+        self, data: ImgDiagScopeResumeRequest
+    ) -> StreamingResponse:
+        async def on_complete(result: AnalysisV2Result) -> None:
+            self._save_trace(result)
+
+        async def event_gen():
+            async for ev in self._graph_runner.iter_img_diag_scope_resume_stream_events(
+                resume_token=data.resume_token,
+                user_id=data.user_id,
+                session_id=data.session_id,
+                action=data.action,
+                payload=data.payload,
+                on_complete=on_complete,
+            ):
                 yield _encode_sse_event(ev)
 
         headers = {

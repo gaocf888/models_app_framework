@@ -174,6 +174,14 @@ class AnalysisNL2SQLRequest(BaseModel):
     query: str = Field(..., description="分析需求的自然语言描述")
     data_requirements_hint: List[str] = Field(default_factory=list, description="建议查询的数据需求提示")
     options: AnalysisOptions = Field(default_factory=AnalysisOptions, description="分析执行选项")
+    confirmed_scope: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="看图诊断 HITL 确认后的结构化范围（可选）",
+    )
+    scope_intent_text: Optional[str] = Field(
+        default=None,
+        description="看图诊断 HITL 合成的 scope 解析短句（可选）",
+    )
 
     @field_validator("user_id")
     @classmethod
@@ -311,4 +319,24 @@ class AnalysisTraceDegradeTopNResponse(BaseModel):
     ok: bool = Field(True, description="是否成功")
     total_unique: int = Field(0, description="降级原因去重总数")
     items: List[AnalysisTraceDegradeItem] = Field(default_factory=list, description="按次数排序的 TopN 列表")
+
+
+class ImgDiagScopeResumeRequest(BaseModel):
+    """看图诊断 scope HITL resume 请求。"""
+
+    resume_token: str = Field(..., description="scope interrupt 返回的 resume_token")
+    user_id: str = Field(..., description="用户 ID")
+    session_id: str = Field(..., description="会话 ID")
+    action: str = Field(default="confirm_scope", description="confirm_scope|edit_scope|abort")
+    payload: Optional[Dict[str, Any]] = Field(default=None, description="user_supplement / scope_patch 等")
+
+    @field_validator("user_id")
+    @classmethod
+    def _v_uid(cls, v: str) -> str:
+        return validate_user_id(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def _v_sid(cls, v: str) -> str:
+        return validate_session_id(v)
 

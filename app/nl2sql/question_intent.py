@@ -1,19 +1,31 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from app.nl2sql.chain import NL2SQLChain
 from app.nl2sql.intent_config import intent_parse_mode
-from app.nl2sql.question_scope_models import QuestionIntent
+from app.nl2sql.question_scope_models import QuestionIntent, QuestionScopeIntent
 from app.nl2sql.scope_parser_llm import resolve_scope_with_mode
 from app.nl2sql.time_intent_display import (
     extract_time_anchor_from_question,
     extract_time_window_from_question,
 )
 
-ParseMode = Literal["rule", "llm", "llm_fallback_rule"]
+ParseMode = Literal["rule", "llm", "llm_fallback_rule", "human_confirmed"]
 
 ScopeLiterals = dict[str, str | int | None]
+
+
+def _scope_from_confirmed_dict(confirmed: dict[str, Any]) -> QuestionScopeIntent:
+    row = confirmed.get("row_no")
+    tube = confirmed.get("tube_no")
+    return QuestionScopeIntent(
+        boiler=confirmed.get("boiler") or None,
+        device_name=confirmed.get("device_name") or None,
+        piperow_name=confirmed.get("piperow_name") or None,
+        row_no=int(row) if isinstance(row, int) and row > 0 else None,
+        tube_no=int(tube) if isinstance(tube, int) and tube > 0 else None,
+    )
 
 
 def resolve_question_intent(
@@ -21,15 +33,37 @@ def resolve_question_intent(
     *,
     time_intent_source: str | None = None,
     parse_mode: str | None = None,
+    confirmed_scope: dict[str, Any] | None = None,
+    scope_intent_text: str | None = None,
+    original_query: str | None = None,
 ) -> QuestionIntent:
     """
     统一问句意图解析入口。
 
     - 时间：始终走 ``time_intent_display`` 程序规则；
-    - 范围：``NL2SQL_INTENT_PARSE_MODE`` 为 ``rule``（默认）/ ``llm`` / ``rule_with_llm_fallback``。
+    - 范围：``NL2SQL_INTENT_PARSE_MODE`` 为 ``rule``（默认）/ ``llm`` / ``rule_with_llm_fallback``；
+    - 看图诊断 HITL：传入 ``confirmed_scope`` 时 scope 以人工确认为准（``human_confirmed``）。
     """
     raw = (question or "").strip()
     mode_raw = (parse_mode or intent_parse_mode()).strip().lower()
+
+    if confirmed_scope:
+        scope_q = (scope_intent_text or time_intent_source or raw).strip()
+        scope = _scope_from_confirmed_dict(confirmed_scope)
+        time_window = extract_time_window_from_question(scope_q)
+        time_anchor = extract_time_anchor_from_question(scope_q)
+        if not time_window and original_query:
+            time_window = extract_time_window_from_question(original_query.strip())
+        if not time_anchor and original_query:
+            time_anchor = extract_time_anchor_from_question(original_query.strip())
+        return QuestionIntent(
+            raw_question=raw,
+            scope_question=scope_q,
+            time_window=time_window,
+            scope=scope,
+            time_anchor=time_anchor,
+            parse_mode="human_confirmed",
+        )
 
     scope_q = NL2SQLChain._resolve_entity_scope_question(
         question=raw,

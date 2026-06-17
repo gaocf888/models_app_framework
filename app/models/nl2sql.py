@@ -30,9 +30,21 @@ class NL2SQLQueryRequest(BaseModel):
     time_intent_text: str | None = Field(
         default=None,
         description=(
-            "可选：仅用于动态时间窗等规则从该文本抽取时间语义；未设置时与 question 一致。"
+            "可选：动态时间窗等规则从该文本抽取时间语义；未设置时与 question 一致。"
             "综合分析等场景可设为上层用户原句，避免任务 question 末尾 RAG 附录污染时间抽取。"
         ),
+    )
+    confirmed_scope: dict[str, Any] | None = Field(
+        default=None,
+        description="可选：人工确认后的结构化范围（看图诊断 HITL）；仅 img_diag 传入。",
+    )
+    scope_intent_text: str | None = Field(
+        default=None,
+        description="可选：由结构化 scope 合成的解析短句，作为 time_intent 优先输入（看图诊断 HITL）。",
+    )
+    original_query: str | None = Field(
+        default=None,
+        description="可选：用户原始问句，confirmed_scope 模式下时间解析兜底来源。",
     )
 
     @field_validator("user_id")

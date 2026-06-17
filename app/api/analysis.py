@@ -35,8 +35,9 @@ OpenAPI 说明：各接口的字段释义、必填与约束以 **请求/响应�
 from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, Path, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.llm.graphs.analysis_img_diag_runner import ImgDiagScopeInterrupt
 from app.models.analysis import (
     AnalysisImgDiagRequest,
     AnalysisNL2SQLRequest,
@@ -48,6 +49,7 @@ from app.models.analysis import (
     AnalysisTraceTrendResponse,
     AnalysisTraceView,
     AnalysisV2Result,
+    ImgDiagScopeResumeRequest,
 )
 from app.models.inspection_extract import InspectionUploadResponse
 from app.services.analysis_service import AnalysisService
@@ -224,8 +226,13 @@ async def run_analysis_img_diag(data: AnalysisImgDiagRequest) -> AnalysisV2Resul
     **响应**：`analysis_type` 为 `img_diag_defect_ident` 或 `img_diag_leakage_burst`；
     `evidence.rag_citations` 与智能客服 `finished.meta.rag_citations` 同形（含 `ref_index`、`doc_name`、`original_content_url` 等）；
     trace 含 `parsed_intent` / `parsed_time_intent` / `parsed_scope_intent`。
+
+    若 scope HITL 需用户确认，返回 **409**，body 含 `event=img_diag_scope_input_required` 与 `resume_token`。
     """
-    return await service.run_analysis_img_diag(data)
+    try:
+        return await service.run_analysis_img_diag(data)
+    except ImgDiagScopeInterrupt as exc:
+        return JSONResponse(status_code=409, content=exc.payload)
 
 
 @router.post(
@@ -248,8 +255,27 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
       `request_id`/`analysis_type`/`synthesis_ms` 等分析扩展字段。
 
     **同步接口** **`/run-img-diag`** 保持不变。
+
+    若 scope 未确认，首条事件可能为 **`img_diag_scope_input_required`**（在 `meta` 之前），
+    需调用 **`/run-img-diag-resume-stream`** 续跑。
     """
     return await service.run_analysis_img_diag_stream(data)
+
+
+@router.post(
+    "/run-img-diag-resume-stream",
+    summary="看图诊断 scope 人机协同恢复（SSE 续流）",
+    response_class=StreamingResponse,
+)
+async def run_analysis_img_diag_scope_resume_stream(
+    data: ImgDiagScopeResumeRequest,
+) -> StreamingResponse:
+    """
+    在 **`/run-img-diag-stream`** 收到 **`img_diag_scope_input_required`** 后调用。
+
+    必传：`resume_token`、`user_id`、`session_id`；`action` 为 `confirm_scope` | `edit_scope` | `abort`。
+    """
+    return await service.run_analysis_img_diag_scope_resume_stream(data)
 
 
 @router.get(

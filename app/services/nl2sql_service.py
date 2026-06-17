@@ -66,6 +66,9 @@ class NL2SQLService:
             plan_item_id=req.plan_item_id,
             plan_template_version=req.plan_template_version,
             time_intent_text=req.time_intent_text,
+            confirmed_scope=req.confirmed_scope,
+            scope_intent_text=req.scope_intent_text,
+            original_query=req.original_query,
         )
         rows: list = []
         execute_succeeded = False

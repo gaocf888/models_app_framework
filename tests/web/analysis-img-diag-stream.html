@@ -238,6 +238,19 @@
       <button type="button" class="secondary" id="btnClear">清空输出</button>
     </div>
 
+    <fieldset id="scopeHitlPanel" style="margin-top:1rem;display:none;border-color:#f59e0b;">
+      <legend style="color:#f59e0b;">scope 人机协同（img_diag_scope_input_required）</legend>
+      <div id="scopeHitlPrompt" style="white-space:pre-wrap;margin-bottom:0.5rem;"></div>
+      <pre id="scopeHitlDraft" style="font-size:0.75rem;overflow:auto;max-height:120px;"></pre>
+      <label>user_supplement（自然语言补充）</label>
+      <textarea id="scopeSupplement" rows="2" placeholder="例如：2号锅炉"></textarea>
+      <input type="hidden" id="scopeResumeToken" />
+      <div class="actions">
+        <button type="button" class="primary" id="btnScopeResume">确认并 resume-stream</button>
+        <button type="button" class="secondary" id="btnScopeAbort">abort</button>
+      </div>
+    </fieldset>
+
     <div class="out" style="margin-top: 1rem;">
       <div id="status">就绪</div>
       <h2>upload 响应</h2>
@@ -260,6 +273,101 @@
 
   let lastUploadUrl = null;
   let abortCtrl = null;
+  let scopeResumeContext = null;
+
+  function showScopeHitl(ev) {
+    scopeResumeContext = ev;
+    $("scopeResumeToken").value = ev.resume_token || "";
+    $("scopeHitlPrompt").textContent = ev.prompt || "请补充机组/受热面";
+    $("scopeHitlDraft").textContent = JSON.stringify(ev.scope_draft || {}, null, 2);
+    $("scopeSupplement").value = "";
+    $("scopeHitlPanel").style.display = "block";
+    setStatus("等待 scope 人机确认…");
+  }
+
+  function hideScopeHitl() {
+    $("scopeHitlPanel").style.display = "none";
+    scopeResumeContext = null;
+  }
+
+  async function processSseEvents(onDelta) {
+    return async (ev) => {
+        if (ev.parseError) {
+          showErr("SSE JSON 解析失败: " + ev.error + "\n片段: " + (ev.raw || "").slice(0, 500));
+          logEvent("parse_error");
+          return;
+        }
+        const kind = ev.event;
+        logEvent(kind || "?");
+
+        if (kind === "img_diag_scope_input_required") {
+          showScopeHitl(ev);
+          return;
+        }
+        if (kind === "meta") {
+          hideScopeHitl();
+          $("meta").textContent =
+            "request_id: " +
+            (ev.request_id || "") +
+            "\nplan_id: " +
+            (ev.plan_id || "") +
+            "\nanalysis_type: " +
+            (ev.analysis_type || "") +
+            "\norchestrator: " +
+            (ev.orchestrator || "") +
+            "\n" +
+            JSON.stringify(ev.template_versions || {}, null, 2);
+          setStatus("已连接，流式 synthesis 中…");
+          return;
+        }
+        if (kind === "summary_delta" && ev.text != null) {
+          onDelta(ev.text);
+          return;
+        }
+        if (kind === "summary_complete") {
+          const answerText = $("answer").textContent || "";
+          const tail =
+            "chars: " +
+            (ev.chars != null ? ev.chars : answerText.length) +
+            "  synthesis_ms: " +
+            (ev.synthesis_ms != null ? ev.synthesis_ms : "—") +
+            "\nrequest_id: " +
+            (ev.request_id || "");
+          $("meta").textContent = ($("meta").textContent || "") + "\n\n--- summary_complete ---\n" + tail;
+          setStatus("summary 流结束，等待 structured_async / finished");
+          return;
+        }
+        if (kind === "structured_async_enqueued") {
+          $("meta").textContent =
+            ($("meta").textContent || "") +
+            "\n\n--- structured_async_enqueued ---\nrequest_id: " +
+            (ev.request_id || "");
+          setStatus("完整 JSON 已排队后台处理…");
+          return;
+        }
+        if (ev.finished === true) {
+          const m = ev.meta || {};
+          const cites = Array.isArray(m.rag_citations) ? m.rag_citations : [];
+          renderRagCitations($("ragCitations"), cites);
+          const tail =
+            "--- finished ---\n" +
+            "used_rag: " +
+            m.used_rag +
+            "\nused_business_rag: " +
+            m.used_business_rag +
+            "\nstream_id: " +
+            (m.stream_id || m.request_id || "") +
+            "\n\nmeta.rag_citations (完整 JSON，与智能客服结束帧同形):\n" +
+            JSON.stringify(cites, null, 2);
+          $("meta").textContent = ($("meta").textContent || "") + "\n\n" + tail;
+          setStatus(
+            "完成（知识来源 " + cites.length + " 条；trace 见 GET /analysis/traces/{request_id}）",
+            true
+          );
+          return;
+        }
+    };
+  }
 
   const DEMO_QUERY_DEFECT = "请识别图片缺陷并给出处置建议，位置是1号锅炉低温过热器A侧第2排第3根。";
   const DEMO_QUERY_LEAKAGE = "#2炉高温过热器B侧第4排于2025-03-01 14:00发生泄爆，请分析直接原因、劣化因素与根本机理。";
@@ -525,78 +633,11 @@
         setStatus("警告: Content-Type 非 text/event-stream: " + ct);
       }
 
-      await readSseStream(resp, (ev) => {
-        if (ev.parseError) {
-          showErr("SSE JSON 解析失败: " + ev.error + "\n片段: " + (ev.raw || "").slice(0, 500));
-          logEvent("parse_error");
-          return;
-        }
-        const kind = ev.event;
-        logEvent(kind || "?");
-
-        if (kind === "meta") {
-          $("meta").textContent =
-            "request_id: " +
-            (ev.request_id || "") +
-            "\nplan_id: " +
-            (ev.plan_id || "") +
-            "\nanalysis_type: " +
-            (ev.analysis_type || "") +
-            "\norchestrator: " +
-            (ev.orchestrator || "") +
-            "\n" +
-            JSON.stringify(ev.template_versions || {}, null, 2);
-          setStatus("已连接，流式 synthesis 中…");
-          return;
-        }
-        if (kind === "summary_delta" && ev.text != null) {
-          answerText += ev.text;
+      await readSseStream(resp, processSseEvents((text) => {
+          answerText += text;
           $("answer").textContent = answerText;
           setStatus("生成中… 已收字符 " + answerText.length);
-          return;
-        }
-        if (kind === "summary_complete") {
-          const tail =
-            "chars: " +
-            (ev.chars != null ? ev.chars : answerText.length) +
-            "  synthesis_ms: " +
-            (ev.synthesis_ms != null ? ev.synthesis_ms : "—") +
-            "\nrequest_id: " +
-            (ev.request_id || "");
-          $("meta").textContent = ($("meta").textContent || "") + "\n\n--- summary_complete ---\n" + tail;
-          setStatus("summary 流结束，等待 structured_async / finished");
-          return;
-        }
-        if (kind === "structured_async_enqueued") {
-          $("meta").textContent =
-            ($("meta").textContent || "") +
-            "\n\n--- structured_async_enqueued ---\nrequest_id: " +
-            (ev.request_id || "");
-          setStatus("完整 JSON 已排队后台处理…");
-          return;
-        }
-        if (ev.finished === true) {
-          const m = ev.meta || {};
-          const cites = Array.isArray(m.rag_citations) ? m.rag_citations : [];
-          renderRagCitations($("ragCitations"), cites);
-          const tail =
-            "--- finished ---\n" +
-            "used_rag: " +
-            m.used_rag +
-            "\nused_business_rag: " +
-            m.used_business_rag +
-            "\nstream_id: " +
-            (m.stream_id || m.request_id || "") +
-            "\n\nmeta.rag_citations (完整 JSON，与智能客服结束帧同形):\n" +
-            JSON.stringify(cites, null, 2);
-          $("meta").textContent = ($("meta").textContent || "") + "\n\n" + tail;
-          setStatus(
-            "完成（知识来源 " + cites.length + " 条；trace 见 GET /analysis/traces/{request_id}）",
-            true
-          );
-          return;
-        }
-      });
+      }));
     } catch (e) {
       if (e.name === "AbortError") {
         setStatus("已中断");
@@ -615,6 +656,49 @@
     if (abortCtrl) abortCtrl.abort();
   });
 
+  async function runScopeResume(action) {
+    const token = $("scopeResumeToken").value.trim();
+    if (!token) {
+      showErr("无 resume_token");
+      return;
+    }
+    const uid = $("userId").value.trim();
+    const sid = $("sessionId").value.trim();
+    let answerText = $("answer").textContent || "";
+    abortCtrl = new AbortController();
+    setBusy(true);
+    setStatus("scope resume-stream 连接中…");
+    try {
+      const resp = await fetch(baseUrl() + "/analysis/run-img-diag-resume-stream", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
+        body: JSON.stringify({
+          resume_token: token,
+          user_id: uid,
+          session_id: sid,
+          action: action,
+          payload: action === "abort" ? { reason: "user abort" } : { user_supplement: $("scopeSupplement").value.trim() },
+        }),
+        signal: abortCtrl.signal,
+        credentials: "omit",
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status + "\n" + (await resp.text()).slice(0, 2000));
+      await readSseStream(resp, processSseEvents((text) => {
+        answerText += text;
+        $("answer").textContent = answerText;
+        setStatus("resume 生成中… " + answerText.length);
+      }));
+    } catch (e) {
+      if (e.name !== "AbortError") showErr(String(e.message || e));
+    } finally {
+      setBusy(false);
+      abortCtrl = null;
+    }
+  }
+
+  $("btnScopeResume").addEventListener("click", () => runScopeResume("confirm_scope"));
+  $("btnScopeAbort").addEventListener("click", () => runScopeResume("abort"));
+
   $("btnClear").addEventListener("click", () => {
     $("uploadResult").textContent = "（尚未上传）";
     $("answer").textContent = "";
@@ -623,6 +707,7 @@
     $("eventLog").textContent = "";
     showErr("");
     setStatus("已清空");
+    hideScopeHitl();
     lastUploadUrl = null;
     $("btnAppendUrl").disabled = true;
     abortCtrl = null;

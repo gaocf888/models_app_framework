@@ -20,7 +20,7 @@ class QuestionIntent:
     time_window: tuple[str, str, str] | None
     scope: QuestionScopeIntent
     time_anchor: tuple[str, str] | None = None
-    parse_mode: Literal["rule", "llm", "llm_fallback_rule"] = "rule"
+    parse_mode: Literal["rule", "llm", "llm_fallback_rule", "human_confirmed"] = "rule"
 
     @property
     def time_window_tag(self) -> str | None:

@@ -204,12 +204,20 @@ class NL2SQLChain:
         plan_item_id: str | None = None,
         plan_template_version: str | None = None,
         time_intent_text: str | None = None,
+        confirmed_scope: dict | None = None,
+        scope_intent_text: str | None = None,
+        original_query: str | None = None,
     ) -> tuple[str, NL2SQLValidationContext]:
-        time_src = (
-            time_intent_text.strip()
-            if time_intent_text is not None
-            else question
-        )
+        if confirmed_scope:
+            time_src = (
+                (scope_intent_text or time_intent_text or question) or ""
+            ).strip()
+        else:
+            time_src = (
+                time_intent_text.strip()
+                if time_intent_text is not None
+                else question
+            )
         from app.nl2sql.question_intent import resolve_question_intent, scope_literals_from_intent
         from app.nl2sql.question_intent_display import (
             format_parsed_intent_prompt_block,
@@ -220,6 +228,9 @@ class NL2SQLChain:
         question_intent = resolve_question_intent(
             question,
             time_intent_source=time_src,
+            confirmed_scope=confirmed_scope,
+            scope_intent_text=scope_intent_text,
+            original_query=original_query,
         )
         scope_literals = scope_literals_from_intent(question_intent)
         parsed_intent_dict = question_intent_to_dict(question_intent)

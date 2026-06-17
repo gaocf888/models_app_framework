@@ -6,7 +6,8 @@ from __future__ import annotations
   → 业务 RAG 臂（串行，query 含用户问题 + 视觉 JSON 摘要）
   → synthesis → finalize
 
-入参：`img_diag_subtype` + `query` + `image_urls`（泄爆可选图）；时间/范围由 NL2SQL 基座从 `query` 解析。
+入参：`img_diag_subtype` + `query` + `image_urls`（泄爆可选图）。
+可选前置：scope HITL（LangGraph）确认机组/受热面后再进入视觉‖NL2SQL 并行臂。
 """
 
 import asyncio
@@ -24,6 +25,7 @@ from app.llm.graphs.analysis_finished_meta import (
     build_analysis_finished_meta,
 )
 from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
+from app.llm.graphs.img_diag_scope_graph import ImgDiagScopeHitlRunner
 from app.models.analysis import (
     AnalysisEvidence,
     AnalysisImgDiagRequest,
@@ -42,6 +44,14 @@ logger = get_logger(__name__)
 
 IMG_DIAG_DEFECT_IDENT_TYPE: AnalysisType = "img_diag_defect_ident"
 IMG_DIAG_LEAKAGE_BURST_TYPE: AnalysisType = "img_diag_leakage_burst"
+
+
+class ImgDiagScopeInterrupt(Exception):
+    """scope HITL 需要用户确认时抛出（同步 API 转为 409）。"""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+        super().__init__(payload.get("prompt") or "scope confirmation required")
 
 
 @dataclass(frozen=True)
@@ -142,10 +152,50 @@ class _ImgDiagPack:
     profile: _ImgDiagSubtypeProfile
     request_id: str
     plan_id: str
+    confirmed_scope_intent: dict[str, Any] | None = None
 
 
 class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
-    """看图诊断（缺陷识别 / 泄爆分析）：并行 + 串行 RAG 编排。"""
+    """看图诊断（缺陷识别 / 泄爆分析）：scope HITL（可选）→ 并行 + 串行 RAG 编排。"""
+
+    def _get_scope_hitl_runner(self) -> ImgDiagScopeHitlRunner:
+        runner = getattr(self, "_scope_hitl_runner", None)
+        if runner is None:
+            runner = ImgDiagScopeHitlRunner(
+                llm_client=self._llm,
+                prompt_registry=self._prompts,
+            )
+            self._scope_hitl_runner = runner
+        return runner
+
+    async def _run_scope_hitl_phase(
+        self,
+        req: AnalysisImgDiagRequest,
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """scope 人机协同；status=skipped|confirmed|interrupt|error。"""
+        runner = self._get_scope_hitl_runner()
+        return await runner.run_until_scope_confirmed_or_interrupt(
+            req.model_dump(mode="json"),
+            request_id=request_id,
+        )
+
+    @staticmethod
+    def _scope_interrupt_sse_event(result: dict[str, Any]) -> dict[str, Any]:
+        intr = result.get("interrupt_payload") or {}
+        return {
+            "event": "img_diag_scope_input_required",
+            "request_id": result.get("request_id"),
+            "resume_token": result.get("resume_token"),
+            "prompt": intr.get("prompt"),
+            "scope_draft": intr.get("scope_draft"),
+            "missing_fields": intr.get("missing_fields") or [],
+            "validation_error": intr.get("validation_error"),
+            "suggested_actions": intr.get("suggested_actions")
+            or ["confirm_scope", "edit_scope", "abort"],
+            "interrupt_reason": intr.get("interrupt_reason"),
+        }
 
     @staticmethod
     def _profile(req: AnalysisImgDiagRequest) -> _ImgDiagSubtypeProfile:
@@ -415,7 +465,14 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             logger.warning("img_diag %s business rag failed: %s", profile.subtype, exc)
             return [], [], [], int((perf_counter() - t0) * 1000), "failed", rag_query
 
-    async def _gather_img_diag_pack(self, req: AnalysisImgDiagRequest) -> _ImgDiagPack:
+    async def _gather_img_diag_pack(
+        self,
+        req: AnalysisImgDiagRequest,
+        *,
+        confirmed_scope: dict[str, Any] | None = None,
+        scope_intent_text: str | None = None,
+        request_id: str | None = None,
+    ) -> _ImgDiagPack:
         profile = self._profile(req)
         lane_timeout = float(self._analysis_cfg.img_diag_lane_timeout_seconds)
         at = profile.analysis_type
@@ -426,6 +483,8 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             query=req.query.strip(),
             data_requirements_hint=list(req.data_requirements_hint or []),
             options=req.options,
+            confirmed_scope=confirmed_scope,
+            scope_intent_text=scope_intent_text,
         )
         degrade: list[str] = []
 
@@ -515,8 +574,24 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         calls_raw = list(nl_state.get("nl2sql_calls") or [])
         calls = [AnalysisNL2SQLCall.model_validate(x) for x in calls_raw if isinstance(x, dict)]
         parsed_intent_snapshot = self._extract_parsed_intent_snapshot(calls)
+        if not parsed_intent_snapshot and confirmed_scope:
+            parsed_intent_snapshot = {
+                "parse_mode": "human_confirmed",
+                "scope_question": scope_intent_text or req.query,
+                "scope": {
+                    "boiler": confirmed_scope.get("boiler"),
+                    "device_name": confirmed_scope.get("device_name"),
+                    "piperow_name": confirmed_scope.get("piperow_name"),
+                    "row_no": confirmed_scope.get("row_no"),
+                    "tube_no": confirmed_scope.get("tube_no"),
+                },
+                "time_window": confirmed_scope.get("time_window"),
+                "time_anchor": confirmed_scope.get("time_anchor"),
+            }
         parsed_time_intent, parsed_scope_intent = self.split_parsed_intent_snapshot(parsed_intent_snapshot)
         parsed_scope = parsed_scope_intent or self._scope_from_intent(parsed_intent_snapshot)
+        if confirmed_scope:
+            parsed_scope = dict(confirmed_scope)
 
         biz_snippets: list[str] = list(pf_snippets)
         biz_sources: list[dict[str, Any]] = list(pf_sources)
@@ -564,6 +639,8 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
 
         parallel_trace = {
             "img_diag_subtype": profile.subtype,
+            "scope_hitl_confirmed": bool(confirmed_scope),
+            "scope_intent_text": (scope_intent_text[:500] if scope_intent_text else None),
             "vision_lane_ms": vision_ms,
             "vision_lane_status": vision_status,
             "nl2sql_lane_status": nl_status,
@@ -633,11 +710,12 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "parsed_intent": parsed_intent_snapshot,
             "parsed_time_intent": parsed_time_intent,
             "parsed_scope_intent": parsed_scope_intent,
+            "confirmed_scope_intent": confirmed_scope,
             "user_query": req.query,
             "img_diag_subtype": profile.subtype,
         }
 
-        request_id = str(nl_state.get("request_id") or f"anl_{uuid4().hex[:12]}")
+        rid = request_id or str(nl_state.get("request_id") or f"anl_{uuid4().hex[:12]}")
         plan_id = str(nl_state.get("plan_id") or f"plan_{uuid4().hex[:10]}")
 
         return _ImgDiagPack(
@@ -672,8 +750,9 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             parsed_intent_snapshot=parsed_intent_snapshot,
             parsed_time_intent=parsed_time_intent,
             parsed_scope_intent=parsed_scope_intent,
+            confirmed_scope_intent=confirmed_scope,
             profile=profile,
-            request_id=request_id,
+            request_id=rid,
             plan_id=plan_id,
         )
 
@@ -696,6 +775,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "parsed_intent": pack.parsed_intent_snapshot,
             "parsed_time_intent": pack.parsed_time_intent,
             "parsed_scope_intent": pack.parsed_scope_intent,
+            "confirmed_scope_intent": pack.confirmed_scope_intent,
             "rag_query": pack.rag_query[:2000] if pack.rag_query else None,
         }
         structured_report = self._build_structured_report(
@@ -711,6 +791,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         structured_report["parsed_intent"] = pack.parsed_intent_snapshot
         structured_report["parsed_time_intent"] = pack.parsed_time_intent
         structured_report["parsed_scope_intent"] = pack.parsed_scope_intent
+        structured_report["confirmed_scope_intent"] = pack.confirmed_scope_intent
         structured_report["user_query"] = req.query
         structured_report["img_diag_subtype"] = profile.subtype
 
@@ -756,14 +837,29 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "used_rag": pack.used_rag,
                 "planned_calls": pack.planned_calls,
-                "orchestrator": "vision_nl_parallel_then_serial_rag",
-                "graph_nodes": [
-                    "normalize_request",
-                    "parallel_vision_nl2sql",
-                    "serial_business_rag",
-                    "synthesis",
-                    "finalize",
-                ],
+                "orchestrator": "scope_hitl_then_vision_nl_parallel_then_serial_rag"
+                if pack.confirmed_scope_intent
+                else "vision_nl_parallel_then_serial_rag",
+                "graph_nodes": (
+                    [
+                        "scope_preflight_llm",
+                        "scope_human_confirm",
+                        "scope_db_validate",
+                        "normalize_request",
+                        "parallel_vision_nl2sql",
+                        "serial_business_rag",
+                        "synthesis",
+                        "finalize",
+                    ]
+                    if pack.confirmed_scope_intent
+                    else [
+                        "normalize_request",
+                        "parallel_vision_nl2sql",
+                        "serial_business_rag",
+                        "synthesis",
+                        "finalize",
+                    ]
+                ),
                 "parallel_lane_trace": pack.parallel_trace,
                 "parsed_intent": pack.parsed_intent_snapshot,
                 "parsed_time_intent": pack.parsed_time_intent,
@@ -804,7 +900,28 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             status="started",
         ).inc()
         try:
-            pack = await self._gather_img_diag_pack(req)
+            scope_result = await self._run_scope_hitl_phase(req)
+            if scope_result.get("status") == "interrupt":
+                raise ImgDiagScopeInterrupt(self._scope_interrupt_sse_event(scope_result))
+            if scope_result.get("status") == "error":
+                raise ValueError(scope_result.get("message") or "scope hitl failed")
+            confirmed = (
+                scope_result.get("confirmed_scope_intent")
+                if scope_result.get("status") == "confirmed"
+                else None
+            )
+            scope_text = (
+                scope_result.get("scope_intent_text")
+                if scope_result.get("status") == "confirmed"
+                else None
+            )
+            rid = scope_result.get("request_id")
+            pack = await self._gather_img_diag_pack(
+                req,
+                confirmed_scope=confirmed,
+                scope_intent_text=scope_text,
+                request_id=rid,
+            )
             t_syn = perf_counter()
             summary = await self._generate_summary(
                 query=req.query,
@@ -848,7 +965,29 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         ).inc()
         try:
             t_pipeline = perf_counter()
-            pack = await self._gather_img_diag_pack(req)
+            scope_result = await self._run_scope_hitl_phase(req)
+            if scope_result.get("status") == "interrupt":
+                yield self._scope_interrupt_sse_event(scope_result)
+                return
+            if scope_result.get("status") == "error":
+                raise ValueError(scope_result.get("message") or "scope hitl failed")
+            confirmed = (
+                scope_result.get("confirmed_scope_intent")
+                if scope_result.get("status") == "confirmed"
+                else None
+            )
+            scope_text = (
+                scope_result.get("scope_intent_text")
+                if scope_result.get("status") == "confirmed"
+                else None
+            )
+            rid = scope_result.get("request_id")
+            pack = await self._gather_img_diag_pack(
+                req,
+                confirmed_scope=confirmed,
+                scope_intent_text=scope_text,
+                request_id=rid,
+            )
             request_id = pack.request_id
             plan_id = pack.plan_id
 
@@ -946,6 +1085,128 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 status="failed",
             ).inc()
             raise
+
+    async def iter_img_diag_scope_resume_stream_events(
+        self,
+        *,
+        resume_token: str,
+        user_id: str,
+        session_id: str,
+        action: str,
+        payload: dict[str, Any] | None = None,
+        on_complete: Callable[[AnalysisV2Result], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """scope HITL resume 后继续看图诊断主流（meta → synthesis → finished）。"""
+        runner = self._get_scope_hitl_runner()
+        scope_result = await runner.resume_until_confirmed_or_interrupt(
+            resume_token=resume_token,
+            user_id=user_id,
+            session_id=session_id,
+            action=action,
+            payload=payload,
+        )
+        if scope_result.get("status") == "interrupt":
+            yield self._scope_interrupt_sse_event(scope_result)
+            return
+        if scope_result.get("status") == "error":
+            yield {
+                "event": "img_diag_error",
+                "message": scope_result.get("message") or "scope resume failed",
+            }
+            return
+        req_dict = scope_result.get("img_diag_request") or {}
+        req = AnalysisImgDiagRequest.model_validate(req_dict)
+        profile = self._profile(req)
+        at = profile.analysis_type
+        data_mode = profile.data_mode
+        confirmed = scope_result.get("confirmed_scope_intent")
+        scope_text = scope_result.get("scope_intent_text")
+        t_pipeline = perf_counter()
+        pack = await self._gather_img_diag_pack(
+            req,
+            confirmed_scope=confirmed,
+            scope_intent_text=scope_text,
+            request_id=scope_result.get("request_id"),
+        )
+        request_id = pack.request_id
+        plan_id = pack.plan_id
+        yield {
+            "event": "meta",
+            "request_id": request_id,
+            "plan_id": plan_id,
+            "analysis_type": at,
+            "data_mode": data_mode,
+            "img_diag_subtype": profile.subtype,
+            "orchestrator": profile.orchestrator_stream_id,
+            "template_versions": {
+                "synthesis": pack.synthesis_version,
+                "report": pack.report_version,
+            },
+        }
+        t_syn = perf_counter()
+        parts: list[str] = []
+        try:
+            async for chunk in self._stream_summary_text(
+                query=req.query,
+                analysis_type=at,
+                data_mode=data_mode,
+                data_blob=pack.merged_blob,
+                context_snippets=pack.biz_snippets,
+                system_prompt=pack.synthesis_prompt,
+                planning_context=pack.planning_ctx,
+            ):
+                parts.append(chunk)
+                yield {"event": "summary_delta", "text": chunk}
+        except Exception:  # noqa: BLE001
+            logger.exception("analysis img_diag scope resume stream summary failed")
+            fb = profile.stream_fallback_summary
+            parts = [fb]
+            yield {"event": "summary_delta", "text": fb}
+        summary = "".join(parts)
+        synthesis_ms = int((perf_counter() - t_syn) * 1000)
+        yield {
+            "event": "summary_complete",
+            "request_id": request_id,
+            "chars": len(summary),
+            "synthesis_ms": synthesis_ms,
+        }
+        asyncio.create_task(
+            self._img_diag_stream_background_finalize(
+                pack,
+                summary=summary,
+                synthesis_ms=synthesis_ms,
+                on_complete=on_complete,
+            )
+        )
+        yield {"event": "structured_async_enqueued", "request_id": request_id}
+        image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
+        first_nl2sql_sql = next(
+            (c.sql for c in pack.calls if c.status == "success" and (c.sql or "").strip()),
+            None,
+        )
+        finished_meta = build_analysis_finished_meta(
+            request_id=request_id,
+            plan_id=plan_id,
+            analysis_type=at,
+            data_mode=data_mode,
+            used_rag=pack.used_rag,
+            used_plan_rag=pack.used_plan_rag,
+            used_business_rag=pack.used_business_rag,
+            rag_citations=pack.rag_citations,
+            start_ts=t_pipeline,
+            synthesis_ms=synthesis_ms,
+            used_nl2sql=bool(pack.calls),
+            nl2sql_sql=first_nl2sql_sql,
+            processed_image_urls=image_urls,
+            original_image_urls=image_urls,
+            retrieval_attempts=int(pack.used_plan_rag) + int(pack.used_business_rag),
+            rag_namespace=(
+                str(pack.rag_citations[0].get("namespace") or "").strip() or None
+                if pack.rag_citations
+                else None
+            ),
+        )
+        yield analysis_finished_sse_event(finished_meta)
 
     async def _img_diag_stream_background_finalize(
         self,

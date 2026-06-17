@@ -603,6 +603,21 @@ class AnalysisConfig:
     img_diag_upload_max_mb: int = 15
     # 看图诊断业务 RAG：vision_augmented（默认，视觉完成后串行 RAG）| parallel | hybrid
     img_diag_rag_mode: str = "vision_augmented"
+    # 看图诊断 scope HITL（LangGraph + 人机协同）
+    img_diag_use_langgraph: bool = True
+    img_diag_scope_hitl_enabled: bool = True
+    img_diag_scope_hitl_max_rounds: int = 5
+    img_diag_scope_low_confidence_hitl: bool = True
+    img_diag_scope_validate_sql: str | None = None
+    img_diag_scope_validate_timeout_s: float = 10.0
+    img_diag_scope_validate_skip_on_error: bool = False
+    # scope HITL 持久化：默认 redis（须 REDIS_URL 或 ANALYSIS_IMG_DIAG_*_REDIS_URL）；无 Redis 时改 memory
+    img_diag_checkpoint_backend: str = "redis"
+    img_diag_checkpoint_redis_url: str | None = None
+    img_diag_checkpoint_namespace: str = "img_diag"
+    img_diag_session_store_backend: str = "redis"
+    img_diag_session_store_redis_url: str | None = None
+    img_diag_session_ttl_seconds: int = 3600
 
 
 @dataclass
@@ -1166,6 +1181,14 @@ def _load_from_env() -> AppConfig:
         faq_soft_direct_min_score=max(0.0, min(1.0, float(os.getenv("CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE", "0.95")))),
         faq_soft_direct_snippet_top_n=max(1, min(10, int(os.getenv("CHATBOT_FAQ_SOFT_DIRECT_SNIPPET_TOP_N", "1")))),
     )
+    _app_env = (os.getenv("APP_ENV", "dev") or "dev").strip().lower()
+    _redis_url_configured = bool((os.getenv("REDIS_URL") or "").strip())
+    # 看图诊断 scope HITL：生产或已配置 REDIS_URL 时默认 redis；单机无 Redis 可显式设为 memory
+    _img_diag_persist_default = (
+        "redis"
+        if _app_env in ("production", "prod") or _redis_url_configured
+        else "memory"
+    )
     analysis_cfg = AnalysisConfig(
         default_report_template=(os.getenv("ANALYSIS_DEFAULT_REPORT_TEMPLATE", "standard") or "standard").strip(),
         default_chart_mode=(os.getenv("ANALYSIS_DEFAULT_CHART_MODE", "auto") or "auto").strip().lower(),
@@ -1312,8 +1335,42 @@ def _load_from_env() -> AppConfig:
         ),
         img_diag_upload_max_mb=max(1, int(os.getenv("ANALYSIS_IMG_DIAG_UPLOAD_MAX_MB", "15"))),
         img_diag_rag_mode=(os.getenv("ANALYSIS_IMG_DIAG_RAG_MODE") or "vision_augmented").strip().lower(),
+        img_diag_use_langgraph=os.getenv("ANALYSIS_IMG_DIAG_USE_LANGGRAPH", "true").lower() != "false",
+        img_diag_scope_hitl_enabled=os.getenv("ANALYSIS_IMG_DIAG_SCOPE_HITL_ENABLED", "true").lower() != "false",
+        img_diag_scope_hitl_max_rounds=max(1, int(os.getenv("ANALYSIS_IMG_DIAG_SCOPE_HITL_MAX_ROUNDS", "5"))),
+        img_diag_scope_low_confidence_hitl=os.getenv(
+            "ANALYSIS_IMG_DIAG_SCOPE_LOW_CONFIDENCE_HITL", "true"
+        ).lower()
+        != "false",
+        img_diag_scope_validate_sql=(os.getenv("ANALYSIS_IMG_DIAG_SCOPE_VALIDATE_SQL") or "").strip() or None,
+        img_diag_scope_validate_timeout_s=max(
+            1.0, float(os.getenv("ANALYSIS_IMG_DIAG_SCOPE_VALIDATE_TIMEOUT_S", "10"))
+        ),
+        img_diag_scope_validate_skip_on_error=os.getenv(
+            "ANALYSIS_IMG_DIAG_SCOPE_VALIDATE_SKIP_ON_ERROR", "false"
+        ).lower()
+        == "true",
+        img_diag_checkpoint_backend=(
+            os.getenv("ANALYSIS_IMG_DIAG_CHECKPOINT_BACKEND", _img_diag_persist_default)
+            or _img_diag_persist_default
+        ).strip().lower(),
+        img_diag_checkpoint_redis_url=(os.getenv("ANALYSIS_IMG_DIAG_CHECKPOINT_REDIS_URL") or os.getenv("REDIS_URL") or "").strip()
+        or None,
+        img_diag_checkpoint_namespace=(
+            os.getenv("ANALYSIS_IMG_DIAG_CHECKPOINT_NAMESPACE", "img_diag") or "img_diag"
+        ).strip(),
+        img_diag_session_store_backend=(
+            os.getenv("ANALYSIS_IMG_DIAG_SESSION_STORE_BACKEND", _img_diag_persist_default)
+            or _img_diag_persist_default
+        ).strip().lower(),
+        img_diag_session_store_redis_url=(
+            os.getenv("ANALYSIS_IMG_DIAG_SESSION_STORE_REDIS_URL") or os.getenv("REDIS_URL") or ""
+        ).strip()
+        or None,
+        img_diag_session_ttl_seconds=max(
+            60, int(os.getenv("ANALYSIS_IMG_DIAG_SESSION_TTL_SECONDS", "3600"))
+        ),
     )
-    _app_env = (os.getenv("APP_ENV", "dev") or "dev").strip().lower()
     _aa_persist_default = "redis" if _app_env in ("production", "prod") else "memory"
     analysis_agent_cfg = AnalysisAgentConfig(
         enabled=os.getenv("ANALYSIS_AGENT_ENABLED", "true").lower() != "false",
