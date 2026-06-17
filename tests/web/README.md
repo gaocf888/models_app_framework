@@ -15,17 +15,17 @@ python3 -m http.server 8765
 
 ## 页面索引
 
-| 页面 | 用途                                                                                                      |
-|------|---------------------------------------------------------------------------------------------------------|
-| [chatbot-stream.html](chatbot-stream.html) | 智能客服：`POST /chatbot/chat/stream`（SSE）                                                                   |
-| [inspection-extract.html](inspection-extract.html) | 检修提取 **同步**：`upload` + `POST /inspection-extract/run`                                                   |
-| [inspection-extract-async.html](inspection-extract-async.html) | 检修提取 **异步**：`run/async` + 任务轮询与分块（当前在用版本）                                                               |
-| [inspection-extract-v0-async.html](inspection-extract-v0-async.html) | 检修提取 **V0 异步**（LangGraph + 版面 OCR）：`/inspection-extract-v0/*`                                           |
-| [analysis-img-diag.html](analysis-img-diag-stream.html) | 综合分析 **看图诊断（流式）**：`POST /analysis/img-diag/upload` + `POST /analysis/run-img-diag-stream`（SSE，与超温流式页同构） |
-| [analysis-nl2sql-stream-v1.html](analysis-nl2sql-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（全专项，默认策略）**：`POST /analysis/run-with-nl2sql-stream`                       |
-| [analysis-nl2sql-overheat-stream-v1.html](analysis-nl2sql-overheat-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（超温专项页）**                                                                  |
-| [analysis-nl2sql-stream-v2.html](analysis-nl2sql-stream-v2.html) | 综合分析 **NL2SQL 流式 synthesis v2（超温多槽位；需服务端 env）**：同上接口，可收 `table_payload` / `chart_payload`               |
-| [analysis-agent-stream.html](analysis-agent-stream.html) | **综合分析智能体** `POST /analysis-agent/run-stream`（按章 SSE、HITL resume、ECharts）                              |
+| 页面 | 用途                                                                                                                |
+|------|-------------------------------------------------------------------------------------------------------------------|
+| [chatbot-stream.html](chatbot-stream.html) | 智能客服：`POST /chatbot/chat/stream`（SSE）                                                                             |
+| [inspection-extract.html](inspection-extract.html) | 检修提取 **同步**：`upload` + `POST /inspection-extract/run`                                                             |
+| [inspection-extract-async.html](inspection-extract-async.html) | 检修提取 **异步**：`run/async` + 任务轮询与分块（当前在用版本）                                                                         |
+| [inspection-extract-v0-async.html](inspection-extract-v0-async.html) | 检修提取 **V0 异步**（LangGraph + 版面 OCR）：`/inspection-extract-v0/*`                                                     |
+| [analysis-img-diag.html](analysis-img-diag-stream.html) | 综合分析 **看图诊断-泄爆分析/缺陷识别（流式）**：`POST /analysis/img-diag/upload` + `POST /analysis/run-img-diag-stream`（SSE，与超温流式页同构） |
+| [analysis-nl2sql-stream-v1.html](analysis-nl2sql-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（全专项，默认策略）**：`POST /analysis/run-with-nl2sql-stream`                                 |
+| [analysis-nl2sql-overheat-stream-v1.html](analysis-nl2sql-overheat-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（超温专项页）**                                                                            |
+| [analysis-nl2sql-stream-v2.html](analysis-nl2sql-stream-v2.html) | 综合分析 **NL2SQL 流式 synthesis v2（超温多槽位；需服务端 env）**：同上接口，可收 `table_payload` / `chart_payload`                         |
+| [analysis-agent-stream.html](analysis-agent-stream.html) | **综合分析智能体** `POST /analysis-agent/run-stream`（按章 SSE、HITL resume、ECharts）                                         |
 
 ---
 
