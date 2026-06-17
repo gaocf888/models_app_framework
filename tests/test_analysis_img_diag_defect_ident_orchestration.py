@@ -273,6 +273,9 @@ class TestImgDiagDefectIdentOrchestration(unittest.TestCase):
             namespace="Power_plant_knowledge",
             chunk_id="c_diag_1",
             score=0.88,
+            rerank_score=0.88,
+            doc_version="v1",
+            pipeline_version="1.0.0",
             metadata={"content_fetched_from_url": "https://cdn.example.com/defect_guide.docx"},
         )
 
@@ -312,8 +315,11 @@ class TestImgDiagDefectIdentOrchestration(unittest.TestCase):
         cites = meta.get("rag_citations") or []
         self.assertEqual(1, len(cites))
         self.assertEqual(1, cites[0].get("ref_index"))
+        self.assertEqual("vector_store", cites[0].get("source"))
+        self.assertIn("text_preview", cites[0])
         self.assertEqual("缺陷处置规程.docx", cites[0].get("doc_name"))
         self.assertEqual("Power_plant_knowledge", cites[0].get("namespace"))
+        self.assertEqual(0.88, cites[0].get("rerank_score"))
         self.assertEqual(
             "https://cdn.example.com/defect_guide.docx",
             cites[0].get("original_content_url"),

@@ -6,6 +6,56 @@ from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
 from app.rag.models import RetrievedChunk
 
 
+def test_build_analysis_rag_citations_chatbot_shape() -> None:
+    """与智能客服 finished.meta.rag_citations 字段对齐。"""
+    chunk = RetrievedChunk(
+        text="# 807. 燃烧管理系统（BMS）主要功能有哪些？",
+        doc_name="锅炉运行与检修1000问",
+        namespace="boiler_knowledge",
+        chunk_id="770d44ea-020e-4928-acc8-570ea83928f0",
+        score=1.999924,
+        rerank_score=0.999924,
+        section_path=None,
+        doc_version="v1",
+        pipeline_version="1.0.0",
+    )
+    cites = AnalysisGraphRunner._build_analysis_rag_citations(business_chunks=[chunk])
+    assert len(cites) == 1
+    c = cites[0]
+    assert c["ref_index"] == 1
+    assert c["namespace"] == "boiler_knowledge"
+    assert c["doc_name"] == "锅炉运行与检修1000问"
+    assert c["doc_version"] == "v1"
+    assert c["chunk_id"] == "770d44ea-020e-4928-acc8-570ea83928f0"
+    assert c["section_path"] is None
+    assert c["source"] == "vector_store"
+    assert c["score"] == 1.999924
+    assert c["rerank_score"] == 0.999924
+    assert c["pipeline_version"] == "1.0.0"
+    assert "text_preview" in c
+    assert c["text_preview"].startswith("# 807.")
+
+
+def test_build_analysis_rag_citations_coerces_dict_chunks() -> None:
+    cites = AnalysisGraphRunner._build_analysis_rag_citations(
+        business_chunks=[
+            {
+                "text": "补焊工艺",
+                "doc_name": "规程.docx",
+                "namespace": "boiler_knowledge",
+                "chunk_id": "c1",
+                "score": 0.9,
+                "rerank_score": 0.88,
+                "doc_version": "v1",
+                "pipeline_version": "1.0.0",
+            }
+        ]
+    )
+    assert len(cites) == 1
+    assert cites[0]["doc_name"] == "规程.docx"
+    assert cites[0]["rerank_score"] == 0.88
+
+
 def test_build_analysis_rag_citations_includes_original_content_url() -> None:
     chunk = RetrievedChunk(
         text="超温记录表示例",

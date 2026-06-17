@@ -585,10 +585,10 @@
             m.used_rag +
             "\nused_business_rag: " +
             m.used_business_rag +
-            "\nrag_citations: " +
-            cites.length +
-            " 条\nstream_id: " +
-            (m.stream_id || m.request_id || "");
+            "\nstream_id: " +
+            (m.stream_id || m.request_id || "") +
+            "\n\nmeta.rag_citations (完整 JSON，与智能客服结束帧同形):\n" +
+            JSON.stringify(cites, null, 2);
           $("meta").textContent = ($("meta").textContent || "") + "\n\n" + tail;
           setStatus(
             "完成（知识来源 " + cites.length + " 条；trace 见 GET /analysis/traces/{request_id}）",

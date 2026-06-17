@@ -56,7 +56,10 @@ from app.llm.graphs.analysis_finished_meta import (
     analysis_finished_sse_event,
     build_analysis_finished_meta,
 )
-from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_citations
+from app.llm.graphs.chatbot_rag_citations import (
+    chunks_to_rag_context,
+    filter_rag_citation_dicts,
+)
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.models import RetrievedChunk
 from app.services.analysis_stream_hooks import dispatch_analysis_nl2sql_stream_structured
@@ -270,6 +273,33 @@ class AnalysisGraphRunner:
             return []
         return [c for c in chunks if cls._analysis_rag_citation_namespace_allowed(getattr(c, "namespace", None))]
 
+    @staticmethod
+    def _coerce_retrieved_chunks(chunks: list[Any] | None) -> list[RetrievedChunk]:
+        """将 RetrievedChunk 或序列化 dict 统一为 citation 构建可用的分片对象。"""
+        out: list[RetrievedChunk] = []
+        for c in chunks or []:
+            if isinstance(c, RetrievedChunk):
+                out.append(c)
+                continue
+            if not isinstance(c, dict):
+                continue
+            meta = c.get("metadata")
+            out.append(
+                RetrievedChunk(
+                    text=str(c.get("text") or ""),
+                    doc_name=c.get("doc_name"),
+                    namespace=c.get("namespace"),
+                    chunk_id=c.get("chunk_id"),
+                    score=c.get("score"),
+                    rerank_score=c.get("rerank_score"),
+                    section_path=c.get("section_path"),
+                    doc_version=c.get("doc_version"),
+                    pipeline_version=c.get("pipeline_version"),
+                    metadata=meta if isinstance(meta, dict) else {},
+                )
+            )
+        return out
+
     @classmethod
     def _build_analysis_rag_citations(
         cls,
@@ -279,22 +309,23 @@ class AnalysisGraphRunner:
         max_items: int = 32,
     ) -> list[dict[str, Any]]:
         """
-        合并规划前 + 业务 RAG 分片，转为与智能客服一致的 rag_citations（含 original_content_url）。
+        合并规划前 + 业务 RAG 分片，转为与智能客服 finished.meta.rag_citations 同形。
 
-        排除 nl2sql_schema / nl2sql_biz_knowledge / nl2sql_qa_examples，避免 acquire_data 内
-        NL2SQL RAG 与库表知识库片段出现在结束帧；plan_context 若命中上述命名空间亦不在 citations 展示。
+        使用 ``chunks_to_rag_context``（与 chatbot kb_retrieve 一致），字段含 ref_index、
+        namespace、doc_name、doc_version、chunk_id、section_path、source、score、rerank_score、
+        pipeline_version、text_preview、original_content_url（若有）。
+
+        排除 nl2sql_schema / nl2sql_biz_knowledge / nl2sql_qa_examples。
         """
         merged: list[RetrievedChunk] = []
-        merged.extend(cls._filter_analysis_rag_citation_chunks(plan_chunks))
-        merged.extend(cls._filter_analysis_rag_citation_chunks(business_chunks))
-        cites = chunks_to_rag_citations(merged, max_items=max_items)
-        return [
-            c
-            for c in cites
-            if cls._analysis_rag_citation_namespace_allowed(
-                str(c.get("namespace") or "") if c.get("namespace") is not None else None
-            )
-        ]
+        merged.extend(
+            cls._filter_analysis_rag_citation_chunks(cls._coerce_retrieved_chunks(plan_chunks))
+        )
+        merged.extend(
+            cls._filter_analysis_rag_citation_chunks(cls._coerce_retrieved_chunks(business_chunks))
+        )
+        _snippets, citations = chunks_to_rag_context(merged, max_items=max_items)
+        return filter_rag_citation_dicts(citations)
 
     def _retrieve_rag_with_sources(
         self,
@@ -314,32 +345,50 @@ class AnalysisGraphRunner:
         """
         # 优先使用 retrieve_chunks（可拿到 doc_id/score），否则回退 retrieve_context 文本检索。
         rag_svc = getattr(self._hybrid_rag, "_rag_service", None)
+        retrieve_kw: dict[str, Any] = {
+            "query": query,
+            "top_k": top_k,
+            "namespace": namespace,
+            "scene": scene,
+            "rerank_query": rerank_query,
+        }
+        if exclude_namespaces:
+            retrieve_kw["exclude_namespaces"] = sorted(exclude_namespaces)
+
         if rag_svc is not None and hasattr(rag_svc, "retrieve_chunks"):
-            retrieve_kw: dict[str, Any] = {
-                "query": query,
-                "top_k": top_k,
-                "namespace": namespace,
-                "scene": scene,
-                "rerank_query": rerank_query,
-            }
-            if exclude_namespaces:
-                retrieve_kw["exclude_namespaces"] = sorted(exclude_namespaces)
-            chunks = list(rag_svc.retrieve_chunks(**retrieve_kw) or [])
-            snippets = [getattr(c, "text", "") for c in chunks if getattr(c, "text", "")]
-            sources = [
-                {
-                    "namespace": getattr(c, "namespace", None) or namespace,
-                    "doc_id": self._safe_doc_id(c),
-                    "score": getattr(c, "score", None),
-                }
-                for c in chunks
-            ]
-            return snippets, sources, chunks
+            try:
+                chunks = list(rag_svc.retrieve_chunks(**retrieve_kw) or [])
+                snippets = [
+                    (getattr(c, "text", "") or "").strip()
+                    for c in chunks
+                    if (getattr(c, "text", "") or "").strip()
+                ]
+                sources = [
+                    {
+                        "namespace": getattr(c, "namespace", None) or namespace,
+                        "doc_id": self._safe_doc_id(c),
+                        "score": getattr(c, "score", None),
+                    }
+                    for c in chunks
+                ]
+                return snippets, sources, chunks
+            except Exception:
+                logger.exception(
+                    "analysis retrieve_chunks failed scene=%s namespace=%s",
+                    scene,
+                    namespace,
+                )
+
         try:
             snippets = self._hybrid_rag.retrieve(query, namespace=namespace, top_k=top_k)
         except TypeError:
             snippets = self._hybrid_rag.retrieve(query, namespace=namespace)
         sources = [{"namespace": namespace or "global", "doc_id": "", "score": None} for _ in snippets]
+        if snippets:
+            logger.warning(
+                "analysis RAG text-only fallback; rag_citations will be empty scene=%s",
+                scene,
+            )
         return list(snippets), sources, []
 
     @staticmethod
