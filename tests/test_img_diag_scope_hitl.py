@@ -144,3 +144,30 @@ async def test_validate_scope_skip_on_error() -> None:
         )
     assert count == 1
     assert err is None
+
+
+def test_img_diag_checkpoint_redis_import_failure_falls_back_to_memory(monkeypatch) -> None:
+    from app.llm.graphs import img_diag_checkpoint as cp
+
+    class _Analysis:
+        img_diag_checkpoint_backend = "redis"
+        img_diag_checkpoint_redis_url = "redis://localhost:6379/3"
+        img_diag_checkpoint_namespace = "img_diag"
+
+    class _Cfg:
+        analysis = _Analysis()
+
+    monkeypatch.setattr(cp, "get_app_config", lambda: _Cfg())
+
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):
+        if name == "langgraph.checkpoint.redis":
+            raise ImportError("No module named 'langgraph.checkpoint.redis'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    saver = cp.build_img_diag_checkpointer()
+    assert saver is not None

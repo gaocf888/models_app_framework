@@ -290,8 +290,8 @@
     scopeResumeContext = null;
   }
 
-  async function processSseEvents(onDelta) {
-    return async (ev) => {
+  function processSseEvents(onDelta) {
+    return (ev) => {
         if (ev.parseError) {
           showErr("SSE JSON 解析失败: " + ev.error + "\n片段: " + (ev.raw || "").slice(0, 500));
           logEvent("parse_error");

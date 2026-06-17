@@ -10,42 +10,55 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _build_memory_checkpointer() -> Any | None:
+    try:
+        from langgraph.checkpoint.memory import MemorySaver  # type: ignore[import-not-found]
+
+        logger.info("img_diag: memory checkpoint enabled")
+        return MemorySaver()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("img_diag: memory checkpointer unavailable: %s", exc)
+        return None
+
+
 def build_img_diag_checkpointer() -> Any | None:
     cfg = get_app_config().analysis
     backend = (getattr(cfg, "img_diag_checkpoint_backend", "memory") or "memory").strip().lower()
     if backend == "none":
         return None
     if backend == "memory":
-        try:
-            from langgraph.checkpoint.memory import MemorySaver  # type: ignore[import-not-found]
-
-            logger.info("img_diag: memory checkpoint enabled")
-            return MemorySaver()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("img_diag: memory checkpointer unavailable: %s", exc)
-            return None
+        return _build_memory_checkpointer()
     if backend == "redis":
         try:
             from langgraph.checkpoint.redis import RedisSaver  # type: ignore[import-not-found]
         except Exception as exc:  # noqa: BLE001
-            logger.warning("img_diag: redis checkpointer import failed: %s", exc)
-            return None
+            logger.warning(
+                "img_diag: redis checkpointer import failed: %s; "
+                "falling back to memory (install langgraph-checkpoint-redis for multi-worker)",
+                exc,
+            )
+            return _build_memory_checkpointer()
         url = (getattr(cfg, "img_diag_checkpoint_redis_url", None) or "").strip()
         if not url:
             import os
 
             url = (os.getenv("REDIS_URL") or "").strip()
         if not url:
-            logger.warning("img_diag: redis checkpoint selected but URL missing")
-            return None
+            logger.warning(
+                "img_diag: redis checkpoint selected but URL missing; falling back to memory"
+            )
+            return _build_memory_checkpointer()
         try:
             saver = RedisSaver.from_conn_string(url)
             ns = getattr(cfg, "img_diag_checkpoint_namespace", "img_diag") or "img_diag"
             logger.info("img_diag: redis checkpoint enabled namespace=%s", ns)
             return saver
         except Exception as exc:  # noqa: BLE001
-            logger.warning("img_diag: redis checkpointer init failed: %s", exc)
-            return None
+            logger.warning(
+                "img_diag: redis checkpointer init failed: %s; falling back to memory",
+                exc,
+            )
+            return _build_memory_checkpointer()
     logger.warning("img_diag: unknown checkpoint backend=%s", backend)
     return None
 

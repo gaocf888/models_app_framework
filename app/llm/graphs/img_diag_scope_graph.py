@@ -410,7 +410,13 @@ class ImgDiagScopeHitlRunner:
         if not self._scope_hitl_enabled():
             return {"status": "skipped"}
         if not self.available():
-            return {"status": "skipped", "reason": "langgraph_or_checkpoint_unavailable"}
+            reason = "langgraph_or_checkpoint_unavailable"
+            logger.warning(
+                "img_diag scope HITL skipped: %s (check ANALYSIS_IMG_DIAG_USE_LANGGRAPH / "
+                "SCOPE_HITL_ENABLED / checkpoint backend)",
+                reason,
+            )
+            return {"status": "skipped", "reason": reason}
 
         rid = request_id or f"anl_{uuid.uuid4().hex[:12]}"
         initial = self._build_initial_state(request_id=rid, img_diag_request=img_diag_request)
