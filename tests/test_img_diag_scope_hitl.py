@@ -146,6 +146,28 @@ async def test_validate_scope_skip_on_error() -> None:
     assert err is None
 
 
+def test_open_langgraph_redis_saver_enters_context_manager(monkeypatch) -> None:
+    import sys
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    from app.llm.graphs.langgraph_redis_checkpointer import open_langgraph_redis_saver
+
+    mock_saver = MagicMock(name="RedisSaverInstance")
+
+    @contextmanager
+    def cm():
+        yield mock_saver
+
+    redis_mod = MagicMock()
+    redis_mod.RedisSaver.from_conn_string.return_value = cm()
+    monkeypatch.setitem(sys.modules, "langgraph.checkpoint.redis", redis_mod)
+
+    out = open_langgraph_redis_saver("redis://localhost:6379/0", log_prefix="test")
+    assert out is mock_saver
+    mock_saver.setup.assert_called_once()
+
+
 def test_img_diag_checkpoint_redis_import_failure_falls_back_to_memory(monkeypatch) -> None:
     from app.llm.graphs import img_diag_checkpoint as cp
 
@@ -158,16 +180,6 @@ def test_img_diag_checkpoint_redis_import_failure_falls_back_to_memory(monkeypat
         analysis = _Analysis()
 
     monkeypatch.setattr(cp, "get_app_config", lambda: _Cfg())
-
-    import builtins
-
-    real_import = builtins.__import__
-
-    def _fake_import(name, *args, **kwargs):
-        if name == "langgraph.checkpoint.redis":
-            raise ImportError("No module named 'langgraph.checkpoint.redis'")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    monkeypatch.setattr(cp, "open_langgraph_redis_saver", lambda *_a, **_k: None)
     saver = cp.build_img_diag_checkpointer()
     assert saver is not None

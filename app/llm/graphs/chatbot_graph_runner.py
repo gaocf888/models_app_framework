@@ -9,6 +9,7 @@ from app.conversation.manager import ConversationManager
 from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.llm.client import VLLMHttpClient
+from app.llm.graphs.langgraph_redis_checkpointer import open_langgraph_redis_saver
 from app.llm.langsmith_tracker import LangSmithTracker
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.models.chatbot import ChatRequest
@@ -237,25 +238,20 @@ class ChatbotLangGraphRunner:
                 logger.warning("ChatbotLangGraphRunner: memory checkpointer unavailable: %s", exc)
                 return None
         if backend == "redis":
-            try:
-                # 兼容不同版本/发行包命名，优先 redis checkpointer。
-                from langgraph.checkpoint.redis import RedisSaver  # type: ignore[import-not-found]
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("ChatbotLangGraphRunner: redis checkpointer unavailable, fallback none: %s", exc)
-                return None
             if not self._checkpoint_redis_url:
                 logger.warning("ChatbotLangGraphRunner: redis checkpoint backend selected but URL missing.")
                 return None
-            try:
-                saver = RedisSaver.from_conn_string(self._checkpoint_redis_url)
-                logger.info(
-                    "ChatbotLangGraphRunner: redis checkpoint enabled namespace=%s",
-                    self._checkpoint_namespace,
-                )
-                return saver
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("ChatbotLangGraphRunner: redis checkpointer init failed: %s", exc)
+            saver = open_langgraph_redis_saver(
+                self._checkpoint_redis_url,
+                log_prefix="ChatbotLangGraphRunner",
+            )
+            if saver is None:
                 return None
+            logger.info(
+                "ChatbotLangGraphRunner: redis checkpoint enabled namespace=%s",
+                self._checkpoint_namespace,
+            )
+            return saver
         logger.warning("ChatbotLangGraphRunner: unknown checkpoint backend=%s, disable checkpoint.", backend)
         return None
 

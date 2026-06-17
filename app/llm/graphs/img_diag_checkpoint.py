@@ -6,6 +6,7 @@ from typing import Any
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
+from app.llm.graphs.langgraph_redis_checkpointer import open_langgraph_redis_saver
 
 logger = get_logger(__name__)
 
@@ -29,15 +30,6 @@ def build_img_diag_checkpointer() -> Any | None:
     if backend == "memory":
         return _build_memory_checkpointer()
     if backend == "redis":
-        try:
-            from langgraph.checkpoint.redis import RedisSaver  # type: ignore[import-not-found]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "img_diag: redis checkpointer import failed: %s; "
-                "falling back to memory (install langgraph-checkpoint-redis for multi-worker)",
-                exc,
-            )
-            return _build_memory_checkpointer()
         url = (getattr(cfg, "img_diag_checkpoint_redis_url", None) or "").strip()
         if not url:
             import os
@@ -48,17 +40,13 @@ def build_img_diag_checkpointer() -> Any | None:
                 "img_diag: redis checkpoint selected but URL missing; falling back to memory"
             )
             return _build_memory_checkpointer()
-        try:
-            saver = RedisSaver.from_conn_string(url)
-            ns = getattr(cfg, "img_diag_checkpoint_namespace", "img_diag") or "img_diag"
-            logger.info("img_diag: redis checkpoint enabled namespace=%s", ns)
-            return saver
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "img_diag: redis checkpointer init failed: %s; falling back to memory",
-                exc,
-            )
+        ns = getattr(cfg, "img_diag_checkpoint_namespace", "img_diag") or "img_diag"
+        saver = open_langgraph_redis_saver(url, log_prefix="img_diag")
+        if saver is None:
+            logger.warning("img_diag: redis checkpointer unavailable; falling back to memory")
             return _build_memory_checkpointer()
+        logger.info("img_diag: redis checkpoint enabled namespace=%s", ns)
+        return saver
     logger.warning("img_diag: unknown checkpoint backend=%s", backend)
     return None
 

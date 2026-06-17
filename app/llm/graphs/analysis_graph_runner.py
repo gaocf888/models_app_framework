@@ -34,6 +34,7 @@ from app.core.metrics import (
 )
 from app.llm.client import VLLMHttpClient
 from app.llm.graphs.analysis_graph_state import AnalysisGraphState
+from app.llm.graphs.langgraph_redis_checkpointer import open_langgraph_redis_saver
 from app.llm.prompt_registry import PromptTemplateRegistry
 from pydantic import ValidationError
 
@@ -763,25 +764,18 @@ class AnalysisGraphRunner:
                 logger.warning("AnalysisGraphRunner: memory checkpointer unavailable: %s", exc)
                 return None
         if backend == "redis":
-            try:
-                from langgraph.checkpoint.redis import RedisSaver  # type: ignore[import-not-found]
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("AnalysisGraphRunner: redis checkpointer unavailable, fallback none: %s", exc)
-                return None
             url = (self._analysis_cfg.checkpoint_redis_url or "").strip()
             if not url:
                 logger.warning("AnalysisGraphRunner: redis checkpoint backend selected but URL missing.")
                 return None
-            try:
-                saver = RedisSaver.from_conn_string(url)
-                logger.info(
-                    "AnalysisGraphRunner: redis checkpoint enabled namespace=%s",
-                    self._analysis_cfg.checkpoint_namespace,
-                )
-                return saver
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("AnalysisGraphRunner: redis checkpointer init failed: %s", exc)
+            saver = open_langgraph_redis_saver(url, log_prefix="AnalysisGraphRunner")
+            if saver is None:
                 return None
+            logger.info(
+                "AnalysisGraphRunner: redis checkpoint enabled namespace=%s",
+                self._analysis_cfg.checkpoint_namespace,
+            )
+            return saver
         logger.warning("AnalysisGraphRunner: unknown checkpoint backend=%s, disable checkpoint.", backend)
         return None
 

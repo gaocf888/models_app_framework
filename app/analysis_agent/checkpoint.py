@@ -6,6 +6,7 @@ from typing import Any
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
+from app.llm.graphs.langgraph_redis_checkpointer import open_langgraph_redis_saver
 
 logger = get_logger(__name__)
 
@@ -32,11 +33,6 @@ def build_analysis_agent_checkpointer() -> Any | None:
             logger.warning("analysis_agent: memory checkpointer unavailable: %s", exc)
             return None
     if backend == "redis":
-        try:
-            from langgraph.checkpoint.redis import RedisSaver  # type: ignore[import-not-found]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("analysis_agent: redis checkpointer import failed: %s", exc)
-            return None
         url = (cfg.checkpoint_redis_url or "").strip()
         if not url:
             import os
@@ -45,16 +41,14 @@ def build_analysis_agent_checkpointer() -> Any | None:
         if not url:
             logger.warning("analysis_agent: redis checkpoint selected but URL missing")
             return None
-        try:
-            saver = RedisSaver.from_conn_string(url)
-            logger.info(
-                "analysis_agent: redis checkpoint enabled namespace=%s",
-                cfg.checkpoint_namespace,
-            )
-            return saver
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("analysis_agent: redis checkpointer init failed: %s", exc)
+        saver = open_langgraph_redis_saver(url, log_prefix="analysis_agent")
+        if saver is None:
             return None
+        logger.info(
+            "analysis_agent: redis checkpoint enabled namespace=%s",
+            cfg.checkpoint_namespace,
+        )
+        return saver
     logger.warning("analysis_agent: unknown checkpoint backend=%s", backend)
     return None
 
