@@ -54,7 +54,7 @@ LEFT JOIN (
 ) RUN_ALL ON ab.boiler_id = RUN_ALL.boiler_id
 WHERE (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
-  AND (@piperow_keyword IS NULL OR @piperow_keyword = '' OR adp.piperow_name LIKE CONCAT('%', @piperow_keyword, '%'))
+  -- AND (@piperow_keyword IS NULL OR @piperow_keyword = '' OR adp.piperow_name LIKE CONCAT('%', @piperow_keyword, '%'))
 GROUP BY
   ab.boiler_name, asd.device_name, adp.piperow_name, adp.model, adp.piperow_diameter,
   adp.piperow_thickness, adp.row_count, adp.pipe_count, ab.run_date,
@@ -89,7 +89,7 @@ WHERE orc.del_flag = '0'
   AND (@t_end IS NULL OR @t_end = '' OR ort.create_time < @t_end)
   AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
-  AND (@row_no IS NULL OR CAST(IFNULL(orc.row_num, '0') AS SIGNED) = @row_no)
+  -- AND (@row_no IS NULL OR CAST(IFNULL(orc.row_num, '0') AS SIGNED) = @row_no)
 ORDER BY ort.create_time DESC
 LIMIT 3;
 
@@ -114,10 +114,10 @@ LEFT JOIN overhaul_new_checklocation onc ON otr.location_id = onc.id
 LEFT JOIN account_static_device asd ON otr.device_id = asd.device_id
 WHERE (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
-  AND (@row_no IS NULL OR otr.row_num = @row_no)
-  AND (@tube_no IS NULL OR otr.pipe_num = @tube_no)
+  -- AND (@row_no IS NULL OR otr.row_num = @row_no)
+  -- AND (@tube_no IS NULL OR otr.pipe_num = @tube_no)
 ORDER BY otr.row_num, otr.pipe_num
-LIMIT 50;
+-- LIMIT 50;
 
 -- q2-c 泄爆/泄漏记录(无时间窗口，查询指定机组受热面管排的最近50次泄爆记录)
 SELECT
@@ -138,8 +138,8 @@ LEFT JOIN account_static_device asd ON ol.device_id = asd.device_id
 WHERE
   (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
-  AND (@row_no IS NULL OR ol.row_num = @row_no)
-  AND (@tube_no IS NULL OR ol.pipe_num = @tube_no)
+  -- AND (@row_no IS NULL OR ol.row_num = @row_no)
+  -- AND (@tube_no IS NULL OR ol.pipe_num = @tube_no)
 ORDER BY ol.leakage_date DESC
 LIMIT 50;
 
@@ -163,8 +163,8 @@ WHERE
   AND (@t_end IS NULL OR @t_end = '' OR lp.record_time < @t_end)
   AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
-  AND (@row_no IS NULL OR lp.row_num = @row_no)
-  AND (@tube_no IS NULL OR lp.pipe_num = @tube_no)
+  -- AND (@row_no IS NULL OR lp.row_num = @row_no)
+  -- AND (@tube_no IS NULL OR lp.pipe_num = @tube_no)
 ORDER BY lp.record_time DESC
 LIMIT 50;
 
@@ -197,7 +197,7 @@ WHERE orc.del_flag = '0'
   AND (@t_end IS NULL OR @t_end = '' OR ort.create_time < @t_end)
   AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
-  AND (@row_no IS NULL OR CAST(IFNULL(orc.row_num, '0') AS SIGNED) = @row_no)
+  -- AND (@row_no IS NULL OR CAST(IFNULL(orc.row_num, '0') AS SIGNED) = @row_no)
 ORDER BY ort.create_time DESC
 LIMIT 50;
 
@@ -226,8 +226,8 @@ WHERE
   AND mht.highest_temp > mht.limit_temp
   AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
   AND (@device_keyword IS NULL OR @device_keyword = '' OR asd.device_name LIKE CONCAT('%', @device_keyword, '%'))
-  AND (@row_no IS NULL OR btp.row_num = @row_no)
-  AND (@tube_no IS NULL OR btp.pipe_num = @tube_no)
+  -- AND (@row_no IS NULL OR btp.row_num = @row_no)
+  -- AND (@tube_no IS NULL OR btp.pipe_num = @tube_no)
 GROUP BY
   ab.boiler_name, asd.device_name, mht.pi_code, btp.point_name, btp.row_num, btp.pipe_num, mht.limit_temp
 ORDER BY 累计超温时长_小时 DESC
