@@ -186,20 +186,22 @@ def missing_required_scope_fields(draft: ImgDiagScopeDraft) -> list[str]:
     return missing
 
 
-def should_trigger_scope_hitl(
-    draft: ImgDiagScopeDraft,
-    *,
-    strict: bool,
-    low_confidence_hitl: bool,
-) -> tuple[bool, str]:
+def should_trigger_scope_hitl(draft: ImgDiagScopeDraft) -> tuple[bool, str]:
+    """
+    第一层人机协同：仅当结构化解析未成功（机组/受热面必填缺失）时触发。
+
+    解析成功（boiler + device_name 均非空）时不 interrupt，交由库表 SQL 校验；
+    SQL 无结果时在 scope_db_validate 节点触发第二层人机协同。
+    """
     missing = missing_required_scope_fields(draft)
     if missing:
         return True, f"missing:{','.join(missing)}"
-    if strict and draft.confidence == "low":
-        return True, "strict_low_confidence"
-    if low_confidence_hitl and draft.confidence == "low":
-        return True, "low_confidence"
     return False, ""
+
+
+def scope_parse_succeeded(draft: ImgDiagScopeDraft) -> bool:
+    """机组与受热面均已解析出非空值。"""
+    return not missing_required_scope_fields(draft)
 
 
 def build_scope_intent_text(

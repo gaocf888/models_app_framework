@@ -167,7 +167,8 @@
       流程：可先 <code>POST /analysis/img-diag/upload</code> 上传现场图，将返回的 <code>url</code> 填入
       <code>image_urls</code>；再 <code>POST /analysis/run-img-diag-stream</code>（<code>text/event-stream</code>）。
       视觉 / 业务 RAG / NL2SQL 三臂并行与同步接口相同；仅结论阶段以 SSE 增量下发（<code>summary_delta</code>）。
-      完整 JSON 在服务端异步写日志与 trace，可用 <code>GET /analysis/traces/{request_id}</code> 查询（<code>request_id</code> 见首帧 <code>meta</code>）。
+      <strong>台账信息确认</strong>：首流可能先收到 <code>img_diag_scope_input_required</code>（非 summary 流），提示会写入下方 summary 区；
+      用户在「query」框补充后再次点击「开始/继续」→ 调用 <code>POST /analysis/run-img-diag-resume-stream</code> 续跑。
       鉴权 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>；需 CORS 放行本页来源。
       编排说明：<code>enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md</code>。
     </p>
@@ -211,7 +212,7 @@
 
       <fieldset>
         <legend>提问与图片 URL</legend>
-        <label>query（用户提问，含位置；泄爆含事故时间）</label>
+        <label>query（用户提问，含位置；泄爆含事故时间；scope HITL 等待时在下方补充机组/受热面）</label>
         <textarea id="query" rows="3" placeholder="请识别图片缺陷并给出处置建议，位置是1号锅炉低温过热器A侧第2排第3根"></textarea>
         <p class="hint">示例：<button type="button" class="secondary" id="btnFillDemo" style="padding:0.2rem 0.5rem;font-size:0.75rem;">填入示例 query</button></p>
         <label>image_urls（每行一个 URL；缺陷识别至少一行，泄爆可留空）</label>
@@ -235,21 +236,9 @@
     <div class="actions" style="margin-top: 1rem;">
       <button type="button" class="primary" id="btnRun">2) 开始流式看图诊断</button>
       <button type="button" class="secondary" id="btnAbort" disabled>中断请求</button>
+      <button type="button" class="secondary" id="btnScopeAbort" disabled>取消 scope 确认</button>
       <button type="button" class="secondary" id="btnClear">清空输出</button>
     </div>
-
-    <fieldset id="scopeHitlPanel" style="margin-top:1rem;display:none;border-color:#f59e0b;">
-      <legend style="color:#f59e0b;">scope 人机协同（img_diag_scope_input_required）</legend>
-      <div id="scopeHitlPrompt" style="white-space:pre-wrap;margin-bottom:0.5rem;"></div>
-      <pre id="scopeHitlDraft" style="font-size:0.75rem;overflow:auto;max-height:120px;"></pre>
-      <label>user_supplement（自然语言补充）</label>
-      <textarea id="scopeSupplement" rows="2" placeholder="例如：2号锅炉"></textarea>
-      <input type="hidden" id="scopeResumeToken" />
-      <div class="actions">
-        <button type="button" class="primary" id="btnScopeResume">确认并 resume-stream</button>
-        <button type="button" class="secondary" id="btnScopeAbort">abort</button>
-      </div>
-    </fieldset>
 
     <div class="out" style="margin-top: 1rem;">
       <div id="status">就绪</div>
@@ -273,21 +262,71 @@
 
   let lastUploadUrl = null;
   let abortCtrl = null;
-  let scopeResumeContext = null;
+  let scopeResumeToken = null;
+  let scopeHitlWaiting = false;
+  const BTN_RUN_LABEL_START = "2) 开始流式看图诊断";
+  const BTN_RUN_LABEL_RESUME = "3) 提交 scope 补充并继续流式诊断";
+  const QUERY_PLACEHOLDER_DEFAULT = "请识别图片缺陷并给出处置建议，位置是1号锅炉低温过热器A侧第2排第3根";
+  const QUERY_PLACEHOLDER_HITL = "在此补充或修正机组/受热面，例如：水冷壁螺旋段后墙螺旋管组";
 
-  function showScopeHitl(ev) {
-    scopeResumeContext = ev;
-    $("scopeResumeToken").value = ev.resume_token || "";
-    $("scopeHitlPrompt").textContent = ev.prompt || "请补充机组/受热面";
-    $("scopeHitlDraft").textContent = JSON.stringify(ev.scope_draft || {}, null, 2);
-    $("scopeSupplement").value = "";
-    $("scopeHitlPanel").style.display = "block";
-    setStatus("等待 scope 人机确认…");
+  const SCOPE_FIELD_LABELS = {
+    boiler: "机组",
+    device_name: "受热面",
+    piperow_name: "管排名称",
+    row_no: "排数",
+    tube_no: "管数",
+  };
+
+  function scopeDraftDisplayLines(ev) {
+    const labeled = ev.scope_draft_display;
+    if (labeled && typeof labeled === "object" && Object.keys(labeled).length) {
+      return Object.entries(labeled).map(([cn, val]) => cn + "：" + val);
+    }
+    const draft = ev.scope_draft || {};
+    return Object.entries(SCOPE_FIELD_LABELS)
+      .map(([en, cn]) => {
+        const val = draft[en];
+        if (val == null || val === "") return null;
+        return cn + "：" + val;
+      })
+      .filter(Boolean);
   }
 
-  function hideScopeHitl() {
-    $("scopeHitlPanel").style.display = "none";
-    scopeResumeContext = null;
+  function formatScopeHitlMessage(ev) {
+    const lines = [
+      "【台账信息确认】",
+      "",
+      ev.prompt || "请补充或确认机组与受热面信息",
+      "",
+      "台账信息：",
+    ];
+    const draftLines = scopeDraftDisplayLines(ev);
+    if (draftLines.length) {
+      lines.push.apply(lines, draftLines);
+    } else {
+      lines.push("（暂无）");
+    }
+    return lines.join("\n");
+  }
+
+  function enterScopeHitlWait(ev) {
+    scopeResumeToken = ev.resume_token || "";
+    scopeHitlWaiting = !!scopeResumeToken;
+    $("answer").textContent = formatScopeHitlMessage(ev);
+    $("query").value = "";
+    $("query").placeholder = QUERY_PLACEHOLDER_HITL;
+    $("btnRun").textContent = BTN_RUN_LABEL_RESUME;
+    $("btnScopeAbort").disabled = false;
+    setBusy(false);
+    setStatus("等待台账信息确认：请在 query 框补充后点击继续");
+  }
+
+  function exitScopeHitlWait() {
+    scopeResumeToken = null;
+    scopeHitlWaiting = false;
+    $("query").placeholder = QUERY_PLACEHOLDER_DEFAULT;
+    $("btnRun").textContent = BTN_RUN_LABEL_START;
+    $("btnScopeAbort").disabled = true;
   }
 
   function processSseEvents(onDelta) {
@@ -301,11 +340,11 @@
         logEvent(kind || "?");
 
         if (kind === "img_diag_scope_input_required") {
-          showScopeHitl(ev);
+          enterScopeHitlWait(ev);
           return;
         }
         if (kind === "meta") {
-          hideScopeHitl();
+          exitScopeHitlWait();
           $("meta").textContent =
             "request_id: " +
             (ev.request_id || "") +
@@ -441,8 +480,126 @@
   }
 
   function setBusy(b) {
-    $("btnRun").disabled = b;
+    $("btnRun").disabled = b && !scopeHitlWaiting;
     $("btnAbort").disabled = !b;
+  }
+
+  async function runImgDiagStream() {
+    showErr("");
+    const urls = imageUrlsList();
+    if (!urls.length) {
+      showErr("请至少填写一行 image_urls（可先上传图片并追加）。");
+      return;
+    }
+
+    const uid = $("userId").value.trim();
+    const sid = $("sessionId").value.trim();
+    const q = $("query").value.trim();
+    if (!uid || !sid || !q) {
+      showErr("请填写 user_id、session_id、query。");
+      return;
+    }
+
+    const body = buildBody();
+
+    $("answer").textContent = "";
+    $("meta").textContent = "…";
+    $("eventLog").textContent = "";
+    exitScopeHitlWait();
+    abortCtrl = new AbortController();
+    setBusy(true);
+    setStatus("连接中（scope 确认 → 视觉‖NL2SQL 并行，RAG 串行）…");
+    let answerText = "";
+
+    const url = baseUrl() + "/analysis/run-img-diag-stream";
+
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
+        body: JSON.stringify(body),
+        signal: abortCtrl.signal,
+        credentials: "omit",
+      });
+
+      if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error("HTTP " + resp.status + "\n" + t.slice(0, 4000));
+      }
+
+      const ct = (resp.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("text/event-stream") && !ct.includes("event-stream")) {
+        setStatus("警告: Content-Type 非 text/event-stream: " + ct);
+      }
+
+      await readSseStream(resp, processSseEvents((text) => {
+          answerText += text;
+          $("answer").textContent = answerText;
+          setStatus("生成中… 已收字符 " + answerText.length);
+      }));
+    } catch (e) {
+      if (e.name === "AbortError") {
+        setStatus("已中断");
+        logEvent("aborted");
+      } else {
+        showErr(String(e.message || e));
+        setStatus("失败");
+      }
+    } finally {
+      if (!scopeHitlWaiting) {
+        setBusy(false);
+      }
+      abortCtrl = null;
+    }
+  }
+
+  async function runScopeResume(action) {
+    const token = scopeResumeToken;
+    if (!token) {
+      showErr("无 resume_token，请先发起看图诊断并等待 scope 确认");
+      return;
+    }
+    const uid = $("userId").value.trim();
+    const sid = $("sessionId").value.trim();
+    const supplement = $("query").value.trim();
+    if (action === "confirm_scope" && !supplement) {
+      showErr("请在 query 文本框填写 scope 补充说明（如受热面名称）。");
+      return;
+    }
+    abortCtrl = new AbortController();
+    setBusy(true);
+    setStatus("scope resume-stream 连接中…");
+    try {
+      const resp = await fetch(baseUrl() + "/analysis/run-img-diag-resume-stream", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
+        body: JSON.stringify({
+          resume_token: token,
+          user_id: uid,
+          session_id: sid,
+          action: action,
+          payload: action === "abort" ? { reason: "user abort" } : { user_supplement: supplement },
+        }),
+        signal: abortCtrl.signal,
+        credentials: "omit",
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status + "\n" + (await resp.text()).slice(0, 2000));
+      exitScopeHitlWait();
+      $("answer").textContent = "";
+      let answerText = "";
+      await readSseStream(resp, processSseEvents((text) => {
+        answerText += text;
+        $("answer").textContent = answerText;
+        setStatus("resume 生成中… " + answerText.length);
+      }));
+    } catch (e) {
+      if (e.name !== "AbortError") showErr(String(e.message || e));
+    } finally {
+      if (!scopeHitlWaiting) {
+        setBusy(false);
+      }
+      abortCtrl = null;
+    }
   }
 
   function logEvent(line) {
@@ -587,116 +744,17 @@
   }
 
   $("btnRun").addEventListener("click", async () => {
-    showErr("");
-    const urls = imageUrlsList();
-    if (!urls.length) {
-      showErr("请至少填写一行 image_urls（可先上传图片并追加）。");
+    if (scopeHitlWaiting) {
+      await runScopeResume("confirm_scope");
       return;
     }
-
-    const uid = $("userId").value.trim();
-    const sid = $("sessionId").value.trim();
-    const q = $("query").value.trim();
-    if (!uid || !sid || !q) {
-      showErr("请填写 user_id、session_id、query。");
-      return;
-    }
-
-    const body = buildBody();
-
-    $("answer").textContent = "";
-    $("meta").textContent = "…";
-    $("eventLog").textContent = "";
-    abortCtrl = new AbortController();
-    setBusy(true);
-    setStatus("连接中（视觉‖NL2SQL 并行，RAG 串行，首包前请耐心等待）…");
-    let answerText = "";
-
-    const url = baseUrl() + "/analysis/run-img-diag-stream";
-
-    try {
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
-        body: JSON.stringify(body),
-        signal: abortCtrl.signal,
-        credentials: "omit",
-      });
-
-      if (!resp.ok) {
-        const t = await resp.text();
-        throw new Error("HTTP " + resp.status + "\n" + t.slice(0, 4000));
-      }
-
-      const ct = (resp.headers.get("content-type") || "").toLowerCase();
-      if (!ct.includes("text/event-stream") && !ct.includes("event-stream")) {
-        setStatus("警告: Content-Type 非 text/event-stream: " + ct);
-      }
-
-      await readSseStream(resp, processSseEvents((text) => {
-          answerText += text;
-          $("answer").textContent = answerText;
-          setStatus("生成中… 已收字符 " + answerText.length);
-      }));
-    } catch (e) {
-      if (e.name === "AbortError") {
-        setStatus("已中断");
-        logEvent("aborted");
-      } else {
-        showErr(String(e.message || e));
-        setStatus("失败");
-      }
-    } finally {
-      setBusy(false);
-      abortCtrl = null;
-    }
+    await runImgDiagStream();
   });
 
   $("btnAbort").addEventListener("click", () => {
     if (abortCtrl) abortCtrl.abort();
   });
 
-  async function runScopeResume(action) {
-    const token = $("scopeResumeToken").value.trim();
-    if (!token) {
-      showErr("无 resume_token");
-      return;
-    }
-    const uid = $("userId").value.trim();
-    const sid = $("sessionId").value.trim();
-    let answerText = $("answer").textContent || "";
-    abortCtrl = new AbortController();
-    setBusy(true);
-    setStatus("scope resume-stream 连接中…");
-    try {
-      const resp = await fetch(baseUrl() + "/analysis/run-img-diag-resume-stream", {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
-        body: JSON.stringify({
-          resume_token: token,
-          user_id: uid,
-          session_id: sid,
-          action: action,
-          payload: action === "abort" ? { reason: "user abort" } : { user_supplement: $("scopeSupplement").value.trim() },
-        }),
-        signal: abortCtrl.signal,
-        credentials: "omit",
-      });
-      if (!resp.ok) throw new Error("HTTP " + resp.status + "\n" + (await resp.text()).slice(0, 2000));
-      await readSseStream(resp, processSseEvents((text) => {
-        answerText += text;
-        $("answer").textContent = answerText;
-        setStatus("resume 生成中… " + answerText.length);
-      }));
-    } catch (e) {
-      if (e.name !== "AbortError") showErr(String(e.message || e));
-    } finally {
-      setBusy(false);
-      abortCtrl = null;
-    }
-  }
-
-  $("btnScopeResume").addEventListener("click", () => runScopeResume("confirm_scope"));
   $("btnScopeAbort").addEventListener("click", () => runScopeResume("abort"));
 
   $("btnClear").addEventListener("click", () => {
@@ -707,7 +765,7 @@
     $("eventLog").textContent = "";
     showErr("");
     setStatus("已清空");
-    hideScopeHitl();
+    exitScopeHitlWait();
     lastUploadUrl = null;
     $("btnAppendUrl").disabled = true;
     abortCtrl = null;

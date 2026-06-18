@@ -258,6 +258,12 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
 
     若 scope 未确认，首条事件可能为 **`img_diag_scope_input_required`**（在 `meta` 之前），
     需调用 **`/run-img-diag-resume-stream`** 续跑。
+
+    **针对看图诊断 图中第一个节点人机协同，前端使用方法**
+        1. 监听 SSE event === "img_diag_scope_input_required"
+        2. 在对话/summary 区域展示 prompt + 草案
+        3. 用户在同一条输入框补充后，调用下方 run-img-diag-resume-stream（保存 resume_token） 接口
+        4. 若再次收到 img_diag_scope_input_required，重复上述步骤（多轮 HITL）
     """
     return await service.run_analysis_img_diag_stream(data)
 

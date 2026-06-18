@@ -190,6 +190,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "resume_token": result.get("resume_token"),
             "prompt": intr.get("prompt"),
             "scope_draft": intr.get("scope_draft"),
+            "scope_draft_display": intr.get("scope_draft_display"),
             "missing_fields": intr.get("missing_fields") or [],
             "validation_error": intr.get("validation_error"),
             "suggested_actions": intr.get("suggested_actions")

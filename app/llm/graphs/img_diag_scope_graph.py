@@ -12,6 +12,13 @@ from app.llm.graphs.img_diag_checkpoint import (
     build_img_diag_checkpointer,
     img_diag_graph_configurable,
 )
+from app.llm.graphs.img_diag_scope_display import (
+    SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
+    format_missing_fields_cn,
+    normalize_scope_patch_keys,
+    scope_draft_to_display,
+    scope_field_label,
+)
 from app.llm.graphs.img_diag_scope_intent import (
     ImgDiagScopeDraft,
     apply_scope_patch,
@@ -67,22 +74,35 @@ def _max_hitl_rounds() -> int:
     return max(1, int(getattr(_cfg(), "img_diag_scope_hitl_max_rounds", 5)))
 
 
-def _low_confidence_hitl() -> bool:
-    return bool(getattr(_cfg(), "img_diag_scope_low_confidence_hitl", True))
+def _draft_from_state(state: ImgDiagScopeGraphState) -> ImgDiagScopeDraft:
+    draft_dict = state.get("scope_draft") or {}
+    return ImgDiagScopeDraft(
+        boiler=draft_dict.get("boiler"),
+        device_name=draft_dict.get("device_name"),
+        piperow_name=draft_dict.get("piperow_name"),
+        row_no=draft_dict.get("row_no"),
+        tube_no=draft_dict.get("tube_no"),
+        confidence=draft_dict.get("confidence", "high"),
+        confidence_reasons=tuple(draft_dict.get("confidence_reasons") or ()),
+        time_meta=parse_img_diag_scope_draft("").time_meta,
+    )
 
 
 def _build_interrupt_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
     draft = state.get("scope_draft") or {}
+    scope_draft = {
+        "boiler": draft.get("boiler"),
+        "device_name": draft.get("device_name"),
+        "piperow_name": draft.get("piperow_name"),
+        "row_no": draft.get("row_no"),
+        "tube_no": draft.get("tube_no"),
+    }
+    missing = state.get("missing_fields") or []
     return {
         "prompt": state.get("human_prompt") or "请补充或确认机组与受热面信息",
-        "scope_draft": {
-            "boiler": draft.get("boiler"),
-            "device_name": draft.get("device_name"),
-            "piperow_name": draft.get("piperow_name"),
-            "row_no": draft.get("row_no"),
-            "tube_no": draft.get("tube_no"),
-        },
-        "missing_fields": state.get("missing_fields") or [],
+        "scope_draft": scope_draft,
+        "scope_draft_display": scope_draft_to_display(scope_draft),
+        "missing_fields": [scope_field_label(f) for f in missing],
         "validation_error": state.get("validation_error"),
         "suggested_actions": state.get("human_suggested_actions")
         or ["confirm_scope", "edit_scope", "abort"],
@@ -107,6 +127,7 @@ def _apply_human_scope_response(
         state["scope_cumulative_text"] = f"{cumulative}\n{supplement}".strip()
     patch = payload.get("scope_patch")
     if isinstance(patch, dict) and state.get("scope_draft"):
+        patch = normalize_scope_patch_keys(patch)
         dd = state["scope_draft"]
         tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
         draft = ImgDiagScopeDraft(
@@ -144,26 +165,13 @@ def make_img_diag_scope_nodes(
         )
         state["scope_draft"] = draft.to_dict()
         state["scope_confidence"] = draft.confidence
-        opts = state.get("options") or {}
-        strict = bool(opts.get("strict"))
-        trigger, reason = should_trigger_scope_hitl(
-            draft,
-            strict=strict,
-            low_confidence_hitl=_low_confidence_hitl(),
-        )
-        state["interrupt_reason"] = reason if trigger else ""
         state["missing_fields"] = missing_required_scope_fields(draft)
+        trigger, reason = should_trigger_scope_hitl(draft)
+        state["interrupt_reason"] = reason if trigger else ""
         if trigger:
-            if "missing:" in reason:
-                state["human_prompt"] = (
-                    f"请补充以下信息：{', '.join(state['missing_fields'])}"
-                )
-            elif reason == "low_confidence":
-                state["human_prompt"] = (
-                    "系统对机组/受热面解析置信度较低，请确认或补充范围信息"
-                )
-            else:
-                state["human_prompt"] = "请确认机组与受热面范围信息"
+            state["human_prompt"] = (
+                f"请补充以下信息：{format_missing_fields_cn(state['missing_fields'])}"
+            )
         return state
 
     async def scope_human_confirm(state: ImgDiagScopeGraphState) -> ImgDiagScopeGraphState:
@@ -190,15 +198,13 @@ def make_img_diag_scope_nodes(
         if err and count <= 0:
             state["validation_error"] = err
             state["needs_db_retry"] = True
-            state["human_prompt"] = f"库表校验失败：{err}，请核对机组/受热面/管排"
+            state["human_prompt"] = SCOPE_HITL_DB_NOT_MATCHED_PROMPT
             state["interrupt_reason"] = "db_validate_error"
             return state
         if count <= 0:
             state["validation_error"] = "scope_not_found_in_catalog"
             state["needs_db_retry"] = True
-            state["human_prompt"] = (
-                "解析的范围在账册库中未找到匹配记录，请核对机组、受热面或管排名称"
-            )
+            state["human_prompt"] = SCOPE_HITL_DB_NOT_MATCHED_PROMPT
             state["interrupt_reason"] = "db_validate_zero_rows"
             return state
         draft = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "")
@@ -231,26 +237,8 @@ def make_img_diag_scope_nodes(
 def _route_after_preflight(state: ImgDiagScopeGraphState) -> Literal["scope_human_confirm", "scope_db_validate"]:
     if state.get("abort_requested"):
         return "scope_db_validate"
-    if state.get("abort_requested"):
-        return "scope_db_validate"
-    draft_dict = state.get("scope_draft") or {}
-    draft = ImgDiagScopeDraft(
-        boiler=draft_dict.get("boiler"),
-        device_name=draft_dict.get("device_name"),
-        piperow_name=draft_dict.get("piperow_name"),
-        row_no=draft_dict.get("row_no"),
-        tube_no=draft_dict.get("tube_no"),
-        confidence=draft_dict.get("confidence", "high"),
-        confidence_reasons=tuple(draft_dict.get("confidence_reasons") or ()),
-        time_meta=parse_img_diag_scope_draft("").time_meta,
-    )
-    opts = state.get("options") or {}
-    trigger, _ = should_trigger_scope_hitl(
-        draft,
-        strict=bool(opts.get("strict")),
-        low_confidence_hitl=_low_confidence_hitl(),
-    )
-    if trigger:
+    draft = _draft_from_state(state)
+    if should_trigger_scope_hitl(draft)[0]:
         return "scope_human_confirm"
     return "scope_db_validate"
 

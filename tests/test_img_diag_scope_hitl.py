@@ -51,8 +51,8 @@ def test_missing_required_scope_fields() -> None:
     assert missing_required_scope_fields(draft) == ["boiler"]
 
 
-def test_should_trigger_scope_hitl_low_confidence() -> None:
-    draft = ImgDiagScopeDraft(
+def test_should_trigger_scope_hitl_only_when_required_fields_missing() -> None:
+    complete = ImgDiagScopeDraft(
         boiler="1号锅炉",
         device_name="低温过热器",
         piperow_name=None,
@@ -62,11 +62,83 @@ def test_should_trigger_scope_hitl_low_confidence() -> None:
         confidence_reasons=("rule_llm_device_mismatch",),
         time_meta=parse_img_diag_scope_draft("").time_meta,
     )
-    trigger, reason = should_trigger_scope_hitl(
-        draft, strict=False, low_confidence_hitl=True
+    trigger, reason = should_trigger_scope_hitl(complete)
+    assert trigger is False
+    assert reason == ""
+
+    incomplete = ImgDiagScopeDraft(
+        boiler="1号锅炉",
+        device_name=None,
+        piperow_name=None,
+        row_no=None,
+        tube_no=None,
+        confidence="high",
+        confidence_reasons=(),
+        time_meta=parse_img_diag_scope_draft("").time_meta,
     )
+    trigger, reason = should_trigger_scope_hitl(incomplete)
     assert trigger is True
-    assert reason == "low_confidence"
+    assert reason == "missing:device_name"
+
+
+def test_scope_draft_to_display_cn_labels() -> None:
+    from app.llm.graphs.img_diag_scope_display import (
+        SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
+        format_missing_fields_cn,
+        scope_draft_to_display,
+    )
+
+    display = scope_draft_to_display(
+        {
+            "boiler": "1号锅炉",
+            "device_name": "水冷壁",
+            "piperow_name": None,
+            "row_no": 3,
+            "tube_no": 56,
+        }
+    )
+    assert display == {
+        "机组": "1号锅炉",
+        "受热面": "水冷壁",
+        "排数": 3,
+        "管数": 56,
+    }
+    assert format_missing_fields_cn(["boiler", "device_name"]) == "机组、受热面"
+    assert "业务库中未匹配" in SCOPE_HITL_DB_NOT_MATCHED_PROMPT
+    from app.llm.graphs.img_diag_scope_display import normalize_scope_patch_keys
+
+    assert normalize_scope_patch_keys({"机组": "2号锅炉", "受热面": "水冷壁"}) == {
+        "boiler": "2号锅炉",
+        "device_name": "水冷壁",
+    }
+
+
+def test_scope_parse_succeeded() -> None:
+    from app.llm.graphs.img_diag_scope_intent import scope_parse_succeeded
+
+    ok = ImgDiagScopeDraft(
+        boiler="1号锅炉",
+        device_name="水冷壁",
+        piperow_name=None,
+        row_no=None,
+        tube_no=None,
+        confidence="high",
+        confidence_reasons=(),
+        time_meta=parse_img_diag_scope_draft("").time_meta,
+    )
+    assert scope_parse_succeeded(ok) is True
+    assert scope_parse_succeeded(
+        ImgDiagScopeDraft(
+            boiler=None,
+            device_name="水冷壁",
+            piperow_name=None,
+            row_no=None,
+            tube_no=None,
+            confidence="high",
+            confidence_reasons=(),
+            time_meta=parse_img_diag_scope_draft("").time_meta,
+        )
+    ) is False
 
 
 def test_bind_scope_validate_sql_optional_piperow() -> None:
