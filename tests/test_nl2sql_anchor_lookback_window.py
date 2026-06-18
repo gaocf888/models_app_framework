@@ -109,11 +109,12 @@ def test_rewrite_query_filters_plan_trigger_without_anchor_leakage_fallback_now(
     assert rewrite_meta.get("effective_time_window", {}).get("tag", "").endswith("fallback_now")
 
 
-def test_rewrite_query_filters_plan_trigger_without_anchor_defect_skipped() -> None:
+def test_rewrite_query_filters_plan_trigger_without_anchor_defect_fallback_now() -> None:
     chain = NL2SQLChain.__new__(NL2SQLChain)
     user_q = "3号锅炉水冷壁缺陷识别"
     intent = resolve_question_intent(user_q, time_intent_source=user_q)
     parsed = question_intent_to_dict(intent)
+    assert parsed.get("time_anchor") is None
     rewrite_meta: dict = {}
     plan_q = f"{user_q}。在事故锚点向前3天时间窗内查询"
 
@@ -126,9 +127,11 @@ def test_rewrite_query_filters_plan_trigger_without_anchor_defect_skipped() -> N
         analysis_type="img_diag_defect_ident",
         rewrite_meta=rewrite_meta,
     )
-    assert "@t_start" in rewritten
-    assert "@t_end" in rewritten
-    assert rewrite_meta.get("time_rewrite_warnings") == ["anchor_lookback_skipped_no_anchor"]
+    assert "@t_start" not in rewritten
+    assert "@t_end" not in rewritten
+    assert "NOW()" in rewritten
+    assert rewrite_meta.get("time_rewrite_warnings") == ["anchor_fallback_now"]
+    assert rewrite_meta.get("effective_time_window", {}).get("tag", "").endswith("fallback_now")
 
 
 def test_validate_unresolved_time_placeholders_rejects() -> None:

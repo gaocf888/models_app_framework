@@ -639,9 +639,9 @@ class NL2SQLIntentConfig:
     inject_parsed_intent: bool = False
     response_include_parsed_intent: bool = False
     trace_include_question_intent: bool = True
-    # plan 含「锚点向前 N 天」但用户未解析事故锚点时，泄爆等场景以 NOW() 为锚点上界合成回溯窗
+    # plan 含「锚点向前 N 天」但用户未解析事故锚点时，看图诊断场景以 NOW() 为锚点上界合成回溯窗
     anchor_fallback_now_enabled: bool = True
-    anchor_fallback_analysis_types: str = "img_diag_leakage_burst"
+    anchor_fallback_analysis_types: str = "img_diag_leakage_burst,img_diag_defect_ident"
     # SQL 执行前拒绝仍含 @t_start/@t_end/@t_after 的语句（通常表示时间窗未解析且未改写）
     reject_unresolved_time_placeholders: bool = True
 
@@ -1522,7 +1522,11 @@ def _load_from_env() -> AppConfig:
         anchor_fallback_now_enabled=os.getenv("NL2SQL_ANCHOR_FALLBACK_NOW_ENABLED", "true").lower()
         == "true",
         anchor_fallback_analysis_types=(
-            os.getenv("NL2SQL_ANCHOR_FALLBACK_ANALYSIS_TYPES", "img_diag_leakage_burst") or "img_diag_leakage_burst"
+            os.getenv(
+                "NL2SQL_ANCHOR_FALLBACK_ANALYSIS_TYPES",
+                "img_diag_leakage_burst,img_diag_defect_ident",
+            )
+            or "img_diag_leakage_burst,img_diag_defect_ident"
         ).strip(),
         reject_unresolved_time_placeholders=os.getenv(
             "NL2SQL_REJECT_UNRESOLVED_TIME_PLACEHOLDERS", "true"
