@@ -269,6 +269,8 @@
   const QUERY_PLACEHOLDER_DEFAULT = "请识别图片缺陷并给出处置建议，位置是1号锅炉低温过热器A侧第2排第3根";
   const QUERY_PLACEHOLDER_HITL = "在此补充或修正机组/受热面，例如：水冷壁螺旋段后墙螺旋管组";
 
+  const SCOPE_HITL_DISPLAY_FIELDS = ["boiler", "device_name"];
+
   const SCOPE_FIELD_LABELS = {
     boiler: "机组",
     device_name: "受热面",
@@ -283,13 +285,12 @@
       return Object.entries(labeled).map(([cn, val]) => cn + "：" + val);
     }
     const draft = ev.scope_draft || {};
-    return Object.entries(SCOPE_FIELD_LABELS)
-      .map(([en, cn]) => {
-        const val = draft[en];
-        if (val == null || val === "") return null;
-        return cn + "：" + val;
-      })
-      .filter(Boolean);
+    return SCOPE_HITL_DISPLAY_FIELDS.map(function (en) {
+      const cn = SCOPE_FIELD_LABELS[en];
+      const val = draft[en];
+      if (val == null || val === "") return null;
+      return cn + "：" + val;
+    }).filter(Boolean);
   }
 
   function formatScopeHitlMessage(ev) {

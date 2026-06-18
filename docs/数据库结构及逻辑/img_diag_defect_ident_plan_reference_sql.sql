@@ -2,14 +2,12 @@
 -- 对照：configs/prompts.yaml → analysis_plan_img_diag_defect_ident
 -- 字段/表关联对齐 DBA 文档：基于AI的锅炉四管防磨防爆智能系统升级研发202606161436-数据计划.docx
 -- 数据库：fmfb · TiDB/MySQL 8 兼容
--- 占位符（NL2SQL 基座从用户问题解析后改写）：
---   @unit_keyword    锅炉名称关键字（空/NULL 则不过滤锅炉）
+-- 占位符（NL2SQL 基座从用户问题解析后改写；看图诊断 plan 范围过滤仅使用以下两项）：
+--   @unit_keyword    锅炉/机组名称关键字（空/NULL 则不过滤锅炉）
 --   @device_keyword  受热面/设备名称关键字
---   @piperow_keyword 管排名称关键字
---   @row_no          排数（NULL 则跳过排数过滤）
---   @tube_no         管数/管号（NULL 则跳过管号过滤）
 --   @t_start         时间窗起点（含）
 --   @t_end           时间窗终点（不含）
+-- 说明：@piperow_keyword/@row_no/@tube_no 已废弃，勿在新 plan SQL 中使用；历史注释行可忽略。
 -- 约束：每条 plan 问句对应单条可执行 SQL；禁止 WITH/CTE
 
 -- =============================================================================

@@ -4,14 +4,12 @@
 -- 时间窗：NL2SQL 从用户问题解析 **事故发生时刻（锚点）向前 3 天** → @t_start（含）～ @t_end（不含）
 -- 数据计划 SQL 正文与 img_diag_defect_ident_plan_reference_sql.sql 一致（两场景 q1/q2a～e/q3～q5 同源）
 -- 数据库：fmfb · TiDB/MySQL 8 兼容
--- 占位符（NL2SQL 基座从用户问题解析后改写）：
---   @unit_keyword    锅炉名称关键字（空/NULL 则不过滤锅炉）
+-- 占位符（NL2SQL 基座从用户问题解析后改写；看图诊断 plan 范围过滤仅使用以下两项）：
+--   @unit_keyword    锅炉/机组名称关键字（空/NULL 则不过滤锅炉）
 --   @device_keyword  受热面/设备名称关键字
---   @piperow_keyword 管排名称关键字
---   @row_no          排数（NULL 则跳过排数过滤）
---   @tube_no         管数/管号（NULL 则跳过管号过滤）
 --   @t_start         时间窗起点（含）
 --   @t_end           时间窗终点（不含）
+-- 说明：@piperow_keyword/@row_no/@tube_no 已废弃，勿在新 plan SQL 中使用；历史注释行可忽略。
 -- 约束：每条 plan 问句对应单条可执行 SQL；禁止 WITH/CTE
 
 -- =============================================================================

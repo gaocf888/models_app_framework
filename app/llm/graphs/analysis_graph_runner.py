@@ -105,8 +105,9 @@ _UNRESOLVED_TIME_PLACEHOLDER_WARNING = (
 )
 _IMG_DIAG_SQL_PLACEHOLDER_CN = (
     "【SQL占位符强制】须使用 @t_start/@t_end（事实表/运行记录时间列写 >= @t_start AND < @t_end，左闭右开；"
-    "禁止写死日期字面量）及 @unit_keyword、@device_keyword、@piperow_keyword、@row_no、@tube_no"
+    "禁止写死日期字面量）及 @unit_keyword、@device_keyword"
     "（须配 IS NULL/空串 guard，写法见 img_diag_*_plan_reference_sql.sql）；禁止硬编码示例锅炉名或区域。"
+    "看图诊断计划 SQL 范围过滤仅使用机组与受热面，不再使用 @piperow_keyword/@row_no/@tube_no。"
 )
 _IMG_DIAG_SQL_PLACEHOLDER_LEAKAGE_CN = (
     f"{_IMG_DIAG_SQL_PLACEHOLDER_CN}"

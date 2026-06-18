@@ -13,19 +13,15 @@ _DEFAULT_VALIDATE_SQL = """
 SELECT COUNT(*) AS record_count
 FROM account_boiler ab
 INNER JOIN account_static_device asd ON ab.boiler_id = asd.boiler_id
-LEFT JOIN account_device_piperow adp ON asd.device_id = adp.device_id
 WHERE ab.boiler_name = :boiler
   AND asd.device_name = :device_name
-  AND (:piperow_name IS NULL OR :piperow_name = '' OR adp.piperow_name = :piperow_name)
 """.strip()
 
 # 与 .env 中 ANALYSIS_IMG_DIAG_SCOPE_VALIDATE_SQL 默认值保持一致（单行写法见 app-deploy/.env.example）
 DEFAULT_IMG_DIAG_SCOPE_VALIDATE_SQL = (
     "SELECT COUNT(*) AS record_count FROM account_boiler ab "
     "INNER JOIN account_static_device asd ON ab.boiler_id = asd.boiler_id "
-    "LEFT JOIN account_device_piperow adp ON asd.device_id = adp.device_id "
-    "WHERE ab.boiler_name = :boiler AND asd.device_name = :device_name "
-    "AND (:piperow_name IS NULL OR :piperow_name = '' OR adp.piperow_name = :piperow_name)"
+    "WHERE ab.boiler_name = :boiler AND asd.device_name = :device_name"
 )
 
 
@@ -43,15 +39,16 @@ def _sql_literal(value: str | None) -> str:
 
 
 def bind_scope_validate_sql(sql_template: str, scope: dict[str, Any]) -> str:
-    """将 :boiler 等占位符替换为安全 SQL 字面量（只读 COUNT）。"""
+    """将 :boiler / :device_name 等占位符替换为安全 SQL 字面量（只读 COUNT）。"""
     boiler = scope.get("boiler") or ""
     device = scope.get("device_name") or ""
-    piperow = scope.get("piperow_name") or ""
     sql = sql_template
     sql = sql.replace(":boiler", _sql_literal(str(boiler) if boiler else None))
     sql = sql.replace(":device_name", _sql_literal(str(device) if device else None))
-    piperow_lit = _sql_literal(str(piperow) if piperow else None)
-    sql = sql.replace(":piperow_name", piperow_lit)
+    if ":piperow_name" in sql:
+        piperow = scope.get("piperow_name") or ""
+        piperow_lit = _sql_literal(str(piperow) if piperow else None)
+        sql = sql.replace(":piperow_name", piperow_lit)
     return sql
 
 

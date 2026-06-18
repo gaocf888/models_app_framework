@@ -100,8 +100,6 @@ def test_scope_draft_to_display_cn_labels() -> None:
     assert display == {
         "机组": "1号锅炉",
         "受热面": "水冷壁",
-        "排数": 3,
-        "管数": 56,
     }
     assert format_missing_fields_cn(["boiler", "device_name"]) == "机组、受热面"
     assert "业务库中未匹配" in SCOPE_HITL_DB_NOT_MATCHED_PROMPT
@@ -141,7 +139,22 @@ def test_scope_parse_succeeded() -> None:
     ) is False
 
 
-def test_bind_scope_validate_sql_optional_piperow() -> None:
+def test_bind_scope_validate_sql_boiler_device_only() -> None:
+    sql_tpl = (
+        "SELECT COUNT(*) AS record_count FROM t "
+        "WHERE b = :boiler AND d = :device_name"
+    )
+    bound = bind_scope_validate_sql(
+        sql_tpl,
+        {"boiler": "1号锅炉", "device_name": "低温过热器", "piperow_name": "前屏"},
+    )
+    assert "1号锅炉" in bound
+    assert "低温过热器" in bound
+    assert "前屏" not in bound
+
+
+def test_bind_scope_validate_sql_legacy_piperow_placeholder() -> None:
+    """自定义校验 SQL 仍含 :piperow_name 时可向后兼容 bind。"""
     sql_tpl = (
         "SELECT COUNT(*) AS record_count FROM t "
         "WHERE b = :boiler AND d = :device_name "

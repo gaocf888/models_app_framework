@@ -16,6 +16,9 @@ SCOPE_FIELD_LABELS_CN_TO_EN: dict[str, str] = {
     cn: en for en, cn in SCOPE_FIELD_LABELS.items()
 }
 
+# 人机协同展示层仅展示机组 + 受热面（解析层仍保留 5 字段）
+SCOPE_HITL_DISPLAY_FIELDS: tuple[str, ...] = ("boiler", "device_name")
+
 SCOPE_HITL_TITLE = "【台账信息确认】"
 
 SCOPE_HITL_DB_NOT_MATCHED_PROMPT = (
@@ -32,11 +35,12 @@ def format_missing_fields_cn(fields: list[str]) -> str:
 
 
 def scope_draft_to_display(scope_draft: dict[str, Any] | None) -> dict[str, Any]:
-    """将 scope_draft 英文字段名映射为中文键（仅输出有值的字段）。"""
+    """将 scope_draft 英文字段名映射为中文键（HITL 展示仅输出机组/受热面）。"""
     if not scope_draft:
         return {}
     display: dict[str, Any] = {}
-    for en, cn in SCOPE_FIELD_LABELS.items():
+    for en in SCOPE_HITL_DISPLAY_FIELDS:
+        cn = SCOPE_FIELD_LABELS[en]
         val = scope_draft.get(en)
         if val is None:
             continue
