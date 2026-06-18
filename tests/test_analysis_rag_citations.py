@@ -145,3 +145,38 @@ def test_build_business_rag_rerank_query_overheat_only() -> None:
         "锅炉管壁超温 规格材质 受热面 昨日超温"
     )
     assert AnalysisGraphRunner._build_business_rag_rerank_query("检修", "maintenance_strategy") is None
+
+
+def test_rag_citations_for_persist_filters_and_none_when_empty() -> None:
+    assert AnalysisGraphRunner._rag_citations_for_persist(None) is None
+    assert AnalysisGraphRunner._rag_citations_for_persist([]) is None
+    filtered = AnalysisGraphRunner._rag_citations_for_persist(
+        [
+            {"namespace": "global", "doc_name": "规程", "ref_index": 1},
+            {"namespace": "nl2sql_schema", "doc_name": "表结构", "ref_index": 2},
+        ]
+    )
+    assert filtered is not None
+    assert len(filtered) == 1
+    assert filtered[0]["doc_name"] == "规程"
+
+
+def test_persist_assistant_summary_writes_rag_citations() -> None:
+    from unittest.mock import MagicMock
+
+    conv = MagicMock()
+    runner = AnalysisGraphRunner(
+        conv_manager=conv,
+        llm_client=MagicMock(),
+        prompt_registry=MagicMock(),
+        hybrid_rag=MagicMock(),
+        nl2sql_service=MagicMock(),
+    )
+    cites = [{"namespace": "global", "doc_name": "超温规程", "ref_index": 1}]
+    runner._persist_assistant_summary("u1", "s1", "分析结论摘要。", cites)
+    conv.append_assistant_message.assert_called_once_with(
+        "u1",
+        "s1",
+        "分析结论摘要。",
+        rag_citations=cites,
+    )

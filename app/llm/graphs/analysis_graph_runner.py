@@ -329,6 +329,31 @@ class AnalysisGraphRunner:
         _snippets, citations = chunks_to_rag_context(merged, max_items=max_items)
         return filter_rag_citation_dicts(citations)
 
+    @staticmethod
+    def _rag_citations_for_persist(
+        raw: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]] | None:
+        """会话落盘 rag_citations（与 finished.meta、GET /chatbot/sessions/messages 同形）。"""
+        if not raw:
+            return None
+        cites = filter_rag_citation_dicts([x for x in raw if isinstance(x, dict)])
+        return cites or None
+
+    def _persist_assistant_summary(
+        self,
+        user_id: str,
+        session_id: str,
+        summary: str,
+        rag_citations: list[dict[str, Any]] | None,
+    ) -> None:
+        """写入助手 summary，并持久化 RAG 引用供历史消息回放。"""
+        self._conv.append_assistant_message(
+            user_id,
+            session_id,
+            summary,
+            rag_citations=self._rag_citations_for_persist(rag_citations),
+        )
+
     def _retrieve_rag_with_sources(
         self,
         *,
@@ -1003,7 +1028,12 @@ class AnalysisGraphRunner:
         quality_report = cast(dict[str, Any], state.get("quality_report") or {})
         used_rag = bool(state.get("used_rag"))
         rag_sources = list(state.get("rag_sources") or [])
-        self._conv.append_assistant_message(req.user_id, req.session_id, summary)
+        self._persist_assistant_summary(
+            req.user_id,
+            req.session_id,
+            summary,
+            list(state.get("rag_citations") or []),
+        )
         evidence = AnalysisEvidence(
             used_rag=used_rag,
             rag_sources=rag_sources[:32],
@@ -1329,7 +1359,12 @@ class AnalysisGraphRunner:
         quality_report = cast(dict[str, Any], state.get("quality_report") or {})
         used_rag = bool(state.get("used_rag"))
         rag_sources_state = list(state.get("rag_sources") or [])
-        self._conv.append_assistant_message(req.user_id, req.session_id, summary)
+        self._persist_assistant_summary(
+            req.user_id,
+            req.session_id,
+            summary,
+            list(state.get("rag_citations") or []),
+        )
         evidence = AnalysisEvidence(
             used_rag=used_rag,
             rag_sources=rag_sources_state[:64],
@@ -1531,7 +1566,7 @@ class AnalysisGraphRunner:
             (perf_counter() - t_syn)
         )
 
-        self._conv.append_assistant_message(req.user_id, req.session_id, summary)
+        self._persist_assistant_summary(req.user_id, req.session_id, summary, rag_citations)
         evidence = AnalysisEvidence(
             used_rag=used_rag,
             rag_sources=rag_sources[:32],
@@ -1881,7 +1916,7 @@ class AnalysisGraphRunner:
             (perf_counter() - synthesis_started)
         )
 
-        self._conv.append_assistant_message(req.user_id, req.session_id, summary)
+        self._persist_assistant_summary(req.user_id, req.session_id, summary, rag_citations)
         evidence = AnalysisEvidence(
             used_rag=used_rag,
             rag_sources=(plan_rag_sources + biz_rag_sources)[:64],
