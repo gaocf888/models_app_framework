@@ -311,9 +311,12 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
     | `suggested_actions` | 建议动作：`confirm_scope` / `edit_scope` / `abort` |
 
     前端建议流程：
-    1. 监听 `event === "img_diag_scope_input_required"`，展示 `prompt` + `scope_draft_display`（prompt + 草案）
-    2. 用户在输入框补充说明，调用 **`/run-img-diag-resume-stream`**（携带 `resume_token`）
-    3. 续跑 SSE 顺序与正常流相同（`meta` → `summary_delta` → … → `finished`）；若再次 HITL，重复上述步骤
+    人机协同触发(用户问题中解析确认 机组/受热面)： -
+    1.	循环监听 `event === "img_diag_scope_input_required"`，
+    2.	监听到后，前端展示流中 `prompt` + `scope_draft_display`；用户在输入框补充说明，调用人机协同恢复接口 **`/run-img-diag-resume-stream`**（携带 `resume_token`）续跑
+    3.	没监听到，同一条首流 SSE 直接到 meta → 报告流，不需要 resume 接口
+
+
 
     **错误**
     - 请求体验证失败（如 defect_ident 无图、query 为空）：**422**
