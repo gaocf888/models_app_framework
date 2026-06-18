@@ -47,6 +47,24 @@ class TestAnalysisFinishedMeta(unittest.TestCase):
         self.assertEqual([], m["suggested_questions"])
         self.assertEqual(1, len(m["rag_citations"]))
 
+    def test_finished_meta_img_diag_parsed_intent(self) -> None:
+        t0 = perf_counter()
+        meta = build_analysis_finished_meta(
+            request_id="anl_img_diag",
+            plan_id="plan_img",
+            analysis_type="img_diag_defect_ident",
+            data_mode="img_diag_defect_ident",
+            used_rag=True,
+            used_plan_rag=False,
+            used_business_rag=True,
+            rag_citations=[],
+            start_ts=t0,
+            parsed_scope_intent={"boiler": "1号锅炉", "device_name": "水冷壁"},
+            parsed_time_intent={"time_window_tag": "近7天"},
+        )
+        self.assertEqual({"boiler": "1号锅炉", "device_name": "水冷壁"}, meta["parsed_scope_intent"])
+        self.assertEqual({"time_window_tag": "近7天"}, meta["parsed_time_intent"])
+
     def test_finished_meta_img_diag_data_mode(self) -> None:
         t0 = perf_counter()
         meta = build_analysis_finished_meta(

@@ -239,31 +239,86 @@ async def run_analysis_img_diag(data: AnalysisImgDiagRequest) -> AnalysisV2Resul
     "/run-img-diag-stream",
     summary="看图诊断执行（并行视觉 + NL2SQL + RAG · 流式 summary）",
     response_class=StreamingResponse,
-    response_description="`text/event-stream`：先 `meta`，再流式 `summary_delta`，最后 `summary_complete`、`structured_async_enqueued` 与尾帧 `finished`；完整 JSON 异步落日志 / trace。",
+    response_description=(
+        "`text/event-stream`：可能先 `img_diag_scope_input_required`（台账 HITL），再 `meta` → "
+        "多条 `summary_delta` → `summary_complete` → `structured_async_enqueued` → 尾帧 `finished`；"
+        "完整 AnalysisV2Result 不在 SSE 内，见 trace。"
+    ),
 )
 async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> StreamingResponse:
     """
-    与 **`/run-img-diag`** 相同鉴权、请求体与**并行臂**（视觉 ‖ NL2SQL ‖ 业务 RAG），**synthesis** 改为流式输出 summary。
+    与 **`/run-img-diag`** 相同鉴权、请求体与**业务链路**（可选 scope HITL → 视觉 ‖ NL2SQL 并行 → 业务 RAG 串行 → synthesis），
+    **synthesis** 阶段改为流式推送报告正文。
 
-    **响应**：`text/event-stream`（SSE），每条 `data: {json}\\n\\n`：
-    - `event: meta`：含 `request_id`、`plan_id`、`analysis_type`、`img_diag_subtype`、`data_mode` 等；
-    - 多条 `summary_delta`：增量文本；
-    - `summary_complete`：`chars`、`synthesis_ms`；
-    - `structured_async_enqueued`：已排队后台组装完整 **`AnalysisV2Result`**（与应用日志、`register_analysis_nl2sql_stream_structured_hook` 钩子**一致**，trace 由 **`_save_trace`** 写入）。
-    - `finished`：**尾帧** `{"finished":true,"meta":{...}}`（与 **`/chatbot/chat/stream`** 结束帧同形）；
-      `meta.rag_citations` 为知识库引用列表（与智能客服字段一致），并含 `used_rag`/`used_plan_rag`/`used_business_rag`、
-      `request_id`/`analysis_type`/`synthesis_ms` 等分析扩展字段。
+    **鉴权**：`Authorization: Bearer <SERVICE_API_KEY>`。
 
-    **同步接口** **`/run-img-diag`** 保持不变。
+    **路径 / Query**：无。
 
-    若 scope 未确认，首条事件可能为 **`img_diag_scope_input_required`**（在 `meta` 之前），
-    需调用 **`/run-img-diag-resume-stream`** 续跑。
+    **请求体 `AnalysisImgDiagRequest`（Schema 为准，以下为速查）**
+    - `user_id`：**必填**。后台用户标识；须通过 `validate_user_id`。
+    - `session_id`：**必填**。会话标识；须通过 `validate_session_id`。
+    - `img_diag_subtype`：可选，默认 `defect_ident`。
+      - `defect_ident`：缺陷识别；`analysis_type`/`data_mode` 为 `img_diag_defect_ident`；**`image_urls` 至少 1 张**。
+      - `leakage_burst`：泄爆分析；`analysis_type`/`data_mode` 为 `img_diag_leakage_burst`；图片可选。
+    - `query`：**必填**。自然语言问题，承载机组/受热面位置与时间语义；泄爆场景须含或可解析 **事故发生时刻**（用于锚点向前 3 天取数）。
+    - `image_urls`：图片 URL 列表（可先调 **`POST /analysis/img-diag/upload`** 获取预签名 URL）；缺陷识别必填，泄爆可选。
+    - `data_requirements_hint`：可选，默认 `[]`。补充 NL2SQL 数据计划维度提示。
+    - `options`：可选，默认 `enable_rag=true`。常用字段：`strict`、`max_nl2sql_calls`、`max_rows_per_query`、
+      `max_suggestions`、`chart_mode` 等；未传字段由服务默认配置补齐。
 
-    **针对看图诊断 图中第一个节点人机协同，前端使用方法**
-        1. 监听 SSE event === "img_diag_scope_input_required"
-        2. 在对话/summary 区域展示 prompt + 草案
-        3. 用户在同一条输入框补充后，调用下方 run-img-diag-resume-stream（保存 resume_token） 接口
-        4. 若再次收到 img_diag_scope_input_required，重复上述步骤（多轮 HITL）
+    **传输**
+    - `Content-Type: text/event-stream`；每条 `data: {json}\\n\\n`（事件类型在 JSON 的 **`event`** 字段）
+    - 响应头含 `Cache-Control: no-cache`、`X-Accel-Buffering: no`
+    - scope 已确认或跳过后，**`meta` 之前可能长时间无事件**（视觉/NL2SQL/RAG 并行阶段），属正常
+
+    **SSE 出参（按典型顺序）**
+
+    | event | 何时出现 | 主要字段 |
+    |-------|----------|----------|
+    | `img_diag_scope_input_required` | scope 台账 HITL 需用户确认时（**可能在 `meta` 之前**）；确认前流结束 | 见下方 HITL 说明 |
+    | `meta` | 并行臂完成、进入 synthesis 前 | `request_id`、`plan_id`、`analysis_type`、`data_mode`、`img_diag_subtype`、`orchestrator`、`template_versions`（`synthesis`/`report`） |
+    | `summary_delta` | synthesis 流式输出，可多条 | `text`：Markdown 增量片段 |
+    | `summary_complete` | 正文流结束 | `request_id`、`chars`、`synthesis_ms` |
+    | `structured_async_enqueued` | 完整结果已排队后台写日志/trace | `request_id` |
+    | `finished` | **尾帧**（与 `/chatbot/chat/stream` 同形） | `finished: true`，`meta` 见下表 |
+
+    **`finished.meta` 主要字段（200 尾帧，非 HTTP body）**
+    - 与智能客服同形：`used_rag`、`rag_citations[]`（含 `ref_index`、`doc_name`、`text_preview`、`original_content_url` 等）、
+      `duration_ms`、`used_nl2sql`、`nl2sql_sql`（首条成功子查询 SQL）、`processed_image_urls`、`original_image_urls`
+    - 分析扩展：`request_id`、`plan_id`、`analysis_type`、`data_mode`、`used_plan_rag`、`used_business_rag`、
+      `synthesis_ms`、`intent_label`（如 `analysis_img_diag_defect_ident`）
+    - **解析范围/时间窗**（报告正文不再单独成章，由前端在结束帧展示）：`parsed_scope_intent`（如 `boiler`、`device_name`）、
+      `parsed_time_intent`（如 `time_window_tag`、`time_window`、`statistical_time_range`）
+
+    **完整 `AnalysisV2Result`（含 `structured_report` / `evidence` / `trace`）不在 SSE 内**；
+    用 `meta.request_id` 或 `finished.meta.request_id` 调 **`GET /analysis/traces/{request_id}`**（宜在收到 `finished` 后拉取）。
+
+    **scope 台账人机协同（HITL）**
+
+    若首流收到 **`img_diag_scope_input_required`**（未出现 `meta`），表示机组/受热面待确认，需调 **`POST /run-img-diag-resume-stream`** 续跑：
+
+    | 字段 | 说明 |
+    |------|------|
+    | `event` | 固定 `img_diag_scope_input_required` |
+    | `request_id` | 本次分析 ID（续跑后沿用） |
+    | `resume_token` | **必存**；续跑请求体必填 |
+    | `prompt` | 提示文案（如缺失字段说明、库表未匹配说明） |
+    | `scope_draft` | 英文字段名草案：`boiler`、`device_name`、`piperow_name`、`row_no`、`tube_no` |
+    | `scope_draft_display` | 中文键展示：`机组`、`受热面` 等（HITL 展示推荐用此字段） |
+    | `missing_fields` | 缺失字段中文列表（如 `机组`、`受热面`） |
+    | `validation_error` | 库表校验错误码/说明（可选） |
+    | `interrupt_reason` | 如 `missing:boiler`、`db_validate_zero_rows` |
+    | `suggested_actions` | 建议动作：`confirm_scope` / `edit_scope` / `abort` |
+
+    前端建议流程：
+    1. 监听 `event === "img_diag_scope_input_required"`，展示 `prompt` + `scope_draft_display`（prompt + 草案）
+    2. 用户在输入框补充说明，调用 **`/run-img-diag-resume-stream`**（携带 `resume_token`）
+    3. 续跑 SSE 顺序与正常流相同（`meta` → `summary_delta` → … → `finished`）；若再次 HITL，重复上述步骤
+
+    **错误**
+    - 请求体验证失败（如 defect_ident 无图、query 为空）：**422**
+    - 鉴权失败：**401** / **403**
+    - 流内 synthesis 失败：仍可能输出降级 `summary_delta` 后正常收尾
     """
     return await service.run_analysis_img_diag_stream(data)
 
@@ -272,14 +327,63 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
     "/run-img-diag-resume-stream",
     summary="看图诊断 scope 人机协同恢复（SSE 续流）",
     response_class=StreamingResponse,
+    response_description=(
+        "`text/event-stream`：scope HITL 确认后续跑，事件顺序与 `/run-img-diag-stream` 相同"
+        "（`meta` → `summary_delta` → `summary_complete` → `structured_async_enqueued` → `finished`）；"
+        "`action=abort` 时可能无 synthesis 事件。"
+    ),
 )
 async def run_analysis_img_diag_scope_resume_stream(
     data: ImgDiagScopeResumeRequest,
 ) -> StreamingResponse:
     """
-    在 **`/run-img-diag-stream`** 收到 **`img_diag_scope_input_required`** 后调用。
+    在 **`/run-img-diag-stream`** 收到 **`img_diag_scope_input_required`** 后调用，提交用户确认/补充并续跑后续链路。
 
-    必传：`resume_token`、`user_id`、`session_id`；`action` 为 `confirm_scope` | `edit_scope` | `abort`。
+    **鉴权**：`Authorization: Bearer <SERVICE_API_KEY>`。
+
+    **路径 / Query**：无。
+
+    **请求体 `ImgDiagScopeResumeRequest`（Schema 为准，以下为速查）**
+    - `resume_token`：**必填**。首流（或上一轮 HITL）事件 `img_diag_scope_input_required.resume_token`；一次性绑定 checkpoint 会话。
+    - `user_id`：**必填**。须与发起首流时一致。
+    - `session_id`：**必填**。须与发起首流时一致。
+    - `action`：可选，默认 `confirm_scope`。
+      - `confirm_scope`：确认当前草案；可配合 `payload.user_supplement` 追加自然语言补充后重新解析 scope。
+      - `edit_scope`：显式编辑；可配合 `payload.scope_patch` 结构化修正。
+      - `abort`：用户取消 scope 确认流程。
+    - `payload`：可选 JSON 对象，常用子字段：
+      - `user_supplement`（string）：用户在输入框的补充说明（如「2号锅炉水冷壁」），会与累计问句合并后重新 LLM 解析。
+      - `scope_patch`（object）：结构化修正；键可为英文字段名（`boiler`、`device_name`）或中文展示名（`机组`、`受热面`）。
+      - `reason`（string）：`action=abort` 时可选取消原因。
+
+    **请求示例**
+    ```json
+    {
+      "resume_token": "<来自 img_diag_scope_input_required>",
+      "user_id": "u_001",
+      "session_id": "s_001",
+      "action": "confirm_scope",
+      "payload": { "user_supplement": "1号锅炉低温过热器" }
+    }
+    ```
+
+    **传输**：同 **`/run-img-diag-stream`**（`text/event-stream`，`data: {json}\\n\\n`）。
+
+    **SSE 出参**
+
+    - **`action` 为 `confirm_scope` / `edit_scope` 且 scope 校验通过**：与正常看图诊断流相同 —
+      `meta` → 多条 `summary_delta` → `summary_complete` → `structured_async_enqueued` → `finished`。
+      字段含义见 **`/run-img-diag-stream`** 文档。
+    - **scope 仍不通过**（如库表仍无匹配、字段仍缺失）：仅输出 **`img_diag_scope_input_required`** 后结束
+      （含新的 `resume_token`，可再次续跑）。
+    - **`action=abort`**：不进入 synthesis；具体事件以实现为准，通常无 `summary_delta`。
+
+    **`finished.meta`**：与首流成功路径相同，含 `parsed_scope_intent`、`parsed_time_intent`、`rag_citations` 等。
+
+    **错误**
+    - `resume_token` 无效或过期：**4xx**（detail 为可读说明）
+    - `user_id` / `session_id` 与 token 绑定不一致：**4xx**
+    - 请求体验证失败：**422**
     """
     return await service.run_analysis_img_diag_scope_resume_stream(data)
 

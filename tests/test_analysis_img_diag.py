@@ -14,6 +14,20 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
         self.assertEqual(_IMG_DIAG_PROFILES["defect_ident"].analysis_type, IMG_DIAG_DEFECT_IDENT_TYPE)
         self.assertEqual(_IMG_DIAG_PROFILES["leakage_burst"].analysis_type, IMG_DIAG_LEAKAGE_BURST_TYPE)
 
+    def test_gathered_data_for_synthesis_uses_purpose_labels(self) -> None:
+        labeled = AnalysisImgDiagGraphRunner._gathered_data_for_synthesis(
+            {"q1": [{"a": 1}], "q2a": [{"b": 2}]},
+            [
+                {"item_id": "q1", "purpose": "管段基础参数"},
+                {"item_id": "q2a", "purpose": "检修处置-近3次壁厚"},
+            ],
+            analysis_type=IMG_DIAG_DEFECT_IDENT_TYPE,
+        )
+        self.assertIn("管段基础参数", labeled)
+        self.assertIn("检修处置-近3次壁厚", labeled)
+        self.assertNotIn("q1", labeled)
+        self.assertNotIn("q2a", labeled)
+
     def test_business_rag_query_defect_ident(self) -> None:
         req = AnalysisImgDiagRequest(
             user_id="u_img",

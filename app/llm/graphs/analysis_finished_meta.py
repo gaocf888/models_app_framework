@@ -32,6 +32,8 @@ def build_analysis_finished_meta(
     original_image_urls: list[str] | None = None,
     retrieval_attempts: int | None = None,
     rag_namespace: str | None = None,
+    parsed_scope_intent: dict[str, Any] | None = None,
+    parsed_time_intent: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """组装 finished.meta：智能客服同名字段 + 综合分析扩展字段。"""
     citations = filter_rag_citation_dicts(list(rag_citations or []))
@@ -92,6 +94,10 @@ def build_analysis_finished_meta(
         meta["synthesis_strategy_effective"] = synthesis_strategy_effective
     if synthesis_ms is not None:
         meta["synthesis_ms"] = synthesis_ms
+    if parsed_scope_intent:
+        meta["parsed_scope_intent"] = parsed_scope_intent
+    if parsed_time_intent:
+        meta["parsed_time_intent"] = parsed_time_intent
     return meta
 
 

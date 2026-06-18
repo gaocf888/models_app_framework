@@ -80,10 +80,13 @@ _IMG_DIAG_PROFILES: dict[ImgDiagSubtype, _ImgDiagSubtypeProfile] = {
         prefetch_rag_intent="规程通识 缺陷处置 运行监护 检修工艺",
         augmented_rag_intent="同类型缺陷历史处置案例 打磨补焊 换管 防磨瓦 运行监护 复测周期",
         synthesis_default=(
-            "你是电厂承压管系缺陷识别分析师，需融合图像证据、数据库摘要与知识库片段"
-            "输出分风险等级的现场处置方案。"
+            "你是电厂承压管系缺陷识别分析师，需融合图像证据、数据库摘要与知识库片段，"
+            "输出分风险等级的现场处置方案与历史同类案例摘要。"
         ),
-        report_default="输出章节含：缺陷判定、证据链、处置方案、历史案例、解析范围说明、免责声明。",
+        report_default=(
+            "输出章节含：缺陷判定与风险等级、分风险等级处置方案（结合知识库）、"
+            "历史同类案例摘要（最多3条）、结尾 AI 辅助分析说明。"
+        ),
         stream_fallback_summary="缺陷识别分析生成失败，已返回基础报告，请稍后重试。",
         orchestrator_stream_id="img_diag_defect_ident_stream",
         images_required=True,
@@ -309,6 +312,102 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         scope_raw = intent.get("scope")
         scope_part = dict(scope_raw) if isinstance(scope_raw, dict) else {}
         return time_part, scope_part
+
+    @staticmethod
+    def _gathered_data_for_synthesis(
+        gathered_data: dict[str, list[dict]],
+        plan_tasks: list[dict[str, Any]],
+        *,
+        analysis_type: str,
+    ) -> dict[str, list[dict]]:
+        """合成输入：用 purpose 业务语义作键，避免报告中引用 q1/q2a 等编号。"""
+        if analysis_type != IMG_DIAG_DEFECT_IDENT_TYPE or not gathered_data:
+            return gathered_data
+        id_to_purpose: dict[str, str] = {}
+        for task in plan_tasks:
+            if not isinstance(task, dict):
+                continue
+            item_id = str(task.get("item_id") or "").strip()
+            purpose = str(task.get("purpose") or "").strip()
+            if item_id and purpose:
+                id_to_purpose[item_id] = purpose
+        labeled: dict[str, list[dict]] = {}
+        for key, rows in gathered_data.items():
+            base = id_to_purpose.get(str(key), "结构化查询数据")
+            label = base
+            suffix = 2
+            while label in labeled:
+                label = f"{base}·{suffix}"
+                suffix += 1
+            labeled[label] = rows
+        return labeled
+
+    @staticmethod
+    def _append_report_constraints(synthesis_prompt: str, report_prompt: str) -> str:
+        report = (report_prompt or "").strip()
+        if not report:
+            return synthesis_prompt
+        return f"{synthesis_prompt.rstrip()}\n\n【报告格式约束】\n{report}"
+
+    @staticmethod
+    def _finished_meta_parsed_intent(
+        pack: _ImgDiagPack,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        scope = pack.confirmed_scope_intent or pack.parsed_scope_intent or None
+        time_part = pack.parsed_time_intent or None
+        if scope:
+            scope = {
+                k: v
+                for k, v in scope.items()
+                if v is not None and (not isinstance(v, str) or v.strip())
+            } or None
+        if time_part:
+            time_part = {
+                k: v
+                for k, v in time_part.items()
+                if v is not None and (not isinstance(v, str) or str(v).strip())
+            } or None
+        return scope, time_part
+
+    def _build_img_diag_finished_meta(
+        self,
+        pack: _ImgDiagPack,
+        *,
+        request_id: str,
+        plan_id: str,
+        start_ts: float,
+        synthesis_ms: int,
+        image_urls: list[str],
+    ) -> dict[str, Any]:
+        first_nl2sql_sql = next(
+            (c.sql for c in pack.calls if c.status == "success" and (c.sql or "").strip()),
+            None,
+        )
+        parsed_scope, parsed_time = self._finished_meta_parsed_intent(pack)
+        return build_analysis_finished_meta(
+            request_id=request_id,
+            plan_id=plan_id,
+            analysis_type=pack.profile.analysis_type,
+            data_mode=pack.profile.data_mode,
+            used_rag=pack.used_rag,
+            used_plan_rag=pack.used_plan_rag,
+            used_business_rag=pack.used_business_rag,
+            rag_citations=pack.rag_citations,
+            start_ts=start_ts,
+            synthesis_ms=synthesis_ms,
+            used_nl2sql=bool(pack.calls),
+            nl2sql_sql=first_nl2sql_sql,
+            processed_image_urls=image_urls,
+            original_image_urls=image_urls,
+            retrieval_attempts=int(pack.used_plan_rag) + int(pack.used_business_rag),
+            rag_namespace=(
+                str(pack.rag_citations[0].get("namespace") or "").strip() or None
+                if pack.rag_citations
+                else None
+            ),
+            parsed_scope_intent=parsed_scope,
+            parsed_time_intent=parsed_time,
+        )
 
     @staticmethod
     def _merge_rag_text_lists(primary: list[str], secondary: list[str], *, limit: int = 24) -> list[str]:
@@ -697,16 +796,22 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             user_id=req.user_id,
             default_text=profile.synthesis_default,
         )
-        _rp, report_version = self._resolve_stage_template(
+        report_prompt, report_version = self._resolve_stage_template(
             stage="analysis_report",
             analysis_type=at,
             user_id=req.user_id,
             default_text=profile.report_default,
         )
-        del _rp
+        synthesis_prompt = self._append_report_constraints(synthesis_prompt, report_prompt)
+
+        synthesis_data = self._gathered_data_for_synthesis(
+            gathered_data,
+            [t for t in raw_tasks if isinstance(t, dict)],
+            analysis_type=at,
+        )
 
         merged_blob: dict[str, Any] = {
-            "structured_queries_snapshot": gathered_data,
+            "structured_queries_snapshot": synthesis_data,
             "vision_findings": vision_data,
             "parsed_intent": parsed_intent_snapshot,
             "parsed_time_intent": parsed_time_intent,
@@ -714,6 +819,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "confirmed_scope_intent": confirmed_scope,
             "user_query": req.query,
             "img_diag_subtype": profile.subtype,
+            "quality_report": quality_report,
         }
 
         rid = request_id or str(nl_state.get("request_id") or f"anl_{uuid4().hex[:12]}")
@@ -1046,31 +1152,13 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             yield {"event": "structured_async_enqueued", "request_id": request_id}
 
             image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
-            first_nl2sql_sql = next(
-                (c.sql for c in pack.calls if c.status == "success" and (c.sql or "").strip()),
-                None,
-            )
-            finished_meta = build_analysis_finished_meta(
+            finished_meta = self._build_img_diag_finished_meta(
+                pack,
                 request_id=request_id,
                 plan_id=plan_id,
-                analysis_type=at,
-                data_mode=data_mode,
-                used_rag=pack.used_rag,
-                used_plan_rag=pack.used_plan_rag,
-                used_business_rag=pack.used_business_rag,
-                rag_citations=pack.rag_citations,
                 start_ts=t_pipeline,
                 synthesis_ms=synthesis_ms,
-                used_nl2sql=bool(pack.calls),
-                nl2sql_sql=first_nl2sql_sql,
-                processed_image_urls=image_urls,
-                original_image_urls=image_urls,
-                retrieval_attempts=int(pack.used_plan_rag) + int(pack.used_business_rag),
-                rag_namespace=(
-                    str(pack.rag_citations[0].get("namespace") or "").strip() or None
-                    if pack.rag_citations
-                    else None
-                ),
+                image_urls=image_urls,
             )
             yield analysis_finished_sse_event(finished_meta)
 
@@ -1181,31 +1269,13 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         )
         yield {"event": "structured_async_enqueued", "request_id": request_id}
         image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
-        first_nl2sql_sql = next(
-            (c.sql for c in pack.calls if c.status == "success" and (c.sql or "").strip()),
-            None,
-        )
-        finished_meta = build_analysis_finished_meta(
+        finished_meta = self._build_img_diag_finished_meta(
+            pack,
             request_id=request_id,
             plan_id=plan_id,
-            analysis_type=at,
-            data_mode=data_mode,
-            used_rag=pack.used_rag,
-            used_plan_rag=pack.used_plan_rag,
-            used_business_rag=pack.used_business_rag,
-            rag_citations=pack.rag_citations,
             start_ts=t_pipeline,
             synthesis_ms=synthesis_ms,
-            used_nl2sql=bool(pack.calls),
-            nl2sql_sql=first_nl2sql_sql,
-            processed_image_urls=image_urls,
-            original_image_urls=image_urls,
-            retrieval_attempts=int(pack.used_plan_rag) + int(pack.used_business_rag),
-            rag_namespace=(
-                str(pack.rag_citations[0].get("namespace") or "").strip() or None
-                if pack.rag_citations
-                else None
-            ),
+            image_urls=image_urls,
         )
         yield analysis_finished_sse_event(finished_meta)
 
