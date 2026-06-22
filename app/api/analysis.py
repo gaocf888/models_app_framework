@@ -186,6 +186,7 @@ async def run_analysis_with_nl2sql_stream(data: AnalysisNL2SQLRequest) -> Stream
 async def stop_analysis_stream(req: AnalysisStreamStopRequest) -> AnalysisStreamStopResponse:
     """
     协作式中断 **`/run-with-nl2sql-stream`** 流式输出（与智能客服 ``/chatbot/chat/stop`` 同语义）。
+    适用于 通用综合分析-超温分析/检修策略/老版泄爆分析/四管健康报告解读、看图诊断-缺陷识别/泄爆分析 的流式显示中断
 
     1. 先从流式首帧 ``{"event":"started","stream_id":"..."}`` 获取 ``stream_id``；
     2. 调用本接口置位取消标记；
