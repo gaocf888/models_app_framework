@@ -340,3 +340,34 @@ class ImgDiagScopeResumeRequest(BaseModel):
     def _v_sid(cls, v: str) -> str:
         return validate_session_id(v)
 
+
+class AnalysisStreamStopRequest(BaseModel):
+    user_id: str = Field(..., description="用户 ID（与 stream 请求一致）")
+    session_id: str = Field(..., description="会话 ID（与 stream 请求一致）")
+    stream_id: str = Field(..., description="需要停止的流式请求标识（由 started 事件返回）")
+
+    @field_validator("user_id")
+    @classmethod
+    def _validate_stop_user_id(cls, v: str) -> str:
+        return validate_user_id(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_stop_session_id(cls, v: str) -> str:
+        return validate_session_id(v)
+
+    @field_validator("stream_id")
+    @classmethod
+    def _validate_stream_id(cls, v: str) -> str:
+        s = (v or "").strip()
+        if not s:
+            raise ValueError("stream_id is required")
+        return s
+
+
+class AnalysisStreamStopResponse(BaseModel):
+    ok: bool = Field(True, description="是否已接受停止请求")
+    user_id: str = Field(..., description="用户 ID")
+    session_id: str = Field(..., description="会话 ID")
+    stream_id: str = Field(..., description="被停止的流式请求 ID")
+

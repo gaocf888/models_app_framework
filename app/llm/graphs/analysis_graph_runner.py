@@ -23,7 +23,12 @@ from uuid import uuid4
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, cast
 
-from app.conversation.manager import ConversationManager
+from app.llm.graphs.analysis_stream_cancel import (
+    AnalysisStreamCancelled,
+    is_stream_cancelled,
+    raise_if_stream_cancelled,
+)
+from app.services.analysis_stream_control import AnalysisStreamControl
 from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.core.metrics import (
@@ -185,6 +190,7 @@ class _SynthesisRunOutcome:
     v2_charts: list[dict[str, Any]] = field(default_factory=list)
     v2_sections: list[dict[str, Any]] = field(default_factory=list)
     slot_trace: list[dict[str, Any]] = field(default_factory=list)
+    user_cancelled: bool = False
 
 
 class AnalysisGraphRunner:
@@ -204,6 +210,7 @@ class AnalysisGraphRunner:
         prompt_registry: PromptTemplateRegistry | None = None,
         hybrid_rag: HybridRAGService | None = None,
         nl2sql_service: NL2SQLService | None = None,
+        stream_control: AnalysisStreamControl | None = None,
     ) -> None:
         """注入依赖并编译两套图；checkpoint 与图编译失败时自动降级。"""
         self._conv = conv_manager or ConversationManager()
@@ -211,6 +218,7 @@ class AnalysisGraphRunner:
         self._prompts = prompt_registry or PromptTemplateRegistry()
         self._hybrid_rag = hybrid_rag or HybridRAGService()
         self._nl2sql = nl2sql_service or NL2SQLService(conv_manager=self._conv)
+        self._stream_ctrl = stream_control
         self._analysis_cfg = get_app_config().analysis
         self._checkpointer = self._build_analysis_checkpointer()
         self._graph_payload = self._build_payload_graph()
@@ -1652,7 +1660,11 @@ class AnalysisGraphRunner:
             raise
 
     async def _run_nl2sql_pipeline_through_rag(
-        self, req: AnalysisNL2SQLRequest, *, request_id: str | None = None
+        self,
+        req: AnalysisNL2SQLRequest,
+        *,
+        request_id: str | None = None,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> _Nl2SqlPipelineThroughRagContext:
         """顺序路径中与 LangGraph 前半段等价：会话 → 规划 RAG → 意图/计划 → 取数 → 质量门 → 业务 RAG（供同步与流式 synthesis 复用）。"""
         t_pipeline = perf_counter()
@@ -1662,6 +1674,7 @@ class AnalysisGraphRunner:
         node_status: dict[str, str] = {}
         degrade_reasons: list[str] = []
         self._conv.append_user_message(req.user_id, req.session_id, req.query)
+        await raise_if_stream_cancelled(cancel_checker)
 
         t_pc = perf_counter()
         plan_context, plan_rag_sources, plan_rag_chunks = self._retrieve_plan_rag(
@@ -1669,6 +1682,7 @@ class AnalysisGraphRunner:
         )
         node_latency_ms["plan_context_rag"] = int((perf_counter() - t_pc) * 1000)
         node_status["plan_context_rag"] = "success"
+        await raise_if_stream_cancelled(cancel_checker)
 
         planner_warnings: list[str] = []
         t_int = perf_counter()
@@ -1686,6 +1700,7 @@ class AnalysisGraphRunner:
             planner_warnings.extend(w_int)
         node_latency_ms["intent_llm"] = int((perf_counter() - t_int) * 1000)
         node_status["intent_llm"] = "success"
+        await raise_if_stream_cancelled(cancel_checker)
 
         t_pl = perf_counter()
         if not self._analysis_cfg.nl2sql_llm_planner_enabled:
@@ -1706,6 +1721,7 @@ class AnalysisGraphRunner:
             planner_warnings.extend(w_m)
         node_latency_ms["plan_llm"] = int((perf_counter() - t_pl) * 1000)
         node_status["plan_llm"] = "success"
+        await raise_if_stream_cancelled(cancel_checker)
 
         plan_template_version = self._resolve_plan_template_version_label(req)
         nl2sql_calls, gathered_data, task_status, acquire_latency_ms = await self._execute_data_plan(
@@ -1713,6 +1729,7 @@ class AnalysisGraphRunner:
             tasks=tasks,
             analysis_request_id=request_id,
             plan_template_version=plan_template_version,
+            cancel_checker=cancel_checker,
         )
         node_latency_ms["acquire_data"] = acquire_latency_ms
         node_status["acquire_data"] = "success"
@@ -1742,6 +1759,8 @@ class AnalysisGraphRunner:
             ANALYSIS_DEGRADE_COUNT.labels(reason="strict_nl2sql_quality_blocked").inc()
             degrade_reasons.append("strict_nl2sql_quality_blocked")
             raise ValueError("strict mode enabled: NL2SQL data quality thresholds not met")
+
+        await raise_if_stream_cancelled(cancel_checker)
 
         context_snippets: list[str] = []
         biz_rag_sources: list[dict[str, Any]] = []
@@ -2241,35 +2260,28 @@ class AnalysisGraphRunner:
         planning_context: str | None,
         chart_mode: str,
         task_status: dict[str, str] | None = None,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> AsyncIterator[tuple[dict[str, Any], _SynthesisRunOutcome | None]]:
         engine = self._make_synthesis_v2_engine()
         report_context = self._resolve_overheat_report_context(
             analysis_type, query, gathered_data
         )
+        stream_kw = dict(
+            analysis_type=analysis_type,
+            query=query,
+            data_mode=data_mode,
+            gathered_data=gathered_data,
+            context_snippets=context_snippets,
+            planning_context=planning_context,
+            chart_mode=chart_mode,
+            task_status=task_status,
+            report_context=report_context,
+            cancel_checker=cancel_checker,
+        )
         if self._analysis_cfg.synthesis_v2_stream_live_first:
-            event_source = engine.iter_stream_events_live_first(
-                analysis_type=analysis_type,
-                query=query,
-                data_mode=data_mode,
-                gathered_data=gathered_data,
-                context_snippets=context_snippets,
-                planning_context=planning_context,
-                chart_mode=chart_mode,
-                task_status=task_status,
-                report_context=report_context,
-            )
+            event_source = engine.iter_stream_events_live_first(**stream_kw)
         else:
-            event_source = engine.iter_stream_events(
-                analysis_type=analysis_type,
-                query=query,
-                data_mode=data_mode,
-                gathered_data=gathered_data,
-                context_snippets=context_snippets,
-                planning_context=planning_context,
-                chart_mode=chart_mode,
-                task_status=task_status,
-                report_context=report_context,
-            )
+            event_source = engine.iter_stream_events(**stream_kw)
         async for event, result in event_source:
             if result is not None:
                 configured = self._configured_synthesis_strategy(analysis_type)
@@ -2286,6 +2298,7 @@ class AnalysisGraphRunner:
                         v2_charts=result.charts,
                         v2_sections=result.sections,
                         slot_trace=result.slot_trace,
+                        user_cancelled=result.user_cancelled,
                     ),
                 )
             elif event:
@@ -2410,6 +2423,17 @@ class AnalysisGraphRunner:
         ):
             yield chunk
 
+    def _build_stream_cancel_checker(
+        self, user_id: str, session_id: str, stream_id: str | None
+    ) -> Callable[[], Awaitable[bool]] | None:
+        if not self._stream_ctrl or not stream_id:
+            return None
+
+        async def _check() -> bool:
+            return await self._stream_ctrl.is_cancelled(user_id, session_id, stream_id)
+
+        return _check
+
     async def iter_nl2sql_stream_events(
         self,
         req: AnalysisNL2SQLRequest,
@@ -2421,27 +2445,72 @@ class AnalysisGraphRunner:
 
         Yields 事件 dict（字段 `event` 标识类型，详见 `app.api.analysis.run_analysis_with_nl2sql_stream`）：
 
-        - `meta`：取数完成后首条
+        - `started`：流建立后立即下发，含 `stream_id`（供 `/analysis/stream/stop`）
+        - `meta`：取数完成后首条业务 meta
         - `summary_delta`：Markdown 增量（v1 整篇 LLM token；v2 按槽位顺序，见 `iter_stream_events`）
         - `synthesis_loading` / `table_payload` / `chart_payload`：仅 v2 且配置开启
-        - `summary_complete` → `structured_async_enqueued` → `finished`：收尾三连（`finished` 为尾帧，与 AI 问答同形 `{"finished":true,"meta":{...}}`）
+        - `summary_complete` → `finished`：用户中断时跳过 `structured_async_enqueued`，`finished.meta.is_partial=true`
 
-        结束后 `create_task(_nl2sql_stream_background_finalize)` 异步写完整 JSON + trace。
+        正常结束仍 `create_task(_nl2sql_stream_background_finalize)` 异步写完整 JSON + trace。
         """
         ANALYSIS_REQUEST_COUNT.labels(
             analysis_type=req.analysis_type, data_mode="nl2sql", status="started"
         ).inc()
+        stream_id: str | None = None
+        stream_request_id = f"anl_{uuid4().hex[:12]}"
+        t_pipeline = perf_counter()
+        user_cancelled = False
+        ctx: _Nl2SqlPipelineThroughRagContext | None = None
+        syn_outcome: _SynthesisRunOutcome | None = None
+        synthesis_ms = 0
+        effective_strategy = self._resolve_synthesis_strategy_effective(req.analysis_type)[0]
+
         try:
-            stream_request_id = f"anl_{uuid4().hex[:12]}"
-            t_pipeline = perf_counter()
+            if self._stream_ctrl is not None:
+                stream_id = self._stream_ctrl.begin_stream(req.user_id, req.session_id)
+            cancel_checker = self._build_stream_cancel_checker(
+                req.user_id, req.session_id, stream_id
+            )
+            yield {
+                "event": "started",
+                "stream_id": stream_id or stream_request_id,
+                "request_id": stream_request_id,
+            }
             logger.info(
-                "analysis_nl2sql_stream_pipeline_start request_id=%s analysis_type=%s user_id=%s session_id=%s",
+                "analysis_nl2sql_stream_pipeline_start request_id=%s stream_id=%s analysis_type=%s user_id=%s session_id=%s",
                 stream_request_id,
+                stream_id,
                 req.analysis_type,
                 req.user_id,
                 req.session_id,
             )
-            ctx = await self._run_nl2sql_pipeline_through_rag(req, request_id=stream_request_id)
+            try:
+                ctx = await self._run_nl2sql_pipeline_through_rag(
+                    req,
+                    request_id=stream_request_id,
+                    cancel_checker=cancel_checker,
+                )
+            except AnalysisStreamCancelled:
+                user_cancelled = True
+                ctx = None
+
+            if user_cancelled:
+                yield self._analysis_stream_aborted_finished(
+                    request_id=stream_request_id,
+                    plan_id="",
+                    analysis_type=req.analysis_type,
+                    start_ts=t_pipeline,
+                    stream_id=stream_id,
+                    summary="",
+                    synthesis_ms=0,
+                    ctx=None,
+                )
+                ANALYSIS_REQUEST_COUNT.labels(
+                    analysis_type=req.analysis_type, data_mode="nl2sql", status="aborted"
+                ).inc()
+                return
+
+            assert ctx is not None
             synthesis_prompt, synthesis_version = self._resolve_synthesis_stage_template(
                 analysis_type=req.analysis_type,
                 user_id=req.user_id,
@@ -2466,6 +2535,7 @@ class AnalysisGraphRunner:
                 "analysis_type": req.analysis_type,
                 "data_mode": "nl2sql",
                 "orchestrator": "sequential_stream",
+                "stream_id": stream_id,
                 "template_versions": {
                     "synthesis": synthesis_version,
                     "report": report_version,
@@ -2475,7 +2545,6 @@ class AnalysisGraphRunner:
             }
 
             t_syn = perf_counter()
-            syn_outcome: _SynthesisRunOutcome | None = None
             try:
                 if effective_strategy == "v2":
                     async for event, outcome in self._iter_synthesis_v2_stream(
@@ -2487,9 +2556,11 @@ class AnalysisGraphRunner:
                         planning_context=planning_ctx,
                         chart_mode=req.options.chart_mode,
                         task_status=ctx.task_status,
+                        cancel_checker=cancel_checker,
                     ):
                         if outcome is not None:
                             syn_outcome = outcome
+                            user_cancelled = bool(outcome.user_cancelled)
                             continue
                         if event:
                             yield event
@@ -2504,6 +2575,9 @@ class AnalysisGraphRunner:
                         system_prompt=synthesis_prompt,
                         planning_context=planning_ctx,
                     ):
+                        if await is_stream_cancelled(cancel_checker):
+                            user_cancelled = True
+                            break
                         parts.append(chunk)
                         yield {"event": "summary_delta", "text": chunk}
                     summary_v1 = "".join(parts)
@@ -2517,6 +2591,7 @@ class AnalysisGraphRunner:
                         synthesis_version=syn_ver,
                         strategy_configured=configured_strategy,
                         strategy_effective="v1",
+                        user_cancelled=user_cancelled,
                     )
             except Exception:  # noqa: BLE001
                 logger.exception("analysis nl2sql stream summary failed")
@@ -2537,7 +2612,33 @@ class AnalysisGraphRunner:
                 "chars": len(summary),
                 "synthesis_ms": synthesis_ms,
                 "markdown": summary,
+                "partial": user_cancelled,
             }
+
+            if user_cancelled:
+                self._persist_assistant_summary(
+                    req.user_id,
+                    req.session_id,
+                    summary,
+                    ctx.rag_citations,
+                )
+                yield self._analysis_stream_aborted_finished(
+                    request_id=ctx.request_id,
+                    plan_id=ctx.plan_id,
+                    analysis_type=req.analysis_type,
+                    start_ts=t_pipeline,
+                    stream_id=stream_id,
+                    summary=summary,
+                    synthesis_ms=synthesis_ms,
+                    ctx=ctx,
+                    synthesis_strategy_effective=(
+                        syn_outcome.strategy_effective if syn_outcome else effective_strategy
+                    ),
+                )
+                ANALYSIS_REQUEST_COUNT.labels(
+                    analysis_type=req.analysis_type, data_mode="nl2sql", status="aborted"
+                ).inc()
+                return
 
             asyncio.create_task(
                 self._nl2sql_stream_background_finalize(
@@ -2575,6 +2676,7 @@ class AnalysisGraphRunner:
                 synthesis_ms=synthesis_ms,
                 used_nl2sql=True,
                 nl2sql_sql=first_nl2sql_sql,
+                stream_id=stream_id,
             )
             yield analysis_finished_sse_event(finished_meta)
 
@@ -2586,6 +2688,49 @@ class AnalysisGraphRunner:
                 analysis_type=req.analysis_type, data_mode="nl2sql", status="failed"
             ).inc()
             raise
+        finally:
+            if stream_id and self._stream_ctrl is not None:
+                await self._stream_ctrl.clear_stream(req.user_id, req.session_id, stream_id)
+
+    def _analysis_stream_aborted_finished(
+        self,
+        *,
+        request_id: str,
+        plan_id: str,
+        analysis_type: str,
+        start_ts: float,
+        stream_id: str | None,
+        summary: str,
+        synthesis_ms: int,
+        ctx: _Nl2SqlPipelineThroughRagContext | None,
+        synthesis_strategy_effective: str | None = None,
+    ) -> dict[str, Any]:
+        first_nl2sql_sql = None
+        if ctx is not None:
+            first_nl2sql_sql = next(
+                (c.sql for c in ctx.nl2sql_calls if c.status == "success" and (c.sql or "").strip()),
+                None,
+            )
+        finished_meta = build_analysis_finished_meta(
+            request_id=request_id,
+            plan_id=plan_id,
+            analysis_type=analysis_type,
+            data_mode="nl2sql",
+            used_rag=bool(ctx.used_rag) if ctx else False,
+            used_plan_rag=bool(ctx.used_plan_rag) if ctx else False,
+            used_business_rag=bool(ctx.used_business_rag) if ctx else False,
+            rag_citations=ctx.rag_citations if ctx else [],
+            start_ts=start_ts,
+            synthesis_strategy_effective=synthesis_strategy_effective,
+            synthesis_ms=synthesis_ms,
+            used_nl2sql=ctx is not None,
+            nl2sql_sql=first_nl2sql_sql,
+            stream_id=stream_id,
+            status="aborted",
+            terminate_reason="user_cancelled",
+            is_partial=bool(summary.strip()) or ctx is not None,
+        )
+        return analysis_finished_sse_event(finished_meta)
 
     async def _nl2sql_stream_background_finalize(
         self,
@@ -3810,6 +3955,7 @@ class AnalysisGraphRunner:
         tasks: list[_PlanTask],
         analysis_request_id: str | None = None,
         plan_template_version: str | None = None,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> tuple[list[AnalysisNL2SQLCall], dict[str, list[dict]], dict[str, str]]:
         """与并行版语义一致，仅按 plan_tasks 顺序串行调度（并行关闭或单任务时使用）。"""
         ptv = plan_template_version or self._resolve_plan_template_version_label(req)
@@ -3817,6 +3963,7 @@ class AnalysisGraphRunner:
         gathered_data: dict[str, list[dict]] = {}
         task_status: dict[str, str] = {}
         for task in tasks:
+            await raise_if_stream_cancelled(cancel_checker)
             if task.dependency_ids and any(task_status.get(dep) != "success" for dep in task.dependency_ids):
                 calls.append(
                     AnalysisNL2SQLCall(
@@ -3863,6 +4010,7 @@ class AnalysisGraphRunner:
         tasks: list[_PlanTask],
         analysis_request_id: str | None = None,
         plan_template_version: str | None = None,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> tuple[list[AnalysisNL2SQLCall], dict[str, list[dict]], dict[str, str], int]:
         """执行 NL2SQL：依赖未满足则 skipped；每项最多 2 次尝试。默认同层无依赖任务并行（含生成 SQL 与查库）。"""
         ptv = plan_template_version or self._resolve_plan_template_version_label(req)
@@ -3876,6 +4024,7 @@ class AnalysisGraphRunner:
                 tasks=tasks,
                 analysis_request_id=analysis_request_id,
                 plan_template_version=ptv,
+                cancel_checker=cancel_checker,
             )
             duration_s = perf_counter() - t_data
             ANALYSIS_NODE_LATENCY.labels(node="acquire_data", analysis_type=req.analysis_type).observe(duration_s)
@@ -3900,6 +4049,7 @@ class AnalysisGraphRunner:
                 )
 
         while unfinished:
+            await raise_if_stream_cancelled(cancel_checker)
             runnable: list[_PlanTask] = []
             for t in tasks:
                 if t.item_id not in unfinished:

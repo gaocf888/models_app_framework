@@ -45,6 +45,7 @@ from app.llm.graphs.analysis_img_diag_runner import (
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
+from app.services.analysis_stream_control import AnalysisStreamControl
 from app.services.nl2sql_service import NL2SQLService
 from app.services.analysis_trace_store import create_analysis_trace_store
 from app.services.analysis_img_diag_upload import upload_analysis_img_diag_image
@@ -112,12 +113,14 @@ class AnalysisService:
         self._trace_trend_cache_ttl = max(1, int(analysis_cfg.trace_trend_cache_ttl_seconds))
         self._trace_trend_cache: dict[str, tuple[float, AnalysisTraceTrendResponse]] = {}
         self._trace_trend_cache_lock = Lock()
+        self._stream_ctrl = AnalysisStreamControl()
         self._graph_runner = AnalysisImgDiagGraphRunner(
             conv_manager=self._conv,
             llm_client=self._llm,
             prompt_registry=self._prompts,
             hybrid_rag=self._hybrid_rag,
             nl2sql_service=self._nl2sql,
+            stream_control=self._stream_ctrl,
         )
 
     async def run_analysis_payload(self, data: AnalysisPayloadRequest) -> AnalysisV2Result:
@@ -162,6 +165,11 @@ class AnalysisService:
             "X-Accel-Buffering": "no",
         }
         return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
+
+    async def stop_analysis_stream(
+        self, user_id: str, session_id: str, stream_id: str
+    ) -> None:
+        await self._stream_ctrl.cancel_stream(user_id, session_id, stream_id)
 
     async def run_analysis_img_diag(self, data: AnalysisImgDiagRequest) -> AnalysisV2Result:
         req = self._apply_defaults_img_diag(data)

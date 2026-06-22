@@ -42,6 +42,8 @@ from app.models.analysis import (
     AnalysisImgDiagRequest,
     AnalysisNL2SQLRequest,
     AnalysisPayloadRequest,
+    AnalysisStreamStopRequest,
+    AnalysisStreamStopResponse,
     AnalysisTraceDegradeTopNResponse,
     AnalysisTraceListItem,
     AnalysisTraceListResponse,
@@ -136,7 +138,7 @@ async def run_analysis_with_nl2sql(data: AnalysisNL2SQLRequest) -> AnalysisV2Res
     response_class=StreamingResponse,
     response_description=(
         "`text/event-stream`：每条 `data: {json}\\n\\n`，JSON 内 `event` 字段标识类型；"
-        "顺序 meta → summary_delta/… → summary_complete → structured_async_enqueued → finished；"
+        "顺序 started → meta → summary_delta/… → summary_complete → structured_async_enqueued → finished；"
         "完整 AnalysisV2Result 不在 SSE 内，见 trace。"
     ),
 )
@@ -150,11 +152,12 @@ async def run_analysis_with_nl2sql_stream(data: AnalysisNL2SQLRequest) -> Stream
     - 响应头含 `Cache-Control: no-cache`、`X-Accel-Buffering: no`
     - **`meta` 之前可能长时间无事件**（NL2SQL 取数阶段），属正常，非断流
 
-    **SSE 事件（`event` 字段，共 8 种）**
+    **SSE 事件（`event` 字段）**
 
     | event | 作用 |
     |-------|------|
-    | `meta` | 首条；`request_id`/`plan_id`/`analysis_type`/`template_versions`（含 `synthesis_strategy_effective` v1\\|v2） |
+    | `started` | **首帧**；`stream_id`（供 ``POST /analysis/stream/stop``）、`request_id` |
+    | `meta` | 取数完成后；`plan_id`/`analysis_type`/`template_versions` 等 |
     | `summary_delta` | 报告 Markdown 增量返回；前端拼接 `text`；v2 按槽位章节顺序推送 |
     | `synthesis_loading` | v2 专用；槽位或 token 等待超时心跳；`active`/`phase`/`slot_id`/`hint` |
     | `table_payload` | 表格json返回 v2 + 结构化 SSE 开启；`slot_id` + `table`（columns/rows，非 HTML） |
@@ -173,6 +176,31 @@ async def run_analysis_with_nl2sql_stream(data: AnalysisNL2SQLRequest) -> Stream
     后台与同步路由相同 **`_save_trace`**；钩子见 **`register_analysis_nl2sql_stream_structured_hook`**。
     """
     return await service.run_analysis_nl2sql_stream(data)
+
+
+@router.post(
+    "/stream/stop",
+    response_model=AnalysisStreamStopResponse,
+    summary="中断指定综合分析流式任务",
+)
+async def stop_analysis_stream(req: AnalysisStreamStopRequest) -> AnalysisStreamStopResponse:
+    """
+    协作式中断 **`/run-with-nl2sql-stream`** 流式输出（与智能客服 ``/chatbot/chat/stop`` 同语义）。
+
+    1. 先从流式首帧 ``{"event":"started","stream_id":"..."}`` 获取 ``stream_id``；
+    2. 调用本接口置位取消标记；
+    3. 服务端在 NL2SQL 取数 / synthesis 循环检查点后停止，并下发 ``finished`` 尾帧
+       （``meta.status=aborted``、``meta.terminate_reason=user_cancelled``、``meta.is_partial=true``）。
+
+    用户中断时不排队 ``structured_async_enqueued``，不写完整 trace。
+    """
+    await service.stop_analysis_stream(req.user_id, req.session_id, req.stream_id)
+    return AnalysisStreamStopResponse(
+        ok=True,
+        user_id=req.user_id,
+        session_id=req.session_id,
+        stream_id=req.stream_id,
+    )
 
 
 @router.post(

@@ -34,6 +34,10 @@ def build_analysis_finished_meta(
     rag_namespace: str | None = None,
     parsed_scope_intent: dict[str, Any] | None = None,
     parsed_time_intent: dict[str, Any] | None = None,
+    status: str = "completed",
+    terminate_reason: str | None = None,
+    is_partial: bool = False,
+    stream_id: str | None = None,
 ) -> dict[str, Any]:
     """组装 finished.meta：智能客服同名字段 + 综合分析扩展字段。"""
     citations = filter_rag_citation_dicts(list(rag_citations or []))
@@ -62,10 +66,10 @@ def build_analysis_finished_meta(
         "rag_scope_fallback": False,
         "faq_soft_direct": False,
         "faq_soft_direct_reason": "",
-        "status": "completed",
+        "status": status,
         "duration_ms": int((perf_counter() - start_ts) * 1000),
-        "terminate_reason": None,
-        "is_partial": False,
+        "terminate_reason": terminate_reason,
+        "is_partial": bool(is_partial),
         "similar_cases_appended": False,
         "similar_case_namespace": None,
         "fault_detect_sources": [],
@@ -81,7 +85,7 @@ def build_analysis_finished_meta(
         "original_image_urls": [
             u for u in (original_image_urls or []) if isinstance(u, str) and u.strip()
         ],
-        "stream_id": request_id,
+        "stream_id": stream_id or request_id,
         # 综合分析扩展（trace / 前端展示 / 调试）
         "request_id": request_id,
         "plan_id": plan_id,

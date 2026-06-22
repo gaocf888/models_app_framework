@@ -12,9 +12,11 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Callable, Literal
+from collections.abc import Awaitable, Callable
+from typing import Any, AsyncIterator, Literal
 
 from app.core.logging import get_logger
+from app.llm.graphs.analysis_stream_cancel import cancel_asyncio_tasks, is_stream_cancelled
 from app.llm.graphs.overheat_synthesis_render import (
     OVERHEAT_CH1_INTRO,
     OVERHEAT_DOCX_AUTHORING_RULES,
@@ -79,6 +81,7 @@ class SynthesisV2RunResult:
     tables: list[dict[str, Any]] = field(default_factory=list)
     charts: list[dict[str, Any]] = field(default_factory=list)
     slot_trace: list[dict[str, Any]] = field(default_factory=list)
+    user_cancelled: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1757,6 +1760,19 @@ class AnalysisSynthesisV2Engine:
         if self._stream_chunk_delay_ms > 0:
             await asyncio.sleep(self._stream_chunk_delay_ms / 1000.0)
 
+    async def _partial_cancelled_result(
+        self,
+        outputs: list[SynthesisV2SlotOutput | None],
+        bg_tasks: list[asyncio.Task[None] | None],
+        *,
+        analysis_type: str,
+    ) -> SynthesisV2RunResult:
+        await cancel_asyncio_tasks(list(bg_tasks))
+        filled = [o for o in outputs if o is not None]
+        result = self._assemble_result(filled, analysis_type=analysis_type)
+        result.user_cancelled = True
+        return result
+
     def _loading_event(
         self,
         *,
@@ -1929,8 +1945,11 @@ class AnalysisSynthesisV2Engine:
         slot: SynthesisV2Slot,
         slot_index: int,
         last_emit_at: float,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         while not task.done():
+            if await is_stream_cancelled(cancel_checker):
+                return
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=self._idle_heartbeat_seconds)
             except asyncio.TimeoutError:
@@ -1953,6 +1972,7 @@ class AnalysisSynthesisV2Engine:
         task: asyncio.Task[None],
         chunk_queue: asyncio.Queue[Any],
         last_emit_at: float,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> AsyncIterator[tuple[dict[str, Any], float]]:
         title = slot.title.strip()
         if title:
@@ -1960,6 +1980,8 @@ class AnalysisSynthesisV2Engine:
             await self._sleep_stream_chunk_delay()
         got_body = False
         while True:
+            if await is_stream_cancelled(cancel_checker):
+                return
             if task.done() and chunk_queue.empty():
                 break
             try:
@@ -1986,7 +2008,11 @@ class AnalysisSynthesisV2Engine:
             await self._sleep_stream_chunk_delay()
         if not task.done():
             async for ev in self._await_task_with_heartbeat(
-                task, slot=slot, slot_index=slot_index, last_emit_at=last_emit_at
+                task,
+                slot=slot,
+                slot_index=slot_index,
+                last_emit_at=last_emit_at,
+                cancel_checker=cancel_checker,
             ):
                 yield (ev, last_emit_at)
             await task
@@ -2023,6 +2049,7 @@ class AnalysisSynthesisV2Engine:
         task: asyncio.Task[None],
         chunk_queue: asyncio.Queue[Any] | None,
         last_emit_at: float,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> AsyncIterator[tuple[dict[str, Any], float]]:
         if slot.kind == "llm_narrative" and chunk_queue is not None:
             got_any_delta = False
@@ -2032,11 +2059,16 @@ class AnalysisSynthesisV2Engine:
                 task=task,
                 chunk_queue=chunk_queue,
                 last_emit_at=last_emit_at,
+                cancel_checker=cancel_checker,
             ):
+                if await is_stream_cancelled(cancel_checker):
+                    return
                 if ev.get("event") == "summary_delta":
                     got_any_delta = True
                     last_emit_at = ts
                 yield (ev, last_emit_at)
+            if await is_stream_cancelled(cancel_checker):
+                return
             out = outputs[index]
             if out is None:
                 await task
@@ -2055,8 +2087,14 @@ class AnalysisSynthesisV2Engine:
             return
 
         async for hb in self._await_task_with_heartbeat(
-            task, slot=slot, slot_index=index, last_emit_at=last_emit_at
+            task,
+            slot=slot,
+            slot_index=index,
+            last_emit_at=last_emit_at,
+            cancel_checker=cancel_checker,
         ):
+            if await is_stream_cancelled(cancel_checker):
+                return
             yield (hb, last_emit_at)
         out = outputs[index]
         if out is None:
@@ -2442,6 +2480,7 @@ class AnalysisSynthesisV2Engine:
         chart_mode: str,
         task_status: dict[str, str] | None = None,
         report_context: dict[str, Any] | None = None,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> AsyncIterator[tuple[dict[str, Any], SynthesisV2RunResult | None]]:
         """
         后台并行生成各槽位，按槽位顺序就绪即推送（小块 summary_delta + 空闲心跳）；
@@ -2480,6 +2519,12 @@ class AnalysisSynthesisV2Engine:
 
         last_emit_at = time.monotonic()
         for i, slot in enumerate(slots):
+            if await is_stream_cancelled(cancel_checker):
+                yield (
+                    {},
+                    await self._partial_cancelled_result(outputs, bg_tasks, analysis_type=analysis_type),
+                )
+                return
             async for ev, last_emit_at in self._emit_slot_in_order(
                 index=i,
                 slot=slot,
@@ -2487,7 +2532,14 @@ class AnalysisSynthesisV2Engine:
                 task=bg_tasks[i],
                 chunk_queue=bg_queues[i],
                 last_emit_at=last_emit_at,
+                cancel_checker=cancel_checker,
             ):
+                if await is_stream_cancelled(cancel_checker):
+                    yield (
+                        {},
+                        await self._partial_cancelled_result(outputs, bg_tasks, analysis_type=analysis_type),
+                    )
+                    return
                 yield (ev, None)
 
         filled = [o for o in outputs if o is not None]
@@ -2505,6 +2557,7 @@ class AnalysisSynthesisV2Engine:
         chart_mode: str,
         task_status: dict[str, str] | None = None,
         report_context: dict[str, Any] | None = None,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> AsyncIterator[tuple[dict[str, Any], SynthesisV2RunResult | None]]:
         """
         首槽 LLM 真流式；其余槽后台并行、按注册表顺序就绪即推送（token/小块 + 空闲心跳）。
@@ -2544,6 +2597,14 @@ class AnalysisSynthesisV2Engine:
                 bg_queues_fb.append(queue)
             last_emit_at = time.monotonic()
             for i, slot in enumerate(slots):
+                if await is_stream_cancelled(cancel_checker):
+                    yield (
+                        {},
+                        await self._partial_cancelled_result(
+                            outputs_fb, bg_tasks_fb, analysis_type=analysis_type
+                        ),
+                    )
+                    return
                 async for ev, last_emit_at in self._emit_slot_in_order(
                     index=i,
                     slot=slot,
@@ -2551,7 +2612,16 @@ class AnalysisSynthesisV2Engine:
                     task=bg_tasks_fb[i],
                     chunk_queue=bg_queues_fb[i],
                     last_emit_at=last_emit_at,
+                    cancel_checker=cancel_checker,
                 ):
+                    if await is_stream_cancelled(cancel_checker):
+                        yield (
+                            {},
+                            await self._partial_cancelled_result(
+                                outputs_fb, bg_tasks_fb, analysis_type=analysis_type
+                            ),
+                        )
+                        return
                     yield (ev, None)
             filled_fb = [o for o in outputs_fb if o is not None]
             yield ({}, self._assemble_result(filled_fb, analysis_type=analysis_type))
@@ -2610,6 +2680,22 @@ class AnalysisSynthesisV2Engine:
         )
         aiter = stream_iter.__aiter__()
         while True:
+            if await is_stream_cancelled(cancel_checker):
+                if stream_body_parts and outputs[live_idx] is None:
+                    body = strip_leading_duplicate_heading(
+                        "".join(stream_body_parts), live_slot.title
+                    )
+                    outputs[live_idx] = SynthesisV2SlotOutput(
+                        live_slot.id,
+                        live_slot.kind,
+                        live_slot.title,
+                        _wrap_narrative_markdown(live_slot.title, body),
+                    )
+                yield (
+                    {},
+                    await self._partial_cancelled_result(outputs, bg_tasks, analysis_type=analysis_type),
+                )
+                return
             try:
                 chunk = await asyncio.wait_for(
                     aiter.__anext__(),
@@ -2653,6 +2739,12 @@ class AnalysisSynthesisV2Engine:
         for i, slot in enumerate(slots):
             if i == live_idx:
                 continue
+            if await is_stream_cancelled(cancel_checker):
+                yield (
+                    {},
+                    await self._partial_cancelled_result(outputs, bg_tasks, analysis_type=analysis_type),
+                )
+                return
             task = bg_tasks[i]
             if task is None:
                 continue
@@ -2663,7 +2755,14 @@ class AnalysisSynthesisV2Engine:
                 task=task,
                 chunk_queue=bg_queues[i],
                 last_emit_at=last_emit_at,
+                cancel_checker=cancel_checker,
             ):
+                if await is_stream_cancelled(cancel_checker):
+                    yield (
+                        {},
+                        await self._partial_cancelled_result(outputs, bg_tasks, analysis_type=analysis_type),
+                    )
+                    return
                 yield (ev, None)
 
         filled = [o for o in outputs if o is not None]
