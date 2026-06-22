@@ -18,6 +18,7 @@ from app.llm.graphs.chatbot_faq_soft_direct import (
 from app.llm.graphs.chatbot_rag_scope import augment_retrieval_query_for_plant_kb, resolve_rag_namespace
 from app.llm.graphs.chatbot_follow_up import build_suggested_questions
 from app.llm.graphs.chatbot_intent import classify_chatbot_intent_async
+from app.llm.graphs.chatbot_citation_stream import CitationStreamParser, citation_stream_enabled, max_citation_ref_index
 from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_context
 from app.llm.graphs.chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
 from app.llm.graphs.chatbot_anaphora_detect import classify_anaphora_rules
@@ -362,6 +363,7 @@ class ChatbotService:
         事件类型：
         - started: {"type": "started", "stream_id": "..."}
         - delta: {"type": "delta", "delta": "..."}
+        - citation: {"type": "citation", "ref_index": n}（API 层映射 SSE ``citation_ref``）
         - finished: {"type": "finished", "meta": {...}}
         """
         stream_id = self._stream_ctrl.begin_stream(req.user_id, req.session_id)
@@ -567,6 +569,9 @@ class ChatbotService:
             enable_rag=req.enable_rag,
         )
         parts: list[str] = []
+        cite_parser: CitationStreamParser | None = None
+        if citation_stream_enabled(rag_citations):
+            cite_parser = CitationStreamParser(max_ref_index=max_citation_ref_index(rag_citations))
         gate_sources: list[str] = []
         gate_conf = 0.0
         need_cases = False
@@ -610,7 +615,14 @@ class ChatbotService:
                 }
                 return
             parts.append(delta)
-            yield {"type": "delta", "delta": delta}
+            if cite_parser is None:
+                yield {"type": "delta", "delta": delta}
+            else:
+                for ev in cite_parser.feed(delta):
+                    yield ev
+        if cite_parser is not None:
+            for ev in cite_parser.flush():
+                yield ev
 
         answer = "".join(parts).strip()
         extra = ""

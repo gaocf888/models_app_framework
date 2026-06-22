@@ -17,6 +17,7 @@ from app.rag.agentic import AgenticRAGService, RAGContext, RAGMode
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
 
+from .chatbot_citation_stream import CitationStreamParser, citation_stream_enabled, max_citation_ref_index
 from .chatbot_follow_up import build_suggested_questions
 from .chatbot_graph_state import ChatbotGraphState
 from .chatbot_intent import classify_chatbot_intent_async
@@ -281,6 +282,7 @@ class ChatbotLangGraphRunner:
 
         事件类型：
         - delta: 增量文本
+        - citation: 知识引用 ``{"ref_index": n}``（SSE 映射为 ``citation_ref``）
         - finished: 完成事件（含 meta）
         """
         # state 在一次请求生命周期内共享；每个节点只增量更新自己负责字段。
@@ -315,6 +317,11 @@ class ChatbotLangGraphRunner:
                 return
 
             parts: List[str] = []
+            cite_parser: CitationStreamParser | None = None
+            if citation_stream_enabled(list(state.get("rag_citations") or [])):
+                cite_parser = CitationStreamParser(
+                    max_ref_index=max_citation_ref_index(list(state.get("rag_citations") or []))
+                )
             stream_kw: Dict[str, Any] = {}
             if self._main_llm_temperature is not None:
                 stream_kw["temperature"] = float(self._main_llm_temperature)
@@ -330,7 +337,14 @@ class ChatbotLangGraphRunner:
                     self._ensure_within_latency(start_ts)
                     parts.append(delta)
                     state["answer_parts"] = list(parts)
-                    yield {"type": "delta", "delta": delta}
+                    if cite_parser is None:
+                        yield {"type": "delta", "delta": delta}
+                    else:
+                        for ev in cite_parser.feed(delta):
+                            yield ev
+                if cite_parser is not None:
+                    for ev in cite_parser.flush():
+                        yield ev
             except TimeoutError as exc:
                 # 与 MAX_GRAPH_LATENCY_MS 同源：总耗时（图+RAG+流式）超预算。
                 # 若已向前端输出过 delta，再抛给上层会触发 legacy 全量重跑，表现为「停几秒后又答一遍」且会话里可能重复 user。
