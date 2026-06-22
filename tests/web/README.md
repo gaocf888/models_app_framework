@@ -54,7 +54,7 @@ python3 -m http.server 8765
 ### 1.4 操作流程
 
 1. 填写连接与会话参数，输入 `query`  
-2. 「发送并开始流式输出」→ 先收到 `started`（含 `stream_id`），再持续 `delta`  
+2. 「发送并开始流式输出」→ 先收到 `started`（含 `stream_id`），再持续 `delta`；RAG 路径下引用为独立事件 `citation_ref`（页面渲染为上标链接，流结束后与 `meta.rag_citations` 对齐）  
 3. 结束见 `finished.meta`；可按需「中断」  
 4. 回答区对模型输出的 **LaTeX 公式**（`$$...$$`、`\\(...\\)`、`\\[...\\]`）使用 KaTeX 渲染；**Markdown 标题/列表等保持原文**，不转 HTML（需页面能访问 jsDelivr CDN；请 **Ctrl+F5** 强刷缓存后再测）。
 

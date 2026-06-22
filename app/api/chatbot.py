@@ -145,7 +145,7 @@ async def chat_stream(req: ChatRequest, request: Request):
        - `original_content_url`（可选）：摄入时的原始文档 URL，有则可渲染为外链。
 
     2. **流式引用事件 `citation_ref`**：RAG 路径下后端从模型输出中识别完整 `[n]` 后单独下发
-       `{"citation_ref": n, "finished": false}`；正文 `delta` 不再包含该 `[n]` 字面量。
+       `{"citation_ref": n, "finished": false}`；正文 `delta` 不再包含该 `[n]` 字面量。（正文中渲染链接时，需要通过n与结束帧rag_citations中的ref_index进行匹配，来获取知识文档名称和链接）
        会话落库与历史消息的 `answer` 仍保留 `[n]` 纯文本。
 
     3. **前端渲染建议**：

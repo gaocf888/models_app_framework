@@ -93,6 +93,22 @@
       font-size: 0.95rem;
       min-height: 3rem;
     }
+    #answer sup.cite,
+    #answer sup.cite-pending {
+      font-size: 0.72em;
+      line-height: 0;
+      margin-left: 0.1em;
+    }
+    #answer sup.cite a {
+      color: #60a5fa;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    #answer sup.cite a:hover { text-decoration: underline; }
+    #answer sup.cite-pending {
+      color: #fbbf24;
+      cursor: default;
+    }
     #answer .katex-display {
       margin: 0.75rem 0;
       overflow-x: auto;
@@ -178,7 +194,7 @@
 
     <div class="out" style="margin-top: 1rem;">
       <div id="status">就绪</div>
-      <h2>回答（delta 即时拼接；流结束后再 KaTeX 渲染公式）</h2>
+      <h2>回答（delta 拼接正文；citation_ref 渲染为可点引用；流结束后再 KaTeX）</h2>
       <div id="answer"></div>
       <div id="err" class="err" hidden></div>
       <h2 style="margin-top:1rem;">结束帧 meta</h2>
@@ -212,16 +228,100 @@
   let katexTimer = null;
   let katexReady = typeof renderMathInElement === "function";
   let pendingKatexText = "";
+  /** @type {{ type: 'text', text: string } | { type: 'citation', refIndex: number }[]} */
+  let answerSegments = [];
+  /** @type {object[]} */
+  let lastRagCitations = [];
 
-  /** 流式过程中：仅更新纯文本（每个 delta 立即显示，保持逐字/逐 token 效果）。 */
-  function updateAnswerTextImmediate(text) {
-    $("answer").textContent = text;
-    pendingKatexText = text;
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
 
-  function applyKatexToAnswer(text) {
+  function escapeAttr(s) {
+    return escapeHtml(s).replace(/'/g, "&#39;");
+  }
+
+  function findRagCitation(refIndex) {
+    return lastRagCitations.find((c) => Number(c.ref_index) === Number(refIndex)) || null;
+  }
+
+  function citationSupHtml(refIndex, cite) {
+    const label = "[" + refIndex + "]";
+    if (!cite) {
+      return (
+        '<sup class="cite-pending" title="引用 #' +
+        refIndex +
+        "（等待 finished.meta.rag_citations）\">" +
+        escapeHtml(label) +
+        "</sup>"
+      );
+    }
+    const title = [cite.doc_name, cite.section_path].filter(Boolean).join(" · ");
+    const url = (cite.original_content_url || "").trim();
+    if (url) {
+      return (
+        '<sup class="cite"><a href="' +
+        escapeAttr(url) +
+        '" target="_blank" rel="noopener noreferrer" title="' +
+        escapeAttr(title) +
+        '">' +
+        escapeHtml(label) +
+        "</a></sup>"
+      );
+    }
+    return (
+      '<sup class="cite" title="' +
+      escapeAttr(title || "知识来源") +
+      '">' +
+      escapeHtml(label) +
+      "</sup>"
+    );
+  }
+
+  function segmentsToPlainText() {
+    return answerSegments
+      .map((seg) => (seg.type === "text" ? seg.text : "[" + seg.refIndex + "]"))
+      .join("");
+  }
+
+  function appendTextDelta(chunk) {
+    if (!chunk) return;
+    const last = answerSegments[answerSegments.length - 1];
+    if (last && last.type === "text") {
+      last.text += chunk;
+    } else {
+      answerSegments.push({ type: "text", text: chunk });
+    }
+  }
+
+  function appendCitationRef(refIndex) {
+    const n = Number(refIndex);
+    if (!Number.isFinite(n) || n < 1) return;
+    answerSegments.push({ type: "citation", refIndex: n });
+  }
+
+  function renderAnswerHtml() {
+    const html = answerSegments
+      .map((seg) => {
+        if (seg.type === "text") return escapeHtml(seg.text);
+        return citationSupHtml(seg.refIndex, findRagCitation(seg.refIndex));
+      })
+      .join("");
+    $("answer").innerHTML = html;
+    pendingKatexText = segmentsToPlainText();
+  }
+
+  /** 流式过程中：更新正文与引用角标。 */
+  function updateAnswerImmediate() {
+    renderAnswerHtml();
+  }
+
+  function applyKatexToAnswer() {
     const el = $("answer");
-    el.textContent = text;
     if (!katexReady) {
       if (typeof renderMathInElement === "function") {
         katexReady = true;
@@ -236,23 +336,30 @@
     }
   }
 
-  /** 生成中偶尔刷新公式（可选）；不阻塞上面的即时文本更新。 */
-  function scheduleKatexPass(text) {
-    pendingKatexText = text;
+  /** 生成中偶尔刷新公式（可选）；不阻塞上面的即时更新。 */
+  function scheduleKatexPass() {
     if (katexTimer) clearTimeout(katexTimer);
     katexTimer = setTimeout(() => {
       katexTimer = null;
-      applyKatexToAnswer(pendingKatexText);
+      applyKatexToAnswer();
     }, 400);
   }
 
-  function flushAnswerWithKatex(text) {
+  function flushAnswerWithKatex(ragCitations) {
     if (katexTimer) {
       clearTimeout(katexTimer);
       katexTimer = null;
     }
-    updateAnswerTextImmediate(text);
-    applyKatexToAnswer(text);
+    lastRagCitations = Array.isArray(ragCitations) ? ragCitations : [];
+    renderAnswerHtml();
+    applyKatexToAnswer();
+  }
+
+  function resetAnswerState() {
+    answerSegments = [];
+    lastRagCitations = [];
+    pendingKatexText = "";
+    $("answer").innerHTML = "";
   }
 
   const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
@@ -308,7 +415,7 @@
   }
 
   $("btnClear").addEventListener("click", () => {
-    $("answer").textContent = "";
+    resetAnswerState();
     $("meta").textContent = "（尚未完成）";
     showErr("");
     appendStatus("已清空");
@@ -387,7 +494,7 @@
 
   $("btnSend").addEventListener("click", async () => {
     showErr("");
-    $("answer").textContent = "";
+    resetAnswerState();
     $("meta").textContent = "…";
     currentStreamId = null;
     abortCtrl = new AbortController();
@@ -395,7 +502,6 @@
     appendStatus("请求中…");
 
     const url = baseUrl() + "/chatbot/chat/stream";
-    let answerText = "";
 
     try {
       const resp = await fetch(url, {
@@ -434,14 +540,27 @@
           return;
         }
         if (ev.delta != null && ev.finished === false) {
-          answerText += ev.delta;
-          updateAnswerTextImmediate(answerText);
-          scheduleKatexPass(answerText);
-          appendStatus("生成中… 已收字符 " + answerText.length);
+          appendTextDelta(ev.delta);
+          updateAnswerImmediate();
+          scheduleKatexPass();
+          appendStatus("生成中… 已收字符 " + segmentsToPlainText().length);
+          return;
+        }
+        if (ev.citation_ref != null && ev.finished === false) {
+          appendCitationRef(ev.citation_ref);
+          updateAnswerImmediate();
+          scheduleKatexPass();
+          appendStatus(
+            "生成中… 引用 [" +
+              ev.citation_ref +
+              "]（" +
+              segmentsToPlainText().length +
+              " 字）"
+          );
           return;
         }
         if (ev.finished === true) {
-          flushAnswerWithKatex(answerText);
+          flushAnswerWithKatex((ev.meta && ev.meta.rag_citations) || []);
           $("meta").textContent = JSON.stringify(ev.meta || {}, null, 2);
           appendStatus("完成");
           return;
