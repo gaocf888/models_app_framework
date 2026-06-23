@@ -34,8 +34,8 @@ services:
       - ./easysearch/config/instance.key:/app/easysearch/config/instance.key:ro
       - ./easysearch/config/ca.crt:/app/easysearch/config/ca.crt:ro
       - ./easysearch/config/ca.key:/app/easysearch/config/ca.key:ro
-      - ./easysearch/config/admin.crt:/app/easysearch/config/admin.crt
-      - ./easysearch/config/admin.key:/app/easysearch/config/admin.key
+      - ./easysearch/config/admin.crt:/app/easysearch/config/admin.crt:ro
+      - ./easysearch/config/admin.key:/app/easysearch/config/admin.key:ro
       - ./easysearch/init:/opt/easysearch/init:ro
     ports:
       - "${EASYSEARCH_PORT}:9200"
