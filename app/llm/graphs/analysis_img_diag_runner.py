@@ -534,6 +534,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         state: dict[str, Any],
         *,
         image_urls: list[str],
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         """写入 request_id/plan_id 与会话用户消息（含图片 URL 块，供 GET /chatbot/sessions/messages 解析）。"""
         req = AnalysisNL2SQLRequest.model_validate(state["nl2sql_request"])
@@ -551,8 +552,9 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         )
         self._conv.append_user_message(req.user_id, req.session_id, content)
         ms = int((perf_counter() - t0) * 1000)
+        rid = (request_id or "").strip() or f"anl_{uuid4().hex[:12]}"
         return {
-            "request_id": f"anl_{uuid4().hex[:12]}",
+            "request_id": rid,
             "plan_id": f"plan_{uuid4().hex[:10]}",
             "user_id": req.user_id,
             "session_id": req.session_id,
@@ -569,10 +571,15 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         nl_req: AnalysisNL2SQLRequest,
         *,
         image_urls: list[str] | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         state: dict[str, Any] = {"nl2sql_request": nl_req.model_dump(mode="json")}
         state.update(
-            await self._img_diag_normalize_request(state, image_urls=list(image_urls or []))
+            await self._img_diag_normalize_request(
+                state,
+                image_urls=list(image_urls or []),
+                request_id=request_id,
+            )
         )
         state.update(await self._lg_nl2sql_plan_context_rag(state))
         state.update(await self._lg_nl2sql_intent_llm(state))
@@ -650,7 +657,11 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         async def nl_safe() -> tuple[dict[str, Any], str]:
             try:
                 st = await asyncio.wait_for(
-                    self._lane_nl2sql_until_gate(nl_req, image_urls=req.image_urls),
+                    self._lane_nl2sql_until_gate(
+                        nl_req,
+                        image_urls=req.image_urls,
+                        request_id=request_id,
+                    ),
                     timeout=lane_timeout,
                 )
                 return st, "success"
@@ -862,7 +873,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "quality_report": quality_report,
         }
 
-        rid = request_id or str(nl_state.get("request_id") or f"anl_{uuid4().hex[:12]}")
+        rid = str(nl_state.get("request_id") or request_id or f"anl_{uuid4().hex[:12]}")
         plan_id = str(nl_state.get("plan_id") or f"plan_{uuid4().hex[:10]}")
 
         return _ImgDiagPack(

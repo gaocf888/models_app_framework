@@ -1853,18 +1853,21 @@ class NL2SQLChain:
             )
             notes.append(f"dynamic_time_window_le_datesub:{tag}")
 
-        standalone_datesub = re.compile(
-            rf"(?i)DATE_SUB\s*\(\s*{lit}\s*,\s*(INTERVAL\s+\d+\s+\w+)\s*\)"
-        )
+        # anchor_lookback_* 下 @t_start 已替换为 DATE_SUB(锚点, INTERVAL n DAY)；
+        # standalone 会把字面量锚点打回 CURDATE()，导致下界>上界，须跳过。
+        if not tag.startswith("anchor_lookback_"):
+            standalone_datesub = re.compile(
+                rf"(?i)DATE_SUB\s*\(\s*{lit}\s*,\s*(INTERVAL\s+\d+\s+\w+)\s*\)"
+            )
 
-        def _standalone_repl(m: re.Match[str]) -> str:
-            notes.append(f"dynamic_time_window_datesub_literal:{tag}")
-            if tag == "recent_1_year":
+            def _standalone_repl(m: re.Match[str]) -> str:
+                notes.append(f"dynamic_time_window_datesub_literal:{tag}")
+                if tag == "recent_1_year":
+                    return f"DATE_SUB(CURDATE(), {m.group(1)})"
                 return f"DATE_SUB(CURDATE(), {m.group(1)})"
-            return f"DATE_SUB(CURDATE(), {m.group(1)})"
 
-        if standalone_datesub.search(rewritten):
-            rewritten = standalone_datesub.sub(_standalone_repl, rewritten)
+            if standalone_datesub.search(rewritten):
+                rewritten = standalone_datesub.sub(_standalone_repl, rewritten)
 
         return rewritten, notes
 
