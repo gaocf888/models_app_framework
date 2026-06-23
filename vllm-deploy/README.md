@@ -125,11 +125,15 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwe
      cp .env.example .env
      vi .env
      ```
+     
+2. **配置Dockerfile**
+   - vllm-deploy/docker/路径下目前包含 nvidia和沐曦的两个Dockerfile配置文件（Dockerfile-nvidia、Dockerfile-mx）
+   - 部署之前，需要在 docker-compose.yml中修改vllm的dockerfile为当前部署环境匹配的Dockerfile
 
-2. **准备模型权重**
+4. **准备模型权重**
    - 按「模型权重准备」一节任意一种方式将模型下载到宿主机 `MODEL_PATH`（默认 `/aidata/models/llm`）下，并在 `config/vllm.yaml` / `config/models.yaml` 中确认路径与预设一致。
 
-3. **构建并启动服务**
+5. **构建并启动服务**
    - 推荐使用一键脚本（自动带上 `--env-file ../.env` 与平台 overlay）：
 
      ```bash
@@ -147,7 +151,7 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwe
      # 旧版：docker-compose --env-file ../.env -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
      ```
 
-4. **（可选）使用 docker 目录下的 .env**
+6. **（可选）使用 docker 目录下的 .env**
    - 若将 `.env` 放在 `docker/.env`，可直接：
 
      ```bash
