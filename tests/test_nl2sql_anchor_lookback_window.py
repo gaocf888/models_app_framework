@@ -40,6 +40,34 @@ def test_build_anchor_lookback_time_window() -> None:
     assert tag == "anchor_lookback_3d"
 
 
+def test_rewrite_query_filters_anchor_lookback_qa_guard_keeps_anchor_not_curdate() -> None:
+    """QA @t_start guard 替换后不得被 standalone_datesub 打回 CURDATE()。"""
+    chain = NL2SQLChain.__new__(NL2SQLChain)
+    user_q = (
+        "请依据事故图片分析事故，事故发生位置为1号锅炉水冷壁螺旋段后墙螺旋管组，"
+        "事故发生时间为2026年6月18日。"
+    )
+    intent = resolve_question_intent(user_q, time_intent_source=user_q)
+    parsed = question_intent_to_dict(intent)
+    plan_q = f"{user_q}。在事故锚点向前3天时间窗内，查询近 3 次壁厚测量"
+
+    sql = (
+        "SELECT 1 FROM overhaul_record_tubes ort "
+        "WHERE (@t_start IS NULL OR @t_start = '' OR ort.create_time >= @t_start) "
+        "AND (@t_end IS NULL OR @t_end = '' OR ort.create_time < @t_end)"
+    )
+    rewritten, notes = chain._rewrite_query_filters(
+        sql,
+        question=plan_q,
+        time_intent_source=user_q,
+        parsed_intent=parsed,
+        analysis_type="img_diag_leakage_burst",
+    )
+    assert "2026-06-19" in rewritten
+    assert "DATE_SUB(CURDATE(), INTERVAL 3 DAY)" not in rewritten
+    assert not any("dynamic_time_window_datesub_literal" in n for n in notes)
+
+
 def test_rewrite_query_filters_anchor_lookback_from_plan_and_user() -> None:
     chain = NL2SQLChain.__new__(NL2SQLChain)
     user_q = "3号锅炉水冷壁前天发生泄爆"
