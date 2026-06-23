@@ -39,6 +39,7 @@ from app.models.analysis import (
 )
 from app.models.analysis_nl2sql_llm import extract_json_object_from_llm_text
 from app.services.analysis_stream_hooks import dispatch_analysis_nl2sql_stream_structured
+from app.services.chatbot_image_utils import build_user_message_with_images
 
 logger = get_logger(__name__)
 
@@ -528,12 +529,51 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 parsed = {"raw_text": (raw or "")[:8000], "parse_error": "vision_output_not_json"}
         return parsed, ms
 
+    async def _img_diag_normalize_request(
+        self,
+        state: dict[str, Any],
+        *,
+        image_urls: list[str],
+    ) -> dict[str, Any]:
+        """写入 request_id/plan_id 与会话用户消息（含图片 URL 块，供 GET /chatbot/sessions/messages 解析）。"""
+        req = AnalysisNL2SQLRequest.model_validate(state["nl2sql_request"])
+        t0 = perf_counter()
+        urls = [u for u in image_urls if isinstance(u, str) and u.strip()]
+        content = (
+            build_user_message_with_images(
+                req.query,
+                urls,
+                original_image_urls=urls,
+                processed_image_urls=urls,
+            )
+            if urls
+            else req.query
+        )
+        self._conv.append_user_message(req.user_id, req.session_id, content)
+        ms = int((perf_counter() - t0) * 1000)
+        return {
+            "request_id": f"anl_{uuid4().hex[:12]}",
+            "plan_id": f"plan_{uuid4().hex[:10]}",
+            "user_id": req.user_id,
+            "session_id": req.session_id,
+            "analysis_type": req.analysis_type,
+            "query": req.query,
+            "options": req.options.model_dump(mode="json"),
+            "degrade_reasons": [],
+            "node_latency_ms": self._merge_latency(state, "normalize_request", ms),
+            "node_status": self._merge_status(state, "normalize_request", "success"),
+        }
+
     async def _lane_nl2sql_until_gate(
         self,
         nl_req: AnalysisNL2SQLRequest,
+        *,
+        image_urls: list[str] | None = None,
     ) -> dict[str, Any]:
         state: dict[str, Any] = {"nl2sql_request": nl_req.model_dump(mode="json")}
-        state.update(await self._lg_nl2sql_normalize_request(state))
+        state.update(
+            await self._img_diag_normalize_request(state, image_urls=list(image_urls or []))
+        )
         state.update(await self._lg_nl2sql_plan_context_rag(state))
         state.update(await self._lg_nl2sql_intent_llm(state))
         state.update(await self._lg_nl2sql_plan_llm_merge(state))
@@ -610,7 +650,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         async def nl_safe() -> tuple[dict[str, Any], str]:
             try:
                 st = await asyncio.wait_for(
-                    self._lane_nl2sql_until_gate(nl_req),
+                    self._lane_nl2sql_until_gate(nl_req, image_urls=req.image_urls),
                     timeout=lane_timeout,
                 )
                 return st, "success"
