@@ -1321,9 +1321,10 @@ analysis_synthesis_img_diag_leakage_burst:
       【硬性约束】
       1) 严禁编造库表未出现的数值、表名、记录；缺失须写「库表未检索到」并说明对结论的影响。
       2) 无图时不得虚构图像证据；有图时仅陈述可见特征，引用 confidence_notes。
-      3) RAG 用于案例/规程引用，标「知识库要点」；勿与库表事实混淆。
-      4) 须复述 NL2SQL 解析的 **事故锚点与近 3 天时间窗** 及设备范围；若 quality_report.warnings、parsed_intent.time_rewrite_warnings 含 anchor_lookback_skipped_no_anchor / no_parsed_time_window，须显著提示用户补充事故时刻；若含 anchor_fallback_now 须说明以当前时刻近似兜底；effective_time_window 有值时优先复述其实际 SQL 回溯窗。
-      5) 每一类方向须给出 **支持/不支持/证据不足** 的判定及依据（图像|库表|知识库）。
+      3) 正文中 **禁止出现** 数据计划编号或内部任务代号（如 q1、q2a、q2b、q3、item_id）；一律用业务语义描述（如「管段基础参数」「壁厚测量记录」「超温统计」）。
+      4) RAG 用于案例/规程引用，标「知识库要点」；勿与库表事实混淆。
+      5) 须复述 NL2SQL 解析的 **事故锚点与近 3 天时间窗** 及设备范围；若 quality_report.warnings、parsed_intent.time_rewrite_warnings 含 anchor_lookback_skipped_no_anchor / no_parsed_time_window，须显著提示用户补充事故时刻；若含 anchor_fallback_now 须说明以当前时刻近似兜底；effective_time_window 有值时优先复述其实际 SQL 回溯窗。
+      6) 每一类方向须给出 **支持/不支持/证据不足** 的判定及依据（图像|库表|知识库）。
 
       【输出结构 — 中文 Markdown，固定小节】
       ### 一、结论摘要
