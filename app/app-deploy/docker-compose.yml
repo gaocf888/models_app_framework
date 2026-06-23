@@ -91,7 +91,7 @@ services:
   models-app:
     build:
       context: ../..
-      dockerfile: app/app-deploy/Dockerfile-mx
+      dockerfile: app/app-deploy/Dockerfile
     container_name: models-app
     restart: unless-stopped
     depends_on:
@@ -155,7 +155,7 @@ services:
     profiles: ["small-model-gpu"]
     build:
       context: ../..
-      dockerfile: app/app-deploy/Dockerfile-mx.small-model-gpu
+      dockerfile: app/app-deploy/Dockerfile.small-model-gpu
     container_name: models-app-gpu
     restart: unless-stopped
     depends_on:
