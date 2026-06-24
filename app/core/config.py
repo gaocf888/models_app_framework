@@ -596,8 +596,7 @@ class AnalysisConfig:
     # cn_label_prefix — `{中文场景标签} {用户 query}` 单次检索（标签见 analysis_graph_runner 映射）；
     # two_stage — 召回仅用用户 query；Hybrid 重排时使用「中文标签 + query」（无映射则退回枚举 + query）。
     plan_rag_query_mode: str = "two_stage"
-    # 看图诊断（img_diag）：视觉模型（空则走 LLM 默认模型）、各臂超时与上传大小上限
-    img_diag_vision_model: str | None = None
+    # 看图诊断（img_diag）：视觉臂复用 LLM_DEFAULT_MODEL（须为多模态 VL）；各臂超时与上传大小上限
     img_diag_vision_timeout_seconds: float = 120.0
     img_diag_lane_timeout_seconds: float = 180.0
     img_diag_upload_max_mb: int = 15
@@ -1326,7 +1325,6 @@ def _load_from_env() -> AppConfig:
         plan_rag_query_mode=(
             (os.getenv("ANALYSIS_PLAN_RAG_QUERY_MODE", "two_stage") or "two_stage").strip().lower()
         ),
-        img_diag_vision_model=(os.getenv("ANALYSIS_IMG_DIAG_VISION_MODEL") or "").strip() or None,
         img_diag_vision_timeout_seconds=max(
             5.0, float(os.getenv("ANALYSIS_IMG_DIAG_VISION_TIMEOUT_SECONDS", "120"))
         ),

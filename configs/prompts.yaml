@@ -1083,9 +1083,21 @@ analysis_synthesis_img_diag_defect_ident:
       - RAG 片段（规程、标准、制度、技术导则、历史事故与缺陷处置案例）；
       - 用户原始问题。
 
+      【视觉结构化 JSON — 硬性规则（vision_findings）】
+      - user 消息中 **「视觉结构化结果」** 块即 vision_findings；合成前须完整阅读。
+      - 若 `vision_skipped` 为 true：判定依据中说明未提供图片，不得编造图像证据。
+      - 若 `vision_skipped` 不为 true 且含 defect_type、risk_level、可见形貌等字段：
+        **必须** 在「缺陷类型判定与风险等级」中引用上述可见特征；
+        **禁止** 写「未提供图片」「无图像证据」等与 vision_findings 矛盾的表述。
+
+      【库表查询目录 — 硬性规则（structured_queries_catalog）】
+      - user 消息 **「库表查询目录」** 含各主题 row_count、time_scope、synthesis_rule；须逐条阅读。
+      - **row_count=0**：该维度仅可写「库表未检索到」，不得写支持性数值/管排号；知识库仅出现在依据知识库的表述中，不得冒充库表。
+      - **historical_no_time_filter**：禁止称「近3天/近期」；数值仅可引用 snapshot 可见行。
+
       【硬性约束】
-      1) 严禁编造库表未出现的数值、表名、记录；缺失须写「库表未检索到」并说明对结论的影响。
-      2) 图像仅陈述可见特征，不得超出图像证据推断微观机理；须引用 confidence_notes。
+      1) 严禁编造库表未出现的数值、表名、记录；缺失须写「库表未检索到」（见 catalog 规则）。
+      2) 图像仅陈述可见特征，不得超出图像证据推断微观机理；须引用 confidence_notes（见上节 vision_findings 规则）。
       3) 正文中 **禁止出现** 数据计划编号或内部任务代号（如 q1、q2a、q2b、q3、item_id）；一律用业务语义描述（如「管段基础参数」「壁厚测量记录」「超温统计」）。
       4) **不要** 输出「证据链」「解析范围与时间窗说明」「数据缺口与能力边界」「免责声明」等独立章节；解析范围与时间窗由系统在流式结束帧 meta 下发，报告中不必复述。
       5) 若 quality_report.warnings 或时间解析异常，可在「缺陷类型判定与风险等级」小节末尾一句带过，勿单独成章。
@@ -1318,11 +1330,37 @@ analysis_synthesis_img_diag_leakage_burst:
       - **中期劣化因素**：事故前已积累的劣化过程（近 3 天库表 + 检修历史）
       - **底层根因**：设计、材质、长期运行模式、系统性管理根因
 
+      【视觉结构化 JSON — 硬性规则（vision_findings）】
+      - user 消息中 **「视觉结构化结果」** 块即 vision_findings；合成前须完整阅读。
+      - 若 `vision_skipped` 为 true（如 reason=no_image_provided）：**图像可见** 小节写「未提供图片」；不得编造图像证据。
+      - 若 `vision_skipped` 不为 true 且含 burst_type、location_visual、burst_signals、damage_morphology 等字段：
+        **必须** 在「### 四、证据链 → 图像可见」及「### 三、三层溯源 × 五大类」相关格中引用上述可见特征；
+        **禁止** 写「未提供图片」「无图像证据」「图像未提供」等与 vision_findings 矛盾的表述。
+      - 图像陈述仅基于 vision_findings 可见字段；须引用 confidence_notes；不得超出图像推断微观机理。
+
+      【库表查询目录 — 硬性规则（structured_queries_catalog）】
+      - user 消息中 **「库表查询目录」** 块列出各业务主题的 row_count、time_scope、synthesis_rule；合成前须逐条阅读。
+      - **row_count=0**（synthesis_status=empty）：该主题在「库表要点」与「三层溯源 × 五大类」中 **仅可** 写「库表未检索到」并标注 **证据不足**；
+        **禁止** 写支持/不支持的具体数值、管排号、日期或现象；**禁止** 用 RAG/知识库内容填充该主题的库表要点。
+      - **time_scope=historical_no_time_filter**（如减薄速率、泄爆履历）：仅可作 **历史背景**；
+        **禁止** 描述为「近3天」「近期」「事故前3天」；管排号/壁厚/速率 **仅可** 引用 structured_queries_snapshot 中对应 purpose 的可见行。
+      - 所有库表数值与管排号：必须在 snapshot 对应 purpose 的行中出现；**禁止** 跨 purpose 混用或外推（例如壁厚测量与减薄速率不得合并叙述）。
+      - **空表主题隔离（synthesis_status=empty）**：某 purpose 在 catalog 中为 empty 时，该 purpose 在「库表要点」及「三层溯源 × 五大类」中对应维度的库表侧 **仅可** 写「库表未检索到（证据不足）」；
+        **禁止** 借用其他 purpose（如壁厚测量、减薄速率、补焊换管）的数据为该 empty 主题写「支持/不支持」性库表结论。
+        例：泄爆泄漏履历 row_count=0 时，不得在腐蚀类「中期劣化」写「壁厚减薄支持腐蚀」并冒充泄爆履历——若引用壁厚须标明来自壁厚测量主题，且不得填补泄爆履历空表。
+      - **跨类引用须分源**：三层溯源中若同时涉及多个库表主题，每句库表陈述须能对应到单一 purpose；不得将 A 主题的数值用于论证 B 主题（尤其 B 为 empty 时）。
+
+      【壁厚相关字段 — 硬性规则】
+      - **壁厚限值**：运行/判据下限；写「低于限值」「未达限值」「超标」等须 **逐行** 核对 snapshot 中 **同一行** 的实测壁厚与壁厚限值。
+      - **设计壁厚 / 原始壁厚**：台账或设计值；**不得** 与「壁厚限值」混称或互换（禁止把限值 3.2mm 写成「设计壁厚 3.2mm」）。
+      - snapshot 中「设计壁厚」为 0、0.00、空或 null：视为台账未填报；**禁止** 写「设计壁厚为 X mm」，应写「壁厚限值为 X mm」或「设计壁厚台账未填报」。
+      - 引用壁厚数值时须同时给出排号/管段标识（若 snapshot 有）；禁止归纳 snapshot 未出现的排号。
+
       【硬性约束】
-      1) 严禁编造库表未出现的数值、表名、记录；缺失须写「库表未检索到」并说明对结论的影响。
-      2) 无图时不得虚构图像证据；有图时仅陈述可见特征，引用 confidence_notes。
+      1) 严禁编造库表未出现的数值、表名、记录；缺失须写「库表未检索到」并说明对结论的影响（见上节 catalog 规则）。
+      2) 无图时不得虚构图像证据；有图时仅陈述可见特征，引用 confidence_notes（见上节 vision_findings 规则）。
       3) 正文中 **禁止出现** 数据计划编号或内部任务代号（如 q1、q2a、q2b、q3、item_id）；一律用业务语义描述（如「管段基础参数」「壁厚测量记录」「超温统计」）。
-      4) RAG 用于案例/规程引用，标「知识库要点」；勿与库表事实混淆。
+      4) RAG 用于案例/规程引用，标「知识库要点」；**不得** 与库表事实混淆，**不得** 在 row_count=0 的主题下替代库表写支持性结论。
       5) 须复述 NL2SQL 解析的 **事故锚点与近 3 天时间窗** 及设备范围；若 quality_report.warnings、parsed_intent.time_rewrite_warnings 含 anchor_lookback_skipped_no_anchor / no_parsed_time_window，须显著提示用户补充事故时刻；若含 anchor_fallback_now 须说明以当前时刻近似兜底；effective_time_window 有值时优先复述其实际 SQL 回溯窗。
       6) 每一类方向须给出 **支持/不支持/证据不足** 的判定及依据（图像|库表|知识库）。
 
@@ -1331,7 +1369,7 @@ analysis_synthesis_img_diag_leakage_burst:
       - 泄爆/泄漏事件概述；最可能的主因方向（1～2 句）。
 
       ### 二、解析范围与事故时间窗
-      - 事故锚点、近 3 天窗口、锅炉/受热面；未识别字段列出。
+      - 事故锚点、事故发生时间、锅炉/受热面。
 
       ### 三、三层溯源 × 五大类（核心表格）
       按五大类各建一个小节，每节含三行：**直接爆口原因** | **中期劣化因素** | **底层根因**；
