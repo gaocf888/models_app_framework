@@ -416,6 +416,14 @@ class ImgDiagScopeHitlRunner:
                 final_state.update(ev["_state_update"])
             if "_interrupt_payload" in ev:
                 intr = ev["_interrupt_payload"]
+                stored_urls = (
+                    img_diag_request.get("image_urls")
+                    if isinstance(img_diag_request, dict)
+                    else []
+                )
+                url_count = len(
+                    [u for u in (stored_urls or []) if isinstance(u, str) and u.strip()]
+                )
                 token = create_img_diag_resume_token(
                     thread_id=rid,
                     request_id=rid,
@@ -425,6 +433,14 @@ class ImgDiagScopeHitlRunner:
                     img_diag_subtype=str(initial.get("img_diag_subtype") or ""),
                     interrupt_payload=intr,
                     img_diag_request=img_diag_request,
+                )
+                logger.info(
+                    "img_diag scope interrupt store resume session request_id=%s "
+                    "subtype=%s image_urls url_count=%s raw_list_len=%s",
+                    rid,
+                    initial.get("img_diag_subtype"),
+                    url_count,
+                    len(stored_urls or []),
                 )
                 return {
                     "status": "interrupt",
@@ -515,6 +531,22 @@ class ImgDiagScopeHitlRunner:
                 "message": final_state.get("abort_reason") or "scope confirm aborted",
             }
         if final_state.get("confirmed_scope_intent") and final_state.get("scope_intent_text"):
+            stored_urls = (
+                session.img_diag_request.get("image_urls")
+                if isinstance(session.img_diag_request, dict)
+                else []
+            )
+            url_count = len(
+                [u for u in (stored_urls or []) if isinstance(u, str) and u.strip()]
+            )
+            logger.info(
+                "img_diag scope resume confirmed request_id=%s action=%s "
+                "session_image_urls url_count=%s raw_list_len=%s",
+                session.request_id,
+                action,
+                url_count,
+                len(stored_urls or []),
+            )
             return {
                 "status": "confirmed",
                 "request_id": session.request_id,

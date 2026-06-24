@@ -18,6 +18,7 @@ from time import perf_counter
 from typing import Any, AsyncIterator, Awaitable, Callable, cast
 from uuid import uuid4
 
+from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.core.metrics import ANALYSIS_REQUEST_COUNT
 from app.llm.graphs.analysis_finished_meta import (
@@ -45,6 +46,30 @@ logger = get_logger(__name__)
 
 IMG_DIAG_DEFECT_IDENT_TYPE: AnalysisType = "img_diag_defect_ident"
 IMG_DIAG_LEAKAGE_BURST_TYPE: AnalysisType = "img_diag_leakage_burst"
+
+# 合成输入：各 plan item 的时间语义（与 reference SQL 一致；q2b/q2c 为历史全量）
+_IMG_DIAG_PLAN_TIME_SCOPE: dict[str, str] = {
+    "q1": "anchor_lookback_3d",
+    "q2a": "anchor_lookback_3d",
+    "q2b": "historical_no_time_filter",
+    "q2c": "historical_no_time_filter",
+    "q2d": "anchor_lookback_3d",
+    "q2e": "anchor_lookback_3d",
+    "q3": "anchor_lookback_3d",
+    "q4": "anchor_lookback_3d",
+    "q5": "anchor_lookback_3d",
+}
+_IMG_DIAG_SYNTHESIS_ROW_CAPS: dict[str, int] = {
+    "q2b": 12,
+    "q2c": 10,
+    "q5": 15,
+}
+_IMG_DIAG_SYNTHESIS_DEFAULT_ROW_CAP = 40
+_IMG_DIAG_TIME_SCOPE_LABELS: dict[str, str] = {
+    "anchor_lookback_3d": "事故锚点向前3天",
+    "historical_no_time_filter": "历史全量（SQL 无近3天时间过滤）",
+    "unknown": "未知",
+}
 
 
 class ImgDiagScopeInterrupt(Exception):
@@ -105,11 +130,12 @@ _IMG_DIAG_PROFILES: dict[ImgDiagSubtype, _ImgDiagSubtypeProfile] = {
         ),
         synthesis_default=(
             "你是电厂锅炉受热面泄爆溯源高级分析师，需融合图像证据（若有）、"
-            "事故近3天库表摘要与知识库片段，按五大类方向×三层逻辑输出泄爆原因分析报告。"
+            "库表摘要与知识库片段；结论摘要按三层逻辑总括，事故分析按五大类逐项综合叙述，"
+            "并给出同类案例处置方案与事故预防措施。"
         ),
         report_default=(
-            "输出章节含：结论摘要、三层溯源（直接/中期/根因）、五大类验证表、"
-            "证据链、同类案例与规程、延伸问题、解析范围说明、免责声明。"
+            "输出章节含：结论摘要（含三层总结）、解析范围与时间窗、事故分析（五大类）、"
+            "证据链、同类案例及处置方案、事故预防措施；结尾 AI 辅助说明。"
         ),
         stream_fallback_summary="泄爆分析生成失败，已返回基础报告，请稍后重试。",
         orchestrator_stream_id="img_diag_leakage_burst_stream",
@@ -184,6 +210,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             req.model_dump(mode="json"),
             request_id=request_id,
         )
+
+    @staticmethod
+    def _image_urls_diag(image_urls: list[str] | None) -> dict[str, Any]:
+        """供 vision/resume 诊断：统计有效 URL 数量并截断预览（避免日志过长）。"""
+        raw = list(image_urls or [])
+        urls = [u for u in raw if isinstance(u, str) and u.strip()]
+        previews: list[str] = []
+        for u in urls[:3]:
+            s = u.strip()
+            previews.append(s if len(s) <= 120 else f"{s[:117]}...")
+        return {"url_count": len(urls), "raw_list_len": len(raw), "url_previews": previews}
 
     @staticmethod
     def _scope_interrupt_sse_event(result: dict[str, Any]) -> dict[str, Any]:
@@ -315,16 +352,67 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         return time_part, scope_part
 
     @staticmethod
-    def _gathered_data_for_synthesis(
+    def _unique_purpose_label(base: str, used: set[str]) -> str:
+        label = base
+        suffix = 2
+        while label in used:
+            label = f"{base}·{suffix}"
+            suffix += 1
+        used.add(label)
+        return label
+
+    @classmethod
+    def _synthesis_catalog_rule(
+        cls,
+        *,
+        row_count: int,
+        rows_in_snapshot: int,
+        time_scope: str,
+    ) -> tuple[str, str]:
+        if row_count <= 0:
+            return (
+                "empty",
+                "库表未检索到任何记录；「库表要点」与三层溯源/判定依据中"
+                "不得写支持性数值或管排号；仅可写「库表未检索到」并标注证据不足；"
+                "知识库内容仅可出现在「知识库要点」小节，不得冒充库表事实。",
+            )
+        if time_scope == "historical_no_time_filter":
+            truncated = rows_in_snapshot < row_count
+            status = "historical_truncated" if truncated else "historical_full"
+            rule = (
+                "本主题为历史全量统计，非事故近3天窗口；"
+                "禁止描述为「近3天」「近期」「事故前3天」；"
+                "管排号、壁厚、速率等数值仅可引用 structured_queries_snapshot 中"
+                "对应 purpose 的可见行，禁止归纳 snapshot 未出现的排号。"
+            )
+            if truncated:
+                rule += f"（snapshot 仅含 {rows_in_snapshot}/{row_count} 行样本，勿外推全量）"
+            return status, rule
+        if rows_in_snapshot < row_count:
+            return (
+                "truncated",
+                f"snapshot 含 {rows_in_snapshot}/{row_count} 行；"
+                "仅可引用 snapshot 内出现的字段与数值，禁止外推。",
+            )
+        return (
+            "ok",
+            "仅可引用 structured_queries_snapshot 中本 purpose 可见行的字段与数值。",
+        )
+
+    @classmethod
+    def _prepare_img_diag_synthesis_queries(
+        cls,
         gathered_data: dict[str, list[dict]],
         plan_tasks: list[dict[str, Any]],
+        calls: list[AnalysisNL2SQLCall],
         *,
         analysis_type: str,
-    ) -> dict[str, list[dict]]:
-        """合成输入：用 purpose 业务语义作键，避免报告中引用 q1/q2a 等编号。"""
-        if analysis_type != IMG_DIAG_DEFECT_IDENT_TYPE or not gathered_data:
-            return gathered_data
+    ) -> tuple[dict[str, list[dict]], list[dict[str, Any]]]:
+        """合成输入：purpose 语义键 + 行数上限 + 可查 catalog（空表/历史全量约束）。"""
+        if analysis_type not in (IMG_DIAG_DEFECT_IDENT_TYPE, IMG_DIAG_LEAKAGE_BURST_TYPE):
+            return gathered_data, []
         id_to_purpose: dict[str, str] = {}
+        plan_order: list[str] = []
         for task in plan_tasks:
             if not isinstance(task, dict):
                 continue
@@ -332,16 +420,64 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             purpose = str(task.get("purpose") or "").strip()
             if item_id and purpose:
                 id_to_purpose[item_id] = purpose
+                plan_order.append(item_id)
+        call_rows: dict[str, int] = {}
+        for call in calls:
+            item_id = str(call.item_id or "").strip()
+            if item_id:
+                call_rows[item_id] = int(call.row_count or 0)
+        ordered_ids = plan_order + [
+            k for k in gathered_data if k not in plan_order
+        ]
         labeled: dict[str, list[dict]] = {}
-        for key, rows in gathered_data.items():
-            base = id_to_purpose.get(str(key), "结构化查询数据")
-            label = base
-            suffix = 2
-            while label in labeled:
-                label = f"{base}·{suffix}"
-                suffix += 1
-            labeled[label] = rows
-        return labeled
+        catalog: list[dict[str, Any]] = []
+        used_labels: set[str] = set()
+        for item_id in ordered_ids:
+            rows = list(gathered_data.get(item_id) or [])
+            purpose = id_to_purpose.get(item_id, "结构化查询数据")
+            label = cls._unique_purpose_label(purpose, used_labels)
+            row_count = call_rows.get(item_id, len(rows))
+            cap = _IMG_DIAG_SYNTHESIS_ROW_CAPS.get(
+                item_id, _IMG_DIAG_SYNTHESIS_DEFAULT_ROW_CAP
+            )
+            snapshot_rows = rows[:cap] if len(rows) > cap else rows
+            labeled[label] = snapshot_rows
+            time_scope = _IMG_DIAG_PLAN_TIME_SCOPE.get(item_id, "unknown")
+            status, rule = cls._synthesis_catalog_rule(
+                row_count=row_count,
+                rows_in_snapshot=len(snapshot_rows),
+                time_scope=time_scope,
+            )
+            catalog.append(
+                {
+                    "purpose": purpose,
+                    "row_count": row_count,
+                    "rows_in_snapshot": len(snapshot_rows),
+                    "time_scope": time_scope,
+                    "time_scope_label": _IMG_DIAG_TIME_SCOPE_LABELS.get(
+                        time_scope, time_scope
+                    ),
+                    "synthesis_status": status,
+                    "synthesis_rule": rule,
+                }
+            )
+        return labeled, catalog
+
+    @staticmethod
+    def _gathered_data_for_synthesis(
+        gathered_data: dict[str, list[dict]],
+        plan_tasks: list[dict[str, Any]],
+        *,
+        analysis_type: str,
+    ) -> dict[str, list[dict]]:
+        """合成 snapshot（兼容旧调用；catalog 见 _prepare_img_diag_synthesis_queries）。"""
+        snapshot, _ = AnalysisImgDiagGraphRunner._prepare_img_diag_synthesis_queries(
+            gathered_data,
+            plan_tasks,
+            [],
+            analysis_type=analysis_type,
+        )
+        return snapshot
 
     @staticmethod
     def _append_report_constraints(synthesis_prompt: str, report_prompt: str) -> str:
@@ -349,6 +485,156 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         if not report:
             return synthesis_prompt
         return f"{synthesis_prompt.rstrip()}\n\n【报告格式约束】\n{report}"
+
+    @staticmethod
+    def _vision_synthesis_log_summary(vision_data: Any) -> dict[str, Any]:
+        """合成前日志：vision_findings 摘要（不含 raw 全文）。"""
+        if not isinstance(vision_data, dict):
+            return {"present": False}
+        if vision_data.get("vision_skipped"):
+            return {
+                "present": True,
+                "vision_skipped": True,
+                "reason": vision_data.get("reason"),
+            }
+        highlight_keys = (
+            "burst_type",
+            "location_visual",
+            "burst_signals",
+            "damage_morphology",
+            "opening_shape",
+            "defect_type",
+            "risk_level",
+            "confidence_notes",
+        )
+        summary: dict[str, Any] = {
+            "present": True,
+            "vision_skipped": False,
+            "keys": [k for k in vision_data if k not in ("raw", "parse_error")][:24],
+        }
+        for key in highlight_keys:
+            if key in vision_data and vision_data[key] is not None:
+                val = vision_data[key]
+                if isinstance(val, str) and len(val) > 200:
+                    val = val[:200] + "…"
+                summary[key] = val
+        return summary
+
+    def _log_vision_before_synthesis(self, pack: _ImgDiagPack) -> None:
+        summary = self._vision_synthesis_log_summary(pack.vision_data)
+        catalog = pack.merged_blob.get("structured_queries_catalog") or []
+        empty_purposes = [
+            c.get("purpose")
+            for c in catalog
+            if isinstance(c, dict) and int(c.get("row_count") or 0) <= 0
+        ]
+        logger.info(
+            "img_diag synthesis vision_context subtype=%s request_id=%s user_id=%s session_id=%s %s",
+            pack.profile.subtype,
+            pack.request_id,
+            pack.req.user_id,
+            pack.req.session_id,
+            json.dumps(summary, ensure_ascii=False, default=str),
+        )
+        if catalog:
+            logger.info(
+                "img_diag synthesis queries_catalog request_id=%s empty_purposes=%s catalog=%s",
+                pack.request_id,
+                empty_purposes,
+                json.dumps(catalog, ensure_ascii=False, default=str),
+            )
+
+    def _build_summary_user_content(
+        self,
+        *,
+        query: str,
+        analysis_type: str,
+        data_mode: str,
+        data_blob: dict,
+        context_snippets: list[str],
+        planning_context: str | None = None,
+    ) -> str:
+        if analysis_type in (IMG_DIAG_DEFECT_IDENT_TYPE, IMG_DIAG_LEAKAGE_BURST_TYPE):
+            return self._build_img_diag_summary_user_content(
+                query=query,
+                analysis_type=analysis_type,
+                data_mode=data_mode,
+                data_blob=data_blob,
+                context_snippets=context_snippets,
+                planning_context=planning_context,
+            )
+        return super()._build_summary_user_content(
+            query=query,
+            analysis_type=analysis_type,
+            data_mode=data_mode,
+            data_blob=data_blob,
+            context_snippets=context_snippets,
+            planning_context=planning_context,
+        )
+
+    def _build_img_diag_summary_user_content(
+        self,
+        *,
+        query: str,
+        analysis_type: str,
+        data_mode: str,
+        data_blob: dict,
+        context_snippets: list[str],
+        planning_context: str | None = None,
+    ) -> str:
+        """看图诊断 synthesis user 消息：vision_findings、catalog 完整保留，snapshot 按预算截断。"""
+        max_chars = int(self._analysis_cfg.synthesis_gathered_json_max_chars)
+        vision_data = data_blob.get("vision_findings")
+        catalog = data_blob.get("structured_queries_catalog")
+        rest_blob = {
+            k: v
+            for k, v in data_blob.items()
+            if k not in ("vision_findings", "structured_queries_catalog")
+        }
+        vision_block = json.dumps(
+            {"vision_findings": vision_data},
+            ensure_ascii=False,
+            default=self._json_fallback,
+        )
+        catalog_block = json.dumps(
+            {"structured_queries_catalog": catalog},
+            ensure_ascii=False,
+            default=self._json_fallback,
+        )
+        vision_cap = min(6000, max(800, max_chars // 3))
+        if len(vision_block) > vision_cap:
+            vision_block = vision_block[:vision_cap]
+        catalog_cap = min(4000, max(600, max_chars // 4))
+        if len(catalog_block) > catalog_cap:
+            catalog_block = catalog_block[:catalog_cap]
+        rest_budget = max(500, max_chars - len(vision_block) - len(catalog_block) - 200)
+        rest_preview = json.dumps(
+            rest_blob,
+            ensure_ascii=False,
+            default=self._json_fallback,
+        )[:rest_budget]
+        rag_text = "\n".join(f"- {s}" for s in context_snippets[:8])
+        pc = (planning_context or "").strip()
+        planning_block = f"\n分阶段规划意图(结构化要点):\n{pc[:2000]}\n" if pc else ""
+        vision_skipped = (
+            isinstance(vision_data, dict) and bool(vision_data.get("vision_skipped"))
+        )
+        vision_hint = (
+            "（vision_skipped=true，报告须说明未提供图片）"
+            if vision_skipped
+            else "（vision_skipped 不为 true 时，报告「图像可见」须引用下列字段，禁止写未提供/无图）"
+        )
+        catalog_hint = "（synthesis_status=empty 的主题禁止写库表支持性结论）"
+        return (
+            f"分析类型: {analysis_type}\n"
+            f"数据来源模式: {data_mode}\n"
+            f"用户问题: {query}\n"
+            f"{planning_block}"
+            f"视觉结构化结果(JSON，合成时必须优先使用){vision_hint}:\n{vision_block}\n"
+            f"库表查询目录(JSON，合成前必读；row_count=0 须写库表未检索到，禁止用知识库冒充){catalog_hint}:\n{catalog_block}\n"
+            f"库表明细 snapshot(JSON截断，数值/管排号仅可引用本块与目录允许范围):\n{rest_preview}\n"
+            f"RAG参考片段:\n{rag_text}"
+        ).strip()
 
     @staticmethod
     def _finished_meta_parsed_intent(
@@ -482,8 +768,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
     async def _lane_vision(
         self, req: AnalysisImgDiagRequest, profile: _ImgDiagSubtypeProfile
     ) -> tuple[dict[str, Any], int]:
+        url_diag = self._image_urls_diag(req.image_urls)
         urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
         if not urls:
+            logger.info(
+                "img_diag vision skipped subtype=%s user_id=%s session_id=%s "
+                "reason=no_image_provided url_count=0 raw_list_len=%s",
+                profile.subtype,
+                req.user_id,
+                req.session_id,
+                url_diag["raw_list_len"],
+            )
             return (
                 {
                     "vision_skipped": True,
@@ -513,8 +808,19 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         for url in urls:
             content.append({"type": "image_url", "image_url": {"url": url}})
         messages = [{"role": "user", "content": content}]
-        vision_model = self._analysis_cfg.img_diag_vision_model
+        vision_model = get_app_config().llm.default_model
         timeout = float(self._analysis_cfg.img_diag_vision_timeout_seconds)
+        logger.info(
+            "img_diag vision start subtype=%s user_id=%s session_id=%s "
+            "url_count=%s model=%s timeout_s=%s url_previews=%s",
+            profile.subtype,
+            req.user_id,
+            req.session_id,
+            len(urls),
+            vision_model,
+            timeout,
+            url_diag["url_previews"],
+        )
         raw = await self._llm.chat(
             model=vision_model,  # type: ignore[arg-type]
             messages=messages,
@@ -527,6 +833,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 parsed = json.loads(raw.strip())
             except Exception:  # noqa: BLE001
                 parsed = {"raw_text": (raw or "")[:8000], "parse_error": "vision_output_not_json"}
+        parse_ok = "parse_error" not in parsed
+        logger.info(
+            "img_diag vision done subtype=%s url_count=%s ms=%s parse_ok=%s "
+            "result_keys=%s parse_error=%s",
+            profile.subtype,
+            len(urls),
+            ms,
+            parse_ok,
+            list(parsed.keys())[:12],
+            parsed.get("parse_error"),
+        )
         return parsed, ms
 
     async def _img_diag_normalize_request(
@@ -621,6 +938,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         request_id: str | None = None,
     ) -> _ImgDiagPack:
         profile = self._profile(req)
+        pack_url_diag = self._image_urls_diag(req.image_urls)
+        logger.info(
+            "img_diag gather_pack start subtype=%s request_id=%s scope_hitl_confirmed=%s "
+            "image_urls url_count=%s raw_list_len=%s url_previews=%s",
+            profile.subtype,
+            (request_id or "").strip() or "-",
+            bool(confirmed_scope),
+            pack_url_diag["url_count"],
+            pack_url_diag["raw_list_len"],
+            pack_url_diag["url_previews"],
+        )
         lane_timeout = float(self._analysis_cfg.img_diag_lane_timeout_seconds)
         at = profile.analysis_type
         nl_req = AnalysisNL2SQLRequest(
@@ -641,8 +969,19 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                     self._lane_vision(req, profile), timeout=lane_timeout
                 )
                 if data.get("vision_skipped"):
-                    return data, ms, "skipped"
-                return data, ms, "success"
+                    status = "skipped"
+                else:
+                    status = "success"
+                logger.info(
+                    "img_diag vision lane outcome subtype=%s status=%s ms=%s "
+                    "skip_reason=%s lane_error=%s",
+                    profile.subtype,
+                    status,
+                    ms,
+                    data.get("reason"),
+                    data.get("vision_lane_error"),
+                )
+                return data, ms, status
             except asyncio.TimeoutError:
                 degrade.append("img_diag_vision_timeout")
                 logger.warning("img_diag vision lane timeout after %ss", lane_timeout)
@@ -855,15 +1194,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         )
         synthesis_prompt = self._append_report_constraints(synthesis_prompt, report_prompt)
 
-        synthesis_data = self._gathered_data_for_synthesis(
+        synthesis_data, queries_catalog = self._prepare_img_diag_synthesis_queries(
             gathered_data,
             [t for t in raw_tasks if isinstance(t, dict)],
+            calls,
             analysis_type=at,
         )
 
         merged_blob: dict[str, Any] = {
-            "structured_queries_snapshot": synthesis_data,
             "vision_findings": vision_data,
+            "structured_queries_catalog": queries_catalog,
+            "structured_queries_snapshot": synthesis_data,
             "parsed_intent": parsed_intent_snapshot,
             "parsed_time_intent": parsed_time_intent,
             "parsed_scope_intent": parsed_scope_intent,
@@ -1081,6 +1422,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 request_id=rid,
             )
             t_syn = perf_counter()
+            self._log_vision_before_synthesis(pack)
             summary = await self._generate_summary(
                 query=req.query,
                 analysis_type=at,
@@ -1164,6 +1506,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             }
 
             t_syn = perf_counter()
+            self._log_vision_before_synthesis(pack)
             parts: list[str] = []
             try:
                 async for chunk in self._stream_summary_text(
@@ -1237,6 +1580,16 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         on_complete: Callable[[AnalysisV2Result], Awaitable[None]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """scope HITL resume 后继续看图诊断主流（meta → synthesis → finished）。"""
+        token_preview = (
+            f"{resume_token[:20]}..." if len(resume_token) > 20 else resume_token
+        )
+        logger.info(
+            "img_diag scope resume start user_id=%s session_id=%s action=%s resume_token=%s",
+            user_id,
+            session_id,
+            action,
+            token_preview,
+        )
         runner = self._get_scope_hitl_runner()
         scope_result = await runner.resume_until_confirmed_or_interrupt(
             resume_token=resume_token,
@@ -1244,6 +1597,11 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             session_id=session_id,
             action=action,
             payload=payload,
+        )
+        logger.info(
+            "img_diag scope resume phase done status=%s request_id=%s",
+            scope_result.get("status"),
+            scope_result.get("request_id"),
         )
         if scope_result.get("status") == "interrupt":
             yield self._scope_interrupt_sse_event(scope_result)
@@ -1255,7 +1613,20 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             }
             return
         req_dict = scope_result.get("img_diag_request") or {}
+        dict_url_diag = self._image_urls_diag(
+            req_dict.get("image_urls") if isinstance(req_dict, dict) else None
+        )
         req = AnalysisImgDiagRequest.model_validate(req_dict)
+        req_url_diag = self._image_urls_diag(req.image_urls)
+        logger.info(
+            "img_diag scope resume restored img_diag_request request_id=%s "
+            "dict_url_count=%s validated_url_count=%s raw_dict_list_len=%s url_previews=%s",
+            scope_result.get("request_id"),
+            dict_url_diag["url_count"],
+            req_url_diag["url_count"],
+            dict_url_diag["raw_list_len"],
+            req_url_diag["url_previews"],
+        )
         profile = self._profile(req)
         at = profile.analysis_type
         data_mode = profile.data_mode
@@ -1267,6 +1638,14 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             confirmed_scope=confirmed,
             scope_intent_text=scope_text,
             request_id=scope_result.get("request_id"),
+        )
+        logger.info(
+            "img_diag scope resume gather_pack done request_id=%s vision_lane_status=%s "
+            "vision_skipped=%s vision_ms=%s",
+            pack.request_id,
+            pack.vision_status,
+            bool(pack.vision_data.get("vision_skipped")),
+            pack.vision_ms,
         )
         request_id = pack.request_id
         plan_id = pack.plan_id
@@ -1284,6 +1663,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             },
         }
         t_syn = perf_counter()
+        self._log_vision_before_synthesis(pack)
         parts: list[str] = []
         try:
             async for chunk in self._stream_summary_text(
