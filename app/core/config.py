@@ -600,6 +600,19 @@ class AnalysisConfig:
     img_diag_vision_timeout_seconds: float = 120.0
     img_diag_lane_timeout_seconds: float = 180.0
     img_diag_upload_max_mb: int = 15
+    # 看图诊断视觉臂增强：预处理 / 两阶段 / RAG 形貌对照 / 低温采样
+    img_diag_vision_preprocess_enabled: bool = True
+    img_diag_vision_min_edge: int = 1024
+    img_diag_vision_max_edge: int = 2048
+    img_diag_vision_jpeg_quality: int = 92
+    img_diag_vision_sharpen_enabled: bool = True
+    img_diag_vision_contrast_factor: float = 1.08
+    img_diag_vision_two_stage_enabled: bool = True
+    img_diag_vision_rag_hint_enabled: bool = True
+    img_diag_vision_rag_hint_top_n: int = 10
+    img_diag_vision_temperature: float = 0.1
+    img_diag_vision_observe_max_tokens: int = 1200
+    img_diag_vision_json_max_tokens: int = 1536
     # 看图诊断业务 RAG：vision_augmented（默认，视觉完成后串行 RAG）| parallel | hybrid
     img_diag_rag_mode: str = "vision_augmented"
     # 看图诊断 scope HITL（LangGraph + 人机协同）
@@ -1332,6 +1345,44 @@ def _load_from_env() -> AppConfig:
             10.0, float(os.getenv("ANALYSIS_IMG_DIAG_LANE_TIMEOUT_SECONDS", "180"))
         ),
         img_diag_upload_max_mb=max(1, int(os.getenv("ANALYSIS_IMG_DIAG_UPLOAD_MAX_MB", "15"))),
+        img_diag_vision_preprocess_enabled=os.getenv(
+            "ANALYSIS_IMG_DIAG_VISION_PREPROCESS_ENABLED", "true"
+        ).lower()
+        != "false",
+        img_diag_vision_min_edge=max(512, int(os.getenv("ANALYSIS_IMG_DIAG_VISION_MIN_EDGE", "1024"))),
+        img_diag_vision_max_edge=max(
+            512, int(os.getenv("ANALYSIS_IMG_DIAG_VISION_MAX_EDGE", "2048"))
+        ),
+        img_diag_vision_jpeg_quality=max(
+            85, min(98, int(os.getenv("ANALYSIS_IMG_DIAG_VISION_JPEG_QUALITY", "92")))
+        ),
+        img_diag_vision_sharpen_enabled=os.getenv(
+            "ANALYSIS_IMG_DIAG_VISION_SHARPEN_ENABLED", "true"
+        ).lower()
+        != "false",
+        img_diag_vision_contrast_factor=max(
+            1.0, min(1.4, float(os.getenv("ANALYSIS_IMG_DIAG_VISION_CONTRAST_FACTOR", "1.08")))
+        ),
+        img_diag_vision_two_stage_enabled=os.getenv(
+            "ANALYSIS_IMG_DIAG_VISION_TWO_STAGE_ENABLED", "true"
+        ).lower()
+        != "false",
+        img_diag_vision_rag_hint_enabled=os.getenv(
+            "ANALYSIS_IMG_DIAG_VISION_RAG_HINT_ENABLED", "true"
+        ).lower()
+        != "false",
+        img_diag_vision_rag_hint_top_n=max(
+            1, min(20, int(os.getenv("ANALYSIS_IMG_DIAG_VISION_RAG_HINT_TOP_N", "10")))
+        ),
+        img_diag_vision_temperature=max(
+            0.0, min(1.0, float(os.getenv("ANALYSIS_IMG_DIAG_VISION_TEMPERATURE", "0.1")))
+        ),
+        img_diag_vision_observe_max_tokens=max(
+            256, int(os.getenv("ANALYSIS_IMG_DIAG_VISION_OBSERVE_MAX_TOKENS", "1200"))
+        ),
+        img_diag_vision_json_max_tokens=max(
+            256, int(os.getenv("ANALYSIS_IMG_DIAG_VISION_JSON_MAX_TOKENS", "1536"))
+        ),
         img_diag_rag_mode=(os.getenv("ANALYSIS_IMG_DIAG_RAG_MODE") or "vision_augmented").strip().lower(),
         img_diag_use_langgraph=os.getenv("ANALYSIS_IMG_DIAG_USE_LANGGRAPH", "true").lower() != "false",
         img_diag_scope_hitl_enabled=os.getenv("ANALYSIS_IMG_DIAG_SCOPE_HITL_ENABLED", "true").lower() != "false",
