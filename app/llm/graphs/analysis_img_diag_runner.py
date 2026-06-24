@@ -186,6 +186,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         )
 
     @staticmethod
+    def _image_urls_diag(image_urls: list[str] | None) -> dict[str, Any]:
+        """供 vision/resume 诊断：统计有效 URL 数量并截断预览（避免日志过长）。"""
+        raw = list(image_urls or [])
+        urls = [u for u in raw if isinstance(u, str) and u.strip()]
+        previews: list[str] = []
+        for u in urls[:3]:
+            s = u.strip()
+            previews.append(s if len(s) <= 120 else f"{s[:117]}...")
+        return {"url_count": len(urls), "raw_list_len": len(raw), "url_previews": previews}
+
+    @staticmethod
     def _scope_interrupt_sse_event(result: dict[str, Any]) -> dict[str, Any]:
         intr = result.get("interrupt_payload") or {}
         return {
@@ -482,8 +493,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
     async def _lane_vision(
         self, req: AnalysisImgDiagRequest, profile: _ImgDiagSubtypeProfile
     ) -> tuple[dict[str, Any], int]:
+        url_diag = self._image_urls_diag(req.image_urls)
         urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
         if not urls:
+            logger.info(
+                "img_diag vision skipped subtype=%s user_id=%s session_id=%s "
+                "reason=no_image_provided url_count=0 raw_list_len=%s",
+                profile.subtype,
+                req.user_id,
+                req.session_id,
+                url_diag["raw_list_len"],
+            )
             return (
                 {
                     "vision_skipped": True,
@@ -515,6 +535,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         messages = [{"role": "user", "content": content}]
         vision_model = self._analysis_cfg.img_diag_vision_model
         timeout = float(self._analysis_cfg.img_diag_vision_timeout_seconds)
+        logger.info(
+            "img_diag vision start subtype=%s user_id=%s session_id=%s "
+            "url_count=%s model=%s timeout_s=%s url_previews=%s",
+            profile.subtype,
+            req.user_id,
+            req.session_id,
+            len(urls),
+            vision_model,
+            timeout,
+            url_diag["url_previews"],
+        )
         raw = await self._llm.chat(
             model=vision_model,  # type: ignore[arg-type]
             messages=messages,
@@ -527,6 +558,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 parsed = json.loads(raw.strip())
             except Exception:  # noqa: BLE001
                 parsed = {"raw_text": (raw or "")[:8000], "parse_error": "vision_output_not_json"}
+        parse_ok = "parse_error" not in parsed
+        logger.info(
+            "img_diag vision done subtype=%s url_count=%s ms=%s parse_ok=%s "
+            "result_keys=%s parse_error=%s",
+            profile.subtype,
+            len(urls),
+            ms,
+            parse_ok,
+            list(parsed.keys())[:12],
+            parsed.get("parse_error"),
+        )
         return parsed, ms
 
     async def _img_diag_normalize_request(
@@ -621,6 +663,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         request_id: str | None = None,
     ) -> _ImgDiagPack:
         profile = self._profile(req)
+        pack_url_diag = self._image_urls_diag(req.image_urls)
+        logger.info(
+            "img_diag gather_pack start subtype=%s request_id=%s scope_hitl_confirmed=%s "
+            "image_urls url_count=%s raw_list_len=%s url_previews=%s",
+            profile.subtype,
+            (request_id or "").strip() or "-",
+            bool(confirmed_scope),
+            pack_url_diag["url_count"],
+            pack_url_diag["raw_list_len"],
+            pack_url_diag["url_previews"],
+        )
         lane_timeout = float(self._analysis_cfg.img_diag_lane_timeout_seconds)
         at = profile.analysis_type
         nl_req = AnalysisNL2SQLRequest(
@@ -641,8 +694,19 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                     self._lane_vision(req, profile), timeout=lane_timeout
                 )
                 if data.get("vision_skipped"):
-                    return data, ms, "skipped"
-                return data, ms, "success"
+                    status = "skipped"
+                else:
+                    status = "success"
+                logger.info(
+                    "img_diag vision lane outcome subtype=%s status=%s ms=%s "
+                    "skip_reason=%s lane_error=%s",
+                    profile.subtype,
+                    status,
+                    ms,
+                    data.get("reason"),
+                    data.get("vision_lane_error"),
+                )
+                return data, ms, status
             except asyncio.TimeoutError:
                 degrade.append("img_diag_vision_timeout")
                 logger.warning("img_diag vision lane timeout after %ss", lane_timeout)
@@ -1237,6 +1301,16 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         on_complete: Callable[[AnalysisV2Result], Awaitable[None]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """scope HITL resume 后继续看图诊断主流（meta → synthesis → finished）。"""
+        token_preview = (
+            f"{resume_token[:20]}..." if len(resume_token) > 20 else resume_token
+        )
+        logger.info(
+            "img_diag scope resume start user_id=%s session_id=%s action=%s resume_token=%s",
+            user_id,
+            session_id,
+            action,
+            token_preview,
+        )
         runner = self._get_scope_hitl_runner()
         scope_result = await runner.resume_until_confirmed_or_interrupt(
             resume_token=resume_token,
@@ -1244,6 +1318,11 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             session_id=session_id,
             action=action,
             payload=payload,
+        )
+        logger.info(
+            "img_diag scope resume phase done status=%s request_id=%s",
+            scope_result.get("status"),
+            scope_result.get("request_id"),
         )
         if scope_result.get("status") == "interrupt":
             yield self._scope_interrupt_sse_event(scope_result)
@@ -1255,7 +1334,20 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             }
             return
         req_dict = scope_result.get("img_diag_request") or {}
+        dict_url_diag = self._image_urls_diag(
+            req_dict.get("image_urls") if isinstance(req_dict, dict) else None
+        )
         req = AnalysisImgDiagRequest.model_validate(req_dict)
+        req_url_diag = self._image_urls_diag(req.image_urls)
+        logger.info(
+            "img_diag scope resume restored img_diag_request request_id=%s "
+            "dict_url_count=%s validated_url_count=%s raw_dict_list_len=%s url_previews=%s",
+            scope_result.get("request_id"),
+            dict_url_diag["url_count"],
+            req_url_diag["url_count"],
+            dict_url_diag["raw_list_len"],
+            req_url_diag["url_previews"],
+        )
         profile = self._profile(req)
         at = profile.analysis_type
         data_mode = profile.data_mode
@@ -1267,6 +1359,14 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             confirmed_scope=confirmed,
             scope_intent_text=scope_text,
             request_id=scope_result.get("request_id"),
+        )
+        logger.info(
+            "img_diag scope resume gather_pack done request_id=%s vision_lane_status=%s "
+            "vision_skipped=%s vision_ms=%s",
+            pack.request_id,
+            pack.vision_status,
+            bool(pack.vision_data.get("vision_skipped")),
+            pack.vision_ms,
         )
         request_id = pack.request_id
         plan_id = pack.plan_id
