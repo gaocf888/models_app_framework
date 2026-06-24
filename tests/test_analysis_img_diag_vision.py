@@ -37,16 +37,15 @@ class TestAnalysisImgDiagVisionHelpers(unittest.TestCase):
         self.assertEqual(len(items), 2)
         self.assertTrue(items[0].startswith("1."))
 
-    def test_format_vision_rag_hints_fallback_when_empty(self) -> None:
+    def test_format_vision_rag_hints_empty_when_no_snippets(self) -> None:
         block, items = format_vision_rag_hints_block([], top_n=10, subtype="defect_ident")
-        self.assertIn("内置对照清单", block)
-        self.assertEqual(len(items), 10)
-        self.assertIn("飞灰冲刷", items[0])
+        self.assertEqual(block, "")
+        self.assertEqual(items, [])
 
-    def test_format_vision_rag_hints_burst_fallback(self) -> None:
+    def test_format_vision_rag_hints_burst_empty_when_no_snippets(self) -> None:
         block, items = format_vision_rag_hints_block([], top_n=5, subtype="leakage_burst")
-        self.assertIn("爆口", block)
-        self.assertEqual(len(items), 5)
+        self.assertEqual(block, "")
+        self.assertEqual(items, [])
 
     def test_profile_has_observe_scene_and_rag_hint_intent(self) -> None:
         for key in ("defect_ident", "leakage_burst"):

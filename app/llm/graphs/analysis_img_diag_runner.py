@@ -805,8 +805,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         cfg = self._analysis_cfg
         top_n = int(cfg.img_diag_vision_rag_hint_top_n)
         if not cfg.img_diag_vision_rag_hint_enabled or not req.options.enable_rag:
-            block, items = format_vision_rag_hints_block([], top_n=top_n, subtype=profile.subtype)
-            return block, items, ""
+            return "", [], ""
 
         rag_q = build_vision_rag_hint_query(
             req,
@@ -894,9 +893,11 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             req.user_id,
             observe_fallback,
         )
-        observe_header = (
-            f"用户问题: {req.query}\n\n{rag_block}\n\n{observe_instructions}"
-        )
+        observe_header_parts = [f"用户问题: {req.query}"]
+        if rag_block.strip():
+            observe_header_parts.append(rag_block)
+        observe_header_parts.append(observe_instructions)
+        observe_header = "\n\n".join(observe_header_parts)
 
         json_fallback = (
             "你是承压部件缺陷图像分析助手；基于下列「可见事实观察」与对照清单输出单个 JSON 对象。"
@@ -934,7 +935,9 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 )
             ).strip()
 
-        json_header_parts = [f"用户问题: {req.query}", rag_block]
+        json_header_parts = [f"用户问题: {req.query}"]
+        if rag_block.strip():
+            json_header_parts.append(rag_block)
         if observations:
             json_header_parts.append(f"【阶段一·可见事实观察（须优先采信）】\n{observations}")
         json_header_parts.append(json_instructions)
