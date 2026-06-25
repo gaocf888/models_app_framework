@@ -25,9 +25,16 @@ WHERE ab.boiler_name = :boiler
   AND (
     :row_no IS NULL
     OR EXISTS (
+      SELECT 1 FROM base_temp_point btp
+      WHERE btp.device_id = asd.device_id
+        AND IFNULL(btp.row_num, 0) = :row_no
+        AND (:tube_no IS NULL OR IFNULL(btp.pipe_num, 0) = :tube_no)
+    )
+    OR EXISTS (
       SELECT 1 FROM overhaul_thickness_rate otr
       WHERE otr.device_id = asd.device_id
         AND IFNULL(otr.row_num, 0) = :row_no
+        AND (:tube_no IS NULL OR IFNULL(otr.pipe_num, 0) = :tube_no)
         AND (
           :check_location_name IS NULL
           OR EXISTS (
@@ -37,11 +44,21 @@ WHERE ab.boiler_name = :boiler
               AND onc2.name LIKE CONCAT('%', :check_location_name, '%')
           )
         )
-        AND (:tube_no IS NULL OR IFNULL(otr.pipe_num, 0) = :tube_no)
+    )
+    OR EXISTS (
+      SELECT 1 FROM overhual_leakage ol
+      WHERE ol.device_id = asd.device_id
+        AND IFNULL(ol.row_num, 0) = :row_no
+        AND (:tube_no IS NULL OR IFNULL(ol.pipe_num, 0) = :tube_no)
+    )
+    OR EXISTS (
+      SELECT 1 FROM overhaul_legacy_problem lp
+      WHERE lp.device_id = asd.device_id
+        AND IFNULL(lp.row_num, 0) = :row_no
+        AND (:tube_no IS NULL OR IFNULL(lp.pipe_num, 0) = :tube_no)
     )
     OR EXISTS (
       SELECT 1 FROM overhaul_record orc
-      INNER JOIN overhaul_record_tubes ort ON orc.id = ort.overhaul_record_id
       WHERE orc.device_id = asd.device_id
         AND IFNULL(orc.del_flag, '0') = '0'
         AND CAST(IFNULL(orc.row_num, '0') AS SIGNED) = :row_no
@@ -54,16 +71,31 @@ WHERE ab.boiler_name = :boiler
               AND onc3.name LIKE CONCAT('%', :check_location_name, '%')
           )
         )
-        AND (:tube_no IS NULL OR IFNULL(ort.tube_position, 0) = :tube_no)
+    )
+    OR EXISTS (
+      SELECT 1 FROM account_device_piperow adp
+      WHERE adp.device_id = asd.device_id
+        AND IFNULL(adp.row_count, 0) >= :row_no
+        AND (:tube_no IS NULL OR IFNULL(adp.pipe_count, 0) >= :tube_no)
     )
   )
   AND (
     :tube_no IS NULL
     OR :row_no IS NOT NULL
     OR EXISTS (
+      SELECT 1 FROM base_temp_point btp2
+      WHERE btp2.device_id = asd.device_id
+        AND IFNULL(btp2.pipe_num, 0) = :tube_no
+    )
+    OR EXISTS (
       SELECT 1 FROM overhaul_thickness_rate otr2
       WHERE otr2.device_id = asd.device_id
         AND IFNULL(otr2.pipe_num, 0) = :tube_no
+    )
+    OR EXISTS (
+      SELECT 1 FROM account_device_piperow adp2
+      WHERE adp2.device_id = asd.device_id
+        AND IFNULL(adp2.pipe_count, 0) >= :tube_no
     )
   )
 """.strip()
@@ -76,12 +108,18 @@ DEFAULT_IMG_DIAG_SCOPE_VALIDATE_SQL = (
     "WHERE ab.boiler_name = :boiler AND asd.device_name = :device_name "
     "AND (:check_location_name IS NULL OR onc.name LIKE CONCAT('%', :check_location_name, '%')) "
     "AND (:row_no IS NULL OR EXISTS ("
-    "SELECT 1 FROM overhaul_thickness_rate otr WHERE otr.device_id = asd.device_id "
+    "SELECT 1 FROM base_temp_point btp WHERE btp.device_id = asd.device_id "
+    "AND IFNULL(btp.row_num, 0) = :row_no "
+    "AND (:tube_no IS NULL OR IFNULL(btp.pipe_num, 0) = :tube_no)) "
+    "OR EXISTS (SELECT 1 FROM overhaul_thickness_rate otr WHERE otr.device_id = asd.device_id "
     "AND IFNULL(otr.row_num, 0) = :row_no "
-    "AND (:tube_no IS NULL OR IFNULL(otr.pipe_num, 0) = :tube_no))) "
+    "AND (:tube_no IS NULL OR IFNULL(otr.pipe_num, 0) = :tube_no)) "
+    "OR EXISTS (SELECT 1 FROM account_device_piperow adp WHERE adp.device_id = asd.device_id "
+    "AND IFNULL(adp.row_count, 0) >= :row_no "
+    "AND (:tube_no IS NULL OR IFNULL(adp.pipe_count, 0) >= :tube_no))) "
     "AND (:tube_no IS NULL OR :row_no IS NOT NULL OR EXISTS ("
-    "SELECT 1 FROM overhaul_thickness_rate otr2 WHERE otr2.device_id = asd.device_id "
-    "AND IFNULL(otr2.pipe_num, 0) = :tube_no))"
+    "SELECT 1 FROM base_temp_point btp2 WHERE btp2.device_id = asd.device_id "
+    "AND IFNULL(btp2.pipe_num, 0) = :tube_no))"
 )
 
 

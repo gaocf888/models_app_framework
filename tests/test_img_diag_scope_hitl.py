@@ -15,7 +15,11 @@ from app.llm.graphs.img_diag_scope_intent import (
     relax_scope_one_level,
     should_trigger_scope_hitl,
 )
-from app.llm.graphs.img_diag_scope_validate import bind_scope_validate_sql, validate_scope_with_relaxation
+from app.llm.graphs.img_diag_scope_validate import (
+    bind_scope_validate_sql,
+    default_scope_validate_sql,
+    validate_scope_with_relaxation,
+)
 from app.nl2sql.question_intent import resolve_question_intent
 
 
@@ -138,6 +142,14 @@ def test_relax_scope_one_level_order() -> None:
     assert f3 == "check_location_name"
     s4, f4 = relax_scope_one_level(s3)
     assert f4 is None
+
+
+def test_default_scope_validate_sql_uses_master_topology() -> None:
+    sql = default_scope_validate_sql()
+    assert "base_temp_point" in sql
+    assert "account_device_piperow" in sql
+    assert "row_count" in sql
+    assert "tube_position" not in sql
 
 
 def test_bind_scope_validate_sql_check_location() -> None:
