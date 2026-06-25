@@ -144,12 +144,11 @@ def test_relax_scope_one_level_order() -> None:
     assert f4 is None
 
 
-def test_default_scope_validate_sql_uses_master_topology() -> None:
+def test_default_scope_validate_sql_uses_base_temp_point_only() -> None:
     sql = default_scope_validate_sql()
     assert "base_temp_point" in sql
-    assert "account_device_piperow" in sql
-    assert "row_count" in sql
-    assert "tube_position" not in sql
+    assert "overhaul_thickness_rate" not in sql
+    assert "account_device_piperow" not in sql
 
 
 def test_bind_scope_validate_sql_check_location() -> None:
