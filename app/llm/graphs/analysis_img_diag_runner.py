@@ -788,6 +788,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 0,
             )
         t0 = perf_counter()
+        vision_model = get_app_config().llm.default_model
         tpl = self._prompts.get_template(
             scene=profile.vision_scene,
             user_id=req.user_id,
@@ -808,17 +809,15 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         for url in urls:
             content.append({"type": "image_url", "image_url": {"url": url}})
         messages = [{"role": "user", "content": content}]
-        vision_model = get_app_config().llm.default_model
         timeout = float(self._analysis_cfg.img_diag_vision_timeout_seconds)
         logger.info(
             "img_diag vision start subtype=%s user_id=%s session_id=%s "
-            "url_count=%s model=%s timeout_s=%s url_previews=%s",
+            "url_count=%s model=%s url_previews=%s",
             profile.subtype,
             req.user_id,
             req.session_id,
             len(urls),
             vision_model,
-            timeout,
             url_diag["url_previews"],
         )
         raw = await self._llm.chat(
@@ -833,16 +832,14 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 parsed = json.loads(raw.strip())
             except Exception:  # noqa: BLE001
                 parsed = {"raw_text": (raw or "")[:8000], "parse_error": "vision_output_not_json"}
-        parse_ok = "parse_error" not in parsed
+        parse_ok = isinstance(parsed, dict) and "parse_error" not in parsed
         logger.info(
-            "img_diag vision done subtype=%s url_count=%s ms=%s parse_ok=%s "
-            "result_keys=%s parse_error=%s",
+            "img_diag vision done subtype=%s url_count=%s ms=%s parse_ok=%s result_keys=%s",
             profile.subtype,
             len(urls),
             ms,
             parse_ok,
-            list(parsed.keys())[:12],
-            parsed.get("parse_error"),
+            list(parsed.keys())[:14] if isinstance(parsed, dict) else [],
         )
         return parsed, ms
 
