@@ -144,11 +144,30 @@ def test_relax_scope_one_level_order() -> None:
     assert f4 is None
 
 
-def test_default_scope_validate_sql_uses_base_temp_point_only() -> None:
+def test_default_scope_validate_sql_uses_checklocation_hierarchy() -> None:
     sql = default_scope_validate_sql()
+    assert "onc_surface" in sql
+    assert "parent_id" in sql
     assert "base_temp_point" in sql
+    assert "account_static_device" not in sql
     assert "overhaul_thickness_rate" not in sql
     assert "account_device_piperow" not in sql
+
+
+def test_bind_scope_validate_sql_checklocation_hierarchy() -> None:
+    bound = bind_scope_validate_sql(
+        default_scope_validate_sql(),
+        {
+            "boiler": "1号锅炉",
+            "device_name": "水冷壁螺旋段前墙",
+            "check_location_name": "吹灰孔33",
+        },
+    )
+    assert "1号锅炉" in bound
+    assert "水冷壁螺旋段前墙" in bound
+    assert "吹灰孔33" in bound
+    assert "parent_id = onc_surface.id" in bound
+    assert "onc_surface.device_id" in bound
 
 
 def test_bind_scope_validate_sql_check_location() -> None:

@@ -10,23 +10,31 @@ from app.llm.graphs.img_diag_scope_intent import relax_scope_one_level, scope_di
 
 logger = get_logger(__name__)
 
+# 受热面/检测位置：overhaul_new_checklocation 父子树（onc_surface.name → onc_loc.parent_id）
+# 排/管：base_temp_point（device_id 取自受热面节点 onc_surface.device_id）
 _DEFAULT_VALIDATE_SQL = """
 SELECT COUNT(*) AS record_count
 FROM account_boiler ab
-INNER JOIN account_static_device asd ON ab.boiler_id = asd.boiler_id
-LEFT JOIN overhaul_new_checklocation onc ON asd.device_id = onc.device_id
-  AND IFNULL(onc.del_flag, 0) = 0
+INNER JOIN overhaul_new_checklocation onc_surface
+  ON onc_surface.boiler_id = ab.boiler_id
+  AND IFNULL(onc_surface.del_flag, 0) = 0
+  AND onc_surface.name LIKE CONCAT('%', :device_name, '%')
 WHERE ab.boiler_name = :boiler
-  AND asd.device_name = :device_name
   AND (
     :check_location_name IS NULL
-    OR onc.name LIKE CONCAT('%', :check_location_name, '%')
+    OR EXISTS (
+      SELECT 1
+      FROM overhaul_new_checklocation onc_loc
+      WHERE onc_loc.parent_id = onc_surface.id
+        AND IFNULL(onc_loc.del_flag, 0) = 0
+        AND onc_loc.name LIKE CONCAT('%', :check_location_name, '%')
+    )
   )
   AND (
     :row_no IS NULL
     OR EXISTS (
       SELECT 1 FROM base_temp_point btp
-      WHERE btp.device_id = asd.device_id
+      WHERE btp.device_id = onc_surface.device_id
         AND IFNULL(btp.row_num, 0) = :row_no
         AND (:tube_no IS NULL OR IFNULL(btp.pipe_num, 0) = :tube_no)
     )
@@ -36,7 +44,7 @@ WHERE ab.boiler_name = :boiler
     OR :row_no IS NOT NULL
     OR EXISTS (
       SELECT 1 FROM base_temp_point btp2
-      WHERE btp2.device_id = asd.device_id
+      WHERE btp2.device_id = onc_surface.device_id
         AND IFNULL(btp2.pipe_num, 0) = :tube_no
     )
   )
@@ -44,17 +52,22 @@ WHERE ab.boiler_name = :boiler
 
 DEFAULT_IMG_DIAG_SCOPE_VALIDATE_SQL = (
     "SELECT COUNT(*) AS record_count FROM account_boiler ab "
-    "INNER JOIN account_static_device asd ON ab.boiler_id = asd.boiler_id "
-    "LEFT JOIN overhaul_new_checklocation onc ON asd.device_id = onc.device_id "
-    "AND IFNULL(onc.del_flag, 0) = 0 "
-    "WHERE ab.boiler_name = :boiler AND asd.device_name = :device_name "
-    "AND (:check_location_name IS NULL OR onc.name LIKE CONCAT('%', :check_location_name, '%')) "
+    "INNER JOIN overhaul_new_checklocation onc_surface "
+    "ON onc_surface.boiler_id = ab.boiler_id "
+    "AND IFNULL(onc_surface.del_flag, 0) = 0 "
+    "AND onc_surface.name LIKE CONCAT('%', :device_name, '%') "
+    "WHERE ab.boiler_name = :boiler "
+    "AND (:check_location_name IS NULL OR EXISTS ("
+    "SELECT 1 FROM overhaul_new_checklocation onc_loc "
+    "WHERE onc_loc.parent_id = onc_surface.id "
+    "AND IFNULL(onc_loc.del_flag, 0) = 0 "
+    "AND onc_loc.name LIKE CONCAT('%', :check_location_name, '%'))) "
     "AND (:row_no IS NULL OR EXISTS ("
-    "SELECT 1 FROM base_temp_point btp WHERE btp.device_id = asd.device_id "
+    "SELECT 1 FROM base_temp_point btp WHERE btp.device_id = onc_surface.device_id "
     "AND IFNULL(btp.row_num, 0) = :row_no "
     "AND (:tube_no IS NULL OR IFNULL(btp.pipe_num, 0) = :tube_no))) "
     "AND (:tube_no IS NULL OR :row_no IS NOT NULL OR EXISTS ("
-    "SELECT 1 FROM base_temp_point btp2 WHERE btp2.device_id = asd.device_id "
+    "SELECT 1 FROM base_temp_point btp2 WHERE btp2.device_id = onc_surface.device_id "
     "AND IFNULL(btp2.pipe_num, 0) = :tube_no))"
 )
 
