@@ -332,8 +332,8 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
     | `request_id` | 本次分析 ID（续跑后沿用） |
     | `resume_token` | **必存**；续跑请求体必填 |
     | `prompt` | 提示文案（如缺失字段说明、库表未匹配说明） |
-    | `scope_draft` | 英文字段名草案：`boiler`、`device_name`、`piperow_name`、`row_no`、`tube_no` |
-    | `scope_draft_display` | 中文键展示：`机组`、`受热面` 等（HITL 展示推荐用此字段） |
+    | `scope_draft` | 英文字段名草案：`boiler`、`device_name`、`check_location_name`、`row_no`、`tube_no` |
+    | `scope_draft_display` | 中文键展示：`机组`、`受热面`、`检测位置`、`排数`、`管数`（HITL 展示推荐用此字段） |
     | `missing_fields` | 缺失字段中文列表（如 `机组`、`受热面`） |
     | `validation_error` | 库表校验错误码/说明（可选） |
     | `interrupt_reason` | 如 `missing:boiler`、`db_validate_zero_rows` |

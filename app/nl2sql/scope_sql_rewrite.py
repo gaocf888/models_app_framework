@@ -7,6 +7,7 @@ from app.nl2sql.intent_config import scope_sql_rewrite_enabled as _scope_sql_rew
 
 _SCOPE_STRING_PLACEHOLDERS: tuple[tuple[str, str], ...] = (
     ("device_keyword", "device_name"),
+    ("location_keyword", "check_location_name"),
     ("piperow_keyword", "piperow_name"),
 )
 

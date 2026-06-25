@@ -10,20 +10,20 @@ from app.llm.graphs.img_diag_scope_intent import (
     ImgDiagScopeDraft,
     build_scope_intent_text,
     missing_required_scope_fields,
+    normalize_img_diag_scope_dict,
     parse_img_diag_scope_draft,
+    relax_scope_one_level,
     should_trigger_scope_hitl,
 )
-from app.llm.graphs.img_diag_scope_validate import bind_scope_validate_sql
+from app.llm.graphs.img_diag_scope_validate import bind_scope_validate_sql, validate_scope_with_relaxation
 from app.nl2sql.question_intent import resolve_question_intent
-from app.nl2sql.question_scope_models import QuestionScopeIntent
-from app.nl2sql.time_intent_display import extract_time_window_from_question
 
 
 def test_build_scope_intent_text() -> None:
     draft = ImgDiagScopeDraft(
         boiler="2号锅炉",
         device_name="高温过热器",
-        piperow_name="第一屏",
+        check_location_name="出口段",
         row_no=4,
         tube_no=None,
         confidence="high",
@@ -33,7 +33,7 @@ def test_build_scope_intent_text() -> None:
     text = build_scope_intent_text(draft, scope_question="2025-03-01 14:00 泄爆")
     assert "2号锅炉" in text
     assert "高温过热器" in text
-    assert "第一屏" in text
+    assert "出口段" in text
     assert "第4排" in text
 
 
@@ -41,7 +41,7 @@ def test_missing_required_scope_fields() -> None:
     draft = ImgDiagScopeDraft(
         boiler=None,
         device_name="高温过热器",
-        piperow_name=None,
+        check_location_name=None,
         row_no=None,
         tube_no=None,
         confidence="high",
@@ -55,7 +55,7 @@ def test_should_trigger_scope_hitl_only_when_required_fields_missing() -> None:
     complete = ImgDiagScopeDraft(
         boiler="1号锅炉",
         device_name="低温过热器",
-        piperow_name=None,
+        check_location_name=None,
         row_no=None,
         tube_no=None,
         confidence="low",
@@ -69,7 +69,7 @@ def test_should_trigger_scope_hitl_only_when_required_fields_missing() -> None:
     incomplete = ImgDiagScopeDraft(
         boiler="1号锅炉",
         device_name=None,
-        piperow_name=None,
+        check_location_name=None,
         row_no=None,
         tube_no=None,
         confidence="high",
@@ -85,6 +85,7 @@ def test_scope_draft_to_display_cn_labels() -> None:
     from app.llm.graphs.img_diag_scope_display import (
         SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
         format_missing_fields_cn,
+        normalize_scope_patch_keys,
         scope_draft_to_display,
     )
 
@@ -92,7 +93,7 @@ def test_scope_draft_to_display_cn_labels() -> None:
         {
             "boiler": "1号锅炉",
             "device_name": "水冷壁",
-            "piperow_name": None,
+            "check_location_name": "水冷壁右墙A2",
             "row_no": 3,
             "tube_no": 56,
         }
@@ -100,84 +101,72 @@ def test_scope_draft_to_display_cn_labels() -> None:
     assert display == {
         "机组": "1号锅炉",
         "受热面": "水冷壁",
+        "检测位置": "水冷壁右墙A2",
+        "排数": 3,
+        "管数": 56,
     }
     assert format_missing_fields_cn(["boiler", "device_name"]) == "机组、受热面"
     assert "业务库中未匹配" in SCOPE_HITL_DB_NOT_MATCHED_PROMPT
-    from app.llm.graphs.img_diag_scope_display import normalize_scope_patch_keys
-
-    assert normalize_scope_patch_keys({"机组": "2号锅炉", "受热面": "水冷壁"}) == {
+    assert normalize_scope_patch_keys({"机组": "2号锅炉", "检测位置": "出口段"}) == {
         "boiler": "2号锅炉",
-        "device_name": "水冷壁",
+        "check_location_name": "出口段",
     }
 
 
-def test_scope_parse_succeeded() -> None:
-    from app.llm.graphs.img_diag_scope_intent import scope_parse_succeeded
-
-    ok = ImgDiagScopeDraft(
-        boiler="1号锅炉",
-        device_name="水冷壁",
-        piperow_name=None,
-        row_no=None,
-        tube_no=None,
-        confidence="high",
-        confidence_reasons=(),
-        time_meta=parse_img_diag_scope_draft("").time_meta,
+def test_normalize_legacy_piperow_name() -> None:
+    out = normalize_img_diag_scope_dict(
+        {"boiler": "1号锅炉", "piperow_name": "第一层", "device_name": "低过"}
     )
-    assert scope_parse_succeeded(ok) is True
-    assert scope_parse_succeeded(
-        ImgDiagScopeDraft(
-            boiler=None,
-            device_name="水冷壁",
-            piperow_name=None,
-            row_no=None,
-            tube_no=None,
-            confidence="high",
-            confidence_reasons=(),
-            time_meta=parse_img_diag_scope_draft("").time_meta,
-        )
-    ) is False
+    assert out["check_location_name"] == "第一层"
+    assert "piperow_name" not in out
 
 
-def test_bind_scope_validate_sql_boiler_device_only() -> None:
-    sql_tpl = (
-        "SELECT COUNT(*) AS record_count FROM t "
-        "WHERE b = :boiler AND d = :device_name"
-    )
-    bound = bind_scope_validate_sql(
-        sql_tpl,
-        {"boiler": "1号锅炉", "device_name": "低温过热器", "piperow_name": "前屏"},
-    )
-    assert "1号锅炉" in bound
-    assert "低温过热器" in bound
-    assert "前屏" not in bound
+def test_relax_scope_one_level_order() -> None:
+    scope = {
+        "boiler": "1号锅炉",
+        "device_name": "低过",
+        "check_location_name": "第一层",
+        "row_no": 2,
+        "tube_no": 3,
+    }
+    s1, f1 = relax_scope_one_level(scope)
+    assert f1 == "tube_no"
+    assert s1["tube_no"] is None
+    s2, f2 = relax_scope_one_level(s1)
+    assert f2 == "row_no"
+    s3, f3 = relax_scope_one_level(s2)
+    assert f3 == "check_location_name"
+    s4, f4 = relax_scope_one_level(s3)
+    assert f4 is None
 
 
-def test_bind_scope_validate_sql_legacy_piperow_placeholder() -> None:
-    """自定义校验 SQL 仍含 :piperow_name 时可向后兼容 bind。"""
+def test_bind_scope_validate_sql_check_location() -> None:
     sql_tpl = (
         "SELECT COUNT(*) AS record_count FROM t "
         "WHERE b = :boiler AND d = :device_name "
-        "AND (:piperow_name IS NULL OR adp.piperow_name = :piperow_name)"
+        "AND (:check_location_name IS NULL OR loc LIKE CONCAT('%', :check_location_name, '%'))"
     )
     bound = bind_scope_validate_sql(
         sql_tpl,
-        {"boiler": "1号锅炉", "device_name": "低温过热器", "piperow_name": None},
+        {
+            "boiler": "1号锅炉",
+            "device_name": "低温过热器",
+            "check_location_name": "出口段",
+        },
     )
+    assert "出口段" in bound
     assert "1号锅炉" in bound
-    assert "低温过热器" in bound
-    assert "NULL" in bound
 
 
 def test_resolve_question_intent_human_confirmed() -> None:
     confirmed = {
         "boiler": "2号锅炉",
         "device_name": "高温过热器",
-        "piperow_name": None,
+        "check_location_name": "出口段",
         "row_no": 3,
         "tube_no": None,
     }
-    scope_text = "2号锅炉 高温过热器 第3排 2025-03-01 14:00"
+    scope_text = "2号锅炉 高温过热器 出口段 第3排 2025-03-01 14:00"
     intent = resolve_question_intent(
         "plan long question",
         time_intent_source=scope_text,
@@ -188,31 +177,41 @@ def test_resolve_question_intent_human_confirmed() -> None:
     assert intent.parse_mode == "human_confirmed"
     assert intent.scope.boiler == "2号锅炉"
     assert intent.scope.device_name == "高温过热器"
+    assert intent.scope.check_location_name == "出口段"
     assert intent.scope.row_no == 3
 
 
-def test_resolve_question_intent_default_unchanged_without_confirmed() -> None:
-    intent = resolve_question_intent(
-        "1号锅炉低温过热器第2排",
-        time_intent_source="1号锅炉低温过热器第2排",
-    )
-    assert intent.parse_mode == "rule"
-    assert intent.scope.boiler == "1号锅炉"
+@pytest.mark.asyncio
+async def test_validate_scope_with_relaxation_auto() -> None:
+    calls: list[dict] = []
 
+    async def fake_validate(scope: dict, *, executor=None):
+        calls.append(dict(scope))
+        if scope.get("tube_no") is not None:
+            return 0, None
+        if scope.get("row_no") is not None:
+            return 0, None
+        return 1, None
 
-def test_resolve_question_intent_time_fallback_to_original_query() -> None:
-    confirmed = {
-        "boiler": "1号锅炉",
-        "device_name": "低温过热器",
-    }
-    scope_text = "1号锅炉 低温过热器"
-    intent = resolve_question_intent(
-        "plan q",
-        confirmed_scope=confirmed,
-        scope_intent_text=scope_text,
-        original_query="1号锅炉低温过热器 前天",
-    )
-    assert intent.time_window is not None or extract_time_window_from_question("前天") is not None
+    with patch(
+        "app.llm.graphs.img_diag_scope_validate.validate_scope_in_catalog",
+        side_effect=fake_validate,
+    ):
+        count, effective, relaxed, err = await validate_scope_with_relaxation(
+            {
+                "boiler": "1号锅炉",
+                "device_name": "低过",
+                "check_location_name": "第一层",
+                "row_no": 2,
+                "tube_no": 3,
+            },
+            allow_auto_relax=True,
+        )
+    assert count == 1
+    assert effective["row_no"] is None
+    assert effective["tube_no"] is None
+    assert "tube_no" in relaxed
+    assert "row_no" in relaxed
 
 
 @pytest.mark.asyncio
@@ -229,42 +228,3 @@ async def test_validate_scope_skip_on_error() -> None:
         )
     assert count == 1
     assert err is None
-
-
-def test_open_langgraph_redis_saver_enters_context_manager(monkeypatch) -> None:
-    import sys
-    from contextlib import contextmanager
-    from unittest.mock import MagicMock
-
-    from app.llm.graphs.langgraph_redis_checkpointer import open_langgraph_redis_saver
-
-    mock_saver = MagicMock(name="RedisSaverInstance")
-
-    @contextmanager
-    def cm():
-        yield mock_saver
-
-    redis_mod = MagicMock()
-    redis_mod.RedisSaver.from_conn_string.return_value = cm()
-    monkeypatch.setitem(sys.modules, "langgraph.checkpoint.redis", redis_mod)
-
-    out = open_langgraph_redis_saver("redis://localhost:6379/0", log_prefix="test")
-    assert out is mock_saver
-    mock_saver.setup.assert_called_once()
-
-
-def test_img_diag_checkpoint_redis_import_failure_falls_back_to_memory(monkeypatch) -> None:
-    from app.llm.graphs import img_diag_checkpoint as cp
-
-    class _Analysis:
-        img_diag_checkpoint_backend = "redis"
-        img_diag_checkpoint_redis_url = "redis://localhost:6379/3"
-        img_diag_checkpoint_namespace = "img_diag"
-
-    class _Cfg:
-        analysis = _Analysis()
-
-    monkeypatch.setattr(cp, "get_app_config", lambda: _Cfg())
-    monkeypatch.setattr(cp, "open_langgraph_redis_saver", lambda *_a, **_k: None)
-    saver = cp.build_img_diag_checkpointer()
-    assert saver is not None

@@ -17,12 +17,15 @@ ScopeLiterals = dict[str, str | int | None]
 
 
 def _scope_from_confirmed_dict(confirmed: dict[str, Any]) -> QuestionScopeIntent:
-    row = confirmed.get("row_no")
-    tube = confirmed.get("tube_no")
+    data = dict(confirmed or {})
+    if not data.get("check_location_name") and data.get("piperow_name"):
+        data["check_location_name"] = data.get("piperow_name")
+    row = data.get("row_no")
+    tube = data.get("tube_no")
     return QuestionScopeIntent(
-        boiler=confirmed.get("boiler") or None,
-        device_name=confirmed.get("device_name") or None,
-        piperow_name=confirmed.get("piperow_name") or None,
+        boiler=data.get("boiler") or None,
+        device_name=data.get("device_name") or None,
+        check_location_name=data.get("check_location_name") or None,
         row_no=int(row) if isinstance(row, int) and row > 0 else None,
         tube_no=int(tube) if isinstance(tube, int) and tube > 0 else None,
     )
@@ -97,6 +100,7 @@ def scope_literals_from_intent(intent: QuestionIntent) -> ScopeLiterals:
         "unit_keyword": unit_kw,
         "boiler": unit_kw,
         "device_name": s.device_name,
+        "check_location_name": s.check_location_name,
         "piperow_name": s.piperow_name,
         "row_no": s.row_no,
         "tube_no": s.tube_no,
@@ -110,11 +114,15 @@ def scope_literals_from_parsed_intent(
     if not parsed_intent:
         return None
     scope = parsed_intent.get("scope") or {}
+    scope = dict(scope)
+    if not scope.get("check_location_name") and scope.get("piperow_name"):
+        scope["check_location_name"] = scope.get("piperow_name")
     boiler = scope.get("boiler")
     return {
         "unit_keyword": boiler,
         "boiler": boiler,
         "device_name": scope.get("device_name"),
+        "check_location_name": scope.get("check_location_name"),
         "piperow_name": scope.get("piperow_name"),
         "row_no": scope.get("row_no"),
         "tube_no": scope.get("tube_no"),

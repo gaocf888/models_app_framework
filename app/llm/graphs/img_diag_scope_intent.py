@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.nl2sql.chain import NL2SQLChain
+from app.nl2sql.img_diag_scope_parser_llm import (
+    ScopeParseLLMError,
+    parse_img_diag_scope_llm_sync,
+)
 from app.nl2sql.question_scope_models import QuestionScopeIntent
 from app.nl2sql.scope_lexicon import get_scope_lexicon
-from app.nl2sql.scope_parser_llm import ScopeParseLLMError, parse_scope_llm_sync
 from app.nl2sql.scope_parser_rule import parse_scope_rule
 from app.nl2sql.time_intent_display import (
     extract_time_anchor_from_question,
@@ -17,6 +20,8 @@ from app.nl2sql.time_intent_display import (
 )
 
 ScopeConfidence = Literal["high", "low"]
+
+SCOPE_RELAX_ORDER: tuple[str, ...] = ("tube_no", "row_no", "check_location_name")
 
 
 @dataclass(frozen=True)
@@ -32,7 +37,7 @@ class ImgDiagScopeTimeMeta:
 class ImgDiagScopeDraft:
     boiler: str | None
     device_name: str | None
-    piperow_name: str | None
+    check_location_name: str | None
     row_no: int | None
     tube_no: int | None
     confidence: ScopeConfidence
@@ -43,7 +48,7 @@ class ImgDiagScopeDraft:
         return {
             "boiler": self.boiler,
             "device_name": self.device_name,
-            "piperow_name": self.piperow_name,
+            "check_location_name": self.check_location_name,
             "row_no": self.row_no,
             "tube_no": self.tube_no,
             "confidence": self.confidence,
@@ -59,10 +64,65 @@ class ImgDiagScopeDraft:
         return QuestionScopeIntent(
             boiler=self.boiler,
             device_name=self.device_name,
-            piperow_name=self.piperow_name,
+            check_location_name=self.check_location_name,
             row_no=self.row_no,
             tube_no=self.tube_no,
         )
+
+
+def normalize_img_diag_scope_dict(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """归一化 scope 字段；兼容旧字段 piperow_name。"""
+    if not raw:
+        return {}
+    out = dict(raw)
+    if not out.get("check_location_name") and out.get("piperow_name"):
+        out["check_location_name"] = out.get("piperow_name")
+    out.pop("piperow_name", None)
+    return out
+
+
+def draft_from_scope_dict(raw: dict[str, Any], *, time_meta: ImgDiagScopeTimeMeta) -> ImgDiagScopeDraft:
+    scope = normalize_img_diag_scope_dict(raw)
+    row = scope.get("row_no")
+    tube = scope.get("tube_no")
+    if isinstance(row, str) and row.isdigit():
+        row = int(row)
+    if isinstance(tube, str) and tube.isdigit():
+        tube = int(tube)
+    return ImgDiagScopeDraft(
+        boiler=(str(scope["boiler"]).strip() if scope.get("boiler") else None),
+        device_name=(str(scope["device_name"]).strip() if scope.get("device_name") else None),
+        check_location_name=(
+            str(scope["check_location_name"]).strip() if scope.get("check_location_name") else None
+        ),
+        row_no=row if isinstance(row, int) and row > 0 else None,
+        tube_no=tube if isinstance(tube, int) and tube > 0 else None,
+        confidence=scope.get("confidence", "high"),
+        confidence_reasons=tuple(scope.get("confidence_reasons") or ()),
+        time_meta=time_meta,
+    )
+
+
+def relax_scope_one_level(scope: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """去掉最细一级范围字段；返回 (新 scope, 被去掉的字段名)。"""
+    normalized = normalize_img_diag_scope_dict(scope)
+    for field in SCOPE_RELAX_ORDER:
+        if normalized.get(field) is not None:
+            relaxed = dict(normalized)
+            relaxed[field] = None
+            return relaxed, field
+    return normalized, None
+
+
+def scope_dict_for_validate(scope: dict[str, Any]) -> dict[str, Any]:
+    s = normalize_img_diag_scope_dict(scope)
+    return {
+        "boiler": s.get("boiler"),
+        "device_name": s.get("device_name"),
+        "check_location_name": s.get("check_location_name"),
+        "row_no": s.get("row_no"),
+        "tube_no": s.get("tube_no"),
+    }
 
 
 def _extract_time_meta(scope_question: str) -> ImgDiagScopeTimeMeta:
@@ -100,14 +160,12 @@ def _device_in_lexicon(device_name: str | None) -> bool:
 def _assess_confidence(
     *,
     rule_scope: QuestionScopeIntent,
-    llm_scope: QuestionScopeIntent,
+    llm_device: str | None,
 ) -> tuple[ScopeConfidence, tuple[str, ...]]:
     reasons: list[str] = []
-    if rule_scope.device_name != llm_scope.device_name and (
-        rule_scope.device_name or llm_scope.device_name
-    ):
+    if rule_scope.device_name != llm_device and (rule_scope.device_name or llm_device):
         reasons.append("rule_llm_device_mismatch")
-    device = llm_scope.device_name or rule_scope.device_name
+    device = llm_device or rule_scope.device_name
     if device and not _device_in_lexicon(device):
         reasons.append("device_not_in_lexicon")
     if reasons:
@@ -121,26 +179,32 @@ def parse_img_diag_scope_draft(
     llm_client: Any | None = None,
     prompt_registry: Any | None = None,
 ) -> ImgDiagScopeDraft:
-    """第一层：LLM 解析 + 锅炉规则覆盖 + 时间程序解析。"""
+    """第一层：看图诊断专用 LLM 解析 + 锅炉规则覆盖 + 时间程序解析。"""
     q = (scope_question or "").strip()
     rule_scope = parse_scope_rule(q)
     time_meta = _extract_time_meta(q)
     try:
-        llm_scope = parse_scope_llm_sync(
+        llm_fields = parse_img_diag_scope_llm_sync(
             q,
             llm_client=llm_client,
             prompt_registry=prompt_registry,
         )
     except ScopeParseLLMError:
-        llm_scope = rule_scope
+        llm_fields = {
+            "device_name": rule_scope.device_name,
+            "check_location_name": rule_scope.piperow_name,
+            "row_no": rule_scope.row_no,
+            "tube_no": rule_scope.tube_no,
+        }
     boiler = NL2SQLChain._extract_unit_keyword_from_question(q) or rule_scope.boiler
-    confidence, reasons = _assess_confidence(rule_scope=rule_scope, llm_scope=llm_scope)
+    device_name = llm_fields.get("device_name") or rule_scope.device_name
+    confidence, reasons = _assess_confidence(rule_scope=rule_scope, llm_device=llm_fields.get("device_name"))
     return ImgDiagScopeDraft(
         boiler=boiler,
-        device_name=llm_scope.device_name,
-        piperow_name=llm_scope.piperow_name,
-        row_no=llm_scope.row_no,
-        tube_no=llm_scope.tube_no,
+        device_name=device_name,
+        check_location_name=llm_fields.get("check_location_name"),
+        row_no=llm_fields.get("row_no"),
+        tube_no=llm_fields.get("tube_no"),
         confidence=confidence,
         confidence_reasons=reasons,
         time_meta=time_meta,
@@ -150,17 +214,18 @@ def parse_img_diag_scope_draft(
 def apply_scope_patch(draft: ImgDiagScopeDraft, patch: dict[str, Any] | None) -> ImgDiagScopeDraft:
     if not patch:
         return draft
+    patch = normalize_img_diag_scope_dict(patch)
     boiler = patch.get("boiler", draft.boiler)
     device_name = patch.get("device_name", draft.device_name)
-    piperow_name = patch.get("piperow_name", draft.piperow_name)
+    check_location_name = patch.get("check_location_name", draft.check_location_name)
     row_no = patch.get("row_no", draft.row_no)
     tube_no = patch.get("tube_no", draft.tube_no)
     if isinstance(boiler, str):
         boiler = boiler.strip() or None
     if isinstance(device_name, str):
         device_name = device_name.strip() or None
-    if isinstance(piperow_name, str):
-        piperow_name = piperow_name.strip() or None
+    if isinstance(check_location_name, str):
+        check_location_name = check_location_name.strip() or None
     if isinstance(row_no, str) and row_no.isdigit():
         row_no = int(row_no)
     if isinstance(tube_no, str) and tube_no.isdigit():
@@ -168,7 +233,7 @@ def apply_scope_patch(draft: ImgDiagScopeDraft, patch: dict[str, Any] | None) ->
     return ImgDiagScopeDraft(
         boiler=boiler if boiler else None,
         device_name=device_name if device_name else None,
-        piperow_name=piperow_name if piperow_name else None,
+        check_location_name=check_location_name if check_location_name else None,
         row_no=row_no if isinstance(row_no, int) and row_no > 0 else None,
         tube_no=tube_no if isinstance(tube_no, int) and tube_no > 0 else None,
         confidence=draft.confidence,
@@ -187,12 +252,6 @@ def missing_required_scope_fields(draft: ImgDiagScopeDraft) -> list[str]:
 
 
 def should_trigger_scope_hitl(draft: ImgDiagScopeDraft) -> tuple[bool, str]:
-    """
-    第一层人机协同：仅当结构化解析未成功（机组/受热面必填缺失）时触发。
-
-    解析成功（boiler + device_name 均非空）时不 interrupt，交由库表 SQL 校验；
-    SQL 无结果时在 scope_db_validate 节点触发第二层人机协同。
-    """
     missing = missing_required_scope_fields(draft)
     if missing:
         return True, f"missing:{','.join(missing)}"
@@ -200,7 +259,6 @@ def should_trigger_scope_hitl(draft: ImgDiagScopeDraft) -> tuple[bool, str]:
 
 
 def scope_parse_succeeded(draft: ImgDiagScopeDraft) -> bool:
-    """机组与受热面均已解析出非空值。"""
     return not missing_required_scope_fields(draft)
 
 
@@ -209,14 +267,13 @@ def build_scope_intent_text(
     *,
     scope_question: str | None = None,
 ) -> str:
-    """将结构化 scope + 时间合成 NL2SQL 解析用短句。"""
     parts: list[str] = []
     if draft.boiler:
         parts.append(str(draft.boiler))
     if draft.device_name:
         parts.append(str(draft.device_name))
-    if draft.piperow_name:
-        parts.append(str(draft.piperow_name))
+    if draft.check_location_name:
+        parts.append(str(draft.check_location_name))
     if draft.row_no is not None:
         parts.append(f"第{draft.row_no}排")
     if draft.tube_no is not None:
@@ -228,7 +285,6 @@ def build_scope_intent_text(
 
 
 def _time_phrase_from_question(q: str) -> str:
-    """从问句提取可读时间片段（用于 scope_intent_text）。"""
     import re
 
     text = (q or "").strip()

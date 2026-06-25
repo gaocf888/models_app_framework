@@ -133,6 +133,37 @@ def test_rewrite_query_filters_scope_placeholders_integration(
     assert "device_keyword_placeholder_single" in notes
 
 
+def test_location_keyword_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", "true")
+    sql = (
+        "WHERE (@location_keyword IS NULL OR @location_keyword = '' "
+        "OR onc.name LIKE CONCAT('%', @location_keyword, '%'))"
+    )
+    from app.nl2sql.scope_sql_rewrite import rewrite_scope_sql_placeholders
+
+    rewritten, notes = rewrite_scope_sql_placeholders(
+        sql, {"check_location_name": None}
+    )
+    assert "@location_keyword" not in rewritten
+    assert "location_keyword_placeholder_empty" in notes
+
+
+def test_location_keyword_single(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", "true")
+    sql = (
+        "WHERE (@location_keyword IS NULL OR @location_keyword = '' "
+        "OR onc.name LIKE CONCAT('%', @location_keyword, '%'))"
+    )
+    from app.nl2sql.scope_sql_rewrite import rewrite_scope_sql_placeholders
+
+    rewritten, notes = rewrite_scope_sql_placeholders(
+        sql, {"check_location_name": "出口段"}
+    )
+    assert "@location_keyword" not in rewritten
+    assert "出口段" in rewritten
+    assert "location_keyword_placeholder_single" in notes
+
+
 def test_rewrite_query_filters_scope_disabled_no_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -107,11 +107,11 @@ _IMG_DIAG_PROFILES: dict[ImgDiagSubtype, _ImgDiagSubtypeProfile] = {
         augmented_rag_intent="同类型缺陷历史处置案例 打磨补焊 换管 防磨瓦 运行监护 复测周期",
         synthesis_default=(
             "你是电厂承压管系缺陷识别分析师，需融合图像证据、数据库摘要与知识库片段，"
-            "输出分风险等级的现场处置方案与历史同类案例摘要。"
+            "按「外观形貌智能分析→多维数据关联分析→风险等级判定与处置方案」三章输出报告。"
         ),
         report_default=(
-            "输出章节含：缺陷判定与风险等级、分风险等级处置方案（结合知识库）、"
-            "历史同类案例摘要（最多3条）、结尾 AI 辅助分析说明。"
+            "输出章节含：一、外观形貌智能分析（宏观形貌+初步结论）；"
+            "二、多维数据关联分析；三、风险等级判定与处置方案；结尾 AI 辅助分析说明。"
         ),
         stream_fallback_summary="缺陷识别分析生成失败，已返回基础报告，请稍后重试。",
         orchestrator_stream_id="img_diag_defect_ident_stream",
@@ -256,7 +256,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         prof = profile or cls._profile(req)
         scope_parts: list[str] = []
         if parsed_scope:
-            for key in ("boiler", "device_name", "piperow_name", "row_no", "tube_no"):
+            for key in ("boiler", "device_name", "check_location_name", "row_no", "tube_no"):
                 val = parsed_scope.get(key)
                 if val is not None and str(val).strip():
                     scope_parts.append(f"{key}={val}")
@@ -504,6 +504,10 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "damage_morphology",
             "opening_shape",
             "defect_type",
+            "morphology_summary",
+            "distribution_features",
+            "surface_state",
+            "preliminary_visual_conclusion",
             "risk_level",
             "confidence_notes",
         )
@@ -1068,7 +1072,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 "scope": {
                     "boiler": confirmed_scope.get("boiler"),
                     "device_name": confirmed_scope.get("device_name"),
-                    "piperow_name": confirmed_scope.get("piperow_name"),
+                    "check_location_name": confirmed_scope.get("check_location_name"),
                     "row_no": confirmed_scope.get("row_no"),
                     "tube_no": confirmed_scope.get("tube_no"),
                 },

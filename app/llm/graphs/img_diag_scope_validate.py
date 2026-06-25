@@ -1,4 +1,4 @@
-"""看图诊断 scope 库表 existence 校验（第二层）。"""
+"""看图诊断 scope 库表 existence 校验（第二层）与分级放宽。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from typing import Any
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
+from app.llm.graphs.img_diag_scope_intent import relax_scope_one_level, scope_dict_for_validate
 
 logger = get_logger(__name__)
 
@@ -13,15 +14,74 @@ _DEFAULT_VALIDATE_SQL = """
 SELECT COUNT(*) AS record_count
 FROM account_boiler ab
 INNER JOIN account_static_device asd ON ab.boiler_id = asd.boiler_id
+LEFT JOIN overhaul_new_checklocation onc ON asd.device_id = onc.device_id
+  AND IFNULL(onc.del_flag, 0) = 0
 WHERE ab.boiler_name = :boiler
   AND asd.device_name = :device_name
+  AND (
+    :check_location_name IS NULL
+    OR onc.name LIKE CONCAT('%', :check_location_name, '%')
+  )
+  AND (
+    :row_no IS NULL
+    OR EXISTS (
+      SELECT 1 FROM overhaul_thickness_rate otr
+      WHERE otr.device_id = asd.device_id
+        AND IFNULL(otr.row_num, 0) = :row_no
+        AND (
+          :check_location_name IS NULL
+          OR EXISTS (
+            SELECT 1 FROM overhaul_new_checklocation onc2
+            WHERE onc2.id = otr.location_id
+              AND IFNULL(onc2.del_flag, 0) = 0
+              AND onc2.name LIKE CONCAT('%', :check_location_name, '%')
+          )
+        )
+        AND (:tube_no IS NULL OR IFNULL(otr.pipe_num, 0) = :tube_no)
+    )
+    OR EXISTS (
+      SELECT 1 FROM overhaul_record orc
+      INNER JOIN overhaul_record_tubes ort ON orc.id = ort.overhaul_record_id
+      WHERE orc.device_id = asd.device_id
+        AND IFNULL(orc.del_flag, '0') = '0'
+        AND CAST(IFNULL(orc.row_num, '0') AS SIGNED) = :row_no
+        AND (
+          :check_location_name IS NULL
+          OR EXISTS (
+            SELECT 1 FROM overhaul_new_checklocation onc3
+            WHERE onc3.id = orc.check_id
+              AND IFNULL(onc3.del_flag, 0) = 0
+              AND onc3.name LIKE CONCAT('%', :check_location_name, '%')
+          )
+        )
+        AND (:tube_no IS NULL OR IFNULL(ort.tube_position, 0) = :tube_no)
+    )
+  )
+  AND (
+    :tube_no IS NULL
+    OR :row_no IS NOT NULL
+    OR EXISTS (
+      SELECT 1 FROM overhaul_thickness_rate otr2
+      WHERE otr2.device_id = asd.device_id
+        AND IFNULL(otr2.pipe_num, 0) = :tube_no
+    )
+  )
 """.strip()
 
-# 与 .env 中 ANALYSIS_IMG_DIAG_SCOPE_VALIDATE_SQL 默认值保持一致（单行写法见 app-deploy/.env.example）
 DEFAULT_IMG_DIAG_SCOPE_VALIDATE_SQL = (
     "SELECT COUNT(*) AS record_count FROM account_boiler ab "
     "INNER JOIN account_static_device asd ON ab.boiler_id = asd.boiler_id "
-    "WHERE ab.boiler_name = :boiler AND asd.device_name = :device_name"
+    "LEFT JOIN overhaul_new_checklocation onc ON asd.device_id = onc.device_id "
+    "AND IFNULL(onc.del_flag, 0) = 0 "
+    "WHERE ab.boiler_name = :boiler AND asd.device_name = :device_name "
+    "AND (:check_location_name IS NULL OR onc.name LIKE CONCAT('%', :check_location_name, '%')) "
+    "AND (:row_no IS NULL OR EXISTS ("
+    "SELECT 1 FROM overhaul_thickness_rate otr WHERE otr.device_id = asd.device_id "
+    "AND IFNULL(otr.row_num, 0) = :row_no "
+    "AND (:tube_no IS NULL OR IFNULL(otr.pipe_num, 0) = :tube_no))) "
+    "AND (:tube_no IS NULL OR :row_no IS NOT NULL OR EXISTS ("
+    "SELECT 1 FROM overhaul_thickness_rate otr2 WHERE otr2.device_id = asd.device_id "
+    "AND IFNULL(otr2.pipe_num, 0) = :tube_no))"
 )
 
 
@@ -38,17 +98,35 @@ def _sql_literal(value: str | None) -> str:
     return f"'{safe}'"
 
 
+def _sql_int_literal(value: int | None) -> str:
+    if value is None:
+        return "NULL"
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return "NULL"
+    return str(n) if n > 0 else "NULL"
+
+
 def bind_scope_validate_sql(sql_template: str, scope: dict[str, Any]) -> str:
-    """将 :boiler / :device_name 等占位符替换为安全 SQL 字面量（只读 COUNT）。"""
+    """将 :boiler / :device_name / :check_location_name / :row_no / :tube_no 替换为 SQL 字面量。"""
+    scope = scope_dict_for_validate(scope)
     boiler = scope.get("boiler") or ""
     device = scope.get("device_name") or ""
+    location = scope.get("check_location_name") or ""
+    row_no = scope.get("row_no")
+    tube_no = scope.get("tube_no")
     sql = sql_template
     sql = sql.replace(":boiler", _sql_literal(str(boiler) if boiler else None))
     sql = sql.replace(":device_name", _sql_literal(str(device) if device else None))
+    sql = sql.replace(
+        ":check_location_name",
+        _sql_literal(str(location) if location else None),
+    )
+    sql = sql.replace(":row_no", _sql_int_literal(row_no if isinstance(row_no, int) else None))
+    sql = sql.replace(":tube_no", _sql_int_literal(tube_no if isinstance(tube_no, int) else None))
     if ":piperow_name" in sql:
-        piperow = scope.get("piperow_name") or ""
-        piperow_lit = _sql_literal(str(piperow) if piperow else None)
-        sql = sql.replace(":piperow_name", piperow_lit)
+        sql = sql.replace(":piperow_name", _sql_literal(None))
     return sql
 
 
@@ -57,12 +135,10 @@ async def validate_scope_in_catalog(
     *,
     executor: Any | None = None,
 ) -> tuple[int, str | None]:
-    """
-    执行库表校验 SQL，返回 (record_count, error_message)。
-    error_message 非空表示执行异常（非 0 行）。
-    """
+    """执行库表校验 SQL，返回 (record_count, error_message)。"""
     cfg = get_app_config().analysis
     skip_on_error = bool(getattr(cfg, "img_diag_scope_validate_skip_on_error", False))
+    scope = scope_dict_for_validate(scope)
     if not scope.get("boiler") or not scope.get("device_name"):
         return 0, "missing_boiler_or_device"
 
@@ -92,3 +168,30 @@ async def validate_scope_in_catalog(
         return int(count), None
     except (TypeError, ValueError):
         return 0, "invalid_record_count"
+
+
+async def validate_scope_with_relaxation(
+    scope: dict[str, Any],
+    *,
+    allow_auto_relax: bool,
+    executor: Any | None = None,
+) -> tuple[int, dict[str, Any], list[str], str | None]:
+    """
+    校验 scope；allow_auto_relax 为 True 时按 tube→row→location 逐级放宽直至命中或仅剩机组+受热面。
+
+    返回 (count, effective_scope, relaxed_fields, error_message)。
+    """
+    current = scope_dict_for_validate(scope)
+    relaxed_fields: list[str] = []
+
+    while True:
+        count, err = await validate_scope_in_catalog(current, executor=executor)
+        if count > 0:
+            return count, current, relaxed_fields, err
+        if not allow_auto_relax:
+            return count, current, relaxed_fields, err
+        next_scope, dropped = relax_scope_one_level(current)
+        if dropped is None:
+            return count, current, relaxed_fields, err
+        relaxed_fields.append(dropped)
+        current = next_scope
