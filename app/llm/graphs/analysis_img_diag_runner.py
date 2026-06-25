@@ -25,12 +25,7 @@ from app.llm.graphs.analysis_finished_meta import (
     analysis_finished_sse_event,
     build_analysis_finished_meta,
 )
-from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner, _ANALYSIS_RAG_CITATIONS_EXCLUDED_NAMESPACES
-from app.llm.graphs.analysis_img_diag_vision import (
-    build_vision_multimodal_content,
-    build_vision_rag_hint_query,
-    format_vision_rag_hints_block,
-)
+from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
 from app.llm.graphs.img_diag_scope_graph import ImgDiagScopeHitlRunner
 from app.models.analysis import (
     AnalysisEvidence,
@@ -44,7 +39,6 @@ from app.models.analysis import (
     ImgDiagSubtype,
 )
 from app.models.analysis_nl2sql_llm import extract_json_object_from_llm_text
-from app.services.analysis_img_diag_image_preprocessor import AnalysisImgDiagImagePreprocessor
 from app.services.analysis_stream_hooks import dispatch_analysis_nl2sql_stream_structured
 from app.services.chatbot_image_utils import build_user_message_with_images
 
@@ -92,8 +86,6 @@ class _ImgDiagSubtypeProfile:
     analysis_type: AnalysisType
     data_mode: DataMode
     vision_scene: str
-    vision_observe_scene: str
-    vision_rag_hint_intent: str
     rag_scene_label: str
     prefetch_rag_intent: str
     augmented_rag_intent: str
@@ -110,11 +102,6 @@ _IMG_DIAG_PROFILES: dict[ImgDiagSubtype, _ImgDiagSubtypeProfile] = {
         analysis_type=IMG_DIAG_DEFECT_IDENT_TYPE,
         data_mode="img_diag_defect_ident",
         vision_scene="analysis_img_diag_vision_defect_ident",
-        vision_observe_scene="analysis_img_diag_vision_defect_ident_observe",
-        vision_rag_hint_intent=(
-            "锅炉四管受热面常见缺陷 TOP10 可见形貌特征 表面形貌 识别要点 "
-            "飞灰冲刷磨损沟槽 点蚀腐蚀坑 胀粗 轴向裂纹 周向裂纹 焊口 防磨瓦 氧化皮"
-        ),
         rag_scene_label="缺陷识别",
         prefetch_rag_intent="规程通识 缺陷处置 运行监护 检修工艺",
         augmented_rag_intent="同类型缺陷历史处置案例 打磨补焊 换管 防磨瓦 运行监护 复测周期",
@@ -135,11 +122,6 @@ _IMG_DIAG_PROFILES: dict[ImgDiagSubtype, _ImgDiagSubtypeProfile] = {
         analysis_type=IMG_DIAG_LEAKAGE_BURST_TYPE,
         data_mode="img_diag_leakage_burst",
         vision_scene="analysis_img_diag_vision_leakage_burst",
-        vision_observe_scene="analysis_img_diag_vision_leakage_burst_observe",
-        vision_rag_hint_intent=(
-            "锅炉爆管泄爆常见形貌 TOP10 爆口特征 环向开口 纵向裂口 穿孔泄漏 "
-            "边缘减薄 邻管牵连 冲刷沟槽 腐蚀产物 胀粗开裂"
-        ),
         rag_scene_label="泄爆分析",
         prefetch_rag_intent="规程通识 爆管预防 运行监护 检修工艺 标准条文",
         augmented_rag_intent=(
@@ -783,77 +765,6 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             logger.warning("img_diag %s prefetch rag failed: %s", profile.subtype, exc)
             return [], [], [], int((perf_counter() - t0) * 1000), "failed", rag_query
 
-    def _get_img_preprocessor(self) -> AnalysisImgDiagImagePreprocessor:
-        proc = getattr(self, "_img_diag_preprocessor", None)
-        if proc is None:
-            proc = AnalysisImgDiagImagePreprocessor()
-            self._img_diag_preprocessor = proc
-        return proc
-
-    def _vision_template_content(self, scene: str, user_id: str, fallback: str) -> str:
-        tpl = self._prompts.get_template(scene=scene, user_id=user_id, version=None)
-        if tpl and tpl.content.strip():
-            return tpl.content.strip()
-        return fallback
-
-    async def _retrieve_vision_rag_hint_block(
-        self,
-        req: AnalysisImgDiagRequest,
-        profile: _ImgDiagSubtypeProfile,
-    ) -> tuple[str, list[str], str]:
-        """视觉臂前置 RAG：召回 TOP N 常见缺陷/爆口形貌对照清单。"""
-        cfg = self._analysis_cfg
-        top_n = int(cfg.img_diag_vision_rag_hint_top_n)
-        if not cfg.img_diag_vision_rag_hint_enabled or not req.options.enable_rag:
-            return "", [], ""
-
-        rag_q = build_vision_rag_hint_query(
-            req,
-            rag_scene_label=profile.rag_scene_label,
-            hint_intent=profile.vision_rag_hint_intent,
-        )
-        snippets: list[str] = []
-        try:
-            snippets, _, _ = await asyncio.to_thread(
-                lambda: self._retrieve_rag_with_sources(
-                    query=self._build_business_rag_recall_query(rag_q, profile.analysis_type),
-                    rerank_query=self._build_business_rag_rerank_query(rag_q, profile.analysis_type),
-                    namespace=None,
-                    top_k=max(top_n + 2, 12),
-                    scene="analysis",
-                    exclude_namespaces=_ANALYSIS_RAG_CITATIONS_EXCLUDED_NAMESPACES,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("img_diag vision rag hint retrieve failed subtype=%s err=%s", profile.subtype, exc)
-        block, items = format_vision_rag_hints_block(snippets, top_n=top_n, subtype=profile.subtype)
-        return block, items, rag_q
-
-    async def _run_vision_llm(
-        self,
-        *,
-        image_urls: list[str],
-        text_header: str,
-        max_tokens: int,
-    ) -> str:
-        cfg = self._analysis_cfg
-        messages = [
-            {
-                "role": "user",
-                "content": build_vision_multimodal_content(
-                    text_header=text_header,
-                    image_urls=image_urls,
-                ),
-            }
-        ]
-        return await self._llm.chat(
-            model=get_app_config().llm.default_model,  # type: ignore[arg-type]
-            messages=messages,
-            timeout=float(cfg.img_diag_vision_timeout_seconds),
-            temperature=float(cfg.img_diag_vision_temperature),
-            max_tokens=max_tokens,
-        )
-
     async def _lane_vision(
         self, req: AnalysisImgDiagRequest, profile: _ImgDiagSubtypeProfile
     ) -> tuple[dict[str, Any], int]:
@@ -877,76 +788,42 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 0,
             )
         t0 = perf_counter()
-        cfg = self._analysis_cfg
         vision_model = get_app_config().llm.default_model
-
-        processed_urls = await self._get_img_preprocessor().preprocess_urls(urls)
-        rag_block, rag_items, rag_q = await self._retrieve_vision_rag_hint_block(req, profile)
-
-        observe_fallback = (
-            "先逐条列出照片中可见事实（部位、颜色、纹理、走向、尺寸线索），不要分类、不要 JSON。"
+        tpl = self._prompts.get_template(
+            scene=profile.vision_scene,
+            user_id=req.user_id,
+            version=None,
+        )
+        default_instructions = (
+            "你是承压部件缺陷图像分析助手，仅描述可见证据；输出必须为单个 JSON 对象。"
             if profile.subtype == "defect_ident"
-            else "先逐条列出爆口/损伤的可见事实（开口形状、边缘、邻管、飞溅痕迹等），不要分类、不要 JSON。"
+            else "你是锅炉受热面泄爆/爆口图像分析助手，仅描述可见证据；输出必须为单个 JSON 对象。"
         )
-        observe_instructions = self._vision_template_content(
-            profile.vision_observe_scene,
-            req.user_id,
-            observe_fallback,
+        instructions = (
+            tpl.content.strip()
+            if tpl and tpl.content.strip()
+            else default_instructions
         )
-        observe_header_parts = [f"用户问题: {req.query}"]
-        if rag_block.strip():
-            observe_header_parts.append(rag_block)
-        observe_header_parts.append(observe_instructions)
-        observe_header = "\n\n".join(observe_header_parts)
-
-        json_fallback = (
-            "你是承压部件缺陷图像分析助手；基于下列「可见事实观察」与对照清单输出单个 JSON 对象。"
-            if profile.subtype == "defect_ident"
-            else "你是锅炉泄爆/爆口图像分析助手；基于下列「可见事实观察」与对照清单输出单个 JSON 对象。"
-        )
-        json_instructions = self._vision_template_content(
-            profile.vision_scene,
-            req.user_id,
-            json_fallback,
-        )
-
+        header = f"用户问题: {req.query}\n\n{instructions}"
+        content: list[dict[str, Any]] = [{"type": "text", "text": header}]
+        for url in urls:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        messages = [{"role": "user", "content": content}]
+        timeout = float(self._analysis_cfg.img_diag_vision_timeout_seconds)
         logger.info(
             "img_diag vision start subtype=%s user_id=%s session_id=%s "
-            "url_count=%s processed=%s model=%s two_stage=%s rag_hint_items=%s rag_q_len=%s url_previews=%s",
+            "url_count=%s model=%s url_previews=%s",
             profile.subtype,
             req.user_id,
             req.session_id,
             len(urls),
-            len(processed_urls),
             vision_model,
-            bool(cfg.img_diag_vision_two_stage_enabled),
-            len(rag_items),
-            len(rag_q or ""),
             url_diag["url_previews"],
         )
-
-        observations = ""
-        if cfg.img_diag_vision_two_stage_enabled:
-            observations = (
-                await self._run_vision_llm(
-                    image_urls=processed_urls,
-                    text_header=observe_header,
-                    max_tokens=int(cfg.img_diag_vision_observe_max_tokens),
-                )
-            ).strip()
-
-        json_header_parts = [f"用户问题: {req.query}"]
-        if rag_block.strip():
-            json_header_parts.append(rag_block)
-        if observations:
-            json_header_parts.append(f"【阶段一·可见事实观察（须优先采信）】\n{observations}")
-        json_header_parts.append(json_instructions)
-        json_header = "\n\n".join(json_header_parts)
-
-        raw = await self._run_vision_llm(
-            image_urls=processed_urls,
-            text_header=json_header,
-            max_tokens=int(cfg.img_diag_vision_json_max_tokens),
+        raw = await self._llm.chat(
+            model=vision_model,  # type: ignore[arg-type]
+            messages=messages,
+            timeout=timeout,
         )
         ms = int((perf_counter() - t0) * 1000)
         parsed = extract_json_object_from_llm_text(raw)
@@ -955,26 +832,13 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 parsed = json.loads(raw.strip())
             except Exception:  # noqa: BLE001
                 parsed = {"raw_text": (raw or "")[:8000], "parse_error": "vision_output_not_json"}
-        if isinstance(parsed, dict):
-            if observations:
-                parsed["visual_observations"] = observations[:4000]
-            if rag_items:
-                parsed["vision_rag_hint_items"] = rag_items[:12]
-                parsed["vision_rag_hints_used"] = True
-            if cfg.img_diag_vision_preprocess_enabled:
-                parsed["vision_image_preprocessed"] = True
-            if cfg.img_diag_vision_two_stage_enabled:
-                parsed["vision_two_stage"] = True
         parse_ok = isinstance(parsed, dict) and "parse_error" not in parsed
         logger.info(
-            "img_diag vision done subtype=%s url_count=%s ms=%s parse_ok=%s "
-            "two_stage=%s rag_hints=%s result_keys=%s",
+            "img_diag vision done subtype=%s url_count=%s ms=%s parse_ok=%s result_keys=%s",
             profile.subtype,
             len(urls),
             ms,
             parse_ok,
-            bool(cfg.img_diag_vision_two_stage_enabled),
-            len(rag_items),
             list(parsed.keys())[:14] if isinstance(parsed, dict) else [],
         )
         return parsed, ms
