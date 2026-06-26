@@ -269,8 +269,7 @@ async def run_analysis_img_diag(data: AnalysisImgDiagRequest) -> AnalysisV2Resul
     summary="看图诊断执行（并行视觉 + NL2SQL + RAG · 流式 summary）",
     response_class=StreamingResponse,
     response_description=(
-        "`text/event-stream`：可能先 `img_diag_scope_input_required`（台账 HITL），再 `meta` → "
-        "多条 `summary_delta` → `summary_complete` → `structured_async_enqueued` → 尾帧 `finished`；"
+        "顺序 started →（img_diag_scope_input_required 可选）→ meta → summary_delta/… → summary_complete → structured_async_enqueued → finished；"
         "完整 AnalysisV2Result 不在 SSE 内，见 trace。"
     ),
 )
@@ -304,8 +303,9 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
 
     | event | 何时出现 | 主要字段 |
     |-------|----------|----------|
-    | `img_diag_scope_input_required` | scope 台账 HITL 需用户确认时（**可能在 `meta` 之前**）；确认前流结束 | 见下方 HITL 说明 |
-    | `meta` | 并行臂完成、进入 synthesis 前 | `request_id`、`plan_id`、`analysis_type`、`data_mode`、`img_diag_subtype`、`orchestrator`、`template_versions`（`synthesis`/`report`） |
+    | `started` | **首帧**（连接建立后立即下发） | `stream_id`（供 ``POST /analysis/stream/stop``）、`request_id` |
+    | `img_diag_scope_input_required` | scope 台账 HITL 需用户确认时；确认前流结束 | 见下方 HITL 说明 |
+    | `meta` | 并行臂完成、进入 synthesis 前 | `request_id`、`plan_id`、`analysis_type`、`data_mode`、`img_diag_subtype`、`orchestrator`、`stream_id`、`template_versions`（`synthesis`/`report`） |
     | `summary_delta` | synthesis 流式输出，可多条 | `text`：Markdown 增量片段 |
     | `summary_complete` | 正文流结束 | `request_id`、`chars`、`synthesis_ms` |
     | `structured_async_enqueued` | 完整结果已排队后台写日志/trace | `request_id` |

@@ -26,6 +26,11 @@ from app.llm.graphs.analysis_finished_meta import (
     build_analysis_finished_meta,
 )
 from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
+from app.llm.graphs.analysis_stream_cancel import (
+    AnalysisStreamCancelled,
+    is_stream_cancelled,
+    raise_if_stream_cancelled,
+)
 from app.llm.graphs.img_diag_scope_graph import ImgDiagScopeHitlRunner
 from app.models.analysis import (
     AnalysisEvidence,
@@ -106,13 +111,18 @@ _IMG_DIAG_PROFILES: dict[ImgDiagSubtype, _ImgDiagSubtypeProfile] = {
         prefetch_rag_intent="规程通识 缺陷处置 运行监护 检修工艺",
         augmented_rag_intent="同类型缺陷历史处置案例 打磨补焊 换管 防磨瓦 运行监护 复测周期",
         synthesis_default=(
-            "你是电厂承压管系缺陷识别分析师，需融合图像证据、数据库摘要与知识库片段，"
+            "你是电厂承压管系缺陷识别分析师，需融合图像证据、相关数据摘要与知识库片段，"
             "按「外观形貌智能分析→多维数据关联分析→风险等级判定与处置方案」三章输出报告；"
+            "第一章 1.1 缺陷宏观形貌特征须简洁 bullet 罗列、禁止长段套话；"
+            "无相关数据的维度整节省略，不写「未检索到」占位句；"
+            "报告正文禁止 RAG/NL2SQL/库表 等技术术语，依据用现场图像/相关数据/知识库等通俗表述；"
             "处置方案中禁止建议停炉、降负荷、停吹等运行退出措施。"
         ),
         report_default=(
-            "输出章节含：一、外观形貌智能分析（宏观形貌+初步结论）；"
-            "二、多维数据关联分析；三、风险等级判定与处置方案；结尾 AI 辅助分析说明。"
+            "输出章节含：一、外观形貌智能分析（1.1 宏观形貌简洁 bullet 罗列）；"
+            "二、多维数据关联分析（仅有数据维度）；"
+            "三、风险等级判定与处置方案；无数据维度/占位句省略；"
+            "禁止 RAG/NL2SQL/库表 等技术术语；依据用相关数据等通俗表述；结尾 AI 辅助分析说明。"
         ),
         stream_fallback_summary="缺陷识别分析生成失败，已返回基础报告，请稍后重试。",
         orchestrator_stream_id="img_diag_defect_ident_stream",
@@ -131,14 +141,16 @@ _IMG_DIAG_PROFILES: dict[ImgDiagSubtype, _ImgDiagSubtypeProfile] = {
         ),
         synthesis_default=(
             "你是电厂锅炉受热面泄爆溯源高级分析师，需融合图像证据（若有）、"
-            "库表摘要与知识库片段；输出结论摘要、五大类事故分析与事故预防措施；"
-            "证据链与同类案例仅作内部分析依据，勿单独成章；"
+            "相关数据摘要与知识库片段；输出结论摘要、事故分析（仅支持类主因）、后续风险防控措施；"
+            "不支持/证据不足类及无数据占位句不输出；"
+            "报告正文禁止 RAG/NL2SQL/库表 等技术术语，依据用现场图像/相关数据/知识库等通俗表述；"
             "预防措施中禁止建议停炉、降负荷、停吹等运行退出措施。"
         ),
         report_default=(
-            "输出章节含：一、结论摘要（主因方向仅列支持类主因）；二、事故分析（五大类）；"
-            "三、事故预防措施（仅针对第一章主因，不按五大类分项）；结尾 AI 辅助说明。"
-            "禁止输出解析范围、证据链、同类案例独立章节。"
+            "输出章节含：一、结论摘要（主因方向仅列支持类）；"
+            "二、事故分析（仅支持类，无可省略整章）；三、后续风险防控措施；"
+            "禁止无数据占位句、RAG/NL2SQL/库表 等技术术语及解析范围/证据链/同类案例独立章节；"
+            "依据用相关数据等通俗表述；结尾 AI 辅助说明。"
         ),
         stream_fallback_summary="泄爆分析生成失败，已返回基础报告，请稍后重试。",
         orchestrator_stream_id="img_diag_leakage_burst_stream",
@@ -672,6 +684,10 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         start_ts: float,
         synthesis_ms: int,
         image_urls: list[str],
+        stream_id: str | None = None,
+        status: str = "completed",
+        terminate_reason: str | None = None,
+        is_partial: bool = False,
     ) -> dict[str, Any]:
         first_nl2sql_sql = next(
             (c.sql for c in pack.calls if c.status == "success" and (c.sql or "").strip()),
@@ -701,7 +717,61 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             ),
             parsed_scope_intent=parsed_scope,
             parsed_time_intent=parsed_time,
+            stream_id=stream_id,
+            status=status,
+            terminate_reason=terminate_reason,
+            is_partial=is_partial,
         )
+
+    def _img_diag_stream_aborted_finished(
+        self,
+        *,
+        pack: _ImgDiagPack | None,
+        request_id: str,
+        plan_id: str,
+        analysis_type: str,
+        data_mode: str,
+        start_ts: float,
+        stream_id: str | None,
+        summary: str,
+        synthesis_ms: int,
+        image_urls: list[str],
+    ) -> dict[str, Any]:
+        if pack is not None:
+            finished_meta = self._build_img_diag_finished_meta(
+                pack,
+                request_id=request_id,
+                plan_id=plan_id,
+                start_ts=start_ts,
+                synthesis_ms=synthesis_ms,
+                image_urls=image_urls,
+                stream_id=stream_id,
+                status="aborted",
+                terminate_reason="user_cancelled",
+                is_partial=bool(summary.strip()),
+            )
+        else:
+            finished_meta = build_analysis_finished_meta(
+                request_id=request_id,
+                plan_id=plan_id or "",
+                analysis_type=analysis_type,
+                data_mode=data_mode,
+                used_rag=False,
+                used_plan_rag=False,
+                used_business_rag=False,
+                rag_citations=[],
+                start_ts=start_ts,
+                synthesis_ms=synthesis_ms,
+                used_nl2sql=False,
+                nl2sql_sql=None,
+                processed_image_urls=image_urls,
+                original_image_urls=image_urls,
+                stream_id=stream_id,
+                status="aborted",
+                terminate_reason="user_cancelled",
+                is_partial=bool(summary.strip()),
+            )
+        return analysis_finished_sse_event(finished_meta)
 
     @staticmethod
     def _merge_rag_text_lists(primary: list[str], secondary: list[str], *, limit: int = 24) -> list[str]:
@@ -893,8 +963,10 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         *,
         image_urls: list[str] | None = None,
         request_id: str | None = None,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict[str, Any]:
         state: dict[str, Any] = {"nl2sql_request": nl_req.model_dump(mode="json")}
+        await raise_if_stream_cancelled(cancel_checker)
         state.update(
             await self._img_diag_normalize_request(
                 state,
@@ -902,10 +974,36 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 request_id=request_id,
             )
         )
+        await raise_if_stream_cancelled(cancel_checker)
         state.update(await self._lg_nl2sql_plan_context_rag(state))
+        await raise_if_stream_cancelled(cancel_checker)
         state.update(await self._lg_nl2sql_intent_llm(state))
+        await raise_if_stream_cancelled(cancel_checker)
         state.update(await self._lg_nl2sql_plan_llm_merge(state))
-        state.update(await self._lg_nl2sql_acquire_data(state))
+        await raise_if_stream_cancelled(cancel_checker)
+        req = AnalysisNL2SQLRequest.model_validate(state["nl2sql_request"])
+        raw_tasks = list(state.get("plan_tasks") or [])
+        tasks = [self._plan_task_from_dict(x) for x in raw_tasks if isinstance(x, dict)]
+        analysis_request_id = str(state.get("request_id") or "").strip() or None
+        plan_template_version = self._resolve_plan_template_version_label(req)
+        nl2sql_calls, gathered_data, task_status, acquire_latency_ms = await self._execute_data_plan(
+            req=req,
+            tasks=tasks,
+            analysis_request_id=analysis_request_id,
+            plan_template_version=plan_template_version,
+            cancel_checker=cancel_checker,
+        )
+        state.update(
+            {
+                "nl2sql_calls": [c.model_dump(mode="json") for c in nl2sql_calls],
+                "gathered_data": gathered_data,
+                "task_status": task_status,
+                "acquire_latency_ms": acquire_latency_ms,
+                "node_latency_ms": self._merge_latency(state, "acquire_data", acquire_latency_ms),
+                "node_status": self._merge_status(state, "acquire_data", "success"),
+            }
+        )
+        await raise_if_stream_cancelled(cancel_checker)
         state.update(await self._lg_nl2sql_data_quality_gate(state))
         return state
 
@@ -940,7 +1038,9 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         confirmed_scope: dict[str, Any] | None = None,
         scope_intent_text: str | None = None,
         request_id: str | None = None,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> _ImgDiagPack:
+        await raise_if_stream_cancelled(cancel_checker)
         profile = self._profile(req)
         pack_url_diag = self._image_urls_diag(req.image_urls)
         logger.info(
@@ -1004,10 +1104,13 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                         nl_req,
                         image_urls=req.image_urls,
                         request_id=request_id,
+                        cancel_checker=cancel_checker,
                     ),
                     timeout=lane_timeout,
                 )
                 return st, "success"
+            except AnalysisStreamCancelled:
+                raise
             except asyncio.TimeoutError:
                 degrade.append("img_diag_nl2sql_timeout")
                 logger.warning("img_diag nl2sql lane timeout after %ss", lane_timeout)
@@ -1061,6 +1164,8 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             v_pack, nl_pack = await asyncio.gather(vision_safe(), nl_safe())
             pf_pack = ([], [], [], 0, "skipped", "")
 
+        await raise_if_stream_cancelled(cancel_checker)
+
         vision_data, vision_ms, vision_status = v_pack
         nl_state, nl_status = nl_pack
         pf_snippets, pf_sources, pf_chunks, pf_rag_ms, pf_rag_status, pf_rag_query = pf_pack
@@ -1096,6 +1201,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         aug_rag_query = ""
 
         if req.options.enable_rag and rag_mode in ("vision_augmented", "hybrid"):
+            await raise_if_stream_cancelled(cancel_checker)
             try:
                 r_pack = await asyncio.wait_for(
                     self._lane_business_rag(
@@ -1118,6 +1224,8 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                     merged_chunks.append(ch)
                 biz_chunks = merged_chunks
                 rag_query = aug_rag_query or rag_query
+            except AnalysisStreamCancelled:
+                raise
             except asyncio.TimeoutError:
                 degrade.append("img_diag_business_rag_timeout")
                 rag_status = "timeout"
@@ -1452,29 +1560,185 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             ).inc()
             raise
 
+    async def _emit_img_diag_stream_after_gather(
+        self,
+        *,
+        req: AnalysisImgDiagRequest,
+        profile: _ImgDiagSubtypeProfile,
+        pack: _ImgDiagPack,
+        t_pipeline: float,
+        stream_id: str | None,
+        cancel_checker: Callable[[], Awaitable[bool]] | None,
+        on_complete: Callable[[AnalysisV2Result], Awaitable[None]] | None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """gather 完成后：meta → synthesis 流 → finished（或用户中断 aborted）。"""
+        at = profile.analysis_type
+        data_mode = profile.data_mode
+        request_id = pack.request_id
+        plan_id = pack.plan_id
+
+        yield {
+            "event": "meta",
+            "request_id": request_id,
+            "plan_id": plan_id,
+            "analysis_type": at,
+            "data_mode": data_mode,
+            "img_diag_subtype": profile.subtype,
+            "orchestrator": profile.orchestrator_stream_id,
+            "stream_id": stream_id,
+            "template_versions": {
+                "synthesis": pack.synthesis_version,
+                "report": pack.report_version,
+            },
+        }
+
+        t_syn = perf_counter()
+        self._log_vision_before_synthesis(pack)
+        parts: list[str] = []
+        user_cancelled = False
+        try:
+            async for chunk in self._stream_summary_text(
+                query=req.query,
+                analysis_type=at,
+                data_mode=data_mode,
+                data_blob=pack.merged_blob,
+                context_snippets=pack.biz_snippets,
+                system_prompt=pack.synthesis_prompt,
+                planning_context=pack.planning_ctx,
+            ):
+                if await is_stream_cancelled(cancel_checker):
+                    user_cancelled = True
+                    break
+                parts.append(chunk)
+                yield {"event": "summary_delta", "text": chunk}
+        except Exception:  # noqa: BLE001
+            logger.exception("analysis img_diag %s stream summary failed", profile.subtype)
+            fb = profile.stream_fallback_summary
+            parts = [fb]
+            yield {"event": "summary_delta", "text": fb}
+
+        summary = "".join(parts)
+        synthesis_ms = int((perf_counter() - t_syn) * 1000)
+        yield {
+            "event": "summary_complete",
+            "request_id": request_id,
+            "chars": len(summary),
+            "synthesis_ms": synthesis_ms,
+            "partial": user_cancelled,
+        }
+
+        image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
+
+        if user_cancelled:
+            yield self._img_diag_stream_aborted_finished(
+                pack=pack,
+                request_id=request_id,
+                plan_id=plan_id,
+                analysis_type=at,
+                data_mode=data_mode,
+                start_ts=t_pipeline,
+                stream_id=stream_id,
+                summary=summary,
+                synthesis_ms=synthesis_ms,
+                image_urls=image_urls,
+            )
+            ANALYSIS_REQUEST_COUNT.labels(
+                analysis_type=at,
+                data_mode=data_mode,
+                status="aborted",
+            ).inc()
+            return
+
+        asyncio.create_task(
+            self._img_diag_stream_background_finalize(
+                pack,
+                summary=summary,
+                synthesis_ms=synthesis_ms,
+                on_complete=on_complete,
+            )
+        )
+        yield {"event": "structured_async_enqueued", "request_id": request_id}
+
+        finished_meta = self._build_img_diag_finished_meta(
+            pack,
+            request_id=request_id,
+            plan_id=plan_id,
+            start_ts=t_pipeline,
+            synthesis_ms=synthesis_ms,
+            image_urls=image_urls,
+            stream_id=stream_id,
+        )
+        yield analysis_finished_sse_event(finished_meta)
+
+        ANALYSIS_REQUEST_COUNT.labels(
+            analysis_type=at,
+            data_mode=data_mode,
+            status="success",
+        ).inc()
+
     async def iter_img_diag_stream_events(
         self,
         req: AnalysisImgDiagRequest,
         *,
         on_complete: Callable[[AnalysisV2Result], Awaitable[None]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """看图诊断：并行臂 + 串行 RAG 后 SSE 流式 synthesis。"""
+        """看图诊断：并行臂 + 串行 RAG 后 SSE 流式 synthesis（首帧 started 含 stream_id）。"""
         profile = self._profile(req)
         at = profile.analysis_type
         data_mode = profile.data_mode
+        stream_id: str | None = None
+        stream_request_id = f"anl_{uuid4().hex[:12]}"
         ANALYSIS_REQUEST_COUNT.labels(
             analysis_type=at,
             data_mode=data_mode,
             status="started",
         ).inc()
         try:
+            if self._stream_ctrl is not None:
+                stream_id = self._stream_ctrl.begin_stream(req.user_id, req.session_id)
+            cancel_checker = self._build_stream_cancel_checker(
+                req.user_id, req.session_id, stream_id
+            )
+            yield {
+                "event": "started",
+                "stream_id": stream_id or stream_request_id,
+                "request_id": stream_request_id,
+            }
+
             t_pipeline = perf_counter()
-            scope_result = await self._run_scope_hitl_phase(req)
+            image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
+
+            try:
+                await raise_if_stream_cancelled(cancel_checker)
+                scope_result = await self._run_scope_hitl_phase(
+                    req, request_id=stream_request_id
+                )
+            except AnalysisStreamCancelled:
+                yield self._img_diag_stream_aborted_finished(
+                    pack=None,
+                    request_id=stream_request_id,
+                    plan_id="",
+                    analysis_type=at,
+                    data_mode=data_mode,
+                    start_ts=t_pipeline,
+                    stream_id=stream_id,
+                    summary="",
+                    synthesis_ms=0,
+                    image_urls=image_urls,
+                )
+                ANALYSIS_REQUEST_COUNT.labels(
+                    analysis_type=at,
+                    data_mode=data_mode,
+                    status="aborted",
+                ).inc()
+                return
+
             if scope_result.get("status") == "interrupt":
                 yield self._scope_interrupt_sse_event(scope_result)
                 return
             if scope_result.get("status") == "error":
                 raise ValueError(scope_result.get("message") or "scope hitl failed")
+
             confirmed = (
                 scope_result.get("confirmed_scope_intent")
                 if scope_result.get("status") == "confirmed"
@@ -1485,86 +1749,47 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 if scope_result.get("status") == "confirmed"
                 else None
             )
-            rid = scope_result.get("request_id")
-            pack = await self._gather_img_diag_pack(
-                req,
-                confirmed_scope=confirmed,
-                scope_intent_text=scope_text,
-                request_id=rid,
-            )
-            request_id = pack.request_id
-            plan_id = pack.plan_id
+            rid = scope_result.get("request_id") or stream_request_id
 
-            yield {
-                "event": "meta",
-                "request_id": request_id,
-                "plan_id": plan_id,
-                "analysis_type": at,
-                "data_mode": data_mode,
-                "img_diag_subtype": profile.subtype,
-                "orchestrator": profile.orchestrator_stream_id,
-                "template_versions": {
-                    "synthesis": pack.synthesis_version,
-                    "report": pack.report_version,
-                },
-            }
-
-            t_syn = perf_counter()
-            self._log_vision_before_synthesis(pack)
-            parts: list[str] = []
             try:
-                async for chunk in self._stream_summary_text(
-                    query=req.query,
+                await raise_if_stream_cancelled(cancel_checker)
+                pack = await self._gather_img_diag_pack(
+                    req,
+                    confirmed_scope=confirmed,
+                    scope_intent_text=scope_text,
+                    request_id=rid,
+                    cancel_checker=cancel_checker,
+                )
+            except AnalysisStreamCancelled:
+                yield self._img_diag_stream_aborted_finished(
+                    pack=None,
+                    request_id=rid,
+                    plan_id="",
                     analysis_type=at,
                     data_mode=data_mode,
-                    data_blob=pack.merged_blob,
-                    context_snippets=pack.biz_snippets,
-                    system_prompt=pack.synthesis_prompt,
-                    planning_context=pack.planning_ctx,
-                ):
-                    parts.append(chunk)
-                    yield {"event": "summary_delta", "text": chunk}
-            except Exception:  # noqa: BLE001
-                logger.exception("analysis img_diag %s stream summary failed", profile.subtype)
-                fb = profile.stream_fallback_summary
-                parts = [fb]
-                yield {"event": "summary_delta", "text": fb}
-
-            summary = "".join(parts)
-            synthesis_ms = int((perf_counter() - t_syn) * 1000)
-            yield {
-                "event": "summary_complete",
-                "request_id": request_id,
-                "chars": len(summary),
-                "synthesis_ms": synthesis_ms,
-            }
-
-            asyncio.create_task(
-                self._img_diag_stream_background_finalize(
-                    pack,
-                    summary=summary,
-                    synthesis_ms=synthesis_ms,
-                    on_complete=on_complete,
+                    start_ts=t_pipeline,
+                    stream_id=stream_id,
+                    summary="",
+                    synthesis_ms=0,
+                    image_urls=image_urls,
                 )
-            )
-            yield {"event": "structured_async_enqueued", "request_id": request_id}
+                ANALYSIS_REQUEST_COUNT.labels(
+                    analysis_type=at,
+                    data_mode=data_mode,
+                    status="aborted",
+                ).inc()
+                return
 
-            image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
-            finished_meta = self._build_img_diag_finished_meta(
-                pack,
-                request_id=request_id,
-                plan_id=plan_id,
-                start_ts=t_pipeline,
-                synthesis_ms=synthesis_ms,
-                image_urls=image_urls,
-            )
-            yield analysis_finished_sse_event(finished_meta)
-
-            ANALYSIS_REQUEST_COUNT.labels(
-                analysis_type=at,
-                data_mode=data_mode,
-                status="success",
-            ).inc()
+            async for ev in self._emit_img_diag_stream_after_gather(
+                req=req,
+                profile=profile,
+                pack=pack,
+                t_pipeline=t_pipeline,
+                stream_id=stream_id,
+                cancel_checker=cancel_checker,
+                on_complete=on_complete,
+            ):
+                yield ev
         except Exception:
             ANALYSIS_REQUEST_COUNT.labels(
                 analysis_type=at,
@@ -1572,6 +1797,9 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 status="failed",
             ).inc()
             raise
+        finally:
+            if stream_id and self._stream_ctrl is not None:
+                await self._stream_ctrl.clear_stream(req.user_id, req.session_id, stream_id)
 
     async def iter_img_diag_scope_resume_stream_events(
         self,
@@ -1583,7 +1811,9 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         payload: dict[str, Any] | None = None,
         on_complete: Callable[[AnalysisV2Result], Awaitable[None]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """scope HITL resume 后继续看图诊断主流（meta → synthesis → finished）。"""
+        """scope HITL resume 后继续看图诊断主流（started → meta → synthesis → finished）。"""
+        stream_id: str | None = None
+        stream_request_id = f"anl_{uuid4().hex[:12]}"
         token_preview = (
             f"{resume_token[:20]}..." if len(resume_token) > 20 else resume_token
         )
@@ -1594,125 +1824,130 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             action,
             token_preview,
         )
-        runner = self._get_scope_hitl_runner()
-        scope_result = await runner.resume_until_confirmed_or_interrupt(
-            resume_token=resume_token,
-            user_id=user_id,
-            session_id=session_id,
-            action=action,
-            payload=payload,
-        )
-        logger.info(
-            "img_diag scope resume phase done status=%s request_id=%s",
-            scope_result.get("status"),
-            scope_result.get("request_id"),
-        )
-        if scope_result.get("status") == "interrupt":
-            yield self._scope_interrupt_sse_event(scope_result)
-            return
-        if scope_result.get("status") == "error":
-            yield {
-                "event": "img_diag_error",
-                "message": scope_result.get("message") or "scope resume failed",
-            }
-            return
-        req_dict = scope_result.get("img_diag_request") or {}
-        dict_url_diag = self._image_urls_diag(
-            req_dict.get("image_urls") if isinstance(req_dict, dict) else None
-        )
-        req = AnalysisImgDiagRequest.model_validate(req_dict)
-        req_url_diag = self._image_urls_diag(req.image_urls)
-        logger.info(
-            "img_diag scope resume restored img_diag_request request_id=%s "
-            "dict_url_count=%s validated_url_count=%s raw_dict_list_len=%s url_previews=%s",
-            scope_result.get("request_id"),
-            dict_url_diag["url_count"],
-            req_url_diag["url_count"],
-            dict_url_diag["raw_list_len"],
-            req_url_diag["url_previews"],
-        )
-        profile = self._profile(req)
-        at = profile.analysis_type
-        data_mode = profile.data_mode
-        confirmed = scope_result.get("confirmed_scope_intent")
-        scope_text = scope_result.get("scope_intent_text")
-        t_pipeline = perf_counter()
-        pack = await self._gather_img_diag_pack(
-            req,
-            confirmed_scope=confirmed,
-            scope_intent_text=scope_text,
-            request_id=scope_result.get("request_id"),
-        )
-        logger.info(
-            "img_diag scope resume gather_pack done request_id=%s vision_lane_status=%s "
-            "vision_skipped=%s vision_ms=%s",
-            pack.request_id,
-            pack.vision_status,
-            bool(pack.vision_data.get("vision_skipped")),
-            pack.vision_ms,
-        )
-        request_id = pack.request_id
-        plan_id = pack.plan_id
-        yield {
-            "event": "meta",
-            "request_id": request_id,
-            "plan_id": plan_id,
-            "analysis_type": at,
-            "data_mode": data_mode,
-            "img_diag_subtype": profile.subtype,
-            "orchestrator": profile.orchestrator_stream_id,
-            "template_versions": {
-                "synthesis": pack.synthesis_version,
-                "report": pack.report_version,
-            },
-        }
-        t_syn = perf_counter()
-        self._log_vision_before_synthesis(pack)
-        parts: list[str] = []
         try:
-            async for chunk in self._stream_summary_text(
-                query=req.query,
-                analysis_type=at,
-                data_mode=data_mode,
-                data_blob=pack.merged_blob,
-                context_snippets=pack.biz_snippets,
-                system_prompt=pack.synthesis_prompt,
-                planning_context=pack.planning_ctx,
-            ):
-                parts.append(chunk)
-                yield {"event": "summary_delta", "text": chunk}
-        except Exception:  # noqa: BLE001
-            logger.exception("analysis img_diag scope resume stream summary failed")
-            fb = profile.stream_fallback_summary
-            parts = [fb]
-            yield {"event": "summary_delta", "text": fb}
-        summary = "".join(parts)
-        synthesis_ms = int((perf_counter() - t_syn) * 1000)
-        yield {
-            "event": "summary_complete",
-            "request_id": request_id,
-            "chars": len(summary),
-            "synthesis_ms": synthesis_ms,
-        }
-        asyncio.create_task(
-            self._img_diag_stream_background_finalize(
-                pack,
-                summary=summary,
-                synthesis_ms=synthesis_ms,
-                on_complete=on_complete,
+            if self._stream_ctrl is not None:
+                stream_id = self._stream_ctrl.begin_stream(user_id, session_id)
+            cancel_checker = self._build_stream_cancel_checker(user_id, session_id, stream_id)
+            yield {
+                "event": "started",
+                "stream_id": stream_id or stream_request_id,
+                "request_id": stream_request_id,
+            }
+
+            t_pipeline = perf_counter()
+            runner = self._get_scope_hitl_runner()
+            try:
+                await raise_if_stream_cancelled(cancel_checker)
+                scope_result = await runner.resume_until_confirmed_or_interrupt(
+                    resume_token=resume_token,
+                    user_id=user_id,
+                    session_id=session_id,
+                    action=action,
+                    payload=payload,
+                )
+            except AnalysisStreamCancelled:
+                yield self._img_diag_stream_aborted_finished(
+                    pack=None,
+                    request_id=stream_request_id,
+                    plan_id="",
+                    analysis_type="img_diag_defect_ident",
+                    data_mode="img_diag_defect_ident",
+                    start_ts=t_pipeline,
+                    stream_id=stream_id,
+                    summary="",
+                    synthesis_ms=0,
+                    image_urls=[],
+                )
+                return
+
+            logger.info(
+                "img_diag scope resume phase done status=%s request_id=%s",
+                scope_result.get("status"),
+                scope_result.get("request_id"),
             )
-        )
-        yield {"event": "structured_async_enqueued", "request_id": request_id}
-        image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
-        finished_meta = self._build_img_diag_finished_meta(
-            pack,
-            request_id=request_id,
-            plan_id=plan_id,
-            start_ts=t_pipeline,
-            synthesis_ms=synthesis_ms,
-            image_urls=image_urls,
-        )
-        yield analysis_finished_sse_event(finished_meta)
+            if scope_result.get("status") == "interrupt":
+                yield self._scope_interrupt_sse_event(scope_result)
+                return
+            if scope_result.get("status") == "error":
+                yield {
+                    "event": "img_diag_error",
+                    "message": scope_result.get("message") or "scope resume failed",
+                }
+                return
+            req_dict = scope_result.get("img_diag_request") or {}
+            dict_url_diag = self._image_urls_diag(
+                req_dict.get("image_urls") if isinstance(req_dict, dict) else None
+            )
+            req = AnalysisImgDiagRequest.model_validate(req_dict)
+            req_url_diag = self._image_urls_diag(req.image_urls)
+            logger.info(
+                "img_diag scope resume restored img_diag_request request_id=%s "
+                "dict_url_count=%s validated_url_count=%s raw_dict_list_len=%s url_previews=%s",
+                scope_result.get("request_id"),
+                dict_url_diag["url_count"],
+                req_url_diag["url_count"],
+                dict_url_diag["raw_list_len"],
+                req_url_diag["url_previews"],
+            )
+            profile = self._profile(req)
+            at = profile.analysis_type
+            data_mode = profile.data_mode
+            confirmed = scope_result.get("confirmed_scope_intent")
+            scope_text = scope_result.get("scope_intent_text")
+            rid = scope_result.get("request_id") or stream_request_id
+            image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
+
+            try:
+                await raise_if_stream_cancelled(cancel_checker)
+                pack = await self._gather_img_diag_pack(
+                    req,
+                    confirmed_scope=confirmed,
+                    scope_intent_text=scope_text,
+                    request_id=rid,
+                    cancel_checker=cancel_checker,
+                )
+            except AnalysisStreamCancelled:
+                yield self._img_diag_stream_aborted_finished(
+                    pack=None,
+                    request_id=rid,
+                    plan_id="",
+                    analysis_type=at,
+                    data_mode=data_mode,
+                    start_ts=t_pipeline,
+                    stream_id=stream_id,
+                    summary="",
+                    synthesis_ms=0,
+                    image_urls=image_urls,
+                )
+                ANALYSIS_REQUEST_COUNT.labels(
+                    analysis_type=at,
+                    data_mode=data_mode,
+                    status="aborted",
+                ).inc()
+                return
+
+            logger.info(
+                "img_diag scope resume gather_pack done request_id=%s vision_lane_status=%s "
+                "vision_skipped=%s vision_ms=%s",
+                pack.request_id,
+                pack.vision_status,
+                bool(pack.vision_data.get("vision_skipped")),
+                pack.vision_ms,
+            )
+
+            async for ev in self._emit_img_diag_stream_after_gather(
+                req=req,
+                profile=profile,
+                pack=pack,
+                t_pipeline=t_pipeline,
+                stream_id=stream_id,
+                cancel_checker=cancel_checker,
+                on_complete=on_complete,
+            ):
+                yield ev
+        finally:
+            if stream_id and self._stream_ctrl is not None:
+                await self._stream_ctrl.clear_stream(user_id, session_id, stream_id)
 
     async def _img_diag_stream_background_finalize(
         self,

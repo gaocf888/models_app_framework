@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.llm.graphs.analysis_finished_meta import build_analysis_finished_meta
 from app.llm.graphs.analysis_graph_runner import AnalysisGraphRunner
@@ -94,6 +94,141 @@ class TestAnalysisGraphRunnerCancelChecker(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await check())
         await ctrl.cancel_stream("u1", "s1", sid)
         self.assertTrue(await check())
+
+
+class TestImgDiagStreamCancel(unittest.IsolatedAsyncioTestCase):
+    async def test_iter_img_diag_stream_emits_started_first(self) -> None:
+        from app.llm.graphs.analysis_img_diag_runner import AnalysisImgDiagGraphRunner
+        from app.models.analysis import AnalysisImgDiagRequest, AnalysisOptions
+        from app.services.analysis_stream_control import AnalysisStreamControl
+
+        ctrl = AnalysisStreamControl()
+        runner = AnalysisImgDiagGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=MagicMock(),
+            prompt_registry=MagicMock(),
+            hybrid_rag=MagicMock(),
+            nl2sql_service=MagicMock(),
+            stream_control=ctrl,
+        )
+        runner._analysis_cfg.img_diag_lane_timeout_seconds = 30.0
+        runner._analysis_cfg.nl2sql_llm_planner_enabled = False
+
+        req = AnalysisImgDiagRequest(
+            user_id="u1",
+            session_id="s1",
+            img_diag_subtype="defect_ident",
+            query="1号炉低温过热器第2排缺陷识别",
+            image_urls=["http://example.com/a.jpg"],
+            options=AnalysisOptions(enable_rag=False),
+        )
+        nl_state = {
+            "nl2sql_calls": [],
+            "gathered_data": {},
+            "plan_tasks": [],
+            "plan_context": [],
+            "plan_rag_sources": [],
+            "quality_report": {"warnings": []},
+            "task_status": {},
+            "node_latency_ms": {},
+            "planner_warnings": [],
+            "request_id": "anl_test001",
+            "plan_id": "plan_test001",
+        }
+
+        async def fake_stream(**_kwargs: object):
+            yield "部分报告"
+
+        with (
+            patch.object(
+                runner,
+                "_run_scope_hitl_phase",
+                new=AsyncMock(return_value={"status": "skipped", "request_id": "anl_test001"}),
+            ),
+            patch.object(runner, "_lane_vision", new=AsyncMock(return_value=({"defect_type": "裂纹"}, 10))),
+            patch.object(runner, "_lane_nl2sql_until_gate", new=AsyncMock(return_value=nl_state)),
+            patch.object(runner, "_stream_summary_text", new=fake_stream),
+        ):
+            events: list[dict] = []
+            async for ev in runner.iter_img_diag_stream_events(req):
+                events.append(ev)
+
+        self.assertEqual("started", events[0].get("event"))
+        self.assertTrue(events[0].get("stream_id"))
+        self.assertEqual("meta", events[1].get("event"))
+        finished = [e for e in events if e.get("finished")]
+        self.assertEqual(1, len(finished))
+        self.assertEqual(events[0]["stream_id"], finished[0]["meta"].get("stream_id"))
+
+    async def test_iter_img_diag_stream_aborted_on_cancel(self) -> None:
+        from app.llm.graphs.analysis_img_diag_runner import AnalysisImgDiagGraphRunner
+        from app.models.analysis import AnalysisImgDiagRequest, AnalysisOptions
+        from app.services.analysis_stream_control import AnalysisStreamControl
+
+        ctrl = AnalysisStreamControl()
+        runner = AnalysisImgDiagGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=MagicMock(),
+            prompt_registry=MagicMock(),
+            hybrid_rag=MagicMock(),
+            nl2sql_service=MagicMock(),
+            stream_control=ctrl,
+        )
+        runner._analysis_cfg.img_diag_lane_timeout_seconds = 30.0
+        runner._analysis_cfg.nl2sql_llm_planner_enabled = False
+
+        req = AnalysisImgDiagRequest(
+            user_id="u1",
+            session_id="s1",
+            img_diag_subtype="defect_ident",
+            query="1号炉低温过热器第2排缺陷识别",
+            image_urls=["http://example.com/a.jpg"],
+            options=AnalysisOptions(enable_rag=False),
+        )
+        cancel_sid: dict[str, str] = {"id": ""}
+
+        async def fake_stream(**_kwargs: object):
+            yield "首段"
+            await ctrl.cancel_stream("u1", "s1", cancel_sid["id"])
+            yield "不应出现"
+
+        nl_state = {
+            "nl2sql_calls": [],
+            "gathered_data": {},
+            "plan_tasks": [],
+            "plan_context": [],
+            "plan_rag_sources": [],
+            "quality_report": {"warnings": []},
+            "task_status": {},
+            "node_latency_ms": {},
+            "planner_warnings": [],
+            "request_id": "anl_abort001",
+            "plan_id": "plan_abort001",
+        }
+
+        with (
+            patch.object(
+                runner,
+                "_run_scope_hitl_phase",
+                new=AsyncMock(return_value={"status": "skipped", "request_id": "anl_abort001"}),
+            ),
+            patch.object(runner, "_lane_vision", new=AsyncMock(return_value=({"defect_type": "裂纹"}, 10))),
+            patch.object(runner, "_lane_nl2sql_until_gate", new=AsyncMock(return_value=nl_state)),
+            patch.object(runner, "_stream_summary_text", new=fake_stream),
+        ):
+            events: list[dict] = []
+            async for ev in runner.iter_img_diag_stream_events(req):
+                if ev.get("event") == "started" and not cancel_sid["id"]:
+                    cancel_sid["id"] = str(ev.get("stream_id") or "")
+                events.append(ev)
+
+        finished = [e for e in events if e.get("finished")]
+        self.assertEqual(1, len(finished))
+        meta = finished[0]["meta"]
+        self.assertEqual("aborted", meta.get("status"))
+        self.assertEqual("user_cancelled", meta.get("terminate_reason"))
+        self.assertTrue(meta.get("is_partial"))
+        self.assertNotIn("structured_async_enqueued", [e.get("event") for e in events])
 
 
 if __name__ == "__main__":
