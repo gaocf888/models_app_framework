@@ -454,6 +454,10 @@
     return $("imageUrls").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   }
 
+  function isDefectIdentSubtype() {
+    return $("imgDiagSubtype").value === "defect_ident";
+  }
+
   function dataHintsList() {
     return $("dataHints").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   }
@@ -488,8 +492,8 @@
   async function runImgDiagStream() {
     showErr("");
     const urls = imageUrlsList();
-    if (!urls.length) {
-      showErr("请至少填写一行 image_urls（可先上传图片并追加）。");
+    if (isDefectIdentSubtype() && !urls.length) {
+      showErr("缺陷识别请至少填写一行 image_urls（可先上传图片并追加）；泄爆分析可留空。");
       return;
     }
 
