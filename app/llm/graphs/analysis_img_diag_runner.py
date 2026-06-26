@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import perf_counter
@@ -55,6 +56,25 @@ logger = get_logger(__name__)
 
 IMG_DIAG_DEFECT_IDENT_TYPE: AnalysisType = "img_diag_defect_ident"
 IMG_DIAG_LEAKAGE_BURST_TYPE: AnalysisType = "img_diag_leakage_burst"
+
+
+def _sanitize_img_diag_report_text(text: str) -> str:
+    """移除报告正文中不应出现的 RAG 等技术术语（流式 chunk 与最终 summary 共用）。"""
+    if not (text or "").strip():
+        return text or ""
+    out = text
+    for pat, repl in (
+        (r"RAG案例分析", "案例分析"),
+        (r"RAG参考片段", "知识库参考"),
+        (r"RAG片段", "历史案例要点"),
+        (r"RAG案例", "历史案例"),
+        (r"依据RAG", "依据历史案例"),
+        (r"RAG中的", "知识库中的"),
+        (r"RAG", "知识库"),
+    ):
+        out = re.sub(pat, repl, out, flags=re.IGNORECASE)
+    return out
+
 
 # 合成输入：各 plan item 的时间语义（与 reference SQL 一致；q2b/q2c 为历史全量）
 _IMG_DIAG_PLAN_TIME_SCOPE: dict[str, str] = {
@@ -145,16 +165,17 @@ _IMG_DIAG_PROFILES: dict[ImgDiagSubtype, _ImgDiagSubtypeProfile] = {
         ),
         synthesis_default=(
             "你是电厂锅炉受热面泄爆溯源高级分析师，需融合图像证据（若有）、"
-            "相关数据摘要与知识库片段；输出结论摘要、事故分析（仅支持类主因）、后续风险防控措施；"
+            "相关数据摘要与知识库/历史案例片段；输出结论摘要、事故分析（仅支持类主因）、后续风险防控措施；"
+            "无现场图片时须综合相关数据与知识库撰写第一章，禁止编造形貌/可见损伤；"
             "不支持/证据不足类及无数据占位句不输出；"
-            "报告正文禁止 RAG/NL2SQL/库表 等技术术语，依据用现场图像/相关数据/知识库等通俗表述；"
+            "报告正文禁止出现 RAG/RAG片段/RAG案例/NL2SQL/库表 等技术术语，依据用现场图像/相关数据/知识库/历史案例等通俗表述；"
             "预防措施中禁止建议停炉、降负荷、停吹等运行退出措施。"
         ),
         report_default=(
-            "输出章节含：一、结论摘要（主因方向仅列支持类）；"
+            "输出章节含：一、结论摘要（主因方向仅列支持类；无图时基于相关数据+知识库，禁止形貌编造）；"
             "二、事故分析（仅支持类，无可省略整章）；三、后续风险防控措施；"
-            "禁止无数据占位句、RAG/NL2SQL/库表 等技术术语及解析范围/证据链/同类案例独立章节；"
-            "依据用相关数据等通俗表述；结尾 AI 辅助说明。"
+            "禁止无数据占位句、RAG/RAG片段/RAG案例/NL2SQL/库表 等技术术语及解析范围/证据链/同类案例独立章节；"
+            "依据用相关数据/知识库/历史案例等通俗表述；结尾 AI 辅助说明。"
         ),
         stream_fallback_summary="泄爆分析生成失败，已返回基础报告，请稍后重试。",
         orchestrator_stream_id="img_diag_leakage_burst_stream",
@@ -692,21 +713,34 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         vision_skipped = (
             isinstance(vision_data, dict) and bool(vision_data.get("vision_skipped"))
         )
-        vision_hint = (
-            "（vision_skipped=true，报告须说明未提供图片）"
-            if vision_skipped
-            else "（vision_skipped 不为 true 时，报告「图像可见」须引用下列字段，禁止写未提供/无图）"
+        if vision_skipped:
+            if analysis_type == IMG_DIAG_LEAKAGE_BURST_TYPE:
+                vision_hint = (
+                    "（未提供现场图片：须综合相关数据与知识库/历史案例撰写报告；"
+                    "第一章结论摘要禁止编造爆口/泄漏形貌或图像可见特征；"
+                    "正文禁止出现 RAG/库表 等技术词）"
+                )
+            else:
+                vision_hint = "（vision_skipped=true，报告须说明未提供图片，不得编造图像证据）"
+        else:
+            vision_hint = (
+                "（vision_skipped 不为 true 时，报告「图像可见」须引用下列字段，禁止写未提供/无图）"
+            )
+        catalog_hint = "（synthesis_status=empty 的主题禁止写相关数据支持性结论）"
+        kb_block = (
+            f"知识库参考片段（内部分析输入，正文禁止写 RAG/库表 等字样）:\n{rag_text}"
+            if rag_text.strip()
+            else "知识库参考片段: （无可用片段）"
         )
-        catalog_hint = "（synthesis_status=empty 的主题禁止写库表支持性结论）"
         return (
             f"分析类型: {analysis_type}\n"
             f"数据来源模式: {data_mode}\n"
             f"用户问题: {query}\n"
             f"{planning_block}"
             f"视觉结构化结果(JSON，合成时必须优先使用){vision_hint}:\n{vision_block}\n"
-            f"库表查询目录(JSON，合成前必读；row_count=0 须写库表未检索到，禁止用知识库冒充){catalog_hint}:\n{catalog_block}\n"
-            f"库表明细 snapshot(JSON截断，数值/管排号仅可引用本块与目录允许范围):\n{rest_preview}\n"
-            f"RAG参考片段:\n{rag_text}"
+            f"相关数据查询目录(JSON，合成前必读；row_count=0 的主题正文省略，禁止用知识库冒充){catalog_hint}:\n{catalog_block}\n"
+            f"相关数据明细 snapshot(JSON截断，数值/管排号仅可引用本块与目录允许范围):\n{rest_preview}\n"
+            f"{kb_block}"
         ).strip()
 
     @staticmethod
@@ -1679,8 +1713,9 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 if await is_stream_cancelled(cancel_checker):
                     user_cancelled = True
                     break
-                parts.append(chunk)
-                yield {"event": "summary_delta", "text": chunk}
+                clean_chunk = _sanitize_img_diag_report_text(chunk)
+                parts.append(clean_chunk)
+                yield {"event": "summary_delta", "text": clean_chunk}
         except Exception:  # noqa: BLE001
             logger.exception("analysis img_diag %s stream summary failed", profile.subtype)
             fb = profile.stream_fallback_summary

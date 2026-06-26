@@ -6,6 +6,7 @@ from app.llm.graphs.analysis_img_diag_runner import (
     IMG_DIAG_LEAKAGE_BURST_TYPE,
     AnalysisImgDiagGraphRunner,
     _IMG_DIAG_PROFILES,
+    _sanitize_img_diag_report_text,
 )
 from app.models.analysis import AnalysisImgDiagRequest, AnalysisNL2SQLCall, AnalysisOptions
 
@@ -192,9 +193,43 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
             },
             context_snippets=[],
         )
-        self.assertIn("库表查询目录", content)
+        self.assertIn("相关数据查询目录", content)
         self.assertIn("壁温超温数据", content)
         self.assertIn("synthesis_status", content)
+
+    def test_img_diag_summary_user_content_no_image_leakage_burst_hint(self) -> None:
+        runner = AnalysisImgDiagGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=MagicMock(),
+            prompt_registry=MagicMock(),
+            hybrid_rag=MagicMock(),
+            nl2sql_service=MagicMock(),
+        )
+        runner._analysis_cfg.synthesis_gathered_json_max_chars = 4000
+        content = runner._build_img_diag_summary_user_content(
+            query="2号炉水冷壁前墙2026-06-23泄爆",
+            analysis_type=IMG_DIAG_LEAKAGE_BURST_TYPE,
+            data_mode="img_diag_leakage_burst",
+            data_blob={
+                "vision_findings": {"vision_skipped": True, "reason": "no_image_provided"},
+                "structured_queries_catalog": [],
+            },
+            context_snippets=["同类型飞灰冲刷案例要点"],
+        )
+        self.assertIn("未提供现场图片", content)
+        self.assertIn("相关数据与知识库", content)
+        self.assertIn("知识库参考片段", content)
+        self.assertNotIn("RAG参考片段", content)
+
+    def test_sanitize_img_diag_report_text_strips_rag_terms(self) -> None:
+        raw = (
+            "依据历史案例与RAG片段，飞灰冲刷可能造成减薄。"
+            "依据RAG案例中的事故原因分析，应加强运行管理。"
+        )
+        cleaned = _sanitize_img_diag_report_text(raw)
+        self.assertNotIn("RAG", cleaned)
+        self.assertIn("历史案例要点", cleaned)
+        self.assertIn("依据历史案例", cleaned)
 
 
 if __name__ == "__main__":
