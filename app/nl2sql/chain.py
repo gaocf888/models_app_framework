@@ -1558,9 +1558,13 @@ class NL2SQLChain:
         if task_win:
             self._record_effective_time_window(meta, task_win[0], task_win[1], task_win[2])
             return task_win
+        from app.nl2sql.time_intent_display import default_time_window_sql_fallback
+
+        win = default_time_window_sql_fallback()
+        self._record_effective_time_window(meta, win[0], win[1], win[2])
         if not parsed_intent or not parsed_intent.get("time_window_tag"):
-            self._append_time_rewrite_warning(meta, "no_parsed_time_window")
-        return None
+            self._append_time_rewrite_warning(meta, "default_yesterday_fallback")
+        return win
 
     @staticmethod
     def _extract_numeric_window(q: str, unit_keys: tuple[str, ...]) -> int | None:

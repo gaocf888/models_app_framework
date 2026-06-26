@@ -104,6 +104,9 @@ _TIME_REWRITE_WARNING_CN: dict[str, str] = {
         "用户问句未解析到时间窗；若 NL2SQL 含 @t_start/@t_end 将拒绝执行，"
         "请在用户问题中补充时间范围或事故时刻。"
     ),
+    "default_yesterday_fallback": (
+        "用户问句未指定时间范围，已默认按昨天统计；如需其他时段请在问题中补充明确时间。"
+    ),
 }
 _UNRESOLVED_TIME_PLACEHOLDER_WARNING = (
     "部分 NL2SQL 因时间占位符未替换而失败，请在用户问题中补充明确时间或事故时刻。"

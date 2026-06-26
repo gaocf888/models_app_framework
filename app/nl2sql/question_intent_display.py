@@ -38,9 +38,7 @@ def question_intent_to_dict(intent: QuestionIntent) -> dict[str, Any]:
         "time_window": time_window,
         "time_anchor": time_anchor,
         "time_anchor_tag": intent.time_anchor_tag,
-        "statistical_time_range": (
-            {"start": stat_range[0], "end": stat_range[1]} if stat_range else None
-        ),
+        "statistical_time_range": {"start": stat_range[0], "end": stat_range[1]},
         "scope": {
             "boiler": scope.boiler,
             "device_name": scope.device_name,
@@ -55,14 +53,9 @@ def format_parsed_intent_prompt_block(intent: QuestionIntent) -> str:
     """供 NL2SQL SQL 生成 Prompt 追加的「已识别问句意图」块。"""
     lines = ["【已识别问句意图】"]
 
-    tag = intent.time_window_tag
     stat = resolve_statistical_time_range_display(intent.scope_question)
-    if tag and stat:
-        lines.append(f"- 时间窗：{tag}（{stat[0]} ~ {stat[1]}）")
-    elif tag:
-        lines.append(f"- 时间窗：{tag}")
-    else:
-        lines.append("- 时间窗：未识别")
+    tag = intent.time_window_tag or "yesterday_fallback"
+    lines.append(f"- 时间窗：{tag}（{stat[0]} ~ {stat[1]}）")
 
     if intent.time_anchor is not None:
         _end, anchor_tag = intent.time_anchor

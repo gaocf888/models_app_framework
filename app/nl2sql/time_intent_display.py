@@ -15,6 +15,9 @@ DAY_WINDOW_TAGS = frozenset(
     {"today", "yesterday", "day_before_yesterday", "three_days_ago"}
 )
 
+# 问句未解析到任何时间表达时，全场景默认统计口径（展示与 NL2SQL 改写共用 tag）
+DEFAULT_TIME_WINDOW_TAG = "yesterday_fallback"
+
 _QUARTER_CN_MAP = {
     "一": 1,
     "二": 2,
@@ -622,23 +625,37 @@ def extract_time_window_tag(question: str) -> str | None:
     return str(win[2])
 
 
+def default_time_window_sql_fallback() -> tuple[str, str, str]:
+    """问句未解析到时间窗时，NL2SQL 默认按昨天（左闭右开，与显式「昨天」一致）。"""
+    return ("DATE_SUB(CURDATE(), INTERVAL 1 DAY)", "CURDATE()", DEFAULT_TIME_WINDOW_TAG)
+
+
+def default_statistical_time_range_display(
+    *,
+    now: datetime | None = None,
+) -> tuple[str, str]:
+    """未识别时间表达时的展示边界：昨天 00:00:00～23:59:59。"""
+    ref = now or datetime.now()
+    day = ref.date() - timedelta(days=1)
+    return _fmt_display_dt(_day_start(day)), _fmt_display_dt(_day_end(day))
+
+
 def resolve_statistical_time_range_display(
     question: str,
     *,
     now: datetime | None = None,
-) -> tuple[str, str] | None:
+) -> tuple[str, str]:
     """
     从用户问句解析统计口径起止时间，供报告第一章展示。
 
-    Returns:
-        (t_start, t_end) 格式 ``yyyy-mm-dd HH:MM:SS``；无法解析时返回 None。
+    未解析到时间表达时，默认按昨天 00:00:00～23:59:59。
     """
     tag = extract_time_window_tag(question)
     if not tag:
-        return None
+        return default_statistical_time_range_display(now=now)
     ref = now or datetime.now()
     bounds = _tag_to_display_bounds(tag, ref)
     if bounds is None:
-        return None
+        return default_statistical_time_range_display(now=now)
     start, end = bounds
     return _fmt_display_dt(start), _fmt_display_dt(end)

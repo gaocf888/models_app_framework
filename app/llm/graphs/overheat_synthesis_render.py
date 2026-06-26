@@ -69,27 +69,27 @@ def overheat_data_source_label(item_id: str) -> str:
 
 
 def infer_overheat_report_context(query: str) -> dict[str, Any]:
-    """从用户问题推断按日/按周模式（默认 weekly）及统计口径时间窗。"""
+    """从用户问题推断按日/按周模式；未指定时间时默认昨天（按日章节）。"""
     from app.nl2sql.time_intent_display import (
+        DEFAULT_TIME_WINDOW_TAG,
         extract_time_window_tag,
         resolve_statistical_time_range_display,
     )
 
     q = (query or "").strip()
+    parsed_tag = extract_time_window_tag(q)
     mode = "weekly"
     if any(k in q for k in _DAILY_KW):
         mode = "daily"
     elif any(k in q for k in _WEEKLY_KW):
         mode = "weekly"
+    elif not parsed_tag:
+        mode = "daily"
     unit_scope = "all" if re.search(r"(所有|全部|各|全厂).{0,6}(锅炉|机组)", q) else "single"
     if re.search(r"未指定.{0,4}机组", q):
         unit_scope = "all"
-    t_start, t_end = "", ""
-    time_window_tag = ""
-    stat_range = resolve_statistical_time_range_display(q)
-    if stat_range:
-        t_start, t_end = stat_range
-        time_window_tag = extract_time_window_tag(q) or ""
+    t_start, t_end = resolve_statistical_time_range_display(q)
+    time_window_tag = parsed_tag or DEFAULT_TIME_WINDOW_TAG
     return {
         "analysis_mode": mode,
         "unit_scope": unit_scope,
