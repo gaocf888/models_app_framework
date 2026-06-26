@@ -598,7 +598,12 @@ class AnalysisConfig:
     plan_rag_query_mode: str = "two_stage"
     # 看图诊断（img_diag）：视觉臂复用 LLM_DEFAULT_MODEL（须为多模态 VL）；各臂超时与上传大小上限
     img_diag_vision_timeout_seconds: float = 120.0
-    img_diag_vision_temperature: float = 0.0
+    img_diag_vision_temperature: float = 0.45
+    # 视觉臂 system 前缀：复用 chatbot 模板版本（默认跟随 CHATBOT_PROMPT_DEFAULT_VERSION）
+    img_diag_vision_chatbot_prompt_version: str | None = None
+    # 视觉臂 user 固定短句（不使用缺陷识别/泄爆分析业务 query；位置/处置语义留给 NL2SQL 与 synthesis）
+    img_diag_vision_user_query_defect_ident: str = "请分析图片中的缺陷特征与形貌。"
+    img_diag_vision_user_query_leakage_burst: str = "请分析图片中的爆口/泄漏可见形貌特征。"
     img_diag_lane_timeout_seconds: float = 180.0
     img_diag_upload_max_mb: int = 15
     # 看图诊断业务 RAG：vision_augmented（默认，视觉完成后串行 RAG）| parallel | hybrid
@@ -1331,8 +1336,20 @@ def _load_from_env() -> AppConfig:
         ),
         img_diag_vision_temperature=max(
             0.0,
-            min(1.0, float(os.getenv("ANALYSIS_IMG_DIAG_VISION_TEMPERATURE", "0"))),
+            min(1.0, float(os.getenv("ANALYSIS_IMG_DIAG_VISION_TEMPERATURE", "0.45"))),
         ),
+        img_diag_vision_chatbot_prompt_version=(
+            os.getenv("ANALYSIS_IMG_DIAG_VISION_CHATBOT_PROMPT_VERSION") or ""
+        ).strip()
+        or None,
+        img_diag_vision_user_query_defect_ident=(
+            os.getenv("ANALYSIS_IMG_DIAG_VISION_USER_QUERY_DEFECT_IDENT")
+            or "请分析图片中的缺陷特征与形貌。"
+        ).strip(),
+        img_diag_vision_user_query_leakage_burst=(
+            os.getenv("ANALYSIS_IMG_DIAG_VISION_USER_QUERY_LEAKAGE_BURST")
+            or "请分析图片中的爆口/泄漏可见形貌特征。"
+        ).strip(),
         img_diag_lane_timeout_seconds=max(
             10.0, float(os.getenv("ANALYSIS_IMG_DIAG_LANE_TIMEOUT_SECONDS", "180"))
         ),

@@ -231,7 +231,65 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
         self.assertIn("历史案例要点", cleaned)
         self.assertIn("依据历史案例", cleaned)
 
-    def test_lane_vision_uses_zero_temperature_by_default(self) -> None:
+    def test_build_vision_llm_messages_uses_system_and_short_user_query(self) -> None:
+        messages = AnalysisImgDiagGraphRunner._build_vision_llm_messages(
+            system_instructions="你是四管缺陷图像分析助手。输出 JSON。",
+            user_text="请识别图片缺陷，1号炉水冷壁前墙",
+            image_urls=["http://example.com/a.png"],
+        )
+        self.assertEqual(2, len(messages))
+        self.assertEqual("system", messages[0]["role"])
+        self.assertIn("四管", messages[0]["content"])
+        self.assertEqual("user", messages[1]["role"])
+        user_content = messages[1]["content"]
+        self.assertIsInstance(user_content, list)
+        self.assertEqual("text", user_content[0]["type"])
+        self.assertEqual("请识别图片缺陷，1号炉水冷壁前墙", user_content[0]["text"])
+        self.assertNotIn("用户问题", user_content[0]["text"])
+        self.assertEqual("image_url", user_content[1]["type"])
+
+    def test_build_vision_system_instructions_merges_chatbot_and_vision(self) -> None:
+        runner = AnalysisImgDiagGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=MagicMock(),
+            prompt_registry=MagicMock(),
+            hybrid_rag=MagicMock(),
+            nl2sql_service=MagicMock(),
+        )
+
+        def _get_template(
+            scene: str,
+            user_id: str | None = None,
+            version: str | None = None,
+            default_version: str | None = None,
+        ) -> MagicMock:
+            if scene == "chatbot":
+                return MagicMock(content="【角色】锅炉技术专家。")
+            if scene == "analysis_img_diag_vision_defect_ident":
+                return MagicMock(content="【JSON附录】输出 defect_orientation。")
+            return MagicMock(content="")
+
+        runner._prompts.get_template.side_effect = _get_template
+        merged = runner._build_vision_system_instructions(
+            user_id="u1",
+            profile=_IMG_DIAG_PROFILES["defect_ident"],
+        )
+        self.assertIn("锅炉技术专家", merged)
+        self.assertIn("defect_orientation", merged)
+
+    def test_vision_user_text_ignores_business_query(self) -> None:
+        runner = AnalysisImgDiagGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=MagicMock(),
+            prompt_registry=MagicMock(),
+            hybrid_rag=MagicMock(),
+            nl2sql_service=MagicMock(),
+        )
+        runner._analysis_cfg.img_diag_vision_user_query_defect_ident = "请分析图片中的缺陷特征与形貌。"
+        text = runner._vision_user_text(_IMG_DIAG_PROFILES["defect_ident"])
+        self.assertEqual("请分析图片中的缺陷特征与形貌。", text)
+
+    def test_lane_vision_uses_chatbot_aligned_settings(self) -> None:
         import asyncio
 
         runner = AnalysisImgDiagGraphRunner(
@@ -241,10 +299,27 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
             hybrid_rag=MagicMock(),
             nl2sql_service=MagicMock(),
         )
-        runner._analysis_cfg.img_diag_vision_temperature = 0.0
-        runner._prompts.get_template.return_value = MagicMock(
-            content="输出 JSON，含 defect_orientation 字段。"
+        runner._analysis_cfg.img_diag_vision_temperature = 0.45
+        runner._analysis_cfg.img_diag_vision_user_query_defect_ident = (
+            "请分析图片中的缺陷特征与形貌。"
         )
+
+        def _get_template(
+            scene: str,
+            user_id: str | None = None,
+            version: str | None = None,
+            default_version: str | None = None,
+        ) -> MagicMock:
+            if scene == "chatbot":
+                return MagicMock(content="【角色】锅炉技术专家。")
+            return MagicMock(content="输出 JSON，含 defect_orientation 字段。")
+
+        runner._prompts.get_template.side_effect = _get_template
+        mock_preprocessor = MagicMock()
+        mock_preprocessor.preprocess_urls = AsyncMock(
+            return_value=["http://example.com/preprocessed.jpg"]
+        )
+        runner._vision_image_preprocessor = mock_preprocessor
         vision_json = (
             '{"defect_type":"周向表面裂纹","defect_orientation":"横跨管轴",'
             '"defect_signals":["白圈内周向裂纹2条"]}'
@@ -262,9 +337,21 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
             await runner._lane_vision(req, _IMG_DIAG_PROFILES["defect_ident"])
 
         asyncio.run(_run())
+        mock_preprocessor.preprocess_urls.assert_awaited_once_with(["http://example.com/a.png"])
         runner._llm.chat.assert_awaited_once()
         call_kwargs = runner._llm.chat.await_args.kwargs
-        self.assertEqual(0.0, call_kwargs.get("temperature"))
+        self.assertEqual(0.45, call_kwargs.get("temperature"))
+        messages = call_kwargs.get("messages") or []
+        self.assertEqual("system", messages[0]["role"])
+        self.assertIn("锅炉技术专家", messages[0]["content"])
+        self.assertEqual("user", messages[1]["role"])
+        user_text = messages[1]["content"][0]["text"]
+        self.assertEqual("请分析图片中的缺陷特征与形貌。", user_text)
+        self.assertNotIn("1号炉", user_text)
+        self.assertEqual(
+            "http://example.com/preprocessed.jpg",
+            messages[1]["content"][1]["image_url"]["url"],
+        )
 
 
 if __name__ == "__main__":

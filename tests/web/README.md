@@ -49,16 +49,24 @@ python3 -m http.server 8765
 - **enable_rag / enable_context / enable_nl2sql_route**
 - **prompt_version**：可选
 - **enable_fault_vision**：可选，默认不传
-- **image_urls**：每行一个 URL
+- **image_urls**：每行一个 URL；推荐先用页内 **图片上传**（`POST /chatbot/upload`）再「填入 image_urls」
 
 ### 1.4 操作流程
 
 1. 填写连接与会话参数，输入 `query`  
-2. 「发送并开始流式输出」→ 先收到 `started`（含 `stream_id`），再持续 `delta`；RAG 路径下引用为独立事件 `citation_ref`（页面渲染为上标链接，流结束后与 `meta.rag_citations` 对齐）  
-3. 结束见 `finished.meta`；可按需「中断」  
-4. 回答区对模型输出的 **LaTeX 公式**（`$$...$$`、`\\(...\\)`、`\\[...\\]`）使用 KaTeX 渲染；**Markdown 标题/列表等保持原文**，不转 HTML（需页面能访问 jsDelivr CDN；请 **Ctrl+F5** 强刷缓存后再测）。
+2. （可选）选择图片 → **上传图片** → **填入 image_urls**（预签名 URL 默认 900s 有效，请及时发送对话）  
+3. 「发送并开始流式输出」→ 先收到 `started`（含 `stream_id`），再持续 `delta`；RAG 路径下引用为独立事件 `citation_ref`（页面渲染为上标链接，流结束后与 `meta.rag_citations` 对齐）  
+4. 结束见 `finished.meta`；可按需「中断」  
+5. 回答区对模型输出的 **LaTeX 公式**（`$$...$$`、`\\(...\\)`、`\\[...\\]`）使用 KaTeX 渲染；**Markdown 标题/列表等保持原文**，不转 HTML（需页面能访问 jsDelivr CDN；请 **Ctrl+F5** 强刷缓存后再测）。
 
-### 1.5 常见问题
+### 1.5 接口
+
+| 方法 | 路径 |
+|------|------|
+| POST | `/chatbot/upload`（multipart `file`，返回 `url` 填入 `image_urls`） |
+| POST | `/chatbot/chat/stream` |
+
+### 1.6 常见问题
 
 - **401/403**：密钥错误或缺失  
 - **422**：ID 或字段校验失败  
