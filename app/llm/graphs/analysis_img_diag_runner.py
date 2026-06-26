@@ -31,6 +31,10 @@ from app.llm.graphs.analysis_stream_cancel import (
     is_stream_cancelled,
     raise_if_stream_cancelled,
 )
+from app.llm.graphs.img_diag_scope_display import (
+    format_scope_hitl_assistant_message,
+    format_scope_hitl_user_message,
+)
 from app.llm.graphs.img_diag_scope_graph import ImgDiagScopeHitlRunner
 from app.models.analysis import (
     AnalysisEvidence,
@@ -236,6 +240,56 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             s = u.strip()
             previews.append(s if len(s) <= 120 else f"{s[:117]}...")
         return {"url_count": len(urls), "raw_list_len": len(raw), "url_previews": previews}
+
+    @staticmethod
+    def _build_img_diag_user_message_content(req: AnalysisImgDiagRequest) -> str:
+        urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
+        query = req.query.strip()
+        if urls:
+            return build_user_message_with_images(
+                query,
+                urls,
+                original_image_urls=urls,
+                processed_image_urls=urls,
+            )
+        return query
+
+    def _persist_img_diag_initial_user_message(self, req: AnalysisImgDiagRequest) -> None:
+        """流式/同步入口：写入用户首问（含图片块），避免 scope HITL 中断时会话历史缺失。"""
+        self._conv.append_user_message(
+            req.user_id,
+            req.session_id,
+            self._build_img_diag_user_message_content(req),
+        )
+
+    def _persist_scope_hitl_assistant_message(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        interrupt_payload: dict[str, Any] | None,
+    ) -> None:
+        if not interrupt_payload:
+            return
+        self._conv.append_assistant_message(
+            user_id,
+            session_id,
+            format_scope_hitl_assistant_message(interrupt_payload),
+        )
+
+    def _persist_scope_hitl_user_message(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        action: str,
+        payload: dict[str, Any] | None,
+    ) -> None:
+        self._conv.append_user_message(
+            user_id,
+            session_id,
+            format_scope_hitl_user_message(action=action, payload=payload),
+        )
 
     @staticmethod
     def _scope_interrupt_sse_event(result: dict[str, Any]) -> dict[str, Any]:
@@ -926,22 +980,27 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         *,
         image_urls: list[str],
         request_id: str | None = None,
+        persist_user_message: bool = True,
     ) -> dict[str, Any]:
         """写入 request_id/plan_id 与会话用户消息（含图片 URL 块，供 GET /chatbot/sessions/messages 解析）。"""
         req = AnalysisNL2SQLRequest.model_validate(state["nl2sql_request"])
         t0 = perf_counter()
-        urls = [u for u in image_urls if isinstance(u, str) and u.strip()]
-        content = (
-            build_user_message_with_images(
-                req.query,
-                urls,
-                original_image_urls=urls,
-                processed_image_urls=urls,
+        if persist_user_message:
+            content = self._build_img_diag_user_message_content(
+                AnalysisImgDiagRequest(
+                    user_id=req.user_id,
+                    session_id=req.session_id,
+                    img_diag_subtype=(
+                        "leakage_burst"
+                        if req.analysis_type == IMG_DIAG_LEAKAGE_BURST_TYPE
+                        else "defect_ident"
+                    ),
+                    query=req.query,
+                    image_urls=list(image_urls or []),
+                    options=req.options,
+                )
             )
-            if urls
-            else req.query
-        )
-        self._conv.append_user_message(req.user_id, req.session_id, content)
+            self._conv.append_user_message(req.user_id, req.session_id, content)
         ms = int((perf_counter() - t0) * 1000)
         rid = (request_id or "").strip() or f"anl_{uuid4().hex[:12]}"
         return {
@@ -964,6 +1023,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         image_urls: list[str] | None = None,
         request_id: str | None = None,
         cancel_checker: Callable[[], Awaitable[bool]] | None = None,
+        persist_user_message: bool = True,
     ) -> dict[str, Any]:
         state: dict[str, Any] = {"nl2sql_request": nl_req.model_dump(mode="json")}
         await raise_if_stream_cancelled(cancel_checker)
@@ -972,6 +1032,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 state,
                 image_urls=list(image_urls or []),
                 request_id=request_id,
+                persist_user_message=persist_user_message,
             )
         )
         await raise_if_stream_cancelled(cancel_checker)
@@ -1039,6 +1100,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         scope_intent_text: str | None = None,
         request_id: str | None = None,
         cancel_checker: Callable[[], Awaitable[bool]] | None = None,
+        persist_user_message: bool = True,
     ) -> _ImgDiagPack:
         await raise_if_stream_cancelled(cancel_checker)
         profile = self._profile(req)
@@ -1105,6 +1167,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                         image_urls=req.image_urls,
                         request_id=request_id,
                         cancel_checker=cancel_checker,
+                        persist_user_message=persist_user_message,
                     ),
                     timeout=lane_timeout,
                 )
@@ -1511,8 +1574,14 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             status="started",
         ).inc()
         try:
+            self._persist_img_diag_initial_user_message(req)
             scope_result = await self._run_scope_hitl_phase(req)
             if scope_result.get("status") == "interrupt":
+                self._persist_scope_hitl_assistant_message(
+                    user_id=req.user_id,
+                    session_id=req.session_id,
+                    interrupt_payload=scope_result.get("interrupt_payload"),
+                )
                 raise ImgDiagScopeInterrupt(self._scope_interrupt_sse_event(scope_result))
             if scope_result.get("status") == "error":
                 raise ValueError(scope_result.get("message") or "scope hitl failed")
@@ -1532,6 +1601,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 confirmed_scope=confirmed,
                 scope_intent_text=scope_text,
                 request_id=rid,
+                persist_user_message=False,
             )
             t_syn = perf_counter()
             self._log_vision_before_synthesis(pack)
@@ -1707,6 +1777,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
 
             t_pipeline = perf_counter()
             image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
+            self._persist_img_diag_initial_user_message(req)
 
             try:
                 await raise_if_stream_cancelled(cancel_checker)
@@ -1734,6 +1805,11 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 return
 
             if scope_result.get("status") == "interrupt":
+                self._persist_scope_hitl_assistant_message(
+                    user_id=req.user_id,
+                    session_id=req.session_id,
+                    interrupt_payload=scope_result.get("interrupt_payload"),
+                )
                 yield self._scope_interrupt_sse_event(scope_result)
                 return
             if scope_result.get("status") == "error":
@@ -1759,6 +1835,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                     scope_intent_text=scope_text,
                     request_id=rid,
                     cancel_checker=cancel_checker,
+                    persist_user_message=False,
                 )
             except AnalysisStreamCancelled:
                 yield self._img_diag_stream_aborted_finished(
@@ -1835,6 +1912,12 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             }
 
             t_pipeline = perf_counter()
+            self._persist_scope_hitl_user_message(
+                user_id=user_id,
+                session_id=session_id,
+                action=action,
+                payload=payload,
+            )
             runner = self._get_scope_hitl_runner()
             try:
                 await raise_if_stream_cancelled(cancel_checker)
@@ -1866,6 +1949,11 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 scope_result.get("request_id"),
             )
             if scope_result.get("status") == "interrupt":
+                self._persist_scope_hitl_assistant_message(
+                    user_id=user_id,
+                    session_id=session_id,
+                    interrupt_payload=scope_result.get("interrupt_payload"),
+                )
                 yield self._scope_interrupt_sse_event(scope_result)
                 return
             if scope_result.get("status") == "error":
@@ -1905,6 +1993,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                     scope_intent_text=scope_text,
                     request_id=rid,
                     cancel_checker=cancel_checker,
+                    persist_user_message=False,
                 )
             except AnalysisStreamCancelled:
                 yield self._img_diag_stream_aborted_finished(

@@ -70,6 +70,76 @@ def format_scope_draft_display_lines(scope_draft: dict[str, Any] | None) -> list
     return [f"{cn}：{val}" for cn, val in scope_draft_to_display(scope_draft).items()]
 
 
+def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None) -> str:
+    """将 scope HITL interrupt 载荷格式化为可写入会话历史的 assistant 正文。"""
+    if not interrupt_payload:
+        return SCOPE_HITL_TITLE
+    lines: list[str] = [SCOPE_HITL_TITLE]
+    prompt = str(interrupt_payload.get("prompt") or "").strip()
+    if prompt:
+        lines.append(prompt)
+    missing = interrupt_payload.get("missing_fields") or []
+    if missing:
+        lines.append(f"待补充：{'、'.join(str(x) for x in missing if str(x).strip())}")
+    val_err = interrupt_payload.get("validation_error")
+    if val_err:
+        lines.append(f"校验说明：{val_err}")
+    display = interrupt_payload.get("scope_draft_display")
+    if isinstance(display, dict) and display:
+        lines.append("当前解析：")
+        for key, val in display.items():
+            if val is None or (isinstance(val, str) and not val.strip()):
+                continue
+            lines.append(f"  · {key}：{val}")
+    else:
+        draft_lines = format_scope_draft_display_lines(
+            interrupt_payload.get("scope_draft")
+            if isinstance(interrupt_payload.get("scope_draft"), dict)
+            else None
+        )
+        if draft_lines:
+            lines.append("当前解析：")
+            lines.extend(f"  · {ln}" for ln in draft_lines)
+    relaxed = interrupt_payload.get("scope_relaxed_fields") or []
+    if relaxed:
+        lines.append(f"已自动放宽字段：{'、'.join(str(x) for x in relaxed if str(x).strip())}")
+    return "\n".join(lines)
+
+
+def format_scope_hitl_user_message(*, action: str, payload: dict[str, Any] | None) -> str:
+    """将 scope HITL resume 请求格式化为可写入会话历史的 user 正文。"""
+    payload = payload or {}
+    act = (action or "confirm_scope").strip()
+    if act == "abort":
+        reason = str(payload.get("reason") or "").strip()
+        return f"【取消台账确认】{reason}" if reason else "【取消台账确认】"
+    parts: list[str] = []
+    supplement = str(payload.get("user_supplement") or "").strip()
+    if supplement:
+        parts.append(supplement)
+    patch = payload.get("scope_patch")
+    if isinstance(patch, dict) and patch:
+        patch_display = scope_draft_to_display(normalize_scope_patch_keys(patch))
+        if patch_display:
+            parts.append(
+                "修改台账："
+                + "；".join(f"{k}：{v}" for k, v in patch_display.items())
+            )
+    if act == "confirm_scope":
+        prefix = "【确认台账】"
+    elif act == "edit_scope":
+        prefix = "【补充台账】"
+    else:
+        prefix = f"【{act}】"
+    if not parts:
+        if act == "confirm_scope":
+            return "【确认上述台账信息】"
+        if act == "edit_scope":
+            return "【修改台账信息】"
+        return prefix
+    return prefix + "\n" + "\n".join(parts)
+
+
 def normalize_scope_patch_keys(patch: dict[str, Any] | None) -> dict[str, Any]:
     """将前端可能提交的中文键 scope_patch 归一化为英文字段名。"""
     if not patch:
