@@ -5,6 +5,7 @@ from __future__ import annotations
 
 职责概览：
     - 提供非流式 `/chat`（已弃用，保留兼容）与流式 `/chat/stream`（SSE）对话入口；
+    - 提供多模态图片上传：`POST /upload`（MinIO 预签名 URL，填入 `image_urls`）；
     - 提供会话目录：`GET /sessions`（按 `user_id` 分页列举会话；方案 B：Redis `conv:index:` + `conv:meta:`，内存模式对齐）；
     - 提供会话运维：`GET/DELETE /sessions/messages`、`DELETE /sessions/message`（单条/批量消息）、`PATCH /sessions/title`（修改展示标题）。
 
@@ -21,13 +22,26 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+import io
+import uuid
+from datetime import timedelta
+from pathlib import Path
+
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 import json
+
+try:
+    from minio import Minio
+except Exception:  # noqa: BLE001
+    Minio = None  # type: ignore[assignment,misc]
+
+from app.core.config import get_app_config
 
 from app.conversation.manager import ConversationManager
 from app.conversation.message_id import build_conversation_message_id, is_valid_message_id_hex
 from app.conversation.session_catalog import session_list_limit_cap
+from app.models.inspection_extract import InspectionUploadResponse
 from app.models.chatbot import (
     ChatRequest,
     ChatResponse,
@@ -90,6 +104,76 @@ def _delete_messages_by_ids(user_id: str, session_id: str, message_ids: list[str
         not_found_ids=not_found_ids,
         deleted_count=len(deleted_ids),
     )
+
+
+@router.post(
+    "/upload",
+    response_model=InspectionUploadResponse,
+    summary="上传智能客服多模态图片",
+)
+async def upload_chatbot_image_endpoint(file: UploadFile = File(...)) -> InspectionUploadResponse:
+    """
+    上传本轮对话关联的图片，返回 MinIO 预签名 URL。
+
+    将响应中的 `url` 填入 `POST /chatbot/chat/stream`（或 `/chat`）请求体的 `image_urls` 数组即可。
+    对象前缀为 `chatbot/`（与综合分析看图诊断 `analysis_img_diag/` 区分）。
+
+    **注意**：预签名 URL 有效期由 `CHATBOT_IMAGE_MINIO_PRESIGN_TTL_SECONDS` 控制（默认 900 秒），
+    请在有效期内发起对话；过期后需重新上传。
+    """
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty file upload")
+    try:
+        chat_cfg = get_app_config().chatbot
+        if Minio is None:
+            raise RuntimeError("MinIO client unavailable; install minio package")
+        endpoint = (chat_cfg.image_minio_endpoint or "").strip()
+        if not endpoint:
+            raise RuntimeError("CHATBOT_IMAGE_MINIO_ENDPOINT is not configured")
+        client = Minio(
+            endpoint,
+            access_key=(chat_cfg.image_minio_access_key or "").strip(),
+            secret_key=(chat_cfg.image_minio_secret_key or "").strip(),
+            secure=bool(chat_cfg.image_minio_secure),
+        )
+        bucket = (chat_cfg.image_minio_bucket or "chatbot-images").strip()
+        ttl = max(300, int(chat_cfg.image_minio_presign_ttl_seconds))
+        safe_name = Path(file.filename or "image.bin").name
+        suf = Path(safe_name).suffix.lower()
+        ct = (file.content_type or "").strip().lower()
+        if not (ct.startswith("image/") or suf in {".jpg", ".jpeg", ".png", ".webp", ".gif"}):
+            raise ValueError("only image files are allowed")
+        if chat_cfg.image_minio_auto_create_bucket and not client.bucket_exists(bucket):
+            client.make_bucket(bucket)
+        object_name = f"chatbot/{uuid.uuid4().hex}_{safe_name}"
+        put_ct = ct if ct.startswith("image/") else "application/octet-stream"
+        client.put_object(
+            bucket_name=bucket,
+            object_name=object_name,
+            data=io.BytesIO(data),
+            length=len(data),
+            content_type=put_ct,
+        )
+        url = client.presigned_get_object(
+            bucket_name=bucket,
+            object_name=object_name,
+            expires=timedelta(seconds=ttl),
+        )
+        return InspectionUploadResponse(
+            ok=True,
+            file_name=safe_name,
+            object_name=object_name,
+            source_type="image",
+            url=url,
+            bucket=bucket,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"chatbot upload failed: {e}") from e
 
 
 @router.post("/chat", response_model=ChatResponse, summary="智能客服对话（基础版）", deprecated=True, include_in_schema=False)

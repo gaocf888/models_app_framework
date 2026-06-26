@@ -50,6 +50,7 @@ from app.models.analysis import (
 )
 from app.models.analysis_nl2sql_llm import extract_json_object_from_llm_text
 from app.services.analysis_stream_hooks import dispatch_analysis_nl2sql_stream_structured
+from app.services.chatbot_image_preprocessor import ChatbotImagePreprocessor
 from app.services.chatbot_image_utils import build_user_message_with_images
 
 logger = get_logger(__name__)
@@ -238,6 +239,78 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             )
             self._scope_hitl_runner = runner
         return runner
+
+    def _get_vision_image_preprocessor(self) -> ChatbotImagePreprocessor:
+        """复用智能客服图片预处理（缩边/JPEG 重编码），与 chatbot 看图分析链路一致。"""
+        proc = getattr(self, "_vision_image_preprocessor", None)
+        if proc is None:
+            proc = ChatbotImagePreprocessor(get_app_config().chatbot)
+            self._vision_image_preprocessor = proc
+        return proc
+
+    def _vision_user_text(self, profile: _ImgDiagSubtypeProfile) -> str:
+        """固定短 user 句（对齐智能客服看图），不使用业务 query。"""
+        if profile.subtype == "defect_ident":
+            return (self._analysis_cfg.img_diag_vision_user_query_defect_ident or "").strip() or (
+                "请分析图片中的缺陷特征与形貌。"
+            )
+        return (self._analysis_cfg.img_diag_vision_user_query_leakage_burst or "").strip() or (
+            "请分析图片中的爆口/泄漏可见形貌特征。"
+        )
+
+    def _build_vision_system_instructions(
+        self,
+        *,
+        user_id: str,
+        profile: _ImgDiagSubtypeProfile,
+    ) -> str:
+        """system = 智能客服 chatbot 模板 + 看图视觉臂 JSON 附录（与客服 persona 同步）。"""
+        app_cfg = get_app_config()
+        chatbot_ver = (
+            (self._analysis_cfg.img_diag_vision_chatbot_prompt_version or "").strip()
+            or (app_cfg.chatbot.default_prompt_version or "boiler_v1").strip()
+            or "boiler_v1"
+        )
+        chat_tpl = self._prompts.get_template(
+            scene="chatbot",
+            user_id=user_id,
+            version=chatbot_ver,
+            default_version=chatbot_ver,
+        )
+        vision_tpl = self._prompts.get_template(
+            scene=profile.vision_scene,
+            user_id=user_id,
+            version=None,
+        )
+        chunks: list[str] = []
+        if chat_tpl and chat_tpl.content.strip():
+            chunks.append(chat_tpl.content.strip())
+        if vision_tpl and vision_tpl.content.strip():
+            chunks.append(vision_tpl.content.strip())
+        if chunks:
+            return "\n\n".join(chunks)
+        fallback = (
+            "你是承压部件缺陷图像分析助手，仅描述可见证据；输出必须为单个 JSON 对象。"
+            if profile.subtype == "defect_ident"
+            else "你是锅炉受热面泄爆/爆口图像分析助手，仅描述可见证据；输出必须为单个 JSON 对象。"
+        )
+        return fallback
+
+    @staticmethod
+    def _build_vision_llm_messages(
+        *,
+        system_instructions: str,
+        user_text: str,
+        image_urls: list[str],
+    ) -> list[dict[str, Any]]:
+        """与智能客服一致：system 承载领域/输出契约，user 为短 query + 图片。"""
+        content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+        for url in image_urls:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        return [
+            {"role": "system", "content": system_instructions},
+            {"role": "user", "content": content},
+        ]
 
     async def _run_scope_hitl_phase(
         self,
@@ -956,38 +1029,34 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 0,
             )
         t0 = perf_counter()
+        original_urls = list(urls)
+        urls = await self._get_vision_image_preprocessor().preprocess_urls(original_urls)
+        image_preprocessed = urls != original_urls
         vision_model = get_app_config().llm.default_model
-        tpl = self._prompts.get_template(
-            scene=profile.vision_scene,
+        instructions = self._build_vision_system_instructions(
             user_id=req.user_id,
-            version=None,
+            profile=profile,
         )
-        default_instructions = (
-            "你是承压部件缺陷图像分析助手，仅描述可见证据；输出必须为单个 JSON 对象。"
-            if profile.subtype == "defect_ident"
-            else "你是锅炉受热面泄爆/爆口图像分析助手，仅描述可见证据；输出必须为单个 JSON 对象。"
+        user_text = self._vision_user_text(profile)
+        messages = self._build_vision_llm_messages(
+            system_instructions=instructions,
+            user_text=user_text,
+            image_urls=urls,
         )
-        instructions = (
-            tpl.content.strip()
-            if tpl and tpl.content.strip()
-            else default_instructions
-        )
-        header = f"用户问题: {req.query}\n\n{instructions}"
-        content: list[dict[str, Any]] = [{"type": "text", "text": header}]
-        for url in urls:
-            content.append({"type": "image_url", "image_url": {"url": url}})
-        messages = [{"role": "user", "content": content}]
         timeout = float(self._analysis_cfg.img_diag_vision_timeout_seconds)
         vision_temperature = float(self._analysis_cfg.img_diag_vision_temperature)
         logger.info(
             "img_diag vision start subtype=%s user_id=%s session_id=%s "
-            "url_count=%s model=%s temperature=%s url_previews=%s",
+            "url_count=%s model=%s temperature=%s image_preprocessed=%s "
+            "vision_user_query_len=%s business_query_ignored=True url_previews=%s",
             profile.subtype,
             req.user_id,
             req.session_id,
             len(urls),
             vision_model,
             vision_temperature,
+            image_preprocessed,
+            len(user_text),
             url_diag["url_previews"],
         )
         raw = await self._llm.chat(

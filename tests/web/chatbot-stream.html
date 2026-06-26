@@ -51,6 +51,7 @@
     input[type="text"],
     input[type="url"],
     input[type="password"],
+    input[type="file"],
     textarea,
     select {
       width: 100%;
@@ -128,6 +129,22 @@
     }
     .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
     code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    #uploadResult {
+      margin-top: 0.5rem;
+      font-size: 0.75rem;
+      color: var(--meta);
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 120px;
+      overflow: auto;
+    }
+    .thumb-preview {
+      margin-top: 0.5rem;
+      max-width: 100%;
+      max-height: 160px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
   </style>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous" />
 </head>
@@ -181,8 +198,20 @@
           <option value="true">true</option>
           <option value="false">false</option>
         </select>
-        <label>image_urls（每行一个 URL，可为空）</label>
+        <label>image_urls（每行一个 URL，可为空；推荐先下方上传）</label>
         <textarea id="imageUrls" rows="2" placeholder="https://..."></textarea>
+      </fieldset>
+
+      <fieldset>
+        <legend>图片上传（POST /chatbot/upload）</legend>
+        <label>选择图片（jpeg/png/webp/gif）</label>
+        <input type="file" id="fileInput" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" />
+        <div class="actions" style="margin-top:0.5rem;">
+          <button type="button" class="secondary" id="btnUpload">上传图片</button>
+          <button type="button" class="secondary" id="btnAppendUrl" disabled>填入 image_urls</button>
+        </div>
+        <div id="uploadResult">（尚未上传）</div>
+        <img id="thumbPreview" class="thumb-preview" alt="" hidden />
       </fieldset>
     </div>
 
@@ -369,6 +398,27 @@
     if (k) h["Authorization"] = "Bearer " + k;
     return h;
   };
+  const authHeaders = (extra) => {
+    const h = Object.assign({}, extra || {});
+    const k = $("apiKey").value.trim();
+    if (k) h["Authorization"] = "Bearer " + k;
+    return h;
+  };
+
+  function pretty(obj) {
+    try { return JSON.stringify(obj, null, 2); } catch (_) { return String(obj); }
+  }
+
+  async function readJsonSafe(resp) {
+    const text = await resp.text();
+    try {
+      return { json: JSON.parse(text), raw: text };
+    } catch (_) {
+      return { json: null, raw: text };
+    }
+  }
+
+  let lastUploadUrl = null;
 
   function buildBody() {
     const body = {
@@ -421,6 +471,61 @@
     appendStatus("已清空");
     currentStreamId = null;
     setBusy(false);
+  });
+
+  $("btnUpload").addEventListener("click", async () => {
+    showErr("");
+    const file = $("fileInput").files && $("fileInput").files[0];
+    if (!file) {
+      showErr("请先选择图片文件。");
+      return;
+    }
+    appendStatus("上传中…");
+    $("btnUpload").disabled = true;
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const resp = await fetch(baseUrl() + "/chatbot/upload", {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+        credentials: "omit",
+      });
+      const out = await readJsonSafe(resp);
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + "\n" + (out.raw || "").slice(0, 2000));
+      }
+      lastUploadUrl = out.json && out.json.url ? String(out.json.url) : null;
+      $("uploadResult").textContent = pretty(out.json || out.raw);
+      $("btnAppendUrl").disabled = !lastUploadUrl;
+      const thumb = $("thumbPreview");
+      if (lastUploadUrl) {
+        thumb.src = lastUploadUrl;
+        thumb.hidden = false;
+      } else {
+        thumb.hidden = true;
+        thumb.removeAttribute("src");
+      }
+      appendStatus("上传成功");
+    } catch (e) {
+      lastUploadUrl = null;
+      $("btnAppendUrl").disabled = true;
+      $("thumbPreview").hidden = true;
+      appendStatus("上传失败");
+      showErr(String(e.message || e));
+    } finally {
+      $("btnUpload").disabled = false;
+    }
+  });
+
+  $("btnAppendUrl").addEventListener("click", () => {
+    if (!lastUploadUrl) return;
+    const ta = $("imageUrls");
+    const cur = ta.value.trim();
+    const lines = cur ? cur.split(/\r?\n/).map((s) => s.trim()).filter(Boolean) : [];
+    if (!lines.includes(lastUploadUrl)) lines.push(lastUploadUrl);
+    ta.value = lines.join("\n");
+    appendStatus("已填入 image_urls");
   });
 
   $("btnStop").addEventListener("click", async () => {
