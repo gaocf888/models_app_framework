@@ -1,11 +1,12 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from app.llm.graphs.analysis_img_diag_runner import (
     IMG_DIAG_DEFECT_IDENT_TYPE,
     IMG_DIAG_LEAKAGE_BURST_TYPE,
     AnalysisImgDiagGraphRunner,
     _IMG_DIAG_PROFILES,
+    _sanitize_img_diag_report_text,
 )
 from app.models.analysis import AnalysisImgDiagRequest, AnalysisNL2SQLCall, AnalysisOptions
 
@@ -192,9 +193,78 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
             },
             context_snippets=[],
         )
-        self.assertIn("库表查询目录", content)
+        self.assertIn("相关数据查询目录", content)
         self.assertIn("壁温超温数据", content)
         self.assertIn("synthesis_status", content)
+
+    def test_img_diag_summary_user_content_no_image_leakage_burst_hint(self) -> None:
+        runner = AnalysisImgDiagGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=MagicMock(),
+            prompt_registry=MagicMock(),
+            hybrid_rag=MagicMock(),
+            nl2sql_service=MagicMock(),
+        )
+        runner._analysis_cfg.synthesis_gathered_json_max_chars = 4000
+        content = runner._build_img_diag_summary_user_content(
+            query="2号炉水冷壁前墙2026-06-23泄爆",
+            analysis_type=IMG_DIAG_LEAKAGE_BURST_TYPE,
+            data_mode="img_diag_leakage_burst",
+            data_blob={
+                "vision_findings": {"vision_skipped": True, "reason": "no_image_provided"},
+                "structured_queries_catalog": [],
+            },
+            context_snippets=["同类型飞灰冲刷案例要点"],
+        )
+        self.assertIn("未提供现场图片", content)
+        self.assertIn("相关数据与知识库", content)
+        self.assertIn("知识库参考片段", content)
+        self.assertNotIn("RAG参考片段", content)
+
+    def test_sanitize_img_diag_report_text_strips_rag_terms(self) -> None:
+        raw = (
+            "依据历史案例与RAG片段，飞灰冲刷可能造成减薄。"
+            "依据RAG案例中的事故原因分析，应加强运行管理。"
+        )
+        cleaned = _sanitize_img_diag_report_text(raw)
+        self.assertNotIn("RAG", cleaned)
+        self.assertIn("历史案例要点", cleaned)
+        self.assertIn("依据历史案例", cleaned)
+
+    def test_lane_vision_uses_zero_temperature_by_default(self) -> None:
+        import asyncio
+
+        runner = AnalysisImgDiagGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=MagicMock(),
+            prompt_registry=MagicMock(),
+            hybrid_rag=MagicMock(),
+            nl2sql_service=MagicMock(),
+        )
+        runner._analysis_cfg.img_diag_vision_temperature = 0.0
+        runner._prompts.get_template.return_value = MagicMock(
+            content="输出 JSON，含 defect_orientation 字段。"
+        )
+        vision_json = (
+            '{"defect_type":"周向表面裂纹","defect_orientation":"横跨管轴",'
+            '"defect_signals":["白圈内周向裂纹2条"]}'
+        )
+        runner._llm.chat = AsyncMock(return_value=vision_json)
+        req = AnalysisImgDiagRequest(
+            user_id="u1",
+            session_id="s1",
+            img_diag_subtype="defect_ident",
+            query="1号炉水冷壁前墙缺陷识别",
+            image_urls=["http://example.com/a.png"],
+        )
+
+        async def _run() -> None:
+            await runner._lane_vision(req, _IMG_DIAG_PROFILES["defect_ident"])
+
+        asyncio.run(_run())
+        runner._llm.chat.assert_awaited_once()
+        call_kwargs = runner._llm.chat.await_args.kwargs
+        self.assertEqual(0.0, call_kwargs.get("temperature"))
 
 
 if __name__ == "__main__":

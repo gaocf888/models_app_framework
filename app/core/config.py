@@ -598,6 +598,7 @@ class AnalysisConfig:
     plan_rag_query_mode: str = "two_stage"
     # 看图诊断（img_diag）：视觉臂复用 LLM_DEFAULT_MODEL（须为多模态 VL）；各臂超时与上传大小上限
     img_diag_vision_timeout_seconds: float = 120.0
+    img_diag_vision_temperature: float = 0.0
     img_diag_lane_timeout_seconds: float = 180.0
     img_diag_upload_max_mb: int = 15
     # 看图诊断业务 RAG：vision_augmented（默认，视觉完成后串行 RAG）| parallel | hybrid
@@ -1327,6 +1328,10 @@ def _load_from_env() -> AppConfig:
         ),
         img_diag_vision_timeout_seconds=max(
             5.0, float(os.getenv("ANALYSIS_IMG_DIAG_VISION_TIMEOUT_SECONDS", "120"))
+        ),
+        img_diag_vision_temperature=max(
+            0.0,
+            min(1.0, float(os.getenv("ANALYSIS_IMG_DIAG_VISION_TEMPERATURE", "0"))),
         ),
         img_diag_lane_timeout_seconds=max(
             10.0, float(os.getenv("ANALYSIS_IMG_DIAG_LANE_TIMEOUT_SECONDS", "180"))

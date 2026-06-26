@@ -1086,21 +1086,11 @@ analysis_synthesis_img_diag_defect_ident:
       【视觉结构化 JSON — 硬性规则（vision_findings）】
       - user 消息中 **「视觉结构化结果」** 块即 vision_findings；合成前须完整阅读。
       - 若 `vision_skipped` 为 true：在「一、外观形貌智能分析」中说明未提供图片，不得编造图像证据；1.1 可写「无图像输入」。
-      - 若 `vision_skipped` 不为 true：须优先引用 morphology_summary、distribution_features、surface_state、defect_orientation、defect_signals 等字段；
+      - 若 `vision_skipped` 不为 true：须优先引用 morphology_summary、distribution_features、surface_state、defect_signals 等字段；
         **必须** 在 **「1. 缺陷宏观形貌特征」** 中 **简洁归纳** 上述可见形貌（bullet 罗列，非长段叙述）；
         缺陷类型、风险、初步定性等内容 **放在 1.2**，1.1 **禁止** 重复；
         **禁止** 写「未提供图片」「无图像证据」等与 vision_findings 矛盾的表述。
       - 图像清晰度/遮挡/分辨率等限制（confidence_notes）**不在 1.1 展开**；若有必要，在 **1.2 末尾一句** 带过并建议现场复核。
-
-      【沟槽 vs 裂纹 — 合成复核（有图时必做）】
-      - 合成前对照 vision_findings 的 **defect_orientation**、defect_type/defect_types、defect_signals、morphology_summary：
-        **沟槽/磨损** = 沿管轴或流向的 **连续凹槽**，底面相对平滑，边缘多为缓变；
-        **裂纹** = **不连续、边缘尖锐** 的线状/分叉开口，可 **横跨管轴（周向/横向）** 或沿管轴（轴向）。
-      - 若 defect_type 为「飞灰冲刷磨损沟槽」等沟槽类，但 defect_signals / morphology_summary / defect_orientation 中出现
-        **裂纹、周向、横向、横跨管轴、标记圈内细线** 等表述 → **1.1 须写裂纹形貌与走向**，**1.2 初步定性须以裂纹为主**（可并存沟槽作次要），
-        **禁止** 仅输出沟槽而漏写裂纹；**1.2 末尾须一句** 建议 PT/MT/UT 等无损复核。
-      - 若存在 **检验标记**（粉笔/漆笔白圈、黄圈等，见 inspector_marking）：1.1 **须** 描述标记圈内主缺陷，不得只描述标记外管壁纵向纹理。
-      - 1.1 **主体形貌** bullet **须含缺陷走向**（沿管轴 / 横跨管轴 / 不确定）。
 
       【库表查询目录 — 硬性规则（structured_queries_catalog）】
       - user 消息 **「库表查询目录」** 含各主题 purpose、row_count、time_scope、synthesis_rule；须逐条阅读。
@@ -1151,17 +1141,15 @@ analysis_synthesis_img_diag_defect_ident:
       **禁止出现**（含但不限于）：「从照片中可见」「综合分析表明」「值得一提的是」「整体而言」「可以观察到」等冗余引导语；**禁止** 在本节写缺陷类型判定、风险等级、处置建议（属 1.2 或第三章）。
       vision_skipped 为 true 时：仅写一句「未提供现场图像，无法描述宏观形貌」。
       有图时 **固定 3～5 条 bullet**（无信息项可省略，勿凑字数）：
-      - **主体形貌**：（沟槽/坑蚀/胀粗/裂纹/焊口/防磨件等 **可见形态 + 走向：沿管轴或横跨管轴**，一句话）
-      - **分布特征**：（集中/散点/沿流向/周向/邻管牵连/检验标记圈内等；无明显写「不明显」）
+      - **主体形貌**：（沟槽/坑蚀/胀粗/裂纹/焊口/防磨件等 **可见形态**，一句话）
+      - **分布特征**：（集中/散点/沿流向/周向/邻管牵连等；无明显写「不明显」）
       - **表面状态**：（氧化皮、产物颜色、粗糙/脱落/湿润等；未见异常写「未见明显异常」）
-      - **其他可见要点**：（可选，仅列 defect_signals 中 **1～2 条** 未覆盖要点，每条短语；含裂纹时须写走向）
+      - **其他可见要点**：（可选，仅列 defect_signals 中 **1～2 条** 未覆盖要点，每条短语）
 
       #### 2. 外观定性初步结论
       - **部位与受热面**：affected_surface、location_visual 及用户问题中的位置描述（冲突时说明以何为准）；
       - **部位材质规格分析**：仅当 catalog「管段基础参数」row_count>0 且有 snapshot 可引用时输出；否则 **省略本 bullet 及材质规格段落**，不得写「库表未检索到」，不得凭图像猜测牌号或壁厚；
-      - **初步定性结论**：defect_type/defect_types 及基于可见形貌的初步缺陷类型判断；**沟槽与裂纹并存时说明主次**；
-        failure_mode_hints 仅作「疑似」表述；结合 preliminary_visual_conclusion（若有）；
-        经「沟槽 vs 裂纹 — 合成复核」判定应以裂纹为主时，**不得** 仍仅写飞灰冲刷沟槽；须建议 PT/MT/UT 复核。
+      - **初步定性结论**：defect_type/defect_types 及基于可见形貌的初步缺陷类型判断；failure_mode_hints 仅作「疑似」表述；结合 preliminary_visual_conclusion（若有）。
 
       ### 二、多维数据关联分析
       **仅输出有相关数据的维度**（见「报告输出 — 仅有数据/有依据才输出」）：对 catalog 中 row_count>0 的主题各建 `#### {purpose业务名}分析` 子节，归纳与第一章形貌的关联或反证；row_count=0 的主题 **不输出**（无子节、无占位句）。禁止写 q1/q2a 等代号。
@@ -1198,7 +1186,7 @@ analysis_report_img_diag_defect_ident:
       正文禁止出现 q1、q2a、q2b、q3 等数据计划编号或 item_id。
       禁止写「库表未检索到」「未检索到可用的…」等无数据占位句；无相关数据/知识库依据的维度或小节直接省略。
       报告正文禁止出现 RAG、NL2SQL、catalog、snapshot、**库表** 等技术术语及英文缩写；依据须用「依据现场图像/相关数据/业务数据/知识库/规程」等通俗表述。
-      第一章仅用图像证据；**1.1 宏观形貌须短语化 bullet 罗列且含缺陷走向**，须做沟槽/裂纹复核；有相关管段基础参数数据时方可输出材质规格；3.2 须结合知识库（有可引用规程/案例时）并含预防再发建议。
+      第一章仅用图像证据；**1.1 宏观形貌须短语化 bullet 罗列**，禁止铺垫话术与重复 1.2；有相关管段基础参数数据时方可输出材质规格；3.2 须结合知识库（有可引用规程/案例时）并含预防再发建议。
       3.2 处置方案中禁止出现建议停炉、降负荷、停吹、隔离运行等促使机组退出运行的表述。
 
 # --- 缺陷识别 · NL2SQL 数据计划 JSON ---
@@ -1283,58 +1271,36 @@ analysis_img_diag_vision_defect_ident:
       用户问题中可能含位置描述，仅作辅助参考；定位以图像可见线索为准。
       **禁止** 猜测材质牌号、设计壁厚、壁温限值等台账参数（由后续库表查询提供）；视觉输出仅描述可见形貌与初步定性。
 
-      【分析顺序 — 必守】
-      1) 先找 **检验标记**（粉笔/漆笔 **白圈、黄圈、箭头** 等）→ 若有，**以标记圈内/所指区域** 为主缺陷区；
-      2) 再判断主缺陷 **走向**（沿管轴 / 横跨管轴 / 不确定）→ 写入 defect_orientation；
-      3) 再区分 **沟槽 vs 裂纹**（见下节），最后选定 defect_type（可多选 defect_types）。
-
-      【沟槽 vs 裂纹 — 判别（必做，禁止混淆）】
-      | 特征 | 沟槽/磨损 | 裂纹 |
-      | 走向 | 通常 **沿管轴或烟气流向** 的连续长槽 | 可为 **横跨管轴（周向/横向）** 或沿管轴（轴向） |
-      | 边缘 | 相对 **缓变、底面较平滑** | **尖锐、不连续**，常呈细线/分叉 |
-      | 表面 | 冲刷沟槽底可见金属光泽（若有） | 深色细线、开口感，锈层上亦可见 |
-      **硬性规则**：
-      - 见 **横跨管轴的多条细线、边缘尖锐、位于检验标记圈内** → 主类型须为 **「周向表面裂纹」**（可并存「管壁胀粗」），
-        **禁止** 仅报「飞灰冲刷磨损沟槽」或把横向裂纹描述为「平行于管轴的沟槽」。
-      - 管壁 **纵向棱边、鳍片残留、光影阴影** 不是沟槽；勿与磨损沟槽混淆。
-      - 不确定时 defect_type 取「其他可见异常」，risk_level=moderate，在 confidence_notes 说明；**不得** 强行选沟槽。
-
-      【缺陷类型枚举 — defect_type 取最匹配一项；defect_types 可多选】
-      周向表面裂纹 | 轴向表面裂纹 | 管壁胀粗 | 点蚀/均匀腐蚀坑 |
-      焊口夹渣/未熔合 | 防磨瓦脱落 | 防磨瓦歪斜 | 管间氧化皮堆积  | 飞灰冲刷磨损沟槽 | 其他可见异常
-      （枚举顺序不代表优先级；**须按可见证据选类型，禁止默认选飞灰冲刷磨损沟槽**。）
+      【缺陷类型枚举 — defect_type 取最匹配一项或多项写入 defect_types 数组】
+      飞灰冲刷磨损沟槽 | 点蚀/均匀腐蚀坑 | 管壁胀粗 | 轴向表面裂纹 | 周向表面裂纹 |
+      焊口夹渣/未熔合 | 防磨瓦脱落 | 防磨瓦歪斜 | 管间氧化皮堆积 | 其他可见异常
 
       【受热面 — affected_surface 示例】
       水冷壁 | 过热器 | 再热器 | 省煤器 | 不确定
 
       【风险等级 — risk_level】
       general（一般，可运行监护）| moderate（较重，需缩短复测/加强监护）| critical（严重，需尽快检修或停炉处理）
-      依据：缺陷尺寸、深度线索、裂纹可见长度、是否活跃扩展形貌等可见证据；**可见裂纹、胀粗、开口** 通常 ≥ moderate；不确定时 risk_level=moderate 并在 confidence_notes 说明。
+      依据：缺陷尺寸、深度线索、裂纹可见长度、是否活跃扩展形貌等可见证据；不确定时 risk_level=moderate 并在 confidence_notes 说明。
 
       【形貌描述要求】
-      - defect_orientation：**主缺陷走向**（沿管轴 | 横跨管轴 | 轴向裂纹 | 周向裂纹 | 不确定）— **必填**；
-      - inspector_marking：检验标记描述（如「白圈标定主缺陷区」；无则填「无」）；
-      - morphology_summary：概括 **主缺陷区** 可见形貌（**须含走向**）；
-      - distribution_features：缺陷在可见范围内的分布（集中/散点/沿流向/周向/标记圈内等）；
+      - morphology_summary：一段话概括主体可见形貌（走向、尺度线索、与管壁关系）；
+      - distribution_features：缺陷在可见范围内的分布（集中/散点/沿流向/周向/邻管等）；
       - surface_state：表面氧化皮、产物、粗糙、脱落、颜色等可见状态；
-      - preliminary_visual_conclusion：基于仅可见证据的简短初步定性（勿写材质规格数值）；
-      - defect_signals：**至少 1 条须含缺陷走向**（如「周向裂纹 2～3 条，位于白圈内」）。
+      - preliminary_visual_conclusion：基于仅可见证据的简短初步定性（勿写材质规格数值）。
 
       输出必须是单个 JSON 对象（勿 Markdown），字段：
       {
         "defect_type": "主缺陷类型（中文）",
-        "defect_types": ["字符串数组，可多选，含并存类型如胀粗+裂纹"],
-        "defect_orientation": "沿管轴|横跨管轴|轴向裂纹|周向裂纹|不确定",
-        "inspector_marking": "检验标记描述，无则填无",
+        "defect_types": ["字符串数组，可多选"],
         "affected_surface": "受热面类型",
-        "morphology_summary": "主体形貌描述（须含走向）",
+        "morphology_summary": "主体形貌描述（一段话）",
         "distribution_features": "缺陷分布特征",
         "surface_state": "表面状态描述",
-        "defect_signals": ["可见形貌要点，至少一条含走向"],
+        "defect_signals": ["可见形貌要点列表，与上述字段互补"],
         "severity": "none|low|medium|high",
         "risk_level": "general|moderate|critical",
         "location_visual": "照片中可见的定位线索（若无填\"不明显\"）",
-        "failure_mode_hints": ["仅基于可见形貌的机理线索，如疑似疲劳/应力/冲刷/腐蚀，勿断言"],
+        "failure_mode_hints": ["仅基于可见形貌的机理线索，如疑似冲刷/腐蚀/疲劳，勿断言"],
         "preliminary_visual_conclusion": "外观定性初步结论（不含材质牌号/壁厚等台账数据）",
         "notes": "其他简短客观描述",
         "confidence_notes": "可见度、遮挡、光照、分辨率等影响；声明为通用视觉模型未微调"
