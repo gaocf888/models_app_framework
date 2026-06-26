@@ -108,6 +108,20 @@ class TestOverheatReportContext(unittest.TestCase):
         ctx = infer_overheat_report_context("请分析1号锅炉本周超温")
         self.assertEqual("weekly", ctx["analysis_mode"])
 
+    def test_infer_default_yesterday_when_no_time(self):
+        from app.nl2sql import time_intent_display
+
+        fixed_now = datetime(2026, 6, 2, 12, 0, 0)
+        with patch.object(time_intent_display, "datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+            mock_dt.combine = datetime.combine
+            ctx = infer_overheat_report_context("请分析1号锅炉超温情况")
+        self.assertEqual("daily", ctx["analysis_mode"])
+        self.assertEqual("2026-06-01 00:00:00", ctx["t_start"])
+        self.assertEqual("2026-06-01 23:59:59", ctx["t_end"])
+        self.assertEqual("yesterday_fallback", ctx["time_window_tag"])
+
     def test_infer_statistical_time_range_yesterday(self):
         from app.nl2sql import time_intent_display
 

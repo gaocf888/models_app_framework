@@ -104,15 +104,19 @@ _TIME_REWRITE_WARNING_CN: dict[str, str] = {
         "用户问句未解析到时间窗；若 NL2SQL 含 @t_start/@t_end 将拒绝执行，"
         "请在用户问题中补充时间范围或事故时刻。"
     ),
+    "default_yesterday_fallback": (
+        "用户问句未指定时间范围，已默认按昨天统计；如需其他时段请在问题中补充明确时间。"
+    ),
 }
 _UNRESOLVED_TIME_PLACEHOLDER_WARNING = (
     "部分 NL2SQL 因时间占位符未替换而失败，请在用户问题中补充明确时间或事故时刻。"
 )
 _IMG_DIAG_SQL_PLACEHOLDER_CN = (
     "【SQL占位符强制】须使用 @t_start/@t_end（事实表/运行记录时间列写 >= @t_start AND < @t_end，左闭右开；"
-    "禁止写死日期字面量）及 @unit_keyword、@device_keyword"
-    "（须配 IS NULL/空串 guard，写法见 img_diag_*_plan_reference_sql.sql）；禁止硬编码示例锅炉名或区域。"
-    "看图诊断计划 SQL 范围过滤仅使用机组与受热面，不再使用 @piperow_keyword/@row_no/@tube_no。"
+    "禁止写死日期字面量）及 @unit_keyword、@device_keyword、@location_keyword、@row_no、@tube_no"
+    "（须配 IS NULL/空串 guard，未解析层级置 NULL/空串即跳过该条件；写法见 img_diag_*_plan_reference_sql.sql）；"
+    "禁止硬编码示例锅炉名或区域。"
+    "范围字段顺序：机组→受热面→检测位置→排数→管数；下级未解析不影响上级查询。"
 )
 _IMG_DIAG_SQL_PLACEHOLDER_LEAKAGE_CN = (
     f"{_IMG_DIAG_SQL_PLACEHOLDER_CN}"

@@ -8,6 +8,7 @@ from typing import Literal
 class QuestionScopeIntent:
     boiler: str | None = None
     device_name: str | None = None
+    check_location_name: str | None = None
     piperow_name: str | None = None
     row_no: int | None = None
     tube_no: int | None = None

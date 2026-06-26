@@ -24,11 +24,12 @@ from app.llm.graphs.img_diag_scope_intent import (
     apply_scope_patch,
     build_scope_intent_text,
     confirmed_scope_from_draft,
+    draft_from_scope_dict,
     missing_required_scope_fields,
     parse_img_diag_scope_draft,
     should_trigger_scope_hitl,
 )
-from app.llm.graphs.img_diag_scope_validate import validate_scope_in_catalog
+from app.llm.graphs.img_diag_scope_validate import validate_scope_with_relaxation
 from app.llm.graphs.img_diag_session_store import (
     create_img_diag_resume_token,
     delete_img_diag_resume_session,
@@ -60,6 +61,7 @@ class ImgDiagScopeGraphState(TypedDict, total=False):
     confirmed_scope_intent: dict[str, Any]
     scope_intent_text: str
     human_interactions: list[dict[str, Any]]
+    scope_relaxed_fields: list[str]
     human_prompt: str
     human_suggested_actions: list[str]
     missing_fields: list[str]
@@ -76,29 +78,29 @@ def _max_hitl_rounds() -> int:
 
 def _draft_from_state(state: ImgDiagScopeGraphState) -> ImgDiagScopeDraft:
     draft_dict = state.get("scope_draft") or {}
-    return ImgDiagScopeDraft(
-        boiler=draft_dict.get("boiler"),
-        device_name=draft_dict.get("device_name"),
-        piperow_name=draft_dict.get("piperow_name"),
-        row_no=draft_dict.get("row_no"),
-        tube_no=draft_dict.get("tube_no"),
-        confidence=draft_dict.get("confidence", "high"),
-        confidence_reasons=tuple(draft_dict.get("confidence_reasons") or ()),
-        time_meta=parse_img_diag_scope_draft("").time_meta,
-    )
+    tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
+    return draft_from_scope_dict(draft_dict, time_meta=tm)
+
+
+def _scope_draft_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
+    draft = state.get("scope_draft") or {}
+    from app.llm.graphs.img_diag_scope_intent import normalize_img_diag_scope_dict
+
+    normalized = normalize_img_diag_scope_dict(draft)
+    return {
+        "boiler": normalized.get("boiler"),
+        "device_name": normalized.get("device_name"),
+        "check_location_name": normalized.get("check_location_name"),
+        "row_no": normalized.get("row_no"),
+        "tube_no": normalized.get("tube_no"),
+    }
 
 
 def _build_interrupt_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
-    draft = state.get("scope_draft") or {}
-    scope_draft = {
-        "boiler": draft.get("boiler"),
-        "device_name": draft.get("device_name"),
-        "piperow_name": draft.get("piperow_name"),
-        "row_no": draft.get("row_no"),
-        "tube_no": draft.get("tube_no"),
-    }
+    scope_draft = _scope_draft_payload(state)
     missing = state.get("missing_fields") or []
-    return {
+    relaxed = state.get("scope_relaxed_fields") or []
+    payload: dict[str, Any] = {
         "prompt": state.get("human_prompt") or "请补充或确认机组与受热面信息",
         "scope_draft": scope_draft,
         "scope_draft_display": scope_draft_to_display(scope_draft),
@@ -109,6 +111,9 @@ def _build_interrupt_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
         "request_id": state.get("request_id"),
         "interrupt_reason": state.get("interrupt_reason"),
     }
+    if relaxed:
+        payload["scope_relaxed_fields"] = [scope_field_label(f) for f in relaxed]
+    return payload
 
 
 def _apply_human_scope_response(
@@ -130,16 +135,7 @@ def _apply_human_scope_response(
         patch = normalize_scope_patch_keys(patch)
         dd = state["scope_draft"]
         tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
-        draft = ImgDiagScopeDraft(
-            boiler=dd.get("boiler"),
-            device_name=dd.get("device_name"),
-            piperow_name=dd.get("piperow_name"),
-            row_no=dd.get("row_no"),
-            tube_no=dd.get("tube_no"),
-            confidence=dd.get("confidence", "high"),
-            confidence_reasons=tuple(dd.get("confidence_reasons") or ()),
-            time_meta=tm,
-        )
+        draft = draft_from_scope_dict(dd, time_meta=tm)
         state["scope_draft"] = apply_scope_patch(draft, patch).to_dict()
     state["needs_db_retry"] = False
     state["validation_error"] = None
@@ -189,35 +185,29 @@ def make_img_diag_scope_nodes(
 
     async def scope_db_validate(state: ImgDiagScopeGraphState) -> ImgDiagScopeGraphState:
         draft_dict = state.get("scope_draft") or {}
-        scope = {
-            "boiler": draft_dict.get("boiler"),
-            "device_name": draft_dict.get("device_name"),
-            "piperow_name": draft_dict.get("piperow_name"),
-        }
-        count, err = await validate_scope_in_catalog(scope)
-        if err and count <= 0:
-            state["validation_error"] = err
-            state["needs_db_retry"] = True
-            state["human_prompt"] = SCOPE_HITL_DB_NOT_MATCHED_PROMPT
-            state["interrupt_reason"] = "db_validate_error"
-            return state
+        scope = _scope_draft_payload(state)
+        hitl_rounds = int(state.get("hitl_rounds") or 0)
+        allow_auto_relax = hitl_rounds >= 2
+
+        count, effective_scope, relaxed_fields, err = await validate_scope_with_relaxation(
+            scope,
+            allow_auto_relax=allow_auto_relax,
+        )
+
         if count <= 0:
-            state["validation_error"] = "scope_not_found_in_catalog"
+            state["validation_error"] = err or "scope_not_found_in_catalog"
             state["needs_db_retry"] = True
             state["human_prompt"] = SCOPE_HITL_DB_NOT_MATCHED_PROMPT
             state["interrupt_reason"] = "db_validate_zero_rows"
+            state["scope_relaxed_fields"] = []
             return state
-        draft = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "")
+
+        tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
         merged = apply_scope_patch(
-            draft,
-            {
-                "boiler": draft_dict.get("boiler"),
-                "device_name": draft_dict.get("device_name"),
-                "piperow_name": draft_dict.get("piperow_name"),
-                "row_no": draft_dict.get("row_no"),
-                "tube_no": draft_dict.get("tube_no"),
-            },
+            draft_from_scope_dict(draft_dict, time_meta=tm),
+            effective_scope,
         )
+        state["scope_draft"] = merged.to_dict()
         state["confirmed_scope_intent"] = confirmed_scope_from_draft(merged)
         state["scope_intent_text"] = build_scope_intent_text(
             merged,
@@ -225,6 +215,16 @@ def make_img_diag_scope_nodes(
         )
         state["needs_db_retry"] = False
         state["validation_error"] = None
+        if relaxed_fields:
+            state["scope_relaxed_fields"] = relaxed_fields
+            state["confirmed_scope_intent"]["scope_relaxed_fields"] = relaxed_fields
+            logger.info(
+                "img_diag scope auto-relaxed fields=%s effective_scope=%s",
+                relaxed_fields,
+                effective_scope,
+            )
+        else:
+            state["scope_relaxed_fields"] = []
         return state
 
     return {
