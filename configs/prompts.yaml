@@ -2104,9 +2104,16 @@ inspection_extract_v0_extract:
 img_diag_scope_parse:
   - version: v1
     weight: 1.0
-    description: 看图诊断范围结构化解析（检测位置/排数/管数；时间由程序侧处理）
+    description: 看图诊断范围结构化解析（检测位置/排数/管数；HITL 重解析以最新补充为准；时间由程序侧处理）
     content: |
       你是看图诊断（缺陷识别/泄爆分析）问句「实体范围」解析器。根据【用户问题】，仅输出一个 JSON 对象，不要 markdown，不要解释。
+
+      【人机协同 / 多段输入 — 最高优先级】
+      - 【用户问题】可能由 **多段** 组成：首段为初始问句，其后每行/每段为用户在台账确认环节追加的补充或修正（程序以换行拼接）。
+      - 解析时须 **先读完全部段落**，再输出 JSON；**不得只根据首段** 下结论。
+      - **冲突消解**：同一字段（机组/受热面/检测位置/排数/管数）若在不同段落表述不一致，**以最后一段（最靠近文末）的表述为准**；后文是对前文的确认或纠错。
+      - 用户补充多为口语（如「检测位置应为…」「应该是…」「不是336是33」「排数对了」），须结合语义理解其要修正的字段，**不要机械拼接数字**。
+      - 若仅后文修正某一字段，其余未提及字段仍从 **全文** 综合解析（以前文+后文为准，后文覆盖冲突项）。
 
       【检测位置与受热面】
       - 检测位置（check_location_name）对应业务表 overhaul_new_checklocation.name（检修策划/测厚点位名称）。
@@ -2114,6 +2121,14 @@ img_diag_scope_parse:
       - 须结合完整问句判断：若短语更像检修检测点位，填入 check_location_name；若为标准受热面台账名，填入 device_name。
       - 同一短语不要同时填入 device_name 与 check_location_name；可拆分为受热面 + 更细检测位置。
       - 仅提到受热面、未提到更细点位时，check_location_name 为 null。
+
+      【检测位置与管号分离 — 禁止拼接】
+      - 检测位置名称（如「吹灰孔33」）与「第 N 根管/第 N 根」中的 N **是不同字段**：
+        check_location_name 只含检测点位名；tube_no 只含管号整数。
+      - **禁止** 将管号数字拼入检测位置名。
+        错误示例：问句含「吹灰孔33第56根管」→ check_location_name 写成「吹灰孔336」或「吹灰孔3356」。
+        正确示例：check_location_name=「吹灰孔33」，tube_no=56。
+      - 若后文明确纠正检测位置（如「检测位置应为吹灰孔33」），则 check_location_name 以 **后文为准**；tube_no 仍从「第56根」等表述 **单独** 解析。
 
       【重要约束】
       - 时间语义由程序侧处理；不要因时间词填充 scope。
@@ -2123,7 +2138,7 @@ img_diag_scope_parse:
       【范围解析规则】
       1. 受热面简称展开：低过→低温过热器，高过→高温过热器，高再→高温再热器，低再→低温再热器，屏过→屏式过热器。
       2. 排数：「第一排」「第1排」「第一行」→ row_no；未写则为 null；水冷壁/包墙/后竖井/冷灰斗且未写排数时 row_no=1。
-      3. 管数：「第一根」「第1根」→ tube_no；未写则为 null。
+      3. 管数：「第一根」「第1根」「第N根管」→ tube_no；未写则为 null。
 
       【示例】
       问：1号锅炉低温过热器第一层第一排第一根
@@ -2140,6 +2155,16 @@ img_diag_scope_parse:
 
       问：所有机组低温过热器
       {"boiler":null,"device_name":"低温过热器","check_location_name":null,"row_no":null,"tube_no":null}
+
+      问：（多段，人机协同修正检测位置）
+      请识别图片缺陷并给出处置建议，位置是1号锅炉水冷壁螺旋段前墙吹灰孔33第56根管
+      检测位置应为吹灰孔33
+      {"boiler":null,"device_name":"水冷壁螺旋段前墙","check_location_name":"吹灰孔33","row_no":1,"tube_no":56}
+
+      问：（多段，口语纠错）
+      1号锅炉水冷壁螺旋段前墙吹灰孔33第56根管
+      不对，检测位置是吹灰孔33，不是336
+      {"boiler":null,"device_name":"水冷壁螺旋段前墙","check_location_name":"吹灰孔33","row_no":1,"tube_no":56}
 
       【输出 schema】
       {"boiler":string|null,"device_name":string|null,"check_location_name":string|null,"row_no":number|null,"tube_no":number|null}

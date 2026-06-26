@@ -35,6 +35,11 @@ _SCENE = "img_diag_scope_parse"
 _DEFAULT_PROMPT = """\
 你是看图诊断（缺陷识别/泄爆分析）问句「实体范围」解析器。根据用户问题，仅输出一个 JSON 对象，不要 markdown，不要解释。
 
+【人机协同 / 多段输入 — 最高优先级】
+- 用户问题可能由多段组成：首段为初始问句，其后每段为用户在台账确认环节追加的补充或修正（程序以换行拼接）。
+- 须先读完全部段落再输出 JSON；同一字段若前后不一致，以最后一段（最靠近文末）为准。
+- 用户补充多为口语，须理解语义，不要机械拼接数字。
+
 【重要约束】
 - 时间语义由程序侧处理；不要因时间词填充 scope。
 - boiler 由程序规则覆盖；JSON 中可省略 boiler 或填 null。
@@ -46,11 +51,14 @@ _DEFAULT_PROMPT = """\
 - 同一短语**不要同时**填入 device_name 与 check_location_name，优先拆分为：受热面 + 更细的检测位置（若有）。
 - 问句仅提到受热面、未提到更细点位时，check_location_name 为 null。
 
+【检测位置与管号分离 — 禁止拼接】
+- check_location_name 与 tube_no 是不同字段；禁止将管号拼入检测位置名（如「吹灰孔33第56根管」→ check_location_name=吹灰孔33，tube_no=56，禁止写成吹灰孔336）。
+
 【范围解析规则】
 1. 分级解析：问句只提到哪一层就只填那一层；未出现字段必须为 null。
 2. 受热面简称展开：低过→低温过热器，高过→高温过热器，高再→高温再热器，低再→低温再热器，屏过→屏式过热器。
 3. 排数：「第一排」「第1排」「第一行」→ row_no；未写则为 null；水冷壁/包墙/后竖井/冷灰斗且未写排数时 row_no=1。
-4. 管数：「第一根」「第1根」→ tube_no；未写则为 null。
+4. 管数：「第一根」「第1根」「第N根管」→ tube_no；未写则为 null。
 
 【输出 schema】
 {"boiler":string|null,"device_name":string|null,"check_location_name":string|null,"row_no":number|null,"tube_no":number|null}
