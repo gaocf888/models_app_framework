@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from app.llm.graphs.analysis_img_diag_runner import (
     IMG_DIAG_DEFECT_IDENT_TYPE,
@@ -230,6 +230,41 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
         self.assertNotIn("RAG", cleaned)
         self.assertIn("历史案例要点", cleaned)
         self.assertIn("依据历史案例", cleaned)
+
+    def test_lane_vision_uses_zero_temperature_by_default(self) -> None:
+        import asyncio
+
+        runner = AnalysisImgDiagGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=MagicMock(),
+            prompt_registry=MagicMock(),
+            hybrid_rag=MagicMock(),
+            nl2sql_service=MagicMock(),
+        )
+        runner._analysis_cfg.img_diag_vision_temperature = 0.0
+        runner._prompts.get_template.return_value = MagicMock(
+            content="输出 JSON，含 defect_orientation 字段。"
+        )
+        vision_json = (
+            '{"defect_type":"周向表面裂纹","defect_orientation":"横跨管轴",'
+            '"defect_signals":["白圈内周向裂纹2条"]}'
+        )
+        runner._llm.chat = AsyncMock(return_value=vision_json)
+        req = AnalysisImgDiagRequest(
+            user_id="u1",
+            session_id="s1",
+            img_diag_subtype="defect_ident",
+            query="1号炉水冷壁前墙缺陷识别",
+            image_urls=["http://example.com/a.png"],
+        )
+
+        async def _run() -> None:
+            await runner._lane_vision(req, _IMG_DIAG_PROFILES["defect_ident"])
+
+        asyncio.run(_run())
+        runner._llm.chat.assert_awaited_once()
+        call_kwargs = runner._llm.chat.await_args.kwargs
+        self.assertEqual(0.0, call_kwargs.get("temperature"))
 
 
 if __name__ == "__main__":

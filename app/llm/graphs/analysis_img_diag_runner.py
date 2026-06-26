@@ -137,7 +137,8 @@ _IMG_DIAG_PROFILES: dict[ImgDiagSubtype, _ImgDiagSubtypeProfile] = {
         synthesis_default=(
             "你是电厂承压管系缺陷识别分析师，需融合图像证据、相关数据摘要与知识库片段，"
             "按「外观形貌智能分析→多维数据关联分析→风险等级判定与处置方案」三章输出报告；"
-            "第一章 1.1 缺陷宏观形貌特征须简洁 bullet 罗列、禁止长段套话；"
+            "第一章 1.1 须含缺陷走向（沿管轴/横跨管轴）；沟槽与裂纹不可混淆；"
+            "若 vision 主类型为沟槽但 signals 含裂纹/周向/横向等，1.2 须优先写裂纹并建议 PT/UT 复核；"
             "无相关数据的维度整节省略，不写「未检索到」占位句；"
             "报告正文禁止 RAG/NL2SQL/库表 等技术术语，依据用现场图像/相关数据/知识库等通俗表述；"
             "处置方案中禁止建议停炉、降负荷、停吹等运行退出措施。"
@@ -594,6 +595,8 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "damage_morphology",
             "opening_shape",
             "defect_type",
+            "defect_orientation",
+            "inspector_marking",
             "morphology_summary",
             "distribution_features",
             "surface_state",
@@ -975,20 +978,23 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             content.append({"type": "image_url", "image_url": {"url": url}})
         messages = [{"role": "user", "content": content}]
         timeout = float(self._analysis_cfg.img_diag_vision_timeout_seconds)
+        vision_temperature = float(self._analysis_cfg.img_diag_vision_temperature)
         logger.info(
             "img_diag vision start subtype=%s user_id=%s session_id=%s "
-            "url_count=%s model=%s url_previews=%s",
+            "url_count=%s model=%s temperature=%s url_previews=%s",
             profile.subtype,
             req.user_id,
             req.session_id,
             len(urls),
             vision_model,
+            vision_temperature,
             url_diag["url_previews"],
         )
         raw = await self._llm.chat(
             model=vision_model,  # type: ignore[arg-type]
             messages=messages,
             timeout=timeout,
+            temperature=vision_temperature,
         )
         ms = int((perf_counter() - t0) * 1000)
         parsed = extract_json_object_from_llm_text(raw)
