@@ -2,7 +2,7 @@
 
 推理链使用 **Ultralytics YOLOv8**（`.pt`）。请将权重放在本目录（`app/small_models/pretrained/`），并在 `configs/small_model_algorithms.yaml` 的 `weights_path` 中引用（相对项目根目录）。
 
-**重要（与 pose/seg 相关）**：`app/small_models/strategy/_yolo_utils.py` 的 `predict_detections` **只读取 `results.boxes`**，不解析实例掩码（seg）或关键点（pose）。因此 pose/seg 权重在现有框架里**仍可跑通推理**，但 **mask / keypoints 不会被用于业务逻辑**；要按轮廓或骨架做规则，需要后续扩展策略代码。
+**重要（与 pose/seg 相关）**：`app/small_models/strategy/base/_yolo_utils.py` 的 `predict_detections` **只读取 `results.boxes`**，不解析实例掩码（seg）或关键点（pose）。因此 pose/seg 权重在现有框架里**仍可跑通推理**，但 **mask / keypoints 不会被用于业务逻辑**；要按轮廓或骨架做规则，需要后续扩展策略代码。
 
 ## 1. 建议准备的文件（按优先级）
 

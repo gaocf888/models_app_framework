@@ -1,6 +1,6 @@
 
 def test_resolve_face_alert_mode() -> None:
-    from app.small_models.face.pipeline import resolve_face_alert_mode
+    from app.small_models.strategy.face.pipeline import resolve_face_alert_mode
 
     assert resolve_face_alert_mode({}) == "identified"
     assert resolve_face_alert_mode({"unknown_alert": True}) == "both"
@@ -8,8 +8,8 @@ def test_resolve_face_alert_mode() -> None:
 
 
 def test_filter_faces_by_roi() -> None:
-    from app.small_models.face.pipeline import filter_faces_by_roi
-    from app.small_models.strategy._insightface_utils import FaceInsight
+    from app.small_models.strategy.base._insightface_utils import FaceInsight
+    from app.small_models.strategy.face.pipeline import filter_faces_by_roi
 
     faces = [
         FaceInsight(bbox_xyxy=(10, 10, 50, 50), det_score=0.9, embedding=[1.0]),
@@ -22,10 +22,10 @@ def test_filter_faces_by_roi() -> None:
 
 
 def test_analyze_faces_alert_modes() -> None:
-    from app.small_models.face.gallery_index import GalleryIndex
-    from app.small_models.face.models import FaceSample
-    from app.small_models.face.pipeline import analyze_faces
-    from app.small_models.strategy._insightface_utils import FaceInsight
+    from app.small_models.strategy.base._insightface_utils import FaceInsight
+    from app.small_models.strategy.face.gallery_index import GalleryIndex
+    from app.small_models.strategy.face.models import FaceSample
+    from app.small_models.strategy.face.pipeline import analyze_faces
 
     samples = [FaceSample(sample_id="s1", person_id="p1", embedding=[1.0, 0.0])]
     index = GalleryIndex.build(samples, {"p1": "P1"}, "t1")

@@ -20,7 +20,8 @@ InsightFace 首次运行时会将模型下载到此目录（或通过 `face_mode
 
 ## 大规模人脸库
 
-样本数 ≥ 32 且已安装 `faiss-cpu` 时，1:N 检索自动切换 Faiss `IndexFlatIP`；可通过 `GET /face/gallery/{id}/stats` 查看 `backend`。
+- **默认（`FACE_VECTOR_BACKEND=local`）**：样本 ≥ 32 且已安装 `faiss-cpu` 时，1:N 自动用 Faiss；`GET /face/gallery/{id}/stats` 查看 `backend`（numpy/faiss）。
+- **Milvus（`FACE_VECTOR_BACKEND=milvus`）**：向量存 Milvus，适合十万级以上；部署见项目根 `face_db-deploy/README.md`，迁移脚本 `scripts/migrate_face_galleries_to_milvus.py`。
 
 ## 与 YOLO 权重区别
 

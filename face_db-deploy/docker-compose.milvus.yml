@@ -1,0 +1,39 @@
+# =============================================================================
+# Milvus Standalone — 人脸识别向量库（与 RAG 向量库分离）
+# =============================================================================
+# 启动：在本目录执行
+#   docker compose -f docker-compose.milvus.yml --env-file .env up -d
+#
+# 应用侧（app/app-deploy）需：
+#   FACE_VECTOR_BACKEND=milvus
+#   MILVUS_URI=http://milvus-standalone:19530
+#   并将 models-app 加入 external 网络 FACE_MILVUS_NETWORK（默认 face-milvus-stack）
+# =============================================================================
+
+services:
+  milvus-standalone:
+    image: milvusdb/milvus:v2.4.15
+    container_name: milvus-standalone
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_USE_EMBED: "true"
+      COMMON_STORAGETYPE: local
+    volumes:
+      - ${MILVUS_DATA_HOST_PATH:-./data/milvus}:/var/lib/milvus
+    ports:
+      - "${MILVUS_PORT:-19530}:19530"
+      - "${MILVUS_METRICS_PORT:-9091}:9091"
+    networks:
+      - face-milvus-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+networks:
+  face-milvus-net:
+    name: ${FACE_MILVUS_NETWORK:-face-milvus-stack}
+    driver: bridge

@@ -7,7 +7,7 @@ import pytest
 from app.small_models.algorithm_registry import AlgorithmConfig, merge_algorithm_config
 from app.small_models.inference_engine import SmallModelInferenceEngine, _STRATEGY_CLASSES, _canonical_strategy_name
 from app.small_models.strategy.base import Detection
-from app.small_models.strategy.object_detection import apply_class_filter
+from app.small_models.strategy.l1.object_detection import apply_class_filter
 
 
 def test_merge_algorithm_config() -> None:

@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.small_models.algorithm_registry import AlgorithmConfig, merge_algorithm_config
-from app.small_models.face.gallery_store import FaceGalleryStore
-from app.small_models.face.matcher import match_embedding_1n
-from app.small_models.face.models import FaceSample
+from app.small_models.strategy.face.gallery_store import FaceGalleryStore
+from app.small_models.strategy.face.matcher import match_embedding_1n
+from app.small_models.strategy.face.models import FaceSample
 from app.small_models.inference_engine import SmallModelInferenceEngine, _STRATEGY_CLASSES
 
 

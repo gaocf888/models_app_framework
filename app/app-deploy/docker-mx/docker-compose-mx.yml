@@ -123,6 +123,7 @@ services:
       rag-external: {}
       mineru-external: {}
       paddle-layout-external: {}
+      face-milvus-external: {}
       # 暂未部署Neo4j，对应网络注释掉
       # graph-external: {}
     volumes:
@@ -182,6 +183,7 @@ services:
       rag-external: {}
       mineru-external: {}
       paddle-layout-external: {}
+      face-milvus-external: {}
       # 暂未部署Neo4j，对应网络注释掉
       # graph-external: {}
     # 说明：原本使用 compose 的 `gpus: all` 字段声明 GPU 需求，
@@ -233,6 +235,9 @@ networks:
   # 与 paddleocr-layout-api 互通（须已存在；由 paddleocr-layout-deploy 创建，默认名 paddle-layout-stack）
   paddle-layout-external:
     name: ${PADDLE_LAYOUT_DOCKER_NETWORK:-paddle-layout-stack}
+    external: true
+  face-milvus-external:
+    name: ${FACE_MILVUS_NETWORK:-face-milvus-stack}
     external: true
   # 与 Neo4j（GraphRAG）互通（可选；启用 GRAPH_RAG_ENABLED 时建议加入）
   # 暂未部署Neo4j，对应网络注释掉
