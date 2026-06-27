@@ -793,6 +793,22 @@ class InspectionExtractV0Config:
 
 
 @dataclass
+class FaceVectorConfig:
+    """
+    人脸识别向量检索后端配置。
+
+    - backend=local：JSON 持久化 + 进程内 numpy/faiss（默认，零外部依赖）
+    - backend=milvus：向量存 Milvus，元数据仍用 JSON + 图片目录
+    """
+
+    backend: str = "local"  # local | milvus
+    milvus_uri: str = "http://127.0.0.1:19530"
+    milvus_collection: str = "face_embeddings"
+    embedding_dim: int = 512
+    milvus_metric: str = "COSINE"  # COSINE | IP
+
+
+@dataclass
 class AppConfig:
     """
     应用全局配置。
@@ -801,6 +817,7 @@ class AppConfig:
     env: str = "dev"
     llm: LLMConfig = field(default_factory=lambda: LLMConfig(default_model="default"))
     rag: RAGConfig = field(default_factory=RAGConfig)
+    face_vector: FaceVectorConfig = field(default_factory=FaceVectorConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     prompt: PromptConfig = field(default_factory=PromptConfig)
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
@@ -1554,11 +1571,22 @@ def _load_from_env() -> AppConfig:
         == "true",
     )
 
+    face_vector_cfg = FaceVectorConfig(
+        backend=(os.getenv("FACE_VECTOR_BACKEND", "local") or "local").strip().lower(),
+        milvus_uri=(os.getenv("MILVUS_URI", "http://127.0.0.1:19530") or "http://127.0.0.1:19530").strip(),
+        milvus_collection=(
+            os.getenv("MILVUS_FACE_COLLECTION", "face_embeddings") or "face_embeddings"
+        ).strip(),
+        embedding_dim=max(1, int(os.getenv("FACE_EMBEDDING_DIM", "512"))),
+        milvus_metric=(os.getenv("MILVUS_FACE_METRIC", "COSINE") or "COSINE").strip().upper(),
+    )
+
     cfg = AppConfig(
         env=env,
         llm=llm_cfg,
         logging=logging_cfg,
         rag=rag_cfg,
+        face_vector=face_vector_cfg,
         mineru=mineru_cfg,
         chatbot=chatbot_cfg,
         analysis=analysis_cfg,

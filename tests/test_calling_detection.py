@@ -7,13 +7,13 @@ from unittest.mock import MagicMock, patch
 from app.small_models.algorithm_registry import AlgorithmConfig, merge_algorithm_config
 from app.small_models.inference_engine import SmallModelInferenceEngine, _STRATEGY_CLASSES, _canonical_strategy_name
 from app.small_models.strategy.base import Detection
-from app.small_models.strategy.calling_detection import (
-    CallingDetectionStrategy,
-    resolve_strategy_name_for_algor,
-)
-from app.small_models.strategy._spatial_rules import (
+from app.small_models.strategy.base._spatial_rules import (
     match_calling_by_phone_spatial,
     phone_center_in_person_upper_body,
+)
+from app.small_models.strategy.specialized.calling_detection import (
+    CallingDetectionStrategy,
+    resolve_strategy_name_for_algor,
 )
 
 
@@ -81,7 +81,7 @@ def test_default_strategy_for_calling_algor_type() -> None:
     assert out.strategy == "CallingDetectionStrategy"
 
 
-@patch("app.small_models.strategy.calling_detection.run_yolo_detection_pipeline")
+@patch("app.small_models.strategy.specialized.calling_detection.run_yolo_detection_pipeline")
 def test_calling_end_to_end_mode(mock_pipeline: MagicMock) -> None:
     mock_pipeline.return_value = [
         Detection(label="calling", score=0.9, bbox_xyxy=(1, 2, 3, 4), class_id=0),
@@ -97,10 +97,10 @@ def test_calling_end_to_end_mode(mock_pipeline: MagicMock) -> None:
     mock_pipeline.assert_called_once()
 
 
-@patch("app.small_models.strategy.calling_detection.run_yolo_detection_pipeline")
-@patch("app.small_models.strategy.calling_detection.predict_detections")
-@patch("app.small_models.strategy.calling_detection.get_yolo_model")
-@patch("app.small_models.strategy.calling_detection.resolve_path")
+@patch("app.small_models.strategy.specialized.calling_detection.run_yolo_detection_pipeline")
+@patch("app.small_models.strategy.specialized.calling_detection.predict_detections")
+@patch("app.small_models.strategy.specialized.calling_detection.get_yolo_model")
+@patch("app.small_models.strategy.specialized.calling_detection.resolve_path")
 def test_calling_spatial_with_fallback(
     mock_resolve: MagicMock,
     mock_get_model: MagicMock,

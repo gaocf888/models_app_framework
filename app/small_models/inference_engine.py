@@ -12,18 +12,18 @@ from app.small_models.algorithm_registry import (
     merge_algorithm_config,
     resolve_path,
 )
-from app.small_models.callback_client import CallbackClient
-from app.small_models.evidence import ClipRecorder, EvidenceStore
+from app.small_models.common.callback_client import CallbackClient
+from app.small_models.common.evidence import ClipRecorder, EvidenceStore
 from app.small_models.registry import SmallModelRegistry
 from app.small_models.strategy.base import SmallModelStrategy, StrategyResult
-from app.small_models.strategy.calling_detection import (
+from app.small_models.strategy.l1.object_detection import ObjectDetectionStrategy
+from app.small_models.strategy.l2.regular_behavior_detection import RegularBehaviorDetectionStrategy
+from app.small_models.strategy.l3.complex_behavior_detection import ComplexBehaviorDetectionStrategy
+from app.small_models.strategy.l4.face_recognition import FaceRecognitionStrategy
+from app.small_models.strategy.specialized.calling_detection import (
     CallingDetectionStrategy,
     resolve_strategy_name_for_algor,
 )
-from app.small_models.strategy.complex_behavior_detection import ComplexBehaviorDetectionStrategy
-from app.small_models.strategy.object_detection import ObjectDetectionStrategy
-from app.small_models.strategy.face_recognition import FaceRecognitionStrategy
-from app.small_models.strategy.regular_behavior_detection import RegularBehaviorDetectionStrategy
 
 logger = get_logger(__name__)
 
