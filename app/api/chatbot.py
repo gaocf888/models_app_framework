@@ -219,7 +219,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag`、`used_nl2sql`、`nl2sql_sql`（仅 NL2SQL 路径有值，否则为 null）、`intent_label`、`suggested_questions`、`rag_citations` 等；
             - `{"error": "...", "finished": true}`：异常时错误事件。
 
-    **RAG 内联引用（方案 1 + 方案 2，前端用法）**
+    **RAG 内联引用（前端用法）**
 
     1. **结束帧** `meta.rag_citations`：结构化来源列表（与 `GET /sessions/messages` 中 assistant 消息的 `rag_citations` 同形）。
        每项常见字段：
