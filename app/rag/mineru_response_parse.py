@@ -64,6 +64,72 @@ def markdown_from_zip_bytes(data: bytes) -> str | None:
     return None
 
 
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"})
+
+
+def _is_image_file(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES
+
+
+def discover_image_base_dir(root: Path) -> Path | None:
+    """
+    定位 MinerU 输出中的图片根目录（常见为 ``images/`` 或 ``auto/images``）。
+    """
+    if not root.is_dir():
+        return None
+    images_sub = root / "images"
+    if images_sub.is_dir() and any(_is_image_file(p) for p in images_sub.rglob("*")):
+        return images_sub
+    for candidate in sorted(root.rglob("images")):
+        if candidate.is_dir() and any(_is_image_file(p) for p in candidate.iterdir() if p.is_file()):
+            return candidate
+    if any(_is_image_file(p) for p in root.rglob("*")):
+        return root
+    return None
+
+
+def materialize_zip_output(data: bytes, target_dir: Path) -> tuple[str | None, Path | None]:
+    """
+    将 MinerU zip 响应解压到 ``target_dir``，返回 (markdown, image_base_dir)。
+    """
+    if not data.startswith(b"PK\x03\x04"):
+        return None, None
+    target_dir.mkdir(parents=True, exist_ok=True)
+    markdown: str | None = None
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for name in zf.namelist():
+                if name.endswith("/"):
+                    continue
+                dest = target_dir / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                raw = zf.read(name)
+                dest.write_bytes(raw)
+                if markdown is None and name.lower().endswith(".md"):
+                    try:
+                        markdown = raw.decode("utf-8")
+                    except UnicodeDecodeError:
+                        markdown = raw.decode("utf-8", errors="replace")
+    except zipfile.BadZipFile:
+        return None, None
+    img_base = discover_image_base_dir(target_dir)
+    if markdown:
+        markdown = markdown.strip() or None
+    return markdown, img_base
+
+
+def list_image_files_from_disk(root: Path) -> list[tuple[str, Path]]:
+    """返回 ``[(md_ref_relative, absolute_path), ...]``，供 figure 抽取对齐 Markdown 引用。"""
+    base = discover_image_base_dir(root)
+    if base is None:
+        return []
+    out: list[tuple[str, Path]] = []
+    for p in sorted(base.rglob("*")):
+        if _is_image_file(p):
+            out.append((p.relative_to(base).as_posix(), p.resolve()))
+    return out
+
+
 def read_markdown_from_disk(io_base: Path, task_id: str, *, output_subdir: str) -> str | None:
     """
     当 HTTP 体未带 md 时，从与 MinerU 共享卷读取。

@@ -2161,3 +2161,17 @@ analysis_agent_synthesis_leakage_burst_analysis:
 # 综合分析智能体 (analysis_agent) 专用提示词 · 结束
 # =============================================================================
 
+rag_figure_caption:
+  - version: rag_figure_caption_v1
+    weight: 1.0
+    description: 知识库 figure 摄入时 VLM 结构化描述
+    content: |
+      你是工业知识库图像理解助手。请用中文描述用户提供的图片或图纸，输出结构化纯文本（不要 Markdown 表格）。
+      须包含：
+      1) 图类型（架构图、流程图、工程图、照片等）；
+      2) 主要组件或实体列表；
+      3) 关系或数据流向；
+      4) 图例、标注与关键数值（若有）；
+      5) 一行 50 字以内摘要。
+      若提供了邻近正文上下文，描述用语应与上下文业务术语一致。
+

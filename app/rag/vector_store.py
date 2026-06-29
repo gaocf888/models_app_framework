@@ -145,6 +145,15 @@ class VectorStore(ABC):
         """
         ...
 
+    @abstractmethod
+    def get_chunks_by_ext_ids(
+        self,
+        ext_ids: Sequence[str],
+        namespace: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """按 ext_id（= chunk_id）批量回查 chunk，供 figure 扩展召回。"""
+        ...
+
     def list_chunk_texts_for_document(
         self,
         doc_name: str,
@@ -386,6 +395,33 @@ class InMemoryVectorStore(VectorStore):
                     "namespace": it.get("namespace"),
                     "doc_name": it.get("doc_name"),
                     "metadata": it.get("metadata") or {},
+                }
+            )
+        return out
+
+    def get_chunks_by_ext_ids(
+        self,
+        ext_ids: Sequence[str],
+        namespace: str | None = None,
+    ) -> list[dict[str, Any]]:
+        wanted = {str(x) for x in ext_ids if x}
+        if not wanted:
+            return []
+        out: list[dict[str, Any]] = []
+        for item in self._items:
+            eid = str(item.get("ext_id") or "")
+            if eid not in wanted:
+                continue
+            if namespace is not None and item.get("namespace") != namespace:
+                continue
+            out.append(
+                {
+                    "text": item.get("text", ""),
+                    "ext_id": eid,
+                    "namespace": item.get("namespace"),
+                    "doc_name": item.get("doc_name"),
+                    "metadata": item.get("metadata") or {},
+                    "score": 0.0,
                 }
             )
         return out
@@ -743,6 +779,33 @@ class FaissVectorStore(VectorStore):
                     "namespace": it.get("namespace"),
                     "doc_name": it.get("doc_name"),
                     "metadata": it.get("metadata") or {},
+                }
+            )
+        return out
+
+    def get_chunks_by_ext_ids(
+        self,
+        ext_ids: Sequence[str],
+        namespace: str | None = None,
+    ) -> list[dict[str, Any]]:
+        wanted = {str(x) for x in ext_ids if x}
+        if not wanted:
+            return []
+        out: list[dict[str, Any]] = []
+        for it in self._items.values():
+            eid = str(it.get("ext_id") or "")
+            if eid not in wanted:
+                continue
+            if namespace is not None and it.get("namespace") != namespace:
+                continue
+            out.append(
+                {
+                    "text": it.get("text", ""),
+                    "ext_id": eid,
+                    "namespace": it.get("namespace"),
+                    "doc_name": it.get("doc_name"),
+                    "metadata": it.get("metadata") or {},
+                    "score": 0.0,
                 }
             )
         return out
@@ -1303,6 +1366,44 @@ class ElasticsearchVectorStore(VectorStore):
             )
         rows.sort(key=_chunk_sort_key)
         return rows
+
+    def get_chunks_by_ext_ids(
+        self,
+        ext_ids: Sequence[str],
+        namespace: str | None = None,
+    ) -> list[dict[str, Any]]:
+        ids = [str(x) for x in ext_ids if x]
+        if not ids:
+            return []
+
+        def _mget():
+            return self._client.mget(index=self._alias, ids=ids)
+
+        try:
+            resp = self._with_retry(_mget)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_chunks_by_ext_ids mget failed: %s", exc)
+            return []
+
+        docs = resp.get("docs") if isinstance(resp, dict) else []
+        out: list[dict[str, Any]] = []
+        for doc in docs or []:
+            if not doc or not doc.get("found"):
+                continue
+            src = doc.get("_source") or {}
+            if namespace is not None and src.get("namespace") != namespace:
+                continue
+            out.append(
+                {
+                    "text": src.get("text", ""),
+                    "ext_id": src.get("ext_id") or doc.get("_id"),
+                    "namespace": src.get("namespace"),
+                    "doc_name": src.get("doc_name"),
+                    "metadata": src.get("metadata") or {},
+                    "score": 0.0,
+                }
+            )
+        return out
 
     def _with_retry(self, fn):
         last_err = None

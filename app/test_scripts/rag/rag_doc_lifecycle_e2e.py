@@ -18,19 +18,124 @@ def _assert_ok(resp: Any, step: str) -> dict[str, Any]:
     return data
 
 
-def _wait_job_success(client: Any, base: str, job_id: str, timeout_s: float = 20.0) -> dict[str, Any]:
+def _wait_job_success(client: Any, base: str, job_id: str, timeout_s: float = 20.0, *, allow_partial: bool = False) -> dict[str, Any]:
     start = time.time()
+    ok_statuses = {"SUCCESS", "PARTIAL"} if allow_partial else {"SUCCESS"}
     while True:
         data = _assert_ok(client.get(f"{base}/rag/jobs/{job_id}"), "job_status")
         job = data.get("job") or {}
         status = (job.get("status") or "").upper()
         if status in {"SUCCESS", "FAILED", "PARTIAL"}:
-            if status != "SUCCESS":
+            if status not in ok_statuses:
                 raise RuntimeError(f"job not successful: status={status}, job={json.dumps(job, ensure_ascii=False)}")
             return job
         if time.time() - start > timeout_s:
             raise RuntimeError(f"job polling timeout: job_id={job_id}, last_status={status}")
         time.sleep(0.3)
+
+
+_MINIMAL_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+    b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xdb\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def run_figure_e2e(base_url: str, report_out: str | None = None, report_md_out: str | None = None) -> None:
+    """
+    独立图片文档（source_type=image）E2E。
+    前提：服务端 RAG_FIGURE_ENABLED=true；使用 manual_caption 避免依赖 VLM。
+    """
+    import httpx
+
+    report: dict[str, Any] = {
+        "status": "running",
+        "suite": "figure_image_ingest",
+        "namespace": None,
+        "checks": [],
+    }
+    base = base_url.rstrip("/")
+    ns = "test_rag_figure_e2e"
+    doc_name = "figure_e2e_demo"
+    dataset_id = "ds_figure_e2e"
+    marker = "FigureE2EMarker_AlphaDiagram_2026"
+    report["namespace"] = ns
+    report["dataset_id"] = dataset_id
+    report["doc_name"] = doc_name
+
+    png_path: Path | None = None
+    try:
+        with httpx.Client(timeout=120) as client:
+            report["failed_phase"] = "cleanup_before"
+            _assert_ok(
+                client.post(f"{base}/rag/documents/delete", json={"doc_name": doc_name, "namespace": ns}),
+                "cleanup_delete",
+            )
+            _record(report, "cleanup_before", True, "cleanup accepted")
+
+            report["failed_phase"] = "prepare_png"
+            png_path = Path(__file__).resolve().parent / "_e2e_figure_tmp.png"
+            png_path.write_bytes(_MINIMAL_PNG)
+            _record(report, "prepare_png", True, str(png_path))
+
+            report["failed_phase"] = "ingest_image"
+            job_id = _submit_single_doc_job(
+                client=client,
+                base=base,
+                dataset_id=dataset_id,
+                doc_name=doc_name,
+                doc_version="v1",
+                namespace=ns,
+                content=str(png_path),
+                source_type="image",
+                metadata={
+                    "case": "figure_e2e",
+                    "manual_caption": f"架构图说明：{marker}",
+                    "asset_type": "architecture_diagram",
+                },
+            )
+            job = _wait_job_success(client, base, job_id, timeout_s=120)
+            fig_count = int((job.get("metrics") or {}).get("figure_count") or 0)
+            if fig_count < 1:
+                raise RuntimeError(f"figure ingest expected figure_count>=1, got metrics={job.get('metrics')}")
+            _record(report, "ingest_image", True, f"job_id={job_id}, figure_count={fig_count}")
+
+            report["failed_phase"] = "query_figure"
+            count = _query_count(client, base, marker, ns)
+            if count <= 0:
+                raise RuntimeError(f"figure query failed: marker {marker!r} not found")
+            _record(report, "query_figure", True, f"count={count}")
+
+            report["failed_phase"] = "delete_figure"
+            del_data = _assert_ok(
+                client.post(f"{base}/rag/documents/delete", json={"doc_name": doc_name, "namespace": ns}),
+                "delete_document",
+            )
+            deleted = int(del_data.get("deleted", 0))
+            if deleted <= 0:
+                raise RuntimeError("delete verification failed")
+            after = _query_count(client, base, marker, ns)
+            if after != 0:
+                raise RuntimeError("snippets still exist after delete")
+            _record(report, "delete_figure", True, f"deleted={deleted}")
+
+        print("RAG figure image E2E passed.")
+        report["status"] = "success"
+        report.pop("failed_phase", None)
+    except Exception as e:  # noqa: BLE001
+        report["status"] = "failed"
+        report["error"] = str(e)
+        report["error_type"] = type(e).__name__
+        report.setdefault("failed_phase", "unknown")
+        report["traceback"] = traceback.format_exc()
+        raise
+    finally:
+        if png_path is not None:
+            png_path.unlink(missing_ok=True)
+        if report.get("status") == "running":
+            report["status"] = "failed"
+        _finalize_summary(report)
+        if report_out or report_md_out:
+            _write_reports(report, report_out, report_md_out)
 
 
 def _submit_single_doc_job(
@@ -41,6 +146,9 @@ def _submit_single_doc_job(
     doc_version: str,
     namespace: str,
     content: str,
+    *,
+    source_type: str = "text",
+    metadata: dict[str, Any] | None = None,
 ) -> str:
     payload = {
         "operator": "rag-doc-lifecycle-e2e",
@@ -55,9 +163,9 @@ def _submit_single_doc_job(
                 "tenant_id": "e2e_tenant",
                 "namespace": namespace,
                 "content": content,
-                "source_type": "text",
+                "source_type": source_type,
                 "replace_if_exists": True,
-                "metadata": {"case": "doc_lifecycle_e2e", "doc_version": doc_version},
+                "metadata": metadata or {"case": "doc_lifecycle_e2e", "doc_version": doc_version},
             }
         ],
     }
@@ -290,11 +398,15 @@ def run(base_url: str, report_out: str | None = None, report_md_out: str | None 
 def main() -> int:
     parser = argparse.ArgumentParser(description="RAG document lifecycle end-to-end script")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Service base URL")
+    parser.add_argument("--figure", action="store_true", help="Run figure image ingest E2E (requires RAG_FIGURE_ENABLED=true)")
     parser.add_argument("--report-out", default=None, help="Optional path to write json report for CI gate")
     parser.add_argument("--report-md-out", default=None, help="Optional path to write markdown report summary")
     args = parser.parse_args()
     try:
-        run(args.base_url, report_out=args.report_out, report_md_out=args.report_md_out)
+        if args.figure:
+            run_figure_e2e(args.base_url, report_out=args.report_out, report_md_out=args.report_md_out)
+        else:
+            run(args.base_url, report_out=args.report_out, report_md_out=args.report_md_out)
         return 0
     except Exception as e:  # noqa: BLE001
         print(f"[FAILED] {e}")

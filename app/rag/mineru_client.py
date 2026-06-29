@@ -11,8 +11,10 @@ from app.core.config import MinerUConfig
 from app.core.logging import get_logger
 from app.rag.mineru_errors import MinerUParseError
 from app.rag.mineru_response_parse import (
+    discover_image_base_dir,
     extract_markdown_from_json,
     markdown_from_zip_bytes,
+    materialize_zip_output,
     read_markdown_from_disk,
 )
 
@@ -82,14 +84,25 @@ class MinerUClient:
         if not md_merged:
             raise MinerUParseError("MinerU returned no markdown content after page batching")
 
+        task_id = task_ids[-1] if task_ids else None
+        mineru_image_base: str | None = None
+        if task_id:
+            io_base = Path(self._cfg.io_path).expanduser()
+            root = io_base / self._cfg.disk_fallback_subdir / str(task_id)
+            img_dir = discover_image_base_dir(root) if root.exists() else None
+            if img_dir is not None:
+                mineru_image_base = str(img_dir)
+
         meta = {
-            "mineru_job_id": task_ids[-1] if task_ids else None,
+            "mineru_job_id": task_id,
             "mineru_job_ids": task_ids,
             "mineru_http_status": last_status,
             "mineru_parse_wall_s": round(elapsed_total, 3),
             "mineru_disk_fallback_subdir": self._cfg.disk_fallback_subdir,
             "mineru_page_batches": len(ranges),
         }
+        if mineru_image_base:
+            meta["mineru_image_base"] = mineru_image_base
         logger.info(
             "MinerU file_parse ok doc_name=%s chars=%s wall_s=%s batches=%s",
             doc_name,
@@ -179,11 +192,18 @@ class MinerUClient:
                 payload = None
             if payload is not None:
                 md = extract_markdown_from_json(payload)
-        if not md:
-            md = markdown_from_zip_bytes(body)
-
         task_id = (resp.headers.get(_MINERU_TASK_ID_HEADER) or "").strip()
         io_base = Path(self._cfg.io_path).expanduser()
+        if not md and body.startswith(b"PK\x03\x04"):
+            if task_id:
+                zip_root = io_base / self._cfg.disk_fallback_subdir / task_id
+            else:
+                zip_root = io_base / self._cfg.disk_fallback_subdir / f"zip_{doc_name}_{int(t0)}"
+            md_from_zip, _img_base = materialize_zip_output(body, zip_root)
+            if md_from_zip:
+                md = md_from_zip
+        if not md:
+            md = markdown_from_zip_bytes(body)
         if not md:
             md = read_markdown_from_disk(io_base, task_id, output_subdir=self._cfg.disk_fallback_subdir)
         if not md or not md.strip():

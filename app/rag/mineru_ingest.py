@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import time
 
+from pathlib import Path
+
 from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.rag.document_pipeline.parsers import DocumentParser
@@ -79,6 +81,16 @@ def prepare_pdf_document_for_pipeline(doc: DocumentSource) -> tuple[DocumentSour
 
     meta = {**doc.metadata, "pdf_parse_route": "mineru", **mineru_meta}
     wall_s = float(mineru_meta.get("mineru_parse_wall_s") or 0.0)
+    task_id = mineru_meta.get("mineru_job_id")
+    if task_id:
+        try:
+            io_base = Path(get_app_config().mineru.io_path).expanduser()
+            subdir = mineru_meta.get("mineru_disk_fallback_subdir") or get_app_config().mineru.disk_fallback_subdir
+            img_root = io_base / subdir / str(task_id)
+            if img_root.exists():
+                meta["mineru_image_base"] = str(img_root)
+        except Exception:  # noqa: BLE001
+            pass
     new_doc = DocumentSource(
         dataset_id=doc.dataset_id,
         doc_name=doc.doc_name,

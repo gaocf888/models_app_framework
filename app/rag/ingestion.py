@@ -108,12 +108,18 @@ class RAGIngestionService:
                 metas.append(row)
         else:
             metas = [{"doc_version": doc_version, "tenant_id": tenant_id} for _ in texts]
+        chunk_ids: list[str] | None = None
+        if metas:
+            candidates = [str(m.get("chunk_id") or "") for m in metas]
+            if candidates and all(candidates):
+                chunk_ids = candidates
         store.add_texts(
             texts,
             embeddings=embs,
             namespace=namespace,
             doc_name=effective_doc_name,
             metadatas=metas,
+            ids=chunk_ids,
         )
 
         if run_post_hook:
@@ -167,6 +173,13 @@ class RAGIngestionService:
         self, doc_name: str, namespace: str | None = None, doc_version: str | None = None
     ) -> int:
         deleted = self._rag_service.delete_by_doc_name(doc_name=doc_name, namespace=namespace, doc_version=doc_version)
+        if get_app_config().rag.ingestion.figure_enabled:
+            try:
+                from app.rag.asset_storage import RagAssetStorage
+
+                RagAssetStorage().delete_by_doc(doc_name, doc_version)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("RagAssetStorage.delete_by_doc failed doc_name=%s: %s", doc_name, e)
         if self._graph_ingestion is not None and self._should_sync_graph_delete():
             try:
                 self._graph_ingestion.delete_document(  # type: ignore[union-attr]
@@ -237,11 +250,19 @@ class RAGIngestionService:
         """
         logger.debug("finalize_alias_version noop: namespace=%s doc_version=%s", namespace, doc_version)
 
-    def query(self, query: str, top_k: int | None = None, namespace: str | None = None, scene: str = "llm_inference") -> List[str]:
+    def query(
+        self,
+        query: str,
+        top_k: int | None = None,
+        namespace: str | None = None,
+        scene: str = "llm_inference",
+        query_image_url: str | None = None,
+    ) -> List[str]:
         return self._rag_service.retrieve_context(
             query=query,
             top_k=top_k,
             namespace=namespace,
             scene=scene,
+            query_image_url=query_image_url,
         )
 

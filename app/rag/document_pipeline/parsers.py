@@ -20,8 +20,8 @@ class _TextExtractor(HTMLParser):
 class DocumentParser:
     def parse(self, content: str, source_type: str) -> str:
         st = (source_type or "text").lower()
-        if st in {"text", "txt"}:
-            return content
+        if st in {"text", "txt", "image"}:
+            return content if st != "image" else ""
         if st in {"md", "markdown"}:
             return self._parse_markdown(content)
         if st == "html":

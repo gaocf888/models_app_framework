@@ -151,6 +151,20 @@ flowchart LR
 - 失败错误码示例：`MINERU_TIMEOUT`、`MINERU_OFFLINE_MODEL_MISSING`。  
 - `MINERU_ENABLED=false` 时回退现有 **pypdf 文本层** 或仅接受已 Markdown。
 
+### 8.1 与 Figure 图块（内嵌图，可选）
+
+当应用侧 **`RAG_FIGURE_ENABLED=true`** 时，MinerU 输出中的图片可进入 figure 管线（详见 **`docs/RAG知识库增加图片存储和召回实现方案.md`**）：
+
+| 环节 | 实现 |
+|------|------|
+| HTTP zip 响应 | `mineru_response_parse.materialize_zip_output` 解压到 `{MINERU_IO}/{subdir}/{task_id}/` |
+| 磁盘 fallback | 共享卷 `{io_path}/{mineru-output}/{task_id}/` 下 `images/` 或 `auto/images` |
+| 元数据 | `mineru_ingest` 写入 `metadata.mineru_image_base` |
+| Markdown 引用 | `figure_extractor` 解析 `![](images/xxx.png)` 相对路径 → MinIO + VLM → figure chunk |
+| 邻近正文 | 在 MinerU Markdown 流上按锚点截取，拼入 figure `text`（缓解漏召） |
+
+**前提**：`models-app` 与 `mineru-deploy` **共用** `MINERU_IO_HOST_PATH` 挂载；MinerU 任务 ID 响应头 `X-MinerU-Task-Id` 或 zip 落盘路径一致。
+
 ---
 
 ## 9. 实施 Todo List（按顺序执行，可打勾）

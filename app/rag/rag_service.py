@@ -180,15 +180,62 @@ class RAGService:
         scene: str | None = None,
         rerank_query: str | None = None,
         exclude_namespaces: Sequence[str] | None = None,
+        query_image_url: str | None = None,
     ) -> List[RetrievedChunk]:
         """
         执行检索并返回标准 RetrievedChunk 列表（设计稿 §E 统一检索输出）。
 
         - query：用于向量嵌入与关键词/元数据召回（主检索句）。
+        - query_image_url：可选用户附图 URL；需 ``RAG_QUERY_VISION_AUGMENT_ENABLED=true``。
         - rerank_query：若传入且在 hybrid 开启且 CrossEncoder 可用时，仅用于最后重排；
           用于「召回用用户原句、重排时再拼场景标签」等两阶段策略。
         - exclude_namespaces：检索结果中剔除这些 namespace（会放大内部召回规模再过滤截断）。
         """
+        from app.rag.query_vision_augment import merge_retrieved_chunks, resolve_retrieval_query
+
+        effective_query, hybrid_aug_query = resolve_retrieval_query(query, query_image_url)
+        profile = self._get_scene_profile(scene)
+        k_out = top_k or (profile.top_k if profile is not None else self._cfg.top_k)
+        if hybrid_aug_query:
+            primary = self._retrieve_chunks_core(
+                query,
+                top_k=k_out,
+                namespace=namespace,
+                use_hybrid=use_hybrid,
+                scene=scene,
+                rerank_query=rerank_query,
+                exclude_namespaces=exclude_namespaces,
+            )
+            secondary = self._retrieve_chunks_core(
+                hybrid_aug_query,
+                top_k=k_out,
+                namespace=namespace,
+                use_hybrid=use_hybrid,
+                scene=scene,
+                rerank_query=rerank_query or hybrid_aug_query,
+                exclude_namespaces=exclude_namespaces,
+            )
+            return merge_retrieved_chunks(primary, secondary, max_k=k_out)
+        return self._retrieve_chunks_core(
+            effective_query,
+            top_k=top_k,
+            namespace=namespace,
+            use_hybrid=use_hybrid,
+            scene=scene,
+            rerank_query=rerank_query,
+            exclude_namespaces=exclude_namespaces,
+        )
+
+    def _retrieve_chunks_core(
+        self,
+        query: str,
+        top_k: int | None = None,
+        namespace: str | None = None,
+        use_hybrid: bool | None = None,
+        scene: str | None = None,
+        rerank_query: str | None = None,
+        exclude_namespaces: Sequence[str] | None = None,
+    ) -> List[RetrievedChunk]:
         RAG_QUERY_COUNT.inc()
         profile = self._get_scene_profile(scene)
         k_out = top_k or (profile.top_k if profile is not None else self._cfg.top_k)
@@ -257,6 +304,12 @@ class RAGService:
             out.append(self._hit_to_chunk(h, pv))
             if len(out) >= k_out:
                 break
+
+        from app.rag.figure_retrieval_expand import expand_related_figures
+
+        out = expand_related_figures(out, store, namespace=namespace, pipeline_version=pv)
+        if len(out) > k_out:
+            out = out[:k_out]
         return out
 
     def retrieve_context(
@@ -268,6 +321,7 @@ class RAGService:
         scene: str | None = None,
         rerank_query: str | None = None,
         exclude_namespaces: Sequence[str] | None = None,
+        query_image_url: str | None = None,
     ) -> List[str]:
         """
         执行检索并返回候选上下文文本列表。
@@ -287,6 +341,7 @@ class RAGService:
             scene=scene,
             rerank_query=rerank_query,
             exclude_namespaces=exclude_namespaces,
+            query_image_url=query_image_url,
         )
         return [c.text for c in chunks if c.text]
 

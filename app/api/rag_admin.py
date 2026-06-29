@@ -301,7 +301,7 @@ class IngestionJobDocumentRequest(BaseModel):
     )
     source_type: str = Field(
         "text",
-        description="可选，默认 text。格式/解析方式：text、markdown、html、pdf、docx、xlsx/xlsm；pdf 扫描件需 MinerU（见配置）。",
+        description="可选，默认 text。格式/解析方式：text、markdown、html、pdf、docx、xlsx/xlsm、image（需 RAG_FIGURE_ENABLED）；pdf 扫描件需 MinerU。",
     )
     source_uri: str | None = Field(
         None,
@@ -817,7 +817,7 @@ class UpsertDocumentRequest(BaseModel):
     )
     source_type: str = Field(
         "text",
-        description="可选，默认 text。解析方式：text、markdown、html、pdf、docx、xlsx/xlsm。",
+        description="可选，默认 text。解析方式：text、markdown、html、pdf、docx、xlsx/xlsm、image（需 RAG_FIGURE_ENABLED）。",
     )
     source_uri: str | None = Field(
         None,
@@ -882,7 +882,9 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
         try:
             doc, tmp_fetched = materialize_document_content_from_url(doc)
             doc, _ = prepare_pdf_document_for_pipeline(doc)
-            chunks, stats = pipeline.process_document(doc)
+            from app.rag.document_pipeline.ingest_document import build_chunks_for_document
+
+            chunks, stats, _figure_metrics = build_chunks_for_document(doc, pipeline)
         finally:
             if tmp_fetched is not None:
                 tmp_fetched.unlink(missing_ok=True)
@@ -991,6 +993,36 @@ class QueryRequest(BaseModel):
         "llm_inference",
         description="可选，默认 llm_inference。场景键：llm_inference / chatbot / analysis / nl2sql。",
     )
+    query_image_url: str | None = Field(
+        None,
+        description="可选。用户附图 URL；需 RAG_QUERY_VISION_AUGMENT_ENABLED=true 时用于增强检索 query。",
+    )
+
+
+class PresignAssetResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    image_url: str = Field(..., description="新的预签名或可访问 URL")
+
+
+@router.get(
+    "/assets/presign",
+    summary="刷新 RAG figure 图片预签名 URL",
+    response_model=PresignAssetResponse,
+)
+async def presign_rag_asset(key: Annotated[str, Query(description="MinIO object key 或本地存储路径")]) -> PresignAssetResponse:
+    """
+    按 ``image_object_key`` 重新签发 MinIO 预签名 GET URL（预签名过期后前端可调用刷新）。
+
+    需 MinIO 后端；本地存储模式返回静态路径 URL。
+    """
+    try:
+        from app.rag.asset_storage import RagAssetStorage
+
+        url = RagAssetStorage().presign_get_url(key)
+        return PresignAssetResponse(ok=True, image_url=url)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("rag presign failed: key=%s", key[:120])
+        raise HTTPException(status_code=400, detail=f"RAG presign failed: {e}") from e
 
 
 @router.post(
@@ -1020,6 +1052,7 @@ async def query_rag(req: QueryRequest) -> QueryRagResponse:
             top_k=req.top_k,
             namespace=req.namespace,
             scene=req.scene,
+            query_image_url=req.query_image_url,
         )
         return QueryRagResponse(
             ok=True, query=req.query, count=len(snippets), snippets=snippets

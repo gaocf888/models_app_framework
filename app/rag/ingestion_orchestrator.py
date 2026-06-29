@@ -13,6 +13,7 @@ from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.rag.document_repository import DocumentRepository, make_document_storage_key
 from app.rag.document_pipeline import ChunkingConfig, DocumentPipeline
+from app.rag.document_pipeline.ingest_document import build_chunks_for_document
 from app.rag.ingestion import RAGIngestionService
 from app.rag.ingestion_job_queue import IngestionJobQueue
 from app.rag.job_repository import JobRepository
@@ -354,17 +355,37 @@ class IngestionOrchestrator:
                     self._set_job_step(job, "mineru_parse")
                     self._record_step_ms(job, doc.doc_name, "mineru_parse", int(mineru_wall_s * 1000))
 
-                staged = pipeline.process_document_staged(doc)
-                chunks = staged["chunks"]
-                stats = staged["stats"]
-                stage_durations = staged.get("stage_durations_ms") or {}
+                ingest_cfg = get_app_config().rag.ingestion
+                if not ingest_cfg.figure_enabled and (doc.source_type or "").lower() == "image":
+                    raise ValueError("E_FIGURE_DISABLED: set RAG_FIGURE_ENABLED=true to ingest images")
+
+                if (doc.source_type or "").lower() == "image":
+                    self._set_job_step(job, "vision_caption")
+
+                chunks, stats, figure_metrics = build_chunks_for_document(doc, pipeline)
+                if figure_metrics:
+                    with self._lock:
+                        job.metrics.setdefault("figure_count", 0)
+                        job.metrics["figure_count"] = job.metrics.get("figure_count", 0) + int(
+                            figure_metrics.get("figure_count") or 0
+                        )
+                        if figure_metrics.get("vlm_caption_ms"):
+                            job.metrics["vlm_caption_ms"] = figure_metrics.get("vlm_caption_ms")
+                        if int(figure_metrics.get("caption_failed_count") or 0) > 0:
+                            job.metrics["figure_caption_degraded"] = True
+                            job.metrics["caption_failed_count"] = job.metrics.get("caption_failed_count", 0) + int(
+                                figure_metrics.get("caption_failed_count") or 0
+                            )
                 if not chunks:
                     raise ValueError(f"E_CHUNK_EMPTY: no chunks generated for doc={doc.doc_name}")
 
-                # 显式记录 parse/clean/chunk/enrich 四个步骤
-                for step_name in ("parse", "clean", "chunk", "enrich"):
-                    self._set_job_step(job, step_name)
-                    self._record_step_ms(job, doc.doc_name, step_name, int(stage_durations.get(step_name, 0)))
+                stage_durations = stats.get("stage_durations_ms") or {}
+                if (doc.source_type or "").lower() != "image":
+                    for step_name in ("parse", "clean", "chunk", "enrich"):
+                        self._set_job_step(job, step_name)
+                        self._record_step_ms(job, doc.doc_name, step_name, int(stage_durations.get(step_name, 0)))
+                else:
+                    pass
 
                 self._set_job_step(job, "index")
                 t1 = time.perf_counter()
@@ -477,9 +498,14 @@ class IngestionOrchestrator:
         with self._lock:
             job.step = "finalize"
             if failed == 0:
-                job.status = IngestionJobStatus.SUCCESS
-                job.error_code = None
-                job.error_message = None
+                if job.metrics.get("figure_caption_degraded"):
+                    job.status = IngestionJobStatus.PARTIAL
+                    job.error_code = "FIGURE_CAPTION_DEGRADED"
+                    job.error_message = "Some figure chunks used fallback captions (VLM failed)"
+                else:
+                    job.status = IngestionJobStatus.SUCCESS
+                    job.error_code = None
+                    job.error_message = None
             elif failed == len(job.documents):
                 job.status = IngestionJobStatus.FAILED
                 job.error_code = "ALL_DOCS_FAILED"

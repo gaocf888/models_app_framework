@@ -255,6 +255,26 @@ class RAGIngestionConfig:
     tenant_id_default: str | None = None
     # RUNNING 任务超过该秒数未更新，判定为卡死并自动转 FAILED。
     running_stuck_timeout_seconds: int = 1800
+    # RAG 知识库图块（figure）：VLM 描述 + MinIO 存储 + 图—文关联召回
+    figure_enabled: bool = False
+    figure_minio_bucket: str = "rag-assets"
+    figure_caption_prompt_version: str = "rag_figure_caption_v1"
+    figure_caption_max_tokens: int = 2048
+    figure_caption_temperature: float = 0.2
+    figure_presign_ttl_seconds: int = 86400
+    figure_object_key_prefix: str = "rag-assets/"
+    figure_neighbor_text_max_chars: int = 400
+    figure_neighbor_text_before_ratio: float = 0.7
+    figure_expand_max_per_text: int = 2
+    figure_expand_max_total: int = 6
+
+
+@dataclass
+class RAGQueryVisionConfig:
+    """查询侧多模态增强（阶段 4，与 RAG_FIGURE_ENABLED 独立）。"""
+
+    enabled: bool = False
+    mode: str = "vision_augmented"  # vision_augmented | hybrid
 
 
 @dataclass
@@ -304,6 +324,7 @@ class RAGConfig:
     ingestion: RAGIngestionConfig = field(default_factory=RAGIngestionConfig)
     content_fetch: RAGContentFetchConfig = field(default_factory=RAGContentFetchConfig)
     agentic: RAGAgenticConfig = field(default_factory=RAGAgenticConfig)
+    query_vision: RAGQueryVisionConfig = field(default_factory=RAGQueryVisionConfig)
 
 
 @dataclass
@@ -1058,6 +1079,23 @@ def _load_from_env() -> AppConfig:
         clean_min_repeated_line_pages=int(os.getenv("RAG_CLEAN_MIN_REPEATED_LINE_PAGES", "2")),
         tenant_id_default=os.getenv("RAG_TENANT_ID_DEFAULT") or None,
         running_stuck_timeout_seconds=max(60, int(os.getenv("RAG_RUNNING_STUCK_TIMEOUT_SECONDS", "1800"))),
+        figure_enabled=os.getenv("RAG_FIGURE_ENABLED", "false").lower() == "true",
+        figure_minio_bucket=(os.getenv("RAG_FIGURE_MINIO_BUCKET") or "rag-assets").strip(),
+        figure_caption_prompt_version=(
+            os.getenv("RAG_FIGURE_CAPTION_PROMPT_VERSION") or "rag_figure_caption_v1"
+        ).strip(),
+        figure_caption_max_tokens=max(256, int(os.getenv("RAG_FIGURE_CAPTION_MAX_TOKENS", "2048"))),
+        figure_caption_temperature=max(
+            0.0, min(1.0, float(os.getenv("RAG_FIGURE_CAPTION_TEMPERATURE", "0.2")))
+        ),
+        figure_presign_ttl_seconds=max(60, int(os.getenv("RAG_FIGURE_PRESIGN_TTL_SECONDS", "86400"))),
+        figure_object_key_prefix=(os.getenv("RAG_FIGURE_OBJECT_KEY_PREFIX") or "rag-assets/").strip(),
+        figure_neighbor_text_max_chars=max(64, int(os.getenv("RAG_FIGURE_NEIGHBOR_TEXT_MAX_CHARS", "400"))),
+        figure_neighbor_text_before_ratio=max(
+            0.0, min(1.0, float(os.getenv("RAG_FIGURE_NEIGHBOR_TEXT_BEFORE_RATIO", "0.7")))
+        ),
+        figure_expand_max_per_text=max(0, int(os.getenv("RAG_FIGURE_EXPAND_MAX_PER_TEXT", "2"))),
+        figure_expand_max_total=max(0, int(os.getenv("RAG_FIGURE_EXPAND_MAX_TOTAL", "6"))),
     )
     agentic_cfg = RAGAgenticConfig(
         enabled=os.getenv("RAG_AGENTIC_ENABLED", "true").lower() == "true",
@@ -1082,6 +1120,11 @@ def _load_from_env() -> AppConfig:
         header_value=os.getenv("RAG_CONTENT_FETCH_HEADER_VALUE") or None,
     )
 
+    query_vision_cfg = RAGQueryVisionConfig(
+        enabled=os.getenv("RAG_QUERY_VISION_AUGMENT_ENABLED", "false").lower() == "true",
+        mode=(os.getenv("RAG_QUERY_VISION_AUGMENT_MODE") or "vision_augmented").strip().lower(),
+    )
+
     rag_cfg = RAGConfig(
         enable_rag_by_default=os.getenv("RAG_ENABLE_BY_DEFAULT", "true").lower() == "true",
         enable_context_by_default=os.getenv("RAG_ENABLE_CONTEXT_BY_DEFAULT", "true").lower() == "true",
@@ -1097,6 +1140,7 @@ def _load_from_env() -> AppConfig:
         ingestion=ingestion_cfg,
         content_fetch=content_fetch_cfg,
         agentic=agentic_cfg,
+        query_vision=query_vision_cfg,
     )
 
     mineru_cfg = MinerUConfig(
