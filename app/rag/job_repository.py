@@ -75,11 +75,51 @@ class JobRepository:
         self._client = Elasticsearch(**kwargs)
         self._ensure_index_and_alias()
 
+    @staticmethod
+    def _prepare_es_document(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        ES/EasySearch 对 object 动态 mapping 有 total_fields 上限（默认 3000）。
+        metrics / documents 含 doc_name 动态键时极易撑爆索引；改为 JSON 文本存储。
+        """
+        body = {k: v for k, v in payload.items() if k not in {"metrics", "documents"}}
+        body["metrics_json"] = json.dumps(payload.get("metrics") or {}, ensure_ascii=False)
+        body["documents_json"] = json.dumps(payload.get("documents") or [], ensure_ascii=False)
+        return body
+
+    @staticmethod
+    def _parse_es_source(source: Dict[str, Any]) -> Dict[str, Any]:
+        if not source:
+            return source
+        out = {
+            k: v
+            for k, v in source.items()
+            if k not in {"metrics_json", "documents_json", "metrics", "documents"}
+        }
+        if "metrics_json" in source:
+            try:
+                out["metrics"] = json.loads(source.get("metrics_json") or "{}")
+            except Exception:  # noqa: BLE001
+                out["metrics"] = {}
+        else:
+            out["metrics"] = source.get("metrics") or {}
+        if "documents_json" in source:
+            try:
+                out["documents"] = json.loads(source.get("documents_json") or "[]")
+            except Exception:  # noqa: BLE001
+                out["documents"] = []
+        else:
+            out["documents"] = source.get("documents") or []
+        return out
+
     def _ensure_index_and_alias(self) -> None:
         assert self._client is not None
         if not self._client.indices.exists(index=self._index):
             mapping = {
+                "settings": {
+                    "index.mapping.total_fields.limit": 2000,
+                },
                 "mappings": {
+                    "dynamic": "strict",
                     "properties": {
                         "job_id": {"type": "keyword"},
                         "job_type": {"type": "keyword"},
@@ -91,7 +131,8 @@ class JobRepository:
                         "finished_at": {"type": "date"},
                         "error_code": {"type": "keyword"},
                         "error_message": {"type": "text"},
-                        "metrics": {"type": "object", "enabled": True},
+                        "metrics_json": {"type": "text", "index": False},
+                        "documents_json": {"type": "text", "index": False},
                         "operator": {"type": "keyword"},
                     }
                 }
@@ -109,7 +150,12 @@ class JobRepository:
     def upsert(self, job_id: str, payload: Dict[str, Any]) -> None:
         if self._use_es and self._client is not None:
             # elasticsearch-py 7.x 使用 body=；8.x 才支持 document=（本项目 requirements 固定 7.13.4）
-            self._client.index(index=self._alias, id=job_id, body=payload, refresh=True)
+            self._client.index(
+                index=self._alias,
+                id=job_id,
+                body=self._prepare_es_document(payload),
+                refresh=True,
+            )
             return
         state = self._load_file_state()
         state[job_id] = payload
@@ -119,7 +165,8 @@ class JobRepository:
         if self._use_es and self._client is not None:
             try:
                 res = self._client.get(index=self._alias, id=job_id)
-                return res.get("_source") or None
+                src = res.get("_source") or None
+                return self._parse_es_source(src) if src else None
             except Exception:
                 return None
         state = self._load_file_state()
@@ -134,7 +181,7 @@ class JobRepository:
                 "query": {"match_all": {}},
             }
             res = self._client.search(index=self._alias, body=body)
-            return [h.get("_source") or {} for h in res.get("hits", {}).get("hits", [])]
+            return [self._parse_es_source(h.get("_source") or {}) for h in res.get("hits", {}).get("hits", [])]
         state = self._load_file_state()
         values = list(state.values())
         values.sort(key=lambda x: x.get("created_at", ""), reverse=True)
@@ -168,7 +215,7 @@ class JobRepository:
                 "sort": [{"created_at": {"order": "asc"}}],
             }
             res = self._client.search(index=self._alias, body=body)
-            jobs = [h.get("_source") or {} for h in res.get("hits", {}).get("hits", [])]
+            jobs = [self._parse_es_source(h.get("_source") or {}) for h in res.get("hits", {}).get("hits", [])]
         else:
             state = self._load_file_state()
             jobs = list(state.values())

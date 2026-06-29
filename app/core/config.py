@@ -175,7 +175,7 @@ class ElasticsearchConfig:
     docs_index_version: int = 1
     jobs_index_name: str = "rag_jobs"
     jobs_index_alias: str = "rag_jobs_current"
-    jobs_index_version: int = 1
+    jobs_index_version: int = 2
 
 
 @dataclass
@@ -984,7 +984,7 @@ def _load_from_env() -> AppConfig:
         docs_index_version=int(os.getenv("RAG_ES_DOCS_INDEX_VERSION", "1")),
         jobs_index_name=os.getenv("RAG_ES_JOBS_INDEX_NAME", "rag_jobs"),
         jobs_index_alias=os.getenv("RAG_ES_JOBS_INDEX_ALIAS", "rag_jobs_current"),
-        jobs_index_version=int(os.getenv("RAG_ES_JOBS_INDEX_VERSION", "1")),
+        jobs_index_version=int(os.getenv("RAG_ES_JOBS_INDEX_VERSION", "2")),
     )
     hybrid_cfg = HybridRetrievalConfig(
         enabled=os.getenv("RAG_HYBRID_ENABLED", "true").lower() == "true",
