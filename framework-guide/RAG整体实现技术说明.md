@@ -284,6 +284,7 @@ GRAPH_RAG_USE_INTENT_ROUTING=true
 | **检索（向量）** | `RAGService`：纯向量 Top-K；上层多经 `AgenticRAGService` 统一入口。 |
 | **检索（图 / 混合，可选）** | `HybridRAGService` + `GraphQueryService`：按配置 `vector` / `graph` / `hybrid`，支持意图路由与权重交织融合。 |
 | **Agentic RAG 基座** | `AgenticRAGService`：`BASIC` / `AGENTIC`；`AGENTIC` 已实现多步规划、并行检索、融合去重与预算裁剪。 |
+| **Figure 图块（可选）** | `RAG_FIGURE_ENABLED=true` 时：独立图/内嵌图 → MinIO + VLM 描述 → figure text chunk；召回后 `expand_related_figures`；`rag_citations` 含 `image_url`。详见 **§3.4.1** 与 `docs/RAG知识库增加图片存储和召回实现方案.md`。 |
 | **场景封装** | `NL2SQLRAGService`：多命名空间（schema / biz / qa）联合检索，支持统一策略层路由。 |
 | **GraphRAG 基础设施** | Neo4j + LangChain Graph；已实现轻量实体抽取、图事实查询与参数化策略（可持续增强）。 |
 
@@ -364,7 +365,10 @@ sequenceDiagram
 | 嵌入 | `app/rag/embedding_service.py` | sentence-transformers；离线路径优先，否则在线模型名；失败抛异常。 |
 | 向量库 | `app/rag/vector_store.py` | `VectorStore` 抽象；`FaissVectorStore`、`ElasticsearchVectorStore`（兼容 EasySearch）、`InMemoryVectorStore`；`VectorStoreProvider` 按 `RAG_VECTOR_STORE_TYPE` 选择。 |
 | 向量检索 | `app/rag/rag_service.py` | `index_texts` / `retrieve_context`；指标 `RAG_QUERY_COUNT`。 |
-| 摄入 | `app/rag/ingestion.py` | `RAGIngestionService`；数据集元数据内存登记；可选 Graph 摄入。 |
+| 摄入 | `app/rag/ingestion.py` | `RAGIngestionService`；数据集元数据内存登记；可选 Graph 摄入；删文档联动 MinIO figure 前缀。 |
+| 文档管线 | `app/rag/document_pipeline/*` | 解析/清洗/切块；`ingest_document.build_chunks_for_document` 统一正文+figure。 |
+| Figure | `app/rag/asset_storage.py`、`vision_caption_service.py`、`figure_retrieval_expand.py`、`document_pipeline/figure_*.py` | 图块存储、VLM 描述、图—文关联、召回扩展（**§3.4.1**）。 |
+| 查询增强 | `app/rag/query_vision_augment.py` | 查询侧附图增强（**§3.4.2**）。 |
 | Agentic 基座 | `app/rag/agentic.py` | `AgenticRAGService`、`RAGMode`、`RAGContext`、`RAGResult`。 |
 | Hybrid | `app/rag/hybrid_rag_service.py` | 向量 / 图 / 混合检索调度，接入 `RetrievalPolicy`。 |
 | Graph | `app/graph/ingestion.py`、`app/graph/query_service.py` | Neo4j 图摄入与图事实查询（轻量企业可用实现）。 |
@@ -396,6 +400,8 @@ sequenceDiagram
 ### 3.3 RAGService（检索）
 
 - `retrieve_context(query, top_k)`：`top_k` 默认取自 `RAGConfig.top_k`（环境变量 `RAG_TOP_K`）。
+- `retrieve_chunks(...)`：混合检索 + RRF + CrossEncoder 重排；**figure 开启时**在返回前调用 `expand_related_figures`（缓解漏召）。
+- 可选 `query_image_url`：配合 `RAG_QUERY_VISION_AUGMENT_ENABLED` 做查询侧 VLM 增强（**§3.4.2**）。
 - 流程：问题嵌入 → 向量库 Top-K → 返回文本列表，供 Prompt 拼接。
 
 ### 3.4 RAGIngestionService（摄入）
@@ -404,6 +410,32 @@ sequenceDiagram
 - **数据集元数据**：进程内 `RAGDatasetMeta` 字典（`dataset_id`、条数、`namespace` 等），重启不持久化；生产可扩展为 DB/配置中心。
 - **GraphRAG**：当 `RAGConfig.graph.enabled == true`（`GRAPH_RAG_ENABLED=true`）时，构造 `GraphIngestionService`；摄入后通过 `post_index_hook` 调用 `ingest_from_chunks`。图写入失败仅打日志，**不中断**向量摄入。
 - **版本与删除一致性**：图侧 chunk 节点携带 `doc_name/doc_version/doc_key`，同名同版本重灌会先清理旧图节点；`/documents/delete` 会同步触发图侧清理。
+
+#### 3.4.1 Figure 图块摄入与召回（`RAG_FIGURE_ENABLED`）
+
+> 完整方案、配置与验收见 **`docs/RAG知识库增加图片存储和召回实现方案.md`**。
+
+| 主题 | 说明 |
+|------|------|
+| **总开关** | `false`：与纯文本现网一致；`source_type=image` → `E_FIGURE_DISABLED`；不 expand figure |
+| **统一入口** | `build_chunks_for_document`（orchestrator、upsert 共用） |
+| **独立图** | `source_type=image` → `process_image_document`：存图 + VLM；`manual_caption` 或 **`description`** 跳过 VLM |
+| **内嵌图** | Markdown/MinerU：`![](...)` + `mineru_image_base`；Docx：段落顺序 + `[FIG:n]` 锚点截取邻近正文 |
+| **缓解 2** | figure `text` = 【邻近正文-前/后】+ VLM 描述；`parent_section_path` 来自 Markdown 标题或 Docx Heading |
+| **缓解 1** | `merge_and_link`：`related_figure_ids` / `parent_chunk_id`（**同 section 优先**）；`expand_related_figures` |
+| **索引** | 仍为 ES text chunk；`chunk_id` 作 `ext_id`；`get_chunks_by_ext_ids` 供 expand |
+| **引用** | `chunks_to_rag_context` → `content_type` / `image_url` / `asset_type`（不进 LLM prompt） |
+| **删除** | `delete_by_doc_name` → `RagAssetStorage.delete_by_doc` |
+| **运维** | `GET /rag/assets/presign?key=`；VLM 失败 → `caption_source=failed`，job 可为 `PARTIAL`（`FIGURE_CAPTION_DEGRADED`） |
+
+关键模块：`asset_storage.py`、`vision_caption_service.py`、`document_pipeline/figure_*.py`、`figure_retrieval_expand.py`、`ingest_document.py`。
+
+#### 3.4.2 查询侧多模态增强（阶段 4，可选）
+
+- **开关**：`RAG_QUERY_VISION_AUGMENT_ENABLED`（默认 `false`，与 `RAG_FIGURE_*` 独立）。
+- **模式**：`RAG_QUERY_VISION_AUGMENT_MODE=vision_augmented|hybrid`。
+- **行为**：`POST /rag/query` 请求体可选 `query_image_url`；启用后用 VLM 描述用户附图并增强检索 query（hybrid 为原 query + 增强 query 双路合并）。
+- **实现**：`app/rag/query_vision_augment.py` → `RAGService.retrieve_chunks(..., query_image_url=...)`。
 
 ### 3.5 AgenticRAGService（上层统一检索入口）
 
@@ -508,11 +540,17 @@ sequenceDiagram
 | `RAG_CLEAN_FIX_ENCODING_NOISE` | 是否修复常见编码噪音/乱码碎片 | `true` |
 | `RAG_CLEAN_MIN_REPEATED_LINE_PAGES` | 判定重复页眉页脚所需最小页数 | `2` |
 | `RAG_TENANT_ID_DEFAULT` | 可选默认租户（幂等键扩展） | 空 |
+| `RAG_FIGURE_ENABLED` | 图块摄入/召回总开关 | `false` |
+| `RAG_FIGURE_MINIO_BUCKET` | figure 图片 MinIO bucket | `rag-assets` |
+| `RAG_FIGURE_*` | VLM 描述、邻近正文、召回扩展等（见 `.env.example`） | 见文档 |
+| `RAG_QUERY_VISION_AUGMENT_ENABLED` | 查询时附图增强 RAG | `false` |
+| `RAG_QUERY_VISION_AUGMENT_MODE` | `vision_augmented` / `hybrid` | `vision_augmented` |
 
 检索侧标准结构：`RAGService.retrieve_chunks()` → `RetrievedChunk`；`AgenticRAGService.RAGResult.chunks` 携带同构结果便于 trace。
 
 文档处理侧（`app/rag/document_pipeline/*`）：
-- `DocumentParser` 支持 `text/markdown/html/pdf/docx`；其中 `pdf/docx` 支持“本地文件路径或 file:// 路径”直接解析（`pypdf` / `python-docx`），也兼容“上游已提取纯文本”的旧模式。
+- `DocumentParser` 支持 `text/markdown/html/pdf/docx`；其中 `pdf/docx` 支持“本地文件路径或 file:// 路径”直接解析（`pypdf` / `python-docx`），也兼容“上游已提取纯文本”的旧模式；**`image` 类型不在 parser 层解析二进制**。
+- `build_chunks_for_document`：在 `RAG_FIGURE_ENABLED=true` 时合并正文 chunk 与 figure chunk（见 **§3.4.1**）。
 - `TextCleaner` 支持清洗档位 `strict/normal/light`，由 `RAG_CLEANING_PROFILE` 驱动。
 - 企业级增强：支持跨页重复页眉/页脚识别清理、重复段合并、常见编码噪音修复（均可配置开关）。
 - `DocumentPipeline` 支持策略标识 `structure/semantic/window`，由 `RAG_DEFAULT_CHUNK_STRATEGY` 驱动。
@@ -604,9 +642,16 @@ sequenceDiagram
   行为：批量原始文档摄入（服务端自动清洗与切块）。
 
 - **`POST /rag/jobs/ingest`**
-  Body：`documents[]`（原始文档）+ `operator` + 切块参数。  
-  行为：提交异步摄入任务，后台按 8 步执行：
-  `validate_input -> parse -> clean -> chunk -> enrich -> index -> quality_check -> finalize_alias_version`，返回 `job_id`。
+  Body：`documents[]`（原始文档）+ `operator` + 切块参数；`source_type` 支持 **`image`**（需 `RAG_FIGURE_ENABLED`）。  
+  行为：提交异步摄入任务，后台按 8 步执行（`image` 文档在 `vision_caption` 后直接进入 index）；返回 `job_id`。
+
+- **`GET /rag/assets/presign`**
+  Query：`key`（MinIO object key）。  
+  行为：刷新 figure 预签名 GET URL（预签名过期后前端可调用）。
+
+- **`POST /rag/query`**
+  Body：`query`、可选 `namespace`/`top_k`/`scene`、可选 **`query_image_url`**（需 `RAG_QUERY_VISION_AUGMENT_ENABLED`）。  
+  行为：调试检索，返回 `snippets`；figure 命中时 snippet 含邻近正文+VLM 描述文本。
 
 - **`GET /rag/jobs/{job_id}`**
   行为：查询任务状态（`PENDING/RUNNING/SUCCESS/FAILED/PARTIAL`）与步骤、指标、错误信息（含 step 耗时与 doc 级错误码）。
@@ -646,6 +691,8 @@ sequenceDiagram
 
 - **常见任务错误码**
   - `E_CHUNK_EMPTY`：文档清洗/切块后无有效 chunk（常见于输入为空或切块阈值配置不合理）。
+  - `E_FIGURE_DISABLED`：`RAG_FIGURE_ENABLED=false` 时提交 `source_type=image`。
+  - `FIGURE_CAPTION_DEGRADED`：文档摄入成功但部分 figure VLM 失败，job 状态为 `PARTIAL`。
   - `E_INGEST_UNKNOWN`：摄入阶段未知异常（需结合 `error_message` 与服务日志定位）。
   - `PARTIAL_FAILED`：部分文档失败，可按文档粒度排查并重试。
   - `ALL_DOCS_FAILED`：全部文档失败，优先排查模型、ES/EasySearch 连通性与权限。
@@ -664,6 +711,7 @@ sequenceDiagram
 
 - **建议的一致性回归脚本（第七批）**
   - `app/test_scripts/rag/rag_migration_consistency_e2e.py`
+  - `app/test_scripts/rag/rag_doc_lifecycle_e2e.py`（文档生命周期；**`--figure`** 为独立图 E2E，需 `RAG_FIGURE_ENABLED=true`）
   - 验收口径：migration 前后同一 query 的结果 overlap ratio 不低于阈值（默认 `0.6`）。
   - 样本管理：支持 `--cases-file` 指定 JSON 基线样本（默认 `app/test_scripts/rag/migration_consistency_cases.json`）。
   - 场景评测：query 可按 `scene` 独立配置（`llm_inference/chatbot/analysis/nl2sql`）。
@@ -753,6 +801,7 @@ pip install -r requirements-大模型应用.txt
 | ES 索引版本迁移机制 | 版本化物理索引 + alias 切换，避免直接改线上索引 | 已完成 |
 | 关键错误可观测 | API 层异常日志明确，返回可读错误信息 | 已完成 |
 | 基础自动化验证 | 单元测试 + E2E API 脚本可运行 | 已完成 |
+| Figure 图块（可选） | 开 `RAG_FIGURE_ENABLED` 后独立图/内嵌图/expand/citation；单测 + `--figure` E2E | 已完成（staging 漏召回归待补） |
 | 管理接口鉴权 | `/rag/*` 管理面鉴权、权限控制、审计 | 待补充 |
 | 目标环境压测通过 | 关键链路 QPS/P95/P99、错误率达到上线阈值 | 待补充 |
 | 上线回滚预案 | alias 回切、索引回退、数据重建方案验证通过 | 待补充 |

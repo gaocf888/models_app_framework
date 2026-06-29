@@ -13,6 +13,7 @@ from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.rag.document_repository import DocumentRepository, make_document_storage_key
 from app.rag.document_pipeline import ChunkingConfig, DocumentPipeline
+from app.rag.document_pipeline.ingest_document import build_chunks_for_document
 from app.rag.ingestion import RAGIngestionService
 from app.rag.ingestion_job_queue import IngestionJobQueue
 from app.rag.job_repository import JobRepository
@@ -93,7 +94,8 @@ class IngestionOrchestrator:
                 "documents_success": 0,
                 "documents_failed": 0,
                 "chunks_total": 0,
-                "step_durations_ms": {},
+                "step_durations_ms": [],
+                "doc_stats": [],
             },
         )
         with self._lock:
@@ -354,17 +356,37 @@ class IngestionOrchestrator:
                     self._set_job_step(job, "mineru_parse")
                     self._record_step_ms(job, doc.doc_name, "mineru_parse", int(mineru_wall_s * 1000))
 
-                staged = pipeline.process_document_staged(doc)
-                chunks = staged["chunks"]
-                stats = staged["stats"]
-                stage_durations = staged.get("stage_durations_ms") or {}
+                ingest_cfg = get_app_config().rag.ingestion
+                if not ingest_cfg.figure_enabled and (doc.source_type or "").lower() == "image":
+                    raise ValueError("E_FIGURE_DISABLED: set RAG_FIGURE_ENABLED=true to ingest images")
+
+                if (doc.source_type or "").lower() == "image":
+                    self._set_job_step(job, "vision_caption")
+
+                chunks, stats, figure_metrics = build_chunks_for_document(doc, pipeline)
+                if figure_metrics:
+                    with self._lock:
+                        job.metrics.setdefault("figure_count", 0)
+                        job.metrics["figure_count"] = job.metrics.get("figure_count", 0) + int(
+                            figure_metrics.get("figure_count") or 0
+                        )
+                        if figure_metrics.get("vlm_caption_ms"):
+                            job.metrics["vlm_caption_ms"] = figure_metrics.get("vlm_caption_ms")
+                        if int(figure_metrics.get("caption_failed_count") or 0) > 0:
+                            job.metrics["figure_caption_degraded"] = True
+                            job.metrics["caption_failed_count"] = job.metrics.get("caption_failed_count", 0) + int(
+                                figure_metrics.get("caption_failed_count") or 0
+                            )
                 if not chunks:
                     raise ValueError(f"E_CHUNK_EMPTY: no chunks generated for doc={doc.doc_name}")
 
-                # 显式记录 parse/clean/chunk/enrich 四个步骤
-                for step_name in ("parse", "clean", "chunk", "enrich"):
-                    self._set_job_step(job, step_name)
-                    self._record_step_ms(job, doc.doc_name, step_name, int(stage_durations.get(step_name, 0)))
+                stage_durations = stats.get("stage_durations_ms") or {}
+                if (doc.source_type or "").lower() != "image":
+                    for step_name in ("parse", "clean", "chunk", "enrich"):
+                        self._set_job_step(job, step_name)
+                        self._record_step_ms(job, doc.doc_name, step_name, int(stage_durations.get(step_name, 0)))
+                else:
+                    pass
 
                 self._set_job_step(job, "index")
                 t1 = time.perf_counter()
@@ -425,7 +447,7 @@ class IngestionOrchestrator:
                 with self._lock:
                     job.metrics["documents_success"] += 1
                     job.metrics["chunks_total"] += len(chunks)
-                    job.metrics[f"doc_stats:{doc.doc_name}"] = stats
+                    self._upsert_doc_stats(job, doc.doc_name, stats)
                     job.updated_at = utcnow_iso()
                     self._save_state()
                     self._save_job_record(job)
@@ -477,9 +499,14 @@ class IngestionOrchestrator:
         with self._lock:
             job.step = "finalize"
             if failed == 0:
-                job.status = IngestionJobStatus.SUCCESS
-                job.error_code = None
-                job.error_message = None
+                if job.metrics.get("figure_caption_degraded"):
+                    job.status = IngestionJobStatus.PARTIAL
+                    job.error_code = "FIGURE_CAPTION_DEGRADED"
+                    job.error_message = "Some figure chunks used fallback captions (VLM failed)"
+                else:
+                    job.status = IngestionJobStatus.SUCCESS
+                    job.error_code = None
+                    job.error_message = None
             elif failed == len(job.documents):
                 job.status = IngestionJobStatus.FAILED
                 job.error_code = "ALL_DOCS_FAILED"
@@ -502,9 +529,79 @@ class IngestionOrchestrator:
 
     def _record_step_ms(self, job: IngestionJob, doc_name: str, step: str, elapsed_ms: int) -> None:
         with self._lock:
-            job.metrics["step_durations_ms"][f"{doc_name}:{step}"] = int(max(0, elapsed_ms))
+            entries = self._step_duration_entries(job)
+            ms = int(max(0, elapsed_ms))
+            for item in entries:
+                if item.get("doc_name") == doc_name and item.get("step") == step:
+                    item["ms"] = ms
+                    break
+            else:
+                entries.append({"doc_name": doc_name, "step": step, "ms": ms})
+            job.metrics["step_durations_ms"] = entries
             self._save_state()
             self._save_job_record(job)
+
+    @staticmethod
+    def _step_duration_entries(job: IngestionJob) -> list[dict]:
+        raw = (job.metrics or {}).get("step_durations_ms")
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, dict):
+            migrated = [
+                {
+                    "doc_name": str(k).split(":", 1)[0],
+                    "step": str(k).split(":", 1)[1] if ":" in str(k) else str(k),
+                    "ms": int(v),
+                }
+                for k, v in raw.items()
+            ]
+            job.metrics["step_durations_ms"] = migrated
+            return migrated
+        job.metrics["step_durations_ms"] = []
+        return job.metrics["step_durations_ms"]
+
+    @staticmethod
+    def _upsert_doc_stats(job: IngestionJob, doc_name: str, stats: dict) -> None:
+        raw = job.metrics.get("doc_stats")
+        if not isinstance(raw, list):
+            raw = []
+            for key, value in list((job.metrics or {}).items()):
+                if str(key).startswith("doc_stats:"):
+                    raw.append({"doc_name": str(key)[len("doc_stats:") :], "stats": value})
+                    job.metrics.pop(key, None)
+        for item in raw:
+            if item.get("doc_name") == doc_name:
+                item["stats"] = stats
+                break
+        else:
+            raw.append({"doc_name": doc_name, "stats": stats})
+        job.metrics["doc_stats"] = raw
+
+    @staticmethod
+    def _normalize_job_metrics(metrics: dict | None) -> dict:
+        """读取持久化 job 时，将旧版 metrics 结构规范化为固定 schema。"""
+        m = dict(metrics or {})
+        sdm = m.get("step_durations_ms")
+        if isinstance(sdm, dict):
+            m["step_durations_ms"] = [
+                {
+                    "doc_name": str(k).split(":", 1)[0],
+                    "step": str(k).split(":", 1)[1] if ":" in str(k) else str(k),
+                    "ms": int(v),
+                }
+                for k, v in sdm.items()
+            ]
+        elif not isinstance(sdm, list):
+            m["step_durations_ms"] = []
+        if not isinstance(m.get("doc_stats"), list):
+            migrated: list[dict] = []
+            for key in list(m.keys()):
+                if str(key).startswith("doc_stats:"):
+                    migrated.append({"doc_name": str(key)[len("doc_stats:") :], "stats": m.pop(key)})
+            m["doc_stats"] = migrated
+        if not isinstance(m.get("doc_errors"), list):
+            m["doc_errors"] = []
+        return m
 
     def _resolve_chunk_cfg(self, job: IngestionJob) -> ChunkingConfig:
         raw = (job.metrics or {}).get("chunk_cfg") or {}
@@ -666,7 +763,7 @@ class IngestionOrchestrator:
             finished_at=item.get("finished_at"),
             error_code=item.get("error_code"),
             error_message=item.get("error_message"),
-            metrics=item.get("metrics") or {},
+            metrics=self._normalize_job_metrics(item.get("metrics")),
             operator=item.get("operator"),
         )
 

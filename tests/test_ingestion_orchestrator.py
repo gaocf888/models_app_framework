@@ -62,9 +62,9 @@ class TestIngestionOrchestrator(unittest.TestCase):
                 self.assertIsNotNone(final)
                 self.assertEqual("SUCCESS", final.status.value)
                 self.assertEqual(1, final.metrics.get("documents_success"))
-                steps = final.metrics.get("step_durations_ms") or {}
-                self.assertTrue(any(k.endswith(":parse") for k in steps.keys()))
-                self.assertTrue(any(k.endswith(":quality_check") for k in steps.keys()))
+                steps = final.metrics.get("step_durations_ms") or []
+                self.assertTrue(any(e.get("step") == "parse" for e in steps))
+                self.assertTrue(any(e.get("step") == "quality_check" for e in steps))
             finally:
                 orch.close()
 

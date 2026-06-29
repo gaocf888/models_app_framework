@@ -36,6 +36,14 @@ def _guess_suffix_from_url(url: str, content_type: str | None) -> str:
         return ".docx"
     if "spreadsheetml" in ct:
         return ".xlsx"
+    if "png" in ct:
+        return ".png"
+    if "jpeg" in ct or "jpg" in ct:
+        return ".jpg"
+    if "webp" in ct:
+        return ".webp"
+    if "gif" in ct:
+        return ".gif"
     return ".bin"
 
 
@@ -153,7 +161,7 @@ def fetch_url_bytes(url: str, cfg: RAGContentFetchConfig) -> tuple[bytes, str | 
 
 def _should_fetch_as_file(source_type: str) -> bool:
     st = (source_type or "text").lower()
-    return st in {"pdf", "docx", "doc", "xlsx", "xlsm"}
+    return st in {"pdf", "docx", "doc", "xlsx", "xlsm", "image", "png", "jpg", "jpeg", "webp", "gif"}
 
 
 def materialize_document_content_from_url(doc: DocumentSource) -> tuple[DocumentSource, Path | None]:

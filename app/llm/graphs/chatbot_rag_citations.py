@@ -170,6 +170,12 @@ def chunks_to_rag_context(
         orig_url = _original_content_url_from_chunk_metadata(c.metadata)
         if orig_url:
             item["original_content_url"] = orig_url
+        meta = c.metadata if isinstance(c.metadata, dict) else {}
+        if meta.get("content_type") == "figure" and meta.get("image_url"):
+            item["content_type"] = "figure"
+            item["image_url"] = meta["image_url"]
+            if meta.get("asset_type"):
+                item["asset_type"] = meta["asset_type"]
         citations.append(item)
         snippets.append(_format_numbered_llm_snippet(ref_index, c))
     return snippets, citations

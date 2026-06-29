@@ -573,20 +573,83 @@ data: {"finished":true,"meta":{"status":"answered","intent_label":"kb_qa","retri
 
 ---
 
-## 5. 日常运维常用命令
+## 5. 日常运维
 
-在 `app/app-deploy` 目录：
+> 端口以各目录 `.env` 为准；下表为**默认值**。智能客服值班排障见 `deploy-docs/online-services-oncall-runbook.md`。
+
+### 5.1 组件访问一览
+
+| 组件 | 容器名（默认） | 宿主机访问（浏览器 / curl） | 容器内访问（应用配置用） | 说明 |
+|------|----------------|----------------------------|--------------------------|------|
+| **应用 API** | `models-app` | `http://<host>:${APP_PORT:-8083}` | — | 健康检查：`/health/`；业务接口需 `Authorization: Bearer <SERVICE_API_KEY>` |
+| **应用 API（GPU 小模型）** | `models-app-gpu` | `http://<host>:${APP_PORT_GPU:-8081}` | — | 需 `--profile small-model-gpu` 启动 |
+| **Redis** | `models-app-redis` | 一般不对外暴露 | `redis://redis:6379/0` | 会话历史；无 Web 界面 |
+| **MinIO API** | `models-app-minio` | `http://<host>:${MINIO_PORT:-9000}` | `models-app-minio:9000` | S3 协议；应用上传/预签名走此端口 |
+| **MinIO Console** | `models-app-minio` | **`http://<host>:${MINIO_CONSOLE_PORT:-9001}`** | — | **自带 Web 管理界面**；登录见下表 |
+| **vLLM** | `vllm-service` | `http://<host>:8000/health` | `http://vllm-service:8000/v1` | 大模型推理；`vllm-deploy/` 部署 |
+| **EasySearch（RAG）** | `rag-easysearch` | `https://<host>:9200` | `https://rag-easysearch:9200` | 知识库向量+全文；账号 `RAG_ES_USERNAME` / `RAG_ES_PASSWORD` |
+| **MinerU（可选）** | `mineru-api` | `http://<host>:${MINERU_PORT:-8009}/health` | `http://mineru-api:8000` | 扫描 PDF 解析；API 文档 `/docs` |
+| **Neo4j（可选）** | `graph-neo4j` | `http://<host>:7474` | `bolt://graph-neo4j:7687` | GraphRAG；`graphrag_db-deploy/` |
+| **版面 OCR 侧车（可选）** | `paddleocr-layout-api` | `http://<host>:8010/health` | `http://paddleocr-layout-api:8000` | 检修 V0；`paddleocr-layout-deploy/` |
+
+**MinIO 控制台登录**（`.env` 中 `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`，示例默认 `minioadmin` / `minioadmin123`）：
+
+- 常用 bucket：`chatbot-images`（客服图片）、`rag-assets`（RAG 知识库 figure 图，key 前缀亦为 `rag-assets/`）。
+- **勿在宿主机挂载目录里直接当普通文件打开图片**：MinIO 落盘为 `对象名/xl.meta` 目录结构，属正常格式；预览/下载请用 **Console（9001）** 或预签名 URL。
+
+### 5.2 快速健康检查
 
 ```bash
-# 查看应用日志
+# 应用
+curl -s "http://127.0.0.1:${APP_PORT:-8083}/health/"
+
+# vLLM
+curl -s "http://127.0.0.1:8000/health"
+
+# EasySearch
+curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
+
+# MinIO（API 存活，需 mc 或 Console 看对象）
+curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:${MINIO_PORT:-9000}/minio/health/live"
+```
+
+### 5.3 本栈常用命令
+
+在 `app/app-deploy` 目录（沐曦环境则在 `docker-mx/` 下，compose 文件换为 `docker-compose-mx.yml`）：
+
+```bash
+# 查看状态
+docker compose ps
+
+# 应用日志（stdout + 若开启则含文件日志挂载）
 docker compose logs -f models-app
 
-# 重启应用
+# Redis / MinIO 日志
+docker compose logs -f redis minio
+
+# 重启应用（不动 vLLM / EasySearch 等外挂）
 docker compose restart models-app
 
-# 停止应用栈（不影响 vLLM / EasySearch / Neo4j）
+# 停止本栈（不删 vLLM / EasySearch / Neo4j 数据）
 docker compose down
 ```
+
+GPU 实例曾启动时：
+
+```bash
+docker compose --profile small-model-gpu logs -f models-app-gpu
+docker compose --profile small-model-gpu down
+```
+
+### 5.4 持久化目录（宿主机）
+
+| 环境变量（默认） | 用途 |
+|------------------|------|
+| `REDIS_DATA_HOST_PATH` → `/aidata/data/redis_data` | 会话 Redis 数据 |
+| `MINIO_DATA_HOST_PATH` → `/aidata/data/minio_data` | MinIO 对象数据 |
+| `SESSION_STORAGE_HOST_PATH` | 会话归档本地目录 |
+| `RAG_FAISS_DATA_HOST_PATH` | FAISS 索引（仅 `RAG_VECTOR_STORE_TYPE=faiss`） |
+| `app-deploy/logs`（compose 挂载） | 应用轮转日志（`LOG_FILE_ENABLED=true` 时） |
 
 ---
 
@@ -598,4 +661,4 @@ docker compose down
 - **检修 V0 + 版面侧车**：`framework-guide/报告解析企业级实现方案V0.md`、`enterprise-level_transformation_docs/企业级检修报告结构化提取V0版本实现和使用说明.md`、`paddleocr-layout-deploy/README.md`。  
 - RAG / GraphRAG 细节：`framework-guide/RAG整体实现技术说明.md`。  
 - 底座数据库部署：`rag_db-deploy/README.md`、`graphrag_db-deploy/README.md`。  
-- 大模型服务部署：`vllm-deploy/README.md`。\n
+- 大模型服务部署：`vllm-deploy/README.md`。
