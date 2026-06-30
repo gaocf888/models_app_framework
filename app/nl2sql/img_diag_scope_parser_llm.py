@@ -39,6 +39,12 @@ _DEFAULT_PROMPT = """\
 - 用户问题可能由多段组成：首段为初始问句，其后每段为用户在台账确认环节追加的补充或修正（程序以换行拼接）。
 - 须先读完全部段落再输出 JSON；同一字段若前后不一致，以最后一段（最靠近文末）为准。
 - 用户补充多为口语，须理解语义，不要机械拼接数字。
+- 若用户明确要求 **不解析/去除/不要** 某些可选字段（检测位置、排数、管数），对应 JSON 字段 **必须为 null**，即使问句正文中仍出现相关数字或描述；不得再填默认值（如水冷壁 row_no=1）。
+
+【用户声明排除字段 — 最高优先级】
+- 用户在人机协同补充中说「去除排数和管数」「不要检测位置」「仅核机组和受热面」等，表示 **禁止解析** 对应可选字段。
+- 被排除字段在 JSON 中 **一律为 null**；不得从问句正文回填，也不得应用水冷壁默认 row_no=1。
+- 「仅/只保留机组和受热面」→ check_location_name、row_no、tube_no 均为 null。
 
 【重要约束】
 - 时间语义由程序侧处理；不要因时间词填充 scope。
@@ -139,8 +145,10 @@ def finalize_img_diag_llm_scope(
     *,
     scope_question: str,
     lexicon: ScopeLexicon | None = None,
+    excluded_fields: frozenset[str] | set[str] | None = None,
 ) -> dict[str, Any]:
     lex = lexicon or get_scope_lexicon()
+    ex = frozenset(excluded_fields or ())
     device_name = _normalize_device_name(parsed.device_name, lex)
     check_location = (parsed.check_location_name or "").strip() or None
     row_no = parsed.row_no
@@ -149,8 +157,20 @@ def finalize_img_diag_llm_scope(
     if check_location and device_name and check_location == device_name:
         check_location = None
 
-    if _is_wall_device(device_name, lex) and row_no is None and not _has_explicit_row_no(scope_question):
+    if (
+        "row_no" not in ex
+        and _is_wall_device(device_name, lex)
+        and row_no is None
+        and not _has_explicit_row_no(scope_question)
+    ):
         row_no = 1
+
+    if "check_location_name" in ex:
+        check_location = None
+    if "row_no" in ex:
+        row_no = None
+    if "tube_no" in ex:
+        tube_no = None
 
     return {
         "device_name": device_name,
@@ -181,6 +201,7 @@ async def parse_img_diag_scope_llm_async(
     llm_client: VLLMHttpClient | None = None,
     prompt_registry: PromptTemplateRegistry | None = None,
     lexicon: ScopeLexicon | None = None,
+    excluded_fields: frozenset[str] | set[str] | None = None,
 ) -> dict[str, Any]:
     q = (scope_question or "").strip()
     if not q:
@@ -204,7 +225,12 @@ async def parse_img_diag_scope_llm_async(
         raise ScopeParseLLMError(f"LLM call failed: {exc}") from exc
 
     parsed = parse_img_diag_scope_llm_output(raw)
-    return finalize_img_diag_llm_scope(parsed, scope_question=q, lexicon=lexicon)
+    return finalize_img_diag_llm_scope(
+        parsed,
+        scope_question=q,
+        lexicon=lexicon,
+        excluded_fields=excluded_fields,
+    )
 
 
 def parse_img_diag_scope_llm_sync(
@@ -213,6 +239,7 @@ def parse_img_diag_scope_llm_sync(
     llm_client: VLLMHttpClient | None = None,
     prompt_registry: PromptTemplateRegistry | None = None,
     lexicon: ScopeLexicon | None = None,
+    excluded_fields: frozenset[str] | set[str] | None = None,
 ) -> dict[str, Any]:
     try:
         asyncio.get_running_loop()
@@ -223,6 +250,7 @@ def parse_img_diag_scope_llm_sync(
                 llm_client=llm_client,
                 prompt_registry=prompt_registry,
                 lexicon=lexicon,
+                excluded_fields=excluded_fields,
             )
         )
 
@@ -234,6 +262,7 @@ def parse_img_diag_scope_llm_sync(
                 llm_client=llm_client,
                 prompt_registry=prompt_registry,
                 lexicon=lexicon,
+                excluded_fields=excluded_fields,
             ),
         )
         return future.result()

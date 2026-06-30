@@ -33,6 +33,10 @@ SCOPE_HITL_DB_NOT_MATCHED_PROMPT = (
     "业务库中未匹配到下面台账信息，请确认机组、受热面、检测位置、排数、管数是否准确"
 )
 
+SCOPE_HITL_DB_MATCHED_PROMPT = (
+    "以下为解析且业务库匹配成功的台账信息，请确认是否准确"
+)
+
 SCOPE_HITL_RELAXED_PROMPT = (
     "业务库未匹配到最细粒度范围，系统已自动放宽范围条件后继续查询；"
     "请确认下列台账信息，或修改后重新提交"

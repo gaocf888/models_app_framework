@@ -211,6 +211,43 @@ def test_resolve_question_intent_human_confirmed() -> None:
     assert intent.scope.row_no == 3
 
 
+def test_scope_auto_relax_allowed_default_off() -> None:
+    from app.llm.graphs.img_diag_scope_graph import scope_auto_relax_allowed
+
+    with patch("app.llm.graphs.img_diag_scope_graph._cfg") as mock_cfg:
+        mock_cfg.return_value.img_diag_scope_auto_relax_enabled = False
+        assert scope_auto_relax_allowed(hitl_rounds=0) is False
+        assert scope_auto_relax_allowed(hitl_rounds=2) is False
+        assert scope_auto_relax_allowed(hitl_rounds=5) is False
+
+
+def test_scope_auto_relax_allowed_when_enabled_after_two_rounds() -> None:
+    from app.llm.graphs.img_diag_scope_graph import scope_auto_relax_allowed
+
+    with patch("app.llm.graphs.img_diag_scope_graph._cfg") as mock_cfg:
+        mock_cfg.return_value.img_diag_scope_auto_relax_enabled = True
+        assert scope_auto_relax_allowed(hitl_rounds=1) is False
+        assert scope_auto_relax_allowed(hitl_rounds=2) is True
+
+
+def test_scope_draft_to_display_omits_unparsed_null_fields() -> None:
+    from app.llm.graphs.img_diag_scope_display import scope_draft_to_display
+
+    display = scope_draft_to_display(
+        {
+            "boiler": "1号锅炉",
+            "device_name": "水冷壁螺旋段前墙",
+            "check_location_name": None,
+            "row_no": None,
+            "tube_no": None,
+        }
+    )
+    assert display == {"机组": "1号锅炉", "受热面": "水冷壁螺旋段前墙"}
+    assert "检测位置" not in display
+    assert "排数" not in display
+    assert "管数" not in display
+
+
 @pytest.mark.asyncio
 async def test_validate_scope_with_relaxation_auto() -> None:
     calls: list[dict] = []
@@ -245,6 +282,34 @@ async def test_validate_scope_with_relaxation_auto() -> None:
 
 
 @pytest.mark.asyncio
+async def test_validate_scope_with_relaxation_disabled() -> None:
+    calls: list[dict] = []
+
+    async def fake_validate(scope: dict, *, executor=None):
+        calls.append(dict(scope))
+        return 0, None
+
+    with patch(
+        "app.llm.graphs.img_diag_scope_validate.validate_scope_in_catalog",
+        side_effect=fake_validate,
+    ):
+        count, effective, relaxed, err = await validate_scope_with_relaxation(
+            {
+                "boiler": "1号锅炉",
+                "device_name": "低过",
+                "check_location_name": "第一层",
+                "row_no": 2,
+                "tube_no": 3,
+            },
+            allow_auto_relax=False,
+        )
+    assert count == 0
+    assert len(calls) == 1
+    assert effective["tube_no"] == 3
+    assert relaxed == []
+
+
+@pytest.mark.asyncio
 async def test_validate_scope_skip_on_error() -> None:
     from app.llm.graphs.img_diag_scope_validate import validate_scope_in_catalog
 
@@ -258,3 +323,239 @@ async def test_validate_scope_skip_on_error() -> None:
         )
     assert count == 1
     assert err is None
+
+
+def test_detect_scope_field_exclusions_from_text() -> None:
+    from app.llm.graphs.img_diag_scope_exclusions import (
+        detect_scope_field_exclusions_from_text,
+    )
+
+    ex = detect_scope_field_exclusions_from_text("去除排数和管数")
+    assert ex == frozenset({"row_no", "tube_no"})
+    ex2 = detect_scope_field_exclusions_from_text("不要检测位置")
+    assert ex2 == frozenset({"check_location_name"})
+    ex3 = detect_scope_field_exclusions_from_text("仅按机组和受热面核对")
+    assert ex3 == frozenset({"check_location_name", "row_no", "tube_no"})
+
+
+def test_finalize_img_diag_llm_scope_respects_excluded_row_no() -> None:
+    from app.nl2sql.img_diag_scope_parser_llm import (
+        ImgDiagScopeParseLLMOutput,
+        finalize_img_diag_llm_scope,
+    )
+
+    parsed = ImgDiagScopeParseLLMOutput(
+        device_name="水冷壁",
+        check_location_name="右墙A2",
+        row_no=None,
+        tube_no=56,
+    )
+    out = finalize_img_diag_llm_scope(
+        parsed,
+        scope_question="1号锅炉水冷壁右墙A2第56根管",
+        excluded_fields=frozenset({"row_no", "tube_no"}),
+    )
+    assert out["row_no"] is None
+    assert out["tube_no"] is None
+    assert out["check_location_name"] == "右墙A2"
+
+
+def test_parse_img_diag_scope_draft_applies_field_exclusions() -> None:
+    llm_out = {
+        "device_name": "水冷壁螺旋段前墙",
+        "check_location_name": "吹灰孔33",
+        "row_no": 1,
+        "tube_no": 56,
+    }
+    with patch(
+        "app.llm.graphs.img_diag_scope_intent.parse_img_diag_scope_llm_sync",
+        return_value=llm_out,
+    ):
+        draft = parse_img_diag_scope_draft(
+            "1号锅炉水冷壁螺旋段前墙吹灰孔33第56根管\n去除排数和管数",
+            scope_field_exclusions=frozenset({"row_no", "tube_no"}),
+        )
+    assert draft.row_no is None
+    assert draft.tube_no is None
+    assert draft.check_location_name == "吹灰孔33"
+
+
+def test_apply_human_scope_response_records_field_exclusions() -> None:
+    from app.llm.graphs.img_diag_scope_graph import _apply_human_scope_response
+
+    state = {
+        "query": "1号锅炉水冷壁螺旋段前墙吹灰孔33第56根管",
+        "scope_cumulative_text": "1号锅炉水冷壁螺旋段前墙吹灰孔33第56根管",
+        "scope_draft": {
+            "boiler": "1号锅炉",
+            "device_name": "水冷壁螺旋段前墙",
+            "check_location_name": "吹灰孔33",
+            "row_no": 1,
+            "tube_no": 56,
+        },
+    }
+    updated = _apply_human_scope_response(
+        state,
+        {"action": "edit_scope", "payload": {"user_supplement": "去除排数和管数"}},
+    )
+    assert updated["scope_field_exclusions"] == ["row_no", "tube_no"]
+    assert updated["scope_draft"]["row_no"] is None
+    assert updated["scope_draft"]["tube_no"] is None
+    assert updated["scope_draft"]["check_location_name"] == "吹灰孔33"
+
+
+def test_scope_hitl_db_matched_prompt() -> None:
+    from app.llm.graphs.img_diag_scope_display import (
+        SCOPE_HITL_DB_MATCHED_PROMPT,
+        SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
+    )
+
+    assert "匹配成功" in SCOPE_HITL_DB_MATCHED_PROMPT
+    assert SCOPE_HITL_DB_MATCHED_PROMPT != SCOPE_HITL_DB_NOT_MATCHED_PROMPT
+
+
+def test_route_after_validate_pending_matched_confirm() -> None:
+    from app.llm.graphs.img_diag_scope_graph import _route_after_validate
+
+    assert _route_after_validate({"pending_matched_confirm": True}) == "scope_human_confirm"
+
+
+def test_matched_confirm_response_reruns_preflight_not_finalize() -> None:
+    from app.llm.graphs.img_diag_scope_graph import _apply_human_scope_response
+
+    state = {
+        "pending_matched_confirm": True,
+        "scope_cumulative_text": "1号锅炉低温过热器",
+        "scope_draft": {
+            "boiler": "1号锅炉",
+            "device_name": "低温过热器",
+            "check_location_name": None,
+            "row_no": None,
+            "tube_no": None,
+        },
+    }
+    updated = _apply_human_scope_response(
+        state,
+        {"action": "confirm_scope", "payload": {}},
+    )
+    assert not updated.get("pending_matched_confirm")
+    assert not updated.get("confirmed_scope_intent")
+    assert not updated.get("scope_intent_text")
+
+
+def test_matched_confirm_with_correction_appends_cumulative() -> None:
+    from app.llm.graphs.img_diag_scope_graph import _apply_human_scope_response
+
+    state = {
+        "pending_matched_confirm": True,
+        "scope_cumulative_text": "1号锅炉水冷壁螺旋段前墙吹灰孔33第56根管",
+        "scope_draft": {
+            "boiler": "1号锅炉",
+            "device_name": "水冷壁螺旋段前墙",
+            "check_location_name": "吹灰孔33",
+            "row_no": 1,
+            "tube_no": 56,
+        },
+    }
+    updated = _apply_human_scope_response(
+        state,
+        {
+            "action": "edit_scope",
+            "payload": {"user_supplement": "检测位置应为吹灰孔33"},
+        },
+    )
+    assert not updated.get("pending_matched_confirm")
+    assert "检测位置应为吹灰孔33" in (updated.get("scope_cumulative_text") or "")
+    assert not updated.get("confirmed_scope_intent")
+
+
+@pytest.mark.asyncio
+async def test_db_validate_first_success_sets_pending_matched_confirm() -> None:
+    from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
+
+    nodes = make_img_diag_scope_nodes()
+    db_validate = nodes["scope_db_validate"]
+    state = {
+        "scope_draft": {
+            "boiler": "1号锅炉",
+            "device_name": "低温过热器",
+            "check_location_name": None,
+            "row_no": None,
+            "tube_no": None,
+        },
+        "scope_cumulative_text": "1号锅炉低温过热器",
+        "hitl_rounds": 0,
+    }
+    with patch(
+        "app.llm.graphs.img_diag_scope_graph.validate_scope_with_relaxation",
+        new_callable=AsyncMock,
+        return_value=(1, {"boiler": "1号锅炉", "device_name": "低温过热器"}, [], None),
+    ), patch(
+        "app.llm.graphs.img_diag_scope_graph._scope_matched_confirm_enabled",
+        return_value=True,
+    ):
+        out = await db_validate(state)
+    assert out.get("pending_matched_confirm") is True
+    assert out.get("interrupt_reason") == "db_validate_matched"
+    assert out.get("human_prompt") and "匹配成功" in out["human_prompt"]
+    assert not out.get("confirmed_scope_intent")
+
+
+@pytest.mark.asyncio
+async def test_db_validate_after_hitl_skips_matched_confirm() -> None:
+    from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
+
+    nodes = make_img_diag_scope_nodes()
+    db_validate = nodes["scope_db_validate"]
+    state = {
+        "scope_draft": {
+            "boiler": "1号锅炉",
+            "device_name": "低温过热器",
+            "check_location_name": None,
+            "row_no": None,
+            "tube_no": None,
+        },
+        "scope_cumulative_text": "1号锅炉低温过热器",
+        "hitl_rounds": 1,
+    }
+    with patch(
+        "app.llm.graphs.img_diag_scope_graph.validate_scope_with_relaxation",
+        new_callable=AsyncMock,
+        return_value=(1, {"boiler": "1号锅炉", "device_name": "低温过热器"}, [], None),
+    ), patch(
+        "app.llm.graphs.img_diag_scope_graph._scope_matched_confirm_enabled",
+        return_value=True,
+    ):
+        out = await db_validate(state)
+    assert not out.get("pending_matched_confirm")
+    assert out.get("confirmed_scope_intent", {}).get("boiler") == "1号锅炉"
+    assert out.get("scope_intent_text")
+
+
+@pytest.mark.asyncio
+async def test_db_validate_matched_confirm_disabled() -> None:
+    from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
+
+    nodes = make_img_diag_scope_nodes()
+    db_validate = nodes["scope_db_validate"]
+    state = {
+        "scope_draft": {
+            "boiler": "1号锅炉",
+            "device_name": "低温过热器",
+        },
+        "scope_cumulative_text": "1号锅炉低温过热器",
+        "hitl_rounds": 0,
+    }
+    with patch(
+        "app.llm.graphs.img_diag_scope_graph.validate_scope_with_relaxation",
+        new_callable=AsyncMock,
+        return_value=(1, {"boiler": "1号锅炉", "device_name": "低温过热器"}, [], None),
+    ), patch(
+        "app.llm.graphs.img_diag_scope_graph._scope_matched_confirm_enabled",
+        return_value=False,
+    ):
+        out = await db_validate(state)
+    assert not out.get("pending_matched_confirm")
+    assert out.get("confirmed_scope_intent")
+
+

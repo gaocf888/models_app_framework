@@ -178,9 +178,11 @@ def parse_img_diag_scope_draft(
     *,
     llm_client: Any | None = None,
     prompt_registry: Any | None = None,
+    scope_field_exclusions: frozenset[str] | set[str] | None = None,
 ) -> ImgDiagScopeDraft:
     """第一层：看图诊断专用 LLM 解析 + 锅炉规则覆盖 + 时间程序解析。"""
     q = (scope_question or "").strip()
+    excluded = frozenset(scope_field_exclusions or ())
     rule_scope = parse_scope_rule(q)
     time_meta = _extract_time_meta(q)
     try:
@@ -188,6 +190,7 @@ def parse_img_diag_scope_draft(
             q,
             llm_client=llm_client,
             prompt_registry=prompt_registry,
+            excluded_fields=excluded,
         )
     except ScopeParseLLMError:
         llm_fields = {
@@ -199,7 +202,8 @@ def parse_img_diag_scope_draft(
     boiler = NL2SQLChain._extract_unit_keyword_from_question(q) or rule_scope.boiler
     device_name = llm_fields.get("device_name") or rule_scope.device_name
     confidence, reasons = _assess_confidence(rule_scope=rule_scope, llm_device=llm_fields.get("device_name"))
-    return ImgDiagScopeDraft(
+
+    draft = ImgDiagScopeDraft(
         boiler=boiler,
         device_name=device_name,
         check_location_name=llm_fields.get("check_location_name"),
@@ -208,6 +212,28 @@ def parse_img_diag_scope_draft(
         confidence=confidence,
         confidence_reasons=reasons,
         time_meta=time_meta,
+    )
+    return apply_scope_field_exclusions_to_draft(draft, excluded)
+
+
+def apply_scope_field_exclusions_to_draft(
+    draft: ImgDiagScopeDraft,
+    excluded: frozenset[str] | set[str],
+) -> ImgDiagScopeDraft:
+    if not excluded:
+        return draft
+    ex = set(excluded)
+    return ImgDiagScopeDraft(
+        boiler=draft.boiler,
+        device_name=draft.device_name,
+        check_location_name=(
+            None if "check_location_name" in ex else draft.check_location_name
+        ),
+        row_no=None if "row_no" in ex else draft.row_no,
+        tube_no=None if "tube_no" in ex else draft.tube_no,
+        confidence=draft.confidence,
+        confidence_reasons=draft.confidence_reasons,
+        time_meta=draft.time_meta,
     )
 
 

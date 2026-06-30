@@ -13,14 +13,21 @@ from app.llm.graphs.img_diag_checkpoint import (
     img_diag_graph_configurable,
 )
 from app.llm.graphs.img_diag_scope_display import (
+    SCOPE_HITL_DB_MATCHED_PROMPT,
     SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
     format_missing_fields_cn,
     normalize_scope_patch_keys,
     scope_draft_to_display,
     scope_field_label,
 )
+from app.llm.graphs.img_diag_scope_exclusions import (
+    detect_scope_field_exclusions_from_patch,
+    detect_scope_field_exclusions_from_text,
+    merge_scope_field_exclusions,
+)
 from app.llm.graphs.img_diag_scope_intent import (
     ImgDiagScopeDraft,
+    apply_scope_field_exclusions_to_draft,
     apply_scope_patch,
     build_scope_intent_text,
     confirmed_scope_from_draft,
@@ -62,6 +69,8 @@ class ImgDiagScopeGraphState(TypedDict, total=False):
     scope_intent_text: str
     human_interactions: list[dict[str, Any]]
     scope_relaxed_fields: list[str]
+    scope_field_exclusions: list[str]
+    pending_matched_confirm: bool
     human_prompt: str
     human_suggested_actions: list[str]
     missing_fields: list[str]
@@ -74,6 +83,22 @@ def _cfg():
 
 def _max_hitl_rounds() -> int:
     return max(1, int(getattr(_cfg(), "img_diag_scope_hitl_max_rounds", 5)))
+
+
+def scope_auto_relax_allowed(*, hitl_rounds: int) -> bool:
+    """
+    是否允许库表校验失败后自动放宽 scope 细粒度字段。
+
+    默认关闭（ANALYSIS_IMG_DIAG_SCOPE_AUTO_RELAX_ENABLED=false）；
+    开启时保持旧行为：至少 2 轮人机后再逐级去掉 tube_no → row_no → check_location_name。
+    """
+    if not bool(getattr(_cfg(), "img_diag_scope_auto_relax_enabled", False)):
+        return False
+    return int(hitl_rounds or 0) >= 2
+
+
+def _scope_matched_confirm_enabled() -> bool:
+    return bool(getattr(_cfg(), "img_diag_scope_matched_confirm_enabled", True))
 
 
 def _draft_from_state(state: ImgDiagScopeGraphState) -> ImgDiagScopeDraft:
@@ -127,16 +152,36 @@ def _apply_human_scope_response(
         state["abort_reason"] = str(payload.get("reason") or "user aborted scope confirm")
         return state
     supplement = str(payload.get("user_supplement") or "").strip()
+    patch = payload.get("scope_patch")
+    new_excluded: set[str] = set()
+    if supplement:
+        new_excluded |= set(detect_scope_field_exclusions_from_text(supplement))
+    if isinstance(patch, dict):
+        patch = normalize_scope_patch_keys(patch)
+        new_excluded |= set(detect_scope_field_exclusions_from_patch(patch))
+    if new_excluded:
+        state["scope_field_exclusions"] = merge_scope_field_exclusions(
+            state.get("scope_field_exclusions"),
+            frozenset(new_excluded),
+        )
     if supplement:
         cumulative = (state.get("scope_cumulative_text") or state.get("query") or "").strip()
         state["scope_cumulative_text"] = f"{cumulative}\n{supplement}".strip()
-    patch = payload.get("scope_patch")
     if isinstance(patch, dict) and state.get("scope_draft"):
-        patch = normalize_scope_patch_keys(patch)
         dd = state["scope_draft"]
         tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
         draft = draft_from_scope_dict(dd, time_meta=tm)
-        state["scope_draft"] = apply_scope_patch(draft, patch).to_dict()
+        draft = apply_scope_patch(draft, patch)
+        excluded = frozenset(state.get("scope_field_exclusions") or ())
+        state["scope_draft"] = apply_scope_field_exclusions_to_draft(draft, excluded).to_dict()
+    elif state.get("scope_draft") and state.get("scope_field_exclusions"):
+        dd = state["scope_draft"]
+        tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
+        draft = draft_from_scope_dict(dd, time_meta=tm)
+        excluded = frozenset(state.get("scope_field_exclusions") or ())
+        state["scope_draft"] = apply_scope_field_exclusions_to_draft(draft, excluded).to_dict()
+    if state.get("pending_matched_confirm"):
+        state["pending_matched_confirm"] = False
     state["needs_db_retry"] = False
     state["validation_error"] = None
     return state
@@ -154,10 +199,12 @@ def make_img_diag_scope_nodes(
         state["scope_parse_attempts"] = int(state.get("scope_parse_attempts") or 0) + 1
         cumulative = (state.get("scope_cumulative_text") or state.get("query") or "").strip()
         state["scope_cumulative_text"] = cumulative
+        excluded = frozenset(state.get("scope_field_exclusions") or ())
         draft = parse_img_diag_scope_draft(
             cumulative,
             llm_client=client,
             prompt_registry=prompts,
+            scope_field_exclusions=excluded,
         )
         state["scope_draft"] = draft.to_dict()
         state["scope_confidence"] = draft.confidence
@@ -187,7 +234,7 @@ def make_img_diag_scope_nodes(
         draft_dict = state.get("scope_draft") or {}
         scope = _scope_draft_payload(state)
         hitl_rounds = int(state.get("hitl_rounds") or 0)
-        allow_auto_relax = hitl_rounds >= 2
+        allow_auto_relax = scope_auto_relax_allowed(hitl_rounds=hitl_rounds)
 
         count, effective_scope, relaxed_fields, err = await validate_scope_with_relaxation(
             scope,
@@ -208,16 +255,10 @@ def make_img_diag_scope_nodes(
             effective_scope,
         )
         state["scope_draft"] = merged.to_dict()
-        state["confirmed_scope_intent"] = confirmed_scope_from_draft(merged)
-        state["scope_intent_text"] = build_scope_intent_text(
-            merged,
-            scope_question=state.get("scope_cumulative_text") or "",
-        )
         state["needs_db_retry"] = False
         state["validation_error"] = None
         if relaxed_fields:
             state["scope_relaxed_fields"] = relaxed_fields
-            state["confirmed_scope_intent"]["scope_relaxed_fields"] = relaxed_fields
             logger.info(
                 "img_diag scope auto-relaxed fields=%s effective_scope=%s",
                 relaxed_fields,
@@ -225,6 +266,24 @@ def make_img_diag_scope_nodes(
             )
         else:
             state["scope_relaxed_fields"] = []
+
+        if _scope_matched_confirm_enabled() and hitl_rounds == 0:
+            state["pending_matched_confirm"] = True
+            state["human_prompt"] = SCOPE_HITL_DB_MATCHED_PROMPT
+            state["interrupt_reason"] = "db_validate_matched"
+            state["missing_fields"] = []
+            return state
+
+        if relaxed_fields:
+            state["confirmed_scope_intent"] = confirmed_scope_from_draft(merged)
+            state["confirmed_scope_intent"]["scope_relaxed_fields"] = relaxed_fields
+        else:
+            state["confirmed_scope_intent"] = confirmed_scope_from_draft(merged)
+        state["scope_intent_text"] = build_scope_intent_text(
+            merged,
+            scope_question=state.get("scope_cumulative_text") or "",
+        )
+        state["pending_matched_confirm"] = False
         return state
 
     return {
@@ -244,6 +303,8 @@ def _route_after_preflight(state: ImgDiagScopeGraphState) -> Literal["scope_huma
 
 
 def _route_after_validate(state: ImgDiagScopeGraphState):
+    if state.get("pending_matched_confirm"):
+        return "scope_human_confirm"
     if state.get("confirmed_scope_intent") and state.get("scope_intent_text"):
         from langgraph.graph import END  # type: ignore[import-not-found]
 

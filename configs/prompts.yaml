@@ -2177,6 +2177,12 @@ img_diag_scope_parse:
       - **冲突消解**：同一字段（机组/受热面/检测位置/排数/管数）若在不同段落表述不一致，**以最后一段（最靠近文末）的表述为准**；后文是对前文的确认或纠错。
       - 用户补充多为口语（如「检测位置应为…」「应该是…」「不是336是33」「排数对了」），须结合语义理解其要修正的字段，**不要机械拼接数字**。
       - 若仅后文修正某一字段，其余未提及字段仍从 **全文** 综合解析（以前文+后文为准，后文覆盖冲突项）。
+      - 若用户明确要求 **不解析/去除/不要** 某些可选字段（检测位置、排数、管数），对应 JSON 字段 **必须为 null**，即使问句正文中仍出现相关数字；**不得** 再填默认值（如水冷壁 row_no=1）。
+
+      【用户声明排除字段 — 最高优先级】
+      - 用户补充如「去除排数和管数」「不要检测位置」「只核机组和受热面」，表示禁止解析对应可选字段。
+      - 被排除字段在 JSON 中一律为 null；不得从问句正文回填。
+      - 「仅/只保留机组和受热面」→ check_location_name、row_no、tube_no 均为 null。
 
       【检测位置与受热面】
       - 检测位置（check_location_name）对应业务表 overhaul_new_checklocation.name（检修策划/测厚点位名称）。
@@ -2228,6 +2234,11 @@ img_diag_scope_parse:
       1号锅炉水冷壁螺旋段前墙吹灰孔33第56根管
       不对，检测位置是吹灰孔33，不是336
       {"boiler":null,"device_name":"水冷壁螺旋段前墙","check_location_name":"吹灰孔33","row_no":1,"tube_no":56}
+
+      问：（多段，用户声明不解析排数管数）
+      1号锅炉水冷壁螺旋段前墙吹灰孔33第56根管
+      去除排数和管数
+      {"boiler":null,"device_name":"水冷壁螺旋段前墙","check_location_name":"吹灰孔33","row_no":null,"tube_no":null}
 
       【输出 schema】
       {"boiler":string|null,"device_name":string|null,"check_location_name":string|null,"row_no":number|null,"tube_no":number|null}

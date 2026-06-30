@@ -633,6 +633,10 @@ class AnalysisConfig:
     img_diag_use_langgraph: bool = True
     img_diag_scope_hitl_enabled: bool = True
     img_diag_scope_hitl_max_rounds: int = 5
+    # 首次 LLM+库表均成功时是否强制一次「匹配成功请确认」人机协同（默认开启；曾触发 HITL 后不再重复）
+    img_diag_scope_matched_confirm_enabled: bool = True
+    # scope 库表校验失败时是否自动放宽 tube_no/row_no/check_location_name（默认关闭，改由人机协同修正）
+    img_diag_scope_auto_relax_enabled: bool = False
     img_diag_scope_low_confidence_hitl: bool = True
     img_diag_scope_validate_sql: str | None = None
     img_diag_scope_validate_timeout_s: float = 10.0
@@ -1419,6 +1423,14 @@ def _load_from_env() -> AppConfig:
         img_diag_use_langgraph=os.getenv("ANALYSIS_IMG_DIAG_USE_LANGGRAPH", "true").lower() != "false",
         img_diag_scope_hitl_enabled=os.getenv("ANALYSIS_IMG_DIAG_SCOPE_HITL_ENABLED", "true").lower() != "false",
         img_diag_scope_hitl_max_rounds=max(1, int(os.getenv("ANALYSIS_IMG_DIAG_SCOPE_HITL_MAX_ROUNDS", "5"))),
+        img_diag_scope_matched_confirm_enabled=os.getenv(
+            "ANALYSIS_IMG_DIAG_SCOPE_MATCHED_CONFIRM_ENABLED", "true"
+        ).lower()
+        != "false",
+        img_diag_scope_auto_relax_enabled=os.getenv(
+            "ANALYSIS_IMG_DIAG_SCOPE_AUTO_RELAX_ENABLED", "false"
+        ).lower()
+        == "true",
         img_diag_scope_low_confidence_hitl=os.getenv(
             "ANALYSIS_IMG_DIAG_SCOPE_LOW_CONFIDENCE_HITL", "true"
         ).lower()
