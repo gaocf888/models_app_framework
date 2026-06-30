@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime
+from datetime import date, datetime
+from unittest.mock import patch
 
 from app.nl2sql.time_intent_display import (
     extract_time_window_from_question,
@@ -96,6 +97,77 @@ class TestTimeIntentP0P1(unittest.TestCase):
         ref = datetime(2026, 5, 19, 10, 0, 0)
         out = resolve_statistical_time_range_display("2025年第一季度统计", now=ref)
         self.assertEqual(("2025-01-01 00:00:00", "2025-03-31 23:59:59"), out)
+
+
+class TestTimeIntentPartialMonthDay(unittest.TestCase):
+    """无年/无月日：当年当月；左闭右开单日窗。"""
+
+    _REF_DATE = date(2026, 6, 2)
+
+    def _patch_today(self):
+        return patch(
+            "app.nl2sql.time_intent_display.date",
+            wraps=date,
+        )
+
+    def test_month_day_chinese(self) -> None:
+        with self._patch_today() as mock_date:
+            mock_date.today.return_value = self._REF_DATE
+            win = extract_time_window_from_question("6月25日1号锅炉超温")
+        assert win is not None
+        self.assertEqual("day_cur_06_25", win[2])
+        self.assertIn("YEAR(CURDATE())", win[0])
+        self.assertIn("-06-25", win[0])
+
+    def test_month_day_formats(self) -> None:
+        cases = [
+            ("6/25超温", "day_cur_06_25"),
+            ("06/25超温", "day_cur_06_25"),
+            ("06-25超温", "day_cur_06_25"),
+            ("6-25超温", "day_cur_06_25"),
+            ("6.25超温", "day_cur_06_25"),
+            ("6月25号超温", "day_cur_06_25"),
+        ]
+        with self._patch_today() as mock_date:
+            mock_date.today.return_value = self._REF_DATE
+            for q, tag in cases:
+                win = extract_time_window_from_question(q)
+                assert win is not None, q
+                self.assertEqual(tag, win[2], q)
+
+    def test_day_of_month_only(self) -> None:
+        with self._patch_today() as mock_date:
+            mock_date.today.return_value = self._REF_DATE
+            win = extract_time_window_from_question("请分析1号锅炉25日超温")
+        assert win is not None
+        self.assertEqual("day_cur_m_25", win[2])
+        self.assertIn("DATE_FORMAT(CURDATE(), '%Y-%m-')", win[0])
+
+    def test_day_only_with_hao(self) -> None:
+        with self._patch_today() as mock_date:
+            mock_date.today.return_value = self._REF_DATE
+            tag = extract_time_window_tag("25号超温统计")
+        self.assertEqual("day_cur_m_25", tag)
+
+    def test_display_month_day_and_day_only(self) -> None:
+        ref = datetime(2026, 6, 2, 10, 0, 0)
+        md = resolve_statistical_time_range_display("6月25日超温", now=ref)
+        self.assertEqual(("2026-06-25 00:00:00", "2026-06-25 23:59:59"), md)
+        d_only = resolve_statistical_time_range_display("25日超温", now=ref)
+        self.assertEqual(("2026-06-25 00:00:00", "2026-06-25 23:59:59"), d_only)
+
+    def test_full_ymd_still_wins(self) -> None:
+        win = extract_time_window_from_question("2026年6月25日超温")
+        assert win is not None
+        self.assertEqual("day_2026_06_25", win[2])
+
+    def test_false_positive_guards(self) -> None:
+        with self._patch_today() as mock_date:
+            mock_date.today.return_value = self._REF_DATE
+            self.assertIsNone(extract_time_window_tag("1号锅炉第25排超温"))
+            self.assertIsNone(extract_time_window_tag("25号锅炉超温"))
+            self.assertEqual("recent_25_days", extract_time_window_tag("近25天超温"))
+            self.assertEqual("month_cur_06", extract_time_window_tag("6月份超温"))
 
 
 if __name__ == "__main__":

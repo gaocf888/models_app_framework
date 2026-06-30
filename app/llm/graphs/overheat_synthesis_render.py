@@ -81,6 +81,8 @@ def infer_overheat_report_context(query: str) -> dict[str, Any]:
     mode = "weekly"
     if any(k in q for k in _DAILY_KW):
         mode = "daily"
+    elif parsed_tag and parsed_tag.startswith("day_"):
+        mode = "daily"
     elif any(k in q for k in _WEEKLY_KW):
         mode = "weekly"
     elif not parsed_tag:

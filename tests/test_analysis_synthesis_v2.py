@@ -135,6 +135,29 @@ class TestOverheatReportContext(unittest.TestCase):
         self.assertEqual("2026-06-01 23:59:59", ctx["t_end"])
         self.assertEqual("yesterday", ctx["time_window_tag"])
 
+    def test_infer_daily_for_month_day_without_year(self):
+        from datetime import date as date_cls
+
+        from app.nl2sql import time_intent_display
+
+        fixed_now = datetime(2026, 6, 2, 12, 0, 0)
+        with patch("app.nl2sql.time_intent_display.date", wraps=date_cls) as mock_date:
+            mock_date.today.return_value = fixed_now.date()
+            with patch.object(time_intent_display, "datetime") as mock_dt:
+                mock_dt.now.return_value = fixed_now
+                mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+                mock_dt.combine = datetime.combine
+                ctx = infer_overheat_report_context("请分析1号锅炉6月25日超温情况")
+        self.assertEqual("daily", ctx["analysis_mode"])
+        self.assertEqual("2026-06-25 00:00:00", ctx["t_start"])
+        self.assertEqual("2026-06-25 23:59:59", ctx["t_end"])
+        self.assertEqual("day_cur_06_25", ctx["time_window_tag"])
+
+    def test_infer_daily_for_full_ymd(self):
+        ctx = infer_overheat_report_context("2026年6月25日1号锅炉超温")
+        self.assertEqual("daily", ctx["analysis_mode"])
+        self.assertEqual("day_2026_06_25", ctx["time_window_tag"])
+
 
 class TestSanitizeNarrative(unittest.TestCase):
     def test_strips_docx_instruction_lines(self):

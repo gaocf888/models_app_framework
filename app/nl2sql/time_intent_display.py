@@ -43,6 +43,25 @@ _EXACT_DAY_ISO_RE = re.compile(
     r"(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?!\d)"
 )
 _MONTH_ONLY_RE = re.compile(r"(?<![0-9年\-])(0?[1-9]|1[0-2])月(?:份)?(?![0-9日\-])")
+# 无四位年份的月日：6月25日、6/25、06-25、6.25（须在整月规则之前匹配）
+_MONTH_DAY_CN_RE = re.compile(
+    r"(?<![0-9年])(0?[1-9]|1[0-2])月(0?[1-9]|[12]\d|3[01])[日号]"
+)
+_MONTH_DAY_SLASH_RE = re.compile(
+    r"(?<![0-9/])(0?[1-9]|1[0-2])/(0?[1-9]|[12]\d|3[01])(?![0-9/])"
+)
+_MONTH_DAY_DASH_RE = re.compile(
+    r"(?<![0-9\-])(0?[1-9]|1[0-2])-(0?[1-9]|[12]\d|3[01])(?![0-9\-])"
+)
+_MONTH_DAY_DOT_RE = re.compile(
+    r"(?<![0-9.])(0?[1-9]|1[0-2])\.(0?[1-9]|[12]\d|3[01])(?![0-9.])"
+)
+# 仅日（当年当月）：25日、25号；排除第25排、25号锅炉等
+_DAY_ONLY_RE = re.compile(
+    r"(?<![第0-9年月/\.\-])"
+    r"(0?[1-9]|[12]\d|3[01])"
+    r"(?:日|号(?!锅炉|机组|排|根|管))"
+)
 _PLAN_ANCHOR_LOOKBACK_RE = re.compile(
     r"锚点\s*向前\s*(\d+|[一二两三四五六七八九十百]+)\s*天"
 )
@@ -304,6 +323,61 @@ def _try_exact_day(q: str) -> tuple[str, str, str] | None:
     )
 
 
+def _valid_calendar_date(year: int, month: int, day: int) -> bool:
+    try:
+        date(year, month, day)
+        return True
+    except ValueError:
+        return False
+
+
+def _day_window_sql_cur_year(month: int, day: int) -> tuple[str, str, str]:
+    """无年份月日：永远取 YEAR(CURDATE())。"""
+    start = f"DATE(CONCAT(YEAR(CURDATE()), '-{month:02d}-{day:02d}'))"
+    end = f"DATE_ADD({start}, INTERVAL 1 DAY)"
+    return start, end, f"day_cur_{month:02d}_{day:02d}"
+
+
+def _day_window_sql_cur_month_day(day: int) -> tuple[str, str, str]:
+    """仅日：永远取 YEAR/MONTH(CURDATE())。"""
+    start = (
+        f"STR_TO_DATE(CONCAT(DATE_FORMAT(CURDATE(), '%Y-%m-'), LPAD({day}, 2, '0')), '%Y-%m-%d')"
+    )
+    end = f"DATE_ADD({start}, INTERVAL 1 DAY)"
+    return start, end, f"day_cur_m_{day:02d}"
+
+
+def _try_month_day_without_year(q: str) -> tuple[str, str, str] | None:
+    """6月25日、6/25、06-25、6.25 等（当年，左闭右开单日窗）。"""
+    year = date.today().year
+    for pat in (
+        _MONTH_DAY_CN_RE,
+        _MONTH_DAY_SLASH_RE,
+        _MONTH_DAY_DASH_RE,
+        _MONTH_DAY_DOT_RE,
+    ):
+        m = pat.search(q)
+        if not m:
+            continue
+        mon, day = int(m.group(1)), int(m.group(2))
+        if not _valid_calendar_date(year, mon, day):
+            continue
+        return _day_window_sql_cur_year(mon, day)
+    return None
+
+
+def _try_day_of_month_only(q: str) -> tuple[str, str, str] | None:
+    """25日、25号（当年当月）。"""
+    m = _DAY_ONLY_RE.search(q)
+    if not m:
+        return None
+    day = int(m.group(1))
+    today = date.today()
+    if not _valid_calendar_date(today.year, today.month, day):
+        return None
+    return _day_window_sql_cur_month_day(day)
+
+
 def _try_month_only(q: str) -> tuple[str, str, str] | None:
     m = _MONTH_ONLY_RE.search(q)
     if not m:
@@ -427,6 +501,14 @@ def extract_time_window_from_question(question: str) -> tuple[str, str, str] | N
     exact = _try_exact_day(q)
     if exact:
         return exact
+
+    month_day = _try_month_day_without_year(q)
+    if month_day:
+        return month_day
+
+    day_only = _try_day_of_month_only(q)
+    if day_only:
+        return day_only
 
     m_ym = re.search(r"(20\d{2})年(0?[1-9]|1[0-2])月", q)
     if not m_ym:
@@ -553,9 +635,26 @@ def _tag_to_display_bounds(tag: str, ref: datetime) -> tuple[datetime, datetime]
         qn = int(tag.split("_")[-1])
         return _quarter_bounds_display(d.year, qn)
 
+    if tag.startswith("day_cur_m_"):
+        try:
+            day_n = int(tag.rsplit("_", 1)[-1])
+            day_d = date(d.year, d.month, day_n)
+            return _day_start(day_d), _day_end(day_d)
+        except ValueError:
+            pass
+
+    m_day_cur = re.fullmatch(r"day_cur_(\d{2})_(\d{2})", tag)
+    if m_day_cur:
+        try:
+            mon, day_n = int(m_day_cur.group(1)), int(m_day_cur.group(2))
+            day_d = date(d.year, mon, day_n)
+            return _day_start(day_d), _day_end(day_d)
+        except ValueError:
+            pass
+
     if tag.startswith("day_"):
         parts = tag.split("_")
-        if len(parts) >= 4:
+        if len(parts) >= 4 and parts[1].isdigit():
             try:
                 day_d = date(int(parts[1]), int(parts[2]), int(parts[3]))
                 return _day_start(day_d), _day_end(day_d)
