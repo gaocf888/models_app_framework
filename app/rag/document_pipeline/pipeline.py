@@ -34,6 +34,7 @@ class DocumentPipeline:
             remove_header_footer=rag_ingest_cfg.clean_remove_header_footer,
             merge_duplicate_paragraphs=rag_ingest_cfg.clean_merge_duplicate_paragraphs,
             fix_encoding_noise=rag_ingest_cfg.clean_fix_encoding_noise,
+            strip_html=rag_ingest_cfg.clean_strip_html,
             min_repeated_line_pages=rag_ingest_cfg.clean_min_repeated_line_pages,
         )
         self._structure = StructureSplitter()

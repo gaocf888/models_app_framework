@@ -2,6 +2,27 @@ from __future__ import annotations
 
 import re
 
+from .parsers import _TextExtractor
+
+# 仅匹配 HTML 标签（字母开头），避免误伤「温度<500℃」等比较表达式
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>|<!--")
+
+
+def strip_html_markup(text: str, *, enabled: bool = True, min_tags: int = 1) -> str:
+    """从混合文本中剥离内嵌 HTML 标签，保留可见文本节点。"""
+    if not enabled or not text:
+        return text
+    if len(_HTML_TAG_RE.findall(text)) < max(1, int(min_tags)):
+        return text
+    parser = _TextExtractor()
+    try:
+        parser.feed(text)
+        parser.close()
+    except Exception:
+        return text
+    extracted = parser.text()
+    return extracted if extracted.strip() else text
+
 
 class TextCleaner:
     _multi_newline_re = re.compile(r"\n{3,}")
@@ -27,17 +48,27 @@ class TextCleaner:
         merge_duplicate_paragraphs: bool = True,
         fix_encoding_noise: bool = True,
         min_repeated_line_pages: int = 2,
+        strip_html: bool = True,
+        strip_html_min_tags: int = 1,
     ) -> None:
         self._profile = (profile or "normal").lower()
         self._remove_header_footer = remove_header_footer
         self._merge_duplicate_paragraphs = merge_duplicate_paragraphs
         self._fix_encoding_noise = fix_encoding_noise
         self._min_repeated_line_pages = max(2, int(min_repeated_line_pages))
+        self._strip_html = strip_html
+        self._strip_html_min_tags = max(1, int(strip_html_min_tags))
 
     def clean(self, content: str) -> str:
         text = (content or "").replace("\r\n", "\n").replace("\r", "\n")
         if self._fix_encoding_noise:
             text = self._repair_encoding_noise(text)
+        if self._strip_html:
+            text = strip_html_markup(
+                text,
+                enabled=True,
+                min_tags=self._strip_html_min_tags,
+            )
         if self._profile in {"normal", "strict"}:
             text = self._toc_noise_re.sub("", text)
             text = self._page_mark_re.sub("", text)

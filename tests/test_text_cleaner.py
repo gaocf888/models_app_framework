@@ -30,6 +30,37 @@ class TestTextCleaner(unittest.TestCase):
         self.assertNotIn("Â", out)
         self.assertNotIn("\ufffd", out)
 
+    def test_strip_embedded_html_table(self):
+        raw = "前言<table><tr><td>单元格A</td><td>单元格B</td></tr></table>后文"
+        cleaner = TextCleaner(profile="normal", strip_html=True)
+        out = cleaner.clean(raw)
+        self.assertIn("前言", out)
+        self.assertIn("单元格A", out)
+        self.assertIn("单元格B", out)
+        self.assertIn("后文", out)
+        self.assertNotIn("<table>", out)
+        self.assertNotIn("<td>", out)
+
+    def test_strip_embedded_html_div(self):
+        raw = '<div class="note">说明文字</div>正文'
+        cleaner = TextCleaner(profile="normal", strip_html=True)
+        out = cleaner.clean(raw)
+        self.assertIn("说明文字", out)
+        self.assertIn("正文", out)
+        self.assertNotIn("<div", out)
+
+    def test_strip_html_skips_numeric_comparison(self):
+        raw = "炉温应低于500℃，当温度<500℃时可停机。"
+        cleaner = TextCleaner(profile="normal", strip_html=True)
+        out = cleaner.clean(raw)
+        self.assertIn("温度<500℃", out)
+
+    def test_strip_html_disabled_keeps_markup(self):
+        raw = "<p>保留标签</p>"
+        cleaner = TextCleaner(profile="normal", strip_html=False)
+        out = cleaner.clean(raw)
+        self.assertIn("<p>保留标签</p>", out)
+
 
 if __name__ == "__main__":
     unittest.main()

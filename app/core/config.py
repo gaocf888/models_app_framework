@@ -251,6 +251,7 @@ class RAGIngestionConfig:
     clean_remove_header_footer: bool = True
     clean_merge_duplicate_paragraphs: bool = True
     clean_fix_encoding_noise: bool = True
+    clean_strip_html: bool = True
     clean_min_repeated_line_pages: int = 2
     tenant_id_default: str | None = None
     # RUNNING 任务超过该秒数未更新，判定为卡死并自动转 FAILED。
@@ -1080,6 +1081,7 @@ def _load_from_env() -> AppConfig:
         clean_remove_header_footer=os.getenv("RAG_CLEAN_REMOVE_HEADER_FOOTER", "true").lower() == "true",
         clean_merge_duplicate_paragraphs=os.getenv("RAG_CLEAN_MERGE_DUPLICATE_PARAGRAPHS", "true").lower() == "true",
         clean_fix_encoding_noise=os.getenv("RAG_CLEAN_FIX_ENCODING_NOISE", "true").lower() == "true",
+        clean_strip_html=os.getenv("RAG_CLEAN_STRIP_HTML", "true").lower() == "true",
         clean_min_repeated_line_pages=int(os.getenv("RAG_CLEAN_MIN_REPEATED_LINE_PAGES", "2")),
         tenant_id_default=os.getenv("RAG_TENANT_ID_DEFAULT") or None,
         running_stuck_timeout_seconds=max(60, int(os.getenv("RAG_RUNNING_STUCK_TIMEOUT_SECONDS", "1800"))),
