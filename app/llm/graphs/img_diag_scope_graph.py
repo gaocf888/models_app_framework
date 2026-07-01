@@ -49,7 +49,13 @@ from app.llm.graphs.img_diag_session_store import (
     delete_img_diag_resume_session,
     get_img_diag_resume_session,
 )
-from app.llm.graphs.img_diag_vision_display import build_vision_findings_display
+from app.llm.graphs.img_diag_vision_display import (
+    VISION_HITL_REUPLOAD_PROMPT,
+    VISION_REJECT_INTERRUPT_REASON,
+    apply_vision_rejection_scope_gate,
+    build_vision_findings_display,
+    is_scope_confirm_blocked_by_vision,
+)
 from app.llm.prompt_registry import PromptTemplateRegistry
 
 logger = get_logger(__name__)
@@ -161,6 +167,7 @@ def _enrich_interrupt_payload_from_state(state: ImgDiagScopeGraphState, payload:
         and bool(vision_data)
         and (
             images_replaced
+            or str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON
             or (
                 orchestrator_path == "vision_first"
                 and hitl_rounds <= 1
@@ -243,6 +250,74 @@ async def _finalize_state_after_hitl_resume(
         len(normalize_image_url_list(updated_request.get("image_urls"))),
     )
     return updated_request
+
+
+async def _prepare_scope_resume_state(
+    graph: Any,
+    *,
+    thread_id: str,
+    session: Any,
+    payload: dict[str, Any],
+    vision_refresh: VisionRefreshFn | None,
+) -> str | None:
+    """resume 前合并换图 URL，并在 URL 变化时重跑视觉写回 checkpoint。"""
+    config = img_diag_graph_configurable(thread_id)
+    snap = await graph.aget_state(config)
+    if not snap or not snap.values:
+        return None
+    state = dict(snap.values)
+    img_err = _apply_hitl_image_urls_to_state(state, payload if isinstance(payload, dict) else {})
+    if img_err:
+        return img_err
+    req = dict(state.get("img_diag_request") or session.img_diag_request or {})
+    state["img_diag_request"] = req
+    if state.get("vision_images_replaced") and vision_refresh is not None:
+        vision_data, ms, status = await vision_refresh(req)
+        state["vision_prefetch_data"] = vision_data
+        state["vision_prefetch_ms"] = int(ms or 0)
+        state["vision_prefetch_status"] = str(status or "")
+        subtype = str(state.get("img_diag_subtype") or req.get("img_diag_subtype") or "defect_ident")
+        if not is_scope_confirm_blocked_by_vision(
+            vision_data if isinstance(vision_data, dict) else None,
+            img_diag_request=req,
+            img_diag_subtype=subtype,
+        ):
+            if state.get("interrupt_reason") == VISION_REJECT_INTERRUPT_REASON:
+                state.pop("interrupt_reason", None)
+            if state.get("human_prompt") == VISION_HITL_REUPLOAD_PROMPT:
+                state.pop("human_prompt", None)
+    await graph.aupdate_state(config, state)
+    return None
+
+
+def _scope_interrupt_from_state(
+    state: dict[str, Any],
+    *,
+    thread_id: str,
+    request_id: str,
+    img_diag_request: dict[str, Any],
+) -> dict[str, Any]:
+    intr = _build_interrupt_payload(state)
+    token = create_img_diag_resume_token(
+        **_resume_session_kwargs(
+            state,
+            thread_id=thread_id,
+            request_id=request_id,
+            interrupt_payload=intr,
+            img_diag_request=img_diag_request,
+        )
+    )
+    return {
+        "status": "interrupt",
+        "request_id": request_id,
+        "resume_token": token,
+        "interrupt_payload": intr,
+        "img_diag_request": state.get("img_diag_request") or img_diag_request,
+        "orchestrator_path": str(state.get("orchestrator_path") or "scope_first"),
+        "vision_prefetch": state.get("vision_prefetch_data"),
+        "vision_prefetch_ms": int(state.get("vision_prefetch_ms") or 0),
+        "vision_prefetch_status": str(state.get("vision_prefetch_status") or ""),
+    }
 
 
 def _build_interrupt_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
@@ -338,6 +413,7 @@ def _apply_human_scope_response(
     if pending_matched:
         if affirmative:
             _finalize_confirmed_scope(state)
+            apply_vision_rejection_scope_gate(state)
         else:
             state["pending_matched_confirm"] = False
     state["needs_db_retry"] = False
@@ -439,6 +515,7 @@ def make_img_diag_scope_nodes(
             merged,
             scope_question=state.get("scope_cumulative_text") or "",
         )
+        apply_vision_rejection_scope_gate(state)
         state["pending_matched_confirm"] = False
         return state
 
@@ -459,6 +536,8 @@ def _route_after_preflight(state: ImgDiagScopeGraphState) -> Literal["scope_huma
 
 
 def _route_after_validate(state: ImgDiagScopeGraphState):
+    if str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON:
+        return "scope_human_confirm"
     if state.get("pending_matched_confirm"):
         return "scope_human_confirm"
     if state.get("confirmed_scope_intent") and state.get("scope_intent_text"):
@@ -483,6 +562,8 @@ def _route_after_validate(state: ImgDiagScopeGraphState):
 
 
 def _route_after_human_confirm(state: ImgDiagScopeGraphState):
+    if str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON:
+        return "scope_human_confirm"
     if state.get("confirmed_scope_intent") and state.get("scope_intent_text"):
         from langgraph.graph import END  # type: ignore[import-not-found]
 
@@ -704,6 +785,13 @@ class ImgDiagScopeHitlRunner:
                 "message": final_state.get("abort_reason") or "scope confirm aborted",
             }
         if final_state.get("confirmed_scope_intent") and final_state.get("scope_intent_text"):
+            if apply_vision_rejection_scope_gate(final_state):
+                return _scope_interrupt_from_state(
+                    final_state,
+                    thread_id=rid,
+                    request_id=rid,
+                    img_diag_request=img_diag_request,
+                )
             return {
                 "status": "confirmed",
                 "request_id": rid,
@@ -753,6 +841,16 @@ class ImgDiagScopeHitlRunner:
             return {"status": "error", "message": "langgraph Command unavailable"}
 
         config = img_diag_graph_configurable(session.thread_id)
+        prep_err = await _prepare_scope_resume_state(
+            self._graph,
+            thread_id=session.thread_id,
+            session=session,
+            payload=payload,
+            vision_refresh=vision_refresh,
+        )
+        if prep_err:
+            return {"status": "error", "message": prep_err}
+
         human_input = {"action": action, "payload": payload}
         final_state: dict[str, Any] = {}
 
@@ -825,6 +923,13 @@ class ImgDiagScopeHitlRunner:
                 vision_refresh=vision_refresh,
                 for_interrupt=False,
             )
+            if apply_vision_rejection_scope_gate(state_confirmed):
+                return _scope_interrupt_from_state(
+                    state_confirmed,
+                    thread_id=session.thread_id,
+                    request_id=session.request_id,
+                    img_diag_request=updated_request if isinstance(updated_request, dict) else session.img_diag_request or {},
+                )
             stored_urls = updated_request.get("image_urls") if isinstance(updated_request, dict) else []
             url_count = len(normalize_image_url_list(stored_urls))
             logger.info(

@@ -391,6 +391,28 @@ def test_single_boiler_wins_over_full_plant_phrase_in_same_query() -> None:
     assert chain._extract_unit_keyword_from_question(user_q) == "1号锅炉"
 
 
+def test_explicit_month_day_wins_over_yesterday_in_rag_plan_question() -> None:
+    """用户指定 6月29日 时，plan 长问句 RAG 线索中的「昨日」不得覆盖 SQL 时间窗。"""
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT * FROM monitor_hotarea_temp t "
+        "WHERE t.start_time >= '2026-05-01 00:00:00' AND t.start_time < '2026-06-01 00:00:00'"
+    )
+    user_q = "请帮我分析6月29日的超温情况"
+    plan_q = (
+        f"{user_q}。统计用户指定时间窗内的超温事件明细。"
+        "若用户未指定机组/区域，则不要在 WHERE 中臆造具体锅炉名或墙别。"
+        "。请结合以下规则线索：参考昨日典型超温案例，注意壁温测点配置。"
+    )
+    rewritten, notes = chain._rewrite_query_filters(
+        sql, question=plan_q, time_intent_source=user_q
+    )
+    assert "DATE(CONCAT(YEAR(CURDATE()), '-06-29'))" in rewritten
+    assert "DATE_ADD(DATE(CONCAT(YEAR(CURDATE()), '-06-29')), INTERVAL 1 DAY)" in rewritten
+    assert "DATE_SUB(CURDATE(), INTERVAL 1 DAY)" not in rewritten
+    assert any("day_cur_06_29" in n for n in notes)
+
+
 def test_today_wins_over_iso_date_in_long_plan_question() -> None:
     """plan 长问句含 2026-05-27 等示例日期时，仍应用用户 time_intent 的「今天」。"""
     chain = _build_chain_for_unit()

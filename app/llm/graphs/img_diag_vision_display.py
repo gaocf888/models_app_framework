@@ -9,6 +9,8 @@ VISION_HITL_TITLE = "【图像可见分析】"
 VISION_FRONTEND_NARRATIVE_LABEL = "外观可见分析"
 
 VISION_BOILER_REJECTION_DEFAULT = "当前图片非锅炉相关图片，请重新上传"
+VISION_HITL_REUPLOAD_PROMPT = "当前图片非锅炉相关图片，请重新上传后再确认台账。"
+VISION_REJECT_INTERRUPT_REASON = "vision_boiler_image_rejected"
 
 _VISION_NARRATIVE_CUT_MARKERS = ("---JSON---",)
 
@@ -173,3 +175,59 @@ def format_vision_hitl_assistant_block(
         return ""
     body = "\n".join(f"  · {ln}" for ln in bullets)
     return f"{VISION_HITL_TITLE}\n{body}"
+
+
+def img_diag_request_has_images(
+    img_diag_request: dict[str, Any] | None,
+    *,
+    img_diag_subtype: str,
+) -> bool:
+    """缺陷识别有图即校验；泄爆无图时不做锅炉图门禁。"""
+    from app.llm.graphs.img_diag_hitl_images import normalize_image_url_list
+
+    urls = normalize_image_url_list(
+        (img_diag_request or {}).get("image_urls") if isinstance(img_diag_request, dict) else None
+    )
+    if not urls:
+        return False
+    subtype = (img_diag_subtype or "defect_ident").strip()
+    if subtype == "leakage_burst":
+        return bool(urls)
+    return bool(urls)
+
+
+def is_scope_confirm_blocked_by_vision(
+    vision_data: dict[str, Any] | None,
+    *,
+    img_diag_request: dict[str, Any] | None,
+    img_diag_subtype: str,
+) -> bool:
+    """台账可确认前：有图且视觉拒识则阻断。"""
+    if not img_diag_request_has_images(img_diag_request, img_diag_subtype=img_diag_subtype):
+        return False
+    return is_vision_boiler_relevance_rejected(vision_data)
+
+
+def apply_vision_rejection_scope_gate(state: dict[str, Any]) -> bool:
+    """
+    若当前 scope 已可确认但图片非锅炉相关，撤销 confirmed 并写入 HITL 换图提示。
+    返回 True 表示已阻断（须再次人机协同）。
+    """
+    req = state.get("img_diag_request") if isinstance(state.get("img_diag_request"), dict) else {}
+    subtype = str(state.get("img_diag_subtype") or req.get("img_diag_subtype") or "defect_ident")
+    vision_data = state.get("vision_prefetch_data")
+    if not is_scope_confirm_blocked_by_vision(
+        vision_data if isinstance(vision_data, dict) else None,
+        img_diag_request=req,
+        img_diag_subtype=subtype,
+    ):
+        return False
+
+    state.pop("confirmed_scope_intent", None)
+    state.pop("scope_intent_text", None)
+    state["pending_matched_confirm"] = False
+    state["human_prompt"] = VISION_HITL_REUPLOAD_PROMPT
+    state["interrupt_reason"] = VISION_REJECT_INTERRUPT_REASON
+    state["needs_db_retry"] = False
+    state["validation_error"] = None
+    return True

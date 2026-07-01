@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.llm.graphs.img_diag_vision_display import VISION_REJECT_INTERRUPT_REASON
+
 SCOPE_FIELD_LABELS: dict[str, str] = {
     "boiler": "机组",
     "device_name": "受热面",
@@ -85,6 +87,8 @@ def build_scope_hitl_confirm_reply_example(interrupt_payload: dict[str, Any] | N
 
     if reason == "db_validate_matched" or prompt == SCOPE_HITL_DB_MATCHED_PROMPT:
         return "确认或继续"
+    if reason == VISION_REJECT_INTERRUPT_REASON:
+        return "请重新上传锅炉相关现场图片"
     if reason == "db_validate_zero_rows" or prompt == SCOPE_HITL_DB_NOT_MATCHED_PROMPT:
         return "受热面应为****，检测位置应为****"
     if prompt == SCOPE_HITL_NOT_PARSED_PROMPT or reason.startswith("missing:"):

@@ -1507,7 +1507,9 @@ class NL2SQLChain:
            无锚点且不允许 fallback → 记录 anchor_lookback_skipped_no_anchor；
         1) plan 子任务显式长窗（近一年等）优先；
         2) 用户 time_intent 的 today/yesterday/前天 优先于问句内误触发的字面年月；
-        3) 其余从 intent / task 问句回落。
+        3) 用户 time_intent 任意解析结果（含 day_cur_* 等具体日期）优先于 plan 长问句
+           尾部 RAG 规则线索中的 yesterday/today 等 DAY 标签；
+        4) 其余从 task / 默认回落。
         """
         from app.nl2sql.time_intent_display import (
             build_anchor_lookback_time_window,
@@ -1548,13 +1550,13 @@ class NL2SQLChain:
             self._record_effective_time_window(meta, intent_win[0], intent_win[1], intent_win[2])
             return intent_win
 
-        if task_win and task_win[2] in self._DAY_WINDOW_TAGS:
-            self._record_effective_time_window(meta, task_win[0], task_win[1], task_win[2])
-            return task_win
-
         if intent_win:
             self._record_effective_time_window(meta, intent_win[0], intent_win[1], intent_win[2])
             return intent_win
+
+        if task_win and task_win[2] in self._DAY_WINDOW_TAGS:
+            self._record_effective_time_window(meta, task_win[0], task_win[1], task_win[2])
+            return task_win
         if task_win:
             self._record_effective_time_window(meta, task_win[0], task_win[1], task_win[2])
             return task_win
