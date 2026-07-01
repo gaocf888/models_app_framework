@@ -653,7 +653,7 @@ class AnalysisConfig:
     img_diag_checkpoint_namespace: str = "img_diag"
     img_diag_session_store_backend: str = "redis"
     img_diag_session_store_redis_url: str | None = None
-    img_diag_session_ttl_seconds: int = 3600
+    img_diag_session_ttl_seconds: int = 172800
 
 
 @dataclass
@@ -1474,7 +1474,7 @@ def _load_from_env() -> AppConfig:
         ).strip()
         or None,
         img_diag_session_ttl_seconds=max(
-            60, int(os.getenv("ANALYSIS_IMG_DIAG_SESSION_TTL_SECONDS", "3600"))
+            60, int(os.getenv("ANALYSIS_IMG_DIAG_SESSION_TTL_SECONDS", "172800"))
         ),
     )
     _aa_persist_default = "redis" if _app_env in ("production", "prod") else "memory"

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.llm.graphs.analysis_img_diag_runner import AnalysisImgDiagGraphRunner, ImgDiagScopeInterrupt
 from app.llm.graphs.img_diag_scope_display import (
+    build_scope_hitl_confirm_reply_example,
     format_scope_hitl_assistant_message,
     format_scope_hitl_user_message,
 )
@@ -28,6 +29,19 @@ class TestScopeHitlConversationFormat(unittest.TestCase):
         self.assertIn("请补充机组、受热面", text)
         self.assertIn("1号锅炉", text)
 
+    def test_assistant_message_includes_confirm_reply_example(self) -> None:
+        text = format_scope_hitl_assistant_message(
+            {
+                "prompt": "业务库中未匹配到下面台账信息，请确认机组、受热面、检测位置、排数、管数是否准确",
+                "interrupt_reason": "db_validate_zero_rows",
+                "scope_draft_display": {"机组": "1号锅炉", "受热面": "低温过热器"},
+                "confirm_reply_example": "受热面应为****，检测位置应为****",
+            }
+        )
+        self.assertIn("确认回复示例", text)
+        self.assertIn("受热面应为", text)
+        self.assertNotIn("校验说明", text)
+
     def test_user_message_supplement_and_patch(self) -> None:
         text = format_scope_hitl_user_message(
             action="edit_scope",
@@ -38,6 +52,14 @@ class TestScopeHitlConversationFormat(unittest.TestCase):
         )
         self.assertIn("检测位置应为吹灰孔33", text)
         self.assertIn("高温过热器", text)
+
+    def test_confirm_reply_example_matched(self) -> None:
+        self.assertEqual(
+            build_scope_hitl_confirm_reply_example(
+                {"interrupt_reason": "db_validate_matched"}
+            ),
+            "确认或继续",
+        )
 
 
 def _make_runner() -> AnalysisImgDiagGraphRunner:
@@ -74,13 +96,19 @@ class TestImgDiagScopeConversationPersist(unittest.IsolatedAsyncioTestCase):
         }
         with patch.object(
             runner,
-            "_run_scope_hitl_phase",
+            "_probe_and_run_scope_hitl_phase",
             new=AsyncMock(
-                return_value={
-                    "status": "interrupt",
-                    "request_id": "anl_hitl",
-                    "interrupt_payload": interrupt_payload,
-                }
+                return_value=(
+                    {
+                        "status": "interrupt",
+                        "request_id": "anl_hitl",
+                        "interrupt_payload": interrupt_payload,
+                    },
+                    "scope_first",
+                    None,
+                    0,
+                    "skipped",
+                )
             ),
         ):
             with self.assertRaises(ImgDiagScopeInterrupt):
@@ -97,14 +125,20 @@ class TestImgDiagScopeConversationPersist(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(
                 runner,
-                "_run_scope_hitl_phase",
+                "_probe_and_run_scope_hitl_phase",
                 new=AsyncMock(
-                    return_value={
-                        "status": "interrupt",
-                        "request_id": "anl_hitl",
-                        "resume_token": "tok",
-                        "interrupt_payload": {"prompt": "请确认台账"},
-                    }
+                    return_value=(
+                        {
+                            "status": "interrupt",
+                            "request_id": "anl_hitl",
+                            "resume_token": "tok",
+                            "interrupt_payload": {"prompt": "请确认台账"},
+                        },
+                        "scope_first",
+                        None,
+                        0,
+                        "skipped",
+                    )
                 ),
             ),
             patch.object(runner, "_gather_img_diag_pack", new=AsyncMock()) as gather_mock,
@@ -130,7 +164,10 @@ class TestImgDiagScopeConversationPersist(unittest.IsolatedAsyncioTestCase):
                     "status": "interrupt",
                     "request_id": "anl_hitl",
                     "resume_token": "tok2",
-                    "interrupt_payload": {"prompt": "仍未匹配"},
+                    "interrupt_payload": {
+                        "prompt": "仍未匹配",
+                        "include_vision_preview": False,
+                    },
                 }
             )
             get_runner.return_value = scope_runner
@@ -149,6 +186,9 @@ class TestImgDiagScopeConversationPersist(unittest.IsolatedAsyncioTestCase):
         user_text = runner._conv.append_user_message.call_args[0][2]
         self.assertIn("高温过热器", user_text)
         runner._conv.append_assistant_message.assert_called_once()
+        sse = events[-1]
+        self.assertFalse(sse.get("include_vision_preview"))
+        self.assertNotIn("vision_findings_display", sse)
 
 
 if __name__ == "__main__":

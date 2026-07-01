@@ -30,6 +30,10 @@ class ImgDiagResumeSession:
     created_at: float
     interrupt_payload: dict[str, Any]
     img_diag_request: dict[str, Any]
+    orchestrator_path: str = "scope_first"
+    vision_prefetch: dict[str, Any] | None = None
+    vision_prefetch_ms: int = 0
+    vision_prefetch_status: str = ""
 
 
 def _redis_key(token: str) -> str:
@@ -69,6 +73,10 @@ def create_img_diag_resume_token(
     img_diag_subtype: str,
     interrupt_payload: dict[str, Any],
     img_diag_request: dict[str, Any],
+    orchestrator_path: str = "scope_first",
+    vision_prefetch: dict[str, Any] | None = None,
+    vision_prefetch_ms: int = 0,
+    vision_prefetch_status: str = "",
 ) -> str:
     token = f"rt_{secrets.token_urlsafe(24)}"
     session = ImgDiagResumeSession(
@@ -82,6 +90,10 @@ def create_img_diag_resume_token(
         created_at=time.time(),
         interrupt_payload=interrupt_payload,
         img_diag_request=img_diag_request,
+        orchestrator_path=orchestrator_path or "scope_first",
+        vision_prefetch=vision_prefetch,
+        vision_prefetch_ms=int(vision_prefetch_ms or 0),
+        vision_prefetch_status=str(vision_prefetch_status or ""),
     )
     payload = asdict(session)
     ttl = max(60, int(getattr(get_app_config().analysis, "img_diag_session_ttl_seconds", 3600)))
@@ -115,7 +127,22 @@ def get_img_diag_resume_session(resume_token: str) -> ImgDiagResumeSession | Non
         data = _memory_sessions.get(resume_token)
     if not data:
         return None
-    return ImgDiagResumeSession(**data)
+    return ImgDiagResumeSession(
+        resume_token=data["resume_token"],
+        thread_id=data["thread_id"],
+        request_id=data["request_id"],
+        user_id=data["user_id"],
+        session_id=data["session_id"],
+        analysis_type=data["analysis_type"],
+        img_diag_subtype=data["img_diag_subtype"],
+        created_at=float(data.get("created_at") or 0),
+        interrupt_payload=dict(data.get("interrupt_payload") or {}),
+        img_diag_request=dict(data.get("img_diag_request") or {}),
+        orchestrator_path=str(data.get("orchestrator_path") or "scope_first"),
+        vision_prefetch=data.get("vision_prefetch"),
+        vision_prefetch_ms=int(data.get("vision_prefetch_ms") or 0),
+        vision_prefetch_status=str(data.get("vision_prefetch_status") or ""),
+    )
 
 
 def delete_img_diag_resume_session(resume_token: str) -> None:

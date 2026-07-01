@@ -148,10 +148,7 @@ class AnalysisImgDiagRequest(BaseModel):
     @field_validator("query")
     @classmethod
     def _v_query(cls, v: str) -> str:
-        text = (v or "").strip()
-        if not text:
-            raise ValueError("query must not be empty")
-        return text
+        return (v or "").strip()
 
     @field_validator("image_urls")
     @classmethod
@@ -162,6 +159,10 @@ class AnalysisImgDiagRequest(BaseModel):
     def _validate_subtype_images(self) -> AnalysisImgDiagRequest:
         if self.img_diag_subtype == "defect_ident" and not self.image_urls:
             raise ValueError("defect_ident requires at least one image in image_urls")
+        if not self.query:
+            if self.img_diag_subtype == "defect_ident" and self.image_urls:
+                return self
+            raise ValueError("query must not be empty")
         return self
 
 

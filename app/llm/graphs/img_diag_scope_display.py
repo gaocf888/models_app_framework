@@ -37,6 +37,8 @@ SCOPE_HITL_DB_MATCHED_PROMPT = (
     "以下为解析且业务库匹配成功的台账信息，请确认是否准确"
 )
 
+SCOPE_HITL_NOT_PARSED_PROMPT = "未识别解析到台账信息，请补充！"
+
 SCOPE_HITL_RELAXED_PROMPT = (
     "业务库未匹配到最细粒度范围，系统已自动放宽范围条件后继续查询；"
     "请确认下列台账信息，或修改后重新提交"
@@ -74,6 +76,24 @@ def format_scope_draft_display_lines(scope_draft: dict[str, Any] | None) -> list
     return [f"{cn}：{val}" for cn, val in scope_draft_to_display(scope_draft).items()]
 
 
+def build_scope_hitl_confirm_reply_example(interrupt_payload: dict[str, Any] | None) -> str:
+    """根据 HITL 场景生成用户确认回复示例（展示在台账确认信息末尾）。"""
+    payload = interrupt_payload or {}
+    reason = str(payload.get("interrupt_reason") or "").strip()
+    prompt = str(payload.get("prompt") or "").strip()
+    missing = [str(x).strip() for x in (payload.get("missing_fields") or []) if str(x).strip()]
+
+    if reason == "db_validate_matched" or prompt == SCOPE_HITL_DB_MATCHED_PROMPT:
+        return "确认或继续"
+    if reason == "db_validate_zero_rows" or prompt == SCOPE_HITL_DB_NOT_MATCHED_PROMPT:
+        return "受热面应为****，检测位置应为****"
+    if prompt == SCOPE_HITL_NOT_PARSED_PROMPT or reason.startswith("missing:"):
+        if missing:
+            return "，".join(f"{field}应为****" for field in missing[:4])
+        return "机组应为****，受热面应为****"
+    return "受热面应为****，检测位置应为****"
+
+
 def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None) -> str:
     """将 scope HITL interrupt 载荷格式化为可写入会话历史的 assistant 正文。"""
     if not interrupt_payload:
@@ -85,9 +105,6 @@ def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None
     missing = interrupt_payload.get("missing_fields") or []
     if missing:
         lines.append(f"待补充：{'、'.join(str(x) for x in missing if str(x).strip())}")
-    val_err = interrupt_payload.get("validation_error")
-    if val_err:
-        lines.append(f"校验说明：{val_err}")
     display = interrupt_payload.get("scope_draft_display")
     if isinstance(display, dict) and display:
         lines.append("当前解析：")
@@ -107,6 +124,11 @@ def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None
     relaxed = interrupt_payload.get("scope_relaxed_fields") or []
     if relaxed:
         lines.append(f"已自动放宽字段：{'、'.join(str(x) for x in relaxed if str(x).strip())}")
+    example = str(interrupt_payload.get("confirm_reply_example") or "").strip()
+    if not example:
+        example = build_scope_hitl_confirm_reply_example(interrupt_payload)
+    if example:
+        lines.extend(["", "确认回复示例：", example])
     return "\n".join(lines)
 
 
@@ -121,6 +143,11 @@ def format_scope_hitl_user_message(*, action: str, payload: dict[str, Any] | Non
     supplement = str(payload.get("user_supplement") or "").strip()
     if supplement:
         parts.append(supplement)
+    image_urls = payload.get("image_urls")
+    if isinstance(image_urls, list):
+        urls = [u.strip() for u in image_urls if isinstance(u, str) and u.strip()]
+        if urls:
+            parts.append("更换图片：\n" + "\n".join(urls))
     patch = payload.get("scope_patch")
     if isinstance(patch, dict) and patch:
         patch_display = scope_draft_to_display(normalize_scope_patch_keys(patch))

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Literal, TypedDict
+from typing import Any, Awaitable, Callable, Literal, TypedDict
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -16,10 +16,16 @@ from app.llm.graphs.img_diag_scope_affirmation import is_matched_confirm_affirma
 from app.llm.graphs.img_diag_scope_display import (
     SCOPE_HITL_DB_MATCHED_PROMPT,
     SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
-    format_missing_fields_cn,
+    SCOPE_HITL_NOT_PARSED_PROMPT,
+    build_scope_hitl_confirm_reply_example,
     normalize_scope_patch_keys,
     scope_draft_to_display,
     scope_field_label,
+)
+from app.llm.graphs.img_diag_hitl_images import (
+    merge_hitl_image_urls_into_request,
+    normalize_image_url_list,
+    validate_hitl_image_urls_for_subtype,
 )
 from app.llm.graphs.img_diag_scope_exclusions import (
     detect_scope_field_exclusions_from_patch,
@@ -43,9 +49,12 @@ from app.llm.graphs.img_diag_session_store import (
     delete_img_diag_resume_session,
     get_img_diag_resume_session,
 )
+from app.llm.graphs.img_diag_vision_display import build_vision_findings_display
 from app.llm.prompt_registry import PromptTemplateRegistry
 
 logger = get_logger(__name__)
+
+VisionRefreshFn = Callable[[dict[str, Any]], Awaitable[tuple[dict[str, Any], int, str]]]
 
 
 class ImgDiagScopeGraphState(TypedDict, total=False):
@@ -76,6 +85,11 @@ class ImgDiagScopeGraphState(TypedDict, total=False):
     human_suggested_actions: list[str]
     missing_fields: list[str]
     interrupt_reason: str
+    orchestrator_path: str
+    vision_prefetch_data: dict[str, Any]
+    vision_prefetch_ms: int
+    vision_prefetch_status: str
+    vision_images_replaced: bool
 
 
 def _cfg():
@@ -135,6 +149,103 @@ def _scope_draft_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
     }
 
 
+def _enrich_interrupt_payload_from_state(state: ImgDiagScopeGraphState, payload: dict[str, Any]) -> None:
+    orchestrator_path = str(state.get("orchestrator_path") or "scope_first")
+    payload["orchestrator_path"] = orchestrator_path
+    payload["img_diag_subtype"] = str(state.get("img_diag_subtype") or "defect_ident")
+    hitl_rounds = int(state.get("hitl_rounds") or 0)
+    vision_data = state.get("vision_prefetch_data")
+    images_replaced = bool(state.get("vision_images_replaced"))
+    include_vision = (
+        isinstance(vision_data, dict)
+        and bool(vision_data)
+        and (
+            images_replaced
+            or (
+                orchestrator_path == "vision_first"
+                and hitl_rounds <= 1
+            )
+        )
+    )
+    payload["include_vision_preview"] = include_vision
+    if include_vision:
+        subtype = str(state.get("img_diag_subtype") or "defect_ident")
+        payload["vision_findings"] = vision_data
+        payload["vision_findings_display"] = build_vision_findings_display(
+            vision_data,
+            img_diag_subtype=subtype,
+        )
+    payload["confirm_reply_example"] = build_scope_hitl_confirm_reply_example(payload)
+
+
+def _resume_session_kwargs(
+    state: ImgDiagScopeGraphState,
+    *,
+    thread_id: str,
+    request_id: str,
+    interrupt_payload: dict[str, Any],
+    img_diag_request: dict[str, Any],
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "thread_id": thread_id,
+        "request_id": request_id,
+        "user_id": str(state.get("user_id") or ""),
+        "session_id": str(state.get("session_id") or ""),
+        "analysis_type": str(state.get("analysis_type") or ""),
+        "img_diag_subtype": str(state.get("img_diag_subtype") or ""),
+        "interrupt_payload": interrupt_payload,
+        "img_diag_request": img_diag_request,
+        "orchestrator_path": str(state.get("orchestrator_path") or "scope_first"),
+    }
+    vision_data = state.get("vision_prefetch_data")
+    if isinstance(vision_data, dict) and vision_data:
+        kwargs["vision_prefetch"] = vision_data
+        kwargs["vision_prefetch_ms"] = int(state.get("vision_prefetch_ms") or 0)
+        kwargs["vision_prefetch_status"] = str(state.get("vision_prefetch_status") or "")
+    return kwargs
+
+
+async def _finalize_state_after_hitl_resume(
+    state: dict[str, Any],
+    *,
+    session: Any,
+    vision_refresh: VisionRefreshFn | None,
+    for_interrupt: bool,
+) -> dict[str, Any]:
+    """
+    换图后重跑视觉并写回 state；更新 img_diag_request。
+    interrupt：Path1/Path2 均刷新 prefetch 供预览；
+    confirm：仅 Path1 刷新 prefetch（Path2 由 gather 再跑视觉）。
+    """
+    updated_request = dict(state.get("img_diag_request") or session.img_diag_request or {})
+    state["img_diag_request"] = updated_request
+    if not state.get("vision_images_replaced"):
+        if not state.get("vision_prefetch_data") and session.vision_prefetch:
+            state["vision_prefetch_data"] = session.vision_prefetch
+            state["vision_prefetch_ms"] = session.vision_prefetch_ms
+            state["vision_prefetch_status"] = session.vision_prefetch_status
+        return updated_request
+
+    orchestrator_path = str(state.get("orchestrator_path") or session.orchestrator_path or "scope_first")
+    should_refresh = for_interrupt or orchestrator_path == "vision_first"
+    if not should_refresh or vision_refresh is None:
+        return updated_request
+
+    vision_data, ms, status = await vision_refresh(updated_request)
+    state["vision_prefetch_data"] = vision_data
+    state["vision_prefetch_ms"] = int(ms or 0)
+    state["vision_prefetch_status"] = str(status or "")
+    logger.info(
+        "img_diag hitl vision refreshed orchestrator=%s for_interrupt=%s ms=%s status=%s url_count=%s",
+        orchestrator_path,
+        for_interrupt,
+        ms,
+        status,
+        len(normalize_image_url_list(updated_request.get("image_urls"))),
+    )
+    return updated_request
+
+
 def _build_interrupt_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
     scope_draft = _scope_draft_payload(state)
     missing = state.get("missing_fields") or []
@@ -152,7 +263,30 @@ def _build_interrupt_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
     }
     if relaxed:
         payload["scope_relaxed_fields"] = [scope_field_label(f) for f in relaxed]
+    _enrich_interrupt_payload_from_state(state, payload)
     return payload
+
+
+def _apply_hitl_image_urls_to_state(
+    state: ImgDiagScopeGraphState,
+    payload: dict[str, Any],
+) -> str | None:
+    """先合并 URL，再 scope 解析。返回校验错误说明或 None。"""
+    state["vision_images_replaced"] = False
+    req = dict(state.get("img_diag_request") or {})
+    updated, changed = merge_hitl_image_urls_into_request(req, payload)
+    if not changed:
+        return None
+    subtype = str(state.get("img_diag_subtype") or updated.get("img_diag_subtype") or "defect_ident")
+    err = validate_hitl_image_urls_for_subtype(
+        img_diag_subtype=subtype,
+        image_urls=list(updated.get("image_urls") or []),
+    )
+    if err:
+        return err
+    state["img_diag_request"] = updated
+    state["vision_images_replaced"] = True
+    return None
 
 
 def _apply_human_scope_response(
@@ -165,6 +299,9 @@ def _apply_human_scope_response(
         state["abort_requested"] = True
         state["abort_reason"] = str(payload.get("reason") or "user aborted scope confirm")
         return state
+
+    _apply_hitl_image_urls_to_state(state, payload if isinstance(payload, dict) else {})
+
     supplement = str(payload.get("user_supplement") or "").strip()
     patch = payload.get("scope_patch")
     pending_matched = bool(state.get("pending_matched_confirm"))
@@ -234,9 +371,7 @@ def make_img_diag_scope_nodes(
         trigger, reason = should_trigger_scope_hitl(draft)
         state["interrupt_reason"] = reason if trigger else ""
         if trigger:
-            state["human_prompt"] = (
-                f"请补充以下信息：{format_missing_fields_cn(state['missing_fields'])}"
-            )
+            state["human_prompt"] = SCOPE_HITL_NOT_PARSED_PROMPT
         return state
 
     async def scope_human_confirm(state: ImgDiagScopeGraphState) -> ImgDiagScopeGraphState:
@@ -420,6 +555,10 @@ class ImgDiagScopeHitlRunner:
         *,
         request_id: str,
         img_diag_request: dict[str, Any],
+        orchestrator_path: str = "scope_first",
+        vision_prefetch: dict[str, Any] | None = None,
+        vision_prefetch_ms: int = 0,
+        vision_prefetch_status: str = "",
     ) -> ImgDiagScopeGraphState:
         req = img_diag_request
         opts = req.get("options") or {}
@@ -432,7 +571,7 @@ class ImgDiagScopeHitlRunner:
             else "img_diag_defect_ident"
         )
         query = (req.get("query") or "").strip()
-        return {
+        state: ImgDiagScopeGraphState = {
             "request_id": request_id,
             "user_id": req.get("user_id", ""),
             "session_id": req.get("session_id", ""),
@@ -445,7 +584,13 @@ class ImgDiagScopeHitlRunner:
             "scope_parse_attempts": 0,
             "hitl_rounds": 0,
             "human_interactions": [],
+            "orchestrator_path": orchestrator_path or "scope_first",
         }
+        if isinstance(vision_prefetch, dict) and vision_prefetch:
+            state["vision_prefetch_data"] = vision_prefetch
+            state["vision_prefetch_ms"] = int(vision_prefetch_ms or 0)
+            state["vision_prefetch_status"] = str(vision_prefetch_status or "")
+        return state
 
     async def _yield_updates(
         self,
@@ -479,6 +624,10 @@ class ImgDiagScopeHitlRunner:
         img_diag_request: dict[str, Any],
         *,
         request_id: str | None = None,
+        orchestrator_path: str = "scope_first",
+        vision_prefetch: dict[str, Any] | None = None,
+        vision_prefetch_ms: int = 0,
+        vision_prefetch_status: str = "",
     ) -> dict[str, Any]:
         """
         返回 dict:
@@ -498,7 +647,14 @@ class ImgDiagScopeHitlRunner:
             return {"status": "skipped", "reason": reason}
 
         rid = request_id or f"anl_{uuid.uuid4().hex[:12]}"
-        initial = self._build_initial_state(request_id=rid, img_diag_request=img_diag_request)
+        initial = self._build_initial_state(
+            request_id=rid,
+            img_diag_request=img_diag_request,
+            orchestrator_path=orchestrator_path,
+            vision_prefetch=vision_prefetch,
+            vision_prefetch_ms=vision_prefetch_ms,
+            vision_prefetch_status=vision_prefetch_status,
+        )
         config = img_diag_graph_configurable(rid)
         final_state: dict[str, Any] = dict(initial)
 
@@ -516,14 +672,13 @@ class ImgDiagScopeHitlRunner:
                     [u for u in (stored_urls or []) if isinstance(u, str) and u.strip()]
                 )
                 token = create_img_diag_resume_token(
-                    thread_id=rid,
-                    request_id=rid,
-                    user_id=str(initial.get("user_id") or ""),
-                    session_id=str(initial.get("session_id") or ""),
-                    analysis_type=str(initial.get("analysis_type") or ""),
-                    img_diag_subtype=str(initial.get("img_diag_subtype") or ""),
-                    interrupt_payload=intr,
-                    img_diag_request=img_diag_request,
+                    **_resume_session_kwargs(
+                        final_state,
+                        thread_id=rid,
+                        request_id=rid,
+                        interrupt_payload=intr,
+                        img_diag_request=img_diag_request,
+                    )
                 )
                 logger.info(
                     "img_diag scope interrupt store resume session request_id=%s "
@@ -566,6 +721,7 @@ class ImgDiagScopeHitlRunner:
         session_id: str,
         action: str,
         payload: dict[str, Any] | None = None,
+        vision_refresh: VisionRefreshFn | None = None,
     ) -> dict[str, Any]:
         session = get_img_diag_resume_session(resume_token)
         if session is None:
@@ -575,13 +731,30 @@ class ImgDiagScopeHitlRunner:
         if not self.available():
             return {"status": "error", "message": "checkpoint not enabled"}
 
+        payload = payload or {}
+        if "image_urls" in payload:
+            req_probe = dict(session.img_diag_request or {})
+            updated_probe, changed_probe = merge_hitl_image_urls_into_request(req_probe, payload)
+            if changed_probe:
+                subtype = str(
+                    updated_probe.get("img_diag_subtype")
+                    or session.img_diag_subtype
+                    or "defect_ident"
+                )
+                img_err = validate_hitl_image_urls_for_subtype(
+                    img_diag_subtype=subtype,
+                    image_urls=list(updated_probe.get("image_urls") or []),
+                )
+                if img_err:
+                    return {"status": "error", "message": img_err}
+
         try:
             from langgraph.types import Command  # type: ignore[import-not-found]
         except ImportError:
             return {"status": "error", "message": "langgraph Command unavailable"}
 
         config = img_diag_graph_configurable(session.thread_id)
-        human_input = {"action": action, "payload": payload or {}}
+        human_input = {"action": action, "payload": payload}
         final_state: dict[str, Any] = {}
 
         async for ev in self._yield_updates(
@@ -591,16 +764,35 @@ class ImgDiagScopeHitlRunner:
             if "_state_update" in ev:
                 final_state.update(ev["_state_update"])
             if "_interrupt_payload" in ev:
-                intr = ev["_interrupt_payload"]
+                snap_early = await self._graph.aget_state(config)
+                state_for_token: dict[str, Any] = (
+                    dict(snap_early.values) if snap_early and snap_early.values else {}
+                )
+                state_for_token.update(final_state)
+                if not state_for_token.get("vision_prefetch_data") and session.vision_prefetch:
+                    state_for_token["vision_prefetch_data"] = session.vision_prefetch
+                    state_for_token["vision_prefetch_ms"] = session.vision_prefetch_ms
+                    state_for_token["vision_prefetch_status"] = session.vision_prefetch_status
+                state_for_token.setdefault("orchestrator_path", session.orchestrator_path)
+                state_for_token.setdefault("user_id", user_id)
+                state_for_token.setdefault("session_id", session_id)
+                state_for_token.setdefault("analysis_type", session.analysis_type)
+                state_for_token.setdefault("img_diag_subtype", session.img_diag_subtype)
+                updated_request = await _finalize_state_after_hitl_resume(
+                    state_for_token,
+                    session=session,
+                    vision_refresh=vision_refresh,
+                    for_interrupt=True,
+                )
+                intr = _build_interrupt_payload(state_for_token)
                 new_token = create_img_diag_resume_token(
-                    thread_id=session.thread_id,
-                    request_id=session.request_id,
-                    user_id=user_id,
-                    session_id=session_id,
-                    analysis_type=session.analysis_type,
-                    img_diag_subtype=session.img_diag_subtype,
-                    interrupt_payload=intr,
-                    img_diag_request=session.img_diag_request,
+                    **_resume_session_kwargs(
+                        state_for_token,
+                        thread_id=session.thread_id,
+                        request_id=session.request_id,
+                        interrupt_payload=intr,
+                        img_diag_request=updated_request,
+                    )
                 )
                 delete_img_diag_resume_session(resume_token)
                 return {
@@ -608,7 +800,11 @@ class ImgDiagScopeHitlRunner:
                     "request_id": session.request_id,
                     "resume_token": new_token,
                     "interrupt_payload": intr,
-                    "img_diag_request": session.img_diag_request,
+                    "img_diag_request": updated_request,
+                    "orchestrator_path": session.orchestrator_path,
+                    "vision_prefetch": state_for_token.get("vision_prefetch_data"),
+                    "vision_prefetch_ms": int(state_for_token.get("vision_prefetch_ms") or 0),
+                    "vision_prefetch_status": str(state_for_token.get("vision_prefetch_status") or ""),
                 }
 
         delete_img_diag_resume_session(resume_token)
@@ -622,27 +818,33 @@ class ImgDiagScopeHitlRunner:
                 "message": final_state.get("abort_reason") or "scope confirm aborted",
             }
         if final_state.get("confirmed_scope_intent") and final_state.get("scope_intent_text"):
-            stored_urls = (
-                session.img_diag_request.get("image_urls")
-                if isinstance(session.img_diag_request, dict)
-                else []
+            state_confirmed: dict[str, Any] = dict(final_state)
+            state_confirmed.setdefault("orchestrator_path", session.orchestrator_path)
+            updated_request = await _finalize_state_after_hitl_resume(
+                state_confirmed,
+                session=session,
+                vision_refresh=vision_refresh,
+                for_interrupt=False,
             )
-            url_count = len(
-                [u for u in (stored_urls or []) if isinstance(u, str) and u.strip()]
-            )
+            stored_urls = updated_request.get("image_urls") if isinstance(updated_request, dict) else []
+            url_count = len(normalize_image_url_list(stored_urls))
             logger.info(
                 "img_diag scope resume confirmed request_id=%s action=%s "
-                "session_image_urls url_count=%s raw_list_len=%s",
+                "session_image_urls url_count=%s vision_replaced=%s",
                 session.request_id,
                 action,
                 url_count,
-                len(stored_urls or []),
+                bool(state_confirmed.get("vision_images_replaced")),
             )
             return {
                 "status": "confirmed",
                 "request_id": session.request_id,
                 "confirmed_scope_intent": final_state["confirmed_scope_intent"],
                 "scope_intent_text": final_state["scope_intent_text"],
-                "img_diag_request": session.img_diag_request,
+                "img_diag_request": updated_request,
+                "orchestrator_path": session.orchestrator_path,
+                "vision_prefetch": state_confirmed.get("vision_prefetch_data"),
+                "vision_prefetch_ms": int(state_confirmed.get("vision_prefetch_ms") or 0),
+                "vision_prefetch_status": str(state_confirmed.get("vision_prefetch_status") or ""),
             }
         return {"status": "error", "message": "scope confirm incomplete after resume"}

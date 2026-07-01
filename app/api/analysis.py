@@ -341,7 +341,7 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
 
     前端建议流程：
     人机协同触发(用户问题中解析确认 机组/受热面)： -
-    1.	循环监听 `event === "img_diag_scope_input_required"`，
+    1.	监听 `event === "img_diag_scope_input_required"`（台账确认信息） 和 `event === "img_diag_vision_preview"`(视觉分析结果)，
     2.	监听到后，前端展示流中 `prompt` + `scope_draft_display`；用户在输入框补充说明，调用人机协同恢复接口 **`/run-img-diag-resume-stream`**（携带 `resume_token`）续跑
     3.	没监听到，同一条首流 SSE 直接到 meta → 报告流，不需要 resume 接口
 
@@ -385,6 +385,7 @@ async def run_analysis_img_diag_scope_resume_stream(
       - `abort`：用户取消 scope 确认流程。
     - `payload`：可选 JSON 对象，常用子字段：
       - `user_supplement`（string）：用户在输入框的补充说明（如「2号锅炉水冷壁」），会与累计问句合并后重新 LLM 解析。
+      - `image_urls`（string[]）：可选，整表替换首流图片 URL（须先经 **`/img-diag/upload`** 上传）；换图后会重跑视觉臂并覆盖 session 中的视觉结果。
       - `scope_patch`（object）：结构化修正；键可为英文字段名（`boiler`、`device_name`）或中文展示名（`机组`、`受热面`）。
       - `reason`（string）：`action=abort` 时可选取消原因。
 

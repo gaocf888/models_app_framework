@@ -167,8 +167,10 @@
       流程：可先 <code>POST /analysis/img-diag/upload</code> 上传现场图，将返回的 <code>url</code> 填入
       <code>image_urls</code>；再 <code>POST /analysis/run-img-diag-stream</code>（<code>text/event-stream</code>）。
       视觉 / 业务 RAG / NL2SQL 三臂并行与同步接口相同；仅结论阶段以 SSE 增量下发（<code>summary_delta</code>）。
-      <strong>台账信息确认</strong>：首流可能先收到 <code>img_diag_scope_input_required</code>（非 summary 流），提示会写入下方 summary 区；
-      用户在「query」框补充后再次点击「开始/继续」→ 调用 <code>POST /analysis/run-img-diag-resume-stream</code> 续跑。
+      <strong>Path1 先视觉</strong>：首流可能连续收到 <code>img_diag_vision_preview</code>（图像可见分析）→
+      <code>img_diag_scope_input_required</code>（台账确认）；两者中间无需用户操作，流结束后在 query 补充并 resume。
+      <strong>台账信息确认</strong>：用户在「query」框补充后再次点击「开始/继续」→
+      <code>POST /analysis/run-img-diag-resume-stream</code> 续跑。
       鉴权 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>；需 CORS 放行本页来源。
       编排说明：<code>enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md</code>。
     </p>
@@ -244,7 +246,7 @@
       <div id="status">就绪</div>
       <h2>upload 响应</h2>
       <div id="uploadResult">（尚未上传）</div>
-      <h2 style="margin-top: 1rem;">summary（Markdown 增量，run-img-diag-stream）</h2>
+      <h2 style="margin-top: 1rem;">summary（HITL / Markdown 增量）</h2>
       <div id="answer"></div>
       <h2 style="margin-top: 1rem;">知识来源 rag_citations（finished 帧，与智能客服同形）</h2>
       <div id="ragCitations">（尚未开始）</div>
@@ -264,6 +266,8 @@
   let abortCtrl = null;
   let scopeResumeToken = null;
   let scopeHitlWaiting = false;
+  let lastVisionPreview = null;
+  let visionPreviewShown = false;
   const BTN_RUN_LABEL_START = "2) 开始流式看图诊断";
   const BTN_RUN_LABEL_RESUME = "3) 提交 scope 补充并继续流式诊断";
   const QUERY_PLACEHOLDER_DEFAULT = "请识别图片缺陷并给出处置建议，位置是1号锅炉低温过热器A侧第2排第3根";
@@ -293,19 +297,51 @@
     }).filter(Boolean);
   }
 
+  function visionDisplayLines(display) {
+    if (!display || typeof display !== "object") return [];
+    return Object.entries(display)
+      .filter(function (entry) {
+        const val = entry[1];
+        return val != null && String(val).trim() !== "";
+      })
+      .map(function (entry) {
+        return entry[0] + "：" + entry[1];
+      });
+  }
+
+  function formatVisionPreviewMessage(ev) {
+    const lines = ["【图像可见分析】", ""];
+    const displayLines = visionDisplayLines(ev.vision_findings_display || {});
+    if (displayLines.length) {
+      displayLines.forEach(function (ln) {
+        lines.push("  · " + ln);
+      });
+    } else {
+      lines.push("  · （暂无可见形貌描述）");
+    }
+    return lines.join("\n");
+  }
+
   function formatScopeHitlMessage(ev) {
-    const lines = [
-      "【台账信息确认】",
-      "",
-      ev.prompt || "请补充或确认机组与受热面信息",
-      "",
-      "台账信息：",
-    ];
+    const lines = ["【台账信息确认】", ""];
+    if (ev.prompt) {
+      lines.push(ev.prompt, "");
+    } else {
+      lines.push("请补充或确认机组与受热面信息", "");
+    }
+    lines.push("台账信息：");
     const draftLines = scopeDraftDisplayLines(ev);
     if (draftLines.length) {
       lines.push.apply(lines, draftLines);
     } else {
       lines.push("（暂无）");
+    }
+    if (ev.missing_fields && ev.missing_fields.length) {
+      lines.push("", "待补充：" + ev.missing_fields.join("、"));
+    }
+    const example = (ev.confirm_reply_example || "").trim();
+    if (example) {
+      lines.push("", "确认回复示例：", example);
     }
     return lines.join("\n");
   }
@@ -313,7 +349,17 @@
   function enterScopeHitlWait(ev) {
     scopeResumeToken = ev.resume_token || "";
     scopeHitlWaiting = !!scopeResumeToken;
-    $("answer").textContent = formatScopeHitlMessage(ev);
+    const parts = [];
+    if (ev.include_vision_preview) {
+      if (lastVisionPreview) {
+        parts.push(formatVisionPreviewMessage(lastVisionPreview));
+      } else if (ev.vision_findings_display && Object.keys(ev.vision_findings_display).length) {
+        parts.push(formatVisionPreviewMessage(ev));
+      }
+      visionPreviewShown = true;
+    }
+    parts.push(formatScopeHitlMessage(ev));
+    $("answer").textContent = parts.join("\n\n");
     $("query").value = "";
     $("query").placeholder = QUERY_PLACEHOLDER_HITL;
     $("btnRun").textContent = BTN_RUN_LABEL_RESUME;
@@ -340,6 +386,12 @@
         const kind = ev.event;
         logEvent(kind || "?");
 
+        if (kind === "img_diag_vision_preview") {
+          lastVisionPreview = ev;
+          $("answer").textContent = formatVisionPreviewMessage(ev);
+          setStatus("已收到图像可见分析，等待台账确认事件…");
+          return;
+        }
         if (kind === "img_diag_scope_input_required") {
           enterScopeHitlWait(ev);
           return;
@@ -510,6 +562,8 @@
     $("answer").textContent = "";
     $("meta").textContent = "…";
     $("eventLog").textContent = "";
+    lastVisionPreview = null;
+    visionPreviewShown = false;
     exitScopeHitlWait();
     abortCtrl = new AbortController();
     setBusy(true);
@@ -567,10 +621,14 @@
     const uid = $("userId").value.trim();
     const sid = $("sessionId").value.trim();
     const supplement = $("query").value.trim();
-    if (action === "confirm_scope" && !supplement) {
-      showErr("请在 query 文本框填写 scope 补充说明（如受热面名称）。");
+    const resumeImageUrls = imageUrlsList();
+    if (action === "confirm_scope" && !supplement && !resumeImageUrls.length) {
+      showErr("请在 query 填写 scope 补充，和/或在 image_urls 填入换图 URL。");
       return;
     }
+    const resumePayload = action === "abort" ? { reason: "user abort" } : {};
+    if (supplement) resumePayload.user_supplement = supplement;
+    if (resumeImageUrls.length) resumePayload.image_urls = resumeImageUrls;
     abortCtrl = new AbortController();
     setBusy(true);
     setStatus("scope resume-stream 连接中…");
@@ -583,7 +641,7 @@
           user_id: uid,
           session_id: sid,
           action: action,
-          payload: action === "abort" ? { reason: "user abort" } : { user_supplement: supplement },
+          payload: resumePayload,
         }),
         signal: abortCtrl.signal,
         credentials: "omit",
@@ -765,6 +823,8 @@
   $("btnClear").addEventListener("click", () => {
     $("uploadResult").textContent = "（尚未上传）";
     $("answer").textContent = "";
+    lastVisionPreview = null;
+    visionPreviewShown = false;
     $("ragCitations").textContent = "（尚未开始）";
     $("meta").textContent = "（尚未开始）";
     $("eventLog").textContent = "";

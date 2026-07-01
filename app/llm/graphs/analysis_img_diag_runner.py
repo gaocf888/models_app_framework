@@ -37,6 +37,11 @@ from app.llm.graphs.img_diag_scope_display import (
     format_scope_hitl_user_message,
 )
 from app.llm.graphs.img_diag_scope_graph import ImgDiagScopeHitlRunner
+from app.llm.graphs.img_diag_scope_probe import probe_img_diag_scope_route
+from app.llm.graphs.img_diag_vision_display import (
+    build_vision_findings_display,
+    format_vision_hitl_assistant_block,
+)
 from app.models.analysis import (
     AnalysisEvidence,
     AnalysisImgDiagRequest,
@@ -317,13 +322,81 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         req: AnalysisImgDiagRequest,
         *,
         request_id: str | None = None,
+        orchestrator_path: str = "scope_first",
+        vision_prefetch: dict[str, Any] | None = None,
+        vision_prefetch_ms: int = 0,
+        vision_prefetch_status: str = "",
     ) -> dict[str, Any]:
         """scope 人机协同；status=skipped|confirmed|interrupt|error。"""
         runner = self._get_scope_hitl_runner()
         return await runner.run_until_scope_confirmed_or_interrupt(
             req.model_dump(mode="json"),
             request_id=request_id,
+            orchestrator_path=orchestrator_path,
+            vision_prefetch=vision_prefetch,
+            vision_prefetch_ms=vision_prefetch_ms,
+            vision_prefetch_status=vision_prefetch_status,
         )
+
+    async def _probe_and_run_scope_hitl_phase(
+        self,
+        req: AnalysisImgDiagRequest,
+        *,
+        request_id: str | None = None,
+        cancel_checker: Callable[[], Awaitable[bool]] | None = None,
+    ) -> tuple[dict[str, Any], str, dict[str, Any] | None, int, str]:
+        """
+        入口探针 + scope HITL。
+        Path2：scope 先行（含匹配成功确认）；Path1 且有图：先视觉臂再 scope HITL。
+        返回 (scope_result, orchestrator_path, vision_prefetch, vision_ms, vision_status)。
+        """
+        profile = self._profile(req)
+        runner = self._get_scope_hitl_runner()
+        if not runner._scope_hitl_enabled() or not runner.available():
+            return {"status": "skipped"}, "scope_first", None, 0, "skipped"
+
+        url_diag = self._image_urls_diag(req.image_urls)
+        has_images = url_diag["url_count"] > 0
+        probe = await probe_img_diag_scope_route(
+            req.query.strip(),
+            llm_client=self._llm,
+            prompt_registry=self._prompts,
+        )
+        orchestrator_path = "scope_first"
+        vision_prefetch: dict[str, Any] | None = None
+        vision_ms = 0
+        vision_status = "skipped"
+
+        if has_images:
+            orchestrator_path = "vision_first"
+            await raise_if_stream_cancelled(cancel_checker)
+            vision_prefetch, vision_ms = await self._lane_vision(req, profile)
+            vision_status = (
+                "skipped" if vision_prefetch.get("vision_skipped") else "success"
+            )
+            logger.info(
+                "img_diag vision_first has_images probe_route=%s request_id=%s vision_status=%s ms=%s",
+                probe.route,
+                request_id,
+                vision_status,
+                vision_ms,
+            )
+        else:
+            logger.info(
+                "img_diag scope_first no_images probe_route=%s request_id=%s",
+                probe.route,
+                request_id,
+            )
+
+        scope_result = await self._run_scope_hitl_phase(
+            req,
+            request_id=request_id,
+            orchestrator_path=orchestrator_path,
+            vision_prefetch=vision_prefetch,
+            vision_prefetch_ms=vision_ms,
+            vision_prefetch_status=vision_status,
+        )
+        return scope_result, orchestrator_path, vision_prefetch, vision_ms, vision_status
 
     @staticmethod
     def _image_urls_diag(image_urls: list[str] | None) -> dict[str, Any]:
@@ -357,6 +430,15 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             self._build_img_diag_user_message_content(req),
         )
 
+    async def _refresh_vision_for_hitl_request(
+        self, img_diag_request: dict[str, Any]
+    ) -> tuple[dict[str, Any], int, str]:
+        req = AnalysisImgDiagRequest.model_validate(img_diag_request)
+        profile = self._profile(req)
+        data, ms = await self._lane_vision(req, profile)
+        status = "skipped" if data.get("vision_skipped") else "success"
+        return data, int(ms or 0), status
+
     def _persist_scope_hitl_assistant_message(
         self,
         *,
@@ -386,10 +468,25 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             format_scope_hitl_user_message(action=action, payload=payload),
         )
 
+    def _persist_vision_preview_assistant_message(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        vision_data: dict[str, Any] | None,
+        img_diag_subtype: str,
+    ) -> None:
+        block = format_vision_hitl_assistant_block(
+            vision_data,
+            img_diag_subtype=img_diag_subtype,
+        )
+        if block:
+            self._conv.append_assistant_message(user_id, session_id, block)
+
     @staticmethod
     def _scope_interrupt_sse_event(result: dict[str, Any]) -> dict[str, Any]:
         intr = result.get("interrupt_payload") or {}
-        return {
+        event: dict[str, Any] = {
             "event": "img_diag_scope_input_required",
             "request_id": result.get("request_id"),
             "resume_token": result.get("resume_token"),
@@ -397,10 +494,37 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "scope_draft": intr.get("scope_draft"),
             "scope_draft_display": intr.get("scope_draft_display"),
             "missing_fields": intr.get("missing_fields") or [],
-            "validation_error": intr.get("validation_error"),
             "suggested_actions": intr.get("suggested_actions")
             or ["confirm_scope", "edit_scope", "abort"],
             "interrupt_reason": intr.get("interrupt_reason"),
+            "orchestrator_path": intr.get("orchestrator_path") or result.get("orchestrator_path"),
+            "include_vision_preview": bool(intr.get("include_vision_preview")),
+            "confirm_reply_example": intr.get("confirm_reply_example"),
+        }
+        if intr.get("include_vision_preview"):
+            if intr.get("vision_findings_display"):
+                event["vision_findings_display"] = intr.get("vision_findings_display")
+        return event
+
+    @staticmethod
+    def _vision_preview_sse_event(
+        *,
+        request_id: str,
+        img_diag_subtype: str,
+        vision_data: dict[str, Any] | None,
+        vision_ms: int,
+        vision_status: str,
+    ) -> dict[str, Any]:
+        return {
+            "event": "img_diag_vision_preview",
+            "request_id": request_id,
+            "orchestrator_path": "vision_first",
+            "img_diag_subtype": img_diag_subtype,
+            "vision_findings_display": build_vision_findings_display(
+                vision_data,
+                img_diag_subtype=img_diag_subtype,
+            ),
+            "include_vision_preview": True,
         }
 
     @staticmethod
@@ -1210,16 +1334,24 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         request_id: str | None = None,
         cancel_checker: Callable[[], Awaitable[bool]] | None = None,
         persist_user_message: bool = True,
+        orchestrator_path: str = "scope_first",
+        vision_prefetch: dict[str, Any] | None = None,
+        vision_prefetch_ms: int = 0,
+        vision_prefetch_status: str = "",
+        skip_vision_lane: bool = False,
     ) -> _ImgDiagPack:
         await raise_if_stream_cancelled(cancel_checker)
         profile = self._profile(req)
         pack_url_diag = self._image_urls_diag(req.image_urls)
         logger.info(
             "img_diag gather_pack start subtype=%s request_id=%s scope_hitl_confirmed=%s "
+            "orchestrator_path=%s skip_vision_lane=%s "
             "image_urls url_count=%s raw_list_len=%s url_previews=%s",
             profile.subtype,
             (request_id or "").strip() or "-",
             bool(confirmed_scope),
+            orchestrator_path,
+            skip_vision_lane,
             pack_url_diag["url_count"],
             pack_url_diag["raw_list_len"],
             pack_url_diag["url_previews"],
@@ -1331,10 +1463,30 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 return [], [], [], 0, "failed", ""
 
         if rag_mode in ("hybrid", "parallel"):
-            v_pack, nl_pack, pf_pack = await asyncio.gather(vision_safe(), nl_safe(), prefetch_safe())
+            if skip_vision_lane and isinstance(vision_prefetch, dict):
+                nl_pack = await nl_safe()
+                pf_pack = await prefetch_safe()
+                v_pack = (
+                    vision_prefetch,
+                    int(vision_prefetch_ms or 0),
+                    vision_prefetch_status or "success",
+                )
+            else:
+                v_pack, nl_pack, pf_pack = await asyncio.gather(
+                    vision_safe(), nl_safe(), prefetch_safe()
+                )
         else:
-            v_pack, nl_pack = await asyncio.gather(vision_safe(), nl_safe())
-            pf_pack = ([], [], [], 0, "skipped", "")
+            if skip_vision_lane and isinstance(vision_prefetch, dict):
+                nl_pack = await nl_safe()
+                pf_pack = ([], [], [], 0, "skipped", "")
+                v_pack = (
+                    vision_prefetch,
+                    int(vision_prefetch_ms or 0),
+                    vision_prefetch_status or "success",
+                )
+            else:
+                v_pack, nl_pack = await asyncio.gather(vision_safe(), nl_safe())
+                pf_pack = ([], [], [], 0, "skipped", "")
 
         await raise_if_stream_cancelled(cancel_checker)
 
@@ -1415,6 +1567,8 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "img_diag_subtype": profile.subtype,
             "scope_hitl_confirmed": bool(confirmed_scope),
             "scope_intent_text": (scope_intent_text[:500] if scope_intent_text else None),
+            "orchestrator_path": orchestrator_path,
+            "vision_lane_reused": bool(skip_vision_lane and vision_prefetch),
             "vision_lane_ms": vision_ms,
             "vision_lane_status": vision_status,
             "nl2sql_lane_status": nl_status,
@@ -1684,8 +1838,18 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         ).inc()
         try:
             self._persist_img_diag_initial_user_message(req)
-            scope_result = await self._run_scope_hitl_phase(req)
+            scope_result, orchestrator_path, vision_prefetch, vision_ms, vision_status = (
+                await self._probe_and_run_scope_hitl_phase(req)
+            )
             if scope_result.get("status") == "interrupt":
+                intr = scope_result.get("interrupt_payload") or {}
+                if orchestrator_path == "vision_first" and intr.get("include_vision_preview"):
+                    self._persist_vision_preview_assistant_message(
+                        user_id=req.user_id,
+                        session_id=req.session_id,
+                        vision_data=vision_prefetch,
+                        img_diag_subtype=req.img_diag_subtype,
+                    )
                 self._persist_scope_hitl_assistant_message(
                     user_id=req.user_id,
                     session_id=req.session_id,
@@ -1705,12 +1869,20 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 else None
             )
             rid = scope_result.get("request_id")
+            skip_vision = (
+                orchestrator_path == "vision_first" and isinstance(vision_prefetch, dict)
+            )
             pack = await self._gather_img_diag_pack(
                 req,
                 confirmed_scope=confirmed,
                 scope_intent_text=scope_text,
                 request_id=rid,
                 persist_user_message=False,
+                orchestrator_path=orchestrator_path,
+                vision_prefetch=vision_prefetch,
+                vision_prefetch_ms=vision_ms,
+                vision_prefetch_status=vision_status,
+                skip_vision_lane=skip_vision,
             )
             t_syn = perf_counter()
             self._log_vision_before_synthesis(pack)
@@ -1891,8 +2063,16 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
 
             try:
                 await raise_if_stream_cancelled(cancel_checker)
-                scope_result = await self._run_scope_hitl_phase(
-                    req, request_id=stream_request_id
+                (
+                    scope_result,
+                    orchestrator_path,
+                    vision_prefetch,
+                    vision_ms,
+                    vision_status,
+                ) = await self._probe_and_run_scope_hitl_phase(
+                    req,
+                    request_id=stream_request_id,
+                    cancel_checker=cancel_checker,
                 )
             except AnalysisStreamCancelled:
                 yield self._img_diag_stream_aborted_finished(
@@ -1915,6 +2095,21 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 return
 
             if scope_result.get("status") == "interrupt":
+                intr = scope_result.get("interrupt_payload") or {}
+                if orchestrator_path == "vision_first" and intr.get("include_vision_preview"):
+                    self._persist_vision_preview_assistant_message(
+                        user_id=req.user_id,
+                        session_id=req.session_id,
+                        vision_data=vision_prefetch,
+                        img_diag_subtype=req.img_diag_subtype,
+                    )
+                    yield self._vision_preview_sse_event(
+                        request_id=str(scope_result.get("request_id") or stream_request_id),
+                        img_diag_subtype=req.img_diag_subtype,
+                        vision_data=vision_prefetch,
+                        vision_ms=vision_ms,
+                        vision_status=vision_status,
+                    )
                 self._persist_scope_hitl_assistant_message(
                     user_id=req.user_id,
                     session_id=req.session_id,
@@ -1936,6 +2131,9 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 else None
             )
             rid = scope_result.get("request_id") or stream_request_id
+            skip_vision = (
+                orchestrator_path == "vision_first" and isinstance(vision_prefetch, dict)
+            )
 
             try:
                 await raise_if_stream_cancelled(cancel_checker)
@@ -1946,6 +2144,11 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                     request_id=rid,
                     cancel_checker=cancel_checker,
                     persist_user_message=False,
+                    orchestrator_path=orchestrator_path,
+                    vision_prefetch=vision_prefetch,
+                    vision_prefetch_ms=vision_ms,
+                    vision_prefetch_status=vision_status,
+                    skip_vision_lane=skip_vision,
                 )
             except AnalysisStreamCancelled:
                 yield self._img_diag_stream_aborted_finished(
@@ -2037,6 +2240,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                     session_id=session_id,
                     action=action,
                     payload=payload,
+                    vision_refresh=self._refresh_vision_for_hitl_request,
                 )
             except AnalysisStreamCancelled:
                 yield self._img_diag_stream_aborted_finished(
@@ -2059,10 +2263,33 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                 scope_result.get("request_id"),
             )
             if scope_result.get("status") == "interrupt":
+                intr = scope_result.get("interrupt_payload") or {}
+                req_dict = scope_result.get("img_diag_request") or {}
+                subtype = str(
+                    req_dict.get("img_diag_subtype")
+                    if isinstance(req_dict, dict)
+                    else "defect_ident"
+                )
+                if intr.get("include_vision_preview"):
+                    vision_data = scope_result.get("vision_prefetch")
+                    if isinstance(vision_data, dict) and vision_data:
+                        self._persist_vision_preview_assistant_message(
+                            user_id=user_id,
+                            session_id=session_id,
+                            vision_data=vision_data,
+                            img_diag_subtype=subtype,
+                        )
+                        yield self._vision_preview_sse_event(
+                            request_id=str(scope_result.get("request_id") or stream_request_id),
+                            img_diag_subtype=subtype,
+                            vision_data=vision_data,
+                            vision_ms=int(scope_result.get("vision_prefetch_ms") or 0),
+                            vision_status=str(scope_result.get("vision_prefetch_status") or ""),
+                        )
                 self._persist_scope_hitl_assistant_message(
                     user_id=user_id,
                     session_id=session_id,
-                    interrupt_payload=scope_result.get("interrupt_payload"),
+                    interrupt_payload=intr,
                 )
                 yield self._scope_interrupt_sse_event(scope_result)
                 return
@@ -2094,6 +2321,13 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             scope_text = scope_result.get("scope_intent_text")
             rid = scope_result.get("request_id") or stream_request_id
             image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
+            orchestrator_path = str(scope_result.get("orchestrator_path") or "scope_first")
+            vision_prefetch = scope_result.get("vision_prefetch")
+            vision_ms = int(scope_result.get("vision_prefetch_ms") or 0)
+            vision_status = str(scope_result.get("vision_prefetch_status") or "")
+            skip_vision = (
+                orchestrator_path == "vision_first" and isinstance(vision_prefetch, dict)
+            )
 
             try:
                 await raise_if_stream_cancelled(cancel_checker)
@@ -2104,6 +2338,11 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                     request_id=rid,
                     cancel_checker=cancel_checker,
                     persist_user_message=False,
+                    orchestrator_path=orchestrator_path,
+                    vision_prefetch=vision_prefetch,
+                    vision_prefetch_ms=vision_ms,
+                    vision_prefetch_status=vision_status,
+                    skip_vision_lane=skip_vision,
                 )
             except AnalysisStreamCancelled:
                 yield self._img_diag_stream_aborted_finished(
