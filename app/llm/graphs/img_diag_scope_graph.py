@@ -19,8 +19,11 @@ from app.llm.graphs.img_diag_scope_display import (
     SCOPE_HITL_NOT_PARSED_PROMPT,
     build_scope_hitl_confirm_reply_example,
     normalize_scope_patch_keys,
+    record_scope_hitl_context,
+    resolve_scope_hitl_display_prompt,
     scope_draft_to_display,
     scope_field_label,
+    sync_scope_hitl_after_vision_accepted,
 )
 from app.llm.graphs.img_diag_hitl_images import (
     merge_hitl_image_urls_into_request,
@@ -241,6 +244,7 @@ async def _finalize_state_after_hitl_resume(
     state["vision_prefetch_data"] = vision_data
     state["vision_prefetch_ms"] = int(ms or 0)
     state["vision_prefetch_status"] = str(status or "")
+    sync_scope_hitl_after_vision_accepted(state)
     logger.info(
         "img_diag hitl vision refreshed orchestrator=%s for_interrupt=%s ms=%s status=%s url_count=%s",
         orchestrator_path,
@@ -276,16 +280,7 @@ async def _prepare_scope_resume_state(
         state["vision_prefetch_data"] = vision_data
         state["vision_prefetch_ms"] = int(ms or 0)
         state["vision_prefetch_status"] = str(status or "")
-        subtype = str(state.get("img_diag_subtype") or req.get("img_diag_subtype") or "defect_ident")
-        if not is_scope_confirm_blocked_by_vision(
-            vision_data if isinstance(vision_data, dict) else None,
-            img_diag_request=req,
-            img_diag_subtype=subtype,
-        ):
-            if state.get("interrupt_reason") == VISION_REJECT_INTERRUPT_REASON:
-                state.pop("interrupt_reason", None)
-            if state.get("human_prompt") == VISION_HITL_REUPLOAD_PROMPT:
-                state.pop("human_prompt", None)
+        sync_scope_hitl_after_vision_accepted(state)
     await graph.aupdate_state(config, state)
     return None
 
@@ -320,12 +315,24 @@ def _scope_interrupt_from_state(
     }
 
 
+def _apply_vision_gate_or_restore_scope_hitl(state: ImgDiagScopeGraphState) -> None:
+    """HITL 展示前：非锅炉图阻断；已通过则恢复台账确认文案。"""
+    if apply_vision_rejection_scope_gate(state):
+        return
+    sync_scope_hitl_after_vision_accepted(state)
+
+
 def _build_interrupt_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
+    _apply_vision_gate_or_restore_scope_hitl(state)
     scope_draft = _scope_draft_payload(state)
     missing = state.get("missing_fields") or []
     relaxed = state.get("scope_relaxed_fields") or []
+    vision_blocked = bool(
+        state.get("vision_confirm_blocked")
+        or str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON
+    )
     payload: dict[str, Any] = {
-        "prompt": state.get("human_prompt") or "请补充或确认机组与受热面信息",
+        "prompt": resolve_scope_hitl_display_prompt(state=state),
         "scope_draft": scope_draft,
         "scope_draft_display": scope_draft_to_display(scope_draft),
         "missing_fields": [scope_field_label(f) for f in missing],
@@ -334,6 +341,8 @@ def _build_interrupt_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
         or ["confirm_scope", "edit_scope", "abort"],
         "request_id": state.get("request_id"),
         "interrupt_reason": state.get("interrupt_reason"),
+        "pending_matched_confirm": bool(state.get("pending_matched_confirm")),
+        "vision_confirm_blocked": vision_blocked,
     }
     scope_reason = state.get("scope_interrupt_reason")
     if isinstance(scope_reason, str) and scope_reason.strip():
@@ -453,6 +462,11 @@ def make_img_diag_scope_nodes(
         state["interrupt_reason"] = reason if trigger else ""
         if trigger:
             state["human_prompt"] = SCOPE_HITL_NOT_PARSED_PROMPT
+            record_scope_hitl_context(
+                state,
+                reason=reason if trigger else "",
+                prompt=SCOPE_HITL_NOT_PARSED_PROMPT,
+            )
         return state
 
     async def scope_human_confirm(state: ImgDiagScopeGraphState) -> ImgDiagScopeGraphState:
@@ -485,6 +499,11 @@ def make_img_diag_scope_nodes(
             state["human_prompt"] = SCOPE_HITL_DB_NOT_MATCHED_PROMPT
             state["interrupt_reason"] = "db_validate_zero_rows"
             state["scope_relaxed_fields"] = []
+            record_scope_hitl_context(
+                state,
+                reason="db_validate_zero_rows",
+                prompt=SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
+            )
             return state
 
         tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
@@ -510,6 +529,12 @@ def make_img_diag_scope_nodes(
             state["human_prompt"] = SCOPE_HITL_DB_MATCHED_PROMPT
             state["interrupt_reason"] = "db_validate_matched"
             state["missing_fields"] = []
+            record_scope_hitl_context(
+                state,
+                reason="db_validate_matched",
+                prompt=SCOPE_HITL_DB_MATCHED_PROMPT,
+            )
+            apply_vision_rejection_scope_gate(state)
             return state
 
         if relaxed_fields:
@@ -568,12 +593,12 @@ def _route_after_validate(state: ImgDiagScopeGraphState):
 
 
 def _route_after_human_confirm(state: ImgDiagScopeGraphState):
-    if str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON:
-        return "scope_human_confirm"
     if state.get("confirmed_scope_intent") and state.get("scope_intent_text"):
         from langgraph.graph import END  # type: ignore[import-not-found]
 
         return END
+    if str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON:
+        return "scope_human_confirm"
     return "scope_preflight_llm"
 
 

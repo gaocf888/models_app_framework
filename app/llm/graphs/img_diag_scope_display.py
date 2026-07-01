@@ -47,6 +47,115 @@ SCOPE_HITL_RELAXED_PROMPT = (
 )
 
 
+def record_scope_hitl_context(state: dict[str, Any], *, reason: str, prompt: str) -> None:
+    """记录当前台账 HITL 场景，供视觉拒识 overlay 清除后恢复。"""
+    from app.llm.graphs.img_diag_vision_display import VISION_HITL_REUPLOAD_PROMPT
+
+    if reason and reason != VISION_REJECT_INTERRUPT_REASON:
+        state["scope_interrupt_reason"] = reason
+    if prompt and prompt != VISION_HITL_REUPLOAD_PROMPT:
+        state["scope_hitl_prompt"] = prompt
+
+
+def resolve_scope_hitl_display_prompt(
+    *,
+    state: dict[str, Any] | None = None,
+    interrupt_payload: dict[str, Any] | None = None,
+) -> str:
+    """
+    台账 HITL 区展示文案：仅 scope 解析/校验结果，不含视觉换图提示。
+    视觉换图提示只在「图像可见分析」区展示。
+    """
+    from app.llm.graphs.img_diag_vision_display import VISION_HITL_REUPLOAD_PROMPT
+
+    src: dict[str, Any] = interrupt_payload if interrupt_payload is not None else (state or {})
+
+    scope_prompt = str(src.get("scope_hitl_prompt") or "").strip()
+    if scope_prompt and scope_prompt != VISION_HITL_REUPLOAD_PROMPT:
+        return scope_prompt
+
+    human = str(src.get("human_prompt") or src.get("prompt") or "").strip()
+    if human and human not in (VISION_HITL_REUPLOAD_PROMPT,) and "请重新上传后再确认台账" not in human:
+        return human
+
+    scope_reason = str(src.get("scope_interrupt_reason") or "").strip()
+    if scope_reason == "db_validate_matched" or src.get("pending_matched_confirm"):
+        return SCOPE_HITL_DB_MATCHED_PROMPT
+    if scope_reason == "db_validate_zero_rows":
+        return SCOPE_HITL_DB_NOT_MATCHED_PROMPT
+    if scope_reason.startswith("missing:"):
+        return SCOPE_HITL_NOT_PARSED_PROMPT
+
+    interrupt = str(src.get("interrupt_reason") or "").strip()
+    if interrupt == "db_validate_matched":
+        return SCOPE_HITL_DB_MATCHED_PROMPT
+    if interrupt == "db_validate_zero_rows":
+        return SCOPE_HITL_DB_NOT_MATCHED_PROMPT
+    if interrupt.startswith("missing:"):
+        return SCOPE_HITL_NOT_PARSED_PROMPT
+
+    if src.get("validation_error"):
+        return SCOPE_HITL_DB_NOT_MATCHED_PROMPT
+
+    return human or "请补充或确认机组与受热面信息"
+
+
+def sync_scope_hitl_after_vision_accepted(state: dict[str, Any]) -> None:
+    """
+    视觉已通过时撤销「非锅炉图」overlay，恢复台账 HITL 的 prompt / reason。
+    解决换图后 vision 正常但 human_prompt 仍停留在拒识文案的问题。
+    """
+    from app.llm.graphs.img_diag_vision_display import (
+        VISION_HITL_REUPLOAD_PROMPT,
+        is_scope_confirm_blocked_by_vision,
+    )
+
+    req = state.get("img_diag_request") if isinstance(state.get("img_diag_request"), dict) else {}
+    subtype = str(state.get("img_diag_subtype") or req.get("img_diag_subtype") or "defect_ident")
+    vision_data = state.get("vision_prefetch_data")
+    if is_scope_confirm_blocked_by_vision(
+        vision_data if isinstance(vision_data, dict) else None,
+        img_diag_request=req,
+        img_diag_subtype=subtype,
+    ):
+        return
+
+    scope_reason = str(state.get("scope_interrupt_reason") or "").strip()
+    scope_prompt = str(state.get("scope_hitl_prompt") or "").strip()
+
+    if state.get("interrupt_reason") == VISION_REJECT_INTERRUPT_REASON:
+        state.pop("interrupt_reason", None)
+    if state.get("human_prompt") == VISION_HITL_REUPLOAD_PROMPT:
+        state.pop("human_prompt", None)
+
+    if scope_reason == "db_validate_matched" or scope_prompt == SCOPE_HITL_DB_MATCHED_PROMPT:
+        state["human_prompt"] = SCOPE_HITL_DB_MATCHED_PROMPT
+        state["interrupt_reason"] = "db_validate_matched"
+        state["pending_matched_confirm"] = True
+        state["scope_interrupt_reason"] = "db_validate_matched"
+        state["scope_hitl_prompt"] = SCOPE_HITL_DB_MATCHED_PROMPT
+        return
+
+    if scope_reason == "db_validate_zero_rows" or scope_prompt == SCOPE_HITL_DB_NOT_MATCHED_PROMPT:
+        state["human_prompt"] = SCOPE_HITL_DB_NOT_MATCHED_PROMPT
+        state["interrupt_reason"] = "db_validate_zero_rows"
+        return
+
+    if scope_prompt == SCOPE_HITL_NOT_PARSED_PROMPT or scope_reason.startswith("missing:"):
+        if scope_prompt:
+            state["human_prompt"] = scope_prompt
+        if scope_reason:
+            state["interrupt_reason"] = scope_reason
+        return
+
+    if scope_prompt:
+        state["human_prompt"] = scope_prompt
+    if scope_reason:
+        state["interrupt_reason"] = scope_reason
+
+    state.pop("vision_confirm_blocked", None)
+
+
 def scope_field_label(field: str) -> str:
     return SCOPE_FIELD_LABELS.get(field, field)
 
@@ -79,26 +188,41 @@ def format_scope_draft_display_lines(scope_draft: dict[str, Any] | None) -> list
 
 
 def build_scope_hitl_confirm_reply_example(interrupt_payload: dict[str, Any] | None) -> str:
-    """根据 HITL 场景生成用户确认回复示例（展示在台账确认信息末尾；与视觉换图提示无关）。"""
+    """根据台账 HITL 场景生成确认回复示例（与视觉换图无关）。"""
     payload = interrupt_payload or {}
-    reason = str(payload.get("interrupt_reason") or "").strip()
-    prompt = str(payload.get("prompt") or "").strip()
     missing = [str(x).strip() for x in (payload.get("missing_fields") or []) if str(x).strip()]
 
-    if reason == VISION_REJECT_INTERRUPT_REASON:
-        reason = str(payload.get("scope_interrupt_reason") or "").strip()
-        scope_prompt = str(payload.get("scope_hitl_prompt") or "").strip()
-        if scope_prompt:
-            prompt = scope_prompt
+    scope_reason = str(payload.get("scope_interrupt_reason") or "").strip()
+    scope_prompt = str(payload.get("scope_hitl_prompt") or "").strip()
+    display_prompt = resolve_scope_hitl_display_prompt(interrupt_payload=payload)
 
-    if reason == "db_validate_matched" or prompt == SCOPE_HITL_DB_MATCHED_PROMPT:
+    if payload.get("pending_matched_confirm"):
         return "确认或继续"
-    if reason == "db_validate_zero_rows" or prompt == SCOPE_HITL_DB_NOT_MATCHED_PROMPT:
+
+    if (
+        scope_reason == "db_validate_matched"
+        or scope_prompt == SCOPE_HITL_DB_MATCHED_PROMPT
+        or display_prompt == SCOPE_HITL_DB_MATCHED_PROMPT
+    ):
+        return "确认或继续"
+
+    if (
+        scope_reason == "db_validate_zero_rows"
+        or scope_prompt == SCOPE_HITL_DB_NOT_MATCHED_PROMPT
+        or display_prompt == SCOPE_HITL_DB_NOT_MATCHED_PROMPT
+        or payload.get("validation_error")
+    ):
         return "受热面应为****，检测位置应为****"
-    if prompt == SCOPE_HITL_NOT_PARSED_PROMPT or reason.startswith("missing:"):
+
+    if (
+        scope_prompt == SCOPE_HITL_NOT_PARSED_PROMPT
+        or display_prompt == SCOPE_HITL_NOT_PARSED_PROMPT
+        or scope_reason.startswith("missing:")
+    ):
         if missing:
             return "，".join(f"{field}应为****" for field in missing[:4])
         return "机组应为****，受热面应为****"
+
     return "受热面应为****，检测位置应为****"
 
 
@@ -107,7 +231,7 @@ def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None
     if not interrupt_payload:
         return SCOPE_HITL_TITLE
     lines: list[str] = [SCOPE_HITL_TITLE]
-    prompt = str(interrupt_payload.get("prompt") or "").strip()
+    prompt = resolve_scope_hitl_display_prompt(interrupt_payload=interrupt_payload)
     if prompt:
         lines.append(prompt)
     missing = interrupt_payload.get("missing_fields") or []

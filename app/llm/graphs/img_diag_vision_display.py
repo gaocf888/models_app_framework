@@ -14,6 +14,36 @@ VISION_REJECT_INTERRUPT_REASON = "vision_boiler_image_rejected"
 
 _VISION_NARRATIVE_CUT_MARKERS = ("---JSON---",)
 
+# 仅当 JSON 标 false 但叙述/字段明确为锅炉管壁缺陷时，才视为「模型自相矛盾」而放行
+_BOILER_VISION_DOMAIN_KEYWORDS = (
+    "管壁",
+    "管轴",
+    "管排",
+    "受热面",
+    "锅炉",
+    "焊缝",
+    "吹灰孔",
+    "水冷壁",
+    "过热器",
+    "再热器",
+    "省煤器",
+    "鳍片",
+    "弯管",
+    "承压管",
+)
+
+_BOILER_DEFECT_KEYWORDS = (
+    "裂纹",
+    "沟槽",
+    "胀粗",
+    "蠕变",
+    "腐蚀",
+    "剥落",
+    "爆口",
+    "泄漏",
+    "开裂",
+)
+
 # 前端展示不输出的内部/结构化字段（完整 vision_findings 仍保留在状态机）
 _VISION_DISPLAY_SKIP_KEYS = frozenset({
     "parse_error",
@@ -31,20 +61,70 @@ def is_vision_boiler_relevance_rejected(vision_data: dict[str, Any] | None) -> b
     if not isinstance(vision_data, dict) or vision_data.get("vision_skipped"):
         return False
     flag = vision_data.get("is_boiler_pressure_part_image")
-    if flag is False:
-        return True
     if flag is True:
         return False
+    if flag is False:
+        if _vision_has_substantive_boiler_defect_analysis(vision_data):
+            return False
+        return True
     return False
+
+
+def _text_has_boiler_domain(text: str) -> bool:
+    return any(k in text for k in _BOILER_VISION_DOMAIN_KEYWORDS)
+
+
+def _text_has_boiler_defect_signal(text: str) -> bool:
+    return any(k in text for k in _BOILER_DEFECT_KEYWORDS)
+
+
+def _vision_has_substantive_boiler_defect_analysis(vision_data: dict[str, Any]) -> bool:
+    """
+    JSON 标 false 但形貌明确为锅炉管壁缺陷时，视为相关图。
+    仅修正 JSON 与 Markdown 矛盾；非锅炉设备的长描述不得放行。
+    """
+    parts: list[str] = []
+    for key in (
+        "defect_type",
+        "morphology_summary",
+        "preliminary_visual_conclusion",
+        "vision_narrative",
+    ):
+        val = vision_data.get(key)
+        if isinstance(val, str) and val.strip():
+            parts.append(val)
+    defect_types = vision_data.get("defect_types")
+    if isinstance(defect_types, list):
+        parts.extend(str(x) for x in defect_types if str(x).strip())
+    signals = vision_data.get("defect_signals")
+    if isinstance(signals, list):
+        parts.extend(str(x) for x in signals if str(x).strip())
+
+    combined = " ".join(parts)
+    if not combined.strip():
+        return False
+    if not _text_has_boiler_domain(combined):
+        return False
+
+    defect_type = vision_data.get("defect_type")
+    if isinstance(defect_type, str) and defect_type.strip() and "非锅炉" not in defect_type:
+        return True
+    if isinstance(defect_types, list) and any(str(x).strip() for x in defect_types):
+        return True
+    return _text_has_boiler_defect_signal(combined)
 
 
 def vision_boiler_rejection_message(vision_data: dict[str, Any] | None) -> str | None:
     if not is_vision_boiler_relevance_rejected(vision_data):
         return None
-    for key in ("user_message", "preliminary_visual_conclusion", "notes", "vision_narrative"):
-        val = vision_data.get(key) if isinstance(vision_data, dict) else None
-        if isinstance(val, str) and val.strip():
-            return sanitize_vision_narrative_for_frontend(val) or val.strip()
+    if not isinstance(vision_data, dict):
+        return VISION_BOILER_REJECTION_DEFAULT
+
+    user_msg = vision_data.get("user_message")
+    if isinstance(user_msg, str) and user_msg.strip() and "重新上传" in user_msg:
+        cleaned = sanitize_vision_narrative_for_frontend(user_msg)
+        return cleaned or user_msg.strip()
+
     return VISION_BOILER_REJECTION_DEFAULT
 
 
@@ -210,8 +290,9 @@ def is_scope_confirm_blocked_by_vision(
 
 def apply_vision_rejection_scope_gate(state: dict[str, Any]) -> bool:
     """
-    若当前 scope 已可确认但图片非锅炉相关，撤销 confirmed 并写入 HITL 换图提示。
-    返回 True 表示已阻断（须再次人机协同）。
+    图片非锅炉相关：阻断 scope 确认完成，但台账区仍只展示 scope 文案。
+    视觉换图提示由「图像可见分析」区单独展示。
+    返回 True 表示须再次人机协同（换图或确认）。
     """
     req = state.get("img_diag_request") if isinstance(state.get("img_diag_request"), dict) else {}
     subtype = str(state.get("img_diag_subtype") or req.get("img_diag_subtype") or "defect_ident")
@@ -221,6 +302,14 @@ def apply_vision_rejection_scope_gate(state: dict[str, Any]) -> bool:
         img_diag_request=req,
         img_diag_subtype=subtype,
     ):
+        state.pop("vision_confirm_blocked", None)
+        if str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON:
+            state.pop("interrupt_reason", None)
+            scope_reason = str(state.get("scope_interrupt_reason") or "").strip()
+            if scope_reason:
+                state["interrupt_reason"] = scope_reason
+            elif state.get("pending_matched_confirm"):
+                state["interrupt_reason"] = "db_validate_matched"
         return False
 
     prior_reason = str(state.get("interrupt_reason") or "").strip()
@@ -230,11 +319,20 @@ def apply_vision_rejection_scope_gate(state: dict[str, Any]) -> bool:
     if prior_prompt and prior_prompt != VISION_HITL_REUPLOAD_PROMPT:
         state["scope_hitl_prompt"] = prior_prompt
 
+    if state.get("pending_matched_confirm"):
+        from app.llm.graphs.img_diag_scope_display import SCOPE_HITL_DB_MATCHED_PROMPT
+
+        state.setdefault("scope_interrupt_reason", "db_validate_matched")
+        state.setdefault("scope_hitl_prompt", SCOPE_HITL_DB_MATCHED_PROMPT)
+
     state.pop("confirmed_scope_intent", None)
     state.pop("scope_intent_text", None)
-    state["pending_matched_confirm"] = False
-    state["human_prompt"] = VISION_HITL_REUPLOAD_PROMPT
+    state["vision_confirm_blocked"] = True
     state["interrupt_reason"] = VISION_REJECT_INTERRUPT_REASON
     state["needs_db_retry"] = False
     state["validation_error"] = None
+
+    from app.llm.graphs.img_diag_scope_display import resolve_scope_hitl_display_prompt
+
+    state["human_prompt"] = resolve_scope_hitl_display_prompt(state=state)
     return True
