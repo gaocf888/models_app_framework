@@ -170,7 +170,6 @@ def _enrich_interrupt_payload_from_state(state: ImgDiagScopeGraphState, payload:
     payload["include_vision_preview"] = include_vision
     if include_vision:
         subtype = str(state.get("img_diag_subtype") or "defect_ident")
-        payload["vision_findings"] = vision_data
         payload["vision_findings_display"] = build_vision_findings_display(
             vision_data,
             img_diag_subtype=subtype,

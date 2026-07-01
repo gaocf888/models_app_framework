@@ -39,8 +39,7 @@ def test_vision_rejection_default_message_when_flag_false_only() -> None:
 def test_vision_relevant_still_builds_morphology() -> None:
     data = {
         "is_boiler_pressure_part_image": True,
-        "morphology_summary": "可见沟槽沿管轴延伸",
-        "surface_state": "氧化皮",
+        "vision_narrative": "- **主体形貌**：可见沟槽沿管轴延伸\n- **表面状态**：氧化皮",
     }
     assert is_vision_boiler_relevance_rejected(data) is False
     bullets = build_vision_morphology_bullets(data, img_diag_subtype="defect_ident")

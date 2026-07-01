@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 VISION_HITL_TITLE = "【图像可见分析】"
+VISION_FRONTEND_NARRATIVE_LABEL = "外观可见分析"
 
 VISION_BOILER_REJECTION_DEFAULT = "当前图片非锅炉相关图片，请重新上传"
+
+_VISION_NARRATIVE_CUT_MARKERS = ("---JSON---",)
+
+# 前端展示不输出的内部/结构化字段（完整 vision_findings 仍保留在状态机）
+_VISION_DISPLAY_SKIP_KEYS = frozenset({
+    "parse_error",
+    "raw_text",
+    "vision_skipped",
+    "reason",
+    "vision_lane_error",
+    "is_boiler_pressure_part_image",
+    "vision_narrative",
+})
 
 
 def is_vision_boiler_relevance_rejected(vision_data: dict[str, Any] | None) -> bool:
@@ -24,73 +39,74 @@ def is_vision_boiler_relevance_rejected(vision_data: dict[str, Any] | None) -> b
 def vision_boiler_rejection_message(vision_data: dict[str, Any] | None) -> str | None:
     if not is_vision_boiler_relevance_rejected(vision_data):
         return None
-    for key in ("user_message", "preliminary_visual_conclusion", "notes"):
+    for key in ("user_message", "preliminary_visual_conclusion", "notes", "vision_narrative"):
         val = vision_data.get(key) if isinstance(vision_data, dict) else None
         if isinstance(val, str) and val.strip():
-            return val.strip()
+            return sanitize_vision_narrative_for_frontend(val) or val.strip()
     return VISION_BOILER_REJECTION_DEFAULT
 
 
-def _as_list_text(val: Any, *, limit: int = 12) -> str | None:
-    if val is None:
-        return None
-    if isinstance(val, list):
-        items = [str(x).strip() for x in val if str(x).strip()]
-        if not items:
-            return None
-        return "；".join(items[:limit])
-    s = str(val).strip()
-    return s or None
+def sanitize_vision_narrative_for_frontend(raw: str) -> str:
+    """
+    去除 Markdown 格式标识、JSON 分隔段等，仅供接口返回前端展示。
+    不修改状态机内原始 ``vision_narrative``。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
 
+    for marker in _VISION_NARRATIVE_CUT_MARKERS:
+        idx = text.upper().find(marker.upper())
+        if idx != -1:
+            text = text[:idx].strip()
 
-def _pick(data: dict[str, Any], *keys: str) -> Any:
-    for k in keys:
-        v = data.get(k)
-        if v is None:
+    hr = re.search(r"\n\s*---\s*\n", text)
+    if hr:
+        text = text[: hr.start()].strip()
+
+    lines_out: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s in {"---", "---JSON---"}:
             continue
-        if isinstance(v, str) and not v.strip():
+
+        s = re.sub(r"^#+\s*", "", s)
+        s = re.sub(r"^Markdown\s+", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"^外观可见分析[：:]\s*", "", s)
+        s = re.sub(r"^Markdown\s*外观可见分析\s*$", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"^外观可见分析\s*$", "", s)
+
+        if re.fullmatch(r"`+", s):
             continue
-        return v
-    return None
+
+        s = re.sub(r"\*\*([^*]+)\*\*", r"\1", s)
+        s = re.sub(r"`([^`]+)`", r"\1", s)
+
+        if s.startswith("- "):
+            s = s[2:].strip()
+        elif s.startswith("* "):
+            s = s[2:].strip()
+
+        if s:
+            lines_out.append(s)
+
+    return "\n".join(lines_out)
 
 
-def _build_main_morphology(data: dict[str, Any], *, subtype: str) -> str | None:
-    morph = _pick(data, "morphology_summary", "burst_morphology_summary")
-    if morph:
-        return str(morph).strip()
-    parts: list[str] = []
-    if subtype == "leakage_burst":
-        main = _pick(data, "burst_type", "defect_type")
-        if main:
-            parts.append(str(main))
-    else:
-        main = _pick(data, "defect_type")
-        orient = _pick(data, "defect_orientation")
-        if main:
-            parts.append(str(main))
-        if orient:
-            parts.append(f"走向{orient}" if "走向" not in str(orient) else str(orient))
-    return "，".join(parts) if parts else None
+def extract_frontend_vision_narrative(vision_data: dict[str, Any] | None) -> str:
+    """从 vision_findings 提取供前端展示的外观可见分析叙述（已清理 Markdown 标识）。"""
+    if not isinstance(vision_data, dict) or vision_data.get("vision_skipped"):
+        return ""
 
+    rejection = vision_boiler_rejection_message(vision_data)
+    if rejection:
+        return rejection
 
-def _extra_signal_bullets(data: dict[str, Any], *, subtype: str, limit: int = 2) -> list[str]:
-    signals = _pick(data, "defect_signals", "burst_signals")
-    if not isinstance(signals, list):
-        return []
-    out: list[str] = []
-    for item in signals:
-        text = str(item).strip()
-        if not text:
-            continue
-        out.append(text)
-        if len(out) >= limit:
-            break
-    marking = _pick(data, "inspector_marking")
-    if marking and str(marking).strip() not in ("无", "无明显", "none"):
-        mark = str(marking).strip()
-        if mark not in out and len(out) < limit:
-            out.insert(0, f"检验标记：{mark}")
-    return out[:limit]
+    raw_narrative = vision_data.get("vision_narrative")
+    if isinstance(raw_narrative, str) and raw_narrative.strip():
+        return sanitize_vision_narrative_for_frontend(raw_narrative)
+
+    return ""
 
 
 def build_vision_morphology_bullets(
@@ -98,40 +114,18 @@ def build_vision_morphology_bullets(
     *,
     img_diag_subtype: str,
 ) -> list[str]:
-    """
-    将视觉 JSON 映射为报告 1.1「缺陷宏观形貌特征」风格的 bullet 行（仅非空项）。
-    固定顺序：主体形貌 → 分布特征 → 表面状态 → 其他可见要点。
-    """
+    """HITL / SSE bullet 行：仅外观可见分析叙述（不含 JSON 结构化字段摘要）。"""
+    del img_diag_subtype  # 前端叙述展示与子类型无关
     if not isinstance(vision_data, dict) or vision_data.get("vision_skipped"):
         return []
 
-    rejection = vision_boiler_rejection_message(vision_data)
-    if rejection:
-        return [rejection]
+    narrative = extract_frontend_vision_narrative(vision_data)
+    if narrative:
+        return [ln for ln in narrative.splitlines() if ln.strip()]
 
-    subtype = (img_diag_subtype or "defect_ident").strip()
-    data = vision_data
-    bullets: list[str] = []
-
-    main = _build_main_morphology(data, subtype=subtype)
-    if main:
-        bullets.append(f"主体形貌：{main}")
-
-    dist = _pick(data, "distribution_features")
-    if dist:
-        bullets.append(f"分布特征：{dist}")
-
-    surface = _pick(data, "surface_state")
-    if surface:
-        bullets.append(f"表面状态：{surface}")
-
-    extras = _extra_signal_bullets(data, subtype=subtype, limit=2)
-    if extras:
-        bullets.append(f"其他可见要点：{'；'.join(extras)}")
-
-    if not bullets and data.get("parse_error"):
-        bullets.append("说明：视觉结果解析异常，请以后续台账确认与完整报告为准")
-    return bullets
+    if vision_data.get("parse_error"):
+        return ["说明：视觉结果解析异常，请以后续台账确认与完整报告为准"]
+    return []
 
 
 def build_vision_findings_display(
@@ -139,7 +133,8 @@ def build_vision_findings_display(
     *,
     img_diag_subtype: str,
 ) -> dict[str, Any]:
-    """HITL / SSE 用简化展示 dict（与 build_vision_morphology_bullets 一致）。"""
+    """HITL / SSE 用展示 dict：仅 ``外观可见分析`` 叙述，不含结构化 JSON 字段。"""
+    del img_diag_subtype
     if not isinstance(vision_data, dict) or vision_data.get("vision_skipped"):
         reason = (vision_data or {}).get("reason") if isinstance(vision_data, dict) else None
         out: dict[str, Any] = {"说明": "未提供有效图片，暂无视觉分析结果"}
@@ -151,15 +146,13 @@ def build_vision_findings_display(
     if rejection:
         return {"说明": rejection}
 
-    bullets = build_vision_morphology_bullets(vision_data, img_diag_subtype=img_diag_subtype)
-    display: dict[str, Any] = {}
-    for line in bullets:
-        if "：" in line:
-            label, val = line.split("：", 1)
-            display[label.strip()] = val.strip()
-        else:
-            display["说明"] = line
-    return display
+    narrative = extract_frontend_vision_narrative(vision_data)
+    if narrative:
+        return {VISION_FRONTEND_NARRATIVE_LABEL: narrative}
+
+    if vision_data.get("parse_error"):
+        return {"说明": "视觉结果解析异常，请以后续台账确认与完整报告为准"}
+    return {"说明": "（暂无可见形貌描述）"}
 
 
 def format_vision_findings_display_lines(

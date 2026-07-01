@@ -42,6 +42,7 @@ from app.llm.graphs.img_diag_vision_display import (
     build_vision_findings_display,
     format_vision_hitl_assistant_block,
 )
+from app.llm.graphs.img_diag_vision_parse import parse_vision_lane_llm_output
 from app.models.analysis import (
     AnalysisEvidence,
     AnalysisImgDiagRequest,
@@ -53,7 +54,6 @@ from app.models.analysis import (
     DataMode,
     ImgDiagSubtype,
 )
-from app.models.analysis_nl2sql_llm import extract_json_object_from_llm_text
 from app.services.analysis_stream_hooks import dispatch_analysis_nl2sql_stream_structured
 from app.services.chatbot_image_preprocessor import ChatbotImagePreprocessor
 from app.services.chatbot_image_utils import build_user_message_with_images
@@ -257,7 +257,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         """固定短 user 句（对齐智能客服看图），不使用业务 query。"""
         if profile.subtype == "defect_ident":
             return (self._analysis_cfg.img_diag_vision_user_query_defect_ident or "").strip() or (
-                "请分析图片中的缺陷特征与形貌。"
+                "请帮我分析图片缺陷"
             )
         return (self._analysis_cfg.img_diag_vision_user_query_leakage_burst or "").strip() or (
             "请分析图片中的爆口/泄漏可见形貌特征。"
@@ -1190,19 +1190,16 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             temperature=vision_temperature,
         )
         ms = int((perf_counter() - t0) * 1000)
-        parsed = extract_json_object_from_llm_text(raw)
-        if parsed is None:
-            try:
-                parsed = json.loads(raw.strip())
-            except Exception:  # noqa: BLE001
-                parsed = {"raw_text": (raw or "")[:8000], "parse_error": "vision_output_not_json"}
+        parsed = parse_vision_lane_llm_output(raw or "")
         parse_ok = isinstance(parsed, dict) and "parse_error" not in parsed
         logger.info(
-            "img_diag vision done subtype=%s url_count=%s ms=%s parse_ok=%s result_keys=%s",
+            "img_diag vision done subtype=%s url_count=%s ms=%s parse_ok=%s "
+            "has_narrative=%s result_keys=%s",
             profile.subtype,
             len(urls),
             ms,
             parse_ok,
+            bool(isinstance(parsed, dict) and (parsed.get("vision_narrative") or "").strip()),
             list(parsed.keys())[:14] if isinstance(parsed, dict) else [],
         )
         return parsed, ms

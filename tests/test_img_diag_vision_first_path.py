@@ -92,39 +92,55 @@ async def test_probe_path1_when_db_validate_fails() -> None:
 def test_build_vision_morphology_bullets_defect_ident() -> None:
     bullets = build_vision_morphology_bullets(
         {
+            "vision_narrative": (
+                "- **检验标记**：白圈标记\n"
+                "- **线状损伤**：标记圈内周向表面裂纹\n"
+                "- **表面状态**：重度锈蚀"
+            ),
             "defect_type": "沟槽",
-            "defect_orientation": "沿管轴",
-            "morphology_summary": "可见沟槽形貌，走向沿管轴",
-            "distribution_features": "集中分布",
-            "surface_state": "氧化皮剥落",
-            "defect_signals": ["线性沟槽", "边缘较清晰"],
-            "risk_level": "moderate",
+            "defect_types": ["飞灰冲刷磨损沟槽", "周向表面裂纹"],
+            "defect_signals": ["线性沟槽", "白圈内横向细线"],
         },
         img_diag_subtype="defect_ident",
     )
-    assert any("主体形貌" in b for b in bullets)
-    assert any("分布特征" in b for b in bullets)
-    assert any("表面状态" in b for b in bullets)
-    assert not any("严重度" in b for b in bullets)
+    assert any("检验标记" in b for b in bullets)
+    assert any("周向表面裂纹" in b for b in bullets)
+    assert not any("主缺陷类型" in b for b in bullets)
+    assert not any("缺陷类型（多选）" in b for b in bullets)
 
 
-def test_build_vision_findings_display_uses_morphology_keys() -> None:
+def test_build_vision_findings_display_shows_narrative_only() -> None:
     display = build_vision_findings_display(
         {
+            "vision_narrative": "- **线状损伤**：白圈内裂纹\n- **表面状态**：氧化皮剥落",
             "defect_type": "沟槽",
-            "morphology_summary": "可见沟槽形貌",
-            "surface_state": "氧化皮剥落",
+            "defect_types": ["沟槽", "周向表面裂纹"],
         },
         img_diag_subtype="defect_ident",
     )
-    assert "主体形貌" in display
-    assert "表面状态" in display
-    assert "缺陷类型" not in display
+    assert "外观可见分析" in display
+    assert "白圈内裂纹" in display["外观可见分析"]
+    assert "主缺陷类型" not in display
+
+
+def test_build_vision_morphology_bullets_prefers_narrative_lines() -> None:
+    bullets = build_vision_morphology_bullets(
+        {
+            "vision_narrative": "- 白圈内可见周向裂纹\n- 表面重度锈蚀",
+            "defect_type": "周向表面裂纹",
+        },
+        img_diag_subtype="defect_ident",
+    )
+    assert any("周向裂纹" in b for b in bullets)
+    assert not any("主缺陷类型" in b for b in bullets)
 
 
 def test_format_vision_hitl_assistant_block_title() -> None:
     text = format_vision_hitl_assistant_block(
-        {"defect_type": "裂纹", "morphology_summary": "线状裂纹沿管轴延伸"},
+        {
+            "vision_narrative": "- **线状损伤**：线状裂纹沿管轴延伸",
+            "defect_type": "裂纹",
+        },
         img_diag_subtype="defect_ident",
     )
     assert "【图像可见分析】" in text

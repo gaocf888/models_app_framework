@@ -629,7 +629,7 @@ class AnalysisConfig:
     # 视觉臂 system 前缀：复用 chatbot 模板版本（默认跟随 CHATBOT_PROMPT_DEFAULT_VERSION）
     img_diag_vision_chatbot_prompt_version: str | None = None
     # 视觉臂 user 固定短句（不使用缺陷识别/泄爆分析业务 query；位置/处置语义留给 NL2SQL 与 synthesis）
-    img_diag_vision_user_query_defect_ident: str = "请分析图片中的缺陷特征与形貌。"
+    img_diag_vision_user_query_defect_ident: str = "请帮我分析图片缺陷"
     img_diag_vision_user_query_leakage_burst: str = "请分析图片中的爆口/泄漏可见形貌特征。"
     img_diag_lane_timeout_seconds: float = 180.0
     img_diag_upload_max_mb: int = 15
@@ -1422,7 +1422,7 @@ def _load_from_env() -> AppConfig:
         or None,
         img_diag_vision_user_query_defect_ident=(
             os.getenv("ANALYSIS_IMG_DIAG_VISION_USER_QUERY_DEFECT_IDENT")
-            or "请分析图片中的缺陷特征与形貌。"
+            or "请帮我分析图片缺陷"
         ).strip(),
         img_diag_vision_user_query_leakage_burst=(
             os.getenv("ANALYSIS_IMG_DIAG_VISION_USER_QUERY_LEAKAGE_BURST")

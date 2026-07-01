@@ -311,13 +311,26 @@
 
   function formatVisionPreviewMessage(ev) {
     const lines = ["【图像可见分析】", ""];
-    const displayLines = visionDisplayLines(ev.vision_findings_display || {});
-    if (displayLines.length) {
-      displayLines.forEach(function (ln) {
-        lines.push("  · " + ln);
-      });
+    const display = ev.vision_findings_display || {};
+    const narrative = display["外观可见分析"];
+    if (narrative != null && String(narrative).trim()) {
+      String(narrative)
+        .split(/\r?\n/)
+        .forEach(function (ln) {
+          const t = ln.trim();
+          if (t) lines.push("  · " + t);
+        });
+    } else if (display["说明"] && String(display["说明"]).trim()) {
+      lines.push("  · " + String(display["说明"]).trim());
     } else {
-      lines.push("  · （暂无可见形貌描述）");
+      const displayLines = visionDisplayLines(display);
+      if (displayLines.length) {
+        displayLines.forEach(function (ln) {
+          lines.push("  · " + ln);
+        });
+      } else {
+        lines.push("  · （暂无可见形貌描述）");
+      }
     }
     return lines.join("\n");
   }

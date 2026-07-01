@@ -285,9 +285,9 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
             hybrid_rag=MagicMock(),
             nl2sql_service=MagicMock(),
         )
-        runner._analysis_cfg.img_diag_vision_user_query_defect_ident = "请分析图片中的缺陷特征与形貌。"
+        runner._analysis_cfg.img_diag_vision_user_query_defect_ident = "请帮我分析图片缺陷"
         text = runner._vision_user_text(_IMG_DIAG_PROFILES["defect_ident"])
-        self.assertEqual("请分析图片中的缺陷特征与形貌。", text)
+        self.assertEqual("请帮我分析图片缺陷", text)
 
     def test_lane_vision_uses_chatbot_aligned_settings(self) -> None:
         import asyncio
@@ -300,9 +300,7 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
             nl2sql_service=MagicMock(),
         )
         runner._analysis_cfg.img_diag_vision_temperature = 0.45
-        runner._analysis_cfg.img_diag_vision_user_query_defect_ident = (
-            "请分析图片中的缺陷特征与形貌。"
-        )
+        runner._analysis_cfg.img_diag_vision_user_query_defect_ident = "请帮我分析图片缺陷"
 
         def _get_template(
             scene: str,
@@ -346,7 +344,7 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
         self.assertIn("锅炉技术专家", messages[0]["content"])
         self.assertEqual("user", messages[1]["role"])
         user_text = messages[1]["content"][0]["text"]
-        self.assertEqual("请分析图片中的缺陷特征与形貌。", user_text)
+        self.assertEqual("请帮我分析图片缺陷", user_text)
         self.assertNotIn("1号炉", user_text)
         self.assertEqual(
             "http://example.com/preprocessed.jpg",

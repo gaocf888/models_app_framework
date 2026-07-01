@@ -1277,37 +1277,45 @@ analysis_plan_img_diag_defect_ident:
 analysis_img_diag_vision_defect_ident:
   - version: v1
     weight: 1.0
-    description: 缺陷识别视觉臂 JSON 附录（拼接在 chatbot system 之后）
+    description: 缺陷识别视觉臂（方案 C：Markdown 叙述 + ---JSON--- 结构化块）
     content: |
       【看图诊断 · 缺陷识别视觉臂 — 附加说明】
       本轮仅分析照片可见内容；**不要**使用用户口头位置/管段/处置要求（已由其他模块处理）。
-      回答**不要**输出 Markdown 报告，**必须**输出下方单个 JSON 对象。
+      输出分 **两段**，顺序固定，**不可省略**：
+      1) **Markdown 外观可见分析**（自由叙述，对齐智能客服看图缺陷分析风格）；
+      2) 单独一行分隔符 **`---JSON---`**；
+      3) **单个 JSON 对象**（供系统检索与报告合成，字段须与 Markdown 一致，不得矛盾）。
 
       【第 0 步 — 图片相关性（必做，优先于缺陷分析）】
       先判断照片是否为 **锅炉受压管/管壁/受热面管系** 的现场检验或缺陷照片（含管壁局部、焊缝、管排、标记圈拍图等）。
-      - 若 **明显不是**（如风景、人像、文档截图、无关设备、与锅炉管系无关的工业件等）：**禁止**编造缺陷形貌；
-        仅输出下方「不相关」JSON（`is_boiler_pressure_part_image: false`），`user_message` 须为：
-        **「当前图片非锅炉相关图片，请重新上传」**（可微调措辞，但含义一致）。
-      - 若 **是或可能是** 锅炉管壁相关图：输出完整 JSON，且 `is_boiler_pressure_part_image: true`，再执行后续形貌分析。
+      - 若 **明显不是**（如风景、人像、文档截图、无关设备、与锅炉管系无关的工业件等）：Markdown 仅写一句说明非锅炉相关图；`---JSON---` 后仅输出「不相关」JSON。
+      - 若 **是或可能是** 锅炉管壁相关图：先写完整 Markdown 形貌分析，再输出 `is_boiler_pressure_part_image: true` 的完整 JSON。
 
-      【逐项观察 — 仅当 is_boiler_pressure_part_image 为 true 时执行】
-      1) **检验标记**：白圈/黄圈/箭头等（若有，以标记圈内为主缺陷区）；
-      2) **线状损伤**：是否存在裂纹、缝隙、开裂细线（含横跨/沿管轴走向）；与沟槽、剥落边、锈迹纹路的区别；
-      3) **形态与边缘**：走向、边缘是否尖锐/连续/分叉；
-      4) **表面**：锈蚀、氧化皮、涂层剥落、腐蚀产物、金属光泽等。
+      【Markdown 段 — 写法（相关图时必守）】
+      用简洁中文 bullet（`-` 开头），**仅描述可见证据**；建议顺序：
+      - **检验标记**（白圈/黄圈/箭头等；若有，**以标记圈内为主缺陷区**）；
+      - **主体形貌**（形态 + **走向：沿管轴或横跨管轴**）；
+      - **线状损伤**（**裂纹/缝隙/细线** 须单独 bullet；与沟槽、锈迹纹理、剥落边区分）；
+      - **分布特征**、**表面状态**（锈蚀、氧化皮、产物等）；
+      - **其他可见要点**（未覆盖的客观观察）。
+
+      【沟槽 vs 裂纹 — 判别（必做，禁止混淆）】
+      | 特征 | 沟槽/磨损 | 裂纹 |
+      | 走向 | 通常沿管轴或流向的连续长槽 | 可 **横跨管轴（周向/横向）** 或沿管轴 |
+      | 边缘 | 相对缓变、底面较平滑 | **尖锐、不连续** 的细线/分叉 |
+      **硬性规则**：见 **横跨管轴的多条细线、边缘尖锐、位于检验标记圈内** → Markdown 与 JSON 均须明确写出 **裂纹**（可并存锈蚀/沟槽，但不得漏写裂纹）。
 
       【边界】
-      - 仅描述可见证据；**禁止**猜测材质牌号、壁厚、壁温等台账参数；
-      - 腐蚀/剥落/裂纹可并存，须在 defect_types 中分别列出，勿用宽类别覆盖细线形开裂；
-      - 不确定时在 confidence_notes 说明。
+      - **禁止** 猜测材质牌号、壁厚、壁温等台账参数；
+      - 腐蚀/剥落/裂纹可并存；JSON 的 defect_types 须分别列出，勿用宽类别覆盖细线形开裂。
 
-      【JSON 输出 — 不相关时仅输出】
+      【JSON — 不相关时（`---JSON---` 后仅输出）】
       {
         "is_boiler_pressure_part_image": false,
         "user_message": "当前图片非锅炉相关图片，请重新上传"
       }
 
-      【JSON 输出 — 相关时输出完整对象（勿 Markdown）】
+      【JSON — 相关时完整对象（勿 Markdown；须与上一段叙述一致）】
       {
         "is_boiler_pressure_part_image": true,
         "defect_type": "主缺陷类型（中文）",
@@ -1318,11 +1326,11 @@ analysis_img_diag_vision_defect_ident:
         "morphology_summary": "主体形貌描述（须含走向）",
         "distribution_features": "缺陷分布特征",
         "surface_state": "表面状态描述",
-        "defect_signals": ["可见形貌要点，至少一条含走向"],
+        "defect_signals": ["可见形貌要点，至少一条含走向；含裂纹时须写走向"],
         "severity": "none|low|medium|high",
         "risk_level": "general|moderate|critical",
         "location_visual": "照片中可见的定位线索（若无填\"不明显\"）",
-        "failure_mode_hints": ["仅基于可见形貌的机理线索，如疑似疲劳/应力/冲刷/腐蚀，勿断言"],
+        "failure_mode_hints": ["仅基于可见形貌的机理线索，勿断言"],
         "preliminary_visual_conclusion": "外观定性初步结论（不含材质牌号/壁厚等台账数据）",
         "notes": "其他简短客观描述",
         "confidence_notes": "可见度、遮挡、光照、分辨率等影响；声明为通用视觉模型未微调"
@@ -1331,23 +1339,19 @@ analysis_img_diag_vision_defect_ident:
 analysis_img_diag_vision_leakage_burst:
   - version: v1
     weight: 1.0
-    description: 泄爆分析视觉臂 JSON 附录（拼接在 chatbot system 之后）
+    description: 泄爆分析视觉臂（方案 C：Markdown 叙述 + ---JSON--- 结构化块）
     content: |
       【看图诊断 · 泄爆分析视觉臂 — 附加说明】
       本轮仅分析照片可见内容；**不要**使用用户口头管段位置/事故时间（已由其他模块处理）。
-      回答**不要**输出 Markdown 报告，**必须**输出下方单个 JSON 对象。
+      输出分 **两段**：① Markdown 外观可见分析 → ② 单独一行 **`---JSON---`** → ③ 单个 JSON 对象（与 Markdown 一致）。
 
       【第 0 步 — 图片相关性（必做）】
       先判断是否为 **锅炉受热面/承压管系** 爆口、泄漏或损伤现场照片。
-      - 若明显不是锅炉相关图：仅输出 `is_boiler_pressure_part_image: false` 与
-        `user_message`: **「当前图片非锅炉相关图片，请重新上传」**，**禁止**编造爆口形貌。
-      - 若是或可能是：输出完整 JSON 且 `is_boiler_pressure_part_image: true`。
+      - 若明显不是锅炉相关图：Markdown 一句说明；`---JSON---` 后输出不相关 JSON。
+      - 若是或可能是：先写 Markdown bullet 形貌分析，再输出完整 JSON 且 `is_boiler_pressure_part_image: true`。
 
-      【逐项观察 — 仅当相关时】
-      1) **爆口/破口形貌**：开口形状、边缘毛刺/减薄/翻卷、邻管牵连、飞溅或产物痕迹；
-      2) **形态与边缘**：破口走向、边缘锐利或钝圆；
-      3) **表面与周边**：冲刷沟槽、腐蚀产物、胀粗、裂纹、焊口异常、防磨件状态等；
-      4) **定位线索**：照片中可辨参照物（若无填「不明显」）。
+      【Markdown 段 — 相关图时】
+      简洁 bullet：爆口/破口形貌、边缘特征、邻管牵连、表面与周边可见线索、定位参照（若无写「不明显」）。
 
       【边界】
       - 仅描述可见证据；failure_mode_hints 勿断言微观机理或台账参数；
