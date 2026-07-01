@@ -335,6 +335,12 @@ def _build_interrupt_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
         "request_id": state.get("request_id"),
         "interrupt_reason": state.get("interrupt_reason"),
     }
+    scope_reason = state.get("scope_interrupt_reason")
+    if isinstance(scope_reason, str) and scope_reason.strip():
+        payload["scope_interrupt_reason"] = scope_reason.strip()
+    scope_prompt = state.get("scope_hitl_prompt")
+    if isinstance(scope_prompt, str) and scope_prompt.strip():
+        payload["scope_hitl_prompt"] = scope_prompt.strip()
     if relaxed:
         payload["scope_relaxed_fields"] = [scope_field_label(f) for f in relaxed]
     _enrich_interrupt_payload_from_state(state, payload)

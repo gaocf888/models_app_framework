@@ -79,16 +79,20 @@ def format_scope_draft_display_lines(scope_draft: dict[str, Any] | None) -> list
 
 
 def build_scope_hitl_confirm_reply_example(interrupt_payload: dict[str, Any] | None) -> str:
-    """根据 HITL 场景生成用户确认回复示例（展示在台账确认信息末尾）。"""
+    """根据 HITL 场景生成用户确认回复示例（展示在台账确认信息末尾；与视觉换图提示无关）。"""
     payload = interrupt_payload or {}
     reason = str(payload.get("interrupt_reason") or "").strip()
     prompt = str(payload.get("prompt") or "").strip()
     missing = [str(x).strip() for x in (payload.get("missing_fields") or []) if str(x).strip()]
 
+    if reason == VISION_REJECT_INTERRUPT_REASON:
+        reason = str(payload.get("scope_interrupt_reason") or "").strip()
+        scope_prompt = str(payload.get("scope_hitl_prompt") or "").strip()
+        if scope_prompt:
+            prompt = scope_prompt
+
     if reason == "db_validate_matched" or prompt == SCOPE_HITL_DB_MATCHED_PROMPT:
         return "确认或继续"
-    if reason == VISION_REJECT_INTERRUPT_REASON:
-        return "请重新上传锅炉相关现场图片"
     if reason == "db_validate_zero_rows" or prompt == SCOPE_HITL_DB_NOT_MATCHED_PROMPT:
         return "受热面应为****，检测位置应为****"
     if prompt == SCOPE_HITL_NOT_PARSED_PROMPT or reason.startswith("missing:"):

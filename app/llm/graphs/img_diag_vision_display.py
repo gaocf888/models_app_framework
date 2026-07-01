@@ -223,6 +223,13 @@ def apply_vision_rejection_scope_gate(state: dict[str, Any]) -> bool:
     ):
         return False
 
+    prior_reason = str(state.get("interrupt_reason") or "").strip()
+    prior_prompt = str(state.get("human_prompt") or "").strip()
+    if prior_reason and prior_reason != VISION_REJECT_INTERRUPT_REASON:
+        state["scope_interrupt_reason"] = prior_reason
+    if prior_prompt and prior_prompt != VISION_HITL_REUPLOAD_PROMPT:
+        state["scope_hitl_prompt"] = prior_prompt
+
     state.pop("confirmed_scope_intent", None)
     state.pop("scope_intent_text", None)
     state["pending_matched_confirm"] = False
