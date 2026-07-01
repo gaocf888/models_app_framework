@@ -20,7 +20,11 @@ from app.llm.graphs.chatbot_follow_up import build_suggested_questions
 from app.llm.graphs.chatbot_intent import classify_chatbot_intent_async
 from app.llm.graphs.chatbot_citation_stream import CitationStreamParser, citation_stream_enabled, max_citation_ref_index
 from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_context
-from app.llm.graphs.chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
+from app.llm.graphs.chatbot_llm_messages import (
+    ChatbotLlmBuildResult,
+    assemble_chatbot_llm_messages,
+    trim_history_and_build_chatbot_messages,
+)
 from app.llm.graphs.chatbot_anaphora_detect import classify_anaphora_rules
 from app.llm.graphs.chatbot_dialogue_anchor import build_dialogue_anchor_block
 from app.llm.graphs.chatbot_anaphora_store import get_anaphora_slots, slot_bullets_list, update_anaphora_slots_after_assistant
@@ -290,7 +294,7 @@ class ChatbotService:
             history = hist_list
 
             # 使用统一 LLM 客户端生成回答（多模态 message）
-            messages = self._build_llm_messages(
+            llm_build = self._build_llm_messages(
                 req=model_req,
                 history=history,
                 context_snippets=context_snippets,
@@ -303,7 +307,11 @@ class ChatbotService:
             )
 
             try:
-                answer = await self._llm.chat(model=None, messages=messages)  # type: ignore[arg-type]
+                answer = await self._llm.chat(  # type: ignore[arg-type]
+                    model=None,
+                    messages=llm_build.messages,
+                    max_tokens=llm_build.max_tokens,
+                )
             except Exception:  # noqa: BLE001
                 logger.exception("ChatbotService: LLM 调用失败，退回占位回答。")
                 base = "这是占位回答（大模型暂不可用）。"
@@ -557,7 +565,7 @@ class ChatbotService:
             enable_context=req.enable_context,
         )
 
-        messages = self._build_llm_messages(
+        llm_build = self._build_llm_messages(
             req=req,
             history=history,
             context_snippets=context_snippets,
@@ -568,6 +576,7 @@ class ChatbotService:
             intent_label="kb_qa",
             enable_rag=req.enable_rag,
         )
+        messages = llm_build.messages
         parts: list[str] = []
         cite_parser: CitationStreamParser | None = None
         if citation_stream_enabled(rag_citations):
@@ -578,7 +587,7 @@ class ChatbotService:
         legacy_ana_meta: Dict[str, Any] = {}
         if cfg.anaphora_expose_meta:
             legacy_ana_meta = {"anaphora_type": anaphora_type, "anaphora_source": "rule"}
-        stream_kw: Dict[str, Any] = {}
+        stream_kw: Dict[str, Any] = {"max_tokens": llm_build.max_tokens}
         if self._chatbot_cfg.main_llm_temperature is not None:
             stream_kw["temperature"] = float(self._chatbot_cfg.main_llm_temperature)
         async for delta in self._llm.stream_chat(model=None, messages=messages, **stream_kw):  # type: ignore[arg-type]
@@ -610,6 +619,7 @@ class ChatbotService:
                         "rag_citations": rag_citations,
                         "processed_image_urls": imgs,
                         "stream_id": stream_id,
+                        "history_trim_dropped": llm_build.history_dropped,
                         **legacy_ana_meta,
                     },
                 }
@@ -695,9 +705,15 @@ class ChatbotService:
                 "rag_citations": rag_citations,
                 "processed_image_urls": imgs,
                 "stream_id": stream_id,
+                "history_trim_dropped": llm_build.history_dropped,
                 **legacy_ana_meta,
             },
         }
+
+    def _main_llm_max_tokens(self) -> int:
+        llm_cfg = get_app_config().llm
+        entry = llm_cfg.models.get(llm_cfg.default_model)
+        return max(64, int(getattr(entry, "max_tokens", 2048) or 2048))
 
     def _build_llm_messages(
         self,
@@ -711,15 +727,12 @@ class ChatbotService:
         rag_citations: list[dict[str, Any]] | None = None,
         intent_label: str = "kb_qa",
         enable_rag: bool = True,
-    ) -> list[Dict[str, Any]]:
+    ) -> ChatbotLlmBuildResult:
         """
-        构建发送给 vLLM/OpenAI 兼容接口的 messages。
-        若提供 image_urls，则使用多模态 content（text + image_url）。
+        构建发送给 vLLM/OpenAI 兼容接口的 messages，并按上下文预算裁剪历史。
 
-        高分 FAQ 软直通（CHATBOT_FAQ_SOFT_DIRECT_*）：与 LangGraph ``kb_build_messages`` 对齐，
-        满足条件时不注入 history，避免旧 assistant 回答干扰高分问答复述。
+        高分 FAQ 软直通（CHATBOT_FAQ_SOFT_DIRECT_*）：与 LangGraph ``kb_build_messages`` 对齐。
         """
-        messages: list[Dict[str, Any]] = []
         cfg = self._chatbot_cfg
         faq_decision = evaluate_faq_soft_direct(
             enabled=bool(cfg.faq_soft_direct_enabled),
@@ -742,60 +755,55 @@ class ChatbotService:
                 version=None,
                 default_version=cfg.default_prompt_version,
             )
-        # Qwen 等 tokenizer 的 chat_template 仅允许「第一条」为 system；连续两条 role=system 会触发
-        # TemplateError: System message must be at the beginning. 故模板与 RAG 说明合并为单条 system。
         system_chunks: list[str] = []
         if tpl and tpl.content:
             system_chunks.append(tpl.content)
         at = (anaphora_type or "").strip()
-        if cfg.anaphora_anchor_block_enabled and at and at != "none" and not faq_decision.active:
-            anchor = build_dialogue_anchor_block(
-                history_for_llm,
-                req.query,
-                at,
-                config_path=cfg.anaphora_config_path,
-                max_chars=cfg.anaphora_anchor_max_chars,
-                slot_bullets=anaphora_slot_bullets or [],
-            )
-            if anchor:
-                system_chunks.append(anchor)
         snippets_for_llm = snippets_for_llm_generation(
             context_snippets,
             soft_direct=faq_decision.active,
             snippet_top_n=cfg.faq_soft_direct_snippet_top_n,
         )
+        rag_block = ""
         if snippets_for_llm:
-            system_chunks.append(
-                format_rag_snippets_for_generation(
-                    snippets_for_llm,
-                    soft_direct=faq_decision.active,
-                    base_formatter=format_rag_snippets_system_block,
-                )
+            rag_block = format_rag_snippets_for_generation(
+                snippets_for_llm,
+                soft_direct=faq_decision.active,
+                base_formatter=format_rag_snippets_system_block,
             )
-        for h in history_for_llm:
-            role = (h.get("role", "user") or "user").lower()
-            raw_c = h.get("content", "")
-            content = raw_c if isinstance(raw_c, str) else (str(raw_c) if raw_c is not None else "")
-            content = strip_image_block_from_history(content)
-            if not content:
-                continue
-            if role == "system":
-                system_chunks.append(content)
-                continue
-            messages.append({"role": role, "content": content})
-        if system_chunks:
-            messages.insert(0, {"role": "system", "content": "\n\n".join(system_chunks)})
-
-        # 模型层已过滤空串；此处再防御，避免任意路径带入空 URL 触发 vLLM「empty image」400
         image_urls = [u for u in req.image_urls if isinstance(u, str) and u.strip()]
-        if image_urls:
-            content_blocks: list[Dict[str, Any]] = [{"type": "text", "text": req.query}]
-            for u in image_urls:
-                content_blocks.append({"type": "image_url", "image_url": {"url": u}})
-            messages.append({"role": "user", "content": content_blocks})
-        else:
-            messages.append({"role": "user", "content": req.query})
-        return messages
+
+        def build_from_history(hist: list[dict]) -> list[dict[str, Any]]:
+            chunks = list(system_chunks)
+            if cfg.anaphora_anchor_block_enabled and at and at != "none" and not faq_decision.active:
+                anchor = build_dialogue_anchor_block(
+                    hist,
+                    req.query,
+                    at,
+                    config_path=cfg.anaphora_config_path,
+                    max_chars=cfg.anaphora_anchor_max_chars,
+                    slot_bullets=anaphora_slot_bullets or [],
+                )
+                if anchor:
+                    chunks.append(anchor)
+            if rag_block:
+                chunks.append(rag_block)
+            return assemble_chatbot_llm_messages(
+                system_chunks=chunks,
+                history=hist,
+                query=req.query,
+                image_urls=image_urls,
+            )
+
+        return trim_history_and_build_chatbot_messages(
+            history_for_llm,
+            build_from_history=build_from_history,
+            context_total_tokens=cfg.llm_context_total_tokens,
+            requested_max_tokens=self._main_llm_max_tokens(),
+            slack_tokens=cfg.llm_completion_budget_slack_tokens,
+            trim_enabled=bool(cfg.history_trim_enabled) and bool(history_for_llm),
+            min_keep=cfg.history_trim_min_keep,
+        )
 
     async def _preprocess_request_images(self, req: ChatRequest) -> ChatRequest:
         imgs = [u for u in req.image_urls if isinstance(u, str) and u.strip()]

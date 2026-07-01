@@ -420,7 +420,7 @@ def test_route_after_validate_pending_matched_confirm() -> None:
     assert _route_after_validate({"pending_matched_confirm": True}) == "scope_human_confirm"
 
 
-def test_matched_confirm_response_reruns_preflight_not_finalize() -> None:
+def test_matched_confirm_affirmative_finalizes_without_reparse() -> None:
     from app.llm.graphs.img_diag_scope_graph import _apply_human_scope_response
 
     state = {
@@ -439,11 +439,30 @@ def test_matched_confirm_response_reruns_preflight_not_finalize() -> None:
         {"action": "confirm_scope", "payload": {}},
     )
     assert not updated.get("pending_matched_confirm")
-    assert not updated.get("confirmed_scope_intent")
-    assert not updated.get("scope_intent_text")
+    assert updated.get("confirmed_scope_intent", {}).get("boiler") == "1号锅炉"
+    assert updated.get("scope_cumulative_text") == "1号锅炉低温过热器"
 
 
-def test_matched_confirm_with_correction_appends_cumulative() -> None:
+def test_matched_confirm_affirmative_text_finalizes() -> None:
+    from app.llm.graphs.img_diag_scope_graph import _apply_human_scope_response
+
+    state = {
+        "pending_matched_confirm": True,
+        "scope_cumulative_text": "1号锅炉低温过热器",
+        "scope_draft": {
+            "boiler": "1号锅炉",
+            "device_name": "低温过热器",
+        },
+    }
+    updated = _apply_human_scope_response(
+        state,
+        {"action": "edit_scope", "payload": {"user_supplement": "确认，继续"}},
+    )
+    assert updated.get("confirmed_scope_intent")
+    assert updated.get("scope_cumulative_text") == "1号锅炉低温过热器"
+
+
+def test_matched_confirm_with_correction_reruns_preflight() -> None:
     from app.llm.graphs.img_diag_scope_graph import _apply_human_scope_response
 
     state = {
@@ -467,6 +486,51 @@ def test_matched_confirm_with_correction_appends_cumulative() -> None:
     assert not updated.get("pending_matched_confirm")
     assert "检测位置应为吹灰孔33" in (updated.get("scope_cumulative_text") or "")
     assert not updated.get("confirmed_scope_intent")
+
+
+def test_is_matched_confirm_affirmative_response() -> None:
+    from app.llm.graphs.img_diag_scope_affirmation import (
+        is_affirmative_supplement,
+        is_matched_confirm_affirmative_response,
+    )
+
+    assert is_matched_confirm_affirmative_response("confirm_scope", {}) is True
+    assert is_matched_confirm_affirmative_response(
+        "edit_scope", {"user_supplement": "确认"}
+    ) is True
+    assert is_matched_confirm_affirmative_response(
+        "edit_scope", {"user_supplement": "好的，继续"}
+    ) is True
+    assert is_matched_confirm_affirmative_response(
+        "edit_scope", {"user_supplement": "检测位置应为吹灰孔33"}
+    ) is False
+    assert is_matched_confirm_affirmative_response(
+        "edit_scope", {"scope_patch": {"检测位置": "吹灰孔33"}}
+    ) is False
+
+    # 口语变体：后缀/前缀归一
+    for phrase in (
+        "没问题了",
+        "可以的",
+        "请继续",
+        "那就继续吧",
+        "嗯",
+        "行吧",
+        "开始吧",
+        "yes",
+        "confirm",
+        "确认以上信息",
+        "👍",
+    ):
+        assert is_affirmative_supplement(phrase) is True, phrase
+
+    # 含校正语义仍为非肯定
+    for phrase in (
+        "检测位置应为吹灰孔33",
+        "去除排数和管数",
+        "不对，应该是吹灰孔33",
+    ):
+        assert is_affirmative_supplement(phrase) is False, phrase
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from app.llm.graphs.img_diag_checkpoint import (
     build_img_diag_checkpointer,
     img_diag_graph_configurable,
 )
+from app.llm.graphs.img_diag_scope_affirmation import is_matched_confirm_affirmative_response
 from app.llm.graphs.img_diag_scope_display import (
     SCOPE_HITL_DB_MATCHED_PROMPT,
     SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
@@ -107,6 +108,19 @@ def _draft_from_state(state: ImgDiagScopeGraphState) -> ImgDiagScopeDraft:
     return draft_from_scope_dict(draft_dict, time_meta=tm)
 
 
+def _finalize_confirmed_scope(state: ImgDiagScopeGraphState) -> None:
+    draft = _draft_from_state(state)
+    state["scope_draft"] = draft.to_dict()
+    state["confirmed_scope_intent"] = confirmed_scope_from_draft(draft)
+    state["scope_intent_text"] = build_scope_intent_text(
+        draft,
+        scope_question=state.get("scope_cumulative_text") or "",
+    )
+    state["pending_matched_confirm"] = False
+    state["needs_db_retry"] = False
+    state["validation_error"] = None
+
+
 def _scope_draft_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
     draft = state.get("scope_draft") or {}
     from app.llm.graphs.img_diag_scope_intent import normalize_img_diag_scope_dict
@@ -153,35 +167,43 @@ def _apply_human_scope_response(
         return state
     supplement = str(payload.get("user_supplement") or "").strip()
     patch = payload.get("scope_patch")
-    new_excluded: set[str] = set()
-    if supplement:
-        new_excluded |= set(detect_scope_field_exclusions_from_text(supplement))
-    if isinstance(patch, dict):
-        patch = normalize_scope_patch_keys(patch)
-        new_excluded |= set(detect_scope_field_exclusions_from_patch(patch))
-    if new_excluded:
-        state["scope_field_exclusions"] = merge_scope_field_exclusions(
-            state.get("scope_field_exclusions"),
-            frozenset(new_excluded),
-        )
-    if supplement:
-        cumulative = (state.get("scope_cumulative_text") or state.get("query") or "").strip()
-        state["scope_cumulative_text"] = f"{cumulative}\n{supplement}".strip()
-    if isinstance(patch, dict) and state.get("scope_draft"):
-        dd = state["scope_draft"]
-        tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
-        draft = draft_from_scope_dict(dd, time_meta=tm)
-        draft = apply_scope_patch(draft, patch)
-        excluded = frozenset(state.get("scope_field_exclusions") or ())
-        state["scope_draft"] = apply_scope_field_exclusions_to_draft(draft, excluded).to_dict()
-    elif state.get("scope_draft") and state.get("scope_field_exclusions"):
-        dd = state["scope_draft"]
-        tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
-        draft = draft_from_scope_dict(dd, time_meta=tm)
-        excluded = frozenset(state.get("scope_field_exclusions") or ())
-        state["scope_draft"] = apply_scope_field_exclusions_to_draft(draft, excluded).to_dict()
-    if state.get("pending_matched_confirm"):
-        state["pending_matched_confirm"] = False
+    pending_matched = bool(state.get("pending_matched_confirm"))
+    affirmative = pending_matched and is_matched_confirm_affirmative_response(action, payload)
+
+    if not affirmative:
+        new_excluded: set[str] = set()
+        if supplement:
+            new_excluded |= set(detect_scope_field_exclusions_from_text(supplement))
+        if isinstance(patch, dict):
+            patch = normalize_scope_patch_keys(patch)
+            new_excluded |= set(detect_scope_field_exclusions_from_patch(patch))
+        if new_excluded:
+            state["scope_field_exclusions"] = merge_scope_field_exclusions(
+                state.get("scope_field_exclusions"),
+                frozenset(new_excluded),
+            )
+        if supplement:
+            cumulative = (state.get("scope_cumulative_text") or state.get("query") or "").strip()
+            state["scope_cumulative_text"] = f"{cumulative}\n{supplement}".strip()
+        if isinstance(patch, dict) and state.get("scope_draft"):
+            dd = state["scope_draft"]
+            tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
+            draft = draft_from_scope_dict(dd, time_meta=tm)
+            draft = apply_scope_patch(draft, patch)
+            excluded = frozenset(state.get("scope_field_exclusions") or ())
+            state["scope_draft"] = apply_scope_field_exclusions_to_draft(draft, excluded).to_dict()
+        elif state.get("scope_draft") and state.get("scope_field_exclusions"):
+            dd = state["scope_draft"]
+            tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
+            draft = draft_from_scope_dict(dd, time_meta=tm)
+            excluded = frozenset(state.get("scope_field_exclusions") or ())
+            state["scope_draft"] = apply_scope_field_exclusions_to_draft(draft, excluded).to_dict()
+
+    if pending_matched:
+        if affirmative:
+            _finalize_confirmed_scope(state)
+        else:
+            state["pending_matched_confirm"] = False
     state["needs_db_retry"] = False
     state["validation_error"] = None
     return state
@@ -326,6 +348,14 @@ def _route_after_validate(state: ImgDiagScopeGraphState):
     return END
 
 
+def _route_after_human_confirm(state: ImgDiagScopeGraphState):
+    if state.get("confirmed_scope_intent") and state.get("scope_intent_text"):
+        from langgraph.graph import END  # type: ignore[import-not-found]
+
+        return END
+    return "scope_preflight_llm"
+
+
 def build_img_diag_scope_graph(
     *,
     llm_client: VLLMHttpClient | None = None,
@@ -347,7 +377,7 @@ def build_img_diag_scope_graph(
     g.add_node("scope_db_validate", nodes["scope_db_validate"])
     g.set_entry_point("scope_preflight_llm")
     g.add_conditional_edges("scope_preflight_llm", _route_after_preflight)
-    g.add_edge("scope_human_confirm", "scope_preflight_llm")
+    g.add_conditional_edges("scope_human_confirm", _route_after_human_confirm)
     g.add_conditional_edges("scope_db_validate", _route_after_validate)
     checkpointer = build_img_diag_checkpointer()
     if checkpointer is None:

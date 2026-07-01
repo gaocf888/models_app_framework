@@ -28,8 +28,8 @@ from app.models.inspection_extract import InspectionExtractRequest
 from app.models.inspection_extract_v0 import InspectionExtractV0Request
 from app.services.inspection_extract_llm_orchestrator import (
     InspectionExtractJobCancelled,
-    cap_completion_max_tokens_for_context,
 )
+from app.llm.context_budget import cap_completion_max_tokens_for_context
 from app.services.inspection_extract_service import InspectionExtractService
 
 logger = get_logger(__name__)

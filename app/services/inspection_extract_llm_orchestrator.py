@@ -20,89 +20,21 @@ from app.core.logging import get_logger
 from app.inspection_v2.chunk_table_filter import filter_table_work_items, resolve_llm_parse_chunk_body
 from app.inspection_v2.orchestrator import split_parse_chunks, v2_docx_chunk_params
 from app.llm.client import VLLMHttpClient
+from app.llm.context_budget import (
+    CHAT_MESSAGES_SLO_CHARS,
+    cap_completion_max_tokens_for_context,
+    estimate_prompt_tokens_upper_bound,
+)
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.models.inspection_extract import InspectionExtractRequest
 
 logger = get_logger(__name__)
 
-_MIN_COMPLETION_TOKENS = 64
+_MIN_COMPLETION_TOKENS = 64  # noqa: F841 — kept for local readability; budget uses context_budget.MIN_COMPLETION_TOKENS
 
 
 class InspectionExtractJobCancelled(Exception):
     """用户请求取消检修异步任务；在 LLM 分块等检查点抛出，由 JobScheduler 协作处理。"""
-
-
-# chat 模板对 system/user 的额外字符（启发式计入 _budget_max_tokens，略放大以免低估）
-_CHAT_MESSAGES_SLO_CHARS = 64
-
-
-def _estimate_prompt_tokens_upper_bound(prompt_chars: int, *, context_total_tokens: int) -> int:
-    """
-    输入 prompt 的 token 数上界（启发式，偏保守）。
-
-    - est_sparse / est_mixed：约 2.2～2.5 字符/token；
-    - est_dense：约 1.5 字符/token（极密符号）；仅在不撑爆窗口上界时并入；
-    - est_ratio_high：约 1.35 字符/token 量级（表格/中英混杂曾出现 33k 字符≈24.6k token），与 base 取 max；
-      对该分支设 ctx 封顶，避免超长纯 ASCII 把估算顶到超过窗口进而算不出合法 max_tokens。
-
-    说明：VL/表格序列化密度波动大，单靠 2.2～2.5 仍可能低估数千 token。
-    """
-    c = max(0, prompt_chars)
-    ctx = max(2048, int(context_total_tokens))
-    est_sparse = max(1, (c * 11 + 21) // 22)
-    est_mixed = max(1, (c * 10 + 24) // 25)
-    est_dense = max(1, (c * 2 + 2) // 3)
-    base = max(est_sparse, est_mixed)
-    density_ceiling = max(4096, (ctx * 85) // 100)
-    if est_dense < density_ceiling:
-        base = max(base, est_dense)
-    # ceil(c / 1.35) 量级：(c * 20 + 26) // 27
-    ratio_ceiling = max(2048, ctx - 2048)
-    est_ratio_high = min(max(1, (c * 20 + 26) // 27), ratio_ceiling)
-    return max(base, est_ratio_high)
-
-
-def cap_completion_max_tokens_for_context(
-    *,
-    prompt_chars: int,
-    requested_max_tokens: int,
-    context_total_tokens: int,
-    slack_tokens: int,
-) -> int:
-    """保证真实 input_tokens + capped 大概率不超过 context（启发式上界）。"""
-    ctx = max(2048, int(context_total_tokens))
-    req = max(_MIN_COMPLETION_TOKENS, int(requested_max_tokens))
-    slack_cfg = max(64, int(slack_tokens))
-
-    est = _estimate_prompt_tokens_upper_bound(prompt_chars, context_total_tokens=ctx)
-    # 单次预留：模板/特殊 token、与服务端计数偏差；+128 与 fencepost 减轻「差 1 token」400
-    reserve = max(slack_cfg, 512) + 384 + 128
-    room = ctx - est - reserve - 1
-    if room < _MIN_COMPLETION_TOKENS:
-        logger.warning(
-            "inspection_extract completion budget exhausted prompt_chars=%s est=%s reserve=%s ctx=%s "
-            "(prompt may exceed context; consider smaller parse chunks or higher max-model-len)",
-            prompt_chars,
-            est,
-            reserve,
-            ctx,
-        )
-        capped = _MIN_COMPLETION_TOKENS
-    else:
-        capped = min(req, room)
-
-    out = max(_MIN_COMPLETION_TOKENS, capped)
-    if out < req:
-        logger.info(
-            "inspection_extract capped max_tokens requested=%s capped=%s prompt_chars=%s ctx=%s est=%s reserve=%s",
-            req,
-            out,
-            prompt_chars,
-            ctx,
-            est,
-            reserve,
-        )
-    return out
 
 
 class InspectionExtractLlmOrchestrator:
@@ -120,7 +52,7 @@ class InspectionExtractLlmOrchestrator:
     def _budget_max_tokens(self, *, system: str, user: str, requested_max_tokens: int) -> int:
         ctx = int(getattr(self._cfg, "llm_context_total_tokens", 32768))
         slack = int(getattr(self._cfg, "llm_completion_budget_slack_tokens", 768))
-        prompt_chars = len(system or "") + len(user or "") + _CHAT_MESSAGES_SLO_CHARS
+        prompt_chars = len(system or "") + len(user or "") + CHAT_MESSAGES_SLO_CHARS
         return cap_completion_max_tokens_for_context(
             prompt_chars=prompt_chars,
             requested_max_tokens=requested_max_tokens,

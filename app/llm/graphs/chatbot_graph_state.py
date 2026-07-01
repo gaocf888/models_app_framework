@@ -78,6 +78,8 @@ class ChatbotGraphState(TypedDict, total=False):
 
     # ===== 生成域（模型输入输出）=====
     llm_messages: List[Dict[str, Any]]
+    llm_max_tokens: int
+    history_trim_dropped: int
     answer_text: str
     # 流式增量缓存：用于最终 answer 拼接、客户端断连时 partial 落库。
     answer_parts: List[str]

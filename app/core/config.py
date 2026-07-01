@@ -522,6 +522,11 @@ class ChatbotConfig:
     faq_soft_direct_min_score: float = 0.95
     # 软直通时注入 LLM 的片段条数上限（rag_citations 展示条数不变）
     faq_soft_direct_snippet_top_n: int = 1
+    # 主问答 LLM 上下文与历史裁剪（与 vLLM --max-model-len 对齐）
+    llm_context_total_tokens: int = 40960
+    llm_completion_budget_slack_tokens: int = 768
+    history_trim_enabled: bool = True
+    history_trim_min_keep: int = 0
 
 
 @dataclass
@@ -1252,6 +1257,12 @@ def _load_from_env() -> AppConfig:
         faq_soft_direct_enabled=os.getenv("CHATBOT_FAQ_SOFT_DIRECT_ENABLED", "true").lower() == "true",
         faq_soft_direct_min_score=max(0.0, min(1.0, float(os.getenv("CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE", "0.95")))),
         faq_soft_direct_snippet_top_n=max(1, min(10, int(os.getenv("CHATBOT_FAQ_SOFT_DIRECT_SNIPPET_TOP_N", "1")))),
+        llm_context_total_tokens=max(2048, int(os.getenv("CHATBOT_LLM_CONTEXT_TOTAL_TOKENS", "40960"))),
+        llm_completion_budget_slack_tokens=max(
+            64, int(os.getenv("CHATBOT_LLM_COMPLETION_SLACK_TOKENS", "768"))
+        ),
+        history_trim_enabled=os.getenv("CHATBOT_HISTORY_TRIM_ENABLED", "true").lower() == "true",
+        history_trim_min_keep=max(0, int(os.getenv("CHATBOT_HISTORY_TRIM_MIN_KEEP", "0"))),
     )
     _app_env = (os.getenv("APP_ENV", "dev") or "dev").strip().lower()
     _redis_url_configured = bool((os.getenv("REDIS_URL") or "").strip())

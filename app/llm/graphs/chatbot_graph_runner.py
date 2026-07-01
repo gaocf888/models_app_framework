@@ -40,8 +40,9 @@ from .chatbot_similar_cases import (
     retrieve_similar_case_snippets,
     run_fault_case_gate_decision,
 )
+from .chatbot_llm_messages import assemble_chatbot_llm_messages, trim_history_and_build_chatbot_messages
 from app.services.nl2sql_service import NL2SQLService
-from app.services.chatbot_image_utils import build_user_message_with_images, strip_image_block_from_history
+from app.services.chatbot_image_utils import build_user_message_with_images
 from app.services.chatbot_outline import ChatbotOutlineStore
 from app.conversation.message_id import build_conversation_message_id
 
@@ -129,6 +130,14 @@ class ChatbotLangGraphRunner:
         self._faq_soft_direct_enabled = bool(cfg.faq_soft_direct_enabled)
         self._faq_soft_direct_min_score = float(cfg.faq_soft_direct_min_score)
         self._faq_soft_direct_snippet_top_n = max(1, int(cfg.faq_soft_direct_snippet_top_n))
+        self._llm_context_total_tokens = max(2048, int(cfg.llm_context_total_tokens))
+        self._llm_completion_slack_tokens = max(64, int(cfg.llm_completion_budget_slack_tokens))
+        self._history_trim_enabled = bool(cfg.history_trim_enabled)
+        self._history_trim_min_keep = max(0, int(cfg.history_trim_min_keep))
+        llm_cfg = get_app_config().llm
+        default_model = llm_cfg.default_model
+        model_entry = llm_cfg.models.get(default_model)
+        self._main_llm_max_tokens = max(64, int(getattr(model_entry, "max_tokens", 2048) or 2048))
 
         self._graph = None
         if self._graph_enabled:
@@ -322,7 +331,7 @@ class ChatbotLangGraphRunner:
                 cite_parser = CitationStreamParser(
                     max_ref_index=max_citation_ref_index(list(state.get("rag_citations") or []))
                 )
-            stream_kw: Dict[str, Any] = {}
+            stream_kw: Dict[str, Any] = {"max_tokens": int(state.get("llm_max_tokens") or self._main_llm_max_tokens)}
             if self._main_llm_temperature is not None:
                 stream_kw["temperature"] = float(self._main_llm_temperature)
             try:
@@ -942,67 +951,79 @@ class ChatbotLangGraphRunner:
                 top_cite.get("score"),
             )
 
-        messages: List[Dict[str, Any]] = []
         system_chunks: List[str] = []
         sp = str(state.get("system_prompt") or "").strip()
         if sp:
             system_chunks.append(sp)
         anchor_block_out = ""
-        # 软直通时不注入对话锚块（锚块依赖 history；与跳过 history 策略一致）
-        if self._anaphora_anchor_enabled and not faq_decision.active:
-            anchor = build_dialogue_anchor_block(
-                list(state.get("history_messages") or []),
-                str(state.get("query") or ""),
-                str(state.get("anaphora_type") or "none"),
-                config_path=self._anaphora_config_path,
-                max_chars=self._anaphora_anchor_max_chars,
-                slot_bullets=state.get("anaphora_slot_bullets") or [],
-            )
-            if anchor:
-                system_chunks.append(anchor)
-                anchor_block_out = anchor
         snippets_for_llm = snippets_for_llm_generation(
             state.get("context_snippets") or [],
             soft_direct=faq_decision.active,
             snippet_top_n=self._faq_soft_direct_snippet_top_n,
         )
+        rag_block = ""
         if snippets_for_llm:
-            system_chunks.append(
-                format_rag_snippets_for_generation(
-                    snippets_for_llm,
-                    soft_direct=faq_decision.active,
-                    base_formatter=format_rag_snippets_system_block,
-                )
+            rag_block = format_rag_snippets_for_generation(
+                snippets_for_llm,
+                soft_direct=faq_decision.active,
+                base_formatter=format_rag_snippets_system_block,
             )
         # 软直通：不注入 history_messages；否则保持原有多轮上下文
         history_for_llm: List[Dict[str, Any]] = (
             [] if faq_decision.active else list(state.get("history_messages") or [])
         )
-        for h in history_for_llm:
-            role = (h.get("role", "user") or "user")
-            role_l = str(role).lower()
-            content = h.get("content", "")
-            if isinstance(content, str):
-                content = strip_image_block_from_history(content)
-            if not content:
-                continue
-            if role_l == "system":
-                system_chunks.append(content)
-                continue
-            messages.append({"role": role_l, "content": content})
-        if system_chunks:
-            messages.insert(0, {"role": "system", "content": "\n\n".join(system_chunks)})
-        image_urls = [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()]
         query = str(state.get("query") or "")
-        if image_urls:
-            blocks: List[Dict[str, Any]] = [{"type": "text", "text": query}]
-            for u in image_urls:
-                blocks.append({"type": "image_url", "image_url": {"url": u}})
-            messages.append({"role": "user", "content": blocks})
-        else:
-            messages.append({"role": "user", "content": query})
+        image_urls = [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()]
+        anaphora_type = str(state.get("anaphora_type") or "none")
+        slot_bullets = state.get("anaphora_slot_bullets") or []
+
+        def build_from_history(hist: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            chunks = list(system_chunks)
+            if self._anaphora_anchor_enabled and not faq_decision.active:
+                anchor = build_dialogue_anchor_block(
+                    hist,
+                    query,
+                    anaphora_type,
+                    config_path=self._anaphora_config_path,
+                    max_chars=self._anaphora_anchor_max_chars,
+                    slot_bullets=slot_bullets,
+                )
+                if anchor:
+                    chunks.append(anchor)
+            if rag_block:
+                chunks.append(rag_block)
+            return assemble_chatbot_llm_messages(
+                system_chunks=chunks,
+                history=hist,
+                query=query,
+                image_urls=image_urls,
+            )
+
+        build_result = trim_history_and_build_chatbot_messages(
+            history_for_llm,
+            build_from_history=build_from_history,
+            context_total_tokens=self._llm_context_total_tokens,
+            requested_max_tokens=self._main_llm_max_tokens,
+            slack_tokens=self._llm_completion_slack_tokens,
+            trim_enabled=self._history_trim_enabled and bool(history_for_llm),
+            min_keep=self._history_trim_min_keep,
+        )
+        if self._anaphora_anchor_enabled and not faq_decision.active:
+            kept_hist = history_for_llm[build_result.history_dropped :]
+            anchor = build_dialogue_anchor_block(
+                kept_hist,
+                query,
+                anaphora_type,
+                config_path=self._anaphora_config_path,
+                max_chars=self._anaphora_anchor_max_chars,
+                slot_bullets=slot_bullets,
+            )
+            if anchor:
+                anchor_block_out = anchor
         out: ChatbotGraphState = {
-            "llm_messages": messages,
+            "llm_messages": build_result.messages,
+            "llm_max_tokens": build_result.max_tokens,
+            "history_trim_dropped": build_result.history_dropped,
             "faq_soft_direct": faq_decision.active,
             "faq_soft_direct_reason": faq_decision.reason,
         }
@@ -1234,6 +1255,7 @@ class ChatbotLangGraphRunner:
             "rag_scope_fallback": bool(state.get("rag_scope_fallback")),
             "faq_soft_direct": bool(state.get("faq_soft_direct", False)),
             "faq_soft_direct_reason": str(state.get("faq_soft_direct_reason") or ""),
+            "history_trim_dropped": int(state.get("history_trim_dropped") or 0),
             "status": state.get("status"),
             "duration_ms": int((time.perf_counter() - start_ts) * 1000),
             "terminate_reason": state.get("terminate_reason"),

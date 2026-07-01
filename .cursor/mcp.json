@@ -33,7 +33,7 @@
         "--transport",
         "stdio",
         "--dsn",
-        "postgresql://postgres:YOUR_POSTGRES_PASSWORD@127.0.0.1:5432/postgres"
+        "postgresql://postgres:1qaz%404321@124.222.37.179:5432/dmcj"
       ]
     }
   }
