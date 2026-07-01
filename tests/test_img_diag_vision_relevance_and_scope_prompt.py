@@ -36,6 +36,31 @@ def test_vision_rejection_default_message_when_flag_false_only() -> None:
     assert vision_boiler_rejection_message(data) == VISION_BOILER_REJECTION_DEFAULT
 
 
+def test_vision_non_boiler_long_narrative_still_rejected() -> None:
+    data = {
+        "is_boiler_pressure_part_image": False,
+        "vision_narrative": (
+            "- 主体形貌：可见工业电机外壳\n"
+            "- 表面状态：无明显管壁特征\n"
+            "- 其他：与锅炉受压管系无关"
+        ),
+    }
+    assert is_vision_boiler_relevance_rejected(data) is True
+    msg = vision_boiler_rejection_message(data)
+    assert msg is not None
+    assert "重新上传" in msg
+    assert "工业电机" not in msg
+
+
+def test_vision_rejection_ignores_non_boiler_narrative_without_reupload_hint() -> None:
+    data = {
+        "is_boiler_pressure_part_image": False,
+        "vision_narrative": "照片内容为办公文档截图，与锅炉检验无关",
+        "preliminary_visual_conclusion": "非锅炉设备",
+    }
+    assert vision_boiler_rejection_message(data) == VISION_BOILER_REJECTION_DEFAULT
+
+
 def test_vision_relevant_still_builds_morphology() -> None:
     data = {
         "is_boiler_pressure_part_image": True,
