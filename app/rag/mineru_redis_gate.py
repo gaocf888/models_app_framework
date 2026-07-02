@@ -27,6 +27,7 @@ class MinerUConcurrencyGate:
         self._pool_key = f"{key_prefix}:sem_pool"
         self._init_key = f"{key_prefix}:sem_pool_initialized"
         self._lock_key = f"{key_prefix}:sem_pool_init_lock"
+        self._holders_key = f"{key_prefix}:sem_holders"
         self._local = threading.BoundedSemaphore(self._max)
         self._redis = None
         self._redis_url = redis_url
@@ -51,42 +52,121 @@ class MinerUConcurrencyGate:
                 "not safe across multiple uvicorn workers if max_concurrent>1."
             )
 
+    def _active_holders(self) -> int:
+        assert self._redis is not None
+        raw = self._redis.get(self._holders_key)
+        try:
+            return max(0, int(raw or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _seed_pool_locked(self) -> None:
+        assert self._redis is not None
+        pipe = self._redis.pipeline()
+        pipe.delete(self._pool_key)
+        for _ in range(self._max):
+            pipe.rpush(self._pool_key, "1")
+        pipe.set(self._init_key, "1")
+        pipe.set(self._holders_key, "0")
+        pipe.execute()
+
+    def _try_repair_leaked_pool(self) -> bool:
+        """
+        池已初始化但 LLEN=0 且无活跃持有者 → 视为 token 泄漏，自动补种。
+
+        合法占用时：token 已被 BLPOP 取走，holders>0，不会误补。
+        """
+        assert self._redis is not None
+        if not self._redis.get(self._init_key):
+            return False
+        if self._redis.llen(self._pool_key) > 0:
+            return False
+        if self._active_holders() > 0:
+            return False
+        with self._redis.lock(self._lock_key, timeout=30, blocking_timeout=30):
+            if not self._redis.get(self._init_key):
+                return False
+            if self._redis.llen(self._pool_key) > 0:
+                return False
+            if self._active_holders() > 0:
+                return False
+            pipe = self._redis.pipeline()
+            for _ in range(self._max):
+                pipe.rpush(self._pool_key, "1")
+            pipe.set(self._holders_key, "0")
+            pipe.execute()
+            logger.warning(
+                "MinerU Redis sem_pool re-seeded after leak: tokens=%s pool_key=%s holders=0",
+                self._max,
+                self._pool_key,
+            )
+            return True
+
     def _ensure_redis_pool(self) -> None:
         assert self._redis is not None
         if self._redis.get(self._init_key):
+            self._try_repair_leaked_pool()
             return
         with self._redis.lock(self._lock_key, timeout=30, blocking_timeout=30):
             if self._redis.get(self._init_key):
+                self._try_repair_leaked_pool()
                 return
-            pipe = self._redis.pipeline()
-            pipe.delete(self._pool_key)
-            for _ in range(self._max):
-                pipe.rpush(self._pool_key, "1")
-            pipe.set(self._init_key, "1")
-            pipe.execute()
+            self._seed_pool_locked()
             logger.info("MinerU Redis semaphore pool initialized: %s tokens", self._max)
 
     @contextmanager
     def acquire(self, blocking_timeout_s: float) -> Iterator[None]:
+        deadline = time.monotonic() + max(1.0, blocking_timeout_s)
         if self._redis is not None:
             self._ensure_redis_pool()
-            deadline = time.monotonic() + max(1.0, blocking_timeout_s)
+            wait_started = time.monotonic()
+            last_log = wait_started
             token = None
             while time.monotonic() < deadline:
+                pool_len = self._redis.llen(self._pool_key)
+                if pool_len <= 0:
+                    self._try_repair_leaked_pool()
+                    pool_len = self._redis.llen(self._pool_key)
                 token = self._redis.blpop(self._pool_key, timeout=2)
                 if token:
                     break
+                now = time.monotonic()
+                if now - last_log >= 30.0:
+                    logger.warning(
+                        "MinerU Redis semaphore waiting: pool_len=%s holders=%s max=%s pool_key=%s waited_s=%.0f timeout_s=%.0f",
+                        pool_len,
+                        self._active_holders(),
+                        self._max,
+                        self._pool_key,
+                        now - wait_started,
+                        blocking_timeout_s,
+                    )
+                    last_log = now
             if not token:
+                pool_len = self._redis.llen(self._pool_key)
                 raise TimeoutError(
                     f"MinerU Redis semaphore timeout after {blocking_timeout_s}s "
-                    f"(pool={self._pool_key}, max={self._max})"
+                    f"(pool={self._pool_key}, max={self._max}, pool_len={pool_len}, "
+                    f"holders={self._active_holders()}). "
+                    "Likely causes: all slots legitimately busy, or holders counter drift after crash. "
+                    "Try restarting app workers or DEL sem_pool* keys."
                 )
+            self._redis.incr(self._holders_key)
             try:
                 yield
             finally:
+                try:
+                    self._redis.decr(self._holders_key)
+                except Exception:  # noqa: BLE001
+                    logger.warning("MinerU holders decr failed", exc_info=True)
                 self._redis.rpush(self._pool_key, "1")
             return
 
+        logger.info(
+            "MinerU local semaphore acquire start max=%s timeout_s=%.0f",
+            self._max,
+            blocking_timeout_s,
+        )
         ok = self._local.acquire(timeout=max(1.0, blocking_timeout_s))
         if not ok:
             raise TimeoutError(f"MinerU local semaphore timeout after {blocking_timeout_s}s")

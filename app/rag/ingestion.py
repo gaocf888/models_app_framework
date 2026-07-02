@@ -323,12 +323,17 @@ class RAGIngestionService:
     ) -> dict[str, int]:
         from app.rag.document_repository import DocumentRepository
 
+        repo = DocumentRepository()
+        records = repo.list(limit=10000, offset=0, namespace=namespace)
+        doc_names = sorted({str(r["doc_name"]) for r in records if r.get("doc_name")})
+
         chunks_updated = self._rag_service.update_namespace_kb_config(
             namespace,
             enabled=enabled,
             priority=priority,
+            doc_names=doc_names,
         )
-        docs_updated = DocumentRepository().update_namespace_kb_config(
+        docs_updated = repo.update_namespace_kb_config(
             namespace,
             enabled=enabled,
             priority=priority,

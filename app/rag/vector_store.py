@@ -12,8 +12,11 @@ from typing import Any, List, Sequence
 from app.core.config import ElasticsearchConfig, get_app_config
 from app.core.logging import get_logger
 from app.rag.namespace_kb import (
+    append_es_filters,
     build_es_kb_enabled_filter_clause,
+    build_es_namespace_kb_update_clauses,
     build_es_namespace_must_clauses,
+    chunk_matches_namespace_kb_target,
     chunk_namespace_matches,
     chunk_passes_kb_enabled_filter,
     patch_metadata_namespace_kb,
@@ -206,6 +209,7 @@ class VectorStore(ABC):
         *,
         enabled: bool,
         priority: int,
+        doc_names: Sequence[str] | None = None,
     ) -> int:
         """批量更新某 namespace 下全部 chunk 的 namespace_kb_* 元数据。"""
         raise NotImplementedError(f"{type(self).__name__} does not implement update_namespace_kb_config")
@@ -492,10 +496,11 @@ class InMemoryVectorStore(VectorStore):
         *,
         enabled: bool,
         priority: int,
+        doc_names: Sequence[str] | None = None,
     ) -> int:
         updated = 0
         for item in self._items:
-            if not chunk_namespace_matches(item.get("namespace"), namespace):
+            if not chunk_matches_namespace_kb_target(item, namespace, doc_names):
                 continue
             item["metadata"] = patch_metadata_namespace_kb(item.get("metadata"), enabled=enabled, priority=priority)
             updated += 1
@@ -899,10 +904,11 @@ class FaissVectorStore(VectorStore):
         *,
         enabled: bool,
         priority: int,
+        doc_names: Sequence[str] | None = None,
     ) -> int:
         updated = 0
         for item in self._items.values():
-            if not chunk_namespace_matches(item.get("namespace"), namespace):
+            if not chunk_matches_namespace_kb_target(item, namespace, doc_names):
                 continue
             item["metadata"] = patch_metadata_namespace_kb(item.get("metadata"), enabled=enabled, priority=priority)
             updated += 1
@@ -1175,7 +1181,7 @@ class ElasticsearchVectorStore(VectorStore):
             actions.append(
                 {
                     "_op_type": "index",
-                    "_index": self._index,
+                    "_index": self._alias,
                     "_id": ext_ids[i],
                     "_source": {
                         "text": text,
@@ -1539,10 +1545,11 @@ class ElasticsearchVectorStore(VectorStore):
         *,
         enabled: bool,
         priority: int,
+        doc_names: Sequence[str] | None = None,
     ) -> int:
         if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
             return 0
-        must = build_es_namespace_must_clauses(namespace)
+        must = build_es_namespace_kb_update_clauses(namespace, doc_names)
         body: dict[str, Any] = {
             "script": {
                 "source": (

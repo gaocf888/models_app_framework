@@ -389,6 +389,8 @@ class MinerUConfig:
     enabled: bool = False
     base_url: str = "http://mineru-api:8000"
     timeout_s: float = 1200.0
+    # 等待 MinerU 并发槽位的最长时间（秒）；与 HTTP 解析超时解耦，避免在 sem_pool 空时静默挂数小时
+    gate_wait_timeout_s: float = 600.0
     max_concurrent: int = 1
     io_path: str = "/workspace/mineru-io"
     # 与 mineru-api /file_parse 表单字段对齐（扫描件建议 parse_method=ocr）
@@ -1163,6 +1165,7 @@ def _load_from_env() -> AppConfig:
         enabled=os.getenv("MINERU_ENABLED", "false").lower() == "true",
         base_url=os.getenv("MINERU_BASE_URL", "http://mineru-api:8000").rstrip("/"),
         timeout_s=float(os.getenv("MINERU_TIMEOUT_S", "1200")),
+        gate_wait_timeout_s=float(os.getenv("MINERU_GATE_WAIT_TIMEOUT_S", "600")),
         max_concurrent=max(1, int(os.getenv("MINERU_MAX_CONCURRENT", "1"))),
         io_path=os.getenv("MINERU_IO_CONTAINER_PATH", "/workspace/mineru-io"),
         backend=os.getenv("MINERU_BACKEND", "pipeline"),

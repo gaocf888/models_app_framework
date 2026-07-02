@@ -455,9 +455,15 @@ class RAGService:
         *,
         enabled: bool,
         priority: int,
+        doc_names: Sequence[str] | None = None,
     ) -> int:
         store = self._store_provider.get_default_store()
-        return store.update_namespace_kb_config(namespace, enabled=enabled, priority=priority)
+        return store.update_namespace_kb_config(
+            namespace,
+            enabled=enabled,
+            priority=priority,
+            doc_names=doc_names,
+        )
 
     @staticmethod
     def _rrf_fuse(

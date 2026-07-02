@@ -6,6 +6,7 @@ from app.rag.namespace_kb import (
     apply_priority_score_adjustment,
     apply_tiered_priority_order,
     build_chunk_metadatas,
+    chunk_matches_namespace_kb_target,
     chunk_passes_kb_enabled_filter,
     finalize_retrieval_hits,
     normalize_namespace_kb_priority,
@@ -134,6 +135,52 @@ class TestNamespaceKbRecall(unittest.TestCase):
         self.assertEqual(2, updated)
         chunks = self.svc.retrieve_chunks("enabled", top_k=5, namespace="ns1", use_hybrid=False)
         self.assertEqual(0, len(chunks))
+
+    def test_update_namespace_kb_config_matches_metadata_namespace(self):
+        self.store._items.clear()
+        self.store.add_texts(
+            texts=["orphan ns in metadata only"],
+            embeddings=[[1.0, 0.0]],
+            namespace=None,
+            doc_name="pdf_doc",
+            metadatas=[{"namespace": "ns1", "namespace_kb_priority": 1}],
+        )
+        updated = self.store.update_namespace_kb_config(
+            "ns1",
+            enabled=True,
+            priority=7,
+            doc_names=["pdf_doc"],
+        )
+        self.assertEqual(1, updated)
+        meta = self.store._items[0].get("metadata") or {}
+        self.assertEqual(7, meta.get("namespace_kb_priority"))
+
+    def test_update_namespace_kb_config_matches_doc_name_without_top_namespace(self):
+        self.store._items.clear()
+        self.store.add_texts(
+            texts=["missing top-level namespace"],
+            embeddings=[[1.0, 0.0]],
+            namespace=None,
+            doc_name="scan_pdf",
+            metadatas=[{"doc_version": "v1"}],
+        )
+        updated = self.store.update_namespace_kb_config(
+            "boiler_tb",
+            enabled=True,
+            priority=2,
+            doc_names=["scan_pdf"],
+        )
+        self.assertEqual(1, updated)
+        meta = self.store._items[0].get("metadata") or {}
+        self.assertEqual(2, meta.get("namespace_kb_priority"))
+
+    def test_chunk_matches_namespace_kb_target_metadata_namespace(self):
+        item = {
+            "doc_name": "d1",
+            "namespace": None,
+            "metadata": {"namespace": "ns1"},
+        }
+        self.assertTrue(chunk_matches_namespace_kb_target(item, "ns1", ["d1"]))
 
     def test_delete_by_namespace(self):
         deleted = self.store.delete_by_namespace("ns1")

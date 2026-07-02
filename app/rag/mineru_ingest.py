@@ -66,10 +66,16 @@ def prepare_pdf_document_for_pipeline(doc: DocumentSource) -> tuple[DocumentSour
         key_prefix=cfg.redis_semaphore_key_prefix,
     )
     client = MinerUClient(cfg)
-    blocking_timeout = max(cfg.timeout_s + 120.0, 300.0)
+    gate_wait_timeout = max(30.0, float(cfg.gate_wait_timeout_s))
 
+    logger.info(
+        "MinerU gate wait start doc_name=%s max_concurrent=%s gate_wait_timeout_s=%.0f",
+        doc.doc_name,
+        cfg.max_concurrent,
+        gate_wait_timeout,
+    )
     wait_t0 = time.perf_counter()
-    with gate.acquire(blocking_timeout_s=blocking_timeout):
+    with gate.acquire(blocking_timeout_s=gate_wait_timeout):
         wait_ms = int((time.perf_counter() - wait_t0) * 1000)
         if wait_ms > 1000:
             logger.info(

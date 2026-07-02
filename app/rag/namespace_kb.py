@@ -216,6 +216,70 @@ def build_es_namespace_must_clauses(namespace: str | None) -> list[dict[str, Any
     return [{"term": {"namespace": namespace}}]
 
 
+def build_es_namespace_kb_update_clauses(
+    namespace: str | None,
+    doc_names: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    kb-config 批量更新用的 namespace 匹配（比检索 filter 更宽）：
+    - 顶层 namespace 精确匹配；
+    - metadata.namespace（含 .keyword 子字段）；
+    - docs 索引中登记的 doc_name，且 chunk 顶层 namespace 缺失/为空（常见于历史数据、部分 figure chunk）。
+    """
+    if namespace is None:
+        return build_es_namespace_must_clauses(None)
+
+    ns_should: list[dict[str, Any]] = [
+        {"term": {"namespace": namespace}},
+        {"term": {"metadata.namespace": namespace}},
+        {"term": {"metadata.namespace.keyword": namespace}},
+    ]
+    outer_should: list[dict[str, Any]] = [
+        {"bool": {"should": ns_should, "minimum_should_match": 1}}
+    ]
+    names = sorted({str(n) for n in (doc_names or []) if n})
+    if names:
+        outer_should.append(
+            {
+                "bool": {
+                    "must": [
+                        {"terms": {"doc_name": names}},
+                        {
+                            "bool": {
+                                "should": [
+                                    {"bool": {"must_not": [{"exists": {"field": "namespace"}}]}},
+                                    {"term": {"namespace": ""}},
+                                ],
+                                "minimum_should_match": 1,
+                            }
+                        },
+                    ]
+                }
+            }
+        )
+    return [{"bool": {"should": outer_should, "minimum_should_match": 1}}]
+
+
+def chunk_matches_namespace_kb_target(
+    item: dict[str, Any],
+    namespace: str | None,
+    doc_names: Sequence[str] | None = None,
+) -> bool:
+    """内存/FAISS 版 kb-config 批量更新匹配（与 build_es_namespace_kb_update_clauses 语义对齐）。"""
+    if chunk_namespace_matches(item.get("namespace"), namespace):
+        return True
+    meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    if namespace is not None and meta.get("namespace") == namespace:
+        return True
+    if namespace is None:
+        return False
+    doc_name = item.get("doc_name") or meta.get("doc_name")
+    if not doc_name or doc_name not in set(doc_names or []):
+        return False
+    top_ns = item.get("namespace")
+    return top_ns is None or top_ns == ""
+
+
 def append_es_filters(bool_query: dict[str, Any], extra_filters: list[dict[str, Any]]) -> None:
     if not extra_filters:
         return
