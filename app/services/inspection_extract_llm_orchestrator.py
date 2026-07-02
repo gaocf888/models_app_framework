@@ -412,7 +412,7 @@ class InspectionExtractLlmOrchestrator:
                 f"候选记录(JSON)：{json.dumps(batch, ensure_ascii=False)}\n"
                 f"文档摘要：{snippets[:4000]}"
             )
-            prompt_total_chars = len(classify_system) + len(classify_user) + _CHAT_MESSAGES_SLO_CHARS
+            prompt_total_chars = len(classify_system) + len(classify_user) + CHAT_MESSAGES_SLO_CHARS
             logger.info(
                 "inspection_extract llm stage=classify batch=%s/%s model=%s records_in=%s prompt_chars=%s timeout_s=%.1f",
                 bidx,
@@ -460,7 +460,7 @@ class InspectionExtractLlmOrchestrator:
                 raise InspectionExtractJobCancelled()
             repair_input = candidate_records
             repair_user = f"待修复记录(JSON)：{json.dumps(repair_input, ensure_ascii=False)}"
-            prompt_total_chars = len(repair_system) + len(repair_user) + _CHAT_MESSAGES_SLO_CHARS
+            prompt_total_chars = len(repair_system) + len(repair_user) + CHAT_MESSAGES_SLO_CHARS
             logger.info(
                 "inspection_extract llm stage=repair model=%s records_in=%s prompt_chars=%s timeout_s=%.1f",
                 model,
@@ -541,7 +541,7 @@ class InspectionExtractLlmOrchestrator:
             )
         for attempt in range(parse_chunk_retry + 1):
             parse_user = f"文档分块如下（第{idx}/{total}块）：\n{llm_chunk_body}"
-            prompt_total_chars = len(parse_system) + len(parse_user) + _CHAT_MESSAGES_SLO_CHARS
+            prompt_total_chars = len(parse_system) + len(parse_user) + CHAT_MESSAGES_SLO_CHARS
             logger.info(
                 "inspection_extract llm stage=parse chunk=%s/%s model=%s prompt_chars=%s timeout_s=%.1f",
                 idx,
