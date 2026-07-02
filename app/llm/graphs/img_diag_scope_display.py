@@ -41,6 +41,8 @@ SCOPE_HITL_DB_MATCHED_PROMPT = (
 
 SCOPE_HITL_NOT_PARSED_PROMPT = "未识别解析到台账信息，请补充！"
 
+SCOPE_HITL_IMAGE_ONLY_REPLY_EXAMPLE = "1号锅炉水冷壁螺旋段前墙吹灰孔7"
+ 
 SCOPE_HITL_RELAXED_PROMPT = (
     "业务库未匹配到最细粒度范围，系统已自动放宽范围条件后继续查询；"
     "请确认下列台账信息，或修改后重新提交"
@@ -187,9 +189,22 @@ def format_scope_draft_display_lines(scope_draft: dict[str, Any] | None) -> list
     return [f"{cn}：{val}" for cn, val in scope_draft_to_display(scope_draft).items()]
 
 
+def is_image_only_initial_scope_hitl(interrupt_payload: dict[str, Any] | None) -> bool:
+    """首请求仅传图、尚未补充 query/台账文本时的 HITL 展示分支。"""
+    payload = interrupt_payload or {}
+    if not payload.get("initial_query_empty"):
+        return False
+    if str(payload.get("scope_cumulative_text") or "").strip():
+        return False
+    return resolve_scope_hitl_display_prompt(interrupt_payload=payload) == SCOPE_HITL_NOT_PARSED_PROMPT
+
+
 def build_scope_hitl_confirm_reply_example(interrupt_payload: dict[str, Any] | None) -> str:
     """根据台账 HITL 场景生成确认回复示例（与视觉换图无关）。"""
     payload = interrupt_payload or {}
+    if is_image_only_initial_scope_hitl(payload):
+        return SCOPE_HITL_IMAGE_ONLY_REPLY_EXAMPLE
+
     missing = [str(x).strip() for x in (payload.get("missing_fields") or []) if str(x).strip()]
 
     scope_reason = str(payload.get("scope_interrupt_reason") or "").strip()
@@ -230,6 +245,17 @@ def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None
     """将 scope HITL interrupt 载荷格式化为可写入会话历史的 assistant 正文。"""
     if not interrupt_payload:
         return SCOPE_HITL_TITLE
+    if is_image_only_initial_scope_hitl(interrupt_payload):
+        lines: list[str] = [SCOPE_HITL_TITLE]
+        prompt = resolve_scope_hitl_display_prompt(interrupt_payload=interrupt_payload)
+        if prompt:
+            lines.append(prompt)
+        example = str(interrupt_payload.get("confirm_reply_example") or "").strip()
+        if not example:
+            example = build_scope_hitl_confirm_reply_example(interrupt_payload)
+        if example:
+            lines.extend(["", "回复示例：", example])
+        return "\n".join(lines)
     lines: list[str] = [SCOPE_HITL_TITLE]
     prompt = resolve_scope_hitl_display_prompt(interrupt_payload=interrupt_payload)
     if prompt:

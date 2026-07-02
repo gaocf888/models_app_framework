@@ -9,9 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.llm.graphs.analysis_img_diag_runner import AnalysisImgDiagGraphRunner, ImgDiagScopeInterrupt
 from app.llm.graphs.img_diag_scope_display import (
+    SCOPE_HITL_IMAGE_ONLY_REPLY_EXAMPLE,
     build_scope_hitl_confirm_reply_example,
     format_scope_hitl_assistant_message,
     format_scope_hitl_user_message,
+    is_image_only_initial_scope_hitl,
 )
 from app.models.analysis import AnalysisImgDiagRequest, AnalysisOptions
 
@@ -60,6 +62,39 @@ class TestScopeHitlConversationFormat(unittest.TestCase):
             ),
             "确认或继续",
         )
+
+    def test_image_only_initial_scope_hitl_display(self) -> None:
+        payload = {
+            "initial_query_empty": True,
+            "scope_cumulative_text": "",
+            "prompt": "未识别解析到台账信息，请补充！",
+            "scope_hitl_prompt": "未识别解析到台账信息，请补充！",
+            "interrupt_reason": "missing:boiler,device_name",
+            "missing_fields": ["机组", "受热面"],
+        }
+        self.assertTrue(is_image_only_initial_scope_hitl(payload))
+        self.assertEqual(
+            build_scope_hitl_confirm_reply_example(payload),
+            SCOPE_HITL_IMAGE_ONLY_REPLY_EXAMPLE,
+        )
+        text = format_scope_hitl_assistant_message(payload)
+        self.assertIn("未识别解析到台账信息，请补充！", text)
+        self.assertIn("回复示例：", text)
+        self.assertIn(SCOPE_HITL_IMAGE_ONLY_REPLY_EXAMPLE, text)
+        self.assertNotIn("台账信息：", text)
+        self.assertNotIn("待补充：", text)
+        self.assertNotIn("确认回复示例", text)
+
+    def test_image_only_display_disabled_after_user_supplement(self) -> None:
+        payload = {
+            "initial_query_empty": True,
+            "scope_cumulative_text": "1号锅炉水冷壁",
+            "prompt": "未识别解析到台账信息，请补充！",
+            "scope_hitl_prompt": "未识别解析到台账信息，请补充！",
+            "interrupt_reason": "missing:device_name",
+            "missing_fields": ["受热面"],
+        }
+        self.assertFalse(is_image_only_initial_scope_hitl(payload))
 
 
 def _make_runner() -> AnalysisImgDiagGraphRunner:

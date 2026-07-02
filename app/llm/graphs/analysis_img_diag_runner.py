@@ -501,6 +501,10 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "include_vision_preview": bool(intr.get("include_vision_preview")),
             "confirm_reply_example": intr.get("confirm_reply_example"),
         }
+        if intr.get("initial_query_empty"):
+            event["initial_query_empty"] = True
+            if intr.get("scope_cumulative_text") is not None:
+                event["scope_cumulative_text"] = intr.get("scope_cumulative_text")
         if intr.get("include_vision_preview"):
             if intr.get("vision_findings_display"):
                 event["vision_findings_display"] = intr.get("vision_findings_display")

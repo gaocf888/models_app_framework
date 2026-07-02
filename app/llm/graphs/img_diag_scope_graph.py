@@ -106,6 +106,7 @@ class ImgDiagScopeGraphState(TypedDict, total=False):
     vision_confirm_blocked: bool
     scope_interrupt_reason: str
     scope_hitl_prompt: str
+    initial_query_empty: bool
 
 
 def _cfg():
@@ -192,6 +193,9 @@ def _enrich_interrupt_payload_from_state(state: ImgDiagScopeGraphState, payload:
             img_diag_subtype=subtype,
         )
     payload["confirm_reply_example"] = build_scope_hitl_confirm_reply_example(payload)
+    if state.get("initial_query_empty"):
+        payload["initial_query_empty"] = True
+        payload["scope_cumulative_text"] = str(state.get("scope_cumulative_text") or "").strip()
 
 
 def _resume_session_kwargs(
@@ -871,6 +875,8 @@ class ImgDiagScopeHitlRunner:
             "human_interactions": [],
             "orchestrator_path": orchestrator_path or "scope_first",
         }
+        if not query and normalize_image_url_list(req.get("image_urls")):
+            state["initial_query_empty"] = True
         if isinstance(vision_prefetch, dict) and vision_prefetch:
             state["vision_prefetch_data"] = vision_prefetch
             state["vision_prefetch_ms"] = int(vision_prefetch_ms or 0)

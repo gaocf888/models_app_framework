@@ -335,12 +335,26 @@
     return lines.join("\n");
   }
 
+  function isImageOnlyInitialScopeHitl(ev) {
+    if (!ev || !ev.initial_query_empty) return false;
+    if (String(ev.scope_cumulative_text || "").trim()) return false;
+    const prompt = String(ev.prompt || "").trim();
+    return prompt === "未识别解析到台账信息，请补充！";
+  }
+
   function formatScopeHitlMessage(ev) {
     const lines = ["【台账信息确认】", ""];
     if (ev.prompt) {
       lines.push(ev.prompt, "");
     } else {
       lines.push("请补充或确认机组与受热面信息", "");
+    }
+    if (isImageOnlyInitialScopeHitl(ev)) {
+      const example = (ev.confirm_reply_example || "1号锅炉水冷壁螺旋段前墙吹灰孔7").trim();
+      if (example) {
+        lines.push("回复示例：", example);
+      }
+      return lines.join("\n");
     }
     lines.push("台账信息：");
     const draftLines = scopeDraftDisplayLines(ev);
@@ -354,7 +368,7 @@
     }
     const example = (ev.confirm_reply_example || "").trim();
     if (example) {
-      lines.push("", "确认回复示例：", example);
+      lines.push("", isImageOnlyInitialScopeHitl(ev) ? "回复示例：" : "确认回复示例：", example);
     }
     return lines.join("\n");
   }
@@ -565,8 +579,13 @@
     const uid = $("userId").value.trim();
     const sid = $("sessionId").value.trim();
     const q = $("query").value.trim();
-    if (!uid || !sid || !q) {
-      showErr("请填写 user_id、session_id、query。");
+    if (!uid || !sid) {
+      showErr("请填写 user_id、session_id。");
+      return;
+    }
+    const allowEmptyQuery = isDefectIdentSubtype() && urls.length > 0;
+    if (!q && !allowEmptyQuery) {
+      showErr("请填写 query；缺陷识别可先只传图（image_urls 至少一行），台账在 HITL 阶段补充。");
       return;
     }
 
