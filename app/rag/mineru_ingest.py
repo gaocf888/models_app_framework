@@ -10,6 +10,7 @@ from app.core.logging import get_logger
 from app.rag.document_pipeline.parsers import DocumentParser
 from app.rag.mineru_redis_gate import get_mineru_gate
 from app.rag.models import DocumentSource
+from app.rag.namespace_kb import clone_document_source
 from app.rag.pdf_text_analysis import is_likely_scanned_pdf
 
 logger = get_logger(__name__)
@@ -91,20 +92,11 @@ def prepare_pdf_document_for_pipeline(doc: DocumentSource) -> tuple[DocumentSour
                 meta["mineru_image_base"] = str(img_root)
         except Exception:  # noqa: BLE001
             pass
-    new_doc = DocumentSource(
-        dataset_id=doc.dataset_id,
-        doc_name=doc.doc_name,
-        namespace=doc.namespace,
+    new_doc = clone_document_source(
+        doc,
         content=md,
-        doc_version=doc.doc_version,
-        tenant_id=doc.tenant_id,
         source_type="markdown",
-        source_uri=doc.source_uri,
-        description=doc.description,
-        replace_if_exists=doc.replace_if_exists,
         metadata=meta,
-        namespace_kb_enabled=doc.namespace_kb_enabled,
-        namespace_kb_priority=doc.namespace_kb_priority,
     )
     return new_doc, wall_s
 

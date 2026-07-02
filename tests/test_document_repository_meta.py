@@ -120,6 +120,40 @@ class TestDocumentRepositoryNamespaceMove(unittest.TestCase):
                     to_namespace="z",
                 )
 
+    @patch("app.rag.document_repository.get_app_config")
+    def test_list_namespace_kb_configs_uses_latest_updated_doc(self, gc: MagicMock) -> None:
+        gc.return_value = _mock_cfg()
+        with tempfile.TemporaryDirectory() as d:
+            repo = DocumentRepository(state_dir=d)
+            td = "__tenant__"
+            for name, pri, ts in (
+                ("old_doc", 1, "2026-01-01T00:00:00+00:00"),
+                ("new_doc", 2, "2026-07-02T00:00:00+00:00"),
+            ):
+                key = make_document_storage_key(
+                    name,
+                    namespace="n1",
+                    tenant_id=None,
+                    doc_version="v1",
+                    tenant_id_fallback=td,
+                )
+                repo.upsert(
+                    key,
+                    {
+                        "namespace": "n1",
+                        "metadata": {
+                            "namespace_kb_enabled": True,
+                            "namespace_kb_priority": pri,
+                        },
+                        "updated_at": ts,
+                    },
+                )
+            rows = repo.list_namespace_kb_configs()
+            self.assertEqual(1, len(rows))
+            self.assertEqual("n1", rows[0]["namespace"])
+            self.assertEqual(2, rows[0]["namespace_kb_priority"])
+            self.assertEqual(2, rows[0]["document_count"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -552,7 +552,7 @@ class DocumentRepository:
         return updated
 
     def list_namespace_kb_configs(self) -> list[dict[str, Any]]:
-        """按 namespace 聚合 docs 索引中的 namespace_kb_* 配置（取样本文档 metadata）。"""
+        """按 namespace 聚合 docs 索引中的 namespace_kb_* 配置（取该 ns 下最近更新文档的 metadata）。"""
         if self._use_es and self._client is not None:
             body = {
                 "size": 0,
@@ -563,7 +563,8 @@ class DocumentRepository:
                             "sample": {
                                 "top_hits": {
                                     "size": 1,
-                                    "_source": ["namespace", "metadata"],
+                                    "sort": [{"updated_at": {"order": "desc"}}],
+                                    "_source": ["namespace", "metadata", "updated_at"],
                                 }
                             }
                         },
@@ -601,20 +602,31 @@ class DocumentRepository:
         for payload in state.values():
             ns = payload.get("namespace")
             bucket_key = DEFAULT_NAMESPACE_PATH if ns is None or ns == "" else str(ns)
+            meta = payload.get("metadata") or {}
+            enabled, priority = resolve_namespace_kb_fields(
+                meta.get(NS_KB_ENABLED_KEY),
+                meta.get(NS_KB_PRIORITY_KEY),
+            )
+            updated_at = str(payload.get("updated_at") or "")
             if bucket_key not in grouped:
-                meta = payload.get("metadata") or {}
-                enabled, priority = resolve_namespace_kb_fields(
-                    meta.get(NS_KB_ENABLED_KEY),
-                    meta.get(NS_KB_PRIORITY_KEY),
-                )
                 grouped[bucket_key] = {
                     "namespace": None if bucket_key == DEFAULT_NAMESPACE_PATH else bucket_key,
                     "namespace_kb_enabled": enabled,
                     "namespace_kb_priority": priority,
                     "document_count": 0,
+                    "_updated_at": updated_at,
                 }
+            else:
+                prev_updated = grouped[bucket_key].get("_updated_at") or ""
+                if updated_at >= prev_updated:
+                    grouped[bucket_key]["namespace_kb_enabled"] = enabled
+                    grouped[bucket_key]["namespace_kb_priority"] = priority
+                    grouped[bucket_key]["_updated_at"] = updated_at
             grouped[bucket_key]["document_count"] += 1
-        out = list(grouped.values())
+        out = []
+        for row in grouped.values():
+            row.pop("_updated_at", None)
+            out.append(row)
         out.sort(key=lambda x: (x.get("namespace_kb_priority", 1), str(x.get("namespace") or "")))
         return out
 

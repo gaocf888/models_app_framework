@@ -76,6 +76,13 @@ def apply_namespace_kb_to_document_source(
     return doc
 
 
+def clone_document_source(doc: DocumentSource, **overrides: Any) -> DocumentSource:
+    """复制 DocumentSource 并覆盖指定字段，避免重建时遗漏 namespace_kb_* 等字段。"""
+    from dataclasses import replace
+
+    return replace(doc, **overrides)
+
+
 def parse_kb_enabled_value(val: Any) -> bool | None:
     """解析 metadata 中的启用标志；无法识别时返回 None（视为未设置）。"""
     if val is None:

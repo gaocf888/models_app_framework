@@ -11,6 +11,7 @@ import httpx
 from app.core.config import RAGContentFetchConfig, get_app_config
 from app.core.logging import get_logger
 from app.rag.models import DocumentSource
+from app.rag.namespace_kb import clone_document_source
 
 logger = get_logger(__name__)
 
@@ -195,17 +196,10 @@ def materialize_document_content_from_url(doc: DocumentSource) -> tuple[Document
             "content_fetched_from_url": raw,
             "content_fetch_content_type": ct,
         }
-        new_doc = DocumentSource(
-            dataset_id=doc.dataset_id,
-            doc_name=doc.doc_name,
-            namespace=doc.namespace,
+        new_doc = clone_document_source(
+            doc,
             content=text,
-            doc_version=doc.doc_version,
-            tenant_id=doc.tenant_id,
-            source_type=doc.source_type,
             source_uri=doc.source_uri or raw,
-            description=doc.description,
-            replace_if_exists=doc.replace_if_exists,
             metadata=meta,
         )
         logger.info(
@@ -241,17 +235,10 @@ def materialize_document_content_from_url(doc: DocumentSource) -> tuple[Document
         "content_fetched_from_url": raw,
         "content_fetch_content_type": ct,
     }
-    new_doc = DocumentSource(
-        dataset_id=doc.dataset_id,
-        doc_name=doc.doc_name,
-        namespace=doc.namespace,
+    new_doc = clone_document_source(
+        doc,
         content=str(path.resolve()),
-        doc_version=doc.doc_version,
-        tenant_id=doc.tenant_id,
-        source_type=doc.source_type,
         source_uri=doc.source_uri or raw,
-        description=doc.description,
-        replace_if_exists=doc.replace_if_exists,
         metadata=meta,
     )
     logger.info(

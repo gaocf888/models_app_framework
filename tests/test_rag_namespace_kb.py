@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import MagicMock, patch
 
 from app.rag.models import ChunkRecord, DocumentSource
 from app.rag.namespace_kb import (
@@ -166,6 +167,112 @@ class _FakeStoreProvider:
 
     def get_default_store(self):
         return self._store
+
+
+class TestContentUrlFetchPreservesNamespaceKb(unittest.TestCase):
+    def _fetch_docx_via_url(self) -> DocumentSource:
+        from app.rag.content_url_fetch import materialize_document_content_from_url
+
+        doc = DocumentSource(
+            dataset_id="company_kb",
+            doc_name="doc",
+            namespace="n1",
+            content="https://example.com/file.docx",
+            source_type="docx",
+            namespace_kb_enabled=True,
+            namespace_kb_priority=2,
+        )
+        cfg = MagicMock()
+        cfg.enabled = True
+        cfg.max_bytes = 10_000_000
+        cfg.timeout_s = 30
+        fake_docx = b"PK\x03\x04fake-docx"
+        with patch("app.rag.content_url_fetch.get_app_config") as gc, patch(
+            "app.rag.content_url_fetch.fetch_url_bytes",
+            return_value=(fake_docx, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ):
+            gc.return_value.rag.content_fetch = cfg
+            new_doc, tmp = materialize_document_content_from_url(doc)
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+        return new_doc
+
+    def test_docx_url_fetch_preserves_namespace_kb_priority(self) -> None:
+        new_doc = self._fetch_docx_via_url()
+        self.assertTrue(new_doc.namespace_kb_enabled)
+        self.assertEqual(2, new_doc.namespace_kb_priority)
+
+    def test_pdf_url_fetch_preserves_namespace_kb_priority(self) -> None:
+        from app.rag.content_url_fetch import materialize_document_content_from_url
+
+        doc = DocumentSource(
+            dataset_id="ds",
+            doc_name="pdf",
+            namespace="n1",
+            content="https://example.com/file.pdf",
+            source_type="pdf",
+            namespace_kb_priority=3,
+        )
+        cfg = MagicMock()
+        cfg.enabled = True
+        cfg.max_bytes = 10_000_000
+        cfg.timeout_s = 30
+        with patch("app.rag.content_url_fetch.get_app_config") as gc, patch(
+            "app.rag.content_url_fetch.fetch_url_bytes",
+            return_value=(b"%PDF-1.4", "application/pdf"),
+        ):
+            gc.return_value.rag.content_fetch = cfg
+            new_doc, tmp = materialize_document_content_from_url(doc)
+        try:
+            self.assertEqual(3, new_doc.namespace_kb_priority)
+        finally:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
+
+    def test_markdown_url_inline_fetch_preserves_namespace_kb_priority(self) -> None:
+        from app.rag.content_url_fetch import materialize_document_content_from_url
+
+        doc = DocumentSource(
+            dataset_id="ds",
+            doc_name="md",
+            namespace="n1",
+            content="https://example.com/readme.md",
+            source_type="markdown",
+            namespace_kb_priority=4,
+        )
+        cfg = MagicMock()
+        cfg.enabled = True
+        cfg.max_bytes = 10_000_000
+        cfg.timeout_s = 30
+        with patch("app.rag.content_url_fetch.get_app_config") as gc, patch(
+            "app.rag.content_url_fetch.fetch_url_bytes",
+            return_value=(b"# title", "text/markdown"),
+        ):
+            gc.return_value.rag.content_fetch = cfg
+            new_doc, tmp = materialize_document_content_from_url(doc)
+        self.assertIsNone(tmp)
+        self.assertEqual(4, new_doc.namespace_kb_priority)
+        self.assertEqual("# title", new_doc.content)
+
+    def test_http_url_skipped_when_fetch_disabled(self) -> None:
+        from app.rag.content_url_fetch import materialize_document_content_from_url
+
+        doc = DocumentSource(
+            dataset_id="ds",
+            doc_name="d",
+            namespace="n1",
+            content="https://example.com/file.docx",
+            source_type="docx",
+            namespace_kb_priority=2,
+        )
+        cfg = MagicMock()
+        cfg.enabled = False
+        with patch("app.rag.content_url_fetch.get_app_config") as gc:
+            gc.return_value.rag.content_fetch = cfg
+            new_doc, tmp = materialize_document_content_from_url(doc)
+        self.assertIs(doc, new_doc)
+        self.assertEqual(2, new_doc.namespace_kb_priority)
+        self.assertIsNone(tmp)
 
 
 if __name__ == "__main__":
