@@ -332,7 +332,16 @@ def apply_vision_rejection_scope_gate(state: dict[str, Any]) -> bool:
     state["needs_db_retry"] = False
     state["validation_error"] = None
 
-    from app.llm.graphs.img_diag_scope_display import resolve_scope_hitl_display_prompt
+    from app.llm.graphs.img_diag_scope_display import (
+        SCOPE_HITL_DB_MATCHED_PROMPT,
+        resolve_scope_hitl_display_prompt,
+    )
+
+    if (
+        str(state.get("scope_interrupt_reason") or "") == "db_validate_matched"
+        or str(state.get("scope_hitl_prompt") or "") == SCOPE_HITL_DB_MATCHED_PROMPT
+    ):
+        state["pending_matched_confirm"] = True
 
     state["human_prompt"] = resolve_scope_hitl_display_prompt(state=state)
     return True
