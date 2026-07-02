@@ -196,6 +196,54 @@ class RAGIngestionService:
                 )
         return deleted
 
+    def delete_by_namespace(self, namespace: str | None) -> dict[str, int]:
+        """
+        清空指定 namespace 下全部知识：向量 chunk、docs 元数据，并尽力清理 figure 与 GraphRAG。
+        """
+        from app.rag.document_repository import DocumentRepository
+
+        doc_repo = DocumentRepository()
+        docs = doc_repo.list_in_namespace(namespace)
+        for doc in docs:
+            doc_name = str(doc.get("doc_name") or "")
+            if not doc_name:
+                continue
+            doc_version = doc.get("doc_version")
+            if get_app_config().rag.ingestion.figure_enabled:
+                try:
+                    from app.rag.asset_storage import RagAssetStorage
+
+                    RagAssetStorage().delete_by_doc(doc_name, doc_version)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "RagAssetStorage.delete_by_doc failed during namespace purge doc_name=%s: %s",
+                        doc_name,
+                        e,
+                    )
+            if self._graph_ingestion is not None and self._should_sync_graph_delete():
+                try:
+                    self._graph_ingestion.delete_document(  # type: ignore[union-attr]
+                        doc_name=doc_name,
+                        namespace=namespace,
+                        doc_version=doc_version,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "GraphIngestionService.delete_document failed during namespace purge "
+                        "doc_name=%s namespace=%s: %s",
+                        doc_name,
+                        namespace,
+                        e,
+                        exc_info=True,
+                    )
+        chunks_deleted = self._rag_service.delete_by_namespace(namespace)
+        doc_records_deleted = doc_repo.delete_by_namespace(namespace)
+        return {
+            "chunks_deleted": chunks_deleted,
+            "doc_records_deleted": doc_records_deleted,
+            "documents_purged": len(docs),
+        }
+
     def _should_sync_graph_ingest(self) -> bool:
         if self._graph_ingestion is None:
             return False
@@ -265,4 +313,25 @@ class RAGIngestionService:
             scene=scene,
             query_image_url=query_image_url,
         )
+
+    def update_namespace_kb_config(
+        self,
+        namespace: str | None,
+        *,
+        enabled: bool,
+        priority: int,
+    ) -> dict[str, int]:
+        from app.rag.document_repository import DocumentRepository
+
+        chunks_updated = self._rag_service.update_namespace_kb_config(
+            namespace,
+            enabled=enabled,
+            priority=priority,
+        )
+        docs_updated = DocumentRepository().update_namespace_kb_config(
+            namespace,
+            enabled=enabled,
+            priority=priority,
+        )
+        return {"chunks_updated": chunks_updated, "docs_updated": docs_updated}
 

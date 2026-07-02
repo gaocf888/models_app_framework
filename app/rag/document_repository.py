@@ -7,6 +7,15 @@ from typing import Any, Dict
 from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.rag.models import utcnow_iso
+from app.rag.namespace_kb import (
+    DEFAULT_NAMESPACE_PATH,
+    NS_KB_ENABLED_KEY,
+    NS_KB_PRIORITY_KEY,
+    build_es_namespace_must_clauses,
+    chunk_namespace_matches,
+    patch_metadata_namespace_kb,
+    resolve_namespace_kb_fields,
+)
 
 logger = get_logger(__name__)
 
@@ -217,6 +226,66 @@ class DocumentRepository:
             keys_to_del.append(key)
         for k in keys_to_del:
             del state[k]
+        if keys_to_del:
+            self._save_file_state(state)
+        return len(keys_to_del)
+
+    def list_in_namespace(self, namespace: str | None, *, limit: int = 100_000) -> list[Dict[str, Any]]:
+        """列出某 namespace 下全部文档元数据（含默认分区）。"""
+        if self._use_es and self._client is not None:
+            must = build_es_namespace_must_clauses(namespace)
+            body = {
+                "from": 0,
+                "size": max(1, min(limit, 10_000)),
+                "sort": [{"updated_at": {"order": "desc"}}],
+                "query": {"bool": {"must": must}},
+            }
+            res = self._client.search(index=self._alias, body=body)
+            hits = res.get("hits", {}).get("hits") or []
+            total = res.get("hits", {}).get("total", 0)
+            if isinstance(total, dict):
+                total_val = int(total.get("value", 0))
+            else:
+                total_val = int(total or 0)
+            if total_val > len(hits):
+                logger.warning(
+                    "list_in_namespace truncated: namespace=%s total=%s returned=%s",
+                    namespace,
+                    total_val,
+                    len(hits),
+                )
+            return [h.get("_source") or {} for h in hits]
+
+        state = self._load_file_state()
+        values = [
+            v
+            for v in state.values()
+            if isinstance(v, dict) and chunk_namespace_matches(v.get("namespace"), namespace)
+        ]
+        values.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+        return values[: max(1, limit)]
+
+    def delete_by_namespace(self, namespace: str | None) -> int:
+        """删除 docs 索引中某 namespace 下全部文档元数据。"""
+        if self._use_es and self._client is not None:
+            must = build_es_namespace_must_clauses(namespace)
+            body = {"query": {"bool": {"must": must}}}
+            resp = self._client.delete_by_query(
+                index=self._alias,
+                body=body,
+                refresh=True,
+                conflicts="proceed",
+            )
+            return int(resp.get("deleted", 0))
+
+        state = self._load_file_state()
+        keys_to_del = [
+            key
+            for key, payload in state.items()
+            if isinstance(payload, dict) and chunk_namespace_matches(payload.get("namespace"), namespace)
+        ]
+        for key in keys_to_del:
+            del state[key]
         if keys_to_del:
             self._save_file_state(state)
         return len(keys_to_del)
@@ -436,6 +505,169 @@ class DocumentRepository:
             "by_tenant": [{"key": k, "count": v} for k, v in by_tenant.items()],
             "by_status": [{"key": k, "count": v} for k, v in by_status.items()],
         }
+
+    def update_namespace_kb_config(
+        self,
+        namespace: str | None,
+        *,
+        enabled: bool,
+        priority: int,
+    ) -> int:
+        if self._use_es and self._client is not None:
+            must = build_es_namespace_must_clauses(namespace)
+            body: dict[str, Any] = {
+                "script": {
+                    "source": (
+                        "if (ctx._source.metadata == null) { ctx._source.metadata = new HashMap(); } "
+                        "ctx._source.metadata.namespace_kb_enabled = params.enabled; "
+                        "ctx._source.metadata.namespace_kb_priority = params.priority;"
+                    ),
+                    "lang": "painless",
+                    "params": {"enabled": enabled, "priority": priority},
+                },
+                "query": {"bool": {"must": must}},
+            }
+            resp = self._client.update_by_query(
+                index=self._alias,
+                body=body,
+                refresh=True,
+                conflicts="proceed",
+            )
+            return int(resp.get("updated", 0))
+
+        state = self._load_file_state()
+        updated = 0
+        for payload in state.values():
+            if not chunk_namespace_matches(payload.get("namespace"), namespace):
+                continue
+            payload["metadata"] = patch_metadata_namespace_kb(
+                payload.get("metadata"),
+                enabled=enabled,
+                priority=priority,
+            )
+            payload["updated_at"] = utcnow_iso()
+            updated += 1
+        if updated:
+            self._save_file_state(state)
+        return updated
+
+    def list_namespace_kb_configs(self) -> list[dict[str, Any]]:
+        """按 namespace 聚合 docs 索引中的 namespace_kb_* 配置（取样本文档 metadata）。"""
+        if self._use_es and self._client is not None:
+            body = {
+                "size": 0,
+                "aggs": {
+                    "by_namespace": {
+                        "terms": {"field": "namespace", "size": 200, "missing": DEFAULT_NAMESPACE_PATH},
+                        "aggs": {
+                            "sample": {
+                                "top_hits": {
+                                    "size": 1,
+                                    "_source": ["namespace", "metadata"],
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+            res = self._client.search(index=self._alias, body=body)
+            buckets = (res.get("aggregations") or {}).get("by_namespace", {}).get("buckets") or []
+            out: list[dict[str, Any]] = []
+            for b in buckets:
+                key = b.get("key")
+                ns = None if key == DEFAULT_NAMESPACE_PATH else key
+                hits = ((b.get("sample") or {}).get("hits") or {}).get("hits") or []
+                meta = {}
+                if hits:
+                    src = hits[0].get("_source") or {}
+                    meta = src.get("metadata") or {}
+                enabled, priority = resolve_namespace_kb_fields(
+                    meta.get(NS_KB_ENABLED_KEY),
+                    meta.get(NS_KB_PRIORITY_KEY),
+                )
+                out.append(
+                    {
+                        "namespace": ns,
+                        "namespace_kb_enabled": enabled,
+                        "namespace_kb_priority": priority,
+                        "document_count": int(b.get("doc_count", 0)),
+                    }
+                )
+            out.sort(key=lambda x: (x.get("namespace_kb_priority", 1), str(x.get("namespace") or "")))
+            return out
+
+        state = self._load_file_state()
+        grouped: dict[str, dict[str, Any]] = {}
+        for payload in state.values():
+            ns = payload.get("namespace")
+            bucket_key = DEFAULT_NAMESPACE_PATH if ns is None or ns == "" else str(ns)
+            if bucket_key not in grouped:
+                meta = payload.get("metadata") or {}
+                enabled, priority = resolve_namespace_kb_fields(
+                    meta.get(NS_KB_ENABLED_KEY),
+                    meta.get(NS_KB_PRIORITY_KEY),
+                )
+                grouped[bucket_key] = {
+                    "namespace": None if bucket_key == DEFAULT_NAMESPACE_PATH else bucket_key,
+                    "namespace_kb_enabled": enabled,
+                    "namespace_kb_priority": priority,
+                    "document_count": 0,
+                }
+            grouped[bucket_key]["document_count"] += 1
+        out = list(grouped.values())
+        out.sort(key=lambda x: (x.get("namespace_kb_priority", 1), str(x.get("namespace") or "")))
+        return out
+
+    def upsert_document_record(
+        self,
+        doc: "DocumentSource",
+        *,
+        chunk_count: int,
+        status: str = "SUCCESS",
+        pipeline_version: str | None = None,
+        tenant_id_fallback: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        """同步摄入或编排器写入 docs 索引时的公共封装。"""
+        from app.rag.models import DocumentSource
+        from app.rag.namespace_kb import merge_doc_metadata_for_record
+
+        if not isinstance(doc, DocumentSource):
+            raise TypeError("doc must be DocumentSource")
+
+        cfg = get_app_config().rag
+        td_fallback = tenant_id_fallback or cfg.ingestion.tenant_id_default or "default"
+        pv = pipeline_version or cfg.ingestion.pipeline_version
+        doc_key = make_document_storage_key(
+            doc.doc_name,
+            namespace=doc.namespace,
+            tenant_id=doc.tenant_id,
+            doc_version=doc.doc_version,
+            tenant_id_fallback=td_fallback,
+        )
+        existing = self.get(doc_key) or {}
+        created_at = existing.get("created_at") or utcnow_iso()
+        payload = {
+            "doc_name": doc.doc_name,
+            "doc_version": doc.doc_version,
+            "tenant_id": doc.tenant_id,
+            "dataset_id": doc.dataset_id,
+            "namespace": doc.namespace,
+            "source_type": doc.source_type,
+            "source_uri": doc.source_uri,
+            "description": doc.description,
+            "chunk_count": chunk_count,
+            "pipeline_version": pv,
+            "status": status,
+            "created_at": created_at,
+            "updated_at": utcnow_iso(),
+            "last_job_id": existing.get("last_job_id") or "sync_upsert",
+            "last_job_type": existing.get("last_job_type") or "upsert",
+            "last_job_status": status,
+            "metadata": merge_doc_metadata_for_record(doc),
+            "error": error,
+        }
+        self.upsert(doc_key, payload)
 
     def _load_file_state(self) -> Dict[str, Any]:
         if not self._file_path.exists():

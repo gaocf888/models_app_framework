@@ -9,13 +9,13 @@ class _FakeEmbeddingService:
 
 
 class _FakeStore:
-    def similarity_search_by_vector(self, vector, k=5, namespace=None):
+    def similarity_search_by_vector(self, vector, k=5, namespace=None, **kwargs):
         return []
 
-    def keyword_search(self, query, k=5, namespace=None):
+    def keyword_search(self, query, k=5, namespace=None, **kwargs):
         return []
 
-    def metadata_search(self, query, k=5, namespace=None):
+    def metadata_search(self, query, k=5, namespace=None, **kwargs):
         return [
             {
                 "text": "metadata matched chunk",

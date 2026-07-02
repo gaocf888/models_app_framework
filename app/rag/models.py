@@ -60,6 +60,8 @@ class DocumentSource:
     description: Optional[str] = None
     replace_if_exists: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
+    namespace_kb_enabled: bool = True
+    namespace_kb_priority: int = 1
 
 
 @dataclass

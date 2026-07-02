@@ -1,7 +1,7 @@
 # RAG 整体实现技术说明
 
 > 本文描述**当前仓库已实现**的 RAG（检索增强生成）与**可选 GraphRAG** 技术方案：以**传统 RAG（向量+全文）**为主路径，支持 ES/EasySearch（EasySearch 兼容 ES API）与 FAISS 的配置化切换，并在配置开启时并行走向**知识图谱化（Neo4j）**。  
-> 配套文档：`docs/大小模型应用技术架构与实现方案.md`（4.5 节）、`framework-guide/数据持久化与容器部署说明.md`（持久化与容器化）、`rag_db-deploy/README.md`（EasySearch Docker 部署与项目对接）。
+> 配套文档：`docs/大小模型应用技术架构与实现方案.md`（4.5 节）、`framework-guide/数据持久化与容器部署说明.md`（持久化与容器化）、`rag_db-deploy/README.md`（EasySearch Docker 部署与项目对接）、`docs/RAG基于namespace的状态和优先级的改造实现方案.md`（namespace kb 启用与优先级）。
 
 ---
 
@@ -10,8 +10,8 @@
 ### 0.1 一句话方案概括
 
 当前 RAG 采用“**摄入治理 + 检索多路召回 + 策略路由 + 编排增强**”的一体化方案：
-- 摄入侧：8 步任务编排（含质量门禁与 finalize 阶段），支持版本化与幂等；
-- 检索侧：语义召回 + 关键词召回 + metadata 召回，RRF 融合并 CrossEncoder 重排；
+- 摄入侧：8 步任务编排（含质量门禁与 finalize 阶段），支持版本化与幂等；**namespace 级知识库启用/优先级**写入 doc/chunk 元数据；
+- 检索侧：语义召回 + 关键词召回 + metadata 召回，RRF 融合并 CrossEncoder 重排；**`namespace_kb_enabled=false` 的 namespace 不参与召回**；跨 namespace 时按 **`namespace_kb_priority`（数字越小越优先）** 调整排序；
 - 路由侧：`RetrievalPolicy` 按 query/场景做 vector|graph|hybrid 决策；
 - 编排侧：`BASIC` 单步检索与 `AGENTIC` 多步计划检索并存，可配置切换；
 - 存储侧：默认 ES/EasySearch（生产），保留 FAISS（开发/离线场景）。
@@ -171,7 +171,42 @@ GRAPH_RAG_USE_INTENT_ROUTING=true
 - `RAG_AGENTIC_SCENE_BOOST_WEIGHT`（默认 `0.7`，场景增强子问题权重）；
 - `RAG_AGENTIC_ENABLE_SCENE_BOOST`（默认 `true`，是否启用场景增强子问题）。
 
-#### 0.4.5 存储策略（默认 ES/EasySearch）
+#### 0.4.5 namespace 知识库启用与优先级（`namespace_kb_*`）
+
+在**不新增 namespace 配置表**的前提下，摄入时将以下字段写入 **docs 索引**与 **chunk metadata**（全项目召回在 `RAGService` 公共封装层统一生效）：
+
+| 字段 | 含义 | 默认 |
+|------|------|------|
+| `namespace_kb_enabled` | 该 namespace 是否参与召回 | `true` |
+| `namespace_kb_priority` | 跨 namespace 时的优先级（**数字越小越优先**） | `1` |
+
+**摄入**：`POST /rag/jobs/ingest`、`POST /rag/documents/upsert` 的每个文档项可传 `namespace_kb_enabled`、`namespace_kb_priority`（`priority ≥ 1`）；省略时使用默认值。API 字段优先于 `doc.metadata`。
+
+**召回**：
+- 向量/BM25/metadata 召回在存储层过滤 `namespace_kb_enabled=false`；
+- `RAGService._retrieve_chunks_core` 在 hybrid 重排后做二次过滤与优先级排序；
+- 跨 namespace（`namespace=None`）时扩大候选池，避免高优先级 namespace 被过早截断。
+
+**排序策略**（`RAG_NAMESPACE_PRIORITY_TIERED`）：
+- `false`（默认）：`adjusted_score = score − β × (priority − 1)`，`β = RAG_NAMESPACE_PRIORITY_BOOST`（默认 `0.05`）；
+- `true`：分层截断——先填满 priority=1 的 `top_k`，再依次纳入 priority=2、3…
+
+**运维 API**：
+- `GET /rag/namespaces`：列出各 namespace 当前 kb 配置（从 docs 索引聚合）；
+- `PATCH /rag/namespaces/{namespace}/kb-config`：批量更新该 namespace 下全部 doc/chunk 元数据；
+- `POST /rag/namespaces/{namespace}/purge`：整库清空（`confirm=true` 必填；默认分区路径参数为 `__default__`）。
+
+**删除语义区分**：
+- `POST /rag/documents/delete`：按**单篇** `doc_name` 删除（可选 `doc_version`）；
+- `POST /rag/namespaces/{namespace}/purge`：删除该 namespace **全部**文档与 chunk。
+
+> 详见：`docs/RAG基于namespace的状态和优先级的改造实现方案.md`
+
+相关配置：
+- `RAG_NAMESPACE_PRIORITY_BOOST`（默认 `0.05`，非分层模式下的优先级惩罚系数）；
+- `RAG_NAMESPACE_PRIORITY_TIERED`（默认 `false`，是否启用分层截断）。
+
+#### 0.4.6 存储策略（默认 ES/EasySearch）
 
 - 默认策略：
   - 默认 `RAG_VECTOR_STORE_TYPE=es`，走 ES/EasySearch 统一实现（生产推荐）。
@@ -545,6 +580,8 @@ sequenceDiagram
 | `RAG_FIGURE_*` | VLM 描述、邻近正文、召回扩展等（见 `.env.example`） | 见文档 |
 | `RAG_QUERY_VISION_AUGMENT_ENABLED` | 查询时附图增强 RAG | `false` |
 | `RAG_QUERY_VISION_AUGMENT_MODE` | `vision_augmented` / `hybrid` | `vision_augmented` |
+| `RAG_NAMESPACE_PRIORITY_BOOST` | 跨 namespace 非分层模式下的优先级惩罚系数 β | `0.05` |
+| `RAG_NAMESPACE_PRIORITY_TIERED` | 是否启用分层截断（priority=1 先填满 top_k） | `false` |
 
 检索侧标准结构：`RAGService.retrieve_chunks()` → `RetrievedChunk`；`AgenticRAGService.RAGResult.chunks` 携带同构结果便于 trace。
 
@@ -642,8 +679,8 @@ sequenceDiagram
   行为：批量原始文档摄入（服务端自动清洗与切块）。
 
 - **`POST /rag/jobs/ingest`**
-  Body：`documents[]`（原始文档）+ `operator` + 切块参数；`source_type` 支持 **`image`**（需 `RAG_FIGURE_ENABLED`）。  
-  行为：提交异步摄入任务，后台按 8 步执行（`image` 文档在 `vision_caption` 后直接进入 index）；返回 `job_id`。
+  Body：`documents[]`（原始文档）+ `operator` + 切块参数；每文档可选 **`namespace_kb_enabled`**、**`namespace_kb_priority`**（`≥1`，默认 `true`/`1`）；`source_type` 支持 **`image`**（需 `RAG_FIGURE_ENABLED`）。  
+  行为：提交异步摄入任务，后台按 8 步执行（`image` 文档在 `vision_caption` 后直接进入 index）；`namespace_kb_*` 写入 doc/chunk 元数据；返回 `job_id`。
 
 - **`GET /rag/assets/presign`**
   Query：`key`（MinIO object key）。  
@@ -666,7 +703,27 @@ sequenceDiagram
   行为：查询任务关联文档列表（用于任务审计与问题定位）。
 
 - **`POST /rag/documents/upsert`**
-  行为：同步小文档快速通道，自动清洗切块后立即入库（适合管理端快速修订）。
+  Body：单篇原始文档 + 切块参数；可选 **`namespace_kb_enabled`**、**`namespace_kb_priority`**。  
+  行为：同步小文档快速通道，自动清洗切块后立即入库（适合管理端快速修订）；`namespace_kb_*` 写入 doc/chunk 元数据。
+
+- **`POST /rag/documents/delete`**
+  Body：`doc_name`（**单篇**，非批量）、可选 `namespace`、可选 `doc_version`。  
+  行为：按文档名删除；若传入 `doc_version`，执行按版本精确删除（向量+图侧+figure 联动清理）。
+
+- **`POST /rag/documents/namespace/move`**
+  Body：源/目标 `namespace`、`doc_names[]` 等。  
+  行为：将指定文档从源 namespace 迁移到目标 namespace。
+
+- **`GET /rag/namespaces`**
+  行为：列出各 namespace 的 `namespace_kb_enabled`、`namespace_kb_priority` 及文档数（从 docs 索引聚合）。
+
+- **`PATCH /rag/namespaces/{namespace}/kb-config`**
+  Body：`namespace_kb_enabled`、`namespace_kb_priority`（至少一项）。  
+  行为：批量更新该 namespace 下全部 doc 登记与 chunk 元数据（ES `update_by_query`）；路径参数默认分区为 `__default__`。
+
+- **`POST /rag/namespaces/{namespace}/purge`**
+  Body：`confirm: true`（必填）。  
+  行为：删除该 namespace **全部** chunk、docs 登记及关联 figure/GraphRAG 数据；与单篇 `documents/delete` 互补。
 
 - **`GET /rag/documents/meta`**
   行为：分页查询文档元数据（chunk 数量、状态、首次摄入时间、更新时间、最近任务信息、错误信息）；支持 `namespace/tenant_id/dataset_id/doc_name` 过滤。
@@ -718,10 +775,6 @@ sequenceDiagram
   - 报告输出：支持 `--report-out` 输出 JSON 结果，可直接接入 CI 门禁。
   - 汇总输出：支持 `--report-md-out` 生成 Markdown 报告，便于流水线制品直接展示。
   - 失败落盘：任一步骤失败时仍会写出报告（若指定了 `--report-out` / `--report-md-out`），并记录失败阶段与错误栈。
-
-- **`POST /rag/documents/delete`**
-  Body：`doc_name`、可选 `namespace`、可选 `doc_version`。  
-  行为：支持按文档名删除；若传入 `doc_version`，执行按版本精确删除（向量+图侧同步清理）。
 
 - **`GET /rag/datasets`**  
   返回当前进程内已登记数据集元数据列表。

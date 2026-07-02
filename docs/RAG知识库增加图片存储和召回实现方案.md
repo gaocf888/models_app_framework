@@ -3,7 +3,7 @@
 > **方案选型**：VLM 语义描述 + 文本向量（企业落地首选）  
 > **配置**：`RAG_FIGURE_ENABLED` 主开关 + 若干 **`RAG_FIGURE_*` 可调参数**（均有默认值），详见 §4。  
 > **目标**：在**不更换现有文本嵌入模型与 ES/EasySearch 索引结构**的前提下，支持图片、图纸等非文本知识资产的**单独入库、与正文关联、文本召回命中后回传图片**。  
-> **配套文档**：`framework-guide/RAG整体实现技术说明.md`、`docs/MinerU-RAG-技术方案与实施清单.md`、`enterprise-level_transformation_docs/企业级 RAG 文档摄入与检索一体化改造设计稿-20260327.md`  
+> **配套文档**：`framework-guide/RAG整体实现技术说明.md`、`docs/MinerU-RAG-技术方案与实施清单.md`、`enterprise-level_transformation_docs/企业级 RAG 文档摄入与检索一体化改造设计稿-20260327.md`、`docs/RAG基于namespace的状态和优先级的改造实现方案.md`  
 > **文档版本**：v1.4（2026-06-29）｜**代码状态**：阶段 1～4 已落地，见 §13
 
 ---
@@ -25,6 +25,7 @@
 | 扫描 PDF | `mineru_ingest.py` + `mineru_response_parse.py` | MinerU → Markdown；zip/磁盘 **images/** + `mineru_image_base` |
 | 查询增强 | `query_vision_augment.py` | 可选 `query_image_url`（`RAG_QUERY_VISION_AUGMENT_*`） |
 | 运维 | `GET /rag/assets/presign` | 预签名 URL 刷新；删文档联动 MinIO 前缀 |
+| namespace 治理 | `GET/PATCH /rag/namespaces/*`、`POST .../purge` | kb 启用/优先级；整库清空（见 namespace 改造方案） |
 
 ### 1.1.1 基线能力（`RAG_FIGURE_ENABLED=false`，与现网一致）
 

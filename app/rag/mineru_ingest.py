@@ -103,6 +103,8 @@ def prepare_pdf_document_for_pipeline(doc: DocumentSource) -> tuple[DocumentSour
         description=doc.description,
         replace_if_exists=doc.replace_if_exists,
         metadata=meta,
+        namespace_kb_enabled=doc.namespace_kb_enabled,
+        namespace_kb_priority=doc.namespace_kb_priority,
     )
     return new_doc, wall_s
 

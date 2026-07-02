@@ -31,6 +31,14 @@
   - 删除校验：`/documents/delete` 后查询为空（向量/图侧同步清理链路）
   - 支持输出 JSON/Markdown 报告（CI 门禁友好），失败时同样落盘诊断信息
 
+## namespace 知识库启用与优先级
+
+- **单元测试**（pytest，无需启动服务）：
+  - `tests/test_rag_namespace_kb.py`：默认值注入、禁用 ns 召回为空、跨 ns priority 排序、PATCH 批量更新
+  - `tests/test_rag_namespace_purge.py`：`POST /rag/namespaces/{namespace}/purge` 整库清空
+- **说明**：`POST /rag/documents/delete` 为**单篇**删除；整库清空请用 `POST /rag/namespaces/{namespace}/purge`（`confirm=true`）
+- **设计文档**：`docs/RAG基于namespace的状态和优先级的改造实现方案.md`
+
 ## 运行示例
 
 ```bash

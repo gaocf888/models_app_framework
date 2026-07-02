@@ -11,8 +11,22 @@ from typing import Any, List, Sequence
 
 from app.core.config import ElasticsearchConfig, get_app_config
 from app.core.logging import get_logger
+from app.rag.namespace_kb import (
+    build_es_kb_enabled_filter_clause,
+    build_es_namespace_must_clauses,
+    chunk_namespace_matches,
+    chunk_passes_kb_enabled_filter,
+    patch_metadata_namespace_kb,
+)
 
 logger = get_logger(__name__)
+
+
+def _hit_passes_kb_enabled(hit: dict[str, Any], require_kb_enabled: bool) -> bool:
+    if not require_kb_enabled:
+        return True
+    meta = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+    return chunk_passes_kb_enabled_filter(meta)
 
 
 def _chunk_matches_doc_namespace_version(
@@ -78,6 +92,8 @@ class VectorStore(ABC):
         vector: Sequence[float],
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         """
         返回命中列表，元素包括 text/score/ext_id/namespace/doc_name 等字段。
@@ -90,6 +106,8 @@ class VectorStore(ABC):
         query: str,
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         """
         关键词检索（BM25/倒排等），返回命中列表。
@@ -102,6 +120,8 @@ class VectorStore(ABC):
         query: str,
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         """
         元数据召回（doc_name/doc_version/tenant_id 等），返回命中列表。
@@ -114,6 +134,10 @@ class VectorStore(ABC):
         按文档名称（可选版本）删除已有知识，返回删除条数。
         """
         ...
+
+    def delete_by_namespace(self, namespace: str | None) -> int:
+        """删除指定 namespace 下全部 chunk（namespace 为 None 时表示默认分区）。"""
+        raise NotImplementedError(f"{type(self).__name__} does not implement delete_by_namespace")
 
     @abstractmethod
     def reassign_namespace_for_doc(
@@ -176,6 +200,16 @@ class VectorStore(ABC):
             if str(r.get("text") or "")
         ]
 
+    def update_namespace_kb_config(
+        self,
+        namespace: str | None,
+        *,
+        enabled: bool,
+        priority: int,
+    ) -> int:
+        """批量更新某 namespace 下全部 chunk 的 namespace_kb_* 元数据。"""
+        raise NotImplementedError(f"{type(self).__name__} does not implement update_namespace_kb_config")
+
 
 def _chunk_sort_key(item: dict[str, Any]) -> tuple[int, str]:
     meta = item.get("metadata") or {}
@@ -235,6 +269,8 @@ class InMemoryVectorStore(VectorStore):
         vector: Sequence[float],
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         def dot(a: Sequence[float], b: Sequence[float]) -> float:
             return float(sum(x * y for x, y in zip(a, b)))
@@ -247,6 +283,8 @@ class InMemoryVectorStore(VectorStore):
         for idx, emb in enumerate(self._embs):
             item = self._items[idx]
             if namespace is not None and item.get("namespace") != namespace:
+                continue
+            if not _hit_passes_kb_enabled(item, require_kb_enabled):
                 continue
             score = dot(vector, emb) / (v_norm * norm(emb))
             scores.append((idx, score))
@@ -270,6 +308,8 @@ class InMemoryVectorStore(VectorStore):
         query: str,
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         tokens = _query_tokens(query)
         if not tokens:
@@ -278,6 +318,8 @@ class InMemoryVectorStore(VectorStore):
         scored: list[tuple[int, float]] = []
         for idx, item in enumerate(self._items):
             if namespace is not None and item.get("namespace") != namespace:
+                continue
+            if not _hit_passes_kb_enabled(item, require_kb_enabled):
                 continue
             text = (item.get("text") or "").lower()
             score = 0.0
@@ -304,6 +346,8 @@ class InMemoryVectorStore(VectorStore):
         query: str,
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         tokens = _query_tokens(query)
         if not tokens:
@@ -311,6 +355,8 @@ class InMemoryVectorStore(VectorStore):
         scored: list[tuple[int, float]] = []
         for idx, item in enumerate(self._items):
             if namespace is not None and item.get("namespace") != namespace:
+                continue
+            if not _hit_passes_kb_enabled(item, require_kb_enabled):
                 continue
             doc_name = str(item.get("doc_name") or "").lower()
             meta = item.get("metadata") or {}
@@ -347,6 +393,20 @@ class InMemoryVectorStore(VectorStore):
             meta = item.get("metadata") or {}
             same_ver = doc_version is None or str(meta.get("doc_version") or "") == str(doc_version)
             if same_name and same_ns and same_ver:
+                deleted += 1
+                continue
+            keep_items.append(item)
+            keep_embs.append(self._embs[idx])
+        self._items = keep_items
+        self._embs = keep_embs
+        return deleted
+
+    def delete_by_namespace(self, namespace: str | None) -> int:
+        keep_items: list[dict[str, Any]] = []
+        keep_embs: list[list[float]] = []
+        deleted = 0
+        for idx, item in enumerate(self._items):
+            if chunk_namespace_matches(item.get("namespace"), namespace):
                 deleted += 1
                 continue
             keep_items.append(item)
@@ -425,6 +485,21 @@ class InMemoryVectorStore(VectorStore):
                 }
             )
         return out
+
+    def update_namespace_kb_config(
+        self,
+        namespace: str | None,
+        *,
+        enabled: bool,
+        priority: int,
+    ) -> int:
+        updated = 0
+        for item in self._items:
+            if not chunk_namespace_matches(item.get("namespace"), namespace):
+                continue
+            item["metadata"] = patch_metadata_namespace_kb(item.get("metadata"), enabled=enabled, priority=priority)
+            updated += 1
+        return updated
 
 
 class FaissVectorStore(VectorStore):
@@ -578,6 +653,8 @@ class FaissVectorStore(VectorStore):
         vector: Sequence[float],
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         if self._index is None or self._dim is None or len(self._items) == 0:
             return []
@@ -588,39 +665,18 @@ class FaissVectorStore(VectorStore):
         if q.shape[1] != self._dim:
             raise ValueError(f"query dim mismatch: got={q.shape[1]} expected={self._dim}")
 
-        # 无 namespace 过滤：直接返回 FAISS top-k
-        if namespace is None:
-            scores, ids = self._index.search(q, k)
-            results: list[dict[str, Any]] = []
-            for score, internal_id in zip(scores[0].tolist(), ids[0].tolist()):
-                if internal_id < 0:
-                    continue
-                item = self._items.get(int(internal_id))
-                if item is None:
-                    continue
-                results.append(
-                    {
-                        "text": item["text"],
-                        "score": float(score),
-                        "ext_id": item.get("ext_id"),
-                        "namespace": item.get("namespace"),
-                        "doc_name": item.get("doc_name"),
-                        "metadata": item.get("metadata") or {},
-                    }
-                )
-            return results
-
-        # namespace 过滤：增加搜索范围后在结果中筛选
-        search_k = min(max(k * 5, k), len(self._items))
+        search_k = k if namespace is None and not require_kb_enabled else min(max(k * 5, k), len(self._items))
         scores, ids = self._index.search(q, search_k)
-        results = []
+        results: list[dict[str, Any]] = []
         for score, internal_id in zip(scores[0].tolist(), ids[0].tolist()):
             if internal_id < 0:
                 continue
             item = self._items.get(int(internal_id))
             if item is None:
                 continue
-            if item.get("namespace") != namespace:
+            if namespace is not None and item.get("namespace") != namespace:
+                continue
+            if not _hit_passes_kb_enabled(item, require_kb_enabled):
                 continue
             results.append(
                 {
@@ -641,6 +697,8 @@ class FaissVectorStore(VectorStore):
         query: str,
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         # 本地 FAISS 模式下退化为内存关键词匹配（生产建议用 ES/EasySearch）
         tokens = _query_tokens(query)
@@ -649,6 +707,8 @@ class FaissVectorStore(VectorStore):
         scored: list[tuple[int, float]] = []
         for internal_id, item in self._items.items():
             if namespace is not None and item.get("namespace") != namespace:
+                continue
+            if not _hit_passes_kb_enabled(item, require_kb_enabled):
                 continue
             text = (item.get("text") or "").lower()
             score = 0.0
@@ -675,6 +735,8 @@ class FaissVectorStore(VectorStore):
         query: str,
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         tokens = _query_tokens(query)
         if not tokens:
@@ -682,6 +744,8 @@ class FaissVectorStore(VectorStore):
         scored: list[tuple[int, float]] = []
         for internal_id, item in self._items.items():
             if namespace is not None and item.get("namespace") != namespace:
+                continue
+            if not _hit_passes_kb_enabled(item, require_kb_enabled):
                 continue
             doc_name = str(item.get("doc_name") or "").lower()
             meta = item.get("metadata") or {}
@@ -730,6 +794,25 @@ class FaissVectorStore(VectorStore):
         id_selector = faiss.IDSelectorBatch(np.asarray(delete_ids, dtype="int64"))
         self._index.remove_ids(id_selector)
 
+        for internal_id in delete_ids:
+            self._items.pop(int(internal_id), None)
+        self._persist()
+        return len(delete_ids)
+
+    def delete_by_namespace(self, namespace: str | None) -> int:
+        if self._index is None or not self._items:
+            return 0
+        import numpy as np
+
+        delete_ids: list[int] = []
+        for internal_id, item in self._items.items():
+            if chunk_namespace_matches(item.get("namespace"), namespace):
+                delete_ids.append(int(internal_id))
+        if not delete_ids:
+            return 0
+        faiss = self._load_faiss()
+        id_selector = faiss.IDSelectorBatch(np.asarray(delete_ids, dtype="int64"))
+        self._index.remove_ids(id_selector)
         for internal_id in delete_ids:
             self._items.pop(int(internal_id), None)
         self._persist()
@@ -809,6 +892,23 @@ class FaissVectorStore(VectorStore):
                 }
             )
         return out
+
+    def update_namespace_kb_config(
+        self,
+        namespace: str | None,
+        *,
+        enabled: bool,
+        priority: int,
+    ) -> int:
+        updated = 0
+        for item in self._items.values():
+            if not chunk_namespace_matches(item.get("namespace"), namespace):
+                continue
+            item["metadata"] = patch_metadata_namespace_kb(item.get("metadata"), enabled=enabled, priority=priority)
+            updated += 1
+        if updated:
+            self._persist()
+        return updated
 
 
 class ElasticsearchVectorStore(VectorStore):
@@ -1090,11 +1190,26 @@ class ElasticsearchVectorStore(VectorStore):
         self._with_retry(lambda: bulk(self._client, actions, refresh=True))
         return ext_ids
 
+    def _build_search_filters(
+        self,
+        namespace: str | None,
+        *,
+        require_kb_enabled: bool,
+    ) -> list[dict[str, Any]]:
+        filters: list[dict[str, Any]] = []
+        if namespace is not None:
+            filters.append({"term": {"namespace": namespace}})
+        if require_kb_enabled:
+            filters.append(build_es_kb_enabled_filter_clause())
+        return filters
+
     def similarity_search_by_vector(
         self,
         vector: Sequence[float],
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         # 每次语义向量检索前检测字段类型，避免 "dense_vector" 脚本因后端不支持而直接异常。
         try:
@@ -1107,9 +1222,7 @@ class ElasticsearchVectorStore(VectorStore):
         try:
             # EasySearch：knn_nearest_neighbors
             if self._vector_field_kind == "knn_dense_float_vector":
-                filters: list[dict[str, Any]] = []
-                if namespace is not None:
-                    filters.append({"term": {"namespace": namespace}})
+                filters = self._build_search_filters(namespace, require_kb_enabled=require_kb_enabled)
 
                 # 为了更稳定的召回，candidates 略大于最终 top-k
                 candidates = max(50, int(k) * 5)
@@ -1134,9 +1247,7 @@ class ElasticsearchVectorStore(VectorStore):
 
             # Elasticsearch：dense_vector + script_score
             if self._vector_field_kind == "dense_vector":
-                filters: list[dict[str, Any]] = []
-                if namespace is not None:
-                    filters.append({"term": {"namespace": namespace}})
+                filters = self._build_search_filters(namespace, require_kb_enabled=require_kb_enabled)
                 body = {
                     "size": k,
                     "query": {
@@ -1164,13 +1275,14 @@ class ElasticsearchVectorStore(VectorStore):
         query: str,
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
             return []
         q = self._truncate_for_bool_match_query(query)
         bool_query: dict[str, Any] = {"must": [{"match": {"text": q}}]}
-        if namespace is not None:
-            bool_query["filter"] = [{"term": {"namespace": namespace}}]
+        append_es_filters(bool_query, self._build_search_filters(namespace, require_kb_enabled=require_kb_enabled))
         body = {"size": k, "query": {"bool": bool_query}}
         resp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
         return [self._hit_to_result(hit) for hit in resp.get("hits", {}).get("hits", [])]
@@ -1180,6 +1292,8 @@ class ElasticsearchVectorStore(VectorStore):
         query: str,
         k: int = 5,
         namespace: str | None = None,
+        *,
+        require_kb_enabled: bool = False,
     ) -> List[dict[str, Any]]:
         if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
             return []
@@ -1196,8 +1310,7 @@ class ElasticsearchVectorStore(VectorStore):
             ],
             "minimum_should_match": 1,
         }
-        if namespace is not None:
-            bool_query["filter"] = [{"term": {"namespace": namespace}}]
+        append_es_filters(bool_query, self._build_search_filters(namespace, require_kb_enabled=require_kb_enabled))
         body = {"size": k, "query": {"bool": bool_query}}
         resp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
         return [self._hit_to_result(hit) for hit in resp.get("hits", {}).get("hits", [])]
@@ -1227,6 +1340,21 @@ class ElasticsearchVectorStore(VectorStore):
             lambda: self._client.delete_by_query(
                 index=self._alias,
                 # 删除走 alias，确保始终作用在当前线上索引版本。
+                body=body,
+                refresh=True,
+                conflicts="proceed",
+            )
+        )
+        return int(resp.get("deleted", 0))
+
+    def delete_by_namespace(self, namespace: str | None) -> int:
+        if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
+            return 0
+        must = build_es_namespace_must_clauses(namespace)
+        body = {"query": {"bool": {"must": must}}}
+        resp = self._with_retry(
+            lambda: self._client.delete_by_query(
+                index=self._alias,
                 body=body,
                 refresh=True,
                 conflicts="proceed",
@@ -1404,6 +1532,38 @@ class ElasticsearchVectorStore(VectorStore):
                 }
             )
         return out
+
+    def update_namespace_kb_config(
+        self,
+        namespace: str | None,
+        *,
+        enabled: bool,
+        priority: int,
+    ) -> int:
+        if not self._with_retry(lambda: self._client.indices.exists(index=self._alias)):
+            return 0
+        must = build_es_namespace_must_clauses(namespace)
+        body: dict[str, Any] = {
+            "script": {
+                "source": (
+                    "if (ctx._source.metadata == null) { ctx._source.metadata = new HashMap(); } "
+                    "ctx._source.metadata.namespace_kb_enabled = params.enabled; "
+                    "ctx._source.metadata.namespace_kb_priority = params.priority;"
+                ),
+                "lang": "painless",
+                "params": {"enabled": enabled, "priority": priority},
+            },
+            "query": {"bool": {"must": must}},
+        }
+        resp = self._with_retry(
+            lambda: self._client.update_by_query(
+                index=self._alias,
+                body=body,
+                refresh=True,
+                conflicts="proceed",
+            )
+        )
+        return int(resp.get("updated", 0))
 
     def _with_retry(self, fn):
         last_err = None

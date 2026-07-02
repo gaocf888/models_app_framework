@@ -4,6 +4,7 @@ from typing import Any, Sequence
 
 from app.core.config import get_app_config
 from app.rag.models import RetrievedChunk
+from app.rag.namespace_kb import chunk_passes_kb_enabled_filter
 from app.rag.rag_service import RAGService
 from app.rag.vector_store import VectorStore
 
@@ -75,6 +76,9 @@ def expand_related_figures(
             sid = str(fid)
             h = hit_by_id.get(sid)
             if not h or not h.get("text"):
+                continue
+            fig_meta = h.get("metadata") if isinstance(h.get("metadata"), dict) else {}
+            if not chunk_passes_kb_enabled_filter(fig_meta):
                 continue
             if any(x.chunk_id == sid for x in out):
                 continue

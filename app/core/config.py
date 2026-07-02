@@ -326,6 +326,9 @@ class RAGConfig:
     content_fetch: RAGContentFetchConfig = field(default_factory=RAGContentFetchConfig)
     agentic: RAGAgenticConfig = field(default_factory=RAGAgenticConfig)
     query_vision: RAGQueryVisionConfig = field(default_factory=RAGQueryVisionConfig)
+    # namespace 知识库启用/优先级（召回加权）
+    namespace_kb_priority_boost: float = 0.05
+    namespace_kb_priority_tiered: bool = False
 
 
 @dataclass
@@ -1152,6 +1155,8 @@ def _load_from_env() -> AppConfig:
         content_fetch=content_fetch_cfg,
         agentic=agentic_cfg,
         query_vision=query_vision_cfg,
+        namespace_kb_priority_boost=float(os.getenv("RAG_NAMESPACE_PRIORITY_BOOST", "0.05")),
+        namespace_kb_priority_tiered=os.getenv("RAG_NAMESPACE_PRIORITY_TIERED", "false").lower() == "true",
     )
 
     mineru_cfg = MinerUConfig(

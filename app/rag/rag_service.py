@@ -18,6 +18,7 @@ from app.core.metrics import (
 )
 from app.rag.embedding_service import EmbeddingService
 from app.rag.models import RetrievedChunk
+from app.rag.namespace_kb import finalize_retrieval_hits
 from app.rag.vector_store import VectorStoreProvider
 
 logger = get_logger(__name__)
@@ -33,6 +34,36 @@ def _normalize_excluded_namespaces(exclude_namespaces: Sequence[str] | None) -> 
 def _hit_namespace_allowed(hit: dict, excluded: Set[str]) -> bool:
     ns = str(hit.get("namespace") or "").strip()
     return ns not in excluded
+
+
+def _hit_base_score(hit: dict) -> float:
+    if hit.get("_priority_adjusted_score") is not None:
+        return float(hit["_priority_adjusted_score"])
+    if hit.get("_rerank_score") is not None:
+        return float(hit["_rerank_score"])
+    if hit.get("_fused_score") is not None:
+        return float(hit["_fused_score"])
+    if hit.get("score") is not None:
+        return float(hit["score"])
+    return 0.0
+
+
+def _finalize_retrieval_hits(
+    hits: list[dict],
+    *,
+    namespace: str | None,
+    priority_boost: float,
+    priority_tiered: bool,
+    k_out: int,
+) -> list[dict]:
+    return finalize_retrieval_hits(
+        hits,
+        namespace=namespace,
+        priority_boost=priority_boost,
+        priority_tiered=priority_tiered,
+        k_out=k_out,
+        score_getter=_hit_base_score,
+    )
 
 
 def _cross_encoder_device_repr(reranker: object) -> str:
@@ -150,7 +181,9 @@ class RAGService:
         if hit.get("_rerank_score") is not None:
             rerank_score = float(hit["_rerank_score"])
         score = None
-        if rerank_score is not None:
+        if hit.get("_priority_adjusted_score") is not None:
+            score = float(hit["_priority_adjusted_score"])
+        elif rerank_score is not None:
             score = rerank_score
         elif hit.get("_fused_score") is not None:
             score = float(hit["_fused_score"])
@@ -240,17 +273,32 @@ class RAGService:
         profile = self._get_scene_profile(scene)
         k_out = top_k or (profile.top_k if profile is not None else self._cfg.top_k)
         excluded = _normalize_excluded_namespaces(exclude_namespaces)
-        k = min(max(k_out * 4, 32), 64) if excluded else k_out
+        recall_k = k_out
+        if excluded or namespace is None:
+            recall_k = min(max(k_out * 4, 32), 64)
+        k = recall_k
         pv = self._cfg.ingestion.pipeline_version
         store = self._store_provider.get_default_store()
         q_emb = self._embedding_service.embed_text(query)
         hybrid_enabled = self._cfg.hybrid.enabled if use_hybrid is None else use_hybrid
+        require_kb_enabled = True
+        priority_boost = float(self._cfg.namespace_kb_priority_boost)
+        priority_tiered = bool(self._cfg.namespace_kb_priority_tiered)
         hits: list[dict]
         if not hybrid_enabled:
             RAG_SEMANTIC_RECALL_COUNT.inc()
-            hits = store.similarity_search_by_vector(q_emb, k=k, namespace=namespace)
+            hits = store.similarity_search_by_vector(
+                q_emb, k=k, namespace=namespace, require_kb_enabled=require_kb_enabled
+            )
             if excluded:
                 hits = [h for h in hits if _hit_namespace_allowed(h, excluded)]
+            hits = _finalize_retrieval_hits(
+                hits,
+                namespace=namespace,
+                priority_boost=priority_boost,
+                priority_tiered=priority_tiered,
+                k_out=k_out,
+            )
         else:
             sem_top = profile.semantic_top_k if profile is not None else self._cfg.hybrid.semantic_top_k
             kw_top = profile.keyword_top_k if profile is not None else self._cfg.hybrid.keyword_top_k
@@ -267,10 +315,28 @@ class RAGService:
                 )
             worker_num = 3 if metadata_enabled else 2
             with ThreadPoolExecutor(max_workers=worker_num) as pool:
-                f_sem = pool.submit(store.similarity_search_by_vector, q_emb, sem_k, namespace)
-                f_kw = pool.submit(store.keyword_search, query, kw_k, namespace)
+                f_sem = pool.submit(
+                    store.similarity_search_by_vector,
+                    q_emb,
+                    sem_k,
+                    namespace,
+                    require_kb_enabled=require_kb_enabled,
+                )
+                f_kw = pool.submit(
+                    store.keyword_search,
+                    query,
+                    kw_k,
+                    namespace,
+                    require_kb_enabled=require_kb_enabled,
+                )
                 f_md = (
-                    pool.submit(store.metadata_search, md_query, md_k, namespace)
+                    pool.submit(
+                        store.metadata_search,
+                        md_query,
+                        md_k,
+                        namespace,
+                        require_kb_enabled=require_kb_enabled,
+                    )
                     if metadata_enabled
                     else None
                 )
@@ -295,7 +361,14 @@ class RAGService:
             rerank_top_n = max(rerank_base, k)
             candidates = fused[:rerank_top_n]
             rr_q = rerank_query if (rerank_query is not None and str(rerank_query).strip()) else query
-            hits = self._rerank(query=rr_q, hits=candidates)[:k_out]
+            reranked = self._rerank(query=rr_q, hits=candidates)
+            hits = _finalize_retrieval_hits(
+                reranked,
+                namespace=namespace,
+                priority_boost=priority_boost,
+                priority_tiered=priority_tiered,
+                k_out=k_out,
+            )
 
         out: List[RetrievedChunk] = []
         for h in hits:
@@ -353,6 +426,14 @@ class RAGService:
             RAG_DOC_DELETE_COUNT.labels(namespace=ns).inc(deleted)
         return deleted
 
+    def delete_by_namespace(self, namespace: str | None) -> int:
+        store = self._store_provider.get_default_store()
+        deleted = store.delete_by_namespace(namespace)
+        ns = namespace if namespace is not None else "__default__"
+        if deleted > 0:
+            RAG_DOC_DELETE_COUNT.labels(namespace=ns).inc(deleted)
+        return deleted
+
     def reassign_namespace_for_doc(
         self,
         doc_name: str,
@@ -367,6 +448,16 @@ class RAGService:
             to_namespace=to_namespace,
             doc_version=doc_version,
         )
+
+    def update_namespace_kb_config(
+        self,
+        namespace: str | None,
+        *,
+        enabled: bool,
+        priority: int,
+    ) -> int:
+        store = self._store_provider.get_default_store()
+        return store.update_namespace_kb_config(namespace, enabled=enabled, priority=priority)
 
     @staticmethod
     def _rrf_fuse(

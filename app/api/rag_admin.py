@@ -4,8 +4,10 @@ from __future__ import annotations
 RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
 
 说明：
-- 提供文本摄入、批量摄入、按文档删除、单篇文档 namespace 迁移、检索查询、数据集列表查询等管理能力；
+- 提供文本摄入、批量摄入、按文档删除、按 namespace 整库清空、namespace 启用/优先级管理、
+  单篇文档 namespace 迁移、检索查询、数据集列表查询等管理能力；
 - 摄入支持 doc_name + replace_if_exists，实现同名文档更新（先删后灌）；
+- 摄入支持 namespace 级 ``namespace_kb_enabled`` / ``namespace_kb_priority``（写入 doc/chunk 元数据，召回时生效）；
 - 同时支持“原始文档内容”摄入（自动执行清洗与切块）；
 - 异常路径统一记录错误日志并返回明确 HTTP 错误信息。
 
@@ -20,6 +22,8 @@ RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
    - 若启用 GRAPH_RAG_ENABLED=true，需配置 NEO4J_URI/NEO4J_USERNAME/NEO4J_PASSWORD。
 4) 摄入切块/清洗默认参数
    - 可通过 RAG_CHUNK_SIZE/RAG_CHUNK_OVERLAP/RAG_MIN_CHUNK_SIZE 与 RAG_CLEANING_PROFILE 调整。
+5) namespace 召回优先级（可选）
+   - RAG_NAMESPACE_PRIORITY_BOOST、RAG_NAMESPACE_PRIORITY_TIERED（见 .env.example）。
 """
 
 from functools import lru_cache
@@ -38,6 +42,12 @@ from app.rag.migrations import IndexMigrator
 from app.rag.content_url_fetch import materialize_document_content_from_url
 from app.rag.mineru_ingest import prepare_pdf_document_for_pipeline
 from app.rag.models import DocumentSource
+from app.rag.namespace_kb import (
+    DEFAULT_NAMESPACE_PATH,
+    build_chunk_metadatas,
+    namespace_from_path_param,
+    resolve_namespace_kb_fields,
+)
 from app.rag.graph_namespace_resync import run_graph_resync_after_namespace_move
 from app.core.logging import get_logger
 
@@ -319,6 +329,21 @@ class IngestionJobDocumentRequest(BaseModel):
         default_factory=dict,
         description="可选。自定义键值，并入索引 metadata（如部门、标签）；默认 {}。",
     )
+    namespace_kb_enabled: bool | None = Field(
+        None,
+        description=(
+            "可选。namespace 级知识库是否启用；默认 true。"
+            "写入文档与 chunk metadata.namespace_kb_enabled；同 namespace 建议传一致值。"
+        ),
+    )
+    namespace_kb_priority: int | None = Field(
+        None,
+        ge=1,
+        description=(
+            "可选。namespace 级召回优先级，数值越小越优先；默认 1，须 >= 1。"
+            "写入 metadata.namespace_kb_priority。"
+        ),
+    )
 
 
 class IngestionJobRequest(BaseModel):
@@ -340,6 +365,8 @@ class IngestionJobRequest(BaseModel):
                         "description": "员工手册",
                         "replace_if_exists": True,
                         "metadata": {"dept": "HR"},
+                        "namespace_kb_enabled": True,
+                        "namespace_kb_priority": 1,
                     }
                 ],
                 "operator": "admin",
@@ -436,7 +463,16 @@ class JobDocumentItem(BaseModel):
     source_uri: str | None = Field(None, description="原始来源 URI")
     description: str | None = Field(None, description="文档描述")
     replace_if_exists: bool = Field(True, description="是否允许同名先删后灌")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="扩展元数据")
+    namespace_kb_enabled: bool | None = Field(
+        None,
+        description="namespace 级是否启用；未传时任务执行按默认 true 处理。",
+    )
+    namespace_kb_priority: int | None = Field(
+        None,
+        ge=1,
+        description="namespace 级召回优先级，数值越小越优先；未传时默认 1。",
+    )
+    metadata: dict[str, Any] = Field(default_factory=dict, description="其它扩展元数据（不含 namespace_kb_* 时以顶层字段为准）")
 
 
 class JobDocumentsResponse(BaseModel):
@@ -541,6 +577,10 @@ async def submit_ingestion_job(req: IngestionJobRequest) -> IngestionJobSubmitRe
     - `description`：可选，人读摘要。
     - `replace_if_exists`：可选默认 true，同名先删后灌。
     - `metadata`：可选，自定义扩展字段写入索引。[可作为知识库三级级及以下分区]
+    - `namespace_kb_enabled`：可选，namespace 级是否启用；默认 true。写入 doc/chunk 元数据；
+      召回时 ``namespace_kb_enabled=false`` 的 chunk 会被过滤。同 namespace 建议传一致值。
+    - `namespace_kb_priority`：可选，namespace 级召回优先级，**数值越小越优先**；默认 1，须 >= 1。
+      写入 doc/chunk 元数据；全库检索（未指定 namespace）时参与排序/分层召回。
 
     **任务级（模型 `IngestionJobRequest` 根字段）**
     - `operator`：可选，操作者标识，仅审计。
@@ -553,22 +593,26 @@ async def submit_ingestion_job(req: IngestionJobRequest) -> IngestionJobSubmitRe
     失败时 HTTP 5xx，`detail` 为错误信息。
     """
     try:
-        docs = [
-            DocumentSource(
-                dataset_id=d.dataset_id,
-                doc_name=d.doc_name,
-                doc_version=d.doc_version,
-                tenant_id=d.tenant_id,
-                namespace=d.namespace,
-                content=d.content,
-                source_type=d.source_type,
-                source_uri=d.source_uri,
-                description=d.description,
-                replace_if_exists=d.replace_if_exists,
-                metadata=d.metadata,
+        docs = []
+        for d in req.documents:
+            enabled, priority = resolve_namespace_kb_fields(d.namespace_kb_enabled, d.namespace_kb_priority)
+            docs.append(
+                DocumentSource(
+                    dataset_id=d.dataset_id,
+                    doc_name=d.doc_name,
+                    doc_version=d.doc_version,
+                    tenant_id=d.tenant_id,
+                    namespace=d.namespace,
+                    content=d.content,
+                    source_type=d.source_type,
+                    source_uri=d.source_uri,
+                    description=d.description,
+                    replace_if_exists=d.replace_if_exists,
+                    metadata=d.metadata,
+                    namespace_kb_enabled=enabled,
+                    namespace_kb_priority=priority,
+                )
             )
-            for d in req.documents
-        ]
         chunk_cfg = ChunkingConfig(
             chunk_size=req.chunk_size,
             chunk_overlap=req.chunk_overlap,
@@ -751,7 +795,7 @@ async def get_job_documents(
     - `job_id`：必填。
 
     **响应体 `JobDocumentsResponse`（200）**
-    - `ok`、`job_id`、`documents`（`JobDocumentItem` 列表：dataset_id、doc_name、doc_version 等）。
+    - `ok`、`job_id`、`documents`（`JobDocumentItem` 列表：含 `namespace_kb_enabled`、`namespace_kb_priority` 等）。
     """
     try:
         rec = _get_job_repo().get(job_id)
@@ -769,6 +813,8 @@ async def get_job_documents(
                 source_uri=d.get("source_uri"),
                 description=d.get("description"),
                 replace_if_exists=bool(d.get("replace_if_exists", True)),
+                namespace_kb_enabled=d.get("namespace_kb_enabled"),
+                namespace_kb_priority=d.get("namespace_kb_priority"),
                 metadata=d.get("metadata") or {},
             )
             for d in docs
@@ -782,7 +828,7 @@ async def get_job_documents(
 
 
 class UpsertDocumentRequest(BaseModel):
-    """同步写入单文档。`content` 含义与 `POST /rag/jobs/ingest` 中单篇文档相同（内联正文或 pdf/docx/xlsx 路径）。"""
+    """同步写入单文档。字段语义与 ``POST /rag/jobs/ingest`` 中单篇 ``IngestionJobDocumentRequest`` 对齐（含 namespace_kb_*）。"""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -798,6 +844,8 @@ class UpsertDocumentRequest(BaseModel):
                 "chunk_overlap": 80,
                 "min_chunk_size": 40,
                 "metadata": {"dept": "IT"},
+                "namespace_kb_enabled": True,
+                "namespace_kb_priority": 1,
             }
         }
     )
@@ -831,6 +879,15 @@ class UpsertDocumentRequest(BaseModel):
         default_factory=dict,
         description="可选。自定义键值并入索引 metadata；默认 {}。",
     )
+    namespace_kb_enabled: bool | None = Field(
+        None,
+        description="可选。namespace 级知识库是否启用；默认 true。",
+    )
+    namespace_kb_priority: int | None = Field(
+        None,
+        ge=1,
+        description="可选。namespace 级召回优先级（数值越小越优先）；默认 1，须 >= 1。",
+    )
 
 
 @router.post(
@@ -852,8 +909,11 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
     - `dataset_id`、`doc_name`：必填。
     - `content`：必填。内联、路径/`file://`，或开启 URL 拉取时的 `http(s)://`（与 jobs/ingest 一致）。
     - `namespace`、`source_type`、`source_uri`、`description`、`metadata`：可选；`source_uri` 仅元数据，不拉文件。
+    - `namespace_kb_enabled`：可选，namespace 级是否启用；默认 true（语义同 ``POST /rag/jobs/ingest``）。
+    - `namespace_kb_priority`：可选，namespace 级召回优先级，数值越小越优先；默认 1，须 >= 1。
     - `chunk_size`、`chunk_overlap`、`min_chunk_size`：可选切块参数。
     - 扫描 PDF：需 `MINERU_ENABLED` 与 mineru-api，与异步任务一致。
+    - 同步写入向量 chunk 与 docs 索引文档登记（便于 ``GET /rag/namespaces`` 与 PATCH kb-config）。
 
     **响应体 `UpsertDocumentResponse`（200）**
     - `ok`、`doc_name`、`chunk_count`、`stats`。
@@ -867,6 +927,7 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
             min_chunk_size=req.min_chunk_size,
         )
         pipeline = DocumentPipeline(cfg)
+        enabled, priority = resolve_namespace_kb_fields(req.namespace_kb_enabled, req.namespace_kb_priority)
         doc = DocumentSource(
             dataset_id=req.dataset_id,
             doc_name=req.doc_name,
@@ -877,6 +938,8 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
             description=req.description,
             replace_if_exists=True,
             metadata=req.metadata,
+            namespace_kb_enabled=enabled,
+            namespace_kb_priority=priority,
         )
         tmp_fetched = None
         try:
@@ -890,7 +953,7 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
                 tmp_fetched.unlink(missing_ok=True)
         if not chunks:
             raise ValueError("no chunks generated after processing")
-        chunk_metadatas = [{**(doc.metadata or {}), **(c.metadata or {})} for c in chunks]
+        chunk_metadatas = build_chunk_metadatas(doc, chunks)
         _get_service().ingest_texts(
             dataset_id=req.dataset_id,
             texts=[c.text for c in chunks],
@@ -899,6 +962,11 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
             doc_name=req.doc_name,
             replace_if_exists=True,
             metadatas=chunk_metadatas,
+        )
+        _get_doc_repo().upsert_document_record(
+            doc,
+            chunk_count=len(chunks),
+            status="SUCCESS",
         )
         return UpsertDocumentResponse(
             ok=True, doc_name=req.doc_name, chunk_count=len(chunks), stats=stats
@@ -940,11 +1008,13 @@ async def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
     """
     按文档删除已摄入的 chunk（可选缩小 namespace / doc_version 范围）。
 
+    单篇删除请用本接口；**清空整个 namespace** 请用 ``POST /rag/namespaces/{namespace}/purge``。
+
     **路径/Query**：无。
 
     **请求体 `DeleteDocumentRequest`**
     - 必填：`doc_name`。
-    - 可选：`namespace`、`doc_version`（传入则仅删匹配版本）。
+    - 可选：`namespace`、`doc_version`（传入则仅删匹配版本）；不传 `namespace` 时按 `doc_name` 跨所有 namespace 删除。
 
     **响应体 `DeleteDocumentResponse`（200）**
     - `ok`、`deleted`（向量 chunk 删除条数，无匹配时可为 0）。
@@ -1039,7 +1109,8 @@ async def query_rag(req: QueryRequest) -> QueryRagResponse:
 
     **请求体 `QueryRequest`**
     - 必填：`query`。
-    - 可选：`top_k`、`namespace`、`scene`（默认 llm_inference）。
+    - 可选：`top_k`、`namespace`、`scene`（默认 llm_inference）、`query_image_url`。
+    - 召回自动过滤 ``namespace_kb_enabled=false`` 的 chunk；未指定 `namespace` 时按 priority 参与排序（见环境变量）。
 
     **响应体 `QueryRagResponse`（200）**
     - `ok`、`query`、`count`、`snippets`（文本片段列表）。
@@ -1446,7 +1517,12 @@ class DocumentMetaItem(BaseModel):
     last_job_id: str | None = Field(None, description="最近关联任务 ID")
     last_job_type: str | None = Field(None, description="最近任务类型")
     last_job_status: str | None = Field(None, description="最近任务状态")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="扩展元数据")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "扩展元数据；含 namespace_kb_enabled、namespace_kb_priority（namespace 级启用与召回优先级）等。"
+        ),
+    )
     error: str | None = Field(None, description="失败时的错误摘要")
 
 
@@ -1627,6 +1703,173 @@ async def move_document_namespace(
     )
 
 
+class NamespaceKbConfigItem(BaseModel):
+    namespace: str | None = Field(None, description="命名空间；null 表示默认分区")
+    namespace_kb_enabled: bool = Field(..., description="是否启用")
+    namespace_kb_priority: int = Field(..., description="优先级，数值越小越优先")
+    document_count: int = Field(0, description="该 namespace 下文档数（docs 索引）")
+
+
+class NamespaceKbConfigListResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    namespaces: List[NamespaceKbConfigItem] = Field(default_factory=list, description="namespace 配置列表")
+
+
+class PatchNamespaceKbConfigRequest(BaseModel):
+    namespace_kb_enabled: bool = Field(..., description="是否启用该 namespace 知识库")
+    namespace_kb_priority: int = Field(..., ge=1, description="优先级，数值越小越优先，须 >= 1")
+
+
+class PatchNamespaceKbConfigResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    namespace: str | None = Field(None, description="目标 namespace")
+    namespace_kb_enabled: bool = Field(..., description="更新后的启用状态")
+    namespace_kb_priority: int = Field(..., description="更新后的优先级")
+    chunks_updated: int = Field(..., description="向量库更新 chunk 数")
+    docs_updated: int = Field(..., description="docs 索引更新文档数")
+
+
+@router.get(
+    "/namespaces",
+    summary="列出各 namespace 的 kb 启用/优先级配置",
+    response_model=NamespaceKbConfigListResponse,
+)
+async def list_namespace_kb_configs() -> NamespaceKbConfigListResponse:
+    """
+    列出各 namespace 的 ``namespace_kb_enabled`` / ``namespace_kb_priority`` 配置（从 docs 索引聚合）。
+
+    **路径/Query**：无。
+
+    **响应体 `NamespaceKbConfigListResponse`（200）**
+    - `ok`、`namespaces[]`：每项含 `namespace`、`namespace_kb_enabled`、`namespace_kb_priority`、`document_count`。
+    - 默认分区在列表中 `namespace` 为 null。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
+    """
+    try:
+        rows = _get_doc_repo().list_namespace_kb_configs()
+        return NamespaceKbConfigListResponse(
+            ok=True,
+            namespaces=[NamespaceKbConfigItem(**row) for row in rows],
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("rag list_namespace_kb_configs failed")
+        raise HTTPException(status_code=500, detail=f"RAG list_namespace_kb_configs failed: {e}") from e
+
+
+@router.patch(
+    "/namespaces/{namespace}/kb-config",
+    summary="批量更新 namespace 下全部文档/chunk 的 kb 配置(是否启用namespace_kb_enabled，优先级namespace_kb_priority)",
+    response_model=PatchNamespaceKbConfigResponse,
+)
+async def patch_namespace_kb_config(
+    namespace: Annotated[
+        str,
+        Path(description=f"命名空间；默认分区请传 `{DEFAULT_NAMESPACE_PATH}`"),
+    ],
+    req: PatchNamespaceKbConfigRequest,
+) -> PatchNamespaceKbConfigResponse:
+    """
+    批量更新指定 namespace 下**全部**文档与 chunk 的 kb 配置（无需重新摄入）。
+
+    **路径参数**
+    - `namespace`：目标分区；默认分区请传 ``__default__``。
+
+    **请求体 `PatchNamespaceKbConfigRequest`**
+    - `namespace_kb_enabled`：必填，是否启用该 namespace 知识库召回。
+    - `namespace_kb_priority`：必填，优先级（数值越小越优先，须 >= 1）。
+
+    **响应体 `PatchNamespaceKbConfigResponse`（200）**
+    - `ok`、`namespace`、`namespace_kb_enabled`、`namespace_kb_priority`。
+    - `chunks_updated`、`docs_updated`：向量库与 docs 索引实际更新条数。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
+    """
+    ns = namespace_from_path_param(namespace)
+    try:
+        result = _get_service().update_namespace_kb_config(
+            ns,
+            enabled=req.namespace_kb_enabled,
+            priority=req.namespace_kb_priority,
+        )
+        return PatchNamespaceKbConfigResponse(
+            ok=True,
+            namespace=ns,
+            namespace_kb_enabled=req.namespace_kb_enabled,
+            namespace_kb_priority=req.namespace_kb_priority,
+            chunks_updated=int(result.get("chunks_updated", 0)),
+            docs_updated=int(result.get("docs_updated", 0)),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("rag patch_namespace_kb_config failed namespace=%s", ns)
+        raise HTTPException(status_code=500, detail=f"RAG patch_namespace_kb_config failed: {e}") from e
+
+
+class PurgeNamespaceRequest(BaseModel):
+    confirm: bool = Field(
+        True,
+        description="必须为 true 才执行清空（防误操作）；默认 true 便于脚本调用。",
+    )
+
+
+class PurgeNamespaceResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    namespace: str | None = Field(None, description="被清空的 namespace；null 表示默认分区")
+    chunks_deleted: int = Field(..., description="删除的向量 chunk 条数")
+    doc_records_deleted: int = Field(..., description="删除的 docs 索引文档条数")
+    documents_purged: int = Field(..., description="清空前该 namespace 下登记的文档数（用于 figure/graph 清理）")
+
+
+@router.post(
+    "/namespaces/{namespace}/purge",
+    summary="按 namespace 整库清空（删除该分区下全部 chunk 与文档元数据）",
+    response_model=PurgeNamespaceResponse,
+)
+async def purge_namespace_documents(
+    namespace: Annotated[
+        str,
+        Path(description=f"命名空间；默认分区请传 `{DEFAULT_NAMESPACE_PATH}`"),
+    ],
+    req: PurgeNamespaceRequest,
+) -> PurgeNamespaceResponse:
+    """
+    清空指定 namespace 下全部已摄入知识（整库删除，不可恢复）。
+
+    与 ``POST /rag/documents/delete``（单 `doc_name`）互补。
+
+    **路径参数**
+    - `namespace`：目标分区；默认分区请传 ``__default__``。
+
+    **请求体 `PurgeNamespaceRequest`**
+    - `confirm`：必填须为 `true`，否则返回 400（防误操作）。
+
+    **执行范围**
+    - 删除向量库中该 namespace 的全部 chunk；
+    - 删除 docs 索引中该 namespace 的全部文档登记；
+    - 若开启 figure / GraphRAG，按登记文档逐篇清理关联资源。
+
+    **响应体 `PurgeNamespaceResponse`（200）**
+    - `ok`、`namespace`、`chunks_deleted`、`doc_records_deleted`、`documents_purged`。
+
+    失败时 HTTP 5xx，`detail` 为错误信息。
+    """
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="confirm must be true to purge namespace")
+    ns = namespace_from_path_param(namespace)
+    try:
+        result = _get_service().delete_by_namespace(ns)
+        return PurgeNamespaceResponse(
+            ok=True,
+            namespace=ns,
+            chunks_deleted=int(result.get("chunks_deleted", 0)),
+            doc_records_deleted=int(result.get("doc_records_deleted", 0)),
+            documents_purged=int(result.get("documents_purged", 0)),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("rag purge_namespace_documents failed namespace=%s", ns)
+        raise HTTPException(status_code=500, detail=f"RAG purge_namespace_documents failed: {e}") from e
+
+
 class DocumentMetaListResponse(BaseModel):
     """分页文档元数据列表。"""
 
@@ -1661,6 +1904,7 @@ async def list_document_meta(
 
     **响应体 `DocumentMetaListResponse`（200）**
     - `ok`、`limit`、`offset`、`namespace`（请求使用的过滤）、`documents`（`DocumentMetaItem` 列表）。
+    - 每篇 `metadata` 可含 ``namespace_kb_enabled`` / ``namespace_kb_priority``；汇总各 namespace 配置请用 ``GET /rag/namespaces``。
 
     失败时 HTTP 5xx，`detail` 为错误信息。
     """
@@ -1768,6 +2012,7 @@ async def get_documents_overview(
     **响应体 `KnowledgeOverviewResponse`（200）**
     - `ok`、回显过滤字段、`total_documents`、`total_doc_names`、
       `by_namespace` / `by_tenant` / `by_status`（分桶）、`documents`（`DocumentMetaItem` 分页列表）。
+    - 各 namespace 的 kb 启用/优先级汇总请用 ``GET /rag/namespaces``；单篇明细见 `documents[].metadata`。
 
     失败时 HTTP 5xx，`detail` 为错误信息。
     """

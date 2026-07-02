@@ -9,7 +9,7 @@
 - 典型对象：实施、运维、平台管理员。
 - 典型场景：
   - 一次性批量上库/重灌文档；
-  - 按固定顺序执行文档生命周期动作（例如先 upsert 再 delete）；
+  - 按固定顺序执行文档生命周期动作（例如先 upsert 再 delete，或按 namespace purge）；
   - 通过报告追踪每次执行结果（成功/失败/错误原因）。
 
 > 注意：这里的脚本是**管理执行工具**，不是测试验证脚本。  
@@ -21,8 +21,9 @@
 
 用途：
 - 读取一个计划文件（JSON），按顺序执行动作：
-  - `upsert`：调用 `/rag/jobs/ingest` 并轮询任务状态；
-  - `delete`：调用 `/rag/documents/delete`。
+  - `upsert`：调用 `/rag/jobs/ingest` 并轮询任务状态（计划项可带 `namespace_kb_enabled` / `namespace_kb_priority`）；
+  - `delete`：调用 `/rag/documents/delete`（单篇 `doc_name`）；
+  - `purge_namespace`（若计划支持）：调用 `/rag/namespaces/{namespace}/purge`。
 
 能力：
 - `--dry-run`：只做计划校验，不调用 API；
@@ -34,6 +35,8 @@
 - `/rag/jobs/ingest`
 - `/rag/jobs/{job_id}`
 - `/rag/documents/delete`
+- `/rag/namespaces/{namespace}/purge`（整库清空，需 `confirm=true`）
+- `/rag/namespaces`、`/rag/namespaces/{namespace}/kb-config`（namespace 配置查询/批量更新）
 
 ## 计划文件格式
 

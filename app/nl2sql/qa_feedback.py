@@ -327,6 +327,10 @@ def fetch_nl2sql_qa_chunks_by_slot(
         )
         if not (chunk.text or "").strip():
             continue
+        from app.rag.namespace_kb import chunk_passes_kb_enabled_filter
+
+        if not chunk_passes_kb_enabled_filter(meta):
+            continue
         if qa_chunk_passes_retrieval_filter(chunk, ctx):
             out.append(chunk)
         elif not miss_reason:

@@ -21,6 +21,7 @@ from app.rag.content_url_fetch import ContentFetchError, materialize_document_co
 from app.rag.mineru_errors import MinerUParseError
 from app.rag.mineru_ingest import prepare_pdf_document_for_pipeline
 from app.rag.models import DocumentSource, IngestionJob, IngestionJobStatus, IngestionJobType, utcnow_iso
+from app.rag.namespace_kb import build_chunk_metadatas, merge_doc_metadata_for_record, resolve_namespace_kb_fields
 
 logger = get_logger(__name__)
 
@@ -390,7 +391,7 @@ class IngestionOrchestrator:
 
                 self._set_job_step(job, "index")
                 t1 = time.perf_counter()
-                chunk_metadatas = [{**(doc.metadata or {}), **(c.metadata or {})} for c in chunks]
+                chunk_metadatas = build_chunk_metadatas(doc, chunks)
                 try:
                     self._ingestion.ingest_texts(
                         dataset_id=doc.dataset_id,
@@ -675,7 +676,7 @@ class IngestionOrchestrator:
             "last_job_id": job.job_id,
             "last_job_type": job.job_type.value,
             "last_job_status": job.status.value,
-            "metadata": doc.metadata,
+            "metadata": merge_doc_metadata_for_record(doc),
             "error": error,
         }
         self._doc_repo.upsert(doc_key, payload)
@@ -723,6 +724,8 @@ class IngestionOrchestrator:
                     "description": d.description,
                     "replace_if_exists": d.replace_if_exists,
                     "metadata": d.metadata,
+                    "namespace_kb_enabled": d.namespace_kb_enabled,
+                    "namespace_kb_priority": d.namespace_kb_priority,
                 }
                 for d in job.documents
             ],
@@ -743,6 +746,14 @@ class IngestionOrchestrator:
                 description=d.get("description"),
                 replace_if_exists=bool(d.get("replace_if_exists", True)),
                 metadata=d.get("metadata") or {},
+                namespace_kb_enabled=resolve_namespace_kb_fields(
+                    d.get("namespace_kb_enabled"),
+                    d.get("namespace_kb_priority"),
+                )[0],
+                namespace_kb_priority=resolve_namespace_kb_fields(
+                    d.get("namespace_kb_enabled"),
+                    d.get("namespace_kb_priority"),
+                )[1],
             )
             for d in item.get("documents", [])
         ]
