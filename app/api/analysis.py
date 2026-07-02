@@ -342,7 +342,7 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
     前端建议流程：
     人机协同触发(用户问题中解析确认 机组/受热面)： -
     1.	监听 `event === "img_diag_scope_input_required"`（台账确认信息） 和 `event === "img_diag_vision_preview"`(视觉分析结果)，
-    2.	监听到后，前端展示流中 `prompt` + `scope_draft_display`；用户在输入框补充说明，调用人机协同恢复接口 **`/run-img-diag-resume-stream`**（携带 `resume_token`）续跑
+    2.	监听到后，前端展示流中 `prompt` + `scope_draft_display(台账解析结果)` + `视觉分析结果`；用户在输入框补充说明，调用人机协同恢复接口 **`/run-img-diag-resume-stream`**（携带 `resume_token`）续跑
     3.	没监听到，同一条首流 SSE 直接到 meta → 报告流，不需要 resume 接口
 
 
