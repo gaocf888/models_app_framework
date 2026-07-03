@@ -711,7 +711,9 @@ def make_img_diag_scope_nodes(
         else:
             state["scope_relaxed_fields"] = []
 
-        if _scope_matched_confirm_enabled() and hitl_rounds == 0:
+        if _scope_matched_confirm_enabled() and (
+            hitl_rounds == 0 or _should_block_scope_confirm_by_vision_state(state)
+        ):
             state["pending_matched_confirm"] = True
             state["human_prompt"] = SCOPE_HITL_DB_MATCHED_PROMPT
             state["interrupt_reason"] = "db_validate_matched"

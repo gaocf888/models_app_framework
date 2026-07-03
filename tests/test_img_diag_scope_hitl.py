@@ -597,6 +597,60 @@ async def test_db_validate_after_hitl_skips_matched_confirm() -> None:
 
 
 @pytest.mark.asyncio
+async def test_db_validate_after_hitl_with_vision_block_sets_matched_confirm() -> None:
+    """仅传图首轮 HITL 后补台账：hitl_rounds>=1 且视觉仍拒识时，应展示匹配成功待确认而非未解析。"""
+    from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
+
+    nodes = make_img_diag_scope_nodes()
+    db_validate = nodes["scope_db_validate"]
+    state = {
+        "scope_draft": {
+            "boiler": "1号锅炉",
+            "device_name": "水冷壁螺旋段前墙",
+            "check_location_name": "吹灰孔7",
+            "row_no": 1,
+            "tube_no": None,
+        },
+        "scope_cumulative_text": "1号锅炉水冷壁螺旋段前墙吹灰孔7",
+        "hitl_rounds": 1,
+        "initial_query_empty": True,
+        "img_diag_subtype": "defect_ident",
+        "img_diag_request": {
+            "image_urls": ["http://wrong.jpg"],
+            "img_diag_subtype": "defect_ident",
+        },
+        "vision_prefetch_data": {"is_boiler_pressure_part_image": False},
+        "scope_hitl_prompt": "未识别解析到台账信息，请补充！",
+        "scope_interrupt_reason": "missing:boiler,device_name",
+    }
+    with patch(
+        "app.llm.graphs.img_diag_scope_graph.validate_scope_with_relaxation",
+        new_callable=AsyncMock,
+        return_value=(
+            1,
+            {
+                "boiler": "1号锅炉",
+                "device_name": "水冷壁螺旋段前墙",
+                "check_location_name": "吹灰孔7",
+                "row_no": 1,
+            },
+            [],
+            None,
+        ),
+    ), patch(
+        "app.llm.graphs.img_diag_scope_graph._scope_matched_confirm_enabled",
+        return_value=True,
+    ):
+        out = await db_validate(state)
+    assert out.get("pending_matched_confirm") is True
+    assert out.get("scope_interrupt_reason") == "db_validate_matched"
+    assert out.get("scope_hitl_prompt") == (
+        "以下为解析且业务库匹配成功的台账信息，请确认是否准确"
+    )
+    assert not out.get("confirmed_scope_intent")
+    assert out.get("vision_confirm_blocked") is True
+
+@pytest.mark.asyncio
 async def test_db_validate_matched_confirm_disabled() -> None:
     from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
 
