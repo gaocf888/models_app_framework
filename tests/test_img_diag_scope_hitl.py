@@ -579,8 +579,8 @@ async def test_db_validate_leakage_burst_no_image_skips_matched_confirm() -> Non
 
 
 @pytest.mark.asyncio
-async def test_db_validate_leakage_burst_with_image_keeps_matched_confirm() -> None:
-    """泄爆分析有图：库匹配成功后仍进入 matched 待确认。"""
+async def test_db_validate_leakage_burst_with_image_skips_matched_confirm() -> None:
+    """泄爆分析有图：库匹配成功后同样直接 confirmed，不再 matched 待确认。"""
     from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
 
     nodes = make_img_diag_scope_nodes()
@@ -624,9 +624,10 @@ async def test_db_validate_leakage_burst_with_image_keeps_matched_confirm() -> N
         return_value=True,
     ):
         out = await db_validate(state)
-    assert out.get("pending_matched_confirm") is True
-    assert out.get("interrupt_reason") == "db_validate_matched"
-    assert not out.get("confirmed_scope_intent")
+    assert not out.get("pending_matched_confirm")
+    assert out.get("confirmed_scope_intent", {}).get("boiler") == "2号锅炉"
+    assert out.get("scope_intent_text")
+    assert out.get("interrupt_reason") != "db_validate_matched"
 
 
 @pytest.mark.asyncio

@@ -138,16 +138,10 @@ def _scope_matched_confirm_enabled() -> bool:
 
 def _leakage_burst_scope_auto_confirm_after_db_match(state: ImgDiagScopeGraphState) -> bool:
     """
-    泄爆分析且用户未传图：台账库匹配成功后直接放行，不进入 matched HITL。
-    有图时仍走 matched 确认（与缺陷识别一致）。
+    泄爆分析：台账库匹配成功后直接放行，不进入 matched HITL（有图/无图一致）。
+    视觉等非台账门禁仍由 apply_vision_rejection_scope_gate 处理。
     """
-    subtype = str(state.get("img_diag_subtype") or "defect_ident")
-    if subtype != "leakage_burst":
-        return False
-    from app.llm.graphs.img_diag_vision_display import img_diag_request_has_images
-
-    req = state.get("img_diag_request") if isinstance(state.get("img_diag_request"), dict) else {}
-    return not img_diag_request_has_images(req, img_diag_subtype=subtype)
+    return str(state.get("img_diag_subtype") or "defect_ident") == "leakage_burst"
 
 
 def _draft_from_state(state: ImgDiagScopeGraphState) -> ImgDiagScopeDraft:
