@@ -150,6 +150,27 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
         self.assertEqual(req.img_diag_subtype, "leakage_burst")
         self.assertEqual(len(req.image_urls), 0)
 
+    def test_leakage_burst_allows_empty_query_with_images(self) -> None:
+        req = AnalysisImgDiagRequest(
+            user_id="u1",
+            session_id="s1",
+            img_diag_subtype="leakage_burst",
+            query="",
+            image_urls=["http://x/y.png"],
+        )
+        self.assertEqual(req.query, "")
+        self.assertEqual(len(req.image_urls), 1)
+
+    def test_leakage_burst_empty_query_without_images_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            AnalysisImgDiagRequest(
+                user_id="u1",
+                session_id="s1",
+                img_diag_subtype="leakage_burst",
+                query="",
+                image_urls=[],
+            )
+
     def test_defect_ident_requires_images(self) -> None:
         with self.assertRaises(ValueError):
             AnalysisImgDiagRequest(

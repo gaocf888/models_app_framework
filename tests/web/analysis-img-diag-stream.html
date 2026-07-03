@@ -491,7 +491,7 @@
       showErr("请填写 user_id、session_id。");
       return;
     }
-    const allowEmptyQuery = isDefectIdentSubtype() && urls.length > 0;
+    const allowEmptyQuery = urls.length > 0;
     if (!q && !allowEmptyQuery) {
       showErr("请填写 query；缺陷识别可先只传图（image_urls 至少一行），台账在 HITL 阶段补充。");
       return;

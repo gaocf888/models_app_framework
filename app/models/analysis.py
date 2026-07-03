@@ -160,7 +160,7 @@ class AnalysisImgDiagRequest(BaseModel):
         if self.img_diag_subtype == "defect_ident" and not self.image_urls:
             raise ValueError("defect_ident requires at least one image in image_urls")
         if not self.query:
-            if self.img_diag_subtype == "defect_ident" and self.image_urls:
+            if self.image_urls:
                 return self
             raise ValueError("query must not be empty")
         return self
