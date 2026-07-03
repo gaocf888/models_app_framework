@@ -497,6 +497,40 @@ def _should_block_scope_confirm_by_vision_state(state: ImgDiagScopeGraphState) -
     return False
 
 
+def _last_human_response_needs_scope_reparse(state: dict[str, Any]) -> bool:
+    """
+    用户本轮 resume 提供了台账补充/修正，须重新 preflight → db_validate。
+    视觉拒识 alone 不应阻止该路径（仅换图或 matched 纯肯定确认除外）。
+    """
+    interactions = state.get("human_interactions") or []
+    if not interactions:
+        return False
+    last = interactions[-1]
+    if not isinstance(last, dict):
+        return False
+    human = last.get("response")
+    if not isinstance(human, dict):
+        return False
+    payload = human.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    action = str(human.get("action") or "confirm_scope")
+
+    if has_scope_correction_patch(payload.get("scope_patch")):
+        return True
+    if _hitl_payload_only_replaced_images(payload):
+        return False
+
+    supplement = str(payload.get("user_supplement") or "").strip()
+    if not supplement:
+        return False
+    if state.get("pending_matched_confirm") and is_matched_confirm_affirmative_response(
+        action, payload
+    ):
+        return False
+    return True
+
+
 def _state_needs_scope_hitl_interrupt(state: dict[str, Any]) -> bool:
     """图已结束但尚未 confirmed，仍须下一次人机协同（视觉/台账待确认）。"""
     if state.get("confirmed_scope_intent") and state.get("scope_intent_text"):
@@ -786,6 +820,8 @@ def _route_after_human_confirm(state: ImgDiagScopeGraphState):
         from langgraph.graph import END  # type: ignore[import-not-found]
 
         return END
+    if _last_human_response_needs_scope_reparse(state):
+        return "scope_preflight_llm"
     if _state_needs_scope_hitl_interrupt(state):
         from langgraph.graph import END  # type: ignore[import-not-found]
 

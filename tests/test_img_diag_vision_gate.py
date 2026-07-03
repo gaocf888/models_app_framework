@@ -10,6 +10,7 @@ import pytest
 from app.llm.graphs.img_diag_scope_display import (
     SCOPE_HITL_DB_MATCHED_PROMPT,
     SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
+    SCOPE_HITL_NOT_PARSED_PROMPT,
     build_scope_hitl_confirm_reply_example,
 )
 from app.llm.graphs.img_diag_vision_display import (
@@ -337,6 +338,92 @@ def test_route_after_human_confirm_pending_matched_waits_interrupt(monkeypatch) 
         "interrupt_reason": "db_validate_matched",
     }
     assert _route_after_human_confirm(state) is end
+
+
+def test_route_after_human_confirm_vision_reject_with_scope_supplement_reparses(
+    monkeypatch,
+) -> None:
+    end = object()
+    graph_mod = MagicMock()
+    graph_mod.END = end
+    monkeypatch.setitem(sys.modules, "langgraph.graph", graph_mod)
+
+    from app.llm.graphs.img_diag_scope_graph import (
+        _apply_human_scope_response,
+        _route_after_human_confirm,
+    )
+
+    human = {
+        "action": "confirm_scope",
+        "payload": {"user_supplement": "1号锅炉水冷壁螺旋段前墙吹灰孔7"},
+    }
+    state = {
+        "interrupt_reason": VISION_REJECT_INTERRUPT_REASON,
+        "vision_confirm_blocked": True,
+        "scope_interrupt_reason": "missing:boiler,device_name",
+        "scope_hitl_prompt": SCOPE_HITL_NOT_PARSED_PROMPT,
+        "scope_cumulative_text": "",
+        "human_interactions": [{"request": {}, "response": human}],
+        "img_diag_subtype": "defect_ident",
+        "img_diag_request": {"image_urls": ["http://wrong.jpg"], "img_diag_subtype": "defect_ident"},
+    }
+    updated = _apply_human_scope_response(state, human)
+    assert _route_after_human_confirm(updated) == "scope_preflight_llm"
+    assert _route_after_human_confirm(updated) is not end
+
+
+def test_route_after_human_confirm_vision_reject_empty_supplement_still_waits_interrupt(
+    monkeypatch,
+) -> None:
+    end = object()
+    graph_mod = MagicMock()
+    graph_mod.END = end
+    monkeypatch.setitem(sys.modules, "langgraph.graph", graph_mod)
+
+    from app.llm.graphs.img_diag_scope_graph import (
+        _apply_human_scope_response,
+        _route_after_human_confirm,
+    )
+
+    human = {"action": "confirm_scope", "payload": {}}
+    state = {
+        "interrupt_reason": VISION_REJECT_INTERRUPT_REASON,
+        "vision_confirm_blocked": True,
+        "scope_hitl_prompt": SCOPE_HITL_NOT_PARSED_PROMPT,
+        "human_interactions": [{"request": {}, "response": human}],
+    }
+    updated = _apply_human_scope_response(state, human)
+    assert _route_after_human_confirm(updated) is end
+
+
+def test_route_after_human_confirm_matched_affirmative_with_vision_reject_still_waits(
+    monkeypatch,
+) -> None:
+    end = object()
+    graph_mod = MagicMock()
+    graph_mod.END = end
+    monkeypatch.setitem(sys.modules, "langgraph.graph", graph_mod)
+
+    from app.llm.graphs.img_diag_scope_graph import (
+        _apply_human_scope_response,
+        _route_after_human_confirm,
+    )
+
+    human = {"action": "confirm_scope", "payload": {"user_supplement": "确认"}}
+    state = {
+        "pending_matched_confirm": True,
+        "interrupt_reason": VISION_REJECT_INTERRUPT_REASON,
+        "vision_confirm_blocked": True,
+        "scope_interrupt_reason": "db_validate_matched",
+        "scope_hitl_prompt": SCOPE_HITL_DB_MATCHED_PROMPT,
+        "scope_cumulative_text": "1号锅炉水冷壁螺旋段前墙吹灰孔7",
+        "human_interactions": [{"request": {}, "response": human}],
+        "img_diag_subtype": "defect_ident",
+        "img_diag_request": {"image_urls": ["http://wrong.jpg"], "img_diag_subtype": "defect_ident"},
+        "vision_prefetch_data": {"is_boiler_pressure_part_image": False},
+    }
+    updated = _apply_human_scope_response(state, human)
+    assert _route_after_human_confirm(updated) is end
 
 
 def test_wrong_image_plus_confirm_does_not_finalize() -> None:
