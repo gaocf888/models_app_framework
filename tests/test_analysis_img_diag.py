@@ -16,6 +16,69 @@ class TestAnalysisImgDiagSubtypes(unittest.TestCase):
         self.assertEqual(_IMG_DIAG_PROFILES["defect_ident"].analysis_type, IMG_DIAG_DEFECT_IDENT_TYPE)
         self.assertEqual(_IMG_DIAG_PROFILES["leakage_burst"].analysis_type, IMG_DIAG_LEAKAGE_BURST_TYPE)
 
+    def test_effective_synthesis_query_uses_scope_intent_after_hitl(self) -> None:
+        req = AnalysisImgDiagRequest(
+            user_id="u1",
+            session_id="s1",
+            img_diag_subtype="leakage_burst",
+            query="事故发生位置为2号锅炉水冷壁螺旋段前墙吹灰孔199，事故发生时间为2026年6月23日",
+            image_urls=[],
+        )
+        confirmed = {
+            "boiler": "2号锅炉",
+            "device_name": "水冷壁螺旋段前墙",
+            "check_location_name": "吹灰孔19",
+            "row_no": 1,
+        }
+        scope_text = "2号锅炉 水冷壁螺旋段前墙 吹灰孔19 2026-06-23"
+        effective = AnalysisImgDiagGraphRunner._effective_img_diag_synthesis_query(
+            req,
+            confirmed_scope=confirmed,
+            scope_intent_text=scope_text,
+        )
+        self.assertEqual(effective, scope_text)
+        self.assertNotIn("199", effective)
+        self.assertIn("吹灰孔19", effective)
+
+    def test_effective_synthesis_query_without_hitl_keeps_original(self) -> None:
+        req = AnalysisImgDiagRequest(
+            user_id="u1",
+            session_id="s1",
+            img_diag_subtype="leakage_burst",
+            query="2号锅炉水冷壁螺旋段前墙吹灰孔19",
+            image_urls=[],
+        )
+        effective = AnalysisImgDiagGraphRunner._effective_img_diag_synthesis_query(
+            req,
+            confirmed_scope=None,
+            scope_intent_text=None,
+        )
+        self.assertEqual(effective, req.query)
+
+    def test_build_summary_user_content_uses_effective_query_in_blob(self) -> None:
+        runner = AnalysisImgDiagGraphRunner(
+            conv_manager=MagicMock(),
+            llm_client=MagicMock(),
+            prompt_registry=MagicMock(),
+            hybrid_rag=MagicMock(),
+            nl2sql_service=MagicMock(),
+        )
+        runner._analysis_cfg.synthesis_gathered_json_max_chars = 4000
+        scope_text = "2号锅炉 水冷壁螺旋段前墙 吹灰孔19 2026-06-23"
+        content = runner._build_img_diag_summary_user_content(
+            query=scope_text,
+            analysis_type=IMG_DIAG_LEAKAGE_BURST_TYPE,
+            data_mode="img_diag_leakage_burst",
+            data_blob={
+                "user_query": scope_text,
+                "original_user_query": "事故发生位置为2号锅炉水冷壁螺旋段前墙吹灰孔199",
+                "confirmed_scope_intent": {"check_location_name": "吹灰孔19"},
+            },
+            context_snippets=[],
+        )
+        self.assertIn(f"用户问题: {scope_text}", content)
+        self.assertNotIn("吹灰孔199", content.split("用户问题:")[1].split("\n")[0])
+
     def test_gathered_data_for_synthesis_uses_purpose_labels(self) -> None:
         labeled = AnalysisImgDiagGraphRunner._gathered_data_for_synthesis(
             {"q1": [{"a": 1}], "q2a": [{"b": 2}]},

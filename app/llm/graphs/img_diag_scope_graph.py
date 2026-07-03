@@ -136,6 +136,20 @@ def _scope_matched_confirm_enabled() -> bool:
     return bool(getattr(_cfg(), "img_diag_scope_matched_confirm_enabled", True))
 
 
+def _leakage_burst_scope_auto_confirm_after_db_match(state: ImgDiagScopeGraphState) -> bool:
+    """
+    泄爆分析且用户未传图：台账库匹配成功后直接放行，不进入 matched HITL。
+    有图时仍走 matched 确认（与缺陷识别一致）。
+    """
+    subtype = str(state.get("img_diag_subtype") or "defect_ident")
+    if subtype != "leakage_burst":
+        return False
+    from app.llm.graphs.img_diag_vision_display import img_diag_request_has_images
+
+    req = state.get("img_diag_request") if isinstance(state.get("img_diag_request"), dict) else {}
+    return not img_diag_request_has_images(req, img_diag_subtype=subtype)
+
+
 def _draft_from_state(state: ImgDiagScopeGraphState) -> ImgDiagScopeDraft:
     draft_dict = state.get("scope_draft") or {}
     tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
@@ -745,8 +759,10 @@ def make_img_diag_scope_nodes(
         else:
             state["scope_relaxed_fields"] = []
 
-        if _scope_matched_confirm_enabled() and (
-            hitl_rounds == 0 or _should_block_scope_confirm_by_vision_state(state)
+        if (
+            _scope_matched_confirm_enabled()
+            and (hitl_rounds == 0 or _should_block_scope_confirm_by_vision_state(state))
+            and not _leakage_burst_scope_auto_confirm_after_db_match(state)
         ):
             state["pending_matched_confirm"] = True
             state["human_prompt"] = SCOPE_HITL_DB_MATCHED_PROMPT

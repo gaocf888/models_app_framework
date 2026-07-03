@@ -534,6 +534,102 @@ def test_is_matched_confirm_affirmative_response() -> None:
 
 
 @pytest.mark.asyncio
+async def test_db_validate_leakage_burst_no_image_skips_matched_confirm() -> None:
+    """泄爆分析无图：库匹配成功后直接 confirmed，不再中断让用户确认。"""
+    from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
+
+    nodes = make_img_diag_scope_nodes()
+    db_validate = nodes["scope_db_validate"]
+    state = {
+        "scope_draft": {
+            "boiler": "2号锅炉",
+            "device_name": "水冷壁螺旋段前墙",
+            "check_location_name": "吹灰孔19",
+            "row_no": 1,
+            "tube_no": None,
+        },
+        "scope_cumulative_text": "2号锅炉水冷壁螺旋段前墙吹灰孔19 1排",
+        "hitl_rounds": 0,
+        "img_diag_subtype": "leakage_burst",
+        "img_diag_request": {"image_urls": [], "img_diag_subtype": "leakage_burst"},
+    }
+    with patch(
+        "app.llm.graphs.img_diag_scope_graph.validate_scope_with_relaxation",
+        new_callable=AsyncMock,
+        return_value=(
+            1,
+            {
+                "boiler": "2号锅炉",
+                "device_name": "水冷壁螺旋段前墙",
+                "check_location_name": "吹灰孔19",
+                "row_no": 1,
+            },
+            [],
+            None,
+        ),
+    ), patch(
+        "app.llm.graphs.img_diag_scope_graph._scope_matched_confirm_enabled",
+        return_value=True,
+    ):
+        out = await db_validate(state)
+    assert not out.get("pending_matched_confirm")
+    assert out.get("confirmed_scope_intent", {}).get("boiler") == "2号锅炉"
+    assert out.get("scope_intent_text")
+    assert out.get("interrupt_reason") != "db_validate_matched"
+
+
+@pytest.mark.asyncio
+async def test_db_validate_leakage_burst_with_image_keeps_matched_confirm() -> None:
+    """泄爆分析有图：库匹配成功后仍进入 matched 待确认。"""
+    from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
+
+    nodes = make_img_diag_scope_nodes()
+    db_validate = nodes["scope_db_validate"]
+    state = {
+        "scope_draft": {
+            "boiler": "2号锅炉",
+            "device_name": "水冷壁螺旋段前墙",
+            "check_location_name": "吹灰孔19",
+            "row_no": 1,
+            "tube_no": None,
+        },
+        "scope_cumulative_text": "2号锅炉水冷壁螺旋段前墙吹灰孔19",
+        "hitl_rounds": 0,
+        "img_diag_subtype": "leakage_burst",
+        "img_diag_request": {
+            "image_urls": ["http://a.jpg"],
+            "img_diag_subtype": "leakage_burst",
+        },
+        "vision_prefetch_data": {
+            "is_boiler_pressure_part_image": True,
+            "vision_narrative": "- 爆口形貌",
+        },
+    }
+    with patch(
+        "app.llm.graphs.img_diag_scope_graph.validate_scope_with_relaxation",
+        new_callable=AsyncMock,
+        return_value=(
+            1,
+            {
+                "boiler": "2号锅炉",
+                "device_name": "水冷壁螺旋段前墙",
+                "check_location_name": "吹灰孔19",
+                "row_no": 1,
+            },
+            [],
+            None,
+        ),
+    ), patch(
+        "app.llm.graphs.img_diag_scope_graph._scope_matched_confirm_enabled",
+        return_value=True,
+    ):
+        out = await db_validate(state)
+    assert out.get("pending_matched_confirm") is True
+    assert out.get("interrupt_reason") == "db_validate_matched"
+    assert not out.get("confirmed_scope_intent")
+
+
+@pytest.mark.asyncio
 async def test_db_validate_first_success_sets_pending_matched_confirm() -> None:
     from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
 

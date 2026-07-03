@@ -399,6 +399,30 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         return scope_result, orchestrator_path, vision_prefetch, vision_ms, vision_status
 
     @staticmethod
+    def _effective_img_diag_synthesis_query(
+        req: AnalysisImgDiagRequest,
+        *,
+        confirmed_scope: dict[str, Any] | None,
+        scope_intent_text: str | None,
+    ) -> str:
+        """
+        报告合成用用户问题：HITL 已确认台账时以 scope_intent_text 为准，
+        避免首问 query 中过时位置/字段污染「事件概述」等叙述。
+        """
+        original = (req.query or "").strip()
+        confirmed_text = (scope_intent_text or "").strip()
+        if confirmed_scope and confirmed_text:
+            return confirmed_text
+        return original
+
+    @staticmethod
+    def _synthesis_query_from_pack(pack: _ImgDiagPack) -> str:
+        blob_q = str(pack.merged_blob.get("user_query") or "").strip()
+        if blob_q:
+            return blob_q
+        return (pack.req.query or "").strip()
+
+    @staticmethod
     def _image_urls_diag(image_urls: list[str] | None) -> dict[str, Any]:
         """供 vision/resume 诊断：统计有效 URL 数量并截断预览（避免日志过长）。"""
         raw = list(image_urls or [])
@@ -1574,10 +1598,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             if pf_rag_status == "failed":
                 degrade.append("img_diag_business_rag_parallel_failed")
 
+        synthesis_query = self._effective_img_diag_synthesis_query(
+            req,
+            confirmed_scope=confirmed_scope,
+            scope_intent_text=scope_intent_text,
+        )
+
         parallel_trace = {
             "img_diag_subtype": profile.subtype,
             "scope_hitl_confirmed": bool(confirmed_scope),
             "scope_intent_text": (scope_intent_text[:500] if scope_intent_text else None),
+            "synthesis_user_query": (synthesis_query[:500] if synthesis_query else None),
             "orchestrator_path": orchestrator_path,
             "vision_lane_reused": bool(skip_vision_lane and vision_prefetch),
             "vision_lane_ms": vision_ms,
@@ -1658,10 +1689,13 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "parsed_time_intent": parsed_time_intent,
             "parsed_scope_intent": parsed_scope_intent,
             "confirmed_scope_intent": confirmed_scope,
-            "user_query": req.query,
+            "user_query": synthesis_query,
             "img_diag_subtype": profile.subtype,
             "quality_report": quality_report,
         }
+        original_query = (req.query or "").strip()
+        if confirmed_scope and synthesis_query != original_query:
+            merged_blob["original_user_query"] = original_query
 
         rid = str(nl_state.get("request_id") or request_id or f"anl_{uuid4().hex[:12]}")
         plan_id = str(nl_state.get("plan_id") or f"plan_{uuid4().hex[:10]}")
@@ -1740,7 +1774,10 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         structured_report["parsed_time_intent"] = pack.parsed_time_intent
         structured_report["parsed_scope_intent"] = pack.parsed_scope_intent
         structured_report["confirmed_scope_intent"] = pack.confirmed_scope_intent
-        structured_report["user_query"] = req.query
+        structured_report["user_query"] = self._synthesis_query_from_pack(pack)
+        original_user_query = pack.merged_blob.get("original_user_query")
+        if isinstance(original_user_query, str) and original_user_query.strip():
+            structured_report["original_user_query"] = original_user_query.strip()
         structured_report["img_diag_subtype"] = profile.subtype
 
         nl_state = pack.nl_state
@@ -1898,7 +1935,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             t_syn = perf_counter()
             self._log_vision_before_synthesis(pack)
             summary = await self._generate_summary(
-                query=req.query,
+                query=self._synthesis_query_from_pack(pack),
                 analysis_type=at,
                 data_mode=data_mode,
                 data_blob=pack.merged_blob,
@@ -1960,7 +1997,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         user_cancelled = False
         try:
             async for chunk in self._stream_summary_text(
-                query=req.query,
+                query=self._synthesis_query_from_pack(pack),
                 analysis_type=at,
                 data_mode=data_mode,
                 data_blob=pack.merged_blob,
