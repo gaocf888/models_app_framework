@@ -189,14 +189,47 @@ def format_scope_draft_display_lines(scope_draft: dict[str, Any] | None) -> list
     return [f"{cn}：{val}" for cn, val in scope_draft_to_display(scope_draft).items()]
 
 
+def _initial_image_only_request(src: dict[str, Any]) -> bool:
+    """首请求仅传图、尚未在 query 中补充台账文本。"""
+    if src.get("initial_query_empty"):
+        return True
+    req = src.get("img_diag_request") if isinstance(src.get("img_diag_request"), dict) else {}
+    query = str(src.get("query") or req.get("query") or "").strip()
+    if query:
+        return False
+    from app.llm.graphs.img_diag_hitl_images import normalize_image_url_list
+
+    return bool(normalize_image_url_list(req.get("image_urls")))
+
+
 def is_image_only_initial_scope_hitl(interrupt_payload: dict[str, Any] | None) -> bool:
     """首请求仅传图、尚未补充 query/台账文本时的 HITL 展示分支。"""
     payload = interrupt_payload or {}
-    if not payload.get("initial_query_empty"):
+    if not _initial_image_only_request(payload):
         return False
     if str(payload.get("scope_cumulative_text") or "").strip():
         return False
-    return resolve_scope_hitl_display_prompt(interrupt_payload=payload) == SCOPE_HITL_NOT_PARSED_PROMPT
+    if payload.get("pending_matched_confirm"):
+        return False
+    scope_reason = str(payload.get("scope_interrupt_reason") or "").strip()
+    if scope_reason in ("db_validate_matched", "db_validate_zero_rows"):
+        return False
+    interrupt = str(payload.get("interrupt_reason") or "").strip()
+    if interrupt in ("db_validate_matched", "db_validate_zero_rows"):
+        return False
+    if payload.get("validation_error"):
+        return False
+    scope_prompt = str(payload.get("scope_hitl_prompt") or "").strip()
+    display_prompt = resolve_scope_hitl_display_prompt(interrupt_payload=payload)
+    if scope_prompt == SCOPE_HITL_NOT_PARSED_PROMPT or display_prompt == SCOPE_HITL_NOT_PARSED_PROMPT:
+        return True
+    if scope_reason.startswith("missing:") or interrupt.startswith("missing:"):
+        return True
+    if interrupt == VISION_REJECT_INTERRUPT_REASON and (
+        scope_reason.startswith("missing:") or scope_prompt == SCOPE_HITL_NOT_PARSED_PROMPT
+    ):
+        return True
+    return False
 
 
 def build_scope_hitl_confirm_reply_example(interrupt_payload: dict[str, Any] | None) -> str:
@@ -250,9 +283,7 @@ def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None
         prompt = resolve_scope_hitl_display_prompt(interrupt_payload=interrupt_payload)
         if prompt:
             lines.append(prompt)
-        example = str(interrupt_payload.get("confirm_reply_example") or "").strip()
-        if not example:
-            example = build_scope_hitl_confirm_reply_example(interrupt_payload)
+        example = build_scope_hitl_confirm_reply_example(interrupt_payload)
         if example:
             lines.extend(["", "回复示例：", example])
         return "\n".join(lines)

@@ -167,8 +167,8 @@
       流程：可先 <code>POST /analysis/img-diag/upload</code> 上传现场图，将返回的 <code>url</code> 填入
       <code>image_urls</code>；再 <code>POST /analysis/run-img-diag-stream</code>（<code>text/event-stream</code>）。
       视觉 / 业务 RAG / NL2SQL 三臂并行与同步接口相同；仅结论阶段以 SSE 增量下发（<code>summary_delta</code>）。
-      <strong>Path1 先视觉</strong>：首流可能连续收到 <code>img_diag_vision_preview</code>（图像可见分析）→
-      <code>img_diag_scope_input_required</code>（台账确认）；两者中间无需用户操作，流结束后在 query 补充并 resume。
+      <strong>Path1 先视觉</strong>：首流可能连续收到 <code>img_diag_vision_preview</code>（<code>vision_hitl_assistant_message</code>）→
+      <code>img_diag_scope_input_required</code>（<code>scope_hitl_assistant_message</code>）；展示文案均由后端生成，测试页原样渲染。
       <strong>台账信息确认</strong>：用户在「query」框补充后再次点击「开始/继续」→
       <code>POST /analysis/run-img-diag-resume-stream</code> 续跑。
       鉴权 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>；需 CORS 放行本页来源。
@@ -273,120 +273,27 @@
   const QUERY_PLACEHOLDER_DEFAULT = "请识别图片缺陷并给出处置建议，位置是1号锅炉低温过热器A侧第2排第3根";
   const QUERY_PLACEHOLDER_HITL = "在此补充或修正机组/受热面，例如：水冷壁螺旋段后墙螺旋管组";
 
-  const SCOPE_HITL_DISPLAY_FIELDS = ["boiler", "device_name"];
-
-  const SCOPE_FIELD_LABELS = {
-    boiler: "机组",
-    device_name: "受热面",
-    piperow_name: "管排名称",
-    row_no: "排数",
-    tube_no: "管数",
-  };
-
-  function scopeDraftDisplayLines(ev) {
-    const labeled = ev.scope_draft_display;
-    if (labeled && typeof labeled === "object" && Object.keys(labeled).length) {
-      return Object.entries(labeled).map(([cn, val]) => cn + "：" + val);
+  /** HITL 展示文案由后端 SSE 字段提供，测试页不做业务拼装。 */
+  function backendHitlDisplayText(ev) {
+    const parts = [];
+    let visionMsg = String(ev.vision_hitl_assistant_message || "").trim();
+    if (!visionMsg && lastVisionPreview) {
+      visionMsg = String(lastVisionPreview.vision_hitl_assistant_message || "").trim();
     }
-    const draft = ev.scope_draft || {};
-    return SCOPE_HITL_DISPLAY_FIELDS.map(function (en) {
-      const cn = SCOPE_FIELD_LABELS[en];
-      const val = draft[en];
-      if (val == null || val === "") return null;
-      return cn + "：" + val;
-    }).filter(Boolean);
-  }
-
-  function visionDisplayLines(display) {
-    if (!display || typeof display !== "object") return [];
-    return Object.entries(display)
-      .filter(function (entry) {
-        const val = entry[1];
-        return val != null && String(val).trim() !== "";
-      })
-      .map(function (entry) {
-        return entry[0] + "：" + entry[1];
-      });
-  }
-
-  function formatVisionPreviewMessage(ev) {
-    const lines = ["【图像可见分析】", ""];
-    const display = ev.vision_findings_display || {};
-    const narrative = display["外观可见分析"];
-    if (narrative != null && String(narrative).trim()) {
-      String(narrative)
-        .split(/\r?\n/)
-        .forEach(function (ln) {
-          const t = ln.trim();
-          if (t) lines.push("  · " + t);
-        });
-    } else if (display["说明"] && String(display["说明"]).trim()) {
-      lines.push("  · " + String(display["说明"]).trim());
-    } else {
-      const displayLines = visionDisplayLines(display);
-      if (displayLines.length) {
-        displayLines.forEach(function (ln) {
-          lines.push("  · " + ln);
-        });
-      } else {
-        lines.push("  · （暂无可见形貌描述）");
-      }
-    }
-    return lines.join("\n");
-  }
-
-  function isImageOnlyInitialScopeHitl(ev) {
-    if (!ev || !ev.initial_query_empty) return false;
-    if (String(ev.scope_cumulative_text || "").trim()) return false;
-    const prompt = String(ev.prompt || "").trim();
-    return prompt === "未识别解析到台账信息，请补充！";
-  }
-
-  function formatScopeHitlMessage(ev) {
-    const lines = ["【台账信息确认】", ""];
-    if (ev.prompt) {
-      lines.push(ev.prompt, "");
-    } else {
-      lines.push("请补充或确认机组与受热面信息", "");
-    }
-    if (isImageOnlyInitialScopeHitl(ev)) {
-      const example = (ev.confirm_reply_example || "1号锅炉水冷壁螺旋段前墙吹灰孔7").trim();
-      if (example) {
-        lines.push("回复示例：", example);
-      }
-      return lines.join("\n");
-    }
-    lines.push("台账信息：");
-    const draftLines = scopeDraftDisplayLines(ev);
-    if (draftLines.length) {
-      lines.push.apply(lines, draftLines);
-    } else {
-      lines.push("（暂无）");
-    }
-    if (ev.missing_fields && ev.missing_fields.length) {
-      lines.push("", "待补充：" + ev.missing_fields.join("、"));
-    }
-    const example = (ev.confirm_reply_example || "").trim();
-    if (example) {
-      lines.push("", isImageOnlyInitialScopeHitl(ev) ? "回复示例：" : "确认回复示例：", example);
-    }
-    return lines.join("\n");
+    const scopeMsg = String(ev.scope_hitl_assistant_message || "").trim();
+    if (visionMsg) parts.push(visionMsg);
+    if (scopeMsg) parts.push(scopeMsg);
+    return parts.join("\n\n");
   }
 
   function enterScopeHitlWait(ev) {
     scopeResumeToken = ev.resume_token || "";
     scopeHitlWaiting = !!scopeResumeToken;
-    const parts = [];
     if (ev.include_vision_preview) {
-      if (lastVisionPreview) {
-        parts.push(formatVisionPreviewMessage(lastVisionPreview));
-      } else if (ev.vision_findings_display && Object.keys(ev.vision_findings_display).length) {
-        parts.push(formatVisionPreviewMessage(ev));
-      }
       visionPreviewShown = true;
     }
-    parts.push(formatScopeHitlMessage(ev));
-    $("answer").textContent = parts.join("\n\n");
+    const text = backendHitlDisplayText(ev);
+    $("answer").textContent = text || "（后端未返回 HITL 展示文案）";
     $("query").value = "";
     $("query").placeholder = QUERY_PLACEHOLDER_HITL;
     $("btnRun").textContent = BTN_RUN_LABEL_RESUME;
@@ -415,7 +322,8 @@
 
         if (kind === "img_diag_vision_preview") {
           lastVisionPreview = ev;
-          $("answer").textContent = formatVisionPreviewMessage(ev);
+          const visionMsg = String(ev.vision_hitl_assistant_message || "").trim();
+          $("answer").textContent = visionMsg || "（后端未返回视觉分析展示文案）";
           setStatus("已收到图像可见分析，等待台账确认事件…");
           return;
         }

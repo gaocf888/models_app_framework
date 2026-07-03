@@ -500,11 +500,17 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "orchestrator_path": intr.get("orchestrator_path") or result.get("orchestrator_path"),
             "include_vision_preview": bool(intr.get("include_vision_preview")),
             "confirm_reply_example": intr.get("confirm_reply_example"),
+            "scope_hitl_assistant_message": intr.get("scope_hitl_assistant_message"),
+            "scope_reply_example_label": intr.get("scope_reply_example_label"),
+            "vision_hitl_assistant_message": intr.get("vision_hitl_assistant_message"),
         }
         if intr.get("initial_query_empty"):
             event["initial_query_empty"] = True
             if intr.get("scope_cumulative_text") is not None:
                 event["scope_cumulative_text"] = intr.get("scope_cumulative_text")
+        scope_reason = intr.get("scope_interrupt_reason")
+        if scope_reason:
+            event["scope_interrupt_reason"] = scope_reason
         if intr.get("include_vision_preview"):
             if intr.get("vision_findings_display"):
                 event["vision_findings_display"] = intr.get("vision_findings_display")
@@ -525,6 +531,10 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "orchestrator_path": "vision_first",
             "img_diag_subtype": img_diag_subtype,
             "vision_findings_display": build_vision_findings_display(
+                vision_data,
+                img_diag_subtype=img_diag_subtype,
+            ),
+            "vision_hitl_assistant_message": format_vision_hitl_assistant_block(
                 vision_data,
                 img_diag_subtype=img_diag_subtype,
             ),

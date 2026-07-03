@@ -96,6 +96,29 @@ class TestScopeHitlConversationFormat(unittest.TestCase):
         }
         self.assertFalse(is_image_only_initial_scope_hitl(payload))
 
+    def test_image_only_with_vision_reject_still_uses_simplified_display(self) -> None:
+        payload = {
+            "initial_query_empty": True,
+            "scope_cumulative_text": "",
+            "prompt": "未识别解析到台账信息，请补充！",
+            "scope_hitl_prompt": "未识别解析到台账信息，请补充！",
+            "scope_interrupt_reason": "missing:boiler,device_name",
+            "interrupt_reason": "vision_boiler_image_rejected",
+            "vision_confirm_blocked": True,
+            "missing_fields": ["机组", "受热面"],
+        }
+        self.assertTrue(is_image_only_initial_scope_hitl(payload))
+        self.assertEqual(
+            build_scope_hitl_confirm_reply_example(payload),
+            SCOPE_HITL_IMAGE_ONLY_REPLY_EXAMPLE,
+        )
+        text = format_scope_hitl_assistant_message(payload)
+        self.assertIn("回复示例：", text)
+        self.assertIn(SCOPE_HITL_IMAGE_ONLY_REPLY_EXAMPLE, text)
+        self.assertNotIn("台账信息：", text)
+        self.assertNotIn("待补充：", text)
+        self.assertNotIn("确认回复示例", text)
+
 
 def _make_runner() -> AnalysisImgDiagGraphRunner:
     runner = AnalysisImgDiagGraphRunner(

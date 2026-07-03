@@ -21,6 +21,8 @@ from app.llm.graphs.img_diag_scope_display import (
     SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
     SCOPE_HITL_NOT_PARSED_PROMPT,
     build_scope_hitl_confirm_reply_example,
+    format_scope_hitl_assistant_message,
+    is_image_only_initial_scope_hitl,
     normalize_scope_patch_keys,
     record_scope_hitl_context,
     resolve_scope_hitl_display_prompt,
@@ -60,6 +62,7 @@ from app.llm.graphs.img_diag_vision_display import (
     VISION_REJECT_INTERRUPT_REASON,
     apply_vision_rejection_scope_gate,
     build_vision_findings_display,
+    format_vision_hitl_assistant_block,
     is_scope_confirm_blocked_by_vision,
 )
 from app.llm.prompt_registry import PromptTemplateRegistry
@@ -192,10 +195,14 @@ def _enrich_interrupt_payload_from_state(state: ImgDiagScopeGraphState, payload:
             vision_data,
             img_diag_subtype=subtype,
         )
-    payload["confirm_reply_example"] = build_scope_hitl_confirm_reply_example(payload)
+        payload["vision_hitl_assistant_message"] = format_vision_hitl_assistant_block(
+            vision_data if isinstance(vision_data, dict) else None,
+            img_diag_subtype=subtype,
+        )
     if state.get("initial_query_empty"):
         payload["initial_query_empty"] = True
         payload["scope_cumulative_text"] = str(state.get("scope_cumulative_text") or "").strip()
+    payload["confirm_reply_example"] = build_scope_hitl_confirm_reply_example(payload)
 
 
 def _resume_session_kwargs(
@@ -462,6 +469,10 @@ def _build_interrupt_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
     if relaxed:
         payload["scope_relaxed_fields"] = [scope_field_label(f) for f in relaxed]
     _enrich_interrupt_payload_from_state(state, payload)
+    payload["scope_hitl_assistant_message"] = format_scope_hitl_assistant_message(payload)
+    payload["scope_reply_example_label"] = (
+        "回复示例" if is_image_only_initial_scope_hitl(payload) else "确认回复示例"
+    )
     return payload
 
 
