@@ -25,6 +25,32 @@ OVERHEAT_DATA_SOURCE_LABELS: dict[str, str] = {
 # 报告正文仅输出章节标题；下列规则来自 docx 红色底纹/红字说明，仅供程序与 LLM 参考，禁止写入报告。
 OVERHEAT_CH1_INTRO = "## 一、超温情况概览\n\n"
 
+OVERHEAT_NO_Q1_SHORT_CIRCUIT_SYNTHESIS_VERSION = (
+    "analysis_synthesis_overheat_guidance:v2_no_q1_events"
+)
+
+
+def should_short_circuit_overheat_no_q1(
+    analysis_type: str,
+    gathered_data: dict[str, list[dict]] | None,
+    *,
+    task_status: dict[str, str] | None = None,
+) -> bool:
+    """q1 无测点超温明细时短路 synthesis，不再走 LLM 槽位。"""
+    if analysis_type != "overheat_guidance":
+        return False
+    status = (task_status or {}).get("q1")
+    if status in ("mandatory_failed", "optional_failed"):
+        return False
+    return not ((gathered_data or {}).get("q1") or [])
+
+
+def render_overheat_no_q1_short_circuit_report() -> str:
+    return (
+        "# 锅炉管壁超温智能分析报告\n\n"
+        "在当前指定机组和时间窗内，未检索到有效超温事件（测点壁温未超过限温阈值）。\n"
+    )
+
 OVERHEAT_DOCX_AUTHORING_RULES = (
     "【docx 模板红色说明文字（禁止出现在报告正文）】\n"
     "1. 概览章：未指定锅炉时输出全部机组；按日/按周/机组范围由 Query 与 report_context 决定，"

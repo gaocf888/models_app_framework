@@ -35,6 +35,7 @@ from app.llm.graphs.analysis_synthesis_v2 import (
 from app.llm.graphs.overheat_synthesis_render import (
     OVERHEAT_CH1_INTRO,
     OVERHEAT_DOCX_AUTHORING_RULES,
+    OVERHEAT_NO_Q1_SHORT_CIRCUIT_SYNTHESIS_VERSION,
     build_boiler_time_ranges_from_q0,
     build_overheat_distribution_note,
     build_overheat_region_fact_packages,
@@ -45,7 +46,9 @@ from app.llm.graphs.overheat_synthesis_render import (
     infer_overheat_report_context,
     normalize_overheat_region_key,
     render_overheat_daily_section,
+    render_overheat_no_q1_short_circuit_report,
     render_overheat_weekly_section,
+    should_short_circuit_overheat_no_q1,
 )
 
 
@@ -59,6 +62,43 @@ class TestSseEventJsonEncoding(unittest.TestCase):
         raw = _encode_sse_event(payload).decode("utf-8")
         data = json.loads(raw[6:].strip())
         self.assertEqual("580.5", data["table"]["rows"][0]["最大超温值"])
+
+
+class TestOverheatNoQ1ShortCircuit(unittest.TestCase):
+    def test_should_short_circuit_when_q1_empty(self):
+        self.assertTrue(
+            should_short_circuit_overheat_no_q1(
+                "overheat_guidance",
+                {"q1": [], "q4": [{"机组名称": "1号锅炉"}]},
+                task_status={"q1": "success"},
+            )
+        )
+
+    def test_should_not_short_circuit_when_q1_has_rows(self):
+        self.assertFalse(
+            should_short_circuit_overheat_no_q1(
+                "overheat_guidance",
+                {"q1": [{"测点名称": "P1"}]},
+                task_status={"q1": "success"},
+            )
+        )
+
+    def test_should_not_short_circuit_when_q1_failed(self):
+        self.assertFalse(
+            should_short_circuit_overheat_no_q1(
+                "overheat_guidance",
+                {"q1": []},
+                task_status={"q1": "mandatory_failed"},
+            )
+        )
+
+    def test_render_no_q1_short_circuit_report(self):
+        md = render_overheat_no_q1_short_circuit_report()
+        self.assertEqual(
+            md,
+            "# 锅炉管壁超温智能分析报告\n\n"
+            "在当前指定机组和时间窗内，未检索到有效超温事件（测点壁温未超过限温阈值）。\n",
+        )
 
 
 class TestSynthesisV2Registry(unittest.TestCase):
@@ -690,6 +730,38 @@ class TestAnalysisSynthesisV2Engine(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("--按周超温分析--", result.summary)
         self.assertNotIn("### 超温原因剖析", result.summary)
         self.assertGreaterEqual(llm.chat.await_count, 1)
+
+    async def test_run_sync_short_circuit_when_q1_empty(self):
+        prompts = MagicMock()
+        prompts.get_template.return_value = SimpleNamespace(content="system")
+        llm = AsyncMock()
+        llm.chat.return_value = "不应调用"
+        engine = AnalysisSynthesisV2Engine(
+            llm_client=llm,
+            prompts=prompts,
+            gathered_json_max_chars=8000,
+            segment_max_tokens=1024,
+            max_parallel_llm=2,
+            table_max_rows=20,
+            synthesis_timeout_seconds=60.0,
+            emit_structured_sse=False,
+        )
+        result = await engine.run_sync(
+            analysis_type="overheat_guidance",
+            query="请分析7月5日超温情况",
+            data_mode="nl2sql",
+            gathered_data={"q1": [], "q4": []},
+            context_snippets=["RAG 片段"],
+            planning_context=None,
+            chart_mode="off",
+            task_status={"q1": "success"},
+            report_context=infer_overheat_report_context("请分析7月5日超温情况"),
+        )
+        self.assertEqual(OVERHEAT_NO_Q1_SHORT_CIRCUIT_SYNTHESIS_VERSION, result.synthesis_version)
+        self.assertEqual(render_overheat_no_q1_short_circuit_report(), result.summary)
+        self.assertNotIn("超温原因剖析", result.summary)
+        self.assertNotIn("超温风险评估", result.summary)
+        llm.chat.assert_not_called()
 
 
 if __name__ == "__main__":

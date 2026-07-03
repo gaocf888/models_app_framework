@@ -20,13 +20,16 @@ from app.llm.graphs.analysis_stream_cancel import cancel_asyncio_tasks, is_strea
 from app.llm.graphs.overheat_synthesis_render import (
     OVERHEAT_CH1_INTRO,
     OVERHEAT_DOCX_AUTHORING_RULES,
+    OVERHEAT_NO_Q1_SHORT_CIRCUIT_SYNTHESIS_VERSION,
     build_overheat_distribution_note,
     build_overheat_region_fact_packages,
     filter_overheat_synthesis_slots,
     format_overheat_entity_label,
     overheat_data_source_label,
     render_overheat_daily_section,
+    render_overheat_no_q1_short_circuit_report,
     render_overheat_weekly_section,
+    should_short_circuit_overheat_no_q1,
 )
 from app.llm.prompt_registry import PromptTemplateRegistry
 
@@ -2397,6 +2400,32 @@ class AnalysisSynthesisV2Engine:
         return list(await asyncio.gather(*[_one(s) for s in slots]))
 
     @staticmethod
+    def _overheat_no_q1_short_circuit_result() -> SynthesisV2RunResult:
+        summary = render_overheat_no_q1_short_circuit_report()
+        return SynthesisV2RunResult(
+            summary=summary,
+            synthesis_version=OVERHEAT_NO_Q1_SHORT_CIRCUIT_SYNTHESIS_VERSION,
+            synthesis_strategy_effective="v2",
+            slot_trace=[
+                {
+                    "slot_id": "short_circuit_no_q1",
+                    "kind": "static_markdown",
+                    "title": "",
+                    "chars": len(summary),
+                    "error": None,
+                }
+            ],
+        )
+
+    async def _emit_short_circuit_stream(
+        self,
+        result: SynthesisV2RunResult,
+    ) -> AsyncIterator[tuple[dict[str, Any], SynthesisV2RunResult | None]]:
+        async for ev in self._emit_markdown_chunks(result.summary):
+            yield (ev, None)
+        yield ({}, result)
+
+    @staticmethod
     def _assemble_result(
         outputs: list[SynthesisV2SlotOutput],
         *,
@@ -2451,6 +2480,10 @@ class AnalysisSynthesisV2Engine:
         task_status: dict[str, str] | None = None,
         report_context: dict[str, Any] | None = None,
     ) -> SynthesisV2RunResult:
+        if should_short_circuit_overheat_no_q1(
+            analysis_type, gathered_data, task_status=task_status
+        ):
+            return self._overheat_no_q1_short_circuit_result()
         slots = get_effective_synthesis_v2_slots(
             analysis_type, report_context=report_context, gathered_data=gathered_data
         )
@@ -2487,6 +2520,14 @@ class AnalysisSynthesisV2Engine:
         表/图可额外推送 table_payload / chart_payload。
         Yields (event_dict, None)；最后一次 yield (_, result)。
         """
+        if should_short_circuit_overheat_no_q1(
+            analysis_type, gathered_data, task_status=task_status
+        ):
+            async for ev, result in self._emit_short_circuit_stream(
+                self._overheat_no_q1_short_circuit_result()
+            ):
+                yield (ev, result)
+            return
         slots = get_effective_synthesis_v2_slots(
             analysis_type, report_context=report_context, gathered_data=gathered_data
         )
@@ -2563,6 +2604,14 @@ class AnalysisSynthesisV2Engine:
         首槽 LLM 真流式；其余槽后台并行、按注册表顺序就绪即推送（token/小块 + 空闲心跳）。
         Yields (event_dict, None) ；最后一次 yield (_, result)。
         """
+        if should_short_circuit_overheat_no_q1(
+            analysis_type, gathered_data, task_status=task_status
+        ):
+            async for ev, result in self._emit_short_circuit_stream(
+                self._overheat_no_q1_short_circuit_result()
+            ):
+                yield (ev, result)
+            return
         slots = get_effective_synthesis_v2_slots(
             analysis_type, report_context=report_context, gathered_data=gathered_data
         )
