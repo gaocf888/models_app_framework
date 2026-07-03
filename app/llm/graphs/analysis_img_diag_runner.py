@@ -486,11 +486,30 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         action: str,
         payload: dict[str, Any] | None,
     ) -> None:
-        self._conv.append_user_message(
-            user_id,
-            session_id,
-            format_scope_hitl_user_message(action=action, payload=payload),
+        payload = payload or {}
+        image_urls_raw = payload.get("image_urls")
+        urls = (
+            [u.strip() for u in image_urls_raw if isinstance(u, str) and u.strip()]
+            if isinstance(image_urls_raw, list)
+            else []
         )
+        text_payload = (
+            {k: v for k, v in payload.items() if k != "image_urls"}
+            if urls
+            else payload
+        )
+        text = format_scope_hitl_user_message(action=action, payload=text_payload)
+        content = (
+            build_user_message_with_images(
+                text,
+                urls,
+                original_image_urls=urls,
+                processed_image_urls=urls,
+            )
+            if urls
+            else text
+        )
+        self._conv.append_user_message(user_id, session_id, content)
 
     def _persist_vision_preview_assistant_message(
         self,

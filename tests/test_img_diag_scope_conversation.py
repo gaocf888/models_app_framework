@@ -248,6 +248,28 @@ class TestImgDiagScopeConversationPersist(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(sse.get("include_vision_preview"))
         self.assertNotIn("vision_findings_display", sse)
 
+    def test_persist_scope_hitl_user_message_stores_images_in_block(self) -> None:
+        from app.services.chatbot_image_utils import split_message_content_and_images
+
+        runner = _make_runner()
+        runner._persist_scope_hitl_user_message(
+            user_id="u1",
+            session_id="s1",
+            action="confirm_scope",
+            payload={
+                "user_supplement": "确认",
+                "image_urls": ["http://minio/a.jpg"],
+            },
+        )
+        content = runner._conv.append_user_message.call_args[0][2]
+        self.assertIn("【确认台账】", content)
+        self.assertIn("确认", content)
+        self.assertNotIn("更换图片", content)
+        text, original, processed = split_message_content_and_images(content)
+        self.assertEqual(["http://minio/a.jpg"], original)
+        self.assertEqual(["http://minio/a.jpg"], processed)
+        self.assertNotIn("http://minio/a.jpg", text)
+
 
 if __name__ == "__main__":
     unittest.main()
