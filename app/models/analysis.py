@@ -330,6 +330,21 @@ class ImgDiagScopeResumeRequest(BaseModel):
     session_id: str = Field(..., description="会话 ID")
     action: str = Field(default="confirm_scope", description="confirm_scope|edit_scope|abort")
     payload: Optional[Dict[str, Any]] = Field(default=None, description="user_supplement / scope_patch 等")
+    user_supplement: Optional[str] = Field(
+        default=None,
+        description="可选；与 payload.user_supplement 等价，便于顶层传参",
+    )
+
+    @model_validator(mode="after")
+    def _fold_top_level_user_supplement(self) -> ImgDiagScopeResumeRequest:
+        text = str(self.user_supplement or "").strip()
+        if not text:
+            return self
+        payload = dict(self.payload or {})
+        if not str(payload.get("user_supplement") or "").strip():
+            payload["user_supplement"] = text
+            self.payload = payload
+        return self
 
     @field_validator("user_id")
     @classmethod

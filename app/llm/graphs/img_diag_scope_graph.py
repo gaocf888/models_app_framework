@@ -290,6 +290,101 @@ async def _finalize_state_after_hitl_resume(
     return updated_request
 
 
+def _normalize_human_scope_input(human: dict[str, Any]) -> dict[str, Any]:
+    """兼容 resume 时 user_supplement 等字段写在顶层而非 payload 内。"""
+    if not isinstance(human, dict):
+        return {"action": "confirm_scope", "payload": {}}
+    out = dict(human)
+    payload = out.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    merged = dict(payload)
+    for key in ("user_supplement", "scope_patch", "image_urls", "reason"):
+        if key in merged and merged.get(key) not in (None, "", []):
+            continue
+        top = out.get(key)
+        if top not in (None, "", []):
+            merged[key] = top
+    out["payload"] = merged
+    return out
+
+
+def _merge_scope_supplement_into_cumulative(
+    state: ImgDiagScopeGraphState,
+    supplement: str,
+) -> bool:
+    """将 user_supplement 并入 scope_cumulative_text；已存在则跳过。返回是否新写入。"""
+    supplement = str(supplement or "").strip()
+    if not supplement:
+        return False
+    cumulative = (state.get("scope_cumulative_text") or state.get("query") or "").strip()
+    if supplement in cumulative:
+        return False
+    state["scope_cumulative_text"] = f"{cumulative}\n{supplement}".strip() if cumulative else supplement
+    return True
+
+
+def _scope_supplement_merged_into_cumulative(*, supplement: str, cumulative: str) -> bool:
+    if not supplement:
+        return True
+    if not cumulative:
+        return False
+    if supplement in cumulative:
+        return True
+    head = supplement[: min(12, len(supplement))]
+    return bool(head and head in cumulative)
+
+
+def _log_scope_resume_diagnostics(
+    *,
+    request_id: str,
+    action: str,
+    payload: dict[str, Any],
+    state: dict[str, Any],
+    status: str,
+    graph_ran: bool,
+    still_interrupted: bool = False,
+    resume_prep_persisted: bool = False,
+) -> None:
+    supplement = str(payload.get("user_supplement") or "").strip()
+    cumulative = str(state.get("scope_cumulative_text") or "").strip()
+    interactions = state.get("human_interactions") or []
+    merged = _scope_supplement_merged_into_cumulative(
+        supplement=supplement,
+        cumulative=cumulative,
+    )
+    logger.info(
+        "img_diag scope resume diagnostic request_id=%s status=%s action=%s "
+        "payload_has_supplement=%s supplement_len=%d graph_ran=%s still_interrupted=%s "
+        "resume_prep_persisted=%s cumulative_len=%d hitl_rounds=%s interactions=%d "
+        "supplement_merged=%s",
+        request_id,
+        status,
+        action,
+        bool(supplement),
+        len(supplement),
+        graph_ran,
+        still_interrupted,
+        resume_prep_persisted,
+        len(cumulative),
+        state.get("hitl_rounds"),
+        len(interactions),
+        merged,
+    )
+    if supplement and not merged:
+        logger.warning(
+            "img_diag scope resume: user_supplement not merged into scope_cumulative_text "
+            "request_id=%s cumulative_preview=%r supplement_preview=%r graph_ran=%s "
+            "still_interrupted=%s interactions=%d",
+            request_id,
+            cumulative[:160],
+            supplement[:160],
+            graph_ran,
+            still_interrupted,
+            len(interactions),
+        )
+
+
 async def _prepare_scope_resume_state(
     graph: Any,
     *,
@@ -305,15 +400,18 @@ async def _prepare_scope_resume_state(
         return None
     state = dict(snap.values)
     payload_dict = payload if isinstance(payload, dict) else {}
+    human_norm = _normalize_human_scope_input({"action": "confirm_scope", "payload": payload_dict})
+    payload_dict = dict(human_norm.get("payload") or {})
+
     img_err = _apply_hitl_image_urls_to_state(state, payload_dict)
     if img_err:
         return img_err
     req = dict(state.get("img_diag_request") or session.img_diag_request or {})
     state["img_diag_request"] = req
-    payload_urls = normalize_image_url_list(payload_dict.get("image_urls"))
-    should_refresh_vision = vision_refresh is not None and (
-        bool(state.get("vision_images_replaced")) or bool(payload_urls)
-    )
+
+    urls_changed = bool(state.get("vision_images_replaced"))
+    # 仅在 URL 实际变更时 prep 重跑视觉；勿因 payload 重复携带 image_urls 而刷新
+    should_refresh_vision = vision_refresh is not None and urls_changed
     if should_refresh_vision:
         vision_data, ms, status = await vision_refresh(req)
         state["vision_prefetch_data"] = vision_data
@@ -322,7 +420,21 @@ async def _prepare_scope_resume_state(
         state["vision_prefetch_resume_refreshed"] = True
         state["vision_images_replaced"] = False
         sync_scope_hitl_after_vision_accepted(state)
-    await graph.aupdate_state(config, state)
+
+    # 台账补充仅随 Command(resume) 写入，避免 prep 阶段 aupdate 破坏 interrupt（Redis checkpoint）
+    needs_persist = urls_changed or should_refresh_vision
+    if needs_persist:
+        as_node = "scope_human_confirm" if getattr(snap, "interrupts", None) else None
+        await graph.aupdate_state(config, state, as_node=as_node)
+        logger.info(
+            "img_diag scope resume prep persisted request_id=%s urls_changed=%s "
+            "vision_refreshed=%s interrupted=%s as_node=%s",
+            session.request_id,
+            urls_changed,
+            should_refresh_vision,
+            bool(getattr(snap, "interrupts", None)),
+            as_node,
+        )
     return None
 
 
@@ -516,9 +628,7 @@ def _last_human_response_needs_scope_reparse(state: dict[str, Any]) -> bool:
     last = interactions[-1]
     if not isinstance(last, dict):
         return False
-    human = last.get("response")
-    if not isinstance(human, dict):
-        return False
+    human = _normalize_human_scope_input(last.get("response") or {})
     payload = human.get("payload") or {}
     if not isinstance(payload, dict):
         payload = {}
@@ -592,6 +702,7 @@ def _apply_human_scope_response(
     state: ImgDiagScopeGraphState,
     human: dict[str, Any],
 ) -> ImgDiagScopeGraphState:
+    human = _normalize_human_scope_input(human if isinstance(human, dict) else {})
     action = str(human.get("action") or "confirm_scope")
     payload = human.get("payload") or {}
     if action == "abort":
@@ -619,8 +730,7 @@ def _apply_human_scope_response(
                 frozenset(new_excluded),
             )
         if supplement:
-            cumulative = (state.get("scope_cumulative_text") or state.get("query") or "").strip()
-            state["scope_cumulative_text"] = f"{cumulative}\n{supplement}".strip()
+            _merge_scope_supplement_into_cumulative(state, supplement)
         if isinstance(patch, dict) and state.get("scope_draft"):
             dd = state["scope_draft"]
             tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
@@ -706,6 +816,7 @@ def make_img_diag_scope_nodes(
         human = interrupt(payload)
         if not isinstance(human, dict):
             human = {"action": "abort", "payload": {}}
+        human = _normalize_human_scope_input(human)
         state.setdefault("human_interactions", []).append(
             {"request": payload, "response": human}
         )
@@ -947,8 +1058,10 @@ class ImgDiagScopeHitlRunner:
         *,
         input_state: Any,
         config: dict[str, Any],
+        expect_resume: bool = False,
     ):
         assert self._graph is not None
+        saw_state_update = False
         async for chunk in self._graph.astream(input_state, config, stream_mode="updates"):
             if not isinstance(chunk, dict):
                 continue
@@ -960,10 +1073,16 @@ class ImgDiagScopeHitlRunner:
                 continue
             for _node, update in chunk.items():
                 if isinstance(update, dict):
+                    saw_state_update = True
                     yield {"_state_update": update}
 
         snapshot = await self._graph.aget_state(config)
         if snapshot is not None and getattr(snapshot, "interrupts", None):
+            if expect_resume and not saw_state_update:
+                logger.warning(
+                    "img_diag scope resume: Command(resume) produced no node updates; "
+                    "falling back to snapshot interrupt payload"
+                )
             for intr in snapshot.interrupts:
                 val = intr.value if hasattr(intr, "value") else intr
                 if isinstance(val, dict):
@@ -1095,7 +1214,10 @@ class ImgDiagScopeHitlRunner:
         if not self.available():
             return {"status": "error", "message": "checkpoint not enabled"}
 
-        payload = payload or {}
+        payload = dict(payload or {})
+        human_input = _normalize_human_scope_input({"action": action, "payload": payload})
+        action = str(human_input.get("action") or action)
+        payload = dict(human_input.get("payload") or {})
         if "image_urls" in payload:
             req_probe = dict(session.img_diag_request or {})
             updated_probe, changed_probe = merge_hitl_image_urls_into_request(req_probe, payload)
@@ -1118,6 +1240,7 @@ class ImgDiagScopeHitlRunner:
             return {"status": "error", "message": "langgraph Command unavailable"}
 
         config = img_diag_graph_configurable(session.thread_id)
+        snap_before_prep = await self._graph.aget_state(config)
         prep_err = await _prepare_scope_resume_state(
             self._graph,
             thread_id=session.thread_id,
@@ -1127,6 +1250,10 @@ class ImgDiagScopeHitlRunner:
         )
         if prep_err:
             return {"status": "error", "message": prep_err}
+        snap_after_prep = await self._graph.aget_state(config)
+        resume_prep_persisted = snap_before_prep is not None and snap_after_prep is not None and (
+            dict(snap_before_prep.values or {}) != dict(snap_after_prep.values or {})
+        )
 
         early = await _try_resolve_matched_confirm_after_prep(
             self._graph,
@@ -1140,14 +1267,17 @@ class ImgDiagScopeHitlRunner:
             delete_img_diag_resume_session(resume_token)
             return early
 
-        human_input = {"action": action, "payload": payload}
+        human_input = _normalize_human_scope_input({"action": action, "payload": payload})
         final_state: dict[str, Any] = {}
+        graph_ran = False
 
         async for ev in self._yield_updates(
             input_state=Command(resume=human_input),
             config=config,
+            expect_resume=True,
         ):
             if "_state_update" in ev:
+                graph_ran = True
                 final_state.update(ev["_state_update"])
             if "_interrupt_payload" in ev:
                 snap_early = await self._graph.aget_state(config)
@@ -1155,6 +1285,24 @@ class ImgDiagScopeHitlRunner:
                     dict(snap_early.values) if snap_early and snap_early.values else {}
                 )
                 state_for_token.update(final_state)
+                supplement = str(payload.get("user_supplement") or "").strip()
+                cumulative = str(state_for_token.get("scope_cumulative_text") or "").strip()
+                if supplement and not _scope_supplement_merged_into_cumulative(
+                    supplement=supplement,
+                    cumulative=cumulative,
+                ):
+                    _merge_scope_supplement_into_cumulative(state_for_token, supplement)
+                    logger.warning(
+                        "img_diag scope resume: applied supplement fallback merge before interrupt "
+                        "request_id=%s (Command(resume) did not reach scope_human_confirm)",
+                        session.request_id,
+                    )
+                    if getattr(snap_early, "interrupts", None):
+                        await self._graph.aupdate_state(
+                            config,
+                            state_for_token,
+                            as_node="scope_human_confirm",
+                        )
                 if not state_for_token.get("vision_prefetch_data") and session.vision_prefetch:
                     orch = str(
                         state_for_token.get("orchestrator_path") or session.orchestrator_path or "scope_first"
@@ -1176,6 +1324,16 @@ class ImgDiagScopeHitlRunner:
                     for_interrupt=True,
                 )
                 intr = _build_interrupt_payload(state_for_token)
+                _log_scope_resume_diagnostics(
+                    request_id=session.request_id,
+                    action=action,
+                    payload=payload,
+                    state=state_for_token,
+                    status="interrupt",
+                    graph_ran=graph_ran,
+                    still_interrupted=bool(getattr(snap_early, "interrupts", None)),
+                    resume_prep_persisted=resume_prep_persisted,
+                )
                 new_token = create_img_diag_resume_token(
                     **_resume_session_kwargs(
                         state_for_token,
@@ -1234,6 +1392,15 @@ class ImgDiagScopeHitlRunner:
                 action,
                 url_count,
                 bool(state_confirmed.get("vision_images_replaced")),
+            )
+            _log_scope_resume_diagnostics(
+                request_id=session.request_id,
+                action=action,
+                payload=payload,
+                state=state_confirmed,
+                status="confirmed",
+                graph_ran=graph_ran,
+                resume_prep_persisted=resume_prep_persisted,
             )
             return {
                 "status": "confirmed",
