@@ -659,6 +659,8 @@ class AnalysisConfig:
     img_diag_session_store_backend: str = "redis"
     img_diag_session_store_redis_url: str | None = None
     img_diag_session_ttl_seconds: int = 172800
+    # scope resume SSE：上游长时间无事件时发送 comment ping 保活（秒）；0 表示关闭
+    img_diag_resume_sse_idle_ping_seconds: float = 12.0
 
 
 @dataclass
@@ -1483,6 +1485,10 @@ def _load_from_env() -> AppConfig:
         or None,
         img_diag_session_ttl_seconds=max(
             60, int(os.getenv("ANALYSIS_IMG_DIAG_SESSION_TTL_SECONDS", "172800"))
+        ),
+        img_diag_resume_sse_idle_ping_seconds=max(
+            0.0,
+            float(os.getenv("ANALYSIS_IMG_DIAG_RESUME_SSE_IDLE_PING_SECONDS", "12")),
         ),
     )
     _aa_persist_default = "redis" if _app_env in ("production", "prod") else "memory"

@@ -141,9 +141,15 @@ class IngestionOrchestrator:
                     self._queue.sleep_briefly(0.2)
                     continue
                 try:
-                    with self._lock:
-                        job = self._jobs.get(job_id)
-                    if job and job.status in (
+                    job = self._hydrate_job_from_repo(job_id)
+                    if job is None:
+                        logger.error(
+                            "orphan ingestion queue job_id=%s not found in memory or repo; purging queue state",
+                            job_id,
+                        )
+                        self._queue.purge_job_queue_state(job_id)
+                        continue
+                    if job.status in (
                         IngestionJobStatus.SUCCESS,
                         IngestionJobStatus.FAILED,
                         IngestionJobStatus.PARTIAL,
@@ -158,9 +164,49 @@ class IngestionOrchestrator:
                 logger.exception("ingestion queue worker loop error")
                 self._queue.sleep_briefly(0.5)
 
+    def _hydrate_job_from_repo(self, job_id: str) -> IngestionJob | None:
+        """Redis 队列中的 job_id 可能仅在 ES/JobRepository 中；容器重启后本地 jobs.json 为空时需回填。"""
+        with self._lock:
+            existing = self._jobs.get(job_id)
+        if existing is not None:
+            return existing
+        try:
+            persisted = self._job_repo.get(job_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("hydrate job from repo failed job_id=%s", job_id, exc_info=True)
+            return None
+        if not persisted:
+            return None
+        try:
+            job = self._dict_to_job(persisted)
+        except Exception:  # noqa: BLE001
+            logger.warning("skip invalid persisted job record job_id=%s", job_id, exc_info=True)
+            return None
+        with self._lock:
+            self._jobs[job_id] = job
+        return job
+
+    def _hydrate_queued_jobs_from_repo(self) -> int:
+        if not self._queue.enabled:
+            return 0
+        job_ids = list(
+            dict.fromkeys(
+                self._queue.list_pending_job_ids_unique() + self._queue.list_processing_job_ids_unique()
+            )
+        )
+        hydrated = 0
+        for job_id in job_ids:
+            if self._hydrate_job_from_repo(job_id) is not None:
+                hydrated += 1
+        if hydrated:
+            self._save_state()
+            logger.info("ingestion startup: hydrated %s job(s) from repo for queued job_ids", hydrated)
+        return hydrated
+
     def _recover_and_requeue_on_startup(self, max_stuck_seconds: int) -> None:
         if self._queue.enabled:
             self._queue.requeue_processing_on_startup()
+            self._hydrate_queued_jobs_from_repo()
         with self._lock:
             jobs = list(self._jobs.values())
         recovered_running = 0
@@ -324,8 +370,9 @@ class IngestionOrchestrator:
                     logger.exception("save_job_record after job crash failed job_id=%s", job_id)
 
     def _run_job(self, job_id: str) -> None:
-        with self._lock:
-            job = self._jobs[job_id]
+        job = self._hydrate_job_from_repo(job_id)
+        if job is None:
+            raise ValueError(f"job not found: {job_id}")
         pipeline = DocumentPipeline(cfg=self._resolve_chunk_cfg(job))
         with self._lock:
             job = self._jobs[job_id]
@@ -774,7 +821,7 @@ class IngestionOrchestrator:
             finished_at=item.get("finished_at"),
             error_code=item.get("error_code"),
             error_message=item.get("error_message"),
-            metrics=self._normalize_job_metrics(item.get("metrics")),
+            metrics=IngestionOrchestrator._normalize_job_metrics(item.get("metrics")),
             operator=item.get("operator"),
         )
 

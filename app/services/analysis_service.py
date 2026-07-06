@@ -4,8 +4,10 @@ from __future__ import annotations
 综合分析应用服务层：默认值注入、`AnalysisImgDiagGraphRunner`（兼容 payload/nl2sql/img_diag）编排、trace 与运维查询。
 """
 
+import asyncio
 import json
 import time
+from collections.abc import AsyncIterator
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from threading import Lock
@@ -72,6 +74,52 @@ def _encode_sse_event(event: dict[str, Any]) -> bytes:
     return f"data: {json.dumps(event, ensure_ascii=False, default=_sse_event_json_default)}\n\n".encode(
         "utf-8"
     )
+
+
+_SSE_IDLE_PING_COMMENT = b": ping\n\n"
+
+
+async def _sse_stream_with_idle_keepalive(
+    source: AsyncIterator[dict[str, Any]],
+    *,
+    idle_interval_s: float,
+) -> AsyncIterator[bytes]:
+    """
+    包装 SSE 事件流：若 idle_interval_s 内无上游帧，则输出 SSE comment ping 保活。
+    idle_interval_s <= 0 时不启用保活。
+    """
+    if idle_interval_s <= 0:
+        async for ev in source:
+            yield _encode_sse_event(ev)
+        return
+
+    aiter = source.__aiter__()
+    next_task: asyncio.Task[dict[str, Any]] | None = None
+    try:
+        while True:
+            if next_task is None:
+                next_task = asyncio.create_task(aiter.__anext__())
+            done, _ = await asyncio.wait({next_task}, timeout=idle_interval_s)
+            if next_task in done:
+                try:
+                    ev = next_task.result()
+                except StopAsyncIteration:
+                    break
+                next_task = None
+                yield _encode_sse_event(ev)
+            else:
+                yield _SSE_IDLE_PING_COMMENT
+                logger.debug(
+                    "sse idle keepalive ping emitted interval_s=%s",
+                    idle_interval_s,
+                )
+    finally:
+        if next_task is not None and not next_task.done():
+            next_task.cancel()
+            try:
+                await next_task
+            except (asyncio.CancelledError, StopAsyncIteration):
+                pass
 
 
 class AnalysisService:
@@ -208,16 +256,21 @@ class AnalysisService:
         async def on_complete(result: AnalysisV2Result) -> None:
             self._save_trace(result)
 
+        idle_ping_s = float(get_app_config().analysis.img_diag_resume_sse_idle_ping_seconds)
+
         async def event_gen():
-            async for ev in self._graph_runner.iter_img_diag_scope_resume_stream_events(
-                resume_token=data.resume_token,
-                user_id=data.user_id,
-                session_id=data.session_id,
-                action=data.action,
-                payload=data.payload,
-                on_complete=on_complete,
+            async for chunk in _sse_stream_with_idle_keepalive(
+                self._graph_runner.iter_img_diag_scope_resume_stream_events(
+                    resume_token=data.resume_token,
+                    user_id=data.user_id,
+                    session_id=data.session_id,
+                    action=data.action,
+                    payload=data.payload,
+                    on_complete=on_complete,
+                ),
+                idle_interval_s=idle_ping_s,
             ):
-                yield _encode_sse_event(ev)
+                yield chunk
 
         headers = {
             "Cache-Control": "no-cache",

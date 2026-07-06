@@ -148,6 +148,31 @@ class TestIngestionOrchestrator(unittest.TestCase):
                 orch.close()
 
 
+    def test_hydrate_job_from_repo_when_memory_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            orch = IngestionOrchestrator(ingestion_service=_FakeIngestionService(), state_dir=d)
+            try:
+                docs = [
+                    DocumentSource(
+                        dataset_id="ds1",
+                        doc_name="doc_ok",
+                        namespace="ns1",
+                        content="重启恢复测试。",
+                        source_type="text",
+                    )
+                ]
+                job_id = orch.submit_job(docs, operator="tester")
+                with orch._lock:  # noqa: SLF001
+                    snapshot = orch._job_to_dict(orch._jobs[job_id])  # noqa: SLF001
+                    orch._jobs.clear()  # noqa: SLF001
+                orch._job_repo.upsert(job_id, snapshot)  # noqa: SLF001
+                hydrated = orch._hydrate_job_from_repo(job_id)  # noqa: SLF001
+                self.assertIsNotNone(hydrated)
+                self.assertEqual(job_id, hydrated.job_id)
+            finally:
+                orch.close()
+
+
 if __name__ == "__main__":
     unittest.main()
 
