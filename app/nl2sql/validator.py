@@ -528,6 +528,9 @@ class SQLValidator:
     ) -> tuple[bool, str | None]:
         """
         对 SQL 中出现的表/字段做白名单校验。
+
+        列白名单仅检查主查询 FROM 中物理表别名（或物理表名限定）上的 ``alias.column``；
+        子查询别名（如 ``latest.max_start_time``）与 ``validate_column_table_binding`` 一致，跳过。
         """
         s = self.normalize_sql(sql)
         if not s:
@@ -535,16 +538,28 @@ class SQLValidator:
 
         tables = {self._canonical_identifier(t) for t in self._table_ref_pattern.findall(s)}
         tables = {t for t in tables if t}
+        allowed_tables_lower = {t.lower() for t in allowed_tables} if allowed_tables else set()
         if allowed_tables and tables:
-            unknown_tables = sorted(t for t in tables if t.lower() not in allowed_tables)
+            unknown_tables = sorted(t for t in tables if t.lower() not in allowed_tables_lower)
             if unknown_tables:
                 return False, f"unknown tables: {', '.join(unknown_tables)}"
 
-        qualified_cols = {c.lower() for c in self._qualified_col_pattern.findall(s)}
-        if allowed_columns and qualified_cols:
-            unknown_cols = sorted(c for c in qualified_cols if c not in allowed_columns)
-            if unknown_cols:
-                return False, f"unknown columns: {', '.join(unknown_cols)}"
+        if allowed_columns:
+            alias_map = self.parse_table_aliases_from_sql(s)
+            pat = re.compile(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b")
+            cols_to_check: set[str] = set()
+            for m in pat.finditer(s):
+                if not self._match_index_outside_string_literals(s, m.start()):
+                    continue
+                left, right = m.group(1).lower(), m.group(2).lower()
+                if left in self._keyword_blocklist:
+                    continue
+                if left in alias_map or (allowed_tables_lower and left in allowed_tables_lower):
+                    cols_to_check.add(right)
+            if cols_to_check:
+                unknown_cols = sorted(c for c in cols_to_check if c not in allowed_columns)
+                if unknown_cols:
+                    return False, f"unknown columns: {', '.join(unknown_cols)}"
 
         return True, None
 

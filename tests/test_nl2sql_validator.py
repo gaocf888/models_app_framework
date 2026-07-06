@@ -63,6 +63,46 @@ def test_validate_identifiers_reject_unknown_table() -> None:
     assert "unknown tables" in reason
 
 
+def test_validate_identifiers_reject_unknown_column_on_physical_alias() -> None:
+    v = SQLValidator()
+    sql = "SELECT t.fake_col FROM monitor_hotarea_temp t"
+    ok, reason = v.validate_identifiers(
+        sql,
+        allowed_tables={"monitor_hotarea_temp"},
+        allowed_columns={"id", "start_time"},
+    )
+    assert not ok
+    assert reason is not None
+    assert "unknown columns" in reason
+    assert "fake_col" in reason
+
+
+def test_validate_identifiers_ignores_subquery_derived_column_alias() -> None:
+    """子查询别名上的派生列（如 max_start_time）不参与 flat 列白名单。"""
+    v = SQLValidator()
+    sql = (
+        "SELECT ab.boiler_name, t.start_time, latest.max_start_time "
+        "FROM account_boiler ab "
+        "INNER JOIN monitor_hotarea_temp t ON t.boiler_id = ab.boiler_id "
+        "INNER JOIN ("
+        " SELECT boiler_id, MAX(start_time) AS max_start_time "
+        " FROM monitor_hotarea_temp GROUP BY boiler_id"
+        ") latest ON latest.boiler_id = t.boiler_id "
+        "WHERE t.start_time = latest.max_start_time"
+    )
+    ok, reason = v.validate_identifiers(
+        sql,
+        allowed_tables={"account_boiler", "monitor_hotarea_temp"},
+        allowed_columns={
+            "boiler_id",
+            "boiler_name",
+            "start_time",
+            "mw_value",
+        },
+    )
+    assert ok, reason
+
+
 def test_parse_table_aliases_simple_join() -> None:
     v = SQLValidator()
     sql = "SELECT a.id FROM orders a JOIN orders b ON a.id = b.user_id"

@@ -60,7 +60,7 @@ def _validation_ctx() -> NL2SQLValidationContext:
 
 
 def test_postprocess_qa_replay_skips_column_whitelist() -> None:
-    """qa_replay=strict 跳过 flat 列白名单，允许子查询派生列（如 over_level）。"""
+    """子查询派生列（如 over_level）不参与 flat 列白名单；qa_replay 与 cache_l2 路径均应通过。"""
     chain = _build_chain_for_replay()
     sql_with_derived = """
     SELECT x.over_level, x.max_delta
@@ -93,9 +93,7 @@ def test_postprocess_qa_replay_skips_column_whitelist() -> None:
         entity_rules=[],
         log_label="cache_l2",
     )
-    assert not ok_cache
-    assert reason_cache is not None
-    assert "unknown columns" in reason_cache
+    assert ok_cache, reason_cache
 
 
 @pytest.mark.asyncio
