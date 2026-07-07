@@ -62,7 +62,7 @@ CHATBOT_INTENT_LLM_FALLBACK_TO_RULES=true
 | `INTENT_LLM_MODELS_HOST_PATH`（默认 `/aidata/models/llm`） | 宿主机根目录 |
 | `${INTENT_LLM_MODELS_HOST_PATH}/qwen2.5-0.5b-instruct` | HF 权重目录，bind 到容器 `/workspace/models/llm/qwen2.5-0.5b-instruct` |
 
-**可直接挂载标准 HuggingFace 目录**（与 `bge-small-zh-v1.5` 相同），无需魔塔、`ollama create` 等额外步骤。
+**可直接挂载标准 HuggingFace 目录**（与 `Qwen3-Embedding-0.6B` 相同），无需魔塔、`ollama create` 等额外步骤。
 
 ### 4.2 下载模型（任选其一）
 

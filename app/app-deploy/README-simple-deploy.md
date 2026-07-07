@@ -7,6 +7,7 @@
 
 > 文档分工建议：  
 > - 以本文件作为“上线执行主线”；  
+> - **嵌入/重排 GPU 部署**（Qwen3 + 英伟达/沐曦）：见 `README.md`「部署形态选择」；  
 > - 遇到高级参数、GPU profile 细节、运维表格清单时再跳转 `README.md`；  
 > - 不在本文件重复维护离线外挂服务与值班排障长文，分别以对应文档为准。
 
@@ -180,7 +181,7 @@ INTENT_LLM_MODELS_HOST_PATH=/aidata/models/llm   # 仅 CHATBOT_INTENT_BACKEND=ll
 ```
 
 - 网络名需与对应子项目的 `.env` / compose 一致（可用 `docker network ls` 核对）。  
-- 模型路径变量作为宿主机根目录，compose 会自动拼接子目录：`bge-small-zh-v1.5`（嵌入）、`bge-reranker-large`（重排）、`chatbot-intent-bert`（BERT 意图，可选）、`qwen2.5-0.5b-instruct`（轻量意图 LLM，可选）。
+- 模型路径变量作为宿主机根目录，compose 会自动拼接子目录：**`Qwen3-Embedding-0.6B`**（嵌入）、**`Qwen3-Reranker-0.6B`**（重排）、`chatbot-intent-bert`（BERT 意图，可选）、`qwen2.5-0.5b-instruct`（轻量意图 LLM，可选）。
 
 ### 2.7 MinerU（可选，扫描件 PDF 建议开启）
 
@@ -221,16 +222,37 @@ LOG_FILE_COMPRESS=true
 - 轮转触发后会生成 `app.log.1.gz`、`app.log.2.gz` ...（当 `LOG_FILE_COMPRESS=true`）。  
 - compose 将 `/workspace/logs` bind 到 **app-deploy/logs**（`docker-compose.yml` 为 `./logs`，`docker-mx/docker-compose-mx.yml` 为 `../logs`，宿主机目录一致），容器重建后日志仍保留在宿主机。
 
-### 2.9 模型离线使用
-> 整个项目中包括 嵌入模型、重排序模型、智能客服 BERT 意图模型（可选，`bert` 后端）、智能客服轻量意图 LLM（可选，`llm` 后端）、mineru模型
-> 嵌入模型：RAG知识文档切块后转向量(本地离线路径下/aidata/models/embeddings/中存在离线模型文件时，自动走离线，否则自动走在线下载)
-> 重排序模型：RAG混合检索多路召回后，进行重排序(默认走在线下载，若走离线：首先需要修改.env中的RAG_RERANKER_MODEL_PATH（放开注释），然后离线下载模型到宿主机/aidata/models/reranker/路径中，注意：如果配置离线了，离线路径中没有有效模型文件，会报错，不会自动切换在线下载)
-> BERT 意图模型：…（`CHATBOT_INTENT_BACKEND=bert`，须微调，暂不推荐）。
-> **轻量意图 LLM**：`CHATBOT_INTENT_BACKEND=llm` 时，进程内 CPU 运行 `Qwen2.5-0.5B-Instruct`（**无需训练**）；模式 B 仅在规则低置信/混合句等边界调用。部署见 `docs/智能客服意图识别轻量LLM接入说明.md`；默认 `rules` 无需额外模型。
-> 若部署在多卡环境且重排耗时高，建议新增 `.env`：`RAG_RERANKER_DEVICE=cuda:1`（与 vLLM 分卡）。
-> mineru模型：使用mineru进行扫描图片格式PDF文件解析
+### 2.9 模型离线使用（Qwen3 嵌入/重排）
 
-若部署环境**无法访问 Hugging Face Hub**，或希望避免在线下载，推荐将嵌入模型和重排序模型预先下载到宿主机统一离线路径，并通过挂载暴露给应用：
+> 当前默认：**Qwen3-Embedding-0.6B**（1024 维）+ **Qwen3-Reranker-0.6B**。  
+> 整个项目中还包括：智能客服 BERT 意图（可选）、轻量意图 LLM（可选）、MinerU 模型等。
+
+| 模型 | 作用 | 离线/在线 |
+|------|------|-----------|
+| **嵌入** | RAG 切块转向量 | 宿主机 `${EMBEDDING_MODELS_HOST_PATH}/Qwen3-Embedding-0.6B` 存在完整 HF 目录时走离线；否则 Hub 下载 |
+| **重排** | 混合检索后精排 | 同上 `${RERANKER_MODELS_HOST_PATH}/Qwen3-Reranker-0.6B`；compose 已挂载并设置 `RAG_RERANKER_MODEL_PATH` |
+| BERT 意图 | `CHATBOT_INTENT_BACKEND=bert` | 须微调模型，暂不推荐 |
+| 轻量意图 LLM | `CHATBOT_INTENT_BACKEND=llm` | 见 `docs/智能客服意图识别轻量LLM接入说明.md` |
+| MinerU | 扫描 PDF | 见下文 mineru 小节 |
+
+**Qwen3 专用 `.env`（GPU 栈生效；CPU 栈下 `EMBEDDING_DEVICE` / `RAG_RERANKER_DEVICE` 无效）**：
+
+```env
+EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
+EMBEDDING_MODEL_PATH=/workspace/models/embeddings/Qwen3-Embedding-0.6B
+EMBEDDING_QUERY_PROMPT_NAME=query
+EMBEDDING_TRUST_REMOTE_CODE=true
+EMBEDDING_DEVICE=cuda:0
+
+RAG_RERANKER_MODEL_NAME=Qwen/Qwen3-Reranker-0.6B
+RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
+RAG_RERANKER_TRUST_REMOTE_CODE=true
+RAG_RERANKER_DEVICE=cuda:1
+```
+
+**从 BGE 升级**：向量维度 512→1024，须递增 `RAG_ES_INDEX_VERSION` 并 **全量 re-ingest**；FAQ 软直通阈值 `CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE` 可能需重调（Qwen rerank 为 logit 分）。
+
+若部署环境**无法访问 Hugging Face Hub**，推荐预下载到宿主机并挂载（compose 三栈均已预置 Qwen3 挂载）：
 > 嵌入模型和重排序模型离线下载方法：魔塔社区中搜索模型名称，然后使用 git lfs 下载到下述路径中。  
 > ollama的模型(qwen2.5-0.5-instract)需要从huggingface下载（git clone https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct /aidata/models/llm/qwen2.5-0.5b-instruct）
 > **例外**：BERT 意图模型**不适用**「直接魔塔下载通用预训练 BERT」的方式，须使用已微调三分类模型（见下文说明）。
@@ -243,14 +265,22 @@ LOG_FILE_COMPRESS=true
    ```text
    /aidata/models/
      embeddings/
-       bge-small-zh-v1.5/   # BAAI/bge-small-zh-v1.5 的完整模型文件
+       Qwen3-Embedding-0.6B/   # Qwen/Qwen3-Embedding-0.6B 完整 HF 目录
    ```
    
    下面是重排序模型路径
    ```text
    /aidata/models/
      reranker/
-       bge-reranker-large/  # BAAI/bge-reranker-large 的完整模型文件
+       Qwen3-Reranker-0.6B/    # Qwen/Qwen3-Reranker-0.6B 完整 HF 目录
+   ```
+
+   离线下载示例：
+
+   ```bash
+   mkdir -p /aidata/models/embeddings /aidata/models/reranker
+   # huggingface-cli download Qwen/Qwen3-Embedding-0.6B --local-dir /aidata/models/embeddings/Qwen3-Embedding-0.6B
+   # huggingface-cli download Qwen/Qwen3-Reranker-0.6B --local-dir /aidata/models/reranker/Qwen3-Reranker-0.6B
    ```
 
    下面是智能客服 BERT 意图模型路径（仅 `CHATBOT_INTENT_BACKEND=bert` 时需要；默认 `rules` 可跳过）
@@ -307,68 +337,46 @@ LOG_FILE_COMPRESS=true
    ```
    
 
-2. **在 compose 中挂载到应用容器**
+2. **compose 挂载（已预置，一般无需手改）**
 
-   在 `app/app-deploy/docker-compose.yml` 中，为应用容器增加只读挂载（示例）：
+   `docker-compose.yml`、`docker-nvidia/docker-compose-nvidia.yml`、`docker-mx/docker-compose-mx.yml` 均已挂载 Qwen3 子目录。仅当更换模型目录名时需同步改 compose 与 `.env`。
 
    ```yaml
-   services:
-     models-app:
-       # ...
-       volumes:
-         - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
-         - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
-         - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
-       environment:
-         - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
-
-     models-app-gpu:
-       # ...
-       volumes:
-         - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
-         - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
-         - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
-       environment:
-         - RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
+   # models-app 示例
+   volumes:
+     - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/Qwen3-Embedding-0.6B:/workspace/models/embeddings/Qwen3-Embedding-0.6B:ro
+     - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/Qwen3-Reranker-0.6B:/workspace/models/rerank/Qwen3-Reranker-0.6B:ro
+   environment:
+     - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
    ```
 
-3. **在 `.env` 中指定嵌入/重排/BERT 意图模型运行参数**
+   `models-app-gpu` 的重排路径为 **`/models/rerank/Qwen3-Reranker-0.6B`**（compose 会覆盖 `.env` 中同名变量）。
 
-   在 `app/app-deploy/.env` 中确认或新增：
+3. **在 `.env` 中确认 Qwen3 与索引版本**
 
    ```env
-   EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5
-   RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
-   # 可选：显式指定重排设备（cpu / cuda / cuda:1）
+   EMBEDDING_MODEL_PATH=/workspace/models/embeddings/Qwen3-Embedding-0.6B
+   EMBEDDING_QUERY_PROMPT_NAME=query
+   EMBEDDING_TRUST_REMOTE_CODE=true
+   RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
+   RAG_RERANKER_TRUST_REMOTE_CODE=true
+   # GPU 栈（docker-nvidia / docker-mx）：
+   # EMBEDDING_DEVICE=cuda:0
    # RAG_RERANKER_DEVICE=cuda:1
 
-   # 宿主机意图模型根目录（compose 挂载用）
-   INTENT_MODELS_HOST_PATH=/aidata/models/intent
-   # 智能客服意图：默认 rules；启用 BERT 时改为 bert
-   CHATBOT_INTENT_BACKEND=rules
-   # CHATBOT_INTENT_BACKEND=bert
-   # CHATBOT_INTENT_BERT_MODEL_PATH=/workspace/models/intent/chatbot-intent-bert
-   # CHATBOT_INTENT_BERT_DEVICE=cpu
-   # CHATBOT_INTENT_BERT_FALLBACK_TO_RULES=true
-   ```
+   # 换嵌入模型后须升版本并 re-ingest
+   RAG_ES_INDEX_VERSION=3
+   RAG_ES_AUTO_MIGRATE_ON_START=true
 
-   应用启动后，`EmbeddingService` 会**直接从该本地路径加载模型**，不再尝试访问 Hugging Face；`RAGService` 会按 `RAG_RERANKER_DEVICE`（若配置）在指定设备执行重排。  
-   启用 BERT 意图时，`ChatbotIntentBertClassifier` 从 `CHATBOT_INTENT_BERT_MODEL_PATH` 加载**已微调**序列分类模型（非通用预训练 BERT）。
+   CHATBOT_INTENT_BACKEND=rules
+   INTENT_MODELS_HOST_PATH=/aidata/models/intent
+   ```
 
 4. **启动/重启应用栈**
 
-   ```bash
-   cd app/app-deploy
-   docker compose up -d --build
-   ```
+   见 [§3.2 启动应用栈](#32-启动应用栈)（按 CPU / 英伟达 GPU / 沐曦 GPU 选择 compose）。
 
-如果未来更换嵌入模型、重排序模型或 BERT 意图模型，只需：
-
-- 在宿主机 `${EMBEDDING_MODELS_HOST_PATH}` / `${RERANKER_MODELS_HOST_PATH}` / `${INTENT_MODELS_HOST_PATH}` 下新增对应子目录并放入新模型文件；  
-- 必要时调整 `docker-compose.yml` 对应挂载路径；  
-- 将 `.env` 中的 `EMBEDDING_MODEL_PATH` / `RAG_RERANKER_MODEL_PATH` / `CHATBOT_INTENT_BERT_MODEL_PATH` 改为新的容器内路径。
+更换嵌入或重排模型时：更新宿主机模型目录 → 同步 compose 挂载子目录名 → 递增 `RAG_ES_INDEX_VERSION` 并 re-ingest。
 
 ---
 
@@ -402,19 +410,37 @@ docker compose -f docker-compose.neo4j.yml --env-file .env up -d
 
 ### 3.2 启动应用栈
 
+目前主应用部署，基于算力类型
+按算力选择 **一种** compose 栈（详见 `README.md`「部署形态选择」）：
+
 ```bash
 cd app/app-deploy
 cp .env.example .env          # 首次，之后直接编辑 .env
-docker compose up -d --build
+```
 
-# 上面是通用启动方式，若启动app-deploy/时想使用沐曦AI框架镜像(为了reranker效率)，使用下面的启动配置文件
-cd app/app-deploy
-cp .env.example .env          # 首次，之后直接编辑 .env
-cp .env docker-mx
+**CPU（默认）** — 嵌入/重排跑 CPU，`.env` 中 `cuda:N` 不生效：
+
+```bash
+docker compose up -d --build
+```
+
+**英伟达 GPU** — Qwen3 嵌入/重排可用 GPU（需宿主机 NVIDIA Container Toolkit）：
+
+```bash
+docker compose -f docker-nvidia/docker-compose-nvidia.yml up -d --build
+# 可选小模型 GPU：
+# docker compose -f docker-nvidia/docker-compose-nvidia.yml --profile small-model-gpu up -d models-app-gpu
+```
+
+**沐曦 GPU** — Metax 镜像栈：
+
+```bash
+cp .env docker-mx/            # 或 docker-mx 使用 ../.env
 cd docker-mx
 docker compose --env-file .env -f docker-compose-mx.yml up -d --build
 ```
-> 启动之前关键修改确认项：LLM_DEFAULT_MODEL  （需要与vllm-deploy/实际部署的大模型名称一致）
+
+> 启动前确认：**`LLM_DEFAULT_MODEL`** 与 `vllm-deploy/` 实际部署的大模型名称一致。
 
 默认会启动：
 
@@ -615,7 +641,7 @@ curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:${MINIO_PORT:-9000}/m
 
 ### 5.3 本栈常用命令
 
-在 `app/app-deploy` 目录（沐曦环境则在 `docker-mx/` 下，compose 文件换为 `docker-compose-mx.yml`）：
+在 `app/app-deploy` 目录（沐曦：`docker-mx/` + `docker-compose-mx.yml`；英伟达：`docker-nvidia/docker-compose-nvidia.yml`）：
 
 ```bash
 # 查看状态

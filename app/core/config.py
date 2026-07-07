@@ -318,6 +318,12 @@ class RAGConfig:
     # 嵌入模型配置（离线优先、在线回退，环境变量 EMBEDDING_MODEL_PATH / EMBEDDING_MODEL_NAME）
     embedding_model_path: str | None = None
     embedding_model_name: str = "BAAI/bge-small-zh-v1.5"
+    # Qwen3-Embedding 等 instruction-aware 模型：检索 query 使用 prompt_name（如 "query"），摄入 document 不带 prompt
+    embedding_query_prompt_name: str | None = None
+    embedding_trust_remote_code: bool = False
+    # 可选：显式指定 SentenceTransformer 设备，例如 cpu / cuda / cuda:0。
+    # 为空时使用 sentence-transformers 默认设备选择。
+    embedding_device: str | None = None
 
     # GraphRAG（Neo4j + LangChain Graph），默认关闭，与向量 RAG 并行可选
     graph: GraphRAGConfig = field(default_factory=GraphRAGConfig)
@@ -1154,6 +1160,9 @@ def _load_from_env() -> AppConfig:
         scene_profiles=scene_profiles_cfg,
         embedding_model_path=os.getenv("EMBEDDING_MODEL_PATH") or None,
         embedding_model_name=os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-small-zh-v1.5"),
+        embedding_query_prompt_name=(os.getenv("EMBEDDING_QUERY_PROMPT_NAME") or "").strip() or None,
+        embedding_trust_remote_code=os.getenv("EMBEDDING_TRUST_REMOTE_CODE", "false").lower() == "true",
+        embedding_device=(os.getenv("EMBEDDING_DEVICE") or "").strip() or None,
         graph=graph_cfg,
         ingestion=ingestion_cfg,
         content_fetch=content_fetch_cfg,

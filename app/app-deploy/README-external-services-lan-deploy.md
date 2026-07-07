@@ -101,9 +101,9 @@ docker load -i paddleocr-layout-cpu.tar
 # vLLM 模型目录（示例）
 mkdir -p /aidata/models/llm
 
-# app RAG 离线模型目录（示例）
-mkdir -p /aidata/models/embeddings/bge-small-zh-v1.5
-mkdir -p /aidata/models/reranker/bge-reranker-large
+# app RAG 离线模型目录（Qwen3 嵌入/重排，示例）
+mkdir -p /aidata/models/embeddings/Qwen3-Embedding-0.6B
+mkdir -p /aidata/models/reranker/Qwen3-Reranker-0.6B
 
 # MinerU 模型与 IO 目录（示例，与 mineru-deploy/.env.example 中 MINERU_*_HOST_PATH 一致）
 mkdir -p /aidata/mineru/models
@@ -158,7 +158,7 @@ HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```
 
-### 6.2 app 与 vLLM
+### 6.2 app 与 vLLM / RAG 嵌入重排（Qwen3）
 
 `app/app-deploy/.env`：
 
@@ -166,12 +166,37 @@ TRANSFORMERS_OFFLINE=1
 LLM_DEFAULT_ENDPOINT=http://vllm-service:8000/v1
 LLM_DEFAULT_MODEL=<与 vllm served_model_name 一致>
 VLLM_DOCKER_NETWORK=<与 vllm 实际网络名一致>
+
+# 宿主机模型根目录（compose 拼接 Qwen3 子目录挂载）
 EMBEDDING_MODELS_HOST_PATH=/aidata/models/embeddings
 RERANKER_MODELS_HOST_PATH=/aidata/models/reranker
-RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
-# 可选：多卡场景建议与 vLLM 分卡（如 cuda:1）
+
+# Qwen3 嵌入/重排（容器内路径，与 compose 挂载一致）
+EMBEDDING_MODEL_PATH=/workspace/models/embeddings/Qwen3-Embedding-0.6B
+EMBEDDING_QUERY_PROMPT_NAME=query
+EMBEDDING_TRUST_REMOTE_CODE=true
+RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
+RAG_RERANKER_TRUST_REMOTE_CODE=true
+
+# GPU 栈（docker-nvidia / docker-mx）下与 vLLM 分卡；CPU 栈（docker-compose.yml）无效
+# EMBEDDING_DEVICE=cuda:0
 # RAG_RERANKER_DEVICE=cuda:1
+# MODELS_APP_NVIDIA_VISIBLE_DEVICES=all   # 仅 docker-nvidia 栈
+
+# 从 BGE 升级或换嵌入后：升版本 + 全量 re-ingest
+# RAG_ES_INDEX_VERSION=3
+# RAG_ES_AUTO_MIGRATE_ON_START=true
 ```
+
+**应用 compose 选型**（与 `README.md` 一致）：
+
+| 场景 | 启动命令 |
+|------|----------|
+| CPU | `cd app/app-deploy && docker compose up -d --build` |
+| 英伟达 GPU | `docker compose -f docker-nvidia/docker-compose-nvidia.yml up -d --build` |
+| 沐曦 GPU | `cd docker-mx && docker compose -f docker-compose-mx.yml up -d --build` |
+
+离线迁移时须同步拷贝 `${EMBEDDING_MODELS_HOST_PATH}/Qwen3-Embedding-0.6B` 与 `${RERANKER_MODELS_HOST_PATH}/Qwen3-Reranker-0.6B` 完整 HF 目录。
 
 `vllm-deploy/.env`：
 
@@ -204,6 +229,7 @@ PADDLE_LAYOUT_IO_HOST_PATH=/aidata/paddle_layout/io
 ## 7. 数据与模型迁移说明
 
 - `vllm-deploy`：通常迁移模型目录即可；镜像只包含服务与依赖。
+- **`app/app-deploy`**：须迁移 **Qwen3 嵌入/重排** 宿主机目录（`${EMBEDDING_MODELS_HOST_PATH}/Qwen3-Embedding-0.6B`、`${RERANKER_MODELS_HOST_PATH}/Qwen3-Reranker-0.6B`）；换嵌入维度时递增 `RAG_ES_INDEX_VERSION` 并 re-ingest。
 - `mineru-deploy`：模型目录和 IO 目录都要迁移/保留。
 - **`paddleocr-layout-deploy`**：模型目录（`PADDLE_LAYOUT_MODELS_HOST_PATH`）与 IO（`PADDLE_LAYOUT_IO_HOST_PATH`）建议一并迁移；详见该目录 README。
 - `rag_db-deploy`：

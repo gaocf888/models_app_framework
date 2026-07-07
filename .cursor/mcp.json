@@ -35,6 +35,17 @@
         "--dsn",
         "postgresql://postgres:1qaz%404321@124.222.37.179:5432/dmcj"
       ]
+    },
+    "chrome-devtools": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "chrome-devtools-mcp@latest"]
+    },
+    "chrome-devtools-auto": {
+      "command": "cmd",
+      "args": [
+        "/c", "npx", "-y", "chrome-devtools-mcp@latest",
+        "--autoConnect=true"
+      ]
     }
   }
 }

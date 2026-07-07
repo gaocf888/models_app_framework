@@ -75,13 +75,13 @@ flowchart TD
 当前传统 RAG 检索策略为：
 - 召回通道：`semantic` + `keyword` + `metadata`；
 - 融合：`RRF`；
-- 重排：`CrossEncoder(BAAI/bge-reranker-large)`；
+- 重排：`CrossEncoder`（默认 **`Qwen/Qwen3-Reranker-0.6B`**；历史默认 `BAAI/bge-reranker-large`）；
 - 输出：标准 `RetrievedChunk`。
 
 默认策略：
 - 默认开启混合检索（`RAG_HYBRID_ENABLED=true`）；
 - 默认开启 metadata 召回；
-- 默认使用 `BAAI/bge-reranker-large` 做重排。
+- 默认使用 **`Qwen/Qwen3-Reranker-0.6B`** 做重排（须 `RAG_RERANKER_TRUST_REMOTE_CODE=true`；分数为 logit，与 BGE 0~1 附近不同）。
 
 如何切为其他策略：
 - 仅语义召回：`RAG_HYBRID_ENABLED=false`（退化为向量 Top-K）；
@@ -96,7 +96,9 @@ flowchart TD
 - `RAG_HYBRID_METADATA_RECALL_ENABLED`（默认 `true`，是否启用 metadata 通道）；
 - `RAG_HYBRID_RRF_K`（默认 `60`，RRF 融合参数）；
 - `RAG_HYBRID_RERANK_TOP_N`（默认 `12`，重排输入上限）；
-- `RAG_RERANKER_MODEL_NAME`（默认 `BAAI/bge-reranker-large`，重排模型名）；
+- `RAG_RERANKER_MODEL_NAME`（默认 **`Qwen/Qwen3-Reranker-0.6B`**，重排模型名）；
+- `RAG_RERANKER_TRUST_REMOTE_CODE`（Qwen3 重排须 `true`）；
+- `RAG_RERANKER_DEVICE`（重排设备；**GPU 栈**下生效，见 `app/app-deploy/README.md`）；
 - `RAG_RERANKER_MODEL_PATH`（默认空，离线路径优先）。
 
 #### 0.4.3 路由策略（RetrievalPolicy）
@@ -418,9 +420,11 @@ sequenceDiagram
 
 ### 3.1 嵌入服务（EmbeddingService）
 
-- **模型**：默认 `BAAI/bge-small-zh-v1.5`，可通过 `EMBEDDING_MODEL_NAME` 覆盖。
-- **加载顺序**：若 `EMBEDDING_MODEL_PATH` 指向有效目录则本地加载；否则按模型名在线加载；均失败则 `RuntimeError`。
-- **向量**：`normalize_embeddings=True`，与 FAISS `IndexFlatIP` 组合时等价于余弦相似度检索。
+- **模型**：默认 **`Qwen/Qwen3-Embedding-0.6B`**（1024 维），可通过 `EMBEDDING_MODEL_NAME` 覆盖。
+- **Qwen3 编码约定**：检索 query（`embed_text`）在配置 `EMBEDDING_QUERY_PROMPT_NAME=query` 时使用 `prompt_name="query"`；知识摄入 chunk（`embed_texts`）不带 prompt。
+- **加载顺序**：若 `EMBEDDING_MODEL_PATH` 指向有效目录则本地加载；否则按模型名在线加载；均失败则 `RuntimeError`。Qwen3 须 `EMBEDDING_TRUST_REMOTE_CODE=true`。
+- **设备**：`EMBEDDING_DEVICE`（cpu / cuda / cuda:N）；默认 CPU 部署栈下实际为 CPU。
+- **向量**：`normalize_embeddings=True`，与 FAISS `IndexFlatIP` 组合时等价于余弦相似度检索。换嵌入模型后须递增 `RAG_ES_INDEX_VERSION` 并 re-ingest。
 
 ### 3.2 向量库（VectorStoreProvider）
 
@@ -550,14 +554,19 @@ sequenceDiagram
 | `RAG_HYBRID_METADATA_RECALL_ENABLED` | 是否启用 metadata 召回通道 | `true` |
 | `RAG_HYBRID_RRF_K` | RRF 融合参数 | `60` |
 | `RAG_HYBRID_RERANK_TOP_N` | 重排候选数量 | `12` |
-| `RAG_RERANKER_MODEL_NAME` | CrossEncoder 重排模型 | `BAAI/bge-reranker-large` |
+| `RAG_RERANKER_MODEL_NAME` | CrossEncoder 重排模型 | `Qwen/Qwen3-Reranker-0.6B` |
 | `RAG_RERANKER_MODEL_PATH` | 本地重排模型目录（离线优先） | 空 |
+| `RAG_RERANKER_TRUST_REMOTE_CODE` | Qwen3 等自定义架构 | `true` |
+| `RAG_RERANKER_DEVICE` | 重排设备 | `cpu`（GPU 栈可设 `cuda:1`） |
 | `RAG_SCENE_LLM_*` | 通用推理场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
 | `RAG_SCENE_CHATBOT_*` | 智能客服场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
 | `RAG_SCENE_ANALYSIS_*` | 综合分析场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
 | `RAG_SCENE_NL2SQL_*` | NL2SQL 场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
 | `EMBEDDING_MODEL_PATH` | 本地嵌入模型目录 | 空 |
-| `EMBEDDING_MODEL_NAME` | HuggingFace 模型名 | `BAAI/bge-small-zh-v1.5` |
+| `EMBEDDING_MODEL_NAME` | HuggingFace 模型名 | `Qwen/Qwen3-Embedding-0.6B` |
+| `EMBEDDING_QUERY_PROMPT_NAME` | Qwen3 检索 query prompt | `query` |
+| `EMBEDDING_TRUST_REMOTE_CODE` | Qwen3 加载 | `true` |
+| `EMBEDDING_DEVICE` | 嵌入设备 | `cpu`（GPU 栈可设 `cuda:0`） |
 
 #### 知识摄入平台（与设计稿 §4 对齐）
 

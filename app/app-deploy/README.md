@@ -1,6 +1,6 @@
 # 应用服务 Docker 部署（在线 API）
 
-本目录提供 **FastAPI 应用层** 的容器化部署，与仓库内 **`vllm-deploy/`**、**`rag_db-deploy/`** 对接。本文档说明**如何配置、如何启动、两种运行形态（默认 / 小模型 GPU）的差异与排错**。
+本目录提供 **FastAPI 应用层** 的容器化部署，与仓库内 **`vllm-deploy/`**、**`rag_db-deploy/`** 对接。本文档说明**如何配置、如何启动、多种运行形态（CPU / 英伟达 GPU / 沐曦 GPU / 小模型 GPU profile）的差异与排错**。
 
 > 局域网/离线部署外挂服务（vLLM、EasySearch、MinerU、**检修 V0 版面侧车 paddleocr-layout-deploy**）请配合阅读：`README-external-services-lan-deploy.md`。  
 > 值班排障请配合阅读：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
@@ -8,6 +8,7 @@
 **目录**
 
 - [能力对照与组件](#能力对照与组件)
+- [部署形态选择（CPU / 英伟达 GPU / 沐曦 GPU）](#部署形态选择cpu--英伟达-gpu--沐曦-gpu)
 - [配置分层：谁在读哪些变量](#配置分层谁在读哪些变量)
 - [Service API Key（业务 HTTP 鉴权）](#service-api-key业务-http-鉴权)
 - [前置条件](#前置条件)
@@ -36,6 +37,8 @@
 |------|----------|
 | 快速上线（最少步骤） | `README-simple-deploy.md` |
 | 完整部署与参数说明（本文件） | `README.md` |
+| **英伟达 GPU 嵌入/重排（Qwen3）** | **`docker-nvidia/README.md`** + **`docker-nvidia/docker-compose-nvidia.yml`** + 本文「部署形态选择」 |
+| **沐曦 GPU 嵌入/重排** | **`docker-mx/docker-compose-mx.yml`** + 本文「部署形态选择」 |
 | 局域网/离线外挂服务（vLLM/EasySearch/MinerU/**Paddle 版面侧车**） | `README-external-services-lan-deploy.md` |
 | 值班排障（当前先覆盖智能客服） | `deploy-docs/online-services-oncall-runbook.md` |
 
@@ -53,6 +56,60 @@
 | 应用 HTTP API | **models-app**（默认）或 **models-app-gpu**（profile） | 见下文端口与 profile 说明 |
 
 持久化与外置依赖的通用约定见：`framework-guide/数据持久化与容器部署说明.md`。
+
+---
+
+## 部署形态选择（CPU / 英伟达 GPU / 沐曦 GPU）
+
+RAG **嵌入**与**重排**模型当前默认为 **Qwen3-Embedding-0.6B** + **Qwen3-Reranker-0.6B**（见 `.env.example`）。按宿主机算力与显卡类型选择 compose 栈：
+
+| 形态 | Compose / Dockerfile | 嵌入/重排设备 | 适用场景 |
+|------|----------------------|---------------|----------|
+| **CPU（默认）** | `docker-compose.yml` + `Dockerfile` | **CPU**（镜像无 CUDA PyTorch；`.env` 中 `cuda:N` 不生效） | 开发联调、无 GPU、或 Qwen3 0.6B 可接受 CPU 延迟 |
+| **英伟达 GPU** | **`docker-nvidia/docker-compose-nvidia.yml`** + **`Dockerfile-nvidia`** | **GPU**（cu121 PyTorch + `EMBEDDING_DEVICE` / `RAG_RERANKER_DEVICE`） | 英伟达服务器；与 vLLM 分卡跑嵌入/重排 |
+| **沐曦 GPU** | **`docker-mx/docker-compose-mx.yml`** + **`Dockerfile-mx`** | **GPU**（Metax 基础镜像 + conda Python） | 沐曦/麒麟等 Metax 栈 |
+| **小模型 GPU profile** | 任上表 compose + `--profile small-model-gpu` | 同上 + YOLO/通道等小模型 | 需 `/small-model/*`、视频通道等 |
+
+**`.env` 共用**：三种主栈均读取 **`app/app-deploy/.env`**（`docker-nvidia` / `docker-mx` 通过 `../.env` 或复制引用）。
+
+**Qwen3 嵌入/重排推荐 `.env` 片段**（GPU 栈）：
+
+```env
+EMBEDDING_MODEL_PATH=/workspace/models/embeddings/Qwen3-Embedding-0.6B
+EMBEDDING_QUERY_PROMPT_NAME=query
+EMBEDDING_TRUST_REMOTE_CODE=true
+EMBEDDING_DEVICE=cuda:0
+RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
+RAG_RERANKER_TRUST_REMOTE_CODE=true
+RAG_RERANKER_DEVICE=cuda:1
+```
+
+> `models-app-gpu` 的重排容器路径为 **`/models/rerank/Qwen3-Reranker-0.6B`**（与 `models-app` 的 `/workspace/models/rerank/...` 不同），compose 已写死挂载，`.env` 中 `RAG_RERANKER_MODEL_PATH` 会被 compose `environment` 覆盖为对应值。
+
+**从 BGE 升级到 Qwen3 时**（向量维度 512→1024）须：
+
+1. 递增 **`RAG_ES_INDEX_VERSION`**（如 `2`→`3`），保持 **`RAG_ES_AUTO_MIGRATE_ON_START=true`** 或调用 `POST /rag/migrations/chunks/run`（body：`{"embedding_dim": 1024}`）；  
+2. **全量 re-ingest** 知识库；  
+3. 视情况重调 **`CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE`**（Qwen3 rerank 分数为 logit，非 0~1）。
+
+**启动示例**：
+
+```bash
+cd app/app-deploy
+
+# CPU（默认）
+docker compose up -d --build
+
+# 英伟达 GPU（嵌入/重排）
+docker compose -f docker-nvidia/docker-compose-nvidia.yml up -d --build
+
+# 沐曦 GPU
+cp .env docker-mx/   # 或 docker-mx 使用 ../.env
+cd docker-mx && docker compose -f docker-compose-mx.yml up -d --build
+
+# 可选小模型 GPU（英伟达栈示例）
+docker compose -f docker-nvidia/docker-compose-nvidia.yml --profile small-model-gpu up -d models-app-gpu
+```
 
 ---
 
@@ -102,6 +159,9 @@
 ---
 
 ## 第一次部署（默认：仅大模型 + RAG + 会话）
+
+> **Compose 选型**：默认 **`docker compose up`** 为 **CPU 栈**（嵌入/重排无 GPU）。英伟达 GPU 用 **`docker-nvidia/docker-compose-nvidia.yml`**，沐曦用 **`docker-mx/docker-compose-mx.yml`** — 见上文 [部署形态选择](#部署形态选择cpu--英伟达-gpu--沐曦-gpu)。  
+> **Qwen3 模型**：`.env.example` 已默认 Qwen3 嵌入/重排；离线目录见 [嵌入与 Hugging Face 缓存](#嵌入与-hugging-face-缓存含离线模型目录约定)。
 
 ### 步骤 1：准备本目录环境文件
 
@@ -184,11 +244,27 @@ docker network create paddle-layout-stack || true   # 若尚未由本 compose �
 docker compose -f docker-compose.cpu.yml up -d --build   # 或 docker-compose.yml；沐曦/英伟达见该目录 GPU compose
 ```
 
-### 步骤 3：启动本栈（Redis + models-app）
+### 步骤 3：启动本栈（Redis + MinIO + models-app）
+
+**CPU（默认）**：
 
 ```bash
 cd ../../app/app-deploy
 docker compose up -d --build
+```
+
+**英伟达 GPU**（Qwen3 嵌入/重排 + 可选 `small-model-gpu` profile）：
+
+```bash
+cd ../../app/app-deploy
+docker compose -f docker-nvidia/docker-compose-nvidia.yml up -d --build
+```
+
+**沐曦 GPU**：
+
+```bash
+cd ../../app/app-deploy/docker-mx
+docker compose -f docker-compose-mx.yml up -d --build
 ```
 
 ### 步骤 4：验证
@@ -302,12 +378,12 @@ docker compose --profile small-model-gpu up -d --build
 | `huggingface-cache` | 应用容器 `/root/.cache/huggingface` | 嵌入/下载模型缓存，减少重复拉取 |
 | `small-model-data` | **仅 models-app-gpu** `/workspace/data/small_model_evidence` | 小模型证据片段等可写数据 |
 | `SMALL_MODEL_WEIGHTS_HOST_PATH` → `/workspace/models/small:ro` | **仅 models-app-gpu** | 只读权重；未设置时用占位卷 **`small-model-weights-dummy`**（空卷，仅开发联调 compose） |
-| `${EMBEDDING_MODELS_HOST_PATH}/bge-small-zh-v1.5`（默认 `/aidata/models/embeddings/...`） → `/workspace/models/embeddings/bge-small-zh-v1.5:ro` | `models-app` / `models-app-gpu` | **离线嵌入模型权重目录**；配合 `EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5` 使用，实现完全离线加载 |
-| `${RERANKER_MODELS_HOST_PATH}/bge-reranker-large`（默认 `/aidata/models/reranker/...`） → `/models/rerank/bge-reranker-large:ro` | `models-app` / `models-app-gpu` | **离线重排模型目录**；`RAG_RERANKER_MODEL_PATH` 指向该容器路径 |
+| `${EMBEDDING_MODELS_HOST_PATH}/Qwen3-Embedding-0.6B` → `/workspace/models/embeddings/Qwen3-Embedding-0.6B:ro` | `models-app` / `models-app-gpu` | **离线嵌入**；配合 `EMBEDDING_MODEL_PATH`、`EMBEDDING_QUERY_PROMPT_NAME=query` |
+| `${RERANKER_MODELS_HOST_PATH}/Qwen3-Reranker-0.6B` → `/workspace/models/rerank/...` 或 `/models/rerank/...:ro` | `models-app` / `models-app-gpu` | **离线重排**；`models-app` 用 `/workspace/models/rerank/...`，`models-app-gpu` 用 `/models/rerank/...` |
 | `${INTENT_MODELS_HOST_PATH}/chatbot-intent-bert` → `.../chatbot-intent-bert:ro` | `models-app` / `models-app-gpu` | **BERT 意图**（`backend=bert`）；须微调 HF 目录 |
 | `${INTENT_LLM_MODELS_HOST_PATH}/qwen2.5-0.5b-instruct` → `.../qwen2.5-0.5b-instruct:ro` | `models-app` / `models-app-gpu` | **轻量意图 LLM**（`backend=llm`）；HF 目录直挂，见 `docs/智能客服意图识别轻量LLM接入说明.md` |
 
-> 若多卡环境出现重排慢或与 vLLM 争卡，建议在 `.env` 显式设置 `RAG_RERANKER_DEVICE`（如 `cuda:1`），用于指定 CrossEncoder 重排设备。
+> 多卡环境建议在 `.env` 显式设置 **`EMBEDDING_DEVICE`**（如 `cuda:0`）与 **`RAG_RERANKER_DEVICE`**（如 `cuda:1`），与 vLLM 分卡。仅 **GPU 栈**（`docker-nvidia` / `docker-mx` / `small-model-gpu`）下生效；默认 CPU 栈无效。
 
 ---
 
@@ -391,39 +467,45 @@ docker compose --profile small-model-gpu down
 
 ## 嵌入与 Hugging Face 缓存（含离线模型目录约定）
 
-首次使用 **sentence-transformers** 等可能下载模型。命名卷 **`huggingface-cache`** 已挂到 **`/root/.cache/huggingface`**。
+当前默认嵌入/重排为 **Qwen3-Embedding-0.6B**（1024 维）与 **Qwen3-Reranker-0.6B**。命名卷 **`huggingface-cache`** 挂到 **`/root/.cache/huggingface`**。
+
+### Qwen3 与 BGE 的差异（运维必读）
+
+| 项 | Qwen3（当前默认） | 原 BGE（历史） |
+|----|-------------------|----------------|
+| 向量维度 | **1024** | bge-small：**512** |
+| 嵌入编码 | query 用 `prompt_name=query`，document 不带 prompt | 统一 encode |
+| 环境变量 | `EMBEDDING_QUERY_PROMPT_NAME`、`EMBEDDING_TRUST_REMOTE_CODE`、`EMBEDDING_DEVICE` | 一般仅需 `EMBEDDING_MODEL_PATH` |
+| 重排 | `RAG_RERANKER_TRUST_REMOTE_CODE=true`；分数为 logit | 通常 0~1 附近 |
+| 依赖 | 建议 `sentence-transformers>=5.4`、`transformers>=4.51`（见 `requirements-大模型应用.txt`） | ST 2.x 即可 |
 
 ### 在线/默认策略
 
-- 未显式指定 `EMBEDDING_MODEL_PATH` 时：  
-  - 应用会尝试通过 Hugging Face Hub 在线下载嵌入模型，并缓存到上述目录。  
-  - 适合有稳定公网出口的开发环境。
+- 未显式指定 `EMBEDDING_MODEL_PATH` 时，应用会尝试从 Hugging Face Hub 在线下载，并缓存到上述目录。  
+- **CPU 栈**（`docker-compose.yml`）下嵌入/重排实际跑在 **CPU**；配置 `EMBEDDING_DEVICE=cuda:0` 不会生效。
 
 ### 离线优先策略（推荐生产做法）
 
-在生产或无公网环境中，推荐**显式指定本地嵌入/重排模型路径**，并用宿主机目录挂载到容器，避免任何在线下载：
-
-1. **项目根目录离线模型目录约定**
-
-   建议在宿主机统一使用以下目录约定：
+1. **宿主机离线模型目录约定**
 
    ```text
    /aidata/models/
      embeddings/
-       bge-small-zh-v1.5/   # 存放 BAAI/bge-small-zh-v1.5 的所有文件
+       Qwen3-Embedding-0.6B/    # Qwen/Qwen3-Embedding-0.6B 完整 HF 目录
      reranker/
-       bge-reranker-large/  # 存放 BAAI/bge-reranker-large 的所有文件
+       Qwen3-Reranker-0.6B/     # Qwen/Qwen3-Reranker-0.6B 完整 HF 目录
      intent/
-       chatbot-intent-bert/ # 智能客服 BERT 意图（仅 CHATBOT_INTENT_BACKEND=bert 时需要）
-         config.json        # 含 id2label：kb_qa / data_query / clarify
-         pytorch_model.bin  # 或 model.safetensors（须为微调后权重，非通用预训练基座）
-         tokenizer.json
-         vocab.txt          # 以及 tokenizer 相关文件（与 HF 导出目录一致）
+       chatbot-intent-bert/     # 可选，BERT 意图
      llm/
-       qwen2.5-0.5b-instruct/   # 轻量意图 LLM（仅 CHATBOT_INTENT_BACKEND=llm 时需要）
-         config.json
-         model.safetensors      # 标准 HuggingFace 目录，与嵌入模型相同直挂
-         tokenizer.json
+       qwen2.5-0.5b-instruct/   # 可选，轻量意图 LLM
+   ```
+
+   离线下载示例（魔塔 / HuggingFace，目录名与 compose 挂载子路径一致）：
+
+   ```bash
+   mkdir -p /aidata/models/embeddings /aidata/models/reranker
+   # huggingface-cli download Qwen/Qwen3-Embedding-0.6B --local-dir /aidata/models/embeddings/Qwen3-Embedding-0.6B
+   # huggingface-cli download Qwen/Qwen3-Reranker-0.6B --local-dir /aidata/models/reranker/Qwen3-Reranker-0.6B
    ```
 
    > **轻量意图 LLM**：`huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct --local-dir /aidata/models/llm/qwen2.5-0.5b-instruct`；见 `docs/智能客服意图识别轻量LLM接入说明.md`。
@@ -441,59 +523,47 @@ docker compose --profile small-model-gpu down
 
 2. **在 compose 中挂载到应用容器**
 
-   在 `app/app-deploy/docker-compose.yml` 中，为应用服务增加一个只读挂载（示例）：
+   当前 **`docker-compose.yml` / `docker-nvidia/` / `docker-mx/`** 已预置 Qwen3 挂载，一般只需保证宿主机目录存在。若更换模型子目录名，需同步改三处 compose 中 volume 与 `.env` 路径。
 
    ```yaml
-   services:
-     models-app:
-       # ...
-       volumes:
-         - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
-         - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
-         - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
-
-     models-app-gpu:
-       # ...
-       volumes:
-         - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
-         - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
-         - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
+   # models-app 示例（路径以实际 compose 为准）
+   volumes:
+     - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/Qwen3-Embedding-0.6B:/workspace/models/embeddings/Qwen3-Embedding-0.6B:ro
+     - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/Qwen3-Reranker-0.6B:/workspace/models/rerank/Qwen3-Reranker-0.6B:ro
+   environment:
+     - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
    ```
 
-3. **在 `.env` 中指定嵌入/重排/BERT 意图模型运行参数**
-
-   编辑 `app/app-deploy/.env`：
+3. **在 `.env` 中指定嵌入/重排运行参数**
 
    ```env
-   EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5
-   RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
-   # 可选：显式指定重排设备（cpu / cuda / cuda:1）
-   # RAG_RERANKER_DEVICE=cuda:1
+   EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
+   EMBEDDING_MODEL_PATH=/workspace/models/embeddings/Qwen3-Embedding-0.6B
+   EMBEDDING_QUERY_PROMPT_NAME=query
+   EMBEDDING_TRUST_REMOTE_CODE=true
+   EMBEDDING_DEVICE=cuda:0
 
-   # 智能客服意图：默认 rules；启用 BERT 时改为 bert 并指定容器内模型路径
-   CHATBOT_INTENT_BACKEND=rules
-   # CHATBOT_INTENT_BACKEND=bert
-   # CHATBOT_INTENT_BERT_MODEL_PATH=/workspace/models/intent/chatbot-intent-bert
-   # CHATBOT_INTENT_BERT_DEVICE=cpu
-   # CHATBOT_INTENT_BERT_FALLBACK_TO_RULES=true
+   RAG_RERANKER_MODEL_NAME=Qwen/Qwen3-Reranker-0.6B
+   RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
+   RAG_RERANKER_TRUST_REMOTE_CODE=true
+   RAG_RERANKER_DEVICE=cuda:1
+
+   # 换嵌入模型后须升版本并 re-ingest
+   RAG_ES_INDEX_VERSION=3
+   RAG_ES_AUTO_MIGRATE_ON_START=true
    ```
 
-   这样 `EmbeddingService` 会优先直接从该路径加载模型权重，完全不依赖 Hugging Face 在线下载。  
-   BERT 意图模型须为 HuggingFace **已微调序列分类**导出目录（`AutoModelForSequenceClassification`），`config.json` 中 `id2label` 为 `kb_qa` / `data_query` / `clarify`。**不支持**魔塔/HF 通用预训练 BERT 直接上线；说明见 `docs/智能客服意图识别BERT接入说明.md`。
+   启动后日志应出现：`EmbeddingService: loaded ... embedding_dim=1024 device=...` 与 `RAGService loaded CrossEncoder reranker: ... device=...`。
 
 4. **启动/重启应用栈**
 
-   ```bash
-   cd app/app-deploy
-   docker compose up -d --build
-   ```
+   见上文 [部署形态选择](#部署形态选择cpu--英伟达-gpu--沐曦-gpu) 中对应 `docker compose` 命令。
 
-更换嵌入、重排或 BERT 意图模型时，只需：
+更换嵌入、重排或 BERT 意图模型时：
 
-- 在 `${EMBEDDING_MODELS_HOST_PATH}` / `${RERANKER_MODELS_HOST_PATH}` / `${INTENT_MODELS_HOST_PATH}` 下新增对应子目录并放入新模型；  
-- 如变更容器内目标路径，再同步调整 `.env` 中 `EMBEDDING_MODEL_PATH` / `RAG_RERANKER_MODEL_PATH` / `CHATBOT_INTENT_BERT_MODEL_PATH`。
+- 在宿主机 `${EMBEDDING_MODELS_HOST_PATH}` / `${RERANKER_MODELS_HOST_PATH}` 下放置新模型子目录；  
+- 同步 compose 挂载子目录名与 `.env` 中 `EMBEDDING_MODEL_PATH` / `RAG_RERANKER_MODEL_PATH`；  
+- **维度变化时**递增 `RAG_ES_INDEX_VERSION` 并 **全量 re-ingest**。
 
 ---
 
@@ -507,8 +577,13 @@ docker compose --profile small-model-gpu down
 | **`Name or service not known`（paddleocr-layout-api）** | **`PADDLE_LAYOUT_DOCKER_NETWORK`** 与侧车 **`PADDLE_LAYOUT_NETWORK_NAME`** 不一致，或 **`models-app` 未加入 external 网络**。 |
 | `Connection refused` 使用 `127.0.0.1` 访问对端服务 | 在容器内 `127.0.0.1` 是自身，应改用 **`vllm-service` / `rag-easysearch`**。 |
 | EasySearch TLS / 401 | HTTPS + `RAG_ES_VERIFY_CERTS`；用户名密码与库一致。 |
-| GPU 容器 `cuda: False` | 宿主机 Toolkit / Docker GPU 设置；`nvidia-smi` 在宿主机是否正常。 |
-| RAG 重排耗时过高（rerank 慢） | 检查日志中 `RAGService rerank done ... device=... rerank_ms=...`；必要时设置 `RAG_RERANKER_DEVICE=cuda:1` 与 vLLM 分卡，并适当调小 `RAG_SCENE_CHATBOT_RERANK_TOP_N`。 |
+| GPU 容器 `cuda: False` | 是否使用 **GPU 栈**（`docker-nvidia` / `docker-mx`）；宿主机 Toolkit；`nvidia-smi` 是否正常。 |
+| 配置了 `EMBEDDING_DEVICE=cuda:0` 但仍为 CPU | 是否误用 **默认 CPU 栈** `docker-compose.yml`；应改用 `docker-nvidia` 或 `docker-mx`。 |
+| 嵌入加载失败 / `trust_remote_code` | Qwen3 设 `EMBEDDING_TRUST_REMOTE_CODE=true`；检查离线目录是否完整。 |
+| 重排 skip rerank / 加载失败 | `RAG_RERANKER_TRUST_REMOTE_CODE=true`；离线路径与 compose `RAG_RERANKER_MODEL_PATH` 一致；GPU 栈是否可用。 |
+| RAG 语义检索无结果 / 维度错误 | 换嵌入后是否 **升 `RAG_ES_INDEX_VERSION` 并 re-ingest**；`embedding_dim` 是否为 **1024**。 |
+| RAG 重排耗时过高（rerank 慢） | 日志 `RAGService rerank done ... device=...`；GPU 栈 + `RAG_RERANKER_DEVICE=cuda:1` 与 vLLM 分卡。 |
+| FAQ 软直通从不触发 | Qwen3 rerank 为 logit 分，重调 `CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE` 或暂时关闭。 |
 | YOLO 找不到权重 | **`SMALL_MODEL_WEIGHTS_HOST_PATH`** 是否设置；宿主机路径与 YAML 是否对齐。 |
 | `docker compose` 报外部网络不存在 | 先启动 `rag_db-deploy`、`vllm-deploy`（`deploy.sh`）、（可选）`mineru-deploy`，或先执行 `docker network create <network-name>`。 |
 
@@ -608,8 +683,15 @@ docker compose --profile small-model-gpu down
 
 | 文件 | 说明 |
 |------|------|
-| `Dockerfile` | 默认镜像：`requirements-大模型应用.txt` + `app` + `configs` |
+| `Dockerfile` | 默认 **CPU** 镜像：`requirements-大模型应用.txt` + `app` + `configs` |
 | `Dockerfile.small-model-gpu` | GPU 小模型镜像：cu121 PyTorch + 大小模型 requirements + `ultralytics` |
-| `docker-compose.yml` | `redis`、`models-app`；可选 **`models-app-gpu`**（`profiles: small-model-gpu`） |
-| `.env.example` | 环境变量模板与分块注释（复制为 `.env`） |
+| `docker-compose.yml` | **CPU** 栈：`redis`、`minio`、`models-app`；可选 **`models-app-gpu`**（`profiles: small-model-gpu`） |
+| **`docker-nvidia/Dockerfile-nvidia`** | **英伟达 GPU** 主镜像：cu121 PyTorch + 大模型应用依赖（嵌入/重排 GPU） |
+| **`docker-nvidia/docker-compose-nvidia.yml`** | **英伟达 GPU** 栈；可选 `small-model-gpu` profile |
+| **`docker-nvidia/README.md`** | 英伟达 GPU 栈快速说明 |
+| **`docker-mx/Dockerfile-mx`** | **沐曦 GPU** 主镜像：Metax 基础镜像 + conda |
+| **`docker-mx/docker-compose-mx.yml`** | **沐曦 GPU** 栈 |
+| `.env.example` | 环境变量模板（含 Qwen3 嵌入/重排、GPU 分卡、索引版本） |
 | `README.md` | 本文档 |
+| `README-simple-deploy.md` | 简明上线流程 |
+| `README-external-services-lan-deploy.md` | 局域网/离线外挂服务 |
