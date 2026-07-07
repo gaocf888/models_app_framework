@@ -410,30 +410,30 @@ docker compose -f docker-compose.neo4j.yml --env-file .env up -d
 
 ### 3.2 启动应用栈
 
-目前主应用部署，基于算力类型
-按算力选择 **一种** compose 栈（详见 `README.md`「部署形态选择」）：
+目前主应用部署，基于使用的服务器的算力类型，部署分为基础部署(无加速卡)、英伟达部署(英伟达显卡)、沐曦部署(沐曦显卡),后续其他算力服务器部署时 增加对应配置即可
+（详见 `README.md`「部署形态选择」）：
 
+**基础部署** — 基于cpu运行 嵌入/重排 模型(`.env` 中 `cuda:N` 不生效)
+> 使用 app/app-deploy/路径下的 Dockerfile和docker-compose.yml部署
 ```bash
 cd app/app-deploy
 cp .env.example .env          # 首次，之后直接编辑 .env
+docker compose --env-file .env -f docker-compose.yml up -d --build
 ```
 
-**CPU（默认）** — 嵌入/重排跑 CPU，`.env` 中 `cuda:N` 不生效：
 
+**英伟达部署** — 基于N卡运行 Qwen3 嵌入/重排 模型（需宿主机 NVIDIA Container Toolkit）
+> 使用 app/app-deploy/docker-nvidia/路径下的 Dockerfile-nvidia和docker-compose-nvidia.yml部署
 ```bash
-docker compose up -d --build
-```
-
-**英伟达 GPU** — Qwen3 嵌入/重排可用 GPU（需宿主机 NVIDIA Container Toolkit）：
-
-```bash
-docker compose -f docker-nvidia/docker-compose-nvidia.yml up -d --build
+cp .env docker-nvidia/            # 或 docker-nvidia 使用 ../.env
+cd docker-nvidia
+docker compose --env-file .env -f docker-compose-nvidia.yml up -d --build
 # 可选小模型 GPU：
 # docker compose -f docker-nvidia/docker-compose-nvidia.yml --profile small-model-gpu up -d models-app-gpu
 ```
 
-**沐曦 GPU** — Metax 镜像栈：
-
+**沐曦部署** — 基于沐曦显卡运行 Qwen3 嵌入/重排 模型（使用Metax AI镜像栈）
+> 使用 app/app-deploy/docker-mx/路径下的 Dockerfile-mx和docker-compose-mx.yml部署
 ```bash
 cp .env docker-mx/            # 或 docker-mx 使用 ../.env
 cd docker-mx

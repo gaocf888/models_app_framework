@@ -1,0 +1,246 @@
+# =============================================================================
+# 应用层在线服务栈（英伟达 GPU · models-app [+ 可选 models-app-gpu]）
+# =============================================================================
+#
+# 【用途】
+#   与 app/app-deploy/docker-compose.yml（CPU）及 docker-mx/（沐曦 GPU）并列。
+#   本文件使 models-app 在英伟达环境内使用 CUDA PyTorch，并通过
+#   EMBEDDING_DEVICE / RAG_RERANKER_DEVICE 将嵌入与重排跑在 GPU 上。
+#   可选 profile small-model-gpu 启动 models-app-gpu（含 Ultralytics 等小模型依赖）。
+#
+# 【外部依赖 · 须先于本文件启动】
+#   1) EasySearch：rag_db-deploy/docker-compose.easysearch.yml
+#   2) vLLM：vllm-deploy/docker/docker-compose.nvidia.yml（或 deploy.sh）
+#   3) MinerU / Paddle 侧车等：与 app-deploy/docker-compose.yml 相同
+#
+# 【.env】
+#   使用上级目录 app/app-deploy/.env（与 .env.example 同目录复制而来）。
+#   建议至少配置：
+#     EMBEDDING_DEVICE=cuda:0
+#     RAG_RERANKER_DEVICE=cuda:1
+#     EMBEDDING_QUERY_PROMPT_NAME=query
+#     EMBEDDING_TRUST_REMOTE_CODE=true
+#     RAG_RERANKER_TRUST_REMOTE_CODE=true
+#
+# 【Compose 专用变量】
+#   MODELS_APP_NVIDIA_VISIBLE_DEVICES   → 注入 models-app 的 NVIDIA_VISIBLE_DEVICES（默认 all）
+#   APP_PORT_GPU                        → models-app-gpu 宿主机端口（默认 8081）
+#   SMALL_MODEL_NVIDIA_VISIBLE_DEVICES  → 注入 models-app-gpu 的 NVIDIA_VISIBLE_DEVICES（默认 all）
+#   SMALL_MODEL_WEIGHTS_HOST_PATH       → 小模型权重宿主机目录；未设置时用占位卷
+#   其余 APP_PORT / *_HOST_PATH / *_DOCKER_NETWORK 与 app-deploy/.env.example 一致。
+#
+# 【启动示例】（在 app/app-deploy 目录）
+#   # 仅 RAG + 大模型 API（嵌入/重排 GPU）
+#   docker compose -f docker-nvidia/docker-compose-nvidia.yml build
+#   docker compose -f docker-nvidia/docker-compose-nvidia.yml up -d
+#
+#   # 额外启动小模型 GPU 实例（YOLO 等；与 models-app 并存，端口 APP_PORT_GPU）
+#   docker compose -f docker-nvidia/docker-compose-nvidia.yml --profile small-model-gpu up -d models-app-gpu
+#
+# 【英伟达 models-app · 解释器与 GPU】
+#   Dockerfile-nvidia 基于 python:3.11-slim + pip cu121 torch。
+#   models-app-gpu 使用 app/app-deploy/Dockerfile.small-model-gpu（cu121 + Ultralytics）。
+#   宿主机须安装 NVIDIA Container Toolkit；若 compose 不支持 `gpus:` 字段，
+#   依赖 NVIDIA_VISIBLE_DEVICES + Docker nvidia runtime。
+#
+# =============================================================================
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: models-app-redis
+    restart: unless-stopped
+    networks:
+      - app-internal
+    volumes:
+      - ${REDIS_DATA_HOST_PATH:-/aidata/data/redis_data}:/data
+    # AOF：容器重建后会话数据可恢复（仍建议生产使用独立高可用 Redis）
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/minio/minio:latest
+    container_name: models-app-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - ${MINIO_DATA_HOST_PATH:-/aidata/data/minio_data}:/data
+    networks:
+      app-internal: {}
+      vllm-external: {}
+
+  # ---------------------------------------------------------------------------
+  # models-app：英伟达 GPU 版（CUDA PyTorch · 嵌入 + 重排可配置 GPU）
+  # ---------------------------------------------------------------------------
+  models-app:
+    build:
+      context: ../../..
+      dockerfile: app/app-deploy/docker-nvidia/Dockerfile-nvidia
+    container_name: models-app
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    env_file:
+      - ../.env
+    # 多 worker：UVICORN_WORKERS 来自 .env，由 shell 在容器内展开（$$ 为 compose 转义）
+    command:
+      - sh
+      - -c
+      - exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
+    ports:
+      - "${APP_PORT:-8083}:8083"
+    # Linux 上访问宿主机 MySQL 等：使用主机名 host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      app-internal: {}
+      vllm-external: {}
+      rag-external: {}
+      mineru-external: {}
+      paddle-layout-external: {}
+      face-milvus-external: {}
+      # 暂未部署Neo4j，对应网络注释掉
+      # graph-external: {}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+      # 与 docker-mx/docker-compose-mx.yml 中 ../logs 一致：宿主机均为 app-deploy/logs
+      - ../logs:/workspace/logs
+      # 会话归档对象存储 local 后端（CONV_ARCHIVE_OBJECT_LOCAL_DIR）
+      - ${SESSION_STORAGE_HOST_PATH:-/aidata/data/session_storage}:/workspace/data/conversation_archive
+      # 检修异步任务状态（INSPECT_EXTRACT_ASYNC_JOBS_DIR）
+      - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
+      # FAISS 索引目录（RAG_FAISS_INDEX_DIR；RAG_VECTOR_STORE_TYPE=faiss 时生效）
+      - ${RAG_FAISS_DATA_HOST_PATH:-/aidata/data/faiss_data}:/workspace/data/faiss
+      # 嵌入模型离线挂载
+      - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/Qwen3-Embedding-0.6B:/workspace/models/embeddings/Qwen3-Embedding-0.6B:ro
+      # 重排模型离线挂载
+      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/Qwen3-Reranker-0.6B:/workspace/models/rerank/Qwen3-Reranker-0.6B:ro
+      # BERT 意图：须为已微调三分类 HF 目录；CHATBOT_INTENT_BACKEND=bert 时使用
+      - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
+      # 意图轻量 LLM（与嵌入模型相同：HF 目录直挂）；CHATBOT_INTENT_BACKEND=llm 时使用
+      - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
+      # MinerU 与 models-app 共享 IO（须与 mineru-deploy 中 MINERU_IO_HOST_PATH 指向同一宿主目录）
+      - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
+      # 人脸识别（CPU）：/face/* API + 人脸库持久化（主镜像 models-app 已含 InsightFace CPU 依赖）
+      - face-galleries-data:/workspace/data/face_galleries
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${MODELS_APP_NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      RAG_RERANKER_MODEL_PATH: /workspace/models/rerank/Qwen3-Reranker-0.6B
+
+  # ---------------------------------------------------------------------------
+  # models-app-gpu：仅当 docker compose --profile small-model-gpu 时启动
+  # - 镜像含 cu121 PyTorch、ultralytics、小模型依赖；需宿主机 GPU + NVIDIA Container Toolkit
+  # - 默认宿主机端口 APP_PORT_GPU=8081，避免与 models-app 的 APP_PORT 冲突
+  # - 仅要一个对外实例时：stop models-app，并将 APP_PORT_GPU 设为 8080
+  # - 与 models-app 共用 ../.env；嵌入/重排同样可通过 EMBEDDING_DEVICE / RAG_RERANKER_DEVICE 分卡
+  # ---------------------------------------------------------------------------
+  models-app-gpu:
+    profiles: ["small-model-gpu"]
+    build:
+      context: ../../..
+      dockerfile: app/app-deploy/Dockerfile.small-model-gpu
+    container_name: models-app-gpu
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    env_file:
+      - ../.env
+    command:
+      - sh
+      - -c
+      - exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
+    ports:
+      - "${APP_PORT_GPU:-8081}:8083"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      app-internal: {}
+      vllm-external: {}
+      rag-external: {}
+      mineru-external: {}
+      paddle-layout-external: {}
+      face-milvus-external: {}
+      # 暂未部署Neo4j，对应网络注释掉
+      # graph-external: {}
+    # 说明：原本使用 compose 的 `gpus: all` 字段声明 GPU 需求，
+    # 但部分 Docker Compose 版本暂不支持该字段，因此改为通过
+    # NVIDIA_VISIBLE_DEVICES 控制可见 GPU。需要在宿主机上正确安装
+    # NVIDIA Container Toolkit，并将 Docker 默认 runtime 配置为 nvidia。
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${SMALL_MODEL_NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      RAG_RERANKER_MODEL_PATH: /models/rerank/Qwen3-Reranker-0.6B
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+      - ../logs:/workspace/logs
+      - ${SESSION_STORAGE_HOST_PATH:-/aidata/data/session_storage}:/workspace/data/conversation_archive
+      - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
+      - ${RAG_FAISS_DATA_HOST_PATH:-/aidata/data/faiss_data}:/workspace/data/faiss
+      # 嵌入模型离线挂载
+      - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/Qwen3-Embedding-0.6B:/workspace/models/embeddings/Qwen3-Embedding-0.6B:ro
+      # 小模型证据输出（与 configs 中 evidence_dir 为 workspace 相对路径时一致）
+      - small-model-data:/workspace/data/small_model_evidence
+      # 人脸库（录入 embedding + 图片）；与 face_gallery_dir 默认路径一致
+      - face-galleries-data:/workspace/data/face_galleries
+      # InsightFace 模型（buffalo_l 等）；可选宿主机预下载目录覆盖
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
+      # 权重：宿主机目录 -> 容器内 /workspace/models/small（只读）
+      # 未设置 SMALL_MODEL_WEIGHTS_HOST_PATH 时使用命名卷占位，见文件末尾 volumes
+      - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro
+      - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
+      # 重排模型离线挂载（容器内路径与 app-deploy/docker-compose.yml models-app-gpu 一致）
+      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/Qwen3-Reranker-0.6B:/models/rerank/Qwen3-Reranker-0.6B:ro
+      # BERT 意图：须为已微调三分类 HF 目录；CHATBOT_INTENT_BACKEND=bert 时使用
+      - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
+      # 意图轻量 LLM（HF 目录直挂）；CHATBOT_INTENT_BACKEND=llm 时使用
+      - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
+
+networks:
+  app-internal:
+    driver: bridge
+  vllm-external:
+    name: ${VLLM_DOCKER_NETWORK:-docker_vllm-network}
+    external: true
+  rag-external:
+    name: ${RAG_DOCKER_NETWORK:-ai-stack}
+    external: true
+  mineru-external:
+    name: ${MINERU_DOCKER_NETWORK:-mineru-stack}
+    external: true
+  paddle-layout-external:
+    name: ${PADDLE_LAYOUT_DOCKER_NETWORK:-paddle-layout-stack}
+    external: true
+  face-milvus-external:
+    name: ${FACE_MILVUS_NETWORK:-face-milvus-stack}
+    external: true
+
+volumes:
+  huggingface-cache: {}
+  small-model-data: {}
+  face-galleries-data: {}
+  insightface-models-dummy:
+    driver: local
+  # 占位卷：未配置 SMALL_MODEL_WEIGHTS_HOST_PATH 时避免 compose 报错；无真实权重，生产请务必配置宿主机路径
+  small-model-weights-dummy:
+    driver: local
+  # 未配置 MINERU_IO_HOST_PATH 时的占位卷；生产与 MinerU 联调请改为同一宿主目录 bind mount
+  mineru-io-dummy:
+    driver: local
