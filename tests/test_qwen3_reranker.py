@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from app.rag.qwen3_reranker import Qwen3Reranker, format_qwen3_rerank_input
+from app.rag.qwen3_reranker import DEFAULT_INSTRUCTION, Qwen3Reranker, format_qwen3_rerank_input
 
 
 class TestQwen3Reranker(unittest.TestCase):
@@ -20,6 +20,20 @@ class TestQwen3Reranker(unittest.TestCase):
         scores = reranker.predict([["q1", "d1"], ["q2", "d2"]], batch_size=2)
         self.assertEqual([0.8, 0.2], scores)
         reranker._score_batch.assert_called_once()
+
+    def test_encode_pair_returns_int_token_ids(self) -> None:
+        reranker = Qwen3Reranker.__new__(Qwen3Reranker)
+        reranker._instruction = DEFAULT_INSTRUCTION
+        reranker._max_length = 8192
+        reranker._prefix_tokens = [1, 2]
+        reranker._suffix_tokens = [3, 4]
+        reranker._max_body_tokens = 512
+        mock_tok = MagicMock()
+        mock_tok.encode.return_value = [10, 11, 12]
+        reranker._tokenizer = mock_tok
+        ids = reranker._encode_pair("查询", "文档")
+        self.assertEqual([1, 2, 10, 11, 12, 3, 4], ids)
+        mock_tok.encode.assert_called_once()
 
     @patch("app.rag.qwen3_reranker.Qwen3Reranker._score_batch", return_value=[0.95])
     def test_rag_service_uses_native_qwen_path(self, _mock_score: MagicMock) -> None:

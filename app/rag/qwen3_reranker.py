@@ -73,12 +73,28 @@ class Qwen3Reranker:
         self._token_true_id = self._tokenizer.convert_tokens_to_ids("yes")
         self._token_false_id = self._tokenizer.convert_tokens_to_ids("no")
 
+        # 按 Qwen 官方 README：prefix/suffix + body，避免 apply_chat_template 在部分 transformers 版本返回 str
+        prefix_text = (
+            "<|im_start|>system\n"
+            f"{_SYSTEM_PROMPT}\n"
+            "\n"
+            "<|im_start|>user\n"
+        )
+        _im_end = "<|im_start|>".replace("start", "end")
+        suffix_text = f"\n{_im_end}\n<|im_start|>assistant\n\n\n\n\n"
+        self._prefix_tokens = self._tokenizer.encode(prefix_text, add_special_tokens=False)
+        self._suffix_tokens = self._tokenizer.encode(suffix_text, add_special_tokens=False)
+        reserved = len(self._prefix_tokens) + len(self._suffix_tokens) + 8
+        self._max_body_tokens = max(64, self._max_length - reserved)
+
         logger.info(
-            "Qwen3Reranker loaded model=%s device=%s max_length=%s torch_dtype=%s",
+            "Qwen3Reranker loaded model=%s device=%s max_length=%s torch_dtype=%s prefix_tokens=%s suffix_tokens=%s",
             model_id,
             self._device,
             self._max_length,
             RAG_MODEL_TORCH_DTYPE,
+            len(self._prefix_tokens),
+            len(self._suffix_tokens),
         )
 
     @property
@@ -101,25 +117,21 @@ class Qwen3Reranker:
         return out
 
     def _encode_pair(self, query: str, document: str) -> list[int]:
-        user_content = format_qwen3_rerank_input(self._instruction, query, document)
-        messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
-        template_kwargs: dict[str, Any] = {
-            "tokenize": True,
-            "add_generation_prompt": True,
-        }
-        try:
-            template_kwargs["enable_thinking"] = False
-            ids = self._tokenizer.apply_chat_template(messages, **template_kwargs)
-        except TypeError:
-            template_kwargs.pop("enable_thinking", None)
-            ids = self._tokenizer.apply_chat_template(messages, **template_kwargs)
-        if not isinstance(ids, list):
-            ids = list(ids)
+        formatted = format_qwen3_rerank_input(self._instruction, query, document)
+        body_ids = self._tokenizer.encode(
+            formatted,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=self._max_body_tokens,
+        )
+        if not body_ids:
+            return []
+        ids = self._prefix_tokens + body_ids + self._suffix_tokens
         if len(ids) > self._max_length:
             ids = ids[: self._max_length]
+        if not all(isinstance(x, int) for x in ids):
+            logger.warning("Qwen3Reranker invalid token ids type for query=%r", (query or "")[:80])
+            return []
         return ids
 
     def _score_batch(self, pairs: list[list[str]]) -> list[float]:
