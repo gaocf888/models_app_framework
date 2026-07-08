@@ -19,6 +19,7 @@ from app.core.metrics import (
 from app.rag.embedding_service import EmbeddingService, RAG_MODEL_TORCH_DTYPE, rag_model_load_kwargs
 from app.rag.models import RetrievedChunk
 from app.rag.namespace_kb import finalize_retrieval_hits
+from app.rag.service_registry import get_embedding_service, get_vector_store_provider
 from app.rag.vector_store import VectorStoreProvider
 
 logger = get_logger(__name__)
@@ -87,8 +88,8 @@ class RAGService:
 
     def __init__(self, embedding_service: EmbeddingService | None = None, store_provider: VectorStoreProvider | None = None) -> None:
         self._cfg = get_app_config().rag
-        self._embedding_service = embedding_service or EmbeddingService()
-        self._store_provider = store_provider or VectorStoreProvider()
+        self._embedding_service = embedding_service or get_embedding_service()
+        self._store_provider = store_provider or get_vector_store_provider()
         self._reranker = None
         self._reranker_lock = threading.Lock()
 

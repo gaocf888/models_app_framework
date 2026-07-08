@@ -19,6 +19,7 @@ from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.rag.models import RetrievedChunk
 from app.rag.rag_service import RAGService
+from app.rag.service_registry import get_rag_service
 
 logger = get_logger(__name__)
 
@@ -77,7 +78,7 @@ class AgenticRAGService:
     """
 
     def __init__(self, rag_service: RAGService | None = None, default_mode: RAGMode = RAGMode.BASIC) -> None:
-        self._rag = rag_service or RAGService()
+        self._rag = rag_service or get_rag_service()
         self._default_mode = default_mode
         # 从统一配置读取 Agentic 策略参数，便于线上灰度调优。
         self._cfg = get_app_config().rag.agentic

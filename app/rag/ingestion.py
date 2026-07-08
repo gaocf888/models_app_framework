@@ -21,6 +21,7 @@ from app.core.logging import get_logger
 from app.graph.ingestion import GraphIngestionService
 from app.rag.embedding_service import EmbeddingService
 from app.rag.rag_service import RAGService
+from app.rag.service_registry import get_embedding_service, get_rag_service, get_vector_store_provider
 from app.rag.vector_store import VectorStoreProvider
 
 logger = get_logger(__name__)
@@ -42,9 +43,17 @@ class RAGIngestionService:
         store_provider: VectorStoreProvider | None = None,
         graph_ingestion: GraphIngestionService | None = None,
     ) -> None:
-        self._embedding_service = embedding_service or EmbeddingService()
-        self._store_provider = store_provider or VectorStoreProvider()
-        self._rag_service = RAGService(embedding_service=self._embedding_service, store_provider=self._store_provider)
+        if embedding_service is None and store_provider is None:
+            self._embedding_service = get_embedding_service()
+            self._store_provider = get_vector_store_provider()
+            self._rag_service = get_rag_service()
+        else:
+            self._embedding_service = embedding_service or get_embedding_service()
+            self._store_provider = store_provider or get_vector_store_provider()
+            self._rag_service = RAGService(
+                embedding_service=self._embedding_service,
+                store_provider=self._store_provider,
+            )
         self._datasets: Dict[str, RAGDatasetMeta] = {}
 
         cfg = get_app_config().rag  # type: ignore[attr-defined]

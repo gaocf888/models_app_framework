@@ -12,6 +12,7 @@ from app.llm.prompt_registry import PromptTemplateRegistry
 from app.llm.langsmith_tracker import LangSmithTracker
 from app.nl2sql.prompt_builder import PromptBuilder
 from app.nl2sql.rag_service import NL2SQLRAGService
+from app.rag.service_registry import get_nl2sql_rag_service
 from app.nl2sql.schema_service import SchemaMetadataService, TableSchema
 from app.nl2sql.schema_snippet_parser import (
     TableRAGHints,
@@ -137,7 +138,7 @@ class NL2SQLChain:
         prompt_registry: PromptTemplateRegistry | None = None,
     ) -> None:
         self._schema = schema_service or SchemaMetadataService()
-        self._rag = rag_service or NL2SQLRAGService()
+        self._rag = rag_service or get_nl2sql_rag_service()
         self._prompt_builder = prompt_builder or PromptBuilder()
         self._llm = llm_client or VLLMHttpClient()
         self._validator = validator or SQLValidator()

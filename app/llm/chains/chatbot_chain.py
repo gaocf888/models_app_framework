@@ -22,6 +22,7 @@ from app.core.logging import get_logger
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.llm.langsmith_tracker import LangSmithTracker
 from app.rag.rag_service import RAGService
+from app.rag.service_registry import get_rag_service
 from app.rag.agentic import AgenticRAGService, RAGContext, RAGMode
 from app.llm.graphs.chatbot_rag_citations import chunks_to_rag_context
 from app.llm.graphs.chatbot_rag_scope import augment_retrieval_query_for_plant_kb, resolve_rag_namespace
@@ -66,7 +67,7 @@ class ChatbotChain:
             api_key=model_cfg.api_key or "EMPTY",
             temperature=model_cfg.temperature,
         )
-        base_rag = rag_service or RAGService()
+        base_rag = rag_service or get_rag_service()
         self._rag = base_rag
         # 为 Chatbot 场景接入 Agentic RAG 基座，当前版本在 AGENTIC 模式下仍复用基础 RAG 实现。
         self._agentic_rag = AgenticRAGService(rag_service=base_rag, default_mode=RAGMode.BASIC)

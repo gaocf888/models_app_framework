@@ -39,6 +39,7 @@ from app.services.nl2sql_service import NL2SQLService
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
+from app.rag.service_registry import get_rag_service
 from app.services.chatbot_image_preprocessor import ChatbotImagePreprocessor
 from app.services.chatbot_image_utils import build_user_message_with_images, strip_image_block_from_history
 from app.services.chatbot_outline import ChatbotOutlineStore
@@ -67,7 +68,7 @@ class ChatbotService:
         llm_client: VLLMHttpClient | None = None,
         prompt_registry: PromptTemplateRegistry | None = None,
     ) -> None:
-        self._rag = rag_service or RAGService()
+        self._rag = rag_service or get_rag_service()
         # 统一策略层入口：回退链路优先走 HybridRAGService（内部根据配置选择 vector/graph/hybrid）。
         self._hybrid_rag = HybridRAGService(rag_service=self._rag)
         self._conv = conv_manager or ConversationManager()

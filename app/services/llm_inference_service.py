@@ -11,6 +11,7 @@ from app.llm.langsmith_tracker import LangSmithTracker
 from app.models.llm import ChatMessage, LLMInferenceRequest, LLMInferenceResponse
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
+from app.rag.service_registry import get_rag_service
 from app.rag.agentic import AgenticRAGService, RAGContext, RAGMode
 
 logger = get_logger(__name__)
@@ -33,7 +34,7 @@ class LLMInferenceService:
         prompt_registry: PromptTemplateRegistry | None = None,
         llm_client: VLLMHttpClient | None = None,
     ) -> None:
-        base_rag = rag_service or RAGService()
+        base_rag = rag_service or get_rag_service()
         self._rag = base_rag
         # 统一策略入口：基础检索默认走 HybridRAGService（内部按配置决定 vector/graph/hybrid）。
         self._hybrid_rag = HybridRAGService(rag_service=base_rag)

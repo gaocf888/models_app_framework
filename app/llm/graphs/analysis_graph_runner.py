@@ -67,6 +67,7 @@ from app.llm.graphs.chatbot_rag_citations import (
     filter_rag_citation_dicts,
 )
 from app.rag.hybrid_rag_service import HybridRAGService
+from app.rag.service_registry import get_hybrid_rag_service
 from app.rag.models import RetrievedChunk
 from app.services.analysis_stream_hooks import dispatch_analysis_nl2sql_stream_structured
 from app.nl2sql.errors import NL2SQLExecutionError
@@ -220,7 +221,7 @@ class AnalysisGraphRunner:
         self._conv = conv_manager or ConversationManager()
         self._llm = llm_client or VLLMHttpClient()
         self._prompts = prompt_registry or PromptTemplateRegistry()
-        self._hybrid_rag = hybrid_rag or HybridRAGService()
+        self._hybrid_rag = hybrid_rag or get_hybrid_rag_service()
         self._nl2sql = nl2sql_service or NL2SQLService(conv_manager=self._conv)
         self._stream_ctrl = stream_control
         self._analysis_cfg = get_app_config().analysis

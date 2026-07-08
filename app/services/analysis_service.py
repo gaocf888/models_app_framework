@@ -47,6 +47,7 @@ from app.llm.graphs.analysis_img_diag_runner import (
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.rag.rag_service import RAGService
+from app.rag.service_registry import get_rag_service
 from app.services.analysis_stream_control import AnalysisStreamControl
 from app.services.nl2sql_service import NL2SQLService
 from app.services.analysis_trace_store import create_analysis_trace_store
@@ -139,7 +140,7 @@ class AnalysisService:
         prompt_registry: PromptTemplateRegistry | None = None,
     ) -> None:
         """组装 RAG/LLM/NL2SQL、trace 存储与 `AnalysisGraphRunner`；未传入时使用默认实现。"""
-        self._hybrid_rag = HybridRAGService(rag_service=rag_service or RAGService())
+        self._hybrid_rag = HybridRAGService(rag_service=rag_service or get_rag_service())
         self._conv = conv_manager or ConversationManager()
         self._llm = llm_client or VLLMHttpClient()
         self._prompts = prompt_registry or PromptTemplateRegistry()

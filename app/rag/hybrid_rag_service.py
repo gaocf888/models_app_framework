@@ -15,6 +15,7 @@ from app.core.logging import get_logger
 from app.graph.query_service import GraphQueryService
 from app.rag.rag_service import RAGService
 from app.rag.retrieval_policy import RetrievalPolicy
+from app.rag.service_registry import get_rag_service
 
 logger = get_logger(__name__)
 
@@ -39,7 +40,7 @@ class HybridRAGService:
         self._graph_cfg: GraphRAGConfig = graph_cfg or self._rag_cfg.graph
         self._policy = RetrievalPolicy(self._graph_cfg)
 
-        self._rag_service = rag_service or RAGService()
+        self._rag_service = rag_service or get_rag_service()
         # 若配置启用了 GraphRAG，则优先使用传入实例，否则尝试默认初始化
         if graph_query is not None:
             self._graph_query = graph_query

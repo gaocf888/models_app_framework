@@ -9,6 +9,7 @@ from app.graph.query_service import GraphQueryService
 from app.rag.models import RetrievedChunk
 from app.rag.retrieval_policy import RetrievalPolicy
 from app.rag.rag_service import RAGService
+from app.rag.service_registry import get_rag_service
 
 if TYPE_CHECKING:
     from app.nl2sql.qa_feedback import NL2SQLQARetrievalContext
@@ -29,7 +30,7 @@ class NL2SQLRAGService:
     NS_QA = "nl2sql_qa_examples"
 
     def __init__(self, rag_service: RAGService | None = None) -> None:
-        self._rag = rag_service or RAGService()
+        self._rag = rag_service or get_rag_service()
         rag_cfg = get_app_config().rag
         self._policy = RetrievalPolicy(rag_cfg.graph)
         if rag_cfg.graph.enabled:

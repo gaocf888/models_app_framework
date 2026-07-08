@@ -15,6 +15,8 @@ from __future__ import annotations
        SERVICE_API_KEYS，见 `app/app-deploy/README.md`「Service API Key」）。
 """
 
+from functools import lru_cache
+
 from fastapi import APIRouter, Depends
 
 from app.models.llm import LLMInferenceRequest, LLMInferenceResponse
@@ -23,6 +25,7 @@ from app.services.llm_inference_service import LLMInferenceService
 router = APIRouter()
 
 
+@lru_cache(maxsize=1)
 def get_service() -> LLMInferenceService:
     return LLMInferenceService()
 

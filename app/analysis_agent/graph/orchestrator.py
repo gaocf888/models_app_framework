@@ -28,6 +28,7 @@ from app.core.metrics import (
 from app.llm.client import VLLMHttpClient
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
+from app.rag.service_registry import get_hybrid_rag_service
 from app.services.nl2sql_service import NL2SQLService
 
 logger = get_logger(__name__)
@@ -62,7 +63,7 @@ class SlotOrchestrator:
         self._conv = conv_manager or ConversationManager()
         self._llm = llm_client or VLLMHttpClient()
         self._prompts = prompt_registry or PromptTemplateRegistry()
-        self._hybrid_rag = hybrid_rag or HybridRAGService()
+        self._hybrid_rag = hybrid_rag or get_hybrid_rag_service()
         self._nl2sql = nl2sql_service or NL2SQLService(conv_manager=self._conv)
         self._cfg = get_app_config().analysis_agent
 
