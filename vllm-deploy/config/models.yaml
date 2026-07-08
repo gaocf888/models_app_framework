@@ -181,6 +181,45 @@ presets:
         - "./videos"
     description: "Qwen2.5-VL 72B AWQ 多模态模型，兼顾效果与显存占用"
 
+
+  # ==================== 通义千问 3 语言模型 =======================
+
+  # Qwen3 8B 指令模型（BF16 权重约 16GiB；单卡 24G 宜控制上下文，更大显存或双卡可上调 max_model_len）
+  qwen3-8b:
+    path: "./models/Qwen3-8B"
+    served_model_name: "qwen3-8b"
+    dtype: "bfloat16"
+    max_model_len: 8192
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.90
+    max_num_seqs: 16
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: true
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal: false
+    description: "Qwen3-8B 文本对话（原生 32K；单卡 24G BF16 默认 8K 上下文）"
+
+  # Qwen3 8B AWQ（单卡 RTX 3090 24GB 推荐；权重约 6GiB，较 BF16 更易留出 KV 或与 GPU embed/rerank 同机）
+  qwen3-8b-awq:
+    path: "./models/Qwen3-8B-AWQ"
+    served_model_name: "qwen3-8b-awq"
+    dtype: "half"
+    quantization: "awq"
+    max_model_len: 16384
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.80
+    max_num_seqs: 16
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: true
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal: false
+    description: "Qwen3-8B-AWQ，单卡 3090 24G 文本对话（16K 上下文；与 models-app GPU RAG 同机时可再降 gpu_memory_utilization）"
+
+
   # ==================== 通义千问 3 视觉语言模型 ====================
 
   # Qwen3-VL 32B 多模态模型
