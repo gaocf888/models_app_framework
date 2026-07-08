@@ -1,5 +1,7 @@
 import unittest
+from unittest.mock import MagicMock
 
+from app.rag.embedding_service import rag_cross_encoder_load_kwargs
 from app.rag.rag_service import RAGService, _hit_namespace_allowed, _normalize_excluded_namespaces
 from app.rag.vector_store import InMemoryVectorStore
 
@@ -59,6 +61,40 @@ class TestRAGCore(unittest.TestCase):
         excluded = _normalize_excluded_namespaces(["nl2sql_schema"]) or set()
         self.assertFalse(_hit_namespace_allowed({"namespace": "nl2sql_schema"}, excluded))
         self.assertTrue(_hit_namespace_allowed({"namespace": "global"}, excluded))
+
+    def test_rag_cross_encoder_load_kwargs_qwen_uses_left_padding(self):
+        kwargs = rag_cross_encoder_load_kwargs(
+            trust_remote_code=False,
+            model_id="/workspace/models/rerank/Qwen3-Reranker-0.6B",
+        )
+        self.assertTrue(kwargs["trust_remote_code"])
+        self.assertEqual(kwargs["tokenizer_kwargs"], {"padding_side": "left"})
+
+    def test_rerank_skips_empty_doc_text(self):
+        svc = RAGService.__new__(RAGService)
+        mock_reranker = MagicMock()
+        mock_reranker.predict.return_value = [0.9]
+        mock_reranker.device = "cpu"
+        svc._get_reranker = lambda: mock_reranker  # type: ignore[method-assign]
+        hits = [
+            {"ext_id": "a", "text": "  "},
+            {"ext_id": "b", "text": "valid chunk"},
+        ]
+        out = svc._rerank("query", hits)
+        mock_reranker.predict.assert_called_once_with([["query", "valid chunk"]], batch_size=1)
+        self.assertEqual(out[0]["ext_id"], "b")
+        self.assertEqual(out[0]["_rerank_score"], 0.9)
+
+    def test_rerank_predict_failure_keeps_rrf_order(self):
+        svc = RAGService.__new__(RAGService)
+        mock_reranker = MagicMock()
+        mock_reranker.predict.side_effect = RuntimeError("cannot reshape tensor")
+        mock_reranker.device = "cpu"
+        svc._get_reranker = lambda: mock_reranker  # type: ignore[method-assign]
+        hits = [{"ext_id": "a", "text": "alpha"}, {"ext_id": "b", "text": "beta"}]
+        out = svc._rerank("query", hits)
+        self.assertEqual([h["ext_id"] for h in out], ["a", "b"])
+        self.assertNotIn("_rerank_score", out[0])
 
 
 if __name__ == "__main__":

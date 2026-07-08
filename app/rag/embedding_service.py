@@ -37,6 +37,23 @@ def rag_model_load_kwargs() -> dict[str, Any]:
     return {"torch_dtype": RAG_MODEL_TORCH_DTYPE}
 
 
+def _is_qwen_reranker_model(model_id: str) -> bool:
+    mid = (model_id or "").lower()
+    return "qwen" in mid and "rerank" in mid
+
+
+def rag_cross_encoder_load_kwargs(*, trust_remote_code: bool, model_id: str = "") -> dict[str, Any]:
+    """CrossEncoder 加载参数；Qwen3-Reranker 须 left padding，否则 batch predict 可能 seq_len=0 崩溃。"""
+    use_qwen = trust_remote_code or _is_qwen_reranker_model(model_id)
+    kwargs: dict[str, Any] = {
+        "trust_remote_code": use_qwen,
+        "model_kwargs": rag_model_load_kwargs(),
+    }
+    if use_qwen:
+        kwargs["tokenizer_kwargs"] = {"padding_side": "left"}
+    return kwargs
+
+
 def _sentence_transformer_device_repr(model: object) -> str:
     """SentenceTransformer 实际推理设备（用于日志）。"""
     try:

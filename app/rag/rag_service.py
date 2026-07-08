@@ -16,7 +16,11 @@ from app.core.metrics import (
     RAG_RERANK_COUNT,
     RAG_SEMANTIC_RECALL_COUNT,
 )
-from app.rag.embedding_service import EmbeddingService, RAG_MODEL_TORCH_DTYPE, rag_model_load_kwargs
+from app.rag.embedding_service import (
+    EmbeddingService,
+    RAG_MODEL_TORCH_DTYPE,
+    rag_cross_encoder_load_kwargs,
+)
 from app.rag.models import RetrievedChunk
 from app.rag.namespace_kb import finalize_retrieval_hits
 from app.rag.service_registry import get_embedding_service, get_vector_store_provider
@@ -123,10 +127,11 @@ class RAGService:
                     "Install with: pip install -r requirements-大模型应用.txt"
                 ) from e
             try:
-                common_kwargs: dict[str, Any] = {
-                    "trust_remote_code": os.getenv("RAG_RERANKER_TRUST_REMOTE_CODE", "false").lower() == "true",
-                    "model_kwargs": rag_model_load_kwargs(),
-                }
+                trust_remote_code = os.getenv("RAG_RERANKER_TRUST_REMOTE_CODE", "false").lower() == "true"
+                common_kwargs: dict[str, Any] = rag_cross_encoder_load_kwargs(
+                    trust_remote_code=trust_remote_code,
+                    model_id=load_id,
+                )
                 if configured_device:
                     common_kwargs["device"] = configured_device
                 if resolved_local:
@@ -513,9 +518,32 @@ class RAGService:
         if reranker is None:
             # 跳过重排：保持融合顺序，避免流式/推理接口因 reranker 加载失败直接中断。
             return hits
+        q = (query or "").strip()
+        if not q:
+            return hits
+
+        pairs: list[list[str]] = []
+        scored_indices: list[int] = []
+        for idx, hit in enumerate(hits):
+            doc = str(hit.get("text") or "").strip()
+            if doc:
+                pairs.append([q, doc])
+                scored_indices.append(idx)
+        if not pairs:
+            logger.warning("RAGService rerank skipped: all candidate texts empty hits=%s", len(hits))
+            return hits
+
         t0 = time.perf_counter()
-        pairs = [[query, h.get("text", "")] for h in hits]
-        scores = reranker.predict(pairs)
+        try:
+            scores = reranker.predict(pairs, batch_size=min(16, len(pairs)))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "RAGService rerank predict failed; keep RRF order. pairs=%s err=%s",
+                len(pairs),
+                e,
+                exc_info=True,
+            )
+            return hits
         rerank_ms = int((time.perf_counter() - t0) * 1000)
         target_device = _cross_encoder_device_repr(reranker)
         logger.info(
@@ -525,8 +553,8 @@ class RAGService:
             target_device,
         )
         RAG_RERANK_COUNT.inc()
-        for idx, hit in enumerate(hits):
-            hit["_rerank_score"] = float(scores[idx])
+        for pair_idx, hit_idx in enumerate(scored_indices):
+            hits[hit_idx]["_rerank_score"] = float(scores[pair_idx])
         hits.sort(key=lambda x: float(x.get("_rerank_score", 0.0)), reverse=True)
         return hits
 
