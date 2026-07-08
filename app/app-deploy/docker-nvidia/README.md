@@ -22,7 +22,8 @@
 ## 前置条件
 
 1. 外挂服务已启动：EasySearch、vLLM（见 `README-simple-deploy.md` §3.1）
-2. 宿主机模型目录（离线推荐）：
+2. **GPU 注入与 vLLM 相同**：宿主机 NVIDIA Container Toolkit 正常，且 compose 中 `models-app` 已声明 `deploy.resources.reservations.devices`（本目录 `docker-compose-nvidia.yml` 已配置；勿仅依赖 `NVIDIA_VISIBLE_DEVICES` 环境变量）
+3. 宿主机模型目录（离线推荐）：
 
    ```text
    /aidata/models/embeddings/Qwen3-Embedding-0.6B/
@@ -42,7 +43,11 @@
    RAG_RERANKER_DEVICE=cuda:1
 
    MODELS_APP_NVIDIA_VISIBLE_DEVICES=all
-   ```
+   # 与 vLLM 的 GPU_DEVICE_COUNT 同理；单卡可设为 1 或 all
+   # MODELS_APP_GPU_DEVICE_COUNT=all
+```
+
+单卡 3090 同时跑 vLLM 时，嵌入/重排建议同卡：`EMBEDDING_DEVICE=cuda:0`、`RAG_RERANKER_DEVICE=cuda:0`（勿写 `cuda:1`）。
 
 ## 启动
 
@@ -60,6 +65,7 @@ docker compose -f docker-nvidia/docker-compose-nvidia.yml --profile small-model-
 
 ```bash
 curl -s "http://127.0.0.1:${APP_PORT:-8083}/health/"
+docker exec models-app nvidia-smi
 docker compose -f docker-nvidia/docker-compose-nvidia.yml logs models-app | grep -E "EmbeddingService|CrossEncoder reranker"
 ```
 

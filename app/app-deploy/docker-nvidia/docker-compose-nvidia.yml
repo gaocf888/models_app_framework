@@ -24,8 +24,10 @@
 #
 # 【Compose 专用变量】
 #   MODELS_APP_NVIDIA_VISIBLE_DEVICES   → 注入 models-app 的 NVIDIA_VISIBLE_DEVICES（默认 all）
+#   MODELS_APP_GPU_DEVICE_COUNT         → compose deploy GPU 预留数量（默认 all，与 vLLM 的 GPU_DEVICE_COUNT 同理）
 #   APP_PORT_GPU                        → models-app-gpu 宿主机端口（默认 8081）
 #   SMALL_MODEL_NVIDIA_VISIBLE_DEVICES  → 注入 models-app-gpu 的 NVIDIA_VISIBLE_DEVICES（默认 all）
+#   SMALL_MODEL_GPU_DEVICE_COUNT        → models-app-gpu 的 compose deploy GPU 预留（默认 all）
 #   SMALL_MODEL_WEIGHTS_HOST_PATH       → 小模型权重宿主机目录；未设置时用占位卷
 #   其余 APP_PORT / *_HOST_PATH / *_DOCKER_NETWORK 与 app-deploy/.env.example 一致。
 #
@@ -40,8 +42,9 @@
 # 【英伟达 models-app · 解释器与 GPU】
 #   Dockerfile-nvidia 基于 python:3.11-slim + pip cu121 torch。
 #   models-app-gpu 使用 app/app-deploy/Dockerfile.small-model-gpu（cu121 + Ultralytics）。
-#   宿主机须安装 NVIDIA Container Toolkit；若 compose 不支持 `gpus:` 字段，
-#   依赖 NVIDIA_VISIBLE_DEVICES + Docker nvidia runtime。
+#   宿主机须安装 NVIDIA Container Toolkit（与 vllm-deploy 相同）。
+#   GPU 注入须使用 compose deploy.resources.reservations.devices（见 vllm docker-compose.nvidia.yml），
+#   仅设置 NVIDIA_VISIBLE_DEVICES 环境变量不足以挂载驱动。
 #
 # =============================================================================
 
@@ -141,6 +144,13 @@ services:
       NVIDIA_VISIBLE_DEVICES: ${MODELS_APP_NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       RAG_RERANKER_MODEL_PATH: /workspace/models/rerank/Qwen3-Reranker-0.6B
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${MODELS_APP_GPU_DEVICE_COUNT:-all}
+              capabilities: [gpu]
 
   # ---------------------------------------------------------------------------
   # models-app-gpu：仅当 docker compose --profile small-model-gpu 时启动
@@ -180,14 +190,18 @@ services:
       face-milvus-external: {}
       # 暂未部署Neo4j，对应网络注释掉
       # graph-external: {}
-    # 说明：原本使用 compose 的 `gpus: all` 字段声明 GPU 需求，
-    # 但部分 Docker Compose 版本暂不支持该字段，因此改为通过
-    # NVIDIA_VISIBLE_DEVICES 控制可见 GPU。需要在宿主机上正确安装
-    # NVIDIA Container Toolkit，并将 Docker 默认 runtime 配置为 nvidia。
+    # GPU：与 vllm-deploy/docker-compose.nvidia.yml 相同，须 deploy.resources 注入 nvidia 驱动
     environment:
       NVIDIA_VISIBLE_DEVICES: ${SMALL_MODEL_NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       RAG_RERANKER_MODEL_PATH: /models/rerank/Qwen3-Reranker-0.6B
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${SMALL_MODEL_GPU_DEVICE_COUNT:-all}
+              capabilities: [gpu]
     volumes:
       - huggingface-cache:/root/.cache/huggingface
       - ../logs:/workspace/logs
