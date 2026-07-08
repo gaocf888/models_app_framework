@@ -5,7 +5,9 @@ services:
     image: ${VLLM_IMAGE:-vllm-service:latest}
     build:
       context: ..
-      dockerfile: docker/Dockerfile-mx
+      # dockerfile 由平台 overlay 指定（docker-compose.nvidia.yml / .mthreads.yml 等）。
+      # 禁止单独本文件 up --build，须与平台 overlay 合并，例如：
+      #   docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
       args:
         BASE_IMAGE: ${BASE_IMAGE:-nvidia/cuda:12.3.0-runtime-ubuntu22.04}
         VLLM_REQUIREMENTS_PROFILE: ${VLLM_REQUIREMENTS_PROFILE:-full}

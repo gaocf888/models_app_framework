@@ -81,11 +81,12 @@ chmod +x deploy.sh
 或在 `docker/` 下手动：
 ```bash
 cd vllm-deploy/docker
-docker compose --env-file ../.env -f docker-compose-mx.yml -f docker-compose.cambricon.yml up -d --build
+docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.cambricon.yml up -d --build
 ```
 此时：
-- `docker/docker-compose.yml` 的 `build.args.BASE_IMAGE` 会使用你刚提交的 `vendor/vllm-stack:vllm-deploy-2025.01`；
+- 平台 overlay 指定 `docker/Dockerfile-mx` 与默认 `VLLM_REQUIREMENTS_PROFILE=extras`；
+- `build.args.BASE_IMAGE` 使用 `.env` 中的厂商镜像（如 `vendor/vllm-stack:vllm-deploy-2025.01`）；
 - Dockerfile 会根据 `VLLM_REQUIREMENTS_PROFILE=extras`，仅使用 `requirements-extras.txt` 做一次离线环境内 `pip` 补充安装；
 - 运行期服务的端口、挂载、健康检查等与在线场景完全一致。
 
-> 说明：当前仓库默认 `docker/Dockerfile` 已切换为 `yum/dnf` 包管理版本，原 `apt-get` 版本备份为 `docker/Dockerfile_bak`。若你的离线基础镜像是 Debian/Ubuntu 体系，请改用 `Dockerfile_bak` 或按现场镜像调整包安装命令。
+> 英伟达离线/内网若基础镜像是 Debian/Ubuntu，overlay 会使用 `Dockerfile-nvidia`（`apt-get`）；国产 Kylin/RHEL 系使用 `Dockerfile-mx`（`yum/dnf`）。

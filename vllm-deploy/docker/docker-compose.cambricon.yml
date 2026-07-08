@@ -2,6 +2,10 @@ version: '3.8'
 
 services:
   vllm:
+    build:
+      dockerfile: docker/Dockerfile-mx
+      args:
+        VLLM_REQUIREMENTS_PROFILE: ${VLLM_REQUIREMENTS_PROFILE:-extras}
     privileged: true
     environment:
       - MLU_VISIBLE_DEVICES=${MLU_VISIBLE_DEVICES:-0}

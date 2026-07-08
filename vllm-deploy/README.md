@@ -13,7 +13,7 @@
 - **英伟达环境**：宿主机安装 **NVIDIA 驱动** 与 **NVIDIA Container Toolkit**。
 - **国产环境**：按厂商文档安装对应驱动与容器运行时；本仓库通过平台化 compose overlay 管理硬件差异。
 
-基础镜像需允许在构建阶段执行包安装与 `pip`（见 `docker/Dockerfile`）。当前仓库默认 `Dockerfile` 为 `yum/dnf` 版本；原 `apt-get` 版本已备份为 `docker/Dockerfile_bak`。若你的基础镜像是 Debian/Ubuntu 体系，请切回 `Dockerfile_bak` 或按需改造。
+基础镜像需允许在构建阶段执行包安装与 `pip`。英伟达使用 `docker/Dockerfile-nvidia`（`apt-get`）；国产算力使用 `docker/Dockerfile-mx`（`yum/dnf`）。**无需手改 base compose**，由平台 overlay 自动选择 Dockerfile。
 
 ## 构建参数（`.env` 或 `docker compose build --build-arg`）
 
@@ -36,11 +36,11 @@ cp .env.example .env
 
 为避免不同厂商显卡配置互相污染，仓库采用“基座 + 平台 overlay”：
 
-- `docker/docker-compose.yml`：通用配置（镜像构建、端口、挂载、命令、健康检查）。
-- `docker/docker-compose.nvidia.yml`：英伟达差异项（`CUDA_VISIBLE_DEVICES`、GPU reservation）。
-- `docker/docker-compose.cambricon.yml`：寒武纪差异项（`privileged: true`、`MLU_VISIBLE_DEVICES`、`/dev` 透传）。
-- `docker/docker-compose.mthreads.yml`：沐曦差异项（`privileged: true`、`MX_VISIBLE_DEVICES`、`/dev` 透传）。
-- `docker/docker-compose.ascend.yml`：昇腾差异项（`privileged: true`、`ASCEND_RT_VISIBLE_DEVICES`、`/dev` 透传）。
+- `docker/docker-compose.yml`：通用配置（`build.context`、端口、挂载、命令、健康检查）；**不含 `dockerfile`**，须与平台 overlay 合并使用。
+- `docker/docker-compose.nvidia.yml`：英伟达（`Dockerfile-nvidia`、`CUDA_VISIBLE_DEVICES`、GPU reservation）。
+- `docker/docker-compose.cambricon.yml`：寒武纪（`Dockerfile-mx`、`privileged`、`MLU_VISIBLE_DEVICES`、`/dev` 透传）。
+- `docker/docker-compose.mthreads.yml`：沐曦（`Dockerfile-mx`、Metax 默认 `BASE_IMAGE`、`privileged`、`MX_VISIBLE_DEVICES`、`/dev` 透传）。
+- `docker/docker-compose.ascend.yml`：昇腾（`Dockerfile-mx`、`privileged`、`ASCEND_RT_VISIBLE_DEVICES`、`/dev` 透传）。
 
 平台选择方式：
 
@@ -125,10 +125,11 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwe
      cp .env.example .env
      vi .env
      ```
-     
-2. **配置Dockerfile**
-   - vllm-deploy/docker/路径下目前包含 nvidia和沐曦的两个Dockerfile配置文件（Dockerfile-nvidia、Dockerfile-mx）
-   - 部署之前，需要在 docker-compose.yml中修改vllm的dockerfile为当前部署环境匹配的Dockerfile
+
+3. **选择平台（自动匹配 Dockerfile）**
+   - `docker/` 下有两个 Dockerfile：`Dockerfile-nvidia`（英伟达 / apt）、`Dockerfile-mx`（国产 / yum）。
+   - **无需**再改 `docker-compose.yml`；通过 `deploy.sh --platform` 或手动 `-f docker-compose.<platform>.yml` 即可选中对应 `dockerfile` 与默认 `build.args`。
+   - 国产场景在 `.env` 中设置 `BASE_IMAGE` 为厂商镜像，并保持 `VLLM_REQUIREMENTS_PROFILE=extras`（overlay 已默认为 `extras`，可被 `.env` 覆盖）。
 
 4. **准备模型权重**
    - 按「模型权重准备」一节任意一种方式将模型下载到宿主机 `MODEL_PATH`（默认 `/aidata/models/llm`）下，并在 `config/vllm.yaml` / `config/models.yaml` 中确认路径与预设一致。
@@ -148,7 +149,8 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwe
      cd vllm-deploy/docker
      docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
      # 沐曦：docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.mthreads.yml up -d --build
-     # 旧版：docker-compose --env-file ../.env -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
+     # 寒武纪：docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.cambricon.yml up -d --build
+     # 昇腾：docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.ascend.yml up -d --build
      ```
 
 6. **（可选）使用 docker 目录下的 .env**

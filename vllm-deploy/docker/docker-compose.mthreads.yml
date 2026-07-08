@@ -2,6 +2,11 @@ version: '3.8'
 
 services:
   vllm:
+    build:
+      dockerfile: docker/Dockerfile-mx
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.17.0-maca.ai3.5.3.307-torch2.8-py312-kylinv11-amd64}
+        VLLM_REQUIREMENTS_PROFILE: ${VLLM_REQUIREMENTS_PROFILE:-extras}
     privileged: true
     environment:
       - MX_VISIBLE_DEVICES=${MX_VISIBLE_DEVICES:-0}
