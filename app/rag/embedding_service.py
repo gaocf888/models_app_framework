@@ -14,6 +14,8 @@ Qwen3-Embedding 等 instruction-aware 模型需配置 EMBEDDING_QUERY_PROMPT_NAM
 - embed_texts（知识摄入 document/chunk）不带 prompt。
 
 推理设备可通过 EMBEDDING_DEVICE 显式指定（cpu / cuda / cuda:0 等），与 RAG_RERANKER_DEVICE 用法一致。
+
+加载时显式使用 float16（model_kwargs），避免 sentence-transformers / transformers 默认 FP32 导致显存占用翻倍。
 """
 
 from __future__ import annotations
@@ -25,6 +27,14 @@ from app.core.config import get_app_config
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# 嵌入与 CrossEncoder 重排共用；Qwen3 等 checkpoint 为 bf16 权重，float16 在 NVIDIA GPU 上显存与兼容性均衡
+RAG_MODEL_TORCH_DTYPE = "float16"
+
+
+def rag_model_load_kwargs() -> dict[str, Any]:
+    """SentenceTransformer / CrossEncoder 传入的 model_kwargs（半精度加载）。"""
+    return {"torch_dtype": RAG_MODEL_TORCH_DTYPE}
 
 
 def _sentence_transformer_device_repr(model: object) -> str:
@@ -64,12 +74,13 @@ class EmbeddingService:
         target_device = _sentence_transformer_device_repr(self._model) if self._model is not None else "?"
         logger.info(
             "EmbeddingService: loaded %s model=%s embedding_dim=%s device=%s "
-            "configured_device=%s query_prompt_name=%s trust_remote_code=%s",
+            "configured_device=%s torch_dtype=%s query_prompt_name=%s trust_remote_code=%s",
             source,
             load_id,
             self._dim,
             target_device,
             self._configured_device or "auto",
+            RAG_MODEL_TORCH_DTYPE,
             self._query_prompt_name,
             self._trust_remote_code,
         )
@@ -108,7 +119,7 @@ class EmbeddingService:
             ) from e
 
     def _sentence_transformer_kwargs(self) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {"model_kwargs": rag_model_load_kwargs()}
         if self._trust_remote_code:
             kwargs["trust_remote_code"] = True
         if self._query_prompt_name:

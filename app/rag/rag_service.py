@@ -4,7 +4,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Sequence, Set
+from typing import Any, List, Sequence, Set
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -16,7 +16,7 @@ from app.core.metrics import (
     RAG_RERANK_COUNT,
     RAG_SEMANTIC_RECALL_COUNT,
 )
-from app.rag.embedding_service import EmbeddingService
+from app.rag.embedding_service import EmbeddingService, RAG_MODEL_TORCH_DTYPE, rag_model_load_kwargs
 from app.rag.models import RetrievedChunk
 from app.rag.namespace_kb import finalize_retrieval_hits
 from app.rag.vector_store import VectorStoreProvider
@@ -122,8 +122,9 @@ class RAGService:
                     "Install with: pip install -r requirements-大模型应用.txt"
                 ) from e
             try:
-                common_kwargs = {
+                common_kwargs: dict[str, Any] = {
                     "trust_remote_code": os.getenv("RAG_RERANKER_TRUST_REMOTE_CODE", "false").lower() == "true",
+                    "model_kwargs": rag_model_load_kwargs(),
                 }
                 if configured_device:
                     common_kwargs["device"] = configured_device
@@ -139,10 +140,11 @@ class RAGService:
                     )
                 target_device = _cross_encoder_device_repr(self._reranker)
                 logger.info(
-                    "RAGService loaded CrossEncoder reranker: %s device=%s configured_device=%s",
+                    "RAGService loaded CrossEncoder reranker: %s device=%s configured_device=%s torch_dtype=%s",
                     load_id,
                     target_device,
                     configured_device or "auto",
+                    RAG_MODEL_TORCH_DTYPE,
                 )
                 return self._reranker
             except Exception as e:  # noqa: BLE001
