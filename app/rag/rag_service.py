@@ -20,7 +20,6 @@ from app.rag.embedding_service import (
     EmbeddingService,
     RAG_MODEL_TORCH_DTYPE,
     _is_qwen_reranker_model,
-    configure_qwen_cross_encoder,
     rag_cross_encoder_load_kwargs,
 )
 from app.rag.text_quality import looks_like_binary_text
@@ -122,15 +121,30 @@ class RAGService:
                         hub_name,
                     )
             load_id = resolved_local if resolved_local else hub_name
+            trust_remote_code = os.getenv("RAG_RERANKER_TRUST_REMOTE_CODE", "false").lower() == "true"
+            use_qwen_native = _is_qwen_reranker_model(load_id) or (
+                trust_remote_code and _is_qwen_reranker_model(hub_name)
+            )
             try:
+                if use_qwen_native:
+                    from app.rag.qwen3_reranker import Qwen3Reranker
+
+                    max_length = int(os.getenv("RAG_RERANKER_MAX_LENGTH", "8192"))
+                    self._reranker = Qwen3Reranker(
+                        load_id,
+                        device=configured_device,
+                        max_length=max_length,
+                    )
+                    logger.info(
+                        "RAGService loaded Qwen3Reranker (native): %s device=%s configured_device=%s",
+                        load_id,
+                        self._reranker.device,
+                        configured_device or "auto",
+                    )
+                    return self._reranker
+
                 from sentence_transformers import CrossEncoder  # type: ignore[import-untyped]
-            except Exception as e:  # noqa: BLE001
-                raise ImportError(
-                    "CrossEncoder reranker requires sentence-transformers. "
-                    "Install with: pip install -r requirements-大模型应用.txt"
-                ) from e
-            try:
-                trust_remote_code = os.getenv("RAG_RERANKER_TRUST_REMOTE_CODE", "false").lower() == "true"
+
                 common_kwargs: dict[str, Any] = rag_cross_encoder_load_kwargs(
                     trust_remote_code=trust_remote_code,
                     model_id=load_id,
@@ -147,8 +161,6 @@ class RAGService:
                         hub_name,
                         **common_kwargs,
                     )
-                if trust_remote_code or _is_qwen_reranker_model(load_id):
-                    configure_qwen_cross_encoder(self._reranker)
                 target_device = _cross_encoder_device_repr(self._reranker)
                 logger.info(
                     "RAGService loaded CrossEncoder reranker: %s device=%s configured_device=%s torch_dtype=%s",
@@ -158,8 +170,12 @@ class RAGService:
                     RAG_MODEL_TORCH_DTYPE,
                 )
                 return self._reranker
+            except ImportError as e:
+                raise ImportError(
+                    "CrossEncoder reranker requires sentence-transformers. "
+                    "Install with: pip install -r requirements-大模型应用.txt"
+                ) from e
             except Exception as e:  # noqa: BLE001
-                # Reranker 不是摄入/检索链路的强依赖：模型缺失/无网时允许跳过重排。
                 logger.warning("RAGService failed to load reranker model=%s; skip rerank. err=%s", load_id, e)
                 self._reranker = None
                 return None

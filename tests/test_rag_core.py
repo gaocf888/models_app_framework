@@ -62,14 +62,13 @@ class TestRAGCore(unittest.TestCase):
         self.assertFalse(_hit_namespace_allowed({"namespace": "nl2sql_schema"}, excluded))
         self.assertTrue(_hit_namespace_allowed({"namespace": "global"}, excluded))
 
-    def test_rag_cross_encoder_load_kwargs_qwen_uses_left_padding(self):
+    def test_rag_cross_encoder_load_kwargs_bge(self):
         kwargs = rag_cross_encoder_load_kwargs(
             trust_remote_code=False,
-            model_id="/workspace/models/rerank/Qwen3-Reranker-0.6B",
+            model_id="BAAI/bge-reranker-large",
         )
-        self.assertTrue(kwargs["trust_remote_code"])
-        self.assertEqual(kwargs["processor_kwargs"], {"padding_side": "left"})
-        self.assertEqual(kwargs["tokenizer_kwargs"], {"padding_side": "left"})
+        self.assertFalse(kwargs["trust_remote_code"])
+        self.assertEqual(kwargs["model_kwargs"], {"torch_dtype": "float16"})
 
     def test_rerank_skips_empty_doc_text(self):
         svc = RAGService.__new__(RAGService)

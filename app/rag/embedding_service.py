@@ -43,17 +43,11 @@ def _is_qwen_reranker_model(model_id: str) -> bool:
 
 
 def rag_cross_encoder_load_kwargs(*, trust_remote_code: bool, model_id: str = "") -> dict[str, Any]:
-    """CrossEncoder 加载参数；Qwen3-Reranker 须 left padding，否则 batch predict 可能 seq_len=0 崩溃。"""
-    use_qwen = trust_remote_code or _is_qwen_reranker_model(model_id)
+    """CrossEncoder 加载参数（BGE 等标准 cross-encoder；Qwen3 请用 Qwen3Reranker）。"""
     kwargs: dict[str, Any] = {
-        "trust_remote_code": use_qwen,
+        "trust_remote_code": trust_remote_code,
         "model_kwargs": rag_model_load_kwargs(),
     }
-    if use_qwen:
-        pad = {"padding_side": "left"}
-        # sentence-transformers 新版用 processor_kwargs；旧版仍读 tokenizer_kwargs
-        kwargs["processor_kwargs"] = pad
-        kwargs["tokenizer_kwargs"] = pad
     return kwargs
 
 
