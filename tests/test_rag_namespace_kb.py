@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from app.rag.models import ChunkRecord, DocumentSource
@@ -320,6 +321,33 @@ class TestContentUrlFetchPreservesNamespaceKb(unittest.TestCase):
         self.assertIs(doc, new_doc)
         self.assertEqual(2, new_doc.namespace_kb_priority)
         self.assertIsNone(tmp)
+
+    def test_pdf_url_with_text_source_type_auto_routes_to_file(self) -> None:
+        from app.rag.content_url_fetch import materialize_document_content_from_url
+
+        doc = DocumentSource(
+            dataset_id="ds",
+            doc_name="pdf_as_text",
+            namespace="n1",
+            content="https://example.com/report.pdf",
+            source_type="text",
+        )
+        cfg = MagicMock()
+        cfg.enabled = True
+        cfg.max_bytes = 10_000_000
+        cfg.timeout_s = 30
+        with patch("app.rag.content_url_fetch.get_app_config") as gc, patch(
+            "app.rag.content_url_fetch.fetch_url_bytes",
+            return_value=(b"%PDF-1.4 binary", "application/pdf"),
+        ):
+            gc.return_value.rag.content_fetch = cfg
+            new_doc, tmp = materialize_document_content_from_url(doc)
+        try:
+            self.assertEqual("pdf", new_doc.source_type)
+            self.assertTrue(Path(new_doc.content).is_file())
+        finally:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

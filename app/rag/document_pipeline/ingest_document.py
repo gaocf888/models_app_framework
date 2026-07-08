@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.config import get_app_config
+from app.rag.content_url_fetch import normalize_document_source_type
 from app.rag.document_pipeline import ChunkingConfig, DocumentPipeline
 from app.rag.document_pipeline.figure_extractor import (
     build_figure_chunks_from_extracted,
@@ -22,6 +23,7 @@ def build_chunks_for_document(
     """
     ingest_cfg = get_app_config().rag.ingestion
     figure_metrics: dict[str, Any] = {}
+    doc = normalize_document_source_type(doc)
     st = (doc.source_type or "text").lower()
 
     if st == "image":

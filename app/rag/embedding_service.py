@@ -50,8 +50,24 @@ def rag_cross_encoder_load_kwargs(*, trust_remote_code: bool, model_id: str = ""
         "model_kwargs": rag_model_load_kwargs(),
     }
     if use_qwen:
-        kwargs["tokenizer_kwargs"] = {"padding_side": "left"}
+        pad = {"padding_side": "left"}
+        # sentence-transformers 新版用 processor_kwargs；旧版仍读 tokenizer_kwargs
+        kwargs["processor_kwargs"] = pad
+        kwargs["tokenizer_kwargs"] = pad
     return kwargs
+
+
+def configure_qwen_cross_encoder(reranker: object) -> None:
+    """加载后显式设置 tokenizer left padding 与 pad_token（兜底 ST 版本差异）。"""
+    tokenizer = getattr(reranker, "tokenizer", None)
+    if tokenizer is None:
+        processor = getattr(reranker, "processor", None)
+        tokenizer = getattr(processor, "tokenizer", None) if processor is not None else None
+    if tokenizer is None:
+        return
+    tokenizer.padding_side = "left"
+    if getattr(tokenizer, "pad_token_id", None) is None and getattr(tokenizer, "eos_token", None):
+        tokenizer.pad_token = tokenizer.eos_token
 
 
 def _sentence_transformer_device_repr(model: object) -> str:

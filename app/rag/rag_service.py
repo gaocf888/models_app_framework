@@ -19,8 +19,11 @@ from app.core.metrics import (
 from app.rag.embedding_service import (
     EmbeddingService,
     RAG_MODEL_TORCH_DTYPE,
+    _is_qwen_reranker_model,
+    configure_qwen_cross_encoder,
     rag_cross_encoder_load_kwargs,
 )
+from app.rag.text_quality import looks_like_binary_text
 from app.rag.models import RetrievedChunk
 from app.rag.namespace_kb import finalize_retrieval_hits
 from app.rag.service_registry import get_embedding_service, get_vector_store_provider
@@ -144,6 +147,8 @@ class RAGService:
                         hub_name,
                         **common_kwargs,
                     )
+                if trust_remote_code or _is_qwen_reranker_model(load_id):
+                    configure_qwen_cross_encoder(self._reranker)
                 target_device = _cross_encoder_device_repr(self._reranker)
                 logger.info(
                     "RAGService loaded CrossEncoder reranker: %s device=%s configured_device=%s torch_dtype=%s",
@@ -382,6 +387,13 @@ class RAGService:
         for h in hits:
             if not h.get("text"):
                 continue
+            if looks_like_binary_text(str(h.get("text") or "")):
+                logger.warning(
+                    "RAGService skip binary-like chunk ext_id=%s doc_name=%s",
+                    h.get("ext_id"),
+                    h.get("doc_name"),
+                )
+                continue
             out.append(self._hit_to_chunk(h, pv))
             if len(out) >= k_out:
                 break
@@ -538,12 +550,20 @@ class RAGService:
             scores = reranker.predict(pairs, batch_size=min(16, len(pairs)))
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "RAGService rerank predict failed; keep RRF order. pairs=%s err=%s",
+                "RAGService rerank batch predict failed; retry batch_size=1. pairs=%s err=%s",
                 len(pairs),
                 e,
-                exc_info=True,
             )
-            return hits
+            try:
+                scores = reranker.predict(pairs, batch_size=1)
+            except Exception as e2:  # noqa: BLE001
+                logger.warning(
+                    "RAGService rerank predict failed; keep RRF order. pairs=%s err=%s",
+                    len(pairs),
+                    e2,
+                    exc_info=True,
+                )
+                return hits
         rerank_ms = int((time.perf_counter() - t0) * 1000)
         target_device = _cross_encoder_device_repr(reranker)
         logger.info(

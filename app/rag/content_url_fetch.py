@@ -165,6 +165,99 @@ def _should_fetch_as_file(source_type: str) -> bool:
     return st in {"pdf", "docx", "doc", "xlsx", "xlsm", "image", "png", "jpg", "jpeg", "webp", "gif"}
 
 
+def _sniff_binary_source_type(data: bytes, content_type: str | None, url: str) -> str | None:
+    """当 source_type 为 text 但响应体实为 PDF/Office 时，推断正确类型。"""
+    if data.startswith(b"%PDF-"):
+        return "pdf"
+    ct = (content_type or "").split(";")[0].strip().lower()
+    if ct == "application/pdf":
+        return "pdf"
+    if len(data) >= 4 and data[:2] == b"PK":
+        path = urlparse(url).path.lower()
+        if path.endswith(".docx") or "wordprocessingml" in ct or "msword" in ct:
+            return "docx"
+        if path.endswith(".xlsx") or path.endswith(".xlsm") or "spreadsheetml" in ct:
+            return "xlsx"
+    return None
+
+
+def normalize_document_source_type(doc: DocumentSource) -> DocumentSource:
+    """
+    本地路径 + 错误 source_type 时自动纠正；内联二进制乱码则拒绝摄入。
+    """
+    from app.rag.document_pipeline.parsers import DocumentParser
+    from app.rag.text_quality import looks_like_binary_text
+
+    raw = (doc.content or "").strip()
+    st = (doc.source_type or "text").lower()
+    if st in {"text", "txt", "markdown", "md", "html"}:
+        if looks_like_binary_text(raw):
+            raise ContentFetchError(
+                "content looks like binary data stored as text; "
+                "set source_type=pdf/docx or re-ingest via file URL with correct source_type"
+            )
+        p = DocumentParser.resolve_local_path(raw)
+        if p is not None:
+            ext_map = {
+                ".pdf": "pdf",
+                ".docx": "docx",
+                ".doc": "doc",
+                ".xlsx": "xlsx",
+                ".xlsm": "xlsx",
+            }
+            guessed = ext_map.get(p.suffix.lower())
+            if guessed and guessed != st:
+                logger.info(
+                    "normalize source_type doc_name=%s path=%s %s -> %s",
+                    doc.doc_name,
+                    p,
+                    st,
+                    guessed,
+                )
+                return clone_document_source(doc, source_type=guessed, content=str(p.resolve()))
+    return doc
+
+
+def _materialize_bytes_as_temp_file(
+    doc: DocumentSource,
+    data: bytes,
+    ct: str | None,
+    raw_url: str,
+) -> tuple[DocumentSource, Path]:
+    suffix = _guess_suffix_from_url(raw_url, ct)
+    fd, path_str = tempfile.mkstemp(prefix="rag_fetch_", suffix=suffix)
+    path = Path(path_str)
+    try:
+        import os
+
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+    meta = {
+        **doc.metadata,
+        "content_fetched_from_url": raw_url,
+        "content_fetch_content_type": ct,
+    }
+    new_doc = clone_document_source(
+        doc,
+        content=str(path.resolve()),
+        source_uri=doc.source_uri or raw_url,
+        metadata=meta,
+    )
+    logger.info(
+        "content URL fetched to temp file doc_name=%s url=%s path=%s bytes=%s source_type=%s",
+        doc.doc_name,
+        raw_url,
+        path,
+        len(data),
+        doc.source_type,
+    )
+    return new_doc, path
+
+
 def materialize_document_content_from_url(doc: DocumentSource) -> tuple[DocumentSource, Path | None]:
     """
     若 `RAG_CONTENT_FETCH_ENABLED` 且 `content` 为 http(s) URL，则拉取并落地：
@@ -173,6 +266,7 @@ def materialize_document_content_from_url(doc: DocumentSource) -> tuple[Document
 
     返回 (新 DocumentSource, 临时文件路径或 None)。调用方须在 `finally` 中 `unlink` 临时文件。
     """
+    doc = normalize_document_source_type(doc)
     cfg = get_app_config().rag.content_fetch
     raw = (doc.content or "").strip()
     if not cfg.enabled or not looks_like_http_url(raw):
@@ -185,6 +279,19 @@ def materialize_document_content_from_url(doc: DocumentSource) -> tuple[Document
             raise
         except httpx.HTTPError as e:
             raise ContentFetchError(f"HTTP fetch failed: {e}") from e
+
+        sniffed = _sniff_binary_source_type(data, ct, raw)
+        if sniffed:
+            logger.warning(
+                "content URL response is binary (%s) but source_type=%s; auto-routing to file parser doc_name=%s url=%s",
+                sniffed,
+                doc.source_type,
+                doc.doc_name,
+                raw,
+            )
+            routed = clone_document_source(doc, source_type=sniffed)
+            new_doc, path = _materialize_bytes_as_temp_file(routed, data, ct, raw)
+            return new_doc, path
 
         try:
             text = data.decode("utf-8")
@@ -218,34 +325,5 @@ def materialize_document_content_from_url(doc: DocumentSource) -> tuple[Document
     except httpx.HTTPError as e:
         raise ContentFetchError(f"HTTP fetch failed: {e}") from e
 
-    suffix = _guess_suffix_from_url(raw, ct)
-    fd, path_str = tempfile.mkstemp(prefix="rag_fetch_", suffix=suffix)
-    path = Path(path_str)
-    try:
-        import os
-
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-    except Exception:
-        path.unlink(missing_ok=True)
-        raise
-
-    meta = {
-        **doc.metadata,
-        "content_fetched_from_url": raw,
-        "content_fetch_content_type": ct,
-    }
-    new_doc = clone_document_source(
-        doc,
-        content=str(path.resolve()),
-        source_uri=doc.source_uri or raw,
-        metadata=meta,
-    )
-    logger.info(
-        "content URL fetched to temp file doc_name=%s url=%s path=%s bytes=%s",
-        doc.doc_name,
-        raw,
-        path,
-        len(data),
-    )
+    new_doc, path = _materialize_bytes_as_temp_file(doc, data, ct, raw)
     return new_doc, path

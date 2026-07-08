@@ -12,6 +12,7 @@ from typing import List, Tuple
 
 from app.core.config import get_app_config
 from app.rag.models import ChunkRecord, DocumentSource
+from app.rag.text_quality import looks_like_binary_text
 
 from .cleaners import TextCleaner
 from .enrichers import chunk_hash, make_chunk_meta
@@ -66,6 +67,11 @@ class DocumentPipeline:
         t0 = time.perf_counter()
         parsed = self._parser.parse(source.content, source.source_type)
         stage_durations_ms["parse"] = int((time.perf_counter() - t0) * 1000)
+        if looks_like_binary_text(parsed):
+            raise ValueError(
+                f"E_BINARY_CONTENT: parsed content looks like binary for doc={source.doc_name}; "
+                "check source_type (pdf/docx) or re-ingest with correct format"
+            )
 
         t1 = time.perf_counter()
         cleaned = self._cleaner.clean(parsed)

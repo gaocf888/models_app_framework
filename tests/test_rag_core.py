@@ -68,6 +68,7 @@ class TestRAGCore(unittest.TestCase):
             model_id="/workspace/models/rerank/Qwen3-Reranker-0.6B",
         )
         self.assertTrue(kwargs["trust_remote_code"])
+        self.assertEqual(kwargs["processor_kwargs"], {"padding_side": "left"})
         self.assertEqual(kwargs["tokenizer_kwargs"], {"padding_side": "left"})
 
     def test_rerank_skips_empty_doc_text(self):
