@@ -131,11 +131,36 @@ TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
 
 ### 6.3 构建并启动
 
+推荐使用 **Compose V2**（`docker compose`，空格）：
+
 ```bash
 docker compose --env-file .env -f docker-compose.gpu.yml build
 docker compose --env-file .env -f docker-compose.gpu.yml up -d
 docker compose --env-file .env -f docker-compose.gpu.yml logs -f mineru-api
 ```
+
+若宿主机只有旧版 **`docker-compose`**（连字符），本文件使用 `runtime: nvidia` + `NVIDIA_VISIBLE_DEVICES`（与 `app-deploy` 一致），需安装 **nvidia-container-toolkit** 并注册 `nvidia` runtime。更推荐升级 **Docker Compose 插件 V2**（`docker compose`）。
+
+### 6.4 常见错误：`KeyError: 'ContainerConfig'`
+
+**原因**：`docker-compose` **1.29.x** 在 **Recreating** 旧容器时，与较新 Docker Engine（API 已移除镜像 `ContainerConfig` 字段）不兼容。镜像已 build 成功，失败发生在替换旧容器阶段。
+
+**处理**（在 `mineru-deploy` 目录）：
+
+```bash
+# 1. 停并删旧容器（不要用会触发 recreate 的 up 直接覆盖）
+docker-compose --env-file .env -f docker-compose.gpu.yml down --remove-orphans
+docker rm -f mineru-api 2>/dev/null || true
+
+# 2. 全新创建（避免 recreate 读旧镜像元数据）
+docker-compose --env-file .env -f docker-compose.gpu.yml up -d --build --force-recreate
+
+# 或改用 Compose V2（推荐，可长期避免此类问题）
+docker compose --env-file .env -f docker-compose.gpu.yml down --remove-orphans
+docker compose --env-file .env -f docker-compose.gpu.yml up -d --build
+```
+
+若仍失败，可删除旧镜像标签后再建：`docker rmi mineru-gpu:cu124 2>/dev/null; docker rmi mineru-gpu:cu123 2>/dev/null`（保留当前 `.env` 中 `MINERU_GPU_IMAGE` 对应 tag）。
 
 ## 7. 离线服务器部署
 
