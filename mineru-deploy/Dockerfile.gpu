@@ -1,4 +1,6 @@
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+# 与 vllm-deploy 英伟达栈对齐：CUDA 12.3 runtime + Ubuntu 22.04；PyTorch 仍用 cu121 wheel 自带 cuDNN
+ARG BASE_IMAGE=nvidia/cuda:12.3.0-runtime-ubuntu22.04
+FROM ${BASE_IMAGE}
 
 ARG MINERU_PIP_SPEC=mineru[core]
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple

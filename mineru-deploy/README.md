@@ -118,6 +118,7 @@ curl -l http://127.0.0.1:8009/health
 
 - `docker-compose.gpu.yml` 为独立编排，不依赖 CPU compose
 - GPU 镜像使用 `Dockerfile.gpu` 构建
+- 基础镜像默认 **`nvidia/cuda:12.3.0-runtime-ubuntu22.04`**（与 `vllm-deploy` 英伟达栈一致）；PyTorch 仍从 `cu121` wheel 安装
 - 默认安装 CUDA 版 PyTorch（可通过 `.env` 开关控制）
 
 ### 6.2 关键 `.env` 配置
@@ -364,7 +365,7 @@ MINERU_TIMEOUT_S=3000
 - GPU 模式需：
   - NVIDIA 驱动
   - `nvidia-container-toolkit`
-  - `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi` 可正常输出
+  - `docker run --rm --gpus all nvidia/cuda:12.3.0-base-ubuntu22.04 nvidia-smi` 可正常输出
 
 ## 3. 通用准备
 
@@ -538,7 +539,7 @@ TRANSFORMERS_OFFLINE=1
 - GPU 模式需：
   - NVIDIA 驱动
   - `nvidia-container-toolkit`
-  - `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi` 可正常输出
+  - `docker run --rm --gpus all nvidia/cuda:12.3.0-base-ubuntu22.04 nvidia-smi` 可正常输出
 
 ---
 
@@ -724,7 +725,7 @@ TRANSFORMERS_OFFLINE=1
 - GPU 模式需：
   - NVIDIA 驱动
   - `nvidia-container-toolkit`
-  - `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi` 能正常输出
+  - `docker run --rm --gpus all nvidia/cuda:12.3.0-base-ubuntu22.04 nvidia-smi` 能正常输出
 
 ---
 
