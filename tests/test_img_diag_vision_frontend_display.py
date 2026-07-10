@@ -5,7 +5,9 @@ from __future__ import annotations
 from app.llm.graphs.img_diag_vision_display import (
     build_vision_findings_display,
     build_vision_morphology_bullets,
+    format_vision_hitl_assistant_block,
     sanitize_vision_narrative_for_frontend,
+    sanitize_vision_narrative_for_markdown,
 )
 
 
@@ -63,3 +65,31 @@ def test_build_vision_morphology_bullets_no_structured_fields() -> None:
     assert any("主体形貌" in b for b in bullets)
     assert any("裂纹" in b for b in bullets)
     assert not any("主缺陷类型" in b for b in bullets)
+
+
+def test_sanitize_markdown_preserves_category_bold() -> None:
+    raw = (
+        "### Markdown 外观可见分析\n"
+        "- **检验标记**：白色弧形标记线\n"
+        "- **线状损伤**：标记圈内可见沿管轴细裂纹\n"
+        "---JSON---\n"
+        '{"defect_type":"裂纹"}'
+    )
+    cleaned = sanitize_vision_narrative_for_markdown(raw)
+    assert "- **检验标记**：" in cleaned
+    assert "- **线状损伤**：" in cleaned
+    assert "###" not in cleaned
+    assert "defect_type" not in cleaned
+
+
+def test_format_vision_hitl_assistant_block_uses_markdown_not_plain_bullets() -> None:
+    text = format_vision_hitl_assistant_block(
+        {
+            "vision_narrative": "- 检验标记：白圈\n- 线状损伤：裂纹",
+        },
+        img_diag_subtype="defect_ident",
+    )
+    assert "【图像可见分析】" in text
+    assert "- **检验标记**：" in text
+    assert "- **线状损伤**：" in text
+    assert "  · " not in text

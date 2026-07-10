@@ -146,6 +146,24 @@ def test_format_vision_hitl_assistant_block_title() -> None:
     assert "【图像可见分析】" in text
     assert "视觉臂" not in text
     assert "裂纹" in text
+    assert "- **线状损伤**：" in text
+
+
+def test_format_vision_hitl_assistant_block_markdown_categories() -> None:
+    text = format_vision_hitl_assistant_block(
+        {
+            "vision_narrative": (
+                "- **检验标记**：白圈标记\n"
+                "- **主体形貌**：管壁锈蚀\n"
+                "- **表面状态**：重度锈蚀"
+            ),
+        },
+        img_diag_subtype="defect_ident",
+    )
+    assert "- **检验标记**：" in text
+    assert "- **主体形貌**：" in text
+    assert "- **表面状态**：" in text
+    assert "  · " not in text
 
 
 def test_confirm_reply_example_db_not_matched() -> None:

@@ -274,8 +274,12 @@ def build_scope_hitl_confirm_reply_example(interrupt_payload: dict[str, Any] | N
     return "受热面应为****，检测位置应为****"
 
 
+def _scope_hitl_markdown_bullet(label: str, value: Any) -> str:
+    return f"- **{label}**：{value}"
+
+
 def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None) -> str:
-    """将 scope HITL interrupt 载荷格式化为可写入会话历史的 assistant 正文。"""
+    """将 scope HITL interrupt 载荷格式化为可写入会话历史的 assistant 正文（Markdown）。"""
     if not interrupt_payload:
         return SCOPE_HITL_TITLE
     if interrupt_payload.get("include_scope_confirm_preview") is False:
@@ -287,7 +291,7 @@ def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None
             lines.append(prompt)
         example = build_scope_hitl_confirm_reply_example(interrupt_payload)
         if example:
-            lines.extend(["", "回复示例：", example])
+            lines.extend(["", "**回复示例**", example])
         return "\n".join(lines)
     lines: list[str] = [SCOPE_HITL_TITLE]
     prompt = resolve_scope_hitl_display_prompt(interrupt_payload=interrupt_payload)
@@ -295,31 +299,34 @@ def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None
         lines.append(prompt)
     missing = interrupt_payload.get("missing_fields") or []
     if missing:
-        lines.append(f"待补充：{'、'.join(str(x) for x in missing if str(x).strip())}")
+        lines.append(f"**待补充**：{'、'.join(str(x) for x in missing if str(x).strip())}")
     display = interrupt_payload.get("scope_draft_display")
     if isinstance(display, dict) and display:
-        lines.append("当前解析：")
+        lines.append("")
+        lines.append("**当前解析**")
         for key, val in display.items():
             if val is None or (isinstance(val, str) and not val.strip()):
                 continue
-            lines.append(f"  · {key}：{val}")
+            lines.append(_scope_hitl_markdown_bullet(str(key), val))
     else:
-        draft_lines = format_scope_draft_display_lines(
+        draft_display = scope_draft_to_display(
             interrupt_payload.get("scope_draft")
             if isinstance(interrupt_payload.get("scope_draft"), dict)
             else None
         )
-        if draft_lines:
-            lines.append("当前解析：")
-            lines.extend(f"  · {ln}" for ln in draft_lines)
+        if draft_display:
+            lines.append("")
+            lines.append("**当前解析**")
+            for key, val in draft_display.items():
+                lines.append(_scope_hitl_markdown_bullet(str(key), val))
     relaxed = interrupt_payload.get("scope_relaxed_fields") or []
     if relaxed:
-        lines.append(f"已自动放宽字段：{'、'.join(str(x) for x in relaxed if str(x).strip())}")
+        lines.append(f"**已自动放宽字段**：{'、'.join(str(x) for x in relaxed if str(x).strip())}")
     example = str(interrupt_payload.get("confirm_reply_example") or "").strip()
     if not example:
         example = build_scope_hitl_confirm_reply_example(interrupt_payload)
     if example:
-        lines.extend(["", "确认回复示例：", example])
+        lines.extend(["", "**确认回复示例**", example])
     return "\n".join(lines)
 
 

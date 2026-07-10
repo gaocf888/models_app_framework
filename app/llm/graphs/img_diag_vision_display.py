@@ -14,6 +14,17 @@ VISION_REJECT_INTERRUPT_REASON = "vision_boiler_image_rejected"
 
 _VISION_NARRATIVE_CUT_MARKERS = ("---JSON---",)
 
+VISION_HITL_CATEGORY_LABELS: tuple[str, ...] = (
+    "检验标记",
+    "主体形貌",
+    "线状损伤",
+    "分布特征",
+    "表面状态",
+    "其他可见要点",
+)
+
+_CATEGORY_LABEL_PATTERN = "|".join(re.escape(label) for label in VISION_HITL_CATEGORY_LABELS)
+
 # 仅当 JSON 标 false 但叙述/字段明确为锅炉管壁缺陷时，才视为「模型自相矛盾」而放行
 _BOILER_VISION_DOMAIN_KEYWORDS = (
     "管壁",
@@ -175,6 +186,89 @@ def sanitize_vision_narrative_for_frontend(raw: str) -> str:
     return "\n".join(lines_out)
 
 
+def _trim_vision_narrative_body(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+
+    for marker in _VISION_NARRATIVE_CUT_MARKERS:
+        idx = text.upper().find(marker.upper())
+        if idx != -1:
+            text = text[:idx].strip()
+
+    hr = re.search(r"\n\s*---\s*\n", text)
+    if hr:
+        text = text[: hr.start()].strip()
+    return text
+
+
+def _strip_vision_narrative_line_prefix(s: str) -> str:
+    s = re.sub(r"^#+\s*", "", s)
+    s = re.sub(r"^Markdown\s+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^外观可见分析[：:]\s*", "", s)
+    s = re.sub(r"^Markdown\s*外观可见分析\s*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^外观可见分析\s*$", "", s)
+    s = re.sub(r"`([^`]+)`", r"\1", s)
+    if s.startswith("- "):
+        s = s[2:].strip()
+    elif s.startswith("* "):
+        s = s[2:].strip()
+    return s
+
+
+def _vision_category_markdown_bullet(s: str) -> str | None:
+    """将「分类：内容」行规范为 ``- **分类**：内容``。"""
+    inner = _strip_vision_narrative_line_prefix(s.strip())
+    if not inner or re.fullmatch(r"`+", inner):
+        return None
+
+    matched = re.match(
+        rf"^(\*\*)?(?P<label>{_CATEGORY_LABEL_PATTERN})(\*\*)?[：:]\s*(?P<content>.*)$",
+        inner,
+    )
+    if matched:
+        label = matched.group("label")
+        content = matched.group("content").strip()
+        return f"- **{label}**：{content}" if content else f"- **{label}**："
+    return None
+
+
+def sanitize_vision_narrative_for_markdown(raw: str) -> str:
+    """
+    HITL assistant 专用：保留 Markdown 列表与分类加粗，去除 JSON 段与冗余标题行。
+    不修改状态机内原始 ``vision_narrative``。
+    """
+    text = _trim_vision_narrative_body(raw)
+    if not text:
+        return ""
+
+    lines_out: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s in {"---", "---JSON---"}:
+            continue
+        if re.fullmatch(r"`+", s):
+            continue
+
+        bullet = _vision_category_markdown_bullet(s)
+        if bullet:
+            lines_out.append(bullet)
+            continue
+
+        if re.match(r"^-\s+\*\*[^*]+\*\*[：:]", s):
+            lines_out.append(s)
+            continue
+
+        inner = _strip_vision_narrative_line_prefix(s)
+        if not inner:
+            continue
+        if re.match(r"^主缺陷类型[：:]", inner) or re.match(r"^缺陷类型", inner):
+            continue
+        lines_out.append(inner)
+
+    return "\n".join(lines_out)
+
+
 def extract_frontend_vision_narrative(vision_data: dict[str, Any] | None) -> str:
     """从 vision_findings 提取供前端展示的外观可见分析叙述（已清理 Markdown 标识）。"""
     if not isinstance(vision_data, dict) or vision_data.get("vision_skipped"):
@@ -187,6 +281,22 @@ def extract_frontend_vision_narrative(vision_data: dict[str, Any] | None) -> str
     raw_narrative = vision_data.get("vision_narrative")
     if isinstance(raw_narrative, str) and raw_narrative.strip():
         return sanitize_vision_narrative_for_frontend(raw_narrative)
+
+    return ""
+
+
+def extract_frontend_vision_narrative_markdown(vision_data: dict[str, Any] | None) -> str:
+    """供 ``vision_hitl_assistant_message`` 使用的 Markdown 叙述。"""
+    if not isinstance(vision_data, dict) or vision_data.get("vision_skipped"):
+        return ""
+
+    rejection = vision_boiler_rejection_message(vision_data)
+    if rejection:
+        return rejection
+
+    raw_narrative = vision_data.get("vision_narrative")
+    if isinstance(raw_narrative, str) and raw_narrative.strip():
+        return sanitize_vision_narrative_for_markdown(raw_narrative)
 
     return ""
 
@@ -207,6 +317,25 @@ def build_vision_morphology_bullets(
 
     if vision_data.get("parse_error"):
         return ["说明：视觉结果解析异常，请以后续台账确认与完整报告为准"]
+    return []
+
+
+def build_vision_morphology_markdown_lines(
+    vision_data: dict[str, Any] | None,
+    *,
+    img_diag_subtype: str,
+) -> list[str]:
+    """HITL assistant Markdown 行（``- **分类**：…``）。"""
+    del img_diag_subtype
+    if not isinstance(vision_data, dict) or vision_data.get("vision_skipped"):
+        return []
+
+    narrative = extract_frontend_vision_narrative_markdown(vision_data)
+    if narrative:
+        return [ln for ln in narrative.splitlines() if ln.strip()]
+
+    if vision_data.get("parse_error"):
+        return ["- **说明**：视觉结果解析异常，请以后续台账确认与完整报告为准"]
     return []
 
 
@@ -250,11 +379,13 @@ def format_vision_hitl_assistant_block(
     *,
     img_diag_subtype: str,
 ) -> str:
-    bullets = build_vision_morphology_bullets(vision_data, img_diag_subtype=img_diag_subtype)
-    if not bullets:
+    lines = build_vision_morphology_markdown_lines(
+        vision_data,
+        img_diag_subtype=img_diag_subtype,
+    )
+    if not lines:
         return ""
-    body = "\n".join(f"  · {ln}" for ln in bullets)
-    return f"{VISION_HITL_TITLE}\n{body}"
+    return f"{VISION_HITL_TITLE}\n" + "\n".join(lines)
 
 
 def img_diag_request_has_images(

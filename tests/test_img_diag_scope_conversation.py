@@ -79,10 +79,10 @@ class TestScopeHitlConversationFormat(unittest.TestCase):
         )
         text = format_scope_hitl_assistant_message(payload)
         self.assertIn("未识别解析到台账信息，请补充！", text)
-        self.assertIn("回复示例：", text)
+        self.assertIn("**回复示例**", text)
         self.assertIn(SCOPE_HITL_IMAGE_ONLY_REPLY_EXAMPLE, text)
         self.assertNotIn("台账信息：", text)
-        self.assertNotIn("待补充：", text)
+        self.assertNotIn("**待补充**", text)
         self.assertNotIn("确认回复示例", text)
 
     def test_image_only_display_disabled_after_user_supplement(self) -> None:
@@ -113,10 +113,10 @@ class TestScopeHitlConversationFormat(unittest.TestCase):
             SCOPE_HITL_IMAGE_ONLY_REPLY_EXAMPLE,
         )
         text = format_scope_hitl_assistant_message(payload)
-        self.assertIn("回复示例：", text)
+        self.assertIn("**回复示例**", text)
         self.assertIn(SCOPE_HITL_IMAGE_ONLY_REPLY_EXAMPLE, text)
         self.assertNotIn("台账信息：", text)
-        self.assertNotIn("待补充：", text)
+        self.assertNotIn("**待补充**", text)
         self.assertNotIn("确认回复示例", text)
 
 
