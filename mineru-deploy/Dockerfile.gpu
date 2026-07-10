@@ -1,6 +1,6 @@
-# 与 vllm-deploy 英伟达栈对齐；GPU 推理须 cudnn-runtime（纯 runtime 易 Layout Conv2d 报 CUDNN_STATUS_NOT_INITIALIZED）
+# GPU 推理须 cudnn9-runtime（纯 runtime 易 Layout Conv2d 报 CUDNN_STATUS_NOT_INITIALIZED）
 # PyTorch 固定 cu124 wheel，避免 mineru[core] 依赖把它升到 cu130 导致驱动不兼容
-ARG BASE_IMAGE=nvidia/cuda:12.3.0-cudnn-runtime-ubuntu22.04
+ARG BASE_IMAGE=nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 FROM ${BASE_IMAGE}
 
 ARG MINERU_PIP_SPEC=mineru[core]
