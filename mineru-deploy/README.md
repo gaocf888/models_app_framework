@@ -981,7 +981,7 @@ docker compose --env-file .env logs -f mineru-api
 在 `.env` 中设置：
 
 ```env
-MINERU_DEVICE_MODE=gpu
+MINERU_DEVICE_MODE=cuda
 ```
 
 然后叠加 GPU compose：
@@ -1033,7 +1033,7 @@ docker compose --env-file .env up -d
 
 - `MINERU_CONTAINER_NAME`：容器名
 - `MINERU_PORT`：宿主机映射端口（默认 `8009`）
-- `MINERU_DEVICE_MODE`：`cpu` / `gpu`
+- `MINERU_DEVICE_MODE`：`cpu` / `cuda`（GPU 须写 `cuda`，PyTorch 不认 `gpu`）
 - `MINERU_NVIDIA_VISIBLE_DEVICES`：GPU 设备选择（GPU 模式）
 - `MINERU_MODELS_HOST_PATH`：宿主模型目录（挂载到 `/models`）
 - `MINERU_IO_HOST_PATH`：宿主 IO 目录（挂载到 `/io`）

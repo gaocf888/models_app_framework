@@ -19,7 +19,7 @@ services:
     ports:
       - "${MINERU_PORT:-8009}:8000"
     environment:
-      - MINERU_DEVICE_MODE=gpu
+      - MINERU_DEVICE_MODE=${MINERU_DEVICE_MODE:-cuda}
       - NVIDIA_VISIBLE_DEVICES=${MINERU_NVIDIA_VISIBLE_DEVICES:-0}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - MINERU_MODEL_SOURCE=${MINERU_MODEL_SOURCE:-huggingface}
