@@ -168,7 +168,7 @@ def test_confirm_reply_example_db_matched() -> None:
     assert example == "确认或继续"
 
 
-def test_interrupt_payload_vision_only_on_first_hitl_round() -> None:
+def test_interrupt_payload_vision_only_once_after_delivered() -> None:
     state = {
         "orchestrator_path": "vision_first",
         "hitl_rounds": 1,
@@ -182,6 +182,7 @@ def test_interrupt_payload_vision_only_on_first_hitl_round() -> None:
     payload = _build_interrupt_payload(state)
     assert payload["include_vision_preview"] is True
     assert payload["vision_findings_display"]
+    assert state.get("vision_hitl_preview_delivered") is True
 
     state["hitl_rounds"] = 2
     payload2 = _build_interrupt_payload(state)

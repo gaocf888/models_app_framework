@@ -118,7 +118,6 @@ async def test_finalize_state_path2_confirm_skips_vision_refresh() -> None:
 
     state = {
         "img_diag_request": {"image_urls": ["http://new/b.jpg"], "img_diag_subtype": "defect_ident"},
-        "vision_images_replaced": True,
         "orchestrator_path": "scope_first",
     }
     refresh = AsyncMock(return_value=({"defect_type": "不应调用"}, 1, "success"))
@@ -133,10 +132,11 @@ async def test_finalize_state_path2_confirm_skips_vision_refresh() -> None:
 
 
 def test_interrupt_payload_round_two_no_vision_without_replace() -> None:
-    state: ImgDiagScopeGraphState = {
+    state = {
         "orchestrator_path": "vision_first",
         "hitl_rounds": 2,
         "vision_images_replaced": False,
+        "vision_hitl_preview_delivered": True,
         "vision_prefetch_data": {"defect_type": "裂纹"},
         "img_diag_subtype": "defect_ident",
         "scope_draft": {},

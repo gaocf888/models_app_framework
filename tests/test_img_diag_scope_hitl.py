@@ -21,6 +21,7 @@ from app.llm.graphs.img_diag_scope_validate import (
     validate_scope_with_relaxation,
 )
 from app.nl2sql.question_intent import resolve_question_intent
+from app.llm.graphs.img_diag_vision_display import VISION_REJECT_INTERRUPT_REASON
 
 
 def test_build_scope_intent_text() -> None:
@@ -631,7 +632,7 @@ async def test_db_validate_leakage_burst_with_image_skips_matched_confirm() -> N
 
 
 @pytest.mark.asyncio
-async def test_db_validate_first_success_sets_pending_matched_confirm() -> None:
+async def test_db_validate_first_success_auto_confirms_scope() -> None:
     from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
 
     nodes = make_img_diag_scope_nodes()
@@ -656,10 +657,9 @@ async def test_db_validate_first_success_sets_pending_matched_confirm() -> None:
         return_value=True,
     ):
         out = await db_validate(state)
-    assert out.get("pending_matched_confirm") is True
-    assert out.get("interrupt_reason") == "db_validate_matched"
-    assert out.get("human_prompt") and "匹配成功" in out["human_prompt"]
-    assert not out.get("confirmed_scope_intent")
+    assert not out.get("pending_matched_confirm")
+    assert out.get("confirmed_scope_intent", {}).get("boiler") == "1号锅炉"
+    assert out.get("scope_intent_text")
 
 
 @pytest.mark.asyncio
@@ -694,8 +694,8 @@ async def test_db_validate_after_hitl_skips_matched_confirm() -> None:
 
 
 @pytest.mark.asyncio
-async def test_db_validate_after_hitl_with_vision_block_sets_matched_confirm() -> None:
-    """仅传图首轮 HITL 后补台账：hitl_rounds>=1 且视觉仍拒识时，应展示匹配成功待确认而非未解析。"""
+async def test_db_validate_after_hitl_with_vision_block_auto_confirms_scope() -> None:
+    """补台账后库表命中但视觉仍拒识：台账自动放行，仅保留视觉门禁 interrupt。"""
     from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
 
     nodes = make_img_diag_scope_nodes()
@@ -739,13 +739,10 @@ async def test_db_validate_after_hitl_with_vision_block_sets_matched_confirm() -
         return_value=True,
     ):
         out = await db_validate(state)
-    assert out.get("pending_matched_confirm") is True
-    assert out.get("scope_interrupt_reason") == "db_validate_matched"
-    assert out.get("scope_hitl_prompt") == (
-        "以下为解析且业务库匹配成功的台账信息，请确认是否准确"
-    )
-    assert not out.get("confirmed_scope_intent")
+    assert not out.get("pending_matched_confirm")
+    assert out.get("confirmed_scope_intent", {}).get("boiler") == "1号锅炉"
     assert out.get("vision_confirm_blocked") is True
+    assert out.get("interrupt_reason") == VISION_REJECT_INTERRUPT_REASON
 
 @pytest.mark.asyncio
 async def test_db_validate_matched_confirm_disabled() -> None:

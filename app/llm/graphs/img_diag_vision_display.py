@@ -319,29 +319,37 @@ def apply_vision_rejection_scope_gate(state: dict[str, Any]) -> bool:
     if prior_prompt and prior_prompt != VISION_HITL_REUPLOAD_PROMPT:
         state["scope_hitl_prompt"] = prior_prompt
 
-    if state.get("pending_matched_confirm"):
-        from app.llm.graphs.img_diag_scope_display import SCOPE_HITL_DB_MATCHED_PROMPT
+    scope_already_confirmed = bool(state.get("confirmed_scope_intent") and state.get("scope_intent_text"))
 
-        state.setdefault("scope_interrupt_reason", "db_validate_matched")
-        state.setdefault("scope_hitl_prompt", SCOPE_HITL_DB_MATCHED_PROMPT)
+    if scope_already_confirmed:
+        state.pop("pending_matched_confirm", None)
+        state["human_prompt"] = VISION_HITL_REUPLOAD_PROMPT
+    else:
+        if state.get("pending_matched_confirm"):
+            from app.llm.graphs.img_diag_scope_display import SCOPE_HITL_DB_MATCHED_PROMPT
 
-    state.pop("confirmed_scope_intent", None)
-    state.pop("scope_intent_text", None)
+            state.setdefault("scope_interrupt_reason", "db_validate_matched")
+            state.setdefault("scope_hitl_prompt", SCOPE_HITL_DB_MATCHED_PROMPT)
+
+        state.pop("confirmed_scope_intent", None)
+        state.pop("scope_intent_text", None)
+
     state["vision_confirm_blocked"] = True
     state["interrupt_reason"] = VISION_REJECT_INTERRUPT_REASON
     state["needs_db_retry"] = False
     state["validation_error"] = None
 
-    from app.llm.graphs.img_diag_scope_display import (
-        SCOPE_HITL_DB_MATCHED_PROMPT,
-        resolve_scope_hitl_display_prompt,
-    )
+    if not scope_already_confirmed:
+        from app.llm.graphs.img_diag_scope_display import (
+            SCOPE_HITL_DB_MATCHED_PROMPT,
+            resolve_scope_hitl_display_prompt,
+        )
 
-    if (
-        str(state.get("scope_interrupt_reason") or "") == "db_validate_matched"
-        or str(state.get("scope_hitl_prompt") or "") == SCOPE_HITL_DB_MATCHED_PROMPT
-    ):
-        state["pending_matched_confirm"] = True
+        if (
+            str(state.get("scope_interrupt_reason") or "") == "db_validate_matched"
+            or str(state.get("scope_hitl_prompt") or "") == SCOPE_HITL_DB_MATCHED_PROMPT
+        ):
+            state["pending_matched_confirm"] = True
 
-    state["human_prompt"] = resolve_scope_hitl_display_prompt(state=state)
+        state["human_prompt"] = resolve_scope_hitl_display_prompt(state=state)
     return True

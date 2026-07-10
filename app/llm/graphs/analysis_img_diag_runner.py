@@ -36,7 +36,10 @@ from app.llm.graphs.img_diag_scope_display import (
     format_scope_hitl_assistant_message,
     format_scope_hitl_user_message,
 )
-from app.llm.graphs.img_diag_scope_graph import ImgDiagScopeHitlRunner
+from app.llm.graphs.img_diag_scope_graph import (
+    ImgDiagScopeHitlRunner,
+    should_emit_img_diag_vision_preview_on_scope_confirmed,
+)
 from app.llm.graphs.img_diag_scope_probe import probe_img_diag_scope_route
 from app.llm.graphs.img_diag_vision_display import (
     build_vision_findings_display,
@@ -526,27 +529,57 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         if block:
             self._conv.append_assistant_message(user_id, session_id, block)
 
+    def _maybe_persist_scope_confirmed_vision_preview(
+        self,
+        *,
+        scope_result: dict[str, Any],
+        orchestrator_path: str,
+        vision_prefetch: dict[str, Any] | None,
+        user_id: str,
+        session_id: str,
+        img_diag_subtype: str,
+    ) -> bool:
+        if not should_emit_img_diag_vision_preview_on_scope_confirmed(
+            orchestrator_path=orchestrator_path,
+            vision_prefetch=vision_prefetch,
+            vision_hitl_preview_delivered=bool(scope_result.get("vision_hitl_preview_delivered")),
+        ):
+            return False
+        self._persist_vision_preview_assistant_message(
+            user_id=user_id,
+            session_id=session_id,
+            vision_data=vision_prefetch,
+            img_diag_subtype=img_diag_subtype,
+        )
+        return True
+
     @staticmethod
     def _scope_interrupt_sse_event(result: dict[str, Any]) -> dict[str, Any]:
         intr = result.get("interrupt_payload") or {}
+        include_scope = intr.get("include_scope_confirm_preview", True)
         event: dict[str, Any] = {
             "event": "img_diag_scope_input_required",
             "request_id": result.get("request_id"),
             "resume_token": result.get("resume_token"),
             "prompt": intr.get("prompt"),
-            "scope_draft": intr.get("scope_draft"),
-            "scope_draft_display": intr.get("scope_draft_display"),
-            "missing_fields": intr.get("missing_fields") or [],
+            "missing_fields": intr.get("missing_fields") or [] if include_scope else [],
             "suggested_actions": intr.get("suggested_actions")
             or ["confirm_scope", "edit_scope", "abort"],
             "interrupt_reason": intr.get("interrupt_reason"),
             "orchestrator_path": intr.get("orchestrator_path") or result.get("orchestrator_path"),
             "include_vision_preview": bool(intr.get("include_vision_preview")),
-            "confirm_reply_example": intr.get("confirm_reply_example"),
-            "scope_hitl_assistant_message": intr.get("scope_hitl_assistant_message"),
-            "scope_reply_example_label": intr.get("scope_reply_example_label"),
+            "include_scope_confirm_preview": bool(include_scope),
+            "confirm_reply_example": intr.get("confirm_reply_example") if include_scope else "",
+            "scope_hitl_assistant_message": intr.get("scope_hitl_assistant_message") if include_scope else "",
+            "scope_reply_example_label": intr.get("scope_reply_example_label") if include_scope else "",
             "vision_hitl_assistant_message": intr.get("vision_hitl_assistant_message"),
         }
+        if include_scope:
+            event["scope_draft"] = intr.get("scope_draft")
+            event["scope_draft_display"] = intr.get("scope_draft_display")
+        else:
+            event["scope_draft"] = {}
+            event["scope_draft_display"] = {}
         if intr.get("initial_query_empty"):
             event["initial_query_empty"] = True
             if intr.get("scope_cumulative_text") is not None:
@@ -1917,14 +1950,23 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                         vision_data=vision_prefetch,
                         img_diag_subtype=req.img_diag_subtype,
                     )
-                self._persist_scope_hitl_assistant_message(
-                    user_id=req.user_id,
-                    session_id=req.session_id,
-                    interrupt_payload=scope_result.get("interrupt_payload"),
-                )
+                if intr.get("include_scope_confirm_preview", True):
+                    self._persist_scope_hitl_assistant_message(
+                        user_id=req.user_id,
+                        session_id=req.session_id,
+                        interrupt_payload=scope_result.get("interrupt_payload"),
+                    )
                 raise ImgDiagScopeInterrupt(self._scope_interrupt_sse_event(scope_result))
             if scope_result.get("status") == "error":
                 raise ValueError(scope_result.get("message") or "scope hitl failed")
+            self._maybe_persist_scope_confirmed_vision_preview(
+                scope_result=scope_result,
+                orchestrator_path=orchestrator_path,
+                vision_prefetch=vision_prefetch if isinstance(vision_prefetch, dict) else None,
+                user_id=req.user_id,
+                session_id=req.session_id,
+                img_diag_subtype=req.img_diag_subtype,
+            )
             confirmed = (
                 scope_result.get("confirmed_scope_intent")
                 if scope_result.get("status") == "confirmed"
@@ -2177,15 +2219,32 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                         vision_ms=vision_ms,
                         vision_status=vision_status,
                     )
-                self._persist_scope_hitl_assistant_message(
-                    user_id=req.user_id,
-                    session_id=req.session_id,
-                    interrupt_payload=scope_result.get("interrupt_payload"),
-                )
+                if intr.get("include_scope_confirm_preview", True):
+                    self._persist_scope_hitl_assistant_message(
+                        user_id=req.user_id,
+                        session_id=req.session_id,
+                        interrupt_payload=scope_result.get("interrupt_payload"),
+                    )
                 yield self._scope_interrupt_sse_event(scope_result)
                 return
             if scope_result.get("status") == "error":
                 raise ValueError(scope_result.get("message") or "scope hitl failed")
+
+            if self._maybe_persist_scope_confirmed_vision_preview(
+                scope_result=scope_result,
+                orchestrator_path=orchestrator_path,
+                vision_prefetch=vision_prefetch if isinstance(vision_prefetch, dict) else None,
+                user_id=req.user_id,
+                session_id=req.session_id,
+                img_diag_subtype=req.img_diag_subtype,
+            ):
+                yield self._vision_preview_sse_event(
+                    request_id=str(scope_result.get("request_id") or stream_request_id),
+                    img_diag_subtype=req.img_diag_subtype,
+                    vision_data=vision_prefetch,
+                    vision_ms=vision_ms,
+                    vision_status=vision_status,
+                )
 
             confirmed = (
                 scope_result.get("confirmed_scope_intent")
@@ -2353,11 +2412,12 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                             vision_ms=int(scope_result.get("vision_prefetch_ms") or 0),
                             vision_status=str(scope_result.get("vision_prefetch_status") or ""),
                         )
-                self._persist_scope_hitl_assistant_message(
-                    user_id=user_id,
-                    session_id=session_id,
-                    interrupt_payload=intr,
-                )
+                if intr.get("include_scope_confirm_preview", True):
+                    self._persist_scope_hitl_assistant_message(
+                        user_id=user_id,
+                        session_id=session_id,
+                        interrupt_payload=intr,
+                    )
                 yield self._scope_interrupt_sse_event(scope_result)
                 return
             if scope_result.get("status") == "error":
@@ -2395,6 +2455,22 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             skip_vision = (
                 orchestrator_path == "vision_first" and isinstance(vision_prefetch, dict)
             )
+
+            if self._maybe_persist_scope_confirmed_vision_preview(
+                scope_result=scope_result,
+                orchestrator_path=orchestrator_path,
+                vision_prefetch=vision_prefetch if isinstance(vision_prefetch, dict) else None,
+                user_id=user_id,
+                session_id=session_id,
+                img_diag_subtype=str(req.img_diag_subtype or "defect_ident"),
+            ):
+                yield self._vision_preview_sse_event(
+                    request_id=str(scope_result.get("request_id") or stream_request_id),
+                    img_diag_subtype=str(req.img_diag_subtype or "defect_ident"),
+                    vision_data=vision_prefetch,
+                    vision_ms=vision_ms,
+                    vision_status=vision_status,
+                )
 
             try:
                 await raise_if_stream_cancelled(cancel_checker)

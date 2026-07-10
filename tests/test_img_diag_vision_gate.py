@@ -51,14 +51,12 @@ def test_apply_vision_rejection_scope_gate_clears_confirm() -> None:
         "human_prompt": SCOPE_HITL_DB_MATCHED_PROMPT,
     }
     assert apply_vision_rejection_scope_gate(state) is True
-    assert "confirmed_scope_intent" not in state
+    assert state.get("confirmed_scope_intent")
+    assert state.get("scope_intent_text")
     assert state["interrupt_reason"] == VISION_REJECT_INTERRUPT_REASON
-    assert state["human_prompt"] == SCOPE_HITL_DB_MATCHED_PROMPT
-    assert state["pending_matched_confirm"] is True
+    assert state["human_prompt"] == VISION_HITL_REUPLOAD_PROMPT
+    assert not state.get("pending_matched_confirm")
     assert state["vision_confirm_blocked"] is True
-    assert state["scope_interrupt_reason"] == "db_validate_matched"
-    assert state["scope_hitl_prompt"] == SCOPE_HITL_DB_MATCHED_PROMPT
-    assert "请重新上传后再确认台账" not in state["human_prompt"]
 
 
 def test_vision_blocked_scope_matched_interrupt_payload() -> None:
@@ -238,7 +236,8 @@ def test_apply_vision_gate_restores_pending_after_finalize_cleared() -> None:
         "human_prompt": SCOPE_HITL_DB_MATCHED_PROMPT,
     }
     assert apply_vision_rejection_scope_gate(state) is True
-    assert state["pending_matched_confirm"] is True
+    assert state.get("confirmed_scope_intent")
+    assert not state.get("pending_matched_confirm")
 
 
 def test_image_only_resume_does_not_finalize_matched_confirm() -> None:

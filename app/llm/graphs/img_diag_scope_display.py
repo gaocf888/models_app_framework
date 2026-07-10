@@ -278,6 +278,8 @@ def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None
     """将 scope HITL interrupt 载荷格式化为可写入会话历史的 assistant 正文。"""
     if not interrupt_payload:
         return SCOPE_HITL_TITLE
+    if interrupt_payload.get("include_scope_confirm_preview") is False:
+        return ""
     if is_image_only_initial_scope_hitl(interrupt_payload):
         lines: list[str] = [SCOPE_HITL_TITLE]
         prompt = resolve_scope_hitl_display_prompt(interrupt_payload=interrupt_payload)

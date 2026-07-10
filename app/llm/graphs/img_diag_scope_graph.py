@@ -114,6 +114,7 @@ class ImgDiagScopeGraphState(TypedDict, total=False):
     scope_correction_epoch: int
     scope_correction_parsed_epoch: int
     scope_pending_reparse_supplement: str
+    vision_hitl_preview_delivered: bool
 
 
 _SCOPE_CHECKPOINT_PRIORITY_KEYS: frozenset[str] = frozenset(
@@ -134,8 +135,96 @@ _SCOPE_CHECKPOINT_PRIORITY_KEYS: frozenset[str] = frozenset(
         "scope_relaxed_fields",
         "confirmed_scope_intent",
         "scope_intent_text",
+        "vision_hitl_preview_delivered",
     }
 )
+
+
+def _sync_scope_human_confirm_hitl_gate_flags(state: ImgDiagScopeGraphState) -> None:
+    """
+    scope_human_confirm 在 interrupt 前会递增 hitl 并标记 vision 已展示；
+    LangGraph 在 interrupt 暂停时未必把这些字段写回 checkpoint。
+    """
+    state["hitl_rounds"] = int(state.get("hitl_rounds") or 0) + 1
+    orchestrator_path = str(state.get("orchestrator_path") or "scope_first")
+    vision_data = state.get("vision_prefetch_data")
+    if (
+        orchestrator_path == "vision_first"
+        and isinstance(vision_data, dict)
+        and vision_data
+        and not _vision_hitl_gate_blocked(state)
+    ):
+        state["vision_hitl_preview_delivered"] = True
+
+
+def _scope_hitl_gate_passed(state: dict[str, Any]) -> bool:
+    return bool(state.get("confirmed_scope_intent") and state.get("scope_intent_text"))
+
+
+def _vision_hitl_gate_blocked(state: dict[str, Any]) -> bool:
+    return bool(
+        state.get("vision_confirm_blocked")
+        or str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON
+        or _should_block_scope_confirm_by_vision_state(state)
+    )
+
+
+def _should_include_scope_confirm_in_hitl(state: dict[str, Any]) -> bool:
+    """台账门禁已通过时不向用户展示台账确认块；仅未通过时展示。"""
+    if _scope_hitl_gate_passed(state):
+        return False
+    if _vision_hitl_gate_blocked(state) and not state.get("needs_db_retry"):
+        missing = state.get("missing_fields") or []
+        if not missing and not state.get("validation_error"):
+            return False
+    return True
+
+
+def _should_include_vision_preview_in_hitl(state: ImgDiagScopeGraphState) -> bool:
+    """视觉已通过且已展示过则不再返回；未通过或换图重检时返回。"""
+    orchestrator_path = str(state.get("orchestrator_path") or "scope_first")
+    vision_data = state.get("vision_prefetch_data")
+    if not isinstance(vision_data, dict) or not vision_data:
+        return False
+
+    images_replaced = bool(state.get("vision_images_replaced"))
+    vision_blocked = _vision_hitl_gate_blocked(state)
+    hitl_rounds = int(state.get("hitl_rounds") or 0)
+
+    if images_replaced:
+        state["vision_hitl_preview_delivered"] = False
+
+    if vision_blocked or images_replaced:
+        return True
+    if orchestrator_path != "vision_first":
+        return False
+    if state.get("vision_hitl_preview_delivered") or hitl_rounds > 1:
+        return False
+    return True
+
+
+def should_emit_img_diag_vision_preview_on_scope_confirmed(
+    *,
+    orchestrator_path: str,
+    vision_prefetch: dict[str, Any] | None,
+    vision_hitl_preview_delivered: bool,
+) -> bool:
+    """scope 已自动放行且未 interrupt 时，首轮视觉通过仍须下发一次可见分析。"""
+    if orchestrator_path != "vision_first":
+        return False
+    if not isinstance(vision_prefetch, dict) or not vision_prefetch:
+        return False
+    from app.llm.graphs.img_diag_vision_display import is_vision_boiler_relevance_rejected
+
+    if is_vision_boiler_relevance_rejected(vision_prefetch):
+        return False
+    return not vision_hitl_preview_delivered
+
+
+def _scope_hitl_result_extras(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "vision_hitl_preview_delivered": bool(state.get("vision_hitl_preview_delivered")),
+    }
 
 
 def _mark_scope_correction_written(state: ImgDiagScopeGraphState) -> None:
@@ -199,6 +288,11 @@ def _scope_resume_checkpoint_as_node(snap: Any) -> str | None:
     return None
 
 
+def _is_scope_field_correction_line(line: str) -> bool:
+    """单行 user_supplement 是否为字段校正（如「检测位置应为…」），而非完整台账描述。"""
+    return "应为" in (line or "").strip()
+
+
 def _scope_cumulative_for_correction_reparse(state: dict[str, Any]) -> str:
     """
     校正重解析专用输入：原始 query + 本轮最新 supplement。
@@ -212,9 +306,12 @@ def _scope_cumulative_for_correction_reparse(state: dict[str, Any]) -> str:
         cumulative = str(state.get("scope_cumulative_text") or "").strip()
         for line in cumulative.splitlines():
             line = line.strip()
-            if line and line != pending:
-                original = line
-                break
+            if not line or line == pending or _is_scope_field_correction_line(line):
+                continue
+            original = line
+            break
+        if not original:
+            return pending
     if original and original != pending:
         return f"{original}\n{pending}".strip()
     return pending
@@ -289,23 +386,12 @@ def _enrich_interrupt_payload_from_state(state: ImgDiagScopeGraphState, payload:
     orchestrator_path = str(state.get("orchestrator_path") or "scope_first")
     payload["orchestrator_path"] = orchestrator_path
     payload["img_diag_subtype"] = str(state.get("img_diag_subtype") or "defect_ident")
-    hitl_rounds = int(state.get("hitl_rounds") or 0)
-    vision_data = state.get("vision_prefetch_data")
-    images_replaced = bool(state.get("vision_images_replaced"))
-    include_vision = (
-        isinstance(vision_data, dict)
-        and bool(vision_data)
-        and (
-            images_replaced
-            or str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON
-            or (
-                orchestrator_path == "vision_first"
-                and hitl_rounds <= 1
-            )
-        )
-    )
+    include_vision = _should_include_vision_preview_in_hitl(state)
     payload["include_vision_preview"] = include_vision
     if include_vision:
+        vision_data = state.get("vision_prefetch_data")
+        if not _vision_hitl_gate_blocked(state):
+            state["vision_hitl_preview_delivered"] = True
         subtype = str(state.get("img_diag_subtype") or "defect_ident")
         payload["vision_findings_display"] = build_vision_findings_display(
             vision_data,
@@ -642,6 +728,7 @@ async def _try_resolve_matched_confirm_after_prep(
         "vision_prefetch": state_confirmed.get("vision_prefetch_data"),
         "vision_prefetch_ms": int(state_confirmed.get("vision_prefetch_ms") or 0),
         "vision_prefetch_status": str(state_confirmed.get("vision_prefetch_status") or ""),
+        **_scope_hitl_result_extras(state_confirmed),
     }
 
 
@@ -684,25 +771,33 @@ def _apply_vision_gate_or_restore_scope_hitl(state: ImgDiagScopeGraphState) -> N
 
 def _build_interrupt_payload(state: ImgDiagScopeGraphState) -> dict[str, Any]:
     _apply_vision_gate_or_restore_scope_hitl(state)
-    scope_draft = _scope_draft_payload(state)
-    missing = state.get("missing_fields") or []
-    relaxed = state.get("scope_relaxed_fields") or []
+    include_scope_confirm = _should_include_scope_confirm_in_hitl(state)
+    scope_draft = _scope_draft_payload(state) if include_scope_confirm else {}
+    missing = state.get("missing_fields") or [] if include_scope_confirm else []
+    relaxed = state.get("scope_relaxed_fields") or [] if include_scope_confirm else []
     vision_blocked = bool(
         state.get("vision_confirm_blocked")
         or str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON
     )
+    if include_scope_confirm:
+        prompt = resolve_scope_hitl_display_prompt(state=state)
+    else:
+        from app.llm.graphs.img_diag_vision_display import VISION_HITL_REUPLOAD_PROMPT
+
+        prompt = VISION_HITL_REUPLOAD_PROMPT if vision_blocked else ""
     payload: dict[str, Any] = {
-        "prompt": resolve_scope_hitl_display_prompt(state=state),
+        "prompt": prompt,
         "scope_draft": scope_draft,
-        "scope_draft_display": scope_draft_to_display(scope_draft),
+        "scope_draft_display": scope_draft_to_display(scope_draft) if include_scope_confirm else {},
         "missing_fields": [scope_field_label(f) for f in missing],
-        "validation_error": state.get("validation_error"),
+        "validation_error": state.get("validation_error") if include_scope_confirm else None,
         "suggested_actions": state.get("human_suggested_actions")
         or ["confirm_scope", "edit_scope", "abort"],
         "request_id": state.get("request_id"),
         "interrupt_reason": state.get("interrupt_reason"),
-        "pending_matched_confirm": bool(state.get("pending_matched_confirm")),
+        "pending_matched_confirm": bool(state.get("pending_matched_confirm")) if include_scope_confirm else False,
         "vision_confirm_blocked": vision_blocked,
+        "include_scope_confirm_preview": include_scope_confirm,
     }
     scope_reason = state.get("scope_interrupt_reason")
     if isinstance(scope_reason, str) and scope_reason.strip():
@@ -776,7 +871,7 @@ def _last_human_response_needs_scope_reparse(state: dict[str, Any]) -> bool:
 def _state_needs_scope_hitl_interrupt(state: dict[str, Any]) -> bool:
     """图已结束但尚未 confirmed，仍须下一次人机协同（视觉/台账待确认）。"""
     if state.get("confirmed_scope_intent") and state.get("scope_intent_text"):
-        return False
+        return _vision_hitl_gate_blocked(state)
     if state.get("pending_matched_confirm"):
         return True
     if state.get("vision_confirm_blocked"):
@@ -1075,23 +1170,6 @@ def make_img_diag_scope_nodes(
         else:
             state["scope_relaxed_fields"] = []
 
-        if (
-            _scope_matched_confirm_enabled()
-            and (hitl_rounds == 0 or _should_block_scope_confirm_by_vision_state(state))
-            and not _leakage_burst_scope_auto_confirm_after_db_match(state)
-        ):
-            state["pending_matched_confirm"] = True
-            state["human_prompt"] = SCOPE_HITL_DB_MATCHED_PROMPT
-            state["interrupt_reason"] = "db_validate_matched"
-            state["missing_fields"] = []
-            record_scope_hitl_context(
-                state,
-                reason="db_validate_matched",
-                prompt=SCOPE_HITL_DB_MATCHED_PROMPT,
-            )
-            apply_vision_rejection_scope_gate(state)
-            return state
-
         if relaxed_fields:
             state["confirmed_scope_intent"] = confirmed_scope_from_draft(merged)
             state["confirmed_scope_intent"]["scope_relaxed_fields"] = relaxed_fields
@@ -1266,6 +1344,22 @@ class ImgDiagScopeHitlRunner:
             state["vision_prefetch_status"] = str(vision_prefetch_status or "")
         return state
 
+    async def _persist_scope_human_confirm_interrupt_gate(
+        self,
+        config: dict[str, Any],
+        *,
+        final_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """interrupt 后把 hitl/vision 展示门禁写回 checkpoint，供后续 resume 正确判定。"""
+        assert self._graph is not None
+        snap = await self._graph.aget_state(config)
+        state = dict(snap.values or {}) if snap and snap.values else dict(final_state)
+        state.update(final_state)
+        _sync_scope_human_confirm_hitl_gate_flags(state)
+        as_node = _scope_resume_checkpoint_as_node(snap)
+        await self._graph.aupdate_state(config, state, as_node=as_node)
+        return state
+
     async def _yield_updates(
         self,
         *,
@@ -1423,13 +1517,8 @@ class ImgDiagScopeHitlRunner:
             return None
 
         human_input = _normalize_human_scope_input({"action": action, "payload": payload})
-        intr_before = _build_interrupt_payload(state)
-        state.setdefault("human_interactions", []).append(
-            {"request": intr_before, "response": human_input}
-        )
         state["hitl_rounds"] = int(state.get("hitl_rounds") or 0) + 1
         as_node = _scope_resume_checkpoint_as_node(snap)
-        await self._graph.aupdate_state(config, state, as_node=as_node)
 
         state_out = await self._hydrate_scope_resume_state_from_session(
             state,
@@ -1455,6 +1544,10 @@ class ImgDiagScopeHitlRunner:
                     for_interrupt=True,
                 )
                 intr = _build_interrupt_payload(state_out)
+                state_out.setdefault("human_interactions", []).append(
+                    {"request": intr, "response": human_input}
+                )
+                await self._graph.aupdate_state(config, state_out, as_node=as_node)
                 _log_scope_resume_diagnostics(
                     request_id=session.request_id,
                     action=action,
@@ -1508,6 +1601,7 @@ class ImgDiagScopeHitlRunner:
                 "vision_prefetch": state_out.get("vision_prefetch_data"),
                 "vision_prefetch_ms": int(state_out.get("vision_prefetch_ms") or 0),
                 "vision_prefetch_status": str(state_out.get("vision_prefetch_status") or ""),
+                **_scope_hitl_result_extras(state_out),
             }
 
         updated_request = await _finalize_state_after_hitl_resume(
@@ -1517,6 +1611,10 @@ class ImgDiagScopeHitlRunner:
             for_interrupt=True,
         )
         intr = _build_interrupt_payload(state_out)
+        state_out.setdefault("human_interactions", []).append(
+            {"request": intr, "response": human_input}
+        )
+        await self._graph.aupdate_state(config, state_out, as_node=as_node)
         _log_scope_resume_diagnostics(
             request_id=session.request_id,
             action=action,
@@ -1593,6 +1691,11 @@ class ImgDiagScopeHitlRunner:
                 final_state.update(ev["_state_update"])
             if "_interrupt_payload" in ev:
                 intr = ev["_interrupt_payload"]
+                gate_state = await self._persist_scope_human_confirm_interrupt_gate(
+                    config,
+                    final_state=final_state,
+                )
+                final_state.update(gate_state)
                 stored_urls = (
                     img_diag_request.get("image_urls")
                     if isinstance(img_diag_request, dict)
@@ -1647,6 +1750,7 @@ class ImgDiagScopeHitlRunner:
                 "request_id": rid,
                 "confirmed_scope_intent": final_state["confirmed_scope_intent"],
                 "scope_intent_text": final_state["scope_intent_text"],
+                **_scope_hitl_result_extras(final_state),
             }
         if _state_needs_scope_hitl_interrupt(final_state):
             return _scope_interrupt_from_state(
@@ -1791,6 +1895,7 @@ class ImgDiagScopeHitlRunner:
                 state_for_token.setdefault("session_id", session_id)
                 state_for_token.setdefault("analysis_type", session.analysis_type)
                 state_for_token.setdefault("img_diag_subtype", session.img_diag_subtype)
+                _sync_scope_human_confirm_hitl_gate_flags(state_for_token)
                 updated_request = await _finalize_state_after_hitl_resume(
                     state_for_token,
                     session=session,
@@ -1798,6 +1903,11 @@ class ImgDiagScopeHitlRunner:
                     for_interrupt=True,
                 )
                 intr = _build_interrupt_payload(state_for_token)
+                await self._graph.aupdate_state(
+                    config,
+                    state_for_token,
+                    as_node=_scope_resume_checkpoint_as_node(snap_early),
+                )
                 _log_scope_resume_diagnostics(
                     request_id=session.request_id,
                     action=action,
@@ -1893,6 +2003,7 @@ class ImgDiagScopeHitlRunner:
                 "vision_prefetch": state_confirmed.get("vision_prefetch_data"),
                 "vision_prefetch_ms": int(state_confirmed.get("vision_prefetch_ms") or 0),
                 "vision_prefetch_status": str(state_confirmed.get("vision_prefetch_status") or ""),
+                **_scope_hitl_result_extras(state_confirmed),
             }
         if _state_needs_scope_hitl_interrupt(final_state):
             state_intr: dict[str, Any] = dict(final_state)

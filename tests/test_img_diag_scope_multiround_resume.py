@@ -330,16 +330,15 @@ async def test_multiround_wrong_then_correct_supplement_reparses(
     """错误校正库表未命中仍 interrupt；正确校正解析校验+视觉通过后自动 confirmed。"""
     assert scope_runner.available()
     request_id = "anl_test_wrong_then_correct_supplement"
-    wrong_query = "1号锅炉水冷壁螺旋段前墙吹灰孔99"
+    wrong_correction = "检测位置应为吹灰孔88"
+    correct_correction = "检测位置应为吹灰孔77"
     img_diag_request = {
         "user_id": USER_ID,
         "session_id": SESSION_ID,
-        "query": wrong_query,
+        "query": "",
         "img_diag_subtype": "defect_ident",
         "image_urls": [GOOD_IMAGE],
     }
-    wrong_correction = "检测位置应为吹灰孔88"
-    correct_correction = "检测位置应为吹灰孔77"
 
     def _validate_side_effect(scope: dict, **kwargs: object):
         loc = str(scope.get("check_location_name") or "")
@@ -386,6 +385,7 @@ async def test_multiround_wrong_then_correct_supplement_reparses(
             vision_refresh=_vision_refresh,
         )
         assert r2["status"] == "interrupt"
+        assert (r2.get("interrupt_payload") or {}).get("include_vision_preview") is False
         snap2 = await _checkpoint_snapshot(scope_runner, request_id)
         assert wrong_correction in str(snap2.get("scope_cumulative_text") or "")
         assert snap2.get("needs_db_retry") is True
@@ -453,7 +453,7 @@ async def test_wrong_then_correct_supplement_uses_latest_correction_for_reparse(
             {
                 "user_id": USER_ID,
                 "session_id": SESSION_ID,
-                "query": wrong_query,
+                "query": "",
                 "img_diag_subtype": "defect_ident",
                 "image_urls": [GOOD_IMAGE],
             },
@@ -462,6 +462,7 @@ async def test_wrong_then_correct_supplement_uses_latest_correction_for_reparse(
             vision_prefetch={"is_boiler_pressure_part_image": True},
         )
         assert r1["status"] == "interrupt"
+        assert (r1.get("interrupt_payload") or {}).get("include_vision_preview") is True
 
         r2 = await scope_runner.resume_until_confirmed_or_interrupt(
             resume_token=r1["resume_token"],
@@ -472,6 +473,7 @@ async def test_wrong_then_correct_supplement_uses_latest_correction_for_reparse(
             vision_refresh=_vision_refresh,
         )
         assert r2["status"] == "interrupt"
+        assert (r2.get("interrupt_payload") or {}).get("include_vision_preview") is False
         snap2 = await _checkpoint_snapshot(scope_runner, request_id)
         assert wrong_correction in str(snap2.get("scope_cumulative_text") or "")
 
@@ -501,15 +503,14 @@ async def test_correction_reparse_auto_confirms_when_scope_and_vision_pass(
     """hitl_rounds>=1 时：校正解析+库表校验+视觉均通过 → 自动 confirmed，不再 interrupt。"""
     assert scope_runner.available()
     request_id = "anl_test_correction_auto_confirm"
-    wrong_query = "1号锅炉水冷壁螺旋段前墙吹灰孔99"
+    correction = "检测位置应为吹灰孔77"
     img_diag_request = {
         "user_id": USER_ID,
         "session_id": SESSION_ID,
-        "query": wrong_query,
+        "query": "",
         "img_diag_subtype": "defect_ident",
         "image_urls": [GOOD_IMAGE],
     }
-    correction = "检测位置应为吹灰孔77"
 
     with patch(
         "app.llm.graphs.img_diag_scope_graph.parse_img_diag_scope_draft",
@@ -535,6 +536,7 @@ async def test_correction_reparse_auto_confirms_when_scope_and_vision_pass(
             vision_prefetch={"is_boiler_pressure_part_image": True, "vision_narrative": "- ok"},
         )
         assert r1["status"] == "interrupt"
+        assert (r1.get("interrupt_payload") or {}).get("include_vision_preview") is True
 
         r2 = await scope_runner.resume_until_confirmed_or_interrupt(
             resume_token=r1["resume_token"],
@@ -546,6 +548,7 @@ async def test_correction_reparse_auto_confirms_when_scope_and_vision_pass(
         )
 
         assert r2["status"] == "confirmed"
+        assert (r2.get("interrupt_payload") or {}).get("include_vision_preview") is not True
         snap = await _checkpoint_snapshot(scope_runner, request_id)
         assert (snap.get("scope_draft") or {}).get("check_location_name") == "吹灰孔77"
         assert snap.get("confirmed_scope_intent")
