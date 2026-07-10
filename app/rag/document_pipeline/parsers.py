@@ -42,6 +42,9 @@ class DocumentParser:
         # 支持 file:// 前缀，或直接传本地绝对路径
         if raw.lower().startswith("file://"):
             raw = raw[7:]
+        # 内联正文（如 MinerU OCR 后的 markdown）不是路径；对其 stat 会 ENAMETOOLONG
+        if "\n" in raw or "\r" in raw or len(raw) > 2048:
+            return None
         p = Path(raw)
         if p.exists() and p.is_file():
             return p
