@@ -1,11 +1,13 @@
-# 与 vllm-deploy 英伟达栈对齐：CUDA 12.3 runtime + Ubuntu 22.04；PyTorch 仍用 cu121 wheel 自带 cuDNN
+# 与 vllm-deploy 英伟达栈对齐：CUDA 12.3 runtime + Ubuntu 22.04
+# PyTorch 固定 cu124 wheel，避免 mineru[core] 依赖把它升到 cu130 导致驱动不兼容
 ARG BASE_IMAGE=nvidia/cuda:12.3.0-runtime-ubuntu22.04
 FROM ${BASE_IMAGE}
 
 ARG MINERU_PIP_SPEC=mineru[core]
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG INSTALL_CUDA_TORCH=1
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+ARG TORCH_VERSION=2.5.1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -22,13 +24,22 @@ RUN apt-get update \
 RUN python3 -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 --index-url "${PIP_INDEX_URL}" \
     || python3 -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 --index-url "https://pypi.org/simple"
 RUN if [ "${INSTALL_CUDA_TORCH}" = "1" ]; then \
-      python3 -m pip install --index-url "${TORCH_INDEX_URL}" torch torchvision --default-timeout=600 --retries=20; \
+      python3 -m pip install --index-url "${TORCH_INDEX_URL}" \
+        "torch==${TORCH_VERSION}" "torchvision" --default-timeout=600 --retries=20; \
     fi
 RUN if [ -n "${PIP_INDEX_URL}" ]; then \
       python3 -m pip install --index-url "${PIP_INDEX_URL}" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20 \
       || python3 -m pip install --index-url "https://pypi.org/simple" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20; \
     else \
       python3 -m pip install --index-url "https://pypi.org/simple" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20; \
+    fi
+# mineru[core] 可能把 torch 升到 cu130；安装后强制回装 pin 版本（与 570 驱动 / CUDA 12.8 兼容）
+RUN if [ "${INSTALL_CUDA_TORCH}" = "1" ]; then \
+      python3 -m pip install --index-url "${TORCH_INDEX_URL}" \
+        "torch==${TORCH_VERSION}" "torchvision" --force-reinstall --no-deps --default-timeout=600 --retries=20 \
+      && python3 -c "import torch; v=torch.__version__; c=torch.version.cuda; \
+         assert 'cu130' not in v and c != '13.0', f'unexpected torch {v} cuda {c}'; \
+         print(f'pinned torch {v} cuda {c}')"; \
     fi
 
 COPY docker/entrypoint.sh /entrypoint.sh
@@ -38,4 +49,3 @@ RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 WORKDIR /workspace
 ENTRYPOINT ["/usr/bin/tini", "--", "/bin/sh", "/entrypoint.sh"]
 CMD ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]
-

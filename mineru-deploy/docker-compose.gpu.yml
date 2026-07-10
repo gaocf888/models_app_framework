@@ -10,8 +10,9 @@ services:
         MINERU_PIP_SPEC: ${MINERU_GPU_PIP_SPEC:-mineru[core]}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         INSTALL_CUDA_TORCH: ${INSTALL_CUDA_TORCH:-1}
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
-    image: ${MINERU_GPU_IMAGE:-mineru-gpu:cu123}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+        TORCH_VERSION: ${TORCH_VERSION:-2.5.1}
+    image: ${MINERU_GPU_IMAGE:-mineru-gpu:cu124-pinned}
     container_name: ${MINERU_CONTAINER_NAME:-mineru-api}
     restart: unless-stopped
     ports:
