@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 VISION_HITL_TITLE = "【图像可见分析】"
+VISION_HITL_MACRO_APPEARANCE_HEADING = "## 宏观外貌分析"
 VISION_FRONTEND_NARRATIVE_LABEL = "外观可见分析"
 
 VISION_BOILER_REJECTION_DEFAULT = "当前图片非锅炉相关图片，请重新上传"
@@ -378,6 +379,7 @@ def format_vision_hitl_assistant_block(
     vision_data: dict[str, Any] | None,
     *,
     img_diag_subtype: str,
+    include_macro_appearance_heading: bool = False,
 ) -> str:
     lines = build_vision_morphology_markdown_lines(
         vision_data,
@@ -385,7 +387,11 @@ def format_vision_hitl_assistant_block(
     )
     if not lines:
         return ""
-    return f"{VISION_HITL_TITLE}\n" + "\n".join(lines)
+    parts = [VISION_HITL_TITLE]
+    if include_macro_appearance_heading:
+        parts.append(VISION_HITL_MACRO_APPEARANCE_HEADING)
+    parts.extend(lines)
+    return "\n".join(parts)
 
 
 def img_diag_request_has_images(

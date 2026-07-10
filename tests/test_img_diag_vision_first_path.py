@@ -164,6 +164,51 @@ def test_format_vision_hitl_assistant_block_markdown_categories() -> None:
     assert "- **主体形貌**：" in text
     assert "- **表面状态**：" in text
     assert "  · " not in text
+    assert "## 宏观外貌分析" not in text
+
+
+def test_interrupt_payload_scope_input_includes_macro_appearance_heading() -> None:
+    state = {
+        "orchestrator_path": "vision_first",
+        "hitl_rounds": 0,
+        "pending_vision_user_ack": True,
+        "img_diag_subtype": "defect_ident",
+        "vision_prefetch_data": {
+            "is_boiler_pressure_part_image": True,
+            "vision_narrative": "- **线状损伤**：裂纹",
+        },
+        "confirmed_scope_intent": {"boiler": "1号锅炉"},
+        "scope_intent_text": "1号锅炉",
+        "scope_draft": {"boiler": "1号锅炉"},
+        "img_diag_request": {
+            "image_urls": ["http://minio/good.jpg"],
+            "img_diag_subtype": "defect_ident",
+        },
+    }
+    payload = _build_interrupt_payload(state)
+    msg = payload.get("vision_hitl_assistant_message") or ""
+    assert "【图像可见分析】" in msg
+    assert "## 宏观外貌分析" in msg
+    assert msg.index("【图像可见分析】") < msg.index("## 宏观外貌分析")
+    assert "- **线状损伤**：" in msg
+
+
+def test_vision_preview_sse_event_includes_macro_appearance_heading() -> None:
+    from app.llm.graphs.analysis_img_diag_runner import AnalysisImgDiagGraphRunner
+
+    ev = AnalysisImgDiagGraphRunner._vision_preview_sse_event(
+        request_id="anl_test",
+        img_diag_subtype="defect_ident",
+        vision_data={
+            "vision_narrative": "- **线状损伤**：裂纹",
+        },
+        vision_ms=100,
+        vision_status="ok",
+    )
+    msg = ev.get("vision_hitl_assistant_message") or ""
+    assert ev["event"] == "img_diag_vision_preview"
+    assert "## 宏观外貌分析" in msg
+    assert "- **线状损伤**：" in msg
 
 
 def test_confirm_reply_example_db_not_matched() -> None:

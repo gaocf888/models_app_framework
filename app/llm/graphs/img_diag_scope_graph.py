@@ -417,6 +417,7 @@ def _enrich_interrupt_payload_from_state(state: ImgDiagScopeGraphState, payload:
         payload["vision_hitl_assistant_message"] = format_vision_hitl_assistant_block(
             vision_data if isinstance(vision_data, dict) else None,
             img_diag_subtype=subtype,
+            include_macro_appearance_heading=True,
         )
     if state.get("initial_query_empty"):
         payload["initial_query_empty"] = True

@@ -525,6 +525,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         block = format_vision_hitl_assistant_block(
             vision_data,
             img_diag_subtype=img_diag_subtype,
+            include_macro_appearance_heading=True,
         )
         if block:
             self._conv.append_assistant_message(user_id, session_id, block)
@@ -613,6 +614,7 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "vision_hitl_assistant_message": format_vision_hitl_assistant_block(
                 vision_data,
                 img_diag_subtype=img_diag_subtype,
+                include_macro_appearance_heading=True,
             ),
             "include_vision_preview": True,
         }
