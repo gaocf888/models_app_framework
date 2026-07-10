@@ -110,6 +110,62 @@ def scope_runner() -> ImgDiagScopeHitlRunner:
 
 
 @pytest.mark.asyncio
+async def test_vision_first_db_hit_interrupts_for_vision_ack_then_confirms_on_resume(
+    scope_runner: ImgDiagScopeHitlRunner,
+) -> None:
+    """首轮正确图+正确台账+库表命中：仅视觉 interrupt，用户确认后再 confirmed。"""
+    assert scope_runner.available()
+    request_id = "anl_test_vision_first_db_hit_ack"
+    img_diag_request = {
+        "user_id": USER_ID,
+        "session_id": SESSION_ID,
+        "query": "1号锅炉水冷壁螺旋段前墙吹灰孔77",
+        "img_diag_subtype": "defect_ident",
+        "image_urls": [GOOD_IMAGE],
+    }
+
+    with patch(
+        "app.llm.graphs.img_diag_scope_graph.parse_img_diag_scope_draft",
+        side_effect=_mock_parse_scope_draft,
+    ), patch(
+        "app.llm.graphs.img_diag_scope_graph.validate_scope_with_relaxation",
+        new_callable=AsyncMock,
+        return_value=(
+            1,
+            {
+                "boiler": "1号锅炉",
+                "device_name": "水冷壁螺旋段前墙",
+                "check_location_name": "吹灰孔77",
+            },
+            [],
+            None,
+        ),
+    ):
+        r1 = await scope_runner.run_until_scope_confirmed_or_interrupt(
+            img_diag_request,
+            request_id=request_id,
+            orchestrator_path="vision_first",
+            vision_prefetch={"is_boiler_pressure_part_image": True, "vision_narrative": "- 裂纹"},
+        )
+        assert r1["status"] == "interrupt"
+        intr = r1.get("interrupt_payload") or {}
+        assert intr.get("include_vision_preview") is True
+        assert intr.get("include_scope_confirm_preview") is False
+
+        r2 = await scope_runner.resume_until_confirmed_or_interrupt(
+            resume_token=r1["resume_token"],
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            action="confirm_scope",
+            payload={},
+            vision_refresh=_vision_refresh,
+        )
+        assert r2["status"] == "confirmed"
+        assert r2.get("confirmed_scope_intent")
+        assert (r2.get("interrupt_payload") or {}).get("include_vision_preview") is not True
+
+
+@pytest.mark.asyncio
 async def test_same_image_urls_with_supplement_merges_cumulative(scope_runner: ImgDiagScopeHitlRunner) -> None:
     """第 4 轮：image_urls 与上一轮相同 + user_supplement（用户日志场景）。"""
     assert scope_runner.available()

@@ -115,6 +115,7 @@ class ImgDiagScopeGraphState(TypedDict, total=False):
     scope_correction_parsed_epoch: int
     scope_pending_reparse_supplement: str
     vision_hitl_preview_delivered: bool
+    pending_vision_user_ack: bool
 
 
 _SCOPE_CHECKPOINT_PRIORITY_KEYS: frozenset[str] = frozenset(
@@ -136,6 +137,7 @@ _SCOPE_CHECKPOINT_PRIORITY_KEYS: frozenset[str] = frozenset(
         "confirmed_scope_intent",
         "scope_intent_text",
         "vision_hitl_preview_delivered",
+        "pending_vision_user_ack",
     }
 )
 
@@ -169,8 +171,30 @@ def _vision_hitl_gate_blocked(state: dict[str, Any]) -> bool:
     )
 
 
+def _needs_vision_user_ack_after_scope_db_match(state: ImgDiagScopeGraphState) -> bool:
+    """vision_first 首轮库表命中且视觉通过：须 interrupt 展示视觉并等用户确认后再放行。"""
+    if str(state.get("orchestrator_path") or "") != "vision_first":
+        return False
+    if int(state.get("hitl_rounds") or 0) > 0:
+        return False
+    if state.get("vision_hitl_preview_delivered"):
+        return False
+    from app.llm.graphs.img_diag_vision_display import img_diag_request_has_images
+
+    req = state.get("img_diag_request") if isinstance(state.get("img_diag_request"), dict) else {}
+    subtype = str(state.get("img_diag_subtype") or req.get("img_diag_subtype") or "defect_ident")
+    if not img_diag_request_has_images(req, img_diag_subtype=subtype):
+        return False
+    if _vision_hitl_gate_blocked(state):
+        return False
+    vision_data = state.get("vision_prefetch_data")
+    return isinstance(vision_data, dict) and bool(vision_data)
+
+
 def _should_include_scope_confirm_in_hitl(state: dict[str, Any]) -> bool:
     """台账门禁已通过时不向用户展示台账确认块；仅未通过时展示。"""
+    if state.get("pending_vision_user_ack"):
+        return False
     if _scope_hitl_gate_passed(state):
         return False
     if _vision_hitl_gate_blocked(state) and not state.get("needs_db_retry"):
@@ -209,16 +233,8 @@ def should_emit_img_diag_vision_preview_on_scope_confirmed(
     vision_prefetch: dict[str, Any] | None,
     vision_hitl_preview_delivered: bool,
 ) -> bool:
-    """scope 已自动放行且未 interrupt 时，首轮视觉通过仍须下发一次可见分析。"""
-    if orchestrator_path != "vision_first":
-        return False
-    if not isinstance(vision_prefetch, dict) or not vision_prefetch:
-        return False
-    from app.llm.graphs.img_diag_vision_display import is_vision_boiler_relevance_rejected
-
-    if is_vision_boiler_relevance_rejected(vision_prefetch):
-        return False
-    return not vision_hitl_preview_delivered
+    """视觉可见分析仅在 scope interrupt 路径下发；confirmed 直出不再补发。"""
+    return False
 
 
 def _scope_hitl_result_extras(state: dict[str, Any]) -> dict[str, Any]:
@@ -364,6 +380,7 @@ def _finalize_confirmed_scope(state: ImgDiagScopeGraphState) -> None:
         scope_question=state.get("scope_cumulative_text") or "",
     )
     state["pending_matched_confirm"] = False
+    state.pop("pending_vision_user_ack", None)
     state["needs_db_retry"] = False
     state["validation_error"] = None
 
@@ -648,6 +665,80 @@ async def _prepare_scope_resume_state(
     return None
 
 
+async def _try_resolve_vision_user_ack_after_prep(
+    graph: Any,
+    config: dict[str, Any],
+    session: Any,
+    *,
+    action: str,
+    payload: dict[str, Any] | None,
+    vision_refresh: VisionRefreshFn | None,
+) -> dict[str, Any] | None:
+    """
+    prep 后「台账已内部通过、待视觉确认」且用户肯定回复时直接完成，避免 graph resume 状态漂移。
+    """
+    payload = payload or {}
+    snap = await graph.aget_state(config)
+    if not snap or not snap.values:
+        return None
+    state: dict[str, Any] = dict(snap.values)
+    if not state.get("pending_vision_user_ack"):
+        return None
+    if _hitl_payload_only_replaced_images(payload):
+        return None
+    if not is_matched_confirm_affirmative_response(action, payload):
+        return None
+    if not (state.get("confirmed_scope_intent") and state.get("scope_intent_text")):
+        return None
+
+    req = dict(state.get("img_diag_request") or session.img_diag_request or {})
+    state["img_diag_request"] = req
+    thread_id = session.thread_id
+    request_id = session.request_id
+
+    if _should_block_scope_confirm_by_vision_state(state):
+        apply_vision_rejection_scope_gate(state)
+        await graph.aupdate_state(config, state)
+        updated_request = await _finalize_state_after_hitl_resume(
+            state,
+            session=session,
+            vision_refresh=vision_refresh,
+            for_interrupt=True,
+        )
+        return _scope_interrupt_from_state(
+            state,
+            thread_id=thread_id,
+            request_id=request_id,
+            img_diag_request=updated_request if isinstance(updated_request, dict) else req,
+        )
+
+    state.pop("pending_vision_user_ack", None)
+    if str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON:
+        state.pop("interrupt_reason", None)
+    state.pop("vision_confirm_blocked", None)
+    await graph.aupdate_state(config, state)
+
+    state_confirmed = dict(state)
+    updated_request = await _finalize_state_after_hitl_resume(
+        state_confirmed,
+        session=session,
+        vision_refresh=vision_refresh,
+        for_interrupt=False,
+    )
+    return {
+        "status": "confirmed",
+        "request_id": request_id,
+        "confirmed_scope_intent": state_confirmed["confirmed_scope_intent"],
+        "scope_intent_text": state_confirmed["scope_intent_text"],
+        "img_diag_request": updated_request,
+        "orchestrator_path": session.orchestrator_path,
+        "vision_prefetch": state_confirmed.get("vision_prefetch_data"),
+        "vision_prefetch_ms": int(state_confirmed.get("vision_prefetch_ms") or 0),
+        "vision_prefetch_status": str(state_confirmed.get("vision_prefetch_status") or ""),
+        **_scope_hitl_result_extras(state_confirmed),
+    }
+
+
 async def _try_resolve_matched_confirm_after_prep(
     graph: Any,
     config: dict[str, Any],
@@ -766,6 +857,8 @@ def _apply_vision_gate_or_restore_scope_hitl(state: ImgDiagScopeGraphState) -> N
     """HITL 展示前：非锅炉图阻断；已通过则恢复台账确认文案。"""
     if apply_vision_rejection_scope_gate(state):
         return
+    if state.get("pending_vision_user_ack"):
+        return
     sync_scope_hitl_after_vision_accepted(state)
 
 
@@ -870,6 +963,8 @@ def _last_human_response_needs_scope_reparse(state: dict[str, Any]) -> bool:
 
 def _state_needs_scope_hitl_interrupt(state: dict[str, Any]) -> bool:
     """图已结束但尚未 confirmed，仍须下一次人机协同（视觉/台账待确认）。"""
+    if state.get("pending_vision_user_ack"):
+        return True
     if state.get("confirmed_scope_intent") and state.get("scope_intent_text"):
         return _vision_hitl_gate_blocked(state)
     if state.get("pending_matched_confirm"):
@@ -914,6 +1009,10 @@ def _resume_payload_needs_scope_reparse(
         action, payload
     ):
         return False
+    if state.get("pending_vision_user_ack") and is_matched_confirm_affirmative_response(
+        action, payload
+    ):
+        return False
     return True
 
 
@@ -926,8 +1025,12 @@ def _apply_scope_correction_from_payload(
     """合并 user_supplement/scope_patch；返回是否写入了台账修正。"""
     payload = payload if isinstance(payload, dict) else {}
     pending_matched = bool(state.get("pending_matched_confirm"))
+    pending_vision_ack = bool(state.get("pending_vision_user_ack"))
     affirmative = pending_matched and is_matched_confirm_affirmative_response(action, payload)
-    if affirmative:
+    affirmative_vision = pending_vision_ack and is_matched_confirm_affirmative_response(
+        action, payload
+    )
+    if affirmative or affirmative_vision:
         return False
 
     changed = False
@@ -967,8 +1070,11 @@ def _apply_scope_correction_from_payload(
         state["scope_draft"] = apply_scope_field_exclusions_to_draft(draft, excluded).to_dict()
         changed = True
 
-    if pending_matched and not affirmative and correction_changed:
+    if (pending_matched or pending_vision_ack) and not (affirmative or affirmative_vision) and correction_changed:
         state["pending_matched_confirm"] = False
+        state.pop("pending_vision_user_ack", None)
+        state.pop("confirmed_scope_intent", None)
+        state.pop("scope_intent_text", None)
         changed = True
 
     if changed and not _scope_correction_needs_reparse(state):
@@ -1046,14 +1152,44 @@ def _apply_human_scope_response(
     _apply_hitl_image_urls_to_state(state, payload if isinstance(payload, dict) else {})
 
     pending_matched = bool(state.get("pending_matched_confirm"))
-    affirmative = pending_matched and is_matched_confirm_affirmative_response(action, payload)
+    pending_vision_ack = bool(state.get("pending_vision_user_ack"))
+    affirmative_matched = pending_matched and is_matched_confirm_affirmative_response(action, payload)
     _apply_scope_correction_from_payload(
         state,
         payload if isinstance(payload, dict) else {},
         action=action,
     )
+    pending_vision_ack = bool(state.get("pending_vision_user_ack"))
+
+    if pending_vision_ack:
+        payload_dict = payload if isinstance(payload, dict) else {}
+        if _hitl_payload_only_replaced_images(payload_dict):
+            apply_vision_rejection_scope_gate(state)
+            if not is_scope_confirm_blocked_by_vision(
+                state.get("vision_prefetch_data")
+                if isinstance(state.get("vision_prefetch_data"), dict)
+                else None,
+                img_diag_request=state.get("img_diag_request")
+                if isinstance(state.get("img_diag_request"), dict)
+                else None,
+                img_diag_subtype=str(state.get("img_diag_subtype") or "defect_ident"),
+            ):
+                state.pop("vision_confirm_blocked", None)
+                if str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON:
+                    state.pop("interrupt_reason", None)
+        elif pending_vision_ack and is_matched_confirm_affirmative_response(action, payload):
+            if state.pop("vision_prefetch_resume_refreshed", None):
+                state.pop("vision_confirm_blocked", None)
+            if _should_block_scope_confirm_by_vision_state(state):
+                apply_vision_rejection_scope_gate(state)
+            else:
+                state.pop("pending_vision_user_ack", None)
+                if str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON:
+                    state.pop("interrupt_reason", None)
+                state.pop("vision_confirm_blocked", None)
 
     if pending_matched:
+        affirmative = affirmative_matched
         if _hitl_payload_only_replaced_images(payload if isinstance(payload, dict) else {}):
             apply_vision_rejection_scope_gate(state)
             if not is_scope_confirm_blocked_by_vision(
@@ -1181,6 +1317,14 @@ def make_img_diag_scope_nodes(
         )
         apply_vision_rejection_scope_gate(state)
         state["pending_matched_confirm"] = False
+        if (
+            state.get("confirmed_scope_intent")
+            and state.get("scope_intent_text")
+            and _needs_vision_user_ack_after_scope_db_match(state)
+        ):
+            state["pending_vision_user_ack"] = True
+        else:
+            state.pop("pending_vision_user_ack", None)
         return state
 
     return {
@@ -1201,6 +1345,8 @@ def _route_after_preflight(state: ImgDiagScopeGraphState) -> Literal["scope_huma
 
 def _route_after_validate(state: ImgDiagScopeGraphState):
     if str(state.get("interrupt_reason") or "") == VISION_REJECT_INTERRUPT_REASON:
+        return "scope_human_confirm"
+    if state.get("pending_vision_user_ack"):
         return "scope_human_confirm"
     if state.get("pending_matched_confirm"):
         return "scope_human_confirm"
@@ -1226,7 +1372,11 @@ def _route_after_validate(state: ImgDiagScopeGraphState):
 
 
 def _route_after_human_confirm(state: ImgDiagScopeGraphState):
-    if state.get("confirmed_scope_intent") and state.get("scope_intent_text"):
+    if (
+        state.get("confirmed_scope_intent")
+        and state.get("scope_intent_text")
+        and not state.get("pending_vision_user_ack")
+    ):
         from langgraph.graph import END  # type: ignore[import-not-found]
 
         return END
@@ -1509,9 +1659,15 @@ class ImgDiagScopeHitlRunner:
         state = dict(snap.values)
         if _scope_correction_needs_reparse(state):
             return None
-        auto_confirmed = bool(state.get("confirmed_scope_intent") and state.get("scope_intent_text"))
+        auto_confirmed = bool(
+            state.get("confirmed_scope_intent")
+            and state.get("scope_intent_text")
+            and not state.get("pending_vision_user_ack")
+        )
         needs_interrupt = bool(
-            state.get("pending_matched_confirm") or _state_needs_scope_hitl_interrupt(state)
+            state.get("pending_matched_confirm")
+            or state.get("pending_vision_user_ack")
+            or _state_needs_scope_hitl_interrupt(state)
         )
         if not auto_confirmed and not needs_interrupt:
             return None
@@ -1745,6 +1901,13 @@ class ImgDiagScopeHitlRunner:
                     request_id=rid,
                     img_diag_request=img_diag_request,
                 )
+            if final_state.get("pending_vision_user_ack"):
+                return _scope_interrupt_from_state(
+                    final_state,
+                    thread_id=rid,
+                    request_id=rid,
+                    img_diag_request=img_diag_request,
+                )
             return {
                 "status": "confirmed",
                 "request_id": rid,
@@ -1830,6 +1993,18 @@ class ImgDiagScopeHitlRunner:
         resume_prep_persisted = snap_before_prep is not None and snap_after_prep is not None and (
             dict(snap_before_prep.values or {}) != dict(snap_after_prep.values or {})
         )
+
+        early = await _try_resolve_vision_user_ack_after_prep(
+            self._graph,
+            config,
+            session,
+            action=action,
+            payload=payload,
+            vision_refresh=vision_refresh,
+        )
+        if early is not None:
+            delete_img_diag_resume_session(resume_token)
+            return early
 
         early = await _try_resolve_matched_confirm_after_prep(
             self._graph,

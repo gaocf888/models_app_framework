@@ -663,6 +663,47 @@ async def test_db_validate_first_success_auto_confirms_scope() -> None:
 
 
 @pytest.mark.asyncio
+async def test_db_validate_vision_first_first_hit_pending_vision_user_ack() -> None:
+    from app.llm.graphs.img_diag_scope_graph import (
+        _route_after_validate,
+        make_img_diag_scope_nodes,
+    )
+
+    nodes = make_img_diag_scope_nodes()
+    db_validate = nodes["scope_db_validate"]
+    state = {
+        "orchestrator_path": "vision_first",
+        "img_diag_subtype": "defect_ident",
+        "img_diag_request": {
+            "image_urls": ["http://minio/good.jpg"],
+            "img_diag_subtype": "defect_ident",
+        },
+        "vision_prefetch_data": {
+            "is_boiler_pressure_part_image": True,
+            "vision_narrative": "- 裂纹",
+        },
+        "scope_draft": {
+            "boiler": "1号锅炉",
+            "device_name": "低温过热器",
+            "check_location_name": None,
+            "row_no": None,
+            "tube_no": None,
+        },
+        "scope_cumulative_text": "1号锅炉低温过热器",
+        "hitl_rounds": 0,
+    }
+    with patch(
+        "app.llm.graphs.img_diag_scope_graph.validate_scope_with_relaxation",
+        new_callable=AsyncMock,
+        return_value=(1, {"boiler": "1号锅炉", "device_name": "低温过热器"}, [], None),
+    ):
+        out = await db_validate(state)
+    assert out.get("pending_vision_user_ack") is True
+    assert out.get("confirmed_scope_intent", {}).get("boiler") == "1号锅炉"
+    assert _route_after_validate(out) == "scope_human_confirm"
+
+
+@pytest.mark.asyncio
 async def test_db_validate_after_hitl_skips_matched_confirm() -> None:
     from app.llm.graphs.img_diag_scope_graph import make_img_diag_scope_nodes
 

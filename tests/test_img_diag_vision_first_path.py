@@ -188,3 +188,31 @@ def test_interrupt_payload_vision_only_once_after_delivered() -> None:
     payload2 = _build_interrupt_payload(state)
     assert payload2["include_vision_preview"] is False
     assert "vision_findings_display" not in payload2
+
+
+def test_interrupt_payload_vision_ack_only_hides_scope_confirm() -> None:
+    state = {
+        "orchestrator_path": "vision_first",
+        "hitl_rounds": 0,
+        "pending_vision_user_ack": True,
+        "img_diag_subtype": "defect_ident",
+        "vision_prefetch_data": {
+            "is_boiler_pressure_part_image": True,
+            "vision_narrative": "- 管壁裂纹",
+        },
+        "confirmed_scope_intent": {"boiler": "1号锅炉"},
+        "scope_intent_text": "1号锅炉低温过热器",
+        "scope_draft": {
+            "boiler": "1号锅炉",
+            "device_name": "低温过热器",
+        },
+        "img_diag_request": {
+            "image_urls": ["http://minio/good.jpg"],
+            "img_diag_subtype": "defect_ident",
+        },
+    }
+    payload = _build_interrupt_payload(state)
+    assert payload["include_vision_preview"] is True
+    assert payload["include_scope_confirm_preview"] is False
+    assert not payload.get("scope_draft_display")
+    assert payload.get("scope_hitl_assistant_message") == ""
