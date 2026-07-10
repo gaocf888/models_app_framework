@@ -1,6 +1,5 @@
-# GPU 推理须 cudnn9-runtime（纯 runtime 易 Layout Conv2d 报 CUDNN_STATUS_NOT_INITIALIZED）
-# PyTorch 固定 cu124 wheel，避免 mineru[core] 依赖把它升到 cu130 导致驱动不兼容
-ARG BASE_IMAGE=nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
+# PyTorch cu124 + pip 自带 nvidia-cudnn-cu12；基础镜像用 runtime 即可（避免与 pip cuDNN 双份冲突）
+ARG BASE_IMAGE=nvidia/cuda:12.3.2-runtime-ubuntu22.04
 FROM ${BASE_IMAGE}
 
 ARG MINERU_PIP_SPEC=mineru[core]
@@ -34,23 +33,21 @@ RUN if [ -n "${PIP_INDEX_URL}" ]; then \
     else \
       python3 -m pip install --index-url "https://pypi.org/simple" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20; \
     fi
-# mineru[core] 可能升级 torch/torchvision；安装后强制回装 pin 版本（须 torch+torchvision 成对匹配）
+# mineru[core] 可能升级 torch；须连同 nvidia-cudnn-cu12 等依赖一并回装（禁止 --no-deps，否则 Layout Conv2d 报 CUDNN_STATUS_NOT_INITIALIZED）
 RUN if [ "${INSTALL_CUDA_TORCH}" = "1" ]; then \
       python3 -m pip install --index-url "${TORCH_INDEX_URL}" \
         "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
-        --force-reinstall --no-deps --default-timeout=600 --retries=20 \
+        --force-reinstall --default-timeout=600 --retries=20 \
       && python3 -c "import torch, torchvision; \
          tv=torch.__version__; vv=torchvision.__version__; c=torch.version.cuda; \
          assert 'cu130' not in tv and c != '13.0', f'unexpected torch {tv} cuda {c}'; \
          assert tv.startswith('${TORCH_VERSION}'), f'unexpected torch {tv}'; \
          assert vv.startswith('${TORCHVISION_VERSION}'), f'unexpected torchvision {vv}'; \
          import torchvision.ops; \
-         print(f'pinned torch {tv} torchvision {vv} cuda {c}')"; \
-    fi
-# 构建期无法访问 GPU；仅校验 cuDNN 库可被 torch 加载（需 nvidia/cuda:*-cudnn-runtime 基础镜像）
-RUN if [ "${INSTALL_CUDA_TORCH}" = "1" ]; then \
-      python3 -c "import torch; assert torch.backends.cudnn.is_available(), 'cudnn not available'; \
-         print('cudnn version', torch.backends.cudnn.version())"; \
+         import importlib.util; \
+         assert importlib.util.find_spec('nvidia.cudnn'), 'missing nvidia-cudnn-cu12 pip package'; \
+         assert torch.backends.cudnn.is_available(), 'cudnn not available'; \
+         print(f'pinned torch {tv} torchvision {vv} cuda {c} cudnn {torch.backends.cudnn.version()}')"; \
     fi
 
 COPY docker/entrypoint.sh /entrypoint.sh
