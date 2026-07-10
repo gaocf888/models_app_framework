@@ -8,6 +8,7 @@ ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG INSTALL_CUDA_TORCH=1
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
 ARG TORCH_VERSION=2.5.1
+ARG TORCHVISION_VERSION=0.20.1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -25,7 +26,7 @@ RUN python3 -m pip install --upgrade pip setuptools wheel --default-timeout=600 
     || python3 -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 --index-url "https://pypi.org/simple"
 RUN if [ "${INSTALL_CUDA_TORCH}" = "1" ]; then \
       python3 -m pip install --index-url "${TORCH_INDEX_URL}" \
-        "torch==${TORCH_VERSION}" "torchvision" --default-timeout=600 --retries=20; \
+        "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" --default-timeout=600 --retries=20; \
     fi
 RUN if [ -n "${PIP_INDEX_URL}" ]; then \
       python3 -m pip install --index-url "${PIP_INDEX_URL}" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20 \
@@ -33,13 +34,18 @@ RUN if [ -n "${PIP_INDEX_URL}" ]; then \
     else \
       python3 -m pip install --index-url "https://pypi.org/simple" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20; \
     fi
-# mineru[core] 可能把 torch 升到 cu130；安装后强制回装 pin 版本（与 570 驱动 / CUDA 12.8 兼容）
+# mineru[core] 可能升级 torch/torchvision；安装后强制回装 pin 版本（须 torch+torchvision 成对匹配）
 RUN if [ "${INSTALL_CUDA_TORCH}" = "1" ]; then \
       python3 -m pip install --index-url "${TORCH_INDEX_URL}" \
-        "torch==${TORCH_VERSION}" "torchvision" --force-reinstall --no-deps --default-timeout=600 --retries=20 \
-      && python3 -c "import torch; v=torch.__version__; c=torch.version.cuda; \
-         assert 'cu130' not in v and c != '13.0', f'unexpected torch {v} cuda {c}'; \
-         print(f'pinned torch {v} cuda {c}')"; \
+        "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
+        --force-reinstall --no-deps --default-timeout=600 --retries=20 \
+      && python3 -c "import torch, torchvision; \
+         tv=torch.__version__; vv=torchvision.__version__; c=torch.version.cuda; \
+         assert 'cu130' not in tv and c != '13.0', f'unexpected torch {tv} cuda {c}'; \
+         assert tv.startswith('${TORCH_VERSION}'), f'unexpected torch {tv}'; \
+         assert vv.startswith('${TORCHVISION_VERSION}'), f'unexpected torchvision {vv}'; \
+         import torchvision.ops; \
+         print(f'pinned torch {tv} torchvision {vv} cuda {c}')"; \
     fi
 
 COPY docker/entrypoint.sh /entrypoint.sh

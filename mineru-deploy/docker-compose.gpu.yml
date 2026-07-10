@@ -12,6 +12,7 @@ services:
         INSTALL_CUDA_TORCH: ${INSTALL_CUDA_TORCH:-1}
         TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
         TORCH_VERSION: ${TORCH_VERSION:-2.5.1}
+        TORCHVISION_VERSION: ${TORCHVISION_VERSION:-0.20.1}
     image: ${MINERU_GPU_IMAGE:-mineru-gpu:cu124-pinned}
     container_name: ${MINERU_CONTAINER_NAME:-mineru-api}
     restart: unless-stopped
