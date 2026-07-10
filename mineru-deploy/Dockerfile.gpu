@@ -1,6 +1,6 @@
-# 与 vllm-deploy 英伟达栈对齐：CUDA 12.3 runtime + Ubuntu 22.04
+# 与 vllm-deploy 英伟达栈对齐；GPU 推理须 cudnn-runtime（纯 runtime 易 Layout Conv2d 报 CUDNN_STATUS_NOT_INITIALIZED）
 # PyTorch 固定 cu124 wheel，避免 mineru[core] 依赖把它升到 cu130 导致驱动不兼容
-ARG BASE_IMAGE=nvidia/cuda:12.3.0-runtime-ubuntu22.04
+ARG BASE_IMAGE=nvidia/cuda:12.3.0-cudnn-runtime-ubuntu22.04
 FROM ${BASE_IMAGE}
 
 ARG MINERU_PIP_SPEC=mineru[core]
@@ -46,6 +46,11 @@ RUN if [ "${INSTALL_CUDA_TORCH}" = "1" ]; then \
          assert vv.startswith('${TORCHVISION_VERSION}'), f'unexpected torchvision {vv}'; \
          import torchvision.ops; \
          print(f'pinned torch {tv} torchvision {vv} cuda {c}')"; \
+    fi
+# 构建期无法访问 GPU；仅校验 cuDNN 库可被 torch 加载（需 nvidia/cuda:*-cudnn-runtime 基础镜像）
+RUN if [ "${INSTALL_CUDA_TORCH}" = "1" ]; then \
+      python3 -c "import torch; assert torch.backends.cudnn.is_available(), 'cudnn not available'; \
+         print('cudnn version', torch.backends.cudnn.version())"; \
     fi
 
 COPY docker/entrypoint.sh /entrypoint.sh
