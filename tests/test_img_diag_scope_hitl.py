@@ -698,9 +698,9 @@ async def test_db_validate_vision_first_first_hit_pending_vision_user_ack() -> N
         return_value=(1, {"boiler": "1号锅炉", "device_name": "低温过热器"}, [], None),
     ):
         out = await db_validate(state)
-    assert out.get("pending_vision_user_ack") is True
+    assert not out.get("pending_vision_user_ack")
     assert out.get("confirmed_scope_intent", {}).get("boiler") == "1号锅炉"
-    assert _route_after_validate(out) == "scope_human_confirm"
+    assert _route_after_validate(out) != "scope_human_confirm"
 
 
 @pytest.mark.asyncio

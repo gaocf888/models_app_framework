@@ -172,23 +172,8 @@ def _vision_hitl_gate_blocked(state: dict[str, Any]) -> bool:
 
 
 def _needs_vision_user_ack_after_scope_db_match(state: ImgDiagScopeGraphState) -> bool:
-    """vision_first 首轮库表命中且视觉通过：须 interrupt 展示视觉并等用户确认后再放行。"""
-    if str(state.get("orchestrator_path") or "") != "vision_first":
-        return False
-    if int(state.get("hitl_rounds") or 0) > 0:
-        return False
-    if state.get("vision_hitl_preview_delivered"):
-        return False
-    from app.llm.graphs.img_diag_vision_display import img_diag_request_has_images
-
-    req = state.get("img_diag_request") if isinstance(state.get("img_diag_request"), dict) else {}
-    subtype = str(state.get("img_diag_subtype") or req.get("img_diag_subtype") or "defect_ident")
-    if not img_diag_request_has_images(req, img_diag_subtype=subtype):
-        return False
-    if _vision_hitl_gate_blocked(state):
-        return False
-    vision_data = state.get("vision_prefetch_data")
-    return isinstance(vision_data, dict) and bool(vision_data)
+    """vision_first 首轮库表命中且视觉通过：台账/视觉双门禁已放行，不再 interrupt 等用户确认。"""
+    return False
 
 
 def _should_include_scope_confirm_in_hitl(state: dict[str, Any]) -> bool:

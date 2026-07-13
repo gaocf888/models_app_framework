@@ -110,12 +110,12 @@ def scope_runner() -> ImgDiagScopeHitlRunner:
 
 
 @pytest.mark.asyncio
-async def test_vision_first_db_hit_interrupts_for_vision_ack_then_confirms_on_resume(
+async def test_vision_first_db_hit_auto_confirmed_without_vision_ack_interrupt(
     scope_runner: ImgDiagScopeHitlRunner,
 ) -> None:
-    """首轮正确图+正确台账+库表命中：仅视觉 interrupt，用户确认后再 confirmed。"""
+    """首轮正确图+正确台账+库表命中：双门禁通过，直接 confirmed，不 interrupt。"""
     assert scope_runner.available()
-    request_id = "anl_test_vision_first_db_hit_ack"
+    request_id = "anl_test_vision_first_db_hit_auto"
     img_diag_request = {
         "user_id": USER_ID,
         "session_id": SESSION_ID,
@@ -147,24 +147,9 @@ async def test_vision_first_db_hit_interrupts_for_vision_ack_then_confirms_on_re
             orchestrator_path="vision_first",
             vision_prefetch={"is_boiler_pressure_part_image": True, "vision_narrative": "- 裂纹"},
         )
-        assert r1["status"] == "interrupt"
-        intr = r1.get("interrupt_payload") or {}
-        assert intr.get("include_vision_preview") is True
-        assert intr.get("include_scope_confirm_preview") is False
-        assert intr.get("hitl_mode") == "vision_ack_only"
-        assert (intr.get("ui_buttons") or [])[0].get("label") == "继续"
-
-        r2 = await scope_runner.resume_until_confirmed_or_interrupt(
-            resume_token=r1["resume_token"],
-            user_id=USER_ID,
-            session_id=SESSION_ID,
-            action="confirm_scope",
-            payload={},
-            vision_refresh=_vision_refresh,
-        )
-        assert r2["status"] == "confirmed"
-        assert r2.get("confirmed_scope_intent")
-        assert (r2.get("interrupt_payload") or {}).get("include_vision_preview") is not True
+        assert r1["status"] == "confirmed"
+        assert r1.get("confirmed_scope_intent")
+        assert not r1.get("resume_token")
 
 
 @pytest.mark.asyncio
