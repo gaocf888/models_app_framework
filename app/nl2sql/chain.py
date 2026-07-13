@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
 from app.core.logging import get_logger
@@ -36,6 +36,7 @@ class NL2SQLValidationContext:
     join_whitelist: frozenset[str]
     parsed_intent: dict[str, Any] | None = None
     analysis_type: str | None = None
+    last_gen_fail_reason: str | None = None
 
 NL2SQL_SCHEMA_CATALOG_PLACEHOLDER = "{{NL2SQL_SCHEMA_CATALOG}}"
 
@@ -182,6 +183,15 @@ class NL2SQLChain:
         except Exception:
             logger.warning("NL2SQLChain: LangChain not available, fallback to VLLMHttpClient.")
 
+    @staticmethod
+    def _empty_sql_fail(
+        ctx: NL2SQLValidationContext,
+        reason: str | None,
+    ) -> tuple[str, NL2SQLValidationContext]:
+        if reason:
+            return "", replace(ctx, last_gen_fail_reason=reason)
+        return "", ctx
+
     async def generate_sql(
         self,
         question: str,
@@ -207,6 +217,9 @@ class NL2SQLChain:
         confirmed_scope: dict | None = None,
         scope_intent_text: str | None = None,
         original_query: str | None = None,
+        *,
+        skip_sql_cache: bool = False,
+        nl2sql_retry_hint: str | None = None,
     ) -> tuple[str, NL2SQLValidationContext]:
         if confirmed_scope:
             time_src = (
@@ -394,7 +407,11 @@ class NL2SQLChain:
                 )
                 return replay_sql, validation_ctx
 
-        if cfg_analysis.nl2sql_cache_enabled and db_cfg is not None:
+        if (
+            not skip_sql_cache
+            and cfg_analysis.nl2sql_cache_enabled
+            and db_cfg is not None
+        ):
             cache_key_for_store = build_nl2sql_sql_cache_key(
                 data_source_fp=data_source_fp,
                 analysis_type=analysis_type,
@@ -566,6 +583,14 @@ class NL2SQLChain:
         )
         if inject_parsed_intent_enabled():
             prompt = f"{prompt}\n\n{format_parsed_intent_prompt_block(question_intent)}"
+        retry_hint = (nl2sql_retry_hint or "").strip()
+        if retry_hint:
+            prompt = f"{prompt}\n\n{retry_hint}"
+            logger.info(
+                "NL2SQLChain retry hint injected hint_len=%d skip_sql_cache=%s",
+                len(retry_hint),
+                skip_sql_cache,
+            )
         logger.info(
             "NL2SQLChain prompt built version=%s catalog_in_template=%s catalog_source=%s "
             "replacement_chars=%d prompt_catalog_chars=%s prompt_total_chars=%d",
@@ -788,7 +813,7 @@ class NL2SQLChain:
                             _text_preview(sql, 0),
                             validation_error,
                         )
-                        return "", validation_ctx
+                        return self._empty_sql_fail(validation_ctx, validation_error)
                     logger.info(
                         "NL2SQLChain refine_sql ok sql_len=%d preview=%r",
                         len(sql or ""),
@@ -796,10 +821,10 @@ class NL2SQLChain:
                     )
                 except Exception:
                     logger.exception("NL2SQLChain: refine_sql failed, return empty SQL.")
-                    return "", validation_ctx
+                    return self._empty_sql_fail(validation_ctx, validation_error)
             else:
                 logger.warning("NL2SQLChain validation failed and no LangChain; return empty SQL")
-                return "", validation_ctx
+                return self._empty_sql_fail(validation_ctx, validation_error)
 
         # LangSmith trace（若启用）
         self._ls_tracker.log_run(

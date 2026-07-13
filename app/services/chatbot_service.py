@@ -7,7 +7,7 @@ from app.conversation.manager import ConversationManager
 from app.conversation.message_id import build_conversation_message_id
 from app.core.config import get_app_config
 from app.core.logging import get_logger
-from app.models.chatbot import ChatRequest, ChatResponse
+from app.models.chatbot import ChatRequest, ChatResponse, ChatbotHitlResumeRequest
 from app.llm.client import VLLMHttpClient
 from app.llm.graphs import ChatbotLangGraphRunner
 from app.llm.graphs.chatbot_faq_soft_direct import (
@@ -409,6 +409,26 @@ class ChatbotService:
                 stream_id=stream_id,
                 original_image_urls=original_image_urls,
                 original_query=req.query,
+            ):
+                yield ev
+        finally:
+            await self._stream_ctrl.clear_stream(req.user_id, req.session_id, stream_id)
+
+    async def stream_chat_resume_events(
+        self,
+        req: ChatbotHitlResumeRequest,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """HITL 续跑结构化事件（供 /chat/resume-stream SSE 使用）。"""
+        stream_id = self._stream_ctrl.begin_stream(req.user_id, req.session_id)
+        yield {"type": "started", "stream_id": stream_id}
+        try:
+            async for ev in self._graph_runner.run_resume_stream_events(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                resume_token=req.resume_token,
+                action=req.action,
+                payload=dict(req.payload or {}),
+                stream_id=stream_id,
             ):
                 yield ev
         finally:

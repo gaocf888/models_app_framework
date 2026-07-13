@@ -455,6 +455,16 @@ class ChatbotConfig:
     checkpoint_backend: str = "none"
     checkpoint_redis_url: str | None = None
     checkpoint_namespace: str = "chatbot_graph"
+    # 人机协同（意图边界确认、NL2SQL 生成失败降级）
+    hitl_enabled: bool = False
+    intent_hitl_enabled: bool = True
+    intent_hitl_min_confidence: float = 0.75
+    nl2sql_hitl_enabled: bool = True
+    nl2sql_hitl_max_retries: int = 1
+    hitl_resume_ttl_seconds: int = 1800
+    hitl_session_backend: str = "memory"
+    hitl_session_redis_url: str | None = None
+    hitl_session_namespace: str = "chatbot_graph"
     # 锅炉/管材故障域 + 限定 namespace 相似案例（见 enterprise 文档 §14）
     similar_case_enabled: bool = False
     similar_case_namespace: str = "事故案例"
@@ -1214,6 +1224,17 @@ def _load_from_env() -> AppConfig:
         checkpoint_backend=(os.getenv("CHATBOT_CHECKPOINT_BACKEND", "none") or "none").lower(),
         checkpoint_redis_url=os.getenv("CHATBOT_CHECKPOINT_REDIS_URL") or None,
         checkpoint_namespace=(os.getenv("CHATBOT_CHECKPOINT_NAMESPACE", "chatbot_graph") or "chatbot_graph"),
+        hitl_enabled=os.getenv("CHATBOT_HITL_ENABLED", "false").lower() == "true",
+        intent_hitl_enabled=os.getenv("CHATBOT_INTENT_HITL_ENABLED", "true").lower() == "true",
+        intent_hitl_min_confidence=max(
+            0.0, min(1.0, float(os.getenv("CHATBOT_INTENT_HITL_MIN_CONF", "0.75")))
+        ),
+        nl2sql_hitl_enabled=os.getenv("CHATBOT_NL2SQL_HITL_ENABLED", "true").lower() == "true",
+        nl2sql_hitl_max_retries=max(0, int(os.getenv("CHATBOT_NL2SQL_HITL_MAX_RETRIES", "1"))),
+        hitl_resume_ttl_seconds=max(60, int(os.getenv("CHATBOT_HITL_RESUME_TTL_SEC", "1800"))),
+        hitl_session_backend=(os.getenv("CHATBOT_HITL_SESSION_BACKEND", "memory") or "memory").lower(),
+        hitl_session_redis_url=os.getenv("CHATBOT_HITL_SESSION_REDIS_URL") or None,
+        hitl_session_namespace=(os.getenv("CHATBOT_HITL_SESSION_NAMESPACE", "chatbot_graph") or "chatbot_graph"),
         similar_case_enabled=os.getenv("CHATBOT_SIMILAR_CASE_ENABLED", "false").lower() == "true",
         similar_case_namespace=(os.getenv("CHATBOT_SIMILAR_CASE_NAMESPACE", "事故案例") or "事故案例"),
         similar_case_top_k=max(1, int(os.getenv("CHATBOT_SIMILAR_CASE_TOP_K", "5"))),

@@ -20,6 +20,26 @@ from app.rag.rag_service import RAGService
 from .chatbot_citation_stream import CitationStreamParser, citation_stream_enabled, max_citation_ref_index
 from .chatbot_follow_up import build_suggested_questions
 from .chatbot_graph_state import ChatbotGraphState
+from .chatbot_hitl import (
+    apply_chatbot_hitl_action,
+    build_hitl_sse_event,
+    hitl_button_label,
+    hitl_globally_enabled,
+    prepare_intent_hitl_patch,
+    prepare_nl2sql_hitl_patch,
+    should_trigger_intent_hitl,
+    should_trigger_nl2sql_hitl,
+)
+from .chatbot_hitl_display import (
+    build_hitl_interrupt_payload,
+    format_hitl_assistant_message,
+    format_hitl_user_choice_message,
+)
+from .chatbot_hitl_session_store import (
+    create_chatbot_hitl_resume_session,
+    delete_chatbot_hitl_resume_session,
+    get_chatbot_hitl_resume_session,
+)
 from .chatbot_intent import classify_chatbot_intent_async
 from .chatbot_nl2sql_answer import run_chatbot_nl2sql_query
 from .chatbot_rag_citations import chunks_to_rag_context, filter_rag_citation_dicts
@@ -138,6 +158,9 @@ class ChatbotLangGraphRunner:
         default_model = llm_cfg.default_model
         model_entry = llm_cfg.models.get(default_model)
         self._main_llm_max_tokens = max(64, int(getattr(model_entry, "max_tokens", 2048) or 2048))
+
+        self._hitl_enabled = hitl_globally_enabled()
+        self._nl2sql_hitl_max_retries = max(0, int(cfg.nl2sql_hitl_max_retries))
 
         self._graph = None
         if self._graph_enabled:
@@ -301,10 +324,19 @@ class ChatbotLangGraphRunner:
             state = await self._run_graph(state)
             self._ensure_within_latency(start_ts)
 
+            if state.get("pending_hitl"):
+                async for ev in self._emit_hitl_events(state, req, start_ts, stream_id):
+                    yield ev
+                return
+
             pre_answer = (state.get("answer_text") or "").strip()
             llm_messages = state.get("llm_messages") or []
             # 意图澄清、或仅有固定话术而无 llm_messages（如检索触发的澄清/占位分支）
-            no_stream_path = state.get("intent_label") == "clarify" or (bool(pre_answer) and not llm_messages)
+            no_stream_path = (
+                state.get("intent_label") == "clarify"
+                or state.get("status") == "awaiting_hitl"
+                or (bool(pre_answer) and not llm_messages)
+            )
             if no_stream_path:
                 if await self._is_cancelled(req, stream_id, cancel_checker):
                     self._persist_disconnect(state, req, "")
@@ -473,6 +505,16 @@ class ChatbotLangGraphRunner:
             "fault_detect_confidence": 0.0,
             "enable_fault_vision": req.enable_fault_vision,
             "similar_cases_appended": False,
+            "confirmed_route": "",
+            "pending_hitl": False,
+            "hitl_kind": "",
+            "hitl_original_query": "",
+            "hitl_resume_action": "",
+            "human_interactions": [],
+            "nl2sql_retry_count": 0,
+            "nl2sql_skip_cache": False,
+            "nl2sql_retry_hint": "",
+            "nl2sql_fail_reason": "",
         }
 
     @staticmethod
@@ -511,39 +553,81 @@ class ChatbotLangGraphRunner:
                 f"chatbot graph latency budget exceeded: elapsed_ms={elapsed_ms}, budget_ms={self._max_graph_latency_ms}"
             )
 
-    async def _run_graph(self, state: ChatbotGraphState) -> ChatbotGraphState:
-        if self._graph is None:
-            # langgraph 不可用时退化为顺序执行：
-            # - 目标是“可用性优先”，不能因依赖缺失直接中断主业务；
-            # - 顺序分支必须与图语义一致，避免线上行为双轨分叉。
-            # - 节点返回值均为增量字段，须合并进完整 state（与 LangGraph ainvoke 合并语义一致）。
-            m = self._merge_graph_state
-            state = m(state, await self._node_load_prompt_template(state))
-            state = m(state, await self._node_load_history(state))
-            state = m(state, await self._node_intent_classify(state))
-            state = m(state, await self._node_fault_case_gate(state))
-            rintent = self._route_by_intent(state)
-            if rintent == "clarify":
-                state = m(state, await self._node_clarify_build_response(state))
-                return m(state, await self._node_finalize(state))
-            if rintent == "data_query":
+    async def _run_graph(self, state: ChatbotGraphState, *, resume: bool = False) -> ChatbotGraphState:
+        # HITL 续跑与窄触发确认走顺序执行，与 LangGraph 编译图语义对齐且可中断。
+        if self._hitl_enabled or resume or self._graph is None:
+            return await self._run_graph_sequential(state, resume=resume)
+        return await self._graph.ainvoke(state)  # type: ignore[union-attr]
+
+    async def _run_graph_sequential(self, state: ChatbotGraphState, *, resume: bool = False) -> ChatbotGraphState:
+        if resume:
+            return await self._run_graph_resume(state)
+        m = self._merge_graph_state
+        state = m(state, await self._node_load_prompt_template(state))
+        state = m(state, await self._node_load_history(state))
+        state = m(state, await self._node_intent_classify(state))
+        state = m(state, await self._node_fault_case_gate(state))
+        if should_trigger_intent_hitl(state):
+            state = m(state, prepare_intent_hitl_patch(state))
+            return state
+        route = self._route_by_intent(state)
+        return await self._execute_route(state, route)
+
+    async def _run_graph_resume(self, state: ChatbotGraphState) -> ChatbotGraphState:
+        m = self._merge_graph_state
+        kind = str(state.get("hitl_kind") or "")
+        action = str(state.get("hitl_resume_action") or "")
+        if kind == "intent_route_confirm":
+            route = self._route_by_intent(state)
+            return await self._execute_route(state, route)
+        if kind == "nl2sql_gen_failed":
+            if action == "nl2sql_retry":
                 state = m(state, await self._node_nl2sql_answer(state))
+                if state.get("pending_hitl"):
+                    return state
                 return m(state, await self._node_finalize(state))
-            state = m(state, await self._node_select_rag_engine(state))
-            state = m(state, await self._node_rag_scope_resolve(state))
-            while True:
-                state = m(state, await self._node_kb_retrieve(state))
-                state = m(state, await self._node_kb_quality_check(state))
-                route = self._route_after_quality_check(state)
-                if route == "retry":
-                    state = m(state, await self._node_kb_rewrite_query(state))
-                    continue
-                if route == "clarify":
-                    state = m(state, await self._node_clarify_build_response(state))
-                else:
-                    state = m(state, await self._node_kb_build_messages(state))
-                return m(state, await self._node_finalize(state))
-        return await self._graph.ainvoke(state)
+            if action == "fallback_kb_qa":
+                state = dict(state)
+                state["used_nl2sql"] = False
+                return await self._run_kb_path(state)  # type: ignore[arg-type]
+        return m(state, await self._node_finalize(state))
+
+    async def _execute_route(self, state: ChatbotGraphState, route: str) -> ChatbotGraphState:
+        m = self._merge_graph_state
+        if route == "clarify":
+            state = m(state, await self._node_clarify_build_response(state))
+            return m(state, await self._node_finalize(state))
+        if route == "data_query":
+            state = m(state, await self._node_nl2sql_answer(state))
+            if state.get("pending_hitl"):
+                return state
+            return m(state, await self._node_finalize(state))
+        if route in {"unsafe", "handoff_human", "smalltalk"}:
+            node_map = {
+                "unsafe": self._node_unsafe_guard,
+                "handoff_human": self._node_handoff_human,
+                "smalltalk": self._node_smalltalk_generate,
+            }
+            state = m(state, await node_map[route](state))
+            return m(state, await self._node_finalize(state))
+        return await self._run_kb_path(state)
+
+    async def _run_kb_path(self, state: ChatbotGraphState) -> ChatbotGraphState:
+        m = self._merge_graph_state
+        state = m(state, await self._node_select_rag_engine(state))
+        state = m(state, await self._node_rag_scope_resolve(state))
+        while True:
+            state = m(state, await self._node_kb_retrieve(state))
+            state = m(state, await self._node_kb_quality_check(state))
+            route = self._route_after_quality_check(state)
+            if route == "retry":
+                state = m(state, await self._node_kb_rewrite_query(state))
+                continue
+            if route == "clarify":
+                state = m(state, await self._node_clarify_build_response(state))
+            else:
+                state = m(state, await self._node_kb_build_messages(state))
+            return m(state, await self._node_finalize(state))
 
     async def _node_load_prompt_template(self, state: ChatbotGraphState) -> ChatbotGraphState:
         # 模板策略入口：
@@ -633,6 +717,8 @@ class ChatbotLangGraphRunner:
             user_id=state["user_id"],
             session_id=state["session_id"],
             question=q,
+            skip_sql_cache=bool(state.get("nl2sql_skip_cache")),
+            nl2sql_retry_hint=(state.get("nl2sql_retry_hint") or None),
         )
         patch: ChatbotGraphState = {
             "answer_text": outcome.answer_text,
@@ -642,6 +728,19 @@ class ChatbotLangGraphRunner:
             "llm_messages": [],
             "context_snippets": [],
         }
+        if outcome.gen_failed:
+            merged = {**state, **patch}
+            if should_trigger_nl2sql_hitl(merged, gen_failed=True):
+                patch.update(
+                    prepare_nl2sql_hitl_patch(merged, fail_reason=outcome.gen_fail_reason)
+                )
+                return patch
+            patch["answer_text"] = (
+                "未能生成有效的 SQL 查询。请换一种方式描述要查的台账或记录条件，或改用知识库问答。"
+            )
+            patch["nl2sql_failed"] = True
+            patch["terminate_reason"] = outcome.terminate_reason or "nl2sql_gen_failed"
+            return patch
         if outcome.nl2sql_failed:
             patch["nl2sql_failed"] = True
             patch["nl2sql_error_code"] = outcome.nl2sql_error_code
@@ -1042,7 +1141,11 @@ class ChatbotLangGraphRunner:
         return {}
 
     def _route_by_intent(self, state: ChatbotGraphState) -> str:
-        label = str(state.get("intent_label") or "kb_qa").lower()
+        confirmed = str(state.get("confirmed_route") or "").strip().lower()
+        if confirmed:
+            label = confirmed
+        else:
+            label = str(state.get("intent_label") or "kb_qa").lower()
         if label == "clarify":
             route = "clarify"
         elif label == "data_query":
@@ -1173,6 +1276,161 @@ class ChatbotLangGraphRunner:
         except Exception:
             pass
 
+    def _persist_hitl_turn(self, state: ChatbotGraphState, req: ChatRequest, assistant_text: str) -> None:
+        """首轮 HITL interrupt：落库 user 原问 + assistant 确认话术。"""
+        from app.services.chatbot_image_utils import build_user_message_with_images
+
+        self._conv.append_user_message(
+            req.user_id,
+            req.session_id,
+            build_user_message_with_images(
+                req.query,
+                req.image_urls,
+                original_image_urls=[
+                    u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()
+                ],
+                processed_image_urls=[
+                    u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()
+                ],
+            ),
+        )
+        if assistant_text.strip():
+            self._conv.append_assistant_message(req.user_id, req.session_id, assistant_text.strip())
+
+    def _persist_resume_user_choice(
+        self,
+        user_id: str,
+        session_id: str,
+        action: str,
+    ) -> None:
+        label = hitl_button_label(action) or action
+        self._conv.append_user_message(
+            user_id,
+            session_id,
+            format_hitl_user_choice_message(action=action, label=label),
+        )
+
+    async def _emit_hitl_events(
+        self,
+        state: ChatbotGraphState,
+        req: ChatRequest,
+        start_ts: float,
+        stream_id: str | None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        interrupt_payload = build_hitl_interrupt_payload(state)
+        token = create_chatbot_hitl_resume_session(
+            user_id=req.user_id,
+            session_id=req.session_id,
+            hitl_kind=str(state.get("hitl_kind") or ""),
+            state_snapshot=dict(state),
+            interrupt_payload=interrupt_payload,
+        )
+        hitl_ev = build_hitl_sse_event(state, resume_token=token)
+        state["resume_token"] = token
+        prompt = str(hitl_ev.get("prompt") or "")
+        assistant_text = format_hitl_assistant_message(
+            hitl_kind=str(state.get("hitl_kind") or ""),
+            prompt=prompt,
+        )
+        self._persist_hitl_turn(state, req, assistant_text)
+        state["answer_text"] = assistant_text
+        state["status"] = "awaiting_hitl"
+        yield {"type": "delta", "delta": assistant_text}
+        yield hitl_ev
+        yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
+
+    async def run_resume_stream_events(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        resume_token: str,
+        action: str,
+        payload: dict[str, Any] | None = None,
+        stream_id: str | None = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """HITL 续跑：应用用户按钮选择后继续图编排。"""
+        session = get_chatbot_hitl_resume_session(resume_token)
+        if session is None:
+            yield {"type": "error", "error": "invalid or expired resume_token"}
+            return
+        if session.user_id != user_id or session.session_id != session_id:
+            yield {"type": "error", "error": "resume_token session mismatch"}
+            return
+
+        state: ChatbotGraphState = dict(session.state_snapshot)  # type: ignore[assignment]
+        state = apply_chatbot_hitl_action(state, action=action, payload=payload or {})  # type: ignore[assignment]
+        delete_chatbot_hitl_resume_session(resume_token)
+        self._persist_resume_user_choice(user_id, session_id, action)
+
+        req = ChatRequest(
+            user_id=user_id,
+            session_id=session_id,
+            query=str(state.get("query") or state.get("hitl_original_query") or ""),
+            image_urls=[u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
+            enable_rag=bool(state.get("enable_rag", True)),
+            enable_context=bool(state.get("enable_context", True)),
+            enable_nl2sql_route=bool(state.get("enable_nl2sql_route", True)),
+            prompt_version=state.get("client_prompt_version") or state.get("prompt_version"),
+        )
+        start_ts = time.perf_counter()
+        try:
+            state = await self._run_graph(state, resume=True)
+            self._ensure_within_latency(start_ts)
+
+            if state.get("pending_hitl"):
+                async for ev in self._emit_hitl_events(state, req, start_ts, stream_id):
+                    yield ev
+                return
+
+            pre_answer = (state.get("answer_text") or "").strip()
+            llm_messages = state.get("llm_messages") or []
+            no_stream_path = (
+                state.get("intent_label") == "clarify"
+                or state.get("status") == "awaiting_hitl"
+                or (bool(pre_answer) and not llm_messages)
+            )
+            if no_stream_path:
+                answer = pre_answer
+                extra = self._maybe_similar_cases_extra(state)
+                full = (answer + extra).strip()
+                await self._fill_suggested_questions(state, req, full)
+                if full:
+                    rc_list = state.get("rag_citations")
+                    rag_kw = [x for x in rc_list if isinstance(x, dict)] if isinstance(rc_list, list) else None
+                    self._conv.append_assistant_message(req.user_id, req.session_id, full, rag_citations=rag_kw)
+                state["status"] = "answered"
+                if answer:
+                    yield {"type": "delta", "delta": answer}
+                if extra:
+                    yield {"type": "delta", "delta": extra}
+                yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
+                return
+
+            parts: List[str] = []
+            stream_kw: Dict[str, Any] = {"max_tokens": int(state.get("llm_max_tokens") or self._main_llm_max_tokens)}
+            if self._main_llm_temperature is not None:
+                stream_kw["temperature"] = float(self._main_llm_temperature)
+            async for delta in self._llm.stream_chat(model=None, messages=llm_messages, **stream_kw):  # type: ignore[arg-type]
+                parts.append(delta)
+                yield {"type": "delta", "delta": delta}
+            answer = "".join(parts).strip()
+            extra = self._maybe_similar_cases_extra(state)
+            full_stream = (answer + extra).strip()
+            await self._fill_suggested_questions(state, req, full_stream)
+            if full_stream:
+                rc_list = state.get("rag_citations")
+                rag_kw = [x for x in rc_list if isinstance(x, dict)] if isinstance(rc_list, list) else None
+                self._conv.append_assistant_message(req.user_id, req.session_id, full_stream, rag_citations=rag_kw)
+            state["status"] = "answered"
+            if extra:
+                yield {"type": "delta", "delta": extra}
+            yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("ChatbotLangGraphRunner.run_resume_stream_events failed: %s", exc)
+            yield {"type": "error", "error": str(exc)}
+            yield {"type": "finished", "meta": {"status": "failed", "error": str(exc)}}
+
     def _persist_failure(self, state: ChatbotGraphState, req: ChatRequest) -> None:
         # 失败时仍写 user，保证会话线完整；assistant 不写入。
         self._conv.append_user_message(
@@ -1274,6 +1532,9 @@ class ChatbotLangGraphRunner:
             "processed_image_urls": [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
             "original_image_urls": [u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()],
             "stream_id": stream_id,
+            "pending_hitl": bool(state.get("pending_hitl")),
+            "hitl_kind": state.get("hitl_kind") or None,
+            "resume_token": state.get("resume_token"),
             **self._anaphora_meta_extras(state),
         }
 

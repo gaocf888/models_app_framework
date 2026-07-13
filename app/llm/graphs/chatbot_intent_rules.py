@@ -161,6 +161,8 @@ def _infer_prev_task_type_from_tail(tail: List[Dict[str, Any]]) -> str:
         if str(m.get("role", "")).lower() == "assistant":
             last_assistant = str(m.get("content", "") or "")
             break
+    if last_assistant and "[用户选择]" in last_assistant:
+        return "after_intent_confirm"
     if last_assistant and _CLARIFY_REPLY_SNIPPET in last_assistant:
         return "after_clarify"
 

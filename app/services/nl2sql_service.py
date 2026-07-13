@@ -69,6 +69,8 @@ class NL2SQLService:
             confirmed_scope=req.confirmed_scope,
             scope_intent_text=req.scope_intent_text,
             original_query=req.original_query,
+            skip_sql_cache=bool(req.skip_sql_cache),
+            nl2sql_retry_hint=req.nl2sql_retry_hint,
         )
         rows: list = []
         execute_succeeded = False
@@ -80,12 +82,19 @@ class NL2SQLService:
 
         if not (sql or "").strip():
             logger.warning(
-                "NL2SQLService.query empty SQL after chain user_id=%s session_id=%s duration_ms=%d analysis_request_id=%s plan_item_id=%s",
+                "NL2SQLService.query empty SQL after chain user_id=%s session_id=%s duration_ms=%d analysis_request_id=%s plan_item_id=%s reason=%s",
                 req.user_id,
                 req.session_id,
                 int((perf_counter() - t_query) * 1000),
                 arid,
                 piid,
+                vctx.last_gen_fail_reason or "-",
+            )
+            return NL2SQLQueryResponse(
+                sql="",
+                rows=[],
+                gen_fail_reason=vctx.last_gen_fail_reason or "empty_sql",
+                parsed_intent=vctx.parsed_intent if response_include_parsed_intent() else None,
             )
         while (sql or "").strip():
             if explain_first:

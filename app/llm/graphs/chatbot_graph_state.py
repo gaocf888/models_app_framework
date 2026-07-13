@@ -44,9 +44,22 @@ class ChatbotGraphState(TypedDict, total=False):
     intent_label: IntentLabel
     intent_confidence: float
     intent_reason: str
+    # 用户 HITL 确认后的路由（data_query / kb_qa / clarify）；优先于 intent_label 启发式
+    confirmed_route: IntentLabel
     # 规则层从会话历史抽取（仅供观测/排障；不参与下游强制分支）
     intent_history_summary: str
     intent_prev_task_type: str
+
+    # ===== 人机协同（HITL）=====
+    pending_hitl: bool
+    hitl_kind: str
+    hitl_original_query: str
+    hitl_resume_action: str
+    human_interactions: List[Dict[str, Any]]
+    nl2sql_retry_count: int
+    nl2sql_skip_cache: bool
+    nl2sql_retry_hint: str
+    nl2sql_fail_reason: str
 
     # ===== 多轮历史（load_history）=====
     history_messages: List[Dict[str, Any]]

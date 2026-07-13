@@ -58,6 +58,8 @@ class ChatbotNL2SQLOutcome:
     nl2sql_sql: str | None = None
     nl2sql_failed: bool = False
     nl2sql_error_code: str | None = None
+    gen_failed: bool = False
+    gen_fail_reason: str | None = None
     terminate_reason: str | None = None
 
 
@@ -68,11 +70,33 @@ async def run_chatbot_nl2sql_query(
     user_id: str,
     session_id: str,
     question: str,
+    skip_sql_cache: bool = False,
+    nl2sql_retry_hint: str | None = None,
 ) -> ChatbotNL2SQLOutcome:
     """智能客服 NL2SQL 统一入口：成功则整理结果，失败则友好文案且不向上抛异常。"""
-    req = NL2SQLQueryRequest(user_id=user_id, session_id=session_id, question=question)
+    req = NL2SQLQueryRequest(
+        user_id=user_id,
+        session_id=session_id,
+        question=question,
+        skip_sql_cache=skip_sql_cache,
+        nl2sql_retry_hint=nl2sql_retry_hint,
+    )
     try:
         resp = await nl2sql.query(req, record_conversation=False)
+        if not (resp.sql or "").strip():
+            fail_reason = resp.gen_fail_reason or "empty_sql"
+            logger.info(
+                "智能客服 NL2SQL：未生成有效 SQL（仅日志）。用户问题摘要=%s reason=%s",
+                (question or "")[:400],
+                fail_reason,
+            )
+            return ChatbotNL2SQLOutcome(
+                answer_text="",
+                nl2sql_sql=None,
+                gen_failed=True,
+                gen_fail_reason=fail_reason,
+                terminate_reason="nl2sql_gen_failed",
+            )
         text = await summarize_nl2sql_with_llm(
             llm_client,
             user_query=question,

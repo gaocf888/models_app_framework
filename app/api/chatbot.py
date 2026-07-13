@@ -45,6 +45,7 @@ from app.models.inspection_extract import InspectionUploadResponse
 from app.models.chatbot import (
     ChatRequest,
     ChatResponse,
+    ChatbotHitlResumeRequest,
     ChatStreamStopRequest,
     ChatStreamStopResponse,
     SessionDeleteResponse,
@@ -262,8 +263,149 @@ async def chat_stream(req: ChatRequest, request: Request):
                         ensure_ascii=False,
                     )
                     yield f"data: {payload}\n\n"
+                elif ev.get("type") == "chatbot_hitl_required":
+                    body = {k: v for k, v in ev.items() if k != "type"}
+                    payload = json.dumps(
+                        {"chatbot_hitl_required": True, "finished": False, **body},
+                        ensure_ascii=False,
+                    )
+                    yield f"data: {payload}\n\n"
                 elif ev.get("type") == "finished":
                     payload = json.dumps({"finished": True, "meta": ev.get("meta", {})}, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            err = json.dumps({"error": str(exc), "finished": True}, ensure_ascii=False)
+            yield f"data: {err}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream; charset=utf-8",
+    )
+
+
+@router.post("/chat/resume-stream", summary="智能客服 HITL 续跑（流式 SSE）")
+async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
+    """
+    智能客服人机协同（HITL）续跑接口（Server-Sent Events）。
+
+    当 ``/chat/stream`` 返回 ``chatbot_hitl_required`` 事件后，用户在前端点击确认按钮，
+    本接口携带 ``resume_token`` 与 ``action`` 恢复图编排并继续流式输出。
+    需部署侧开启 ``CHATBOT_HITL_ENABLED=true``（见 ``.env.example``）。
+
+    业务逻辑在 ``ChatbotService.stream_chat_resume_events`` →
+    ``ChatbotLangGraphRunner.run_resume_stream_events``；本路由仅负责 SSE 编码。
+
+    Args:
+        req (ChatbotHitlResumeRequest): 续跑请求体，字段说明见下。
+            - ``user_id`` (str, 必填)：须与触发 HITL 的 ``/chat/stream`` 请求一致。
+            - ``session_id`` (str, 必填)：须与触发 HITL 的会话一致。
+            - ``resume_token`` (str, 必填)：来自 ``chatbot_hitl_required`` 事件或
+              结束帧 ``meta.resume_token``；单次有效，过期后返回错误帧。
+            - ``action`` (str, 必填)：用户选择的按钮 id，取值见下方 **action 枚举**。
+            - ``payload`` (dict, 可选)：补充参数，常用键：
+              - ``refined_query`` (str)：改写后的问句；意图确认或 NL2SQL 重试时可覆盖原问句。
+        request (Request): Starlette 请求对象，用于检测客户端断开。
+
+    Returns:
+        StreamingResponse: ``Content-Type: text/event-stream; charset=utf-8``。
+            每条事件为 ``data: `` + JSON + 换行 + 空行，JSON 形态包括：
+
+            - ``{"started": true, "stream_id": "..."}``：续跑流已建立，可用于 ``/chat/stop`` 中断；
+            - ``{"delta": "...", "finished": false}``：增量正文（与 ``/chat/stream`` 相同）；
+            - ``{"citation_ref": n, "finished": false}``：RAG 路径知识引用（与 ``/chat/stream`` 相同）；
+            - ``{"chatbot_hitl_required": true, "finished": false, ...}``：续跑过程中再次触发 HITL
+              （如 NL2SQL 重试仍失败且未达最大重试次数）；字段同首轮 HITL 事件；
+            - ``{"finished": true, "meta": {...}}``：续跑结束；``meta`` 字段语义与 ``/chat/stream`` 一致，
+              另含 ``pending_hitl``、``hitl_kind``、``resume_token``（若仍处于待确认状态）；
+            - ``{"error": "...", "finished": true}``：``resume_token`` 无效/过期、会话不匹配或内部异常。
+
+    **chatbot_hitl_required 事件字段（首轮由 /chat/stream 下发，续跑亦可能再次出现）**
+
+    - ``hitl_id``：本轮 HITL 标识；
+    - ``resume_token``：续跑凭证（调用本接口时回传）；
+    - ``hitl_kind``：``intent_route_confirm``（意图路由确认）或 ``nl2sql_gen_failed``（NL2SQL 生成失败）；
+    - ``prompt``：展示给用户的确认话术（已随 ``delta`` 写入会话）；
+    - ``ui_buttons``：按钮列表，每项 ``{"id": "<action>", "label": "<展示文案>"}``；
+    - ``context``：辅助上下文（``intent_label``、``intent_confidence``、``original_query``、
+      ``nl2sql_fail_reason`` 等），供前端展示详情，非必填回传。
+
+    **action 枚举（须与 ui_buttons[].id 一致）**
+
+    意图路由确认（``hitl_kind=intent_route_confirm``）：
+
+    - ``route_data_query``：确认为结构化查数，走 NL2SQL；
+    - ``route_kb_qa``：确认为知识库问答，走 RAG；
+    - ``route_clarify``：用户补充问题，返回澄清话术。
+
+    NL2SQL 生成失败（``hitl_kind=nl2sql_gen_failed``）：
+
+    - ``nl2sql_retry``：重试查数（跳过 SQL 缓存，并将上轮失败原因注入生成 prompt）；
+    - ``fallback_kb_qa``：放弃查数，改用知识库 RAG 回答原问句。
+
+    **前端使用说明**
+    目前 意图识别失败/数据查询生成sql失败 会触发人机协同 处理逻辑
+    1. **监听 HITL**：在 ``/chat/stream`` 的 SSE 回调中识别
+       ``ev.chatbot_hitl_required === true && ev.finished === false``；
+       保存 ``resume_token``(用于 人机协同接口续跑)、``ui_buttons``(用于渲染前端 选项按钮)、``prompt``(用于展示到前端 的信息)、``hitl_kind``(intent_route_confirm/nl2sql_gen_failed  ，非必要保存，用于区分 触发的人机交互类型 -- 意图识别失败/数据查询失败)。
+
+        （意图识别失败 返回的ui_buttons：[{"id": "route_data_query", "label": "查实时/台账数据"}, {"id": "route_kb_qa", "label": "基于知识库分析"}, {"id": "route_clarify", "label": "我先补充问题"}]）
+		（数据查询失败 返回的ui_buttons: [{"id": "nl2sql_retry", "label": "重试查数"}, {"id": "fallback_kb_qa", "label": "基于知识库分析"}]）
+
+    2. **渲染按钮**：按 ``ui_buttons`` 渲染操作区（按钮/链接）；``prompt`` 通常已通过 ``delta`` 出现在正文中。
+    3. **发起续跑**：用户点击后 ``POST /chatbot/chat/resume-stream``，Body 示例::
+
+           {
+             "user_id": "u1",
+             "session_id": "s1",
+             "resume_token": "cb_rt_xxx",
+             "action": "route_data_query",
+             "payload": {}
+           }
+        **说明：**
+        1）resume_token -- 上述保存得resume_token；action -- 上述保存的ui_buttons中的id
+		- （意图识别失败对应ui_buttons中的id：route_data_query(查实时/台账数据)、route_kb_qa(基于知识库分析)、route_clarify(我先补充问题)）
+		- （查询数据失败对应ui_buttons中的id：nl2sql_retry(重试查数)、fallback_kb_qa(基于知识库分析)）
+       2）针对 意图识别失败，action传route_clarify时(即用户点击“我先补充问题”)，可在 ``payload.refined_query`` 传入用户补充后的问句。
+    4. **处理续跑 SSE**：与 ``/chat/stream`` 相同拼接 ``delta`` / ``citation_ref``；
+       若再次收到 ``chatbot_hitl_required``，重复步骤 2–3（使用新的 ``resume_token``）。
+    5. **结束**：收到 ``finished: true`` 后读取 ``meta``（``used_nl2sql``、``rag_citations`` 等）；
+       ``resume_token`` 使用后即失效，勿重复提交同一 token。
+    6. **错误**：``error`` 帧常见 ``invalid or expired resume_token``、
+       ``resume_token session mismatch``；应提示用户重新提问或刷新会话。
+
+    Raises:
+        HTTPException: 请求体校验失败时 422；业务错误以 SSE ``error`` 帧返回，不抛 HTTP 异常。
+    """
+
+    async def event_generator():
+        try:
+            async for ev in service.stream_chat_resume_events(req):
+                if await request.is_disconnected():
+                    return
+                if ev.get("type") == "started":
+                    payload = json.dumps({"started": True, "stream_id": ev.get("stream_id")}, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+                elif ev.get("type") == "delta":
+                    payload = json.dumps({"delta": ev.get("delta", ""), "finished": False}, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+                elif ev.get("type") == "citation":
+                    payload = json.dumps(
+                        {"citation_ref": int(ev.get("ref_index") or 0), "finished": False},
+                        ensure_ascii=False,
+                    )
+                    yield f"data: {payload}\n\n"
+                elif ev.get("type") == "chatbot_hitl_required":
+                    body = {k: v for k, v in ev.items() if k != "type"}
+                    payload = json.dumps(
+                        {"chatbot_hitl_required": True, "finished": False, **body},
+                        ensure_ascii=False,
+                    )
+                    yield f"data: {payload}\n\n"
+                elif ev.get("type") == "finished":
+                    payload = json.dumps({"finished": True, "meta": ev.get("meta", {})}, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+                elif ev.get("type") == "error":
+                    payload = json.dumps({"error": ev.get("error", ""), "finished": True}, ensure_ascii=False)
                     yield f"data: {payload}\n\n"
         except Exception as exc:  # noqa: BLE001
             err = json.dumps({"error": str(exc), "finished": True}, ensure_ascii=False)

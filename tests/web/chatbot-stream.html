@@ -127,6 +127,27 @@
       max-height: 240px;
       overflow: auto;
     }
+    #hitlPanel {
+      margin-top: 1rem;
+      border: 1px solid #3b82f6;
+      border-radius: 8px;
+      background: #152238;
+      padding: 1rem;
+    }
+    #hitlPanel h2 { color: #93c5fd; margin: 0 0 0.5rem; font-size: 0.9rem; }
+    #hitlPrompt { color: var(--answer); white-space: pre-wrap; margin-bottom: 0.75rem; }
+    #hitlButtons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    #hitlButtons button.hitl-action {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 0.55rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.875rem;
+    }
+    #hitlButtons button.hitl-action:hover:not(:disabled) { background: var(--accent-hover); }
+    #hitlButtons button.hitl-action:disabled { opacity: 0.5; cursor: not-allowed; }
     .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
     code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
     #uploadResult {
@@ -229,6 +250,11 @@
       <h2 style="margin-top:1rem;">结束帧 meta</h2>
       <div id="meta">（尚未完成）</div>
     </div>
+    <div id="hitlPanel" style="display:none;">
+      <h2>人机确认（HITL）— 请选择</h2>
+      <div id="hitlPrompt"></div>
+      <div id="hitlButtons"></div>
+    </div>
   </div>
 
   <!-- 勿用 defer：须在本页脚本运行前加载完成 -->
@@ -261,6 +287,37 @@
   let answerSegments = [];
   /** @type {object[]} */
   let lastRagCitations = [];
+  /** @type {{ resume_token: string, ui_buttons: {id:string,label:string}[], prompt?: string, hitl_kind?: string } | null} */
+  let pendingHitl = null;
+  let hitlBusy = false;
+
+  const DEFAULT_HITL_BUTTONS = {
+    intent_route_confirm: [
+      { id: "route_data_query", label: "查实时/台账数据" },
+      { id: "route_kb_qa", label: "基于知识库分析" },
+      { id: "route_clarify", label: "我先补充问题" },
+    ],
+    nl2sql_gen_failed: [
+      { id: "nl2sql_retry", label: "重试查数" },
+      { id: "fallback_kb_qa", label: "基于知识库分析" },
+    ],
+  };
+
+  function defaultButtonsForHitlKind(kind) {
+    return DEFAULT_HITL_BUTTONS[kind] ? DEFAULT_HITL_BUTTONS[kind].slice() : [];
+  }
+
+  function normalizeHitlEvent(ev) {
+    const buttons = Array.isArray(ev.ui_buttons) && ev.ui_buttons.length
+      ? ev.ui_buttons
+      : defaultButtonsForHitlKind(ev.hitl_kind || "");
+    return {
+      resume_token: ev.resume_token || "",
+      ui_buttons: buttons,
+      prompt: ev.prompt || "",
+      hitl_kind: ev.hitl_kind || "",
+    };
+  }
 
   function escapeHtml(s) {
     return String(s)
@@ -389,6 +446,146 @@
     lastRagCitations = [];
     pendingKatexText = "";
     $("answer").innerHTML = "";
+    clearHitlPanel();
+  }
+
+  function clearHitlPanel() {
+    pendingHitl = null;
+    $("hitlPanel").style.display = "none";
+    $("hitlPrompt").textContent = "";
+    $("hitlButtons").innerHTML = "";
+  }
+
+  function showHitlPanel(ev) {
+    const normalized = normalizeHitlEvent(ev);
+    if (!normalized.resume_token) {
+      console.warn("HITL panel skipped: missing resume_token", ev);
+      return;
+    }
+    // 若已有按钮，仅更新 token，避免 finished 帧用空 ui_buttons 覆盖
+    if (pendingHitl && pendingHitl.ui_buttons.length > 0 && (!normalized.ui_buttons || !normalized.ui_buttons.length)) {
+      pendingHitl.resume_token = normalized.resume_token;
+      pendingHitl.hitl_kind = normalized.hitl_kind || pendingHitl.hitl_kind;
+      if (normalized.prompt) pendingHitl.prompt = normalized.prompt;
+    } else {
+      pendingHitl = normalized;
+    }
+    $("hitlPanel").style.display = "block";
+    if (pendingHitl.prompt) {
+      $("hitlPrompt").textContent = pendingHitl.prompt;
+    } else if (!$("hitlPrompt").textContent) {
+      $("hitlPrompt").textContent = "请选择：";
+    }
+    const box = $("hitlButtons");
+    box.innerHTML = "";
+    pendingHitl.ui_buttons.forEach((btn) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "hitl-action";
+      b.textContent = btn.label || btn.id;
+      b.dataset.action = btn.id;
+      b.disabled = hitlBusy;
+      b.addEventListener("click", () => resumeHitl(btn.id));
+      box.appendChild(b);
+    });
+  }
+
+  async function resumeHitl(action) {
+    if (!pendingHitl || !pendingHitl.resume_token || hitlBusy) return;
+    hitlBusy = true;
+    $("hitlButtons").querySelectorAll("button").forEach((b) => (b.disabled = true));
+    appendStatus("HITL 续跑中… action=" + action);
+    abortCtrl = new AbortController();
+    setBusy(true);
+    const url = baseUrl() + "/chatbot/chat/resume-stream";
+    const body = {
+      user_id: $("userId").value.trim(),
+      session_id: $("sessionId").value.trim(),
+      resume_token: pendingHitl.resume_token,
+      action: action,
+      payload: {},
+    };
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(body),
+        signal: abortCtrl.signal,
+        credentials: "omit",
+      });
+      if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error("HTTP " + resp.status + "\n" + t.slice(0, 2000));
+      }
+      clearHitlPanel();
+      await readSseStream(resp, handleSseEvent);
+    } catch (e) {
+      if (e.name !== "AbortError") {
+        showErr(String(e.message || e));
+        appendStatus("HITL 续跑失败");
+      }
+    } finally {
+      hitlBusy = false;
+      setBusy(false);
+      $("btnStop").disabled = true;
+      abortCtrl = null;
+    }
+  }
+
+  function handleSseEvent(ev) {
+    if (ev.parseError) {
+      showErr("SSE JSON 解析失败: " + ev.error + "\n片段: " + (ev.raw || "").slice(0, 500));
+      return;
+    }
+    if (ev.started === true && ev.stream_id) {
+      currentStreamId = ev.stream_id;
+      $("btnStop").disabled = false;
+      appendStatus("已连接，stream_id=" + ev.stream_id);
+      return;
+    }
+    if (ev.error && ev.finished) {
+      showErr(String(ev.error));
+      appendStatus("服务端错误帧");
+      $("meta").textContent = JSON.stringify(ev, null, 2);
+      return;
+    }
+    if (ev.delta != null && ev.finished === false) {
+      appendTextDelta(ev.delta);
+      updateAnswerImmediate();
+      scheduleKatexPass();
+      appendStatus("生成中… 已收字符 " + segmentsToPlainText().length);
+      return;
+    }
+    if (ev.citation_ref != null && ev.finished === false) {
+      appendCitationRef(ev.citation_ref);
+      updateAnswerImmediate();
+      scheduleKatexPass();
+      appendStatus(
+        "生成中… 引用 [" + ev.citation_ref + "]（" + segmentsToPlainText().length + " 字）"
+      );
+      return;
+    }
+    if (ev.chatbot_hitl_required === true && ev.finished === false) {
+      showHitlPanel(ev);
+      appendStatus("等待用户 HITL 确认（" + (ev.hitl_kind || "") + "）");
+      return;
+    }
+    if (ev.finished === true) {
+      flushAnswerWithKatex((ev.meta && ev.meta.rag_citations) || []);
+      $("meta").textContent = JSON.stringify(ev.meta || {}, null, 2);
+      if (ev.meta && ev.meta.pending_hitl && ev.meta.resume_token) {
+        showHitlPanel({
+          resume_token: ev.meta.resume_token,
+          ui_buttons: pendingHitl ? pendingHitl.ui_buttons : [],
+          prompt: pendingHitl ? pendingHitl.prompt : "",
+          hitl_kind: ev.meta.hitl_kind || (pendingHitl && pendingHitl.hitl_kind) || "",
+        });
+        appendStatus("等待用户 HITL 确认（" + (ev.meta.hitl_kind || "") + "）");
+      } else {
+        appendStatus("完成");
+      }
+      return;
+    }
   }
 
   const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
@@ -627,50 +824,7 @@
         appendStatus("警告: Content-Type 非 text/event-stream: " + ct);
       }
 
-      await readSseStream(resp, (ev) => {
-        if (ev.parseError) {
-          showErr("SSE JSON 解析失败: " + ev.error + "\n片段: " + (ev.raw || "").slice(0, 500));
-          return;
-        }
-        if (ev.started === true && ev.stream_id) {
-          currentStreamId = ev.stream_id;
-          $("btnStop").disabled = false;
-          appendStatus("已连接，stream_id=" + ev.stream_id);
-          return;
-        }
-        if (ev.error && ev.finished) {
-          showErr(String(ev.error));
-          appendStatus("服务端错误帧");
-          $("meta").textContent = JSON.stringify(ev, null, 2);
-          return;
-        }
-        if (ev.delta != null && ev.finished === false) {
-          appendTextDelta(ev.delta);
-          updateAnswerImmediate();
-          scheduleKatexPass();
-          appendStatus("生成中… 已收字符 " + segmentsToPlainText().length);
-          return;
-        }
-        if (ev.citation_ref != null && ev.finished === false) {
-          appendCitationRef(ev.citation_ref);
-          updateAnswerImmediate();
-          scheduleKatexPass();
-          appendStatus(
-            "生成中… 引用 [" +
-              ev.citation_ref +
-              "]（" +
-              segmentsToPlainText().length +
-              " 字）"
-          );
-          return;
-        }
-        if (ev.finished === true) {
-          flushAnswerWithKatex((ev.meta && ev.meta.rag_citations) || []);
-          $("meta").textContent = JSON.stringify(ev.meta || {}, null, 2);
-          appendStatus("完成");
-          return;
-        }
-      });
+      await readSseStream(resp, handleSseEvent);
     } catch (e) {
       if (e.name === "AbortError") {
         appendStatus("已中止");

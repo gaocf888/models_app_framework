@@ -295,3 +295,47 @@ class ChatStreamStopResponse(BaseModel):
     session_id: str = Field(..., description="会话 ID")
     stream_id: str = Field(..., description="被停止的流式请求 ID")
 
+
+class ChatbotHitlResumeRequest(BaseModel):
+    """智能客服 HITL 续跑请求（用户点击确认按钮后调用）。"""
+
+    user_id: str = Field(..., description="用户 ID")
+    session_id: str = Field(..., description="会话 ID")
+    resume_token: str = Field(..., description="chatbot_hitl_required 事件返回的 resume_token")
+    action: str = Field(
+        ...,
+        description=(
+            "route_data_query | route_kb_qa | route_clarify | nl2sql_retry | fallback_kb_qa"
+        ),
+    )
+    payload: dict[str, Any] = Field(
+        default_factory=dict,
+        description="可选补充，如 refined_query",
+    )
+
+    @field_validator("user_id")
+    @classmethod
+    def _validate_hitl_user_id(cls, v: str) -> str:
+        return validate_user_id(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_hitl_session_id(cls, v: str) -> str:
+        return validate_session_id(v)
+
+    @field_validator("resume_token")
+    @classmethod
+    def _validate_resume_token(cls, v: str) -> str:
+        s = (v or "").strip()
+        if not s:
+            raise ValueError("resume_token is required")
+        return s
+
+    @field_validator("action")
+    @classmethod
+    def _validate_action(cls, v: str) -> str:
+        s = (v or "").strip()
+        if not s:
+            raise ValueError("action is required")
+        return s
+

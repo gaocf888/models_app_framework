@@ -46,6 +46,14 @@ class NL2SQLQueryRequest(BaseModel):
         default=None,
         description="可选：用户原始问句，confirmed_scope 模式下时间解析兜底来源。",
     )
+    skip_sql_cache: bool = Field(
+        default=False,
+        description="可选：为 true 时跳过 L2/L1 SQL 缓存（客服 HITL 重试查数）。",
+    )
+    nl2sql_retry_hint: str | None = Field(
+        default=None,
+        description="可选：注入 NL2SQL 生成 prompt 的失败修正提示（客服 HITL 重试）。",
+    )
 
     @field_validator("user_id")
     @classmethod
@@ -61,6 +69,10 @@ class NL2SQLQueryRequest(BaseModel):
 class NL2SQLQueryResponse(BaseModel):
     sql: str = Field(..., description="生成的 SQL 语句")
     rows: List[dict[str, Any]] = Field(default_factory=list, description="查询结果行列表")
+    gen_fail_reason: str | None = Field(
+        default=None,
+        description="SQL 生成/校验失败原因（空 sql 时由链路透传，供客服 HITL 展示）。",
+    )
     parsed_intent: dict[str, Any] | None = Field(
         default=None,
         description=(
