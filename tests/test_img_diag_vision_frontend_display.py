@@ -93,3 +93,34 @@ def test_format_vision_hitl_assistant_block_uses_markdown_not_plain_bullets() ->
     assert "- **检验标记**：" in text
     assert "- **线状损伤**：" in text
     assert "  · " not in text
+
+
+def test_sanitize_markdown_strips_standalone_analysis_heading() -> None:
+    raw = (
+        "Markdown 外观可见分析\n"
+        "分析\n"
+        "- **爆口形貌**：环向开口\n"
+        "- **边缘特征**：毛刺状"
+    )
+    cleaned = sanitize_vision_narrative_for_markdown(raw)
+    assert "分析" not in cleaned.splitlines()
+    assert "- **爆口形貌**：" in cleaned
+
+
+def test_format_vision_hitl_with_macro_heading_no_standalone_analysis() -> None:
+    text = format_vision_hitl_assistant_block(
+        {
+            "vision_narrative": (
+                "Markdown 外观可见分析\n"
+                "分析\n"
+                "- **爆口形貌**：环向开口"
+            ),
+        },
+        img_diag_subtype="leakage_burst",
+        include_macro_appearance_heading=True,
+    )
+    assert text == (
+        "【图像可见分析】\n"
+        "## 宏观外貌分析\n"
+        "- **爆口形貌**：环向开口"
+    )

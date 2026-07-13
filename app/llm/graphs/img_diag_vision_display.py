@@ -169,6 +169,11 @@ def sanitize_vision_narrative_for_frontend(raw: str) -> str:
         s = re.sub(r"^外观可见分析[：:]\s*", "", s)
         s = re.sub(r"^Markdown\s*外观可见分析\s*$", "", s, flags=re.IGNORECASE)
         s = re.sub(r"^外观可见分析\s*$", "", s)
+        s = re.sub(r"^宏观外貌分析[：:]\s*", "", s)
+        s = re.sub(r"^宏观外貌分析\s*$", "", s)
+
+        if _is_redundant_vision_heading_line(s):
+            continue
 
         if re.fullmatch(r"`+", s):
             continue
@@ -203,18 +208,43 @@ def _trim_vision_narrative_body(raw: str) -> str:
     return text
 
 
+_VISION_NARRATIVE_SKIP_STANDALONE_LINES = frozenset({
+    "分析",
+    "外观可见分析",
+    "宏观外貌分析",
+})
+
+
 def _strip_vision_narrative_line_prefix(s: str) -> str:
     s = re.sub(r"^#+\s*", "", s)
     s = re.sub(r"^Markdown\s+", "", s, flags=re.IGNORECASE)
     s = re.sub(r"^外观可见分析[：:]\s*", "", s)
     s = re.sub(r"^Markdown\s*外观可见分析\s*$", "", s, flags=re.IGNORECASE)
     s = re.sub(r"^外观可见分析\s*$", "", s)
+    s = re.sub(r"^宏观外貌分析[：:]\s*", "", s)
+    s = re.sub(r"^宏观外貌分析\s*$", "", s)
     s = re.sub(r"`([^`]+)`", r"\1", s)
     if s.startswith("- "):
         s = s[2:].strip()
     elif s.startswith("* "):
         s = s[2:].strip()
     return s
+
+
+def _is_redundant_vision_heading_line(line: str) -> bool:
+    """模型常重复输出「外观可见分析/宏观外貌分析/分析」等标题行，HITL 已注入则跳过。"""
+    inner = _strip_vision_narrative_line_prefix(line.strip())
+    if not inner:
+        return True
+    if inner in _VISION_NARRATIVE_SKIP_STANDALONE_LINES:
+        return True
+    if re.fullmatch(
+        r"Markdown\s*(外观可见分析|宏观外貌分析)\s*",
+        inner,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    return False
 
 
 def _vision_category_markdown_bullet(s: str) -> str | None:
@@ -258,6 +288,9 @@ def sanitize_vision_narrative_for_markdown(raw: str) -> str:
 
         if re.match(r"^-\s+\*\*[^*]+\*\*[：:]", s):
             lines_out.append(s)
+            continue
+
+        if _is_redundant_vision_heading_line(s):
             continue
 
         inner = _strip_vision_narrative_line_prefix(s)
