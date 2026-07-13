@@ -48,6 +48,45 @@ SCOPE_HITL_RELAXED_PROMPT = (
     "请确认下列台账信息，或修改后重新提交"
 )
 
+# vision_first 首轮台账已通过、仅待用户看完图像后继续（pending_vision_user_ack）
+HITL_MODE_VISION_ACK_ONLY = "vision_ack_only"
+
+VISION_ACK_CONTINUE_UI_BUTTON: dict[str, Any] = {
+    "id": "continue",
+    "label": "继续",
+    "variant": "primary",
+    "action": "confirm_scope",
+    "payload": {},
+    "requires_input": False,
+}
+
+
+def is_vision_ack_only_hitl(payload: dict[str, Any] | None) -> bool:
+    """interrupt / SSE 是否为「仅视觉确认后继续」场景。"""
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("hitl_mode") or "") == HITL_MODE_VISION_ACK_ONLY
+
+
+def apply_vision_ack_only_hitl_ui_from_state(
+    state: dict[str, Any] | None,
+    payload: dict[str, Any],
+) -> None:
+    """
+    台账库表已内部通过、pending_vision_user_ack：为前端下发「继续」按钮标识。
+    其他 HITL 场景不写入 hitl_mode / ui_buttons。
+    """
+    if not isinstance(state, dict) or not state.get("pending_vision_user_ack"):
+        return
+    if bool(payload.get("vision_confirm_blocked")):
+        return
+    if payload.get("include_scope_confirm_preview") is not False:
+        return
+    if not bool(payload.get("include_vision_preview")):
+        return
+    payload["hitl_mode"] = HITL_MODE_VISION_ACK_ONLY
+    payload["ui_buttons"] = [dict(VISION_ACK_CONTINUE_UI_BUTTON)]
+
 
 def record_scope_hitl_context(state: dict[str, Any], *, reason: str, prompt: str) -> None:
     """记录当前台账 HITL 场景，供视觉拒识 overlay 清除后恢复。"""

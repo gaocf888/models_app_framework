@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.llm.graphs.img_diag_scope_display import build_scope_hitl_confirm_reply_example
+from app.llm.graphs.img_diag_scope_display import (
+    HITL_MODE_VISION_ACK_ONLY,
+    build_scope_hitl_confirm_reply_example,
+    is_vision_ack_only_hitl,
+)
 from app.llm.graphs.img_diag_scope_graph import _build_interrupt_payload
 from app.llm.graphs.img_diag_scope_intent import ImgDiagScopeDraft, parse_img_diag_scope_draft
 from app.llm.graphs.img_diag_scope_probe import probe_img_diag_scope_route
@@ -191,6 +195,13 @@ def test_interrupt_payload_scope_input_includes_macro_appearance_heading() -> No
     assert "## 宏观外貌分析" in msg
     assert msg.index("【图像可见分析】") < msg.index("## 宏观外貌分析")
     assert "- **线状损伤**：" in msg
+    assert payload.get("hitl_mode") == HITL_MODE_VISION_ACK_ONLY
+    assert is_vision_ack_only_hitl(payload)
+    buttons = payload.get("ui_buttons") or []
+    assert len(buttons) == 1
+    assert buttons[0].get("id") == "continue"
+    assert buttons[0].get("label") == "继续"
+    assert buttons[0].get("action") == "confirm_scope"
 
 
 def test_vision_preview_sse_event_includes_macro_appearance_heading() -> None:
@@ -279,3 +290,26 @@ def test_interrupt_payload_vision_ack_only_hides_scope_confirm() -> None:
     assert payload["include_scope_confirm_preview"] is False
     assert not payload.get("scope_draft_display")
     assert payload.get("scope_hitl_assistant_message") == ""
+    assert payload.get("hitl_mode") == HITL_MODE_VISION_ACK_ONLY
+    assert (payload.get("ui_buttons") or [])[0].get("label") == "继续"
+
+
+def test_scope_interrupt_sse_event_includes_vision_ack_ui() -> None:
+    from app.llm.graphs.analysis_img_diag_runner import AnalysisImgDiagGraphRunner
+
+    ev = AnalysisImgDiagGraphRunner._scope_interrupt_sse_event(
+        {
+            "request_id": "anl_test",
+            "resume_token": "rt_test",
+            "interrupt_payload": {
+                "hitl_mode": HITL_MODE_VISION_ACK_ONLY,
+                "ui_buttons": [{"id": "continue", "label": "继续", "action": "confirm_scope", "payload": {}}],
+                "include_vision_preview": True,
+                "include_scope_confirm_preview": False,
+                "vision_hitl_assistant_message": "【图像可见分析】",
+            },
+        }
+    )
+    assert ev["hitl_mode"] == HITL_MODE_VISION_ACK_ONLY
+    assert ev["ui_buttons"][0]["label"] == "继续"
+    assert ev["resume_token"] == "rt_test"

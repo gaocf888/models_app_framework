@@ -338,6 +338,8 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
     | `validation_error` | 库表校验错误码/说明（可选） |
     | `interrupt_reason` | 如 `missing:boiler`、`db_validate_zero_rows` |
     | `suggested_actions` | 建议动作：`confirm_scope` / `edit_scope` / `abort` |
+    | `hitl_mode` | 可选。台账已通过、仅待看完图像后继续时为 `vision_ack_only` |
+    | `ui_buttons` | 可选。`vision_ack_only` 时含「继续」按钮（`action=confirm_scope`，`payload={}`）；与输入「确认」等价 |
 
     前端建议流程：
     人机协同触发(用户问题中解析确认 机组/受热面)： -

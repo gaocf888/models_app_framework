@@ -151,6 +151,8 @@ async def test_vision_first_db_hit_interrupts_for_vision_ack_then_confirms_on_re
         intr = r1.get("interrupt_payload") or {}
         assert intr.get("include_vision_preview") is True
         assert intr.get("include_scope_confirm_preview") is False
+        assert intr.get("hitl_mode") == "vision_ack_only"
+        assert (intr.get("ui_buttons") or [])[0].get("label") == "继续"
 
         r2 = await scope_runner.resume_until_confirmed_or_interrupt(
             resume_token=r1["resume_token"],

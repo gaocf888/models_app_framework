@@ -578,6 +578,10 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             "scope_reply_example_label": intr.get("scope_reply_example_label") if include_scope else "",
             "vision_hitl_assistant_message": intr.get("vision_hitl_assistant_message"),
         }
+        if intr.get("hitl_mode"):
+            event["hitl_mode"] = intr.get("hitl_mode")
+        if intr.get("ui_buttons"):
+            event["ui_buttons"] = intr.get("ui_buttons")
         if include_scope:
             event["scope_draft"] = intr.get("scope_draft")
             event["scope_draft_display"] = intr.get("scope_draft_display")
@@ -604,8 +608,10 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         vision_data: dict[str, Any] | None,
         vision_ms: int,
         vision_status: str,
+        hitl_mode: str | None = None,
+        ui_buttons: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        return {
+        event: dict[str, Any] = {
             "event": "img_diag_vision_preview",
             "request_id": request_id,
             "orchestrator_path": "vision_first",
@@ -621,6 +627,11 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             ),
             "include_vision_preview": True,
         }
+        if hitl_mode:
+            event["hitl_mode"] = hitl_mode
+        if ui_buttons:
+            event["ui_buttons"] = ui_buttons
+        return event
 
     @staticmethod
     def _profile(req: AnalysisImgDiagRequest) -> _ImgDiagSubtypeProfile:
@@ -2223,6 +2234,10 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                         vision_data=vision_prefetch,
                         vision_ms=vision_ms,
                         vision_status=vision_status,
+                        hitl_mode=str(intr.get("hitl_mode") or "") or None,
+                        ui_buttons=intr.get("ui_buttons")
+                        if isinstance(intr.get("ui_buttons"), list)
+                        else None,
                     )
                 if intr.get("include_scope_confirm_preview", True):
                     self._persist_scope_hitl_assistant_message(
@@ -2416,6 +2431,10 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
                             vision_data=vision_data,
                             vision_ms=int(scope_result.get("vision_prefetch_ms") or 0),
                             vision_status=str(scope_result.get("vision_prefetch_status") or ""),
+                            hitl_mode=str(intr.get("hitl_mode") or "") or None,
+                            ui_buttons=intr.get("ui_buttons")
+                            if isinstance(intr.get("ui_buttons"), list)
+                            else None,
                         )
                 if intr.get("include_scope_confirm_preview", True):
                     self._persist_scope_hitl_assistant_message(

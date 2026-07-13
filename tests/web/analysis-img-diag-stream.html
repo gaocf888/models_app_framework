@@ -248,6 +248,10 @@
       <div id="uploadResult">（尚未上传）</div>
       <h2 style="margin-top: 1rem;">summary（HITL / Markdown 增量）</h2>
       <div id="answer"></div>
+      <div id="visionAckActions" class="actions" style="margin-top: 0.75rem; display: none;">
+        <button type="button" class="primary" id="btnVisionContinue" disabled>继续</button>
+        <span class="hint" id="visionAckHint">（等待 resume_token…）</span>
+      </div>
       <h2 style="margin-top: 1rem;">知识来源 rag_citations（finished 帧，与智能客服同形）</h2>
       <div id="ragCitations">（尚未开始）</div>
       <h2 style="margin-top: 1rem;">末帧与 meta</h2>
@@ -266,12 +270,46 @@
   let abortCtrl = null;
   let scopeResumeToken = null;
   let scopeHitlWaiting = false;
+  let visionAckOnlyMode = false;
   let lastVisionPreview = null;
   let visionPreviewShown = false;
   const BTN_RUN_LABEL_START = "2) 开始流式看图诊断";
   const BTN_RUN_LABEL_RESUME = "3) 提交 scope 补充并继续流式诊断";
+  const BTN_RUN_LABEL_VISION_ACK = "3) 提交确认文字并继续（可选）";
   const QUERY_PLACEHOLDER_DEFAULT = "请识别图片缺陷并给出处置建议，位置是1号锅炉低温过热器A侧第2排第3根";
   const QUERY_PLACEHOLDER_HITL = "在此补充或修正机组/受热面，例如：水冷壁螺旋段后墙螺旋管组";
+  const QUERY_PLACEHOLDER_VISION_ACK = "可选：输入「确认」或「继续」后点击下方按钮；或直接点「继续」";
+
+  function isVisionAckOnlyEvent(ev) {
+    if (!ev) return false;
+    if (ev.hitl_mode === "vision_ack_only") return true;
+    return (
+      ev.include_scope_confirm_preview === false &&
+      ev.include_vision_preview === true &&
+      !ev.vision_confirm_blocked
+    );
+  }
+
+  function updateVisionAckUi(ev) {
+    const panel = $("visionAckActions");
+    const btn = $("btnVisionContinue");
+    const hint = $("visionAckHint");
+    if (!isVisionAckOnlyEvent(ev)) {
+      visionAckOnlyMode = false;
+      panel.style.display = "none";
+      btn.disabled = true;
+      return;
+    }
+    visionAckOnlyMode = true;
+    panel.style.display = "flex";
+    panel.style.alignItems = "center";
+    panel.style.gap = "0.75rem";
+    const hasToken = !!(ev && ev.resume_token);
+    btn.disabled = !hasToken || !scopeHitlWaiting;
+    hint.textContent = hasToken
+      ? "可点击继续，或在 query 框输入「确认」后点右侧按钮"
+      : "（等待 resume_token…）";
+  }
 
   /** HITL 展示文案由后端 SSE 字段提供，测试页不做业务拼装。 */
   function backendHitlDisplayText(ev) {
@@ -295,19 +333,28 @@
     const text = backendHitlDisplayText(ev);
     $("answer").textContent = text || "（后端未返回 HITL 展示文案）";
     $("query").value = "";
-    $("query").placeholder = QUERY_PLACEHOLDER_HITL;
-    $("btnRun").textContent = BTN_RUN_LABEL_RESUME;
+    if (isVisionAckOnlyEvent(ev)) {
+      $("query").placeholder = QUERY_PLACEHOLDER_VISION_ACK;
+      $("btnRun").textContent = BTN_RUN_LABEL_VISION_ACK;
+      setStatus("图像可见分析已完成：可点「继续」，或在 query 输入确认文字后提交");
+    } else {
+      $("query").placeholder = QUERY_PLACEHOLDER_HITL;
+      $("btnRun").textContent = BTN_RUN_LABEL_RESUME;
+      setStatus("等待台账信息确认：请在 query 框补充后点击继续");
+    }
     $("btnScopeAbort").disabled = false;
+    updateVisionAckUi(ev);
     setBusy(false);
-    setStatus("等待台账信息确认：请在 query 框补充后点击继续");
   }
 
   function exitScopeHitlWait() {
     scopeResumeToken = null;
     scopeHitlWaiting = false;
+    visionAckOnlyMode = false;
     $("query").placeholder = QUERY_PLACEHOLDER_DEFAULT;
     $("btnRun").textContent = BTN_RUN_LABEL_START;
     $("btnScopeAbort").disabled = true;
+    updateVisionAckUi(null);
   }
 
   function processSseEvents(onDelta) {
@@ -324,7 +371,12 @@
           lastVisionPreview = ev;
           const visionMsg = String(ev.vision_hitl_assistant_message || "").trim();
           $("answer").textContent = visionMsg || "（后端未返回视觉分析展示文案）";
-          setStatus("已收到图像可见分析，等待台账确认事件…");
+          updateVisionAckUi(ev);
+          setStatus(
+            isVisionAckOnlyEvent(ev)
+              ? "已收到图像可见分析，等待 resume_token 后可点「继续」…"
+              : "已收到图像可见分析，等待台账确认事件…"
+          );
           return;
         }
         if (kind === "img_diag_scope_input_required") {
@@ -562,7 +614,12 @@
     const sid = $("sessionId").value.trim();
     const supplement = $("query").value.trim();
     const resumeImageUrls = imageUrlsList();
-    if (action === "confirm_scope" && !supplement && !resumeImageUrls.length) {
+    if (
+      action === "confirm_scope" &&
+      !visionAckOnlyMode &&
+      !supplement &&
+      !resumeImageUrls.length
+    ) {
       showErr("请在 query 填写 scope 补充，和/或在 image_urls 填入换图 URL。");
       return;
     }
@@ -752,6 +809,14 @@
       return;
     }
     await runImgDiagStream();
+  });
+
+  $("btnVisionContinue").addEventListener("click", async () => {
+    if (!scopeHitlWaiting || !scopeResumeToken) {
+      showErr("无 resume_token，请等待 img_diag_scope_input_required 事件");
+      return;
+    }
+    await runScopeResume("confirm_scope");
   });
 
   $("btnAbort").addEventListener("click", () => {

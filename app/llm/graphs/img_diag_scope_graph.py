@@ -423,6 +423,9 @@ def _enrich_interrupt_payload_from_state(state: ImgDiagScopeGraphState, payload:
         payload["initial_query_empty"] = True
         payload["scope_cumulative_text"] = str(state.get("scope_cumulative_text") or "").strip()
     payload["confirm_reply_example"] = build_scope_hitl_confirm_reply_example(payload)
+    from app.llm.graphs.img_diag_scope_display import apply_vision_ack_only_hitl_ui_from_state
+
+    apply_vision_ack_only_hitl_ui_from_state(state, payload)
 
 
 def _resume_session_kwargs(
