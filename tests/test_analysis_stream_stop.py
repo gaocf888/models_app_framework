@@ -229,6 +229,13 @@ class TestImgDiagStreamCancel(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("user_cancelled", meta.get("terminate_reason"))
         self.assertTrue(meta.get("is_partial"))
         self.assertNotIn("structured_async_enqueued", [e.get("event") for e in events])
+        runner._conv.append_assistant_message.assert_called()
+        persisted = [
+            c.args[2]
+            for c in runner._conv.append_assistant_message.call_args_list
+            if len(c.args) >= 3 and isinstance(c.args[2], str) and "首段" in c.args[2]
+        ]
+        self.assertEqual(["首段"], persisted)
 
 
 if __name__ == "__main__":

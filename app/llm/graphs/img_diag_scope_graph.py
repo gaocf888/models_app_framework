@@ -403,8 +403,9 @@ def _enrich_interrupt_payload_from_state(state: ImgDiagScopeGraphState, payload:
     payload["include_vision_preview"] = include_vision
     if include_vision:
         vision_data = state.get("vision_prefetch_data")
-        if not _vision_hitl_gate_blocked(state):
-            state["vision_hitl_preview_delivered"] = True
+        # 勿在此处写 vision_hitl_preview_delivered：图内 interrupt 与 resume 外层
+        # 会各 build 一次；提前置位会导致外层重建丢掉「首次通过态」图像可见分析。
+        # 仅由 _sync_scope_human_confirm_hitl_gate_flags 在最终下发时置位。
         subtype = str(state.get("img_diag_subtype") or "defect_ident")
         payload["vision_findings_display"] = build_vision_findings_display(
             vision_data,

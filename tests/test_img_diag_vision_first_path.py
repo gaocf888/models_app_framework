@@ -253,6 +253,10 @@ def test_interrupt_payload_vision_only_once_after_delivered() -> None:
     payload = _build_interrupt_payload(state)
     assert payload["include_vision_preview"] is True
     assert payload["vision_findings_display"]
+    # delivered 仅在最终下发时由 sync 置位（build 可幂等多次）
+    from app.llm.graphs.img_diag_scope_graph import _sync_scope_human_confirm_hitl_gate_flags
+
+    _sync_scope_human_confirm_hitl_gate_flags(state, interrupt_payload=payload)
     assert state.get("vision_hitl_preview_delivered") is True
 
     state["hitl_rounds"] = 2
@@ -286,6 +290,9 @@ def test_first_passed_vision_after_failed_rounds_still_includes_preview() -> Non
     payload = _build_interrupt_payload(state)
     assert payload["include_vision_preview"] is True
     assert "【图像可见分析】" in (payload.get("vision_hitl_assistant_message") or "")
+    from app.llm.graphs.img_diag_scope_graph import _sync_scope_human_confirm_hitl_gate_flags
+
+    _sync_scope_human_confirm_hitl_gate_flags(state, interrupt_payload=payload)
     assert state.get("vision_hitl_preview_delivered") is True
 
     # 未再换图的后续台账纠错轮：不再返回图像可见分析

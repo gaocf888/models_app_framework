@@ -2107,6 +2107,14 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         image_urls = [u for u in (req.image_urls or []) if isinstance(u, str) and u.strip()]
 
         if user_cancelled:
+            # Match NL2SQL abort: persist streamed partial report; skip empty.
+            if summary.strip():
+                self._persist_assistant_summary(
+                    req.user_id,
+                    req.session_id,
+                    summary,
+                    pack.rag_citations,
+                )
             yield self._img_diag_stream_aborted_finished(
                 pack=pack,
                 request_id=request_id,
