@@ -142,21 +142,24 @@ _SCOPE_CHECKPOINT_PRIORITY_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _sync_scope_human_confirm_hitl_gate_flags(state: ImgDiagScopeGraphState) -> None:
+def _sync_scope_human_confirm_hitl_gate_flags(
+    state: ImgDiagScopeGraphState,
+    *,
+    interrupt_payload: dict[str, Any] | None = None,
+) -> None:
     """
-    scope_human_confirm 在 interrupt 前会递增 hitl 并标记 vision 已展示；
-    LangGraph 在 interrupt 暂停时未必把这些字段写回 checkpoint。
+    scope_human_confirm 在 interrupt 前会递增 hitl；LangGraph 暂停时未必写回 checkpoint。
+    「图像可见分析」已交付标记仅在本轮 interrupt 实际附带且视觉门禁通过时置位
+    （拒识展示不计入已交付，以便后续首次换正确图仍能返回一次）。
     """
     state["hitl_rounds"] = int(state.get("hitl_rounds") or 0) + 1
-    orchestrator_path = str(state.get("orchestrator_path") or "scope_first")
-    vision_data = state.get("vision_prefetch_data")
-    if (
-        orchestrator_path == "vision_first"
-        and isinstance(vision_data, dict)
-        and vision_data
-        and not _vision_hitl_gate_blocked(state)
-    ):
-        state["vision_hitl_preview_delivered"] = True
+    if not isinstance(interrupt_payload, dict):
+        return
+    if not bool(interrupt_payload.get("include_vision_preview")):
+        return
+    if _vision_hitl_gate_blocked(state):
+        return
+    state["vision_hitl_preview_delivered"] = True
 
 
 def _scope_hitl_gate_passed(state: dict[str, Any]) -> bool:
@@ -190,7 +193,14 @@ def _should_include_scope_confirm_in_hitl(state: dict[str, Any]) -> bool:
 
 
 def _should_include_vision_preview_in_hitl(state: ImgDiagScopeGraphState) -> bool:
-    """视觉已通过且已展示过则不再返回；未通过或换图重检时返回。"""
+    """
+    HITL 是否附带「图像可见分析」：
+    - 视觉拒识：返回（拒识文案）；不记为「已通过展示」；
+    - 视觉已通过且台账未通过：无论此前多少轮错图，首次通过时返回一次；
+    - 已返回过通过态分析且未换图：不再返回；
+    - 换图后重置「已交付」，新图门禁通过时再返回一次；
+    - 双门禁都通过：直接放行，不依赖此处。
+    """
     orchestrator_path = str(state.get("orchestrator_path") or "scope_first")
     vision_data = state.get("vision_prefetch_data")
     if not isinstance(vision_data, dict) or not vision_data:
@@ -198,16 +208,17 @@ def _should_include_vision_preview_in_hitl(state: ImgDiagScopeGraphState) -> boo
 
     images_replaced = bool(state.get("vision_images_replaced"))
     vision_blocked = _vision_hitl_gate_blocked(state)
-    hitl_rounds = int(state.get("hitl_rounds") or 0)
 
     if images_replaced:
         state["vision_hitl_preview_delivered"] = False
 
-    if vision_blocked or images_replaced:
+    if vision_blocked:
         return True
     if orchestrator_path != "vision_first":
         return False
-    if state.get("vision_hitl_preview_delivered") or hitl_rounds > 1:
+    if _scope_hitl_gate_passed(state):
+        return False
+    if state.get("vision_hitl_preview_delivered"):
         return False
     return True
 
@@ -465,12 +476,16 @@ async def _finalize_state_after_hitl_resume(
         or (not for_interrupt and orchestrator_path == "vision_first")
     )
     if should_refresh:
+        replaced_before_refresh = bool(state.get("vision_images_replaced"))
         vision_data, ms, status = await vision_refresh(updated_request)
         state["vision_prefetch_data"] = vision_data
         state["vision_prefetch_ms"] = int(ms or 0)
         state["vision_prefetch_status"] = str(status or "")
         state["vision_images_replaced"] = False
         state.pop("vision_prefetch_resume_refreshed", None)
+        if replaced_before_refresh:
+            # 换图后允许「新图首次门禁通过」再展示一次图像可见分析
+            state["vision_hitl_preview_delivered"] = False
         sync_scope_hitl_after_vision_accepted(state)
         logger.info(
             "img_diag hitl vision refreshed orchestrator=%s for_interrupt=%s ms=%s status=%s url_count=%s",
@@ -635,6 +650,8 @@ async def _prepare_scope_resume_state(
         state["vision_prefetch_status"] = str(status or "")
         state["vision_prefetch_resume_refreshed"] = True
         state["vision_images_replaced"] = False
+        # URL 已变更：清除「通过态图像可见分析已交付」，便于新图首次通过时再返回一次
+        state["vision_hitl_preview_delivered"] = False
         sync_scope_hitl_after_vision_accepted(state)
 
     needs_persist = urls_changed or should_refresh_vision or correction_applied
@@ -1488,13 +1505,14 @@ class ImgDiagScopeHitlRunner:
         config: dict[str, Any],
         *,
         final_state: dict[str, Any],
+        interrupt_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """interrupt 后把 hitl/vision 展示门禁写回 checkpoint，供后续 resume 正确判定。"""
         assert self._graph is not None
         snap = await self._graph.aget_state(config)
         state = dict(snap.values or {}) if snap and snap.values else dict(final_state)
         state.update(final_state)
-        _sync_scope_human_confirm_hitl_gate_flags(state)
+        _sync_scope_human_confirm_hitl_gate_flags(state, interrupt_payload=interrupt_payload)
         as_node = _scope_resume_checkpoint_as_node(snap)
         await self._graph.aupdate_state(config, state, as_node=as_node)
         return state
@@ -1839,6 +1857,7 @@ class ImgDiagScopeHitlRunner:
                 gate_state = await self._persist_scope_human_confirm_interrupt_gate(
                     config,
                     final_state=final_state,
+                    interrupt_payload=intr,
                 )
                 final_state.update(gate_state)
                 stored_urls = (
@@ -2059,14 +2078,19 @@ class ImgDiagScopeHitlRunner:
                 state_for_token.setdefault("session_id", session_id)
                 state_for_token.setdefault("analysis_type", session.analysis_type)
                 state_for_token.setdefault("img_diag_subtype", session.img_diag_subtype)
-                _sync_scope_human_confirm_hitl_gate_flags(state_for_token)
                 updated_request = await _finalize_state_after_hitl_resume(
                     state_for_token,
                     session=session,
                     vision_refresh=vision_refresh,
                     for_interrupt=True,
                 )
+                # 必须先按当前 state 重建 interrupt，再用该 payload 同步 delivered；
+                # 若先用图内旧 interrupt 标记 delivered，再重建会把「首次通过态」图像分析丢掉。
                 intr = _build_interrupt_payload(state_for_token)
+                _sync_scope_human_confirm_hitl_gate_flags(
+                    state_for_token,
+                    interrupt_payload=intr,
+                )
                 await self._graph.aupdate_state(
                     config,
                     state_for_token,

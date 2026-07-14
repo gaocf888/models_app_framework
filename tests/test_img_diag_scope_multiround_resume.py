@@ -153,6 +153,75 @@ async def test_vision_first_db_hit_auto_confirmed_without_vision_ack_interrupt(
 
 
 @pytest.mark.asyncio
+async def test_wrong_image_then_good_image_bad_scope_returns_vision_preview(
+    scope_runner: ImgDiagScopeHitlRunner,
+) -> None:
+    """错图拒识后，resume 换正确图但台账错误：须返回一次通过态图像可见分析。"""
+    assert scope_runner.available()
+    request_id = "anl_test_wrong_then_good_bad_scope"
+    img_diag_request = {
+        "user_id": USER_ID,
+        "session_id": SESSION_ID,
+        "query": "",
+        "img_diag_subtype": "defect_ident",
+        "image_urls": [WRONG_IMAGE],
+    }
+
+    with patch(
+        "app.llm.graphs.img_diag_scope_graph.parse_img_diag_scope_draft",
+        side_effect=_mock_parse_scope_draft,
+    ), patch(
+        "app.llm.graphs.img_diag_scope_graph.validate_scope_with_relaxation",
+        new_callable=AsyncMock,
+        return_value=(0, {}, [], "scope_not_found_in_catalog"),
+    ):
+        r1 = await scope_runner.run_until_scope_confirmed_or_interrupt(
+            img_diag_request,
+            request_id=request_id,
+            orchestrator_path="vision_first",
+            vision_prefetch={
+                "is_boiler_pressure_part_image": False,
+                "vision_narrative": "- 电机设备",
+            },
+        )
+        assert r1["status"] == "interrupt"
+        intr1 = r1.get("interrupt_payload") or {}
+        assert intr1.get("include_vision_preview") is True
+
+        r2 = await scope_runner.resume_until_confirmed_or_interrupt(
+            resume_token=r1["resume_token"],
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            action="confirm_scope",
+            payload={
+                "image_urls": [GOOD_IMAGE],
+                "user_supplement": "机组应为错的锅炉XYZ",
+            },
+            vision_refresh=_vision_refresh,
+        )
+        assert r2["status"] == "interrupt"
+        intr2 = r2.get("interrupt_payload") or {}
+        assert intr2.get("include_vision_preview") is True, (
+            f"expected vision preview after first good image, got keys={sorted(intr2.keys())}"
+        )
+        vision_msg = str(intr2.get("vision_hitl_assistant_message") or "")
+        assert "【图像可见分析】" in vision_msg
+        assert intr2.get("include_scope_confirm_preview") is True
+
+        r3 = await scope_runner.resume_until_confirmed_or_interrupt(
+            resume_token=r2["resume_token"],
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            action="confirm_scope",
+            payload={"user_supplement": "受热面应为不存在的位置ABC"},
+            vision_refresh=_vision_refresh,
+        )
+        assert r3["status"] == "interrupt"
+        intr3 = r3.get("interrupt_payload") or {}
+        assert intr3.get("include_vision_preview") is False
+
+
+@pytest.mark.asyncio
 async def test_same_image_urls_with_supplement_merges_cumulative(scope_runner: ImgDiagScopeHitlRunner) -> None:
     """第 4 轮：image_urls 与上一轮相同 + user_supplement（用户日志场景）。"""
     assert scope_runner.available()

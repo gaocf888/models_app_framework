@@ -9,7 +9,6 @@ import pytest
 from app.llm.graphs.img_diag_scope_display import (
     HITL_MODE_VISION_ACK_ONLY,
     build_scope_hitl_confirm_reply_example,
-    is_vision_ack_only_hitl,
 )
 from app.llm.graphs.img_diag_scope_graph import _build_interrupt_payload
 from app.llm.graphs.img_diag_scope_intent import ImgDiagScopeDraft, parse_img_diag_scope_draft
@@ -171,37 +170,35 @@ def test_format_vision_hitl_assistant_block_markdown_categories() -> None:
     assert "## 宏观外貌分析" not in text
 
 
-def test_interrupt_payload_scope_input_includes_macro_appearance_heading() -> None:
+def test_interrupt_payload_scope_fail_includes_vision_with_macro_heading() -> None:
+    """视觉已通过 + 台账未通过：首次 HITL 须返回图像可见分析（含宏观外貌标题）。"""
     state = {
         "orchestrator_path": "vision_first",
         "hitl_rounds": 0,
-        "pending_vision_user_ack": True,
         "img_diag_subtype": "defect_ident",
         "vision_prefetch_data": {
             "is_boiler_pressure_part_image": True,
             "vision_narrative": "- **线状损伤**：裂纹",
         },
-        "confirmed_scope_intent": {"boiler": "1号锅炉"},
-        "scope_intent_text": "1号锅炉",
         "scope_draft": {"boiler": "1号锅炉"},
+        "missing_fields": ["device_name"],
+        "interrupt_reason": "missing:device_name",
+        "human_prompt": "未识别解析到台账信息，请补充！",
         "img_diag_request": {
             "image_urls": ["http://minio/good.jpg"],
             "img_diag_subtype": "defect_ident",
         },
     }
     payload = _build_interrupt_payload(state)
+    assert payload.get("include_vision_preview") is True
+    assert payload.get("include_scope_confirm_preview") is True
     msg = payload.get("vision_hitl_assistant_message") or ""
     assert "【图像可见分析】" in msg
     assert "## 宏观外貌分析" in msg
     assert msg.index("【图像可见分析】") < msg.index("## 宏观外貌分析")
     assert "- **线状损伤**：" in msg
-    assert payload.get("hitl_mode") == HITL_MODE_VISION_ACK_ONLY
-    assert is_vision_ack_only_hitl(payload)
-    buttons = payload.get("ui_buttons") or []
-    assert len(buttons) == 1
-    assert buttons[0].get("id") == "continue"
-    assert buttons[0].get("label") == "继续"
-    assert buttons[0].get("action") == "confirm_scope"
+    assert not payload.get("hitl_mode")
+    assert not payload.get("ui_buttons")
 
 
 def test_vision_preview_sse_event_includes_macro_appearance_heading() -> None:
@@ -264,7 +261,63 @@ def test_interrupt_payload_vision_only_once_after_delivered() -> None:
     assert "vision_findings_display" not in payload2
 
 
-def test_interrupt_payload_vision_ack_only_hides_scope_confirm() -> None:
+def test_first_passed_vision_after_failed_rounds_still_includes_preview() -> None:
+    """错图多轮拒识后，首次换正确图且视觉通过、台账未通过 → 须返回图像可见分析。"""
+    # 模拟：此前错图 HITL 仅展示拒识（不置 delivered）；换图刷新已清 images_replaced
+    state = {
+        "orchestrator_path": "vision_first",
+        "hitl_rounds": 3,
+        "vision_hitl_preview_delivered": False,
+        "vision_images_replaced": False,
+        "img_diag_subtype": "defect_ident",
+        "vision_prefetch_data": {
+            "is_boiler_pressure_part_image": True,
+            "vision_narrative": "- **主体形貌**：管壁沟槽",
+        },
+        "scope_draft": {"boiler": "1号锅炉"},
+        "missing_fields": ["device_name"],
+        "interrupt_reason": "missing:device_name",
+        "human_prompt": "未识别解析到台账信息，请补充！",
+        "img_diag_request": {
+            "image_urls": ["http://minio/good.jpg"],
+            "img_diag_subtype": "defect_ident",
+        },
+    }
+    payload = _build_interrupt_payload(state)
+    assert payload["include_vision_preview"] is True
+    assert "【图像可见分析】" in (payload.get("vision_hitl_assistant_message") or "")
+    assert state.get("vision_hitl_preview_delivered") is True
+
+    # 未再换图的后续台账纠错轮：不再返回图像可见分析
+    state["hitl_rounds"] = 4
+    state["vision_images_replaced"] = False
+    payload2 = _build_interrupt_payload(state)
+    assert payload2["include_vision_preview"] is False
+
+
+def test_sync_gate_flags_does_not_mark_delivered_on_rejection_preview() -> None:
+    from app.llm.graphs.img_diag_scope_graph import _sync_scope_human_confirm_hitl_gate_flags
+    from app.llm.graphs.img_diag_vision_display import VISION_REJECT_INTERRUPT_REASON
+
+    state = {
+        "orchestrator_path": "vision_first",
+        "hitl_rounds": 0,
+        "interrupt_reason": VISION_REJECT_INTERRUPT_REASON,
+        "vision_confirm_blocked": True,
+        "vision_prefetch_data": {"is_boiler_pressure_part_image": False},
+        "img_diag_request": {"image_urls": ["http://bad.jpg"], "img_diag_subtype": "defect_ident"},
+        "img_diag_subtype": "defect_ident",
+    }
+    _sync_scope_human_confirm_hitl_gate_flags(
+        state,
+        interrupt_payload={"include_vision_preview": True},
+    )
+    assert state["hitl_rounds"] == 1
+    assert not state.get("vision_hitl_preview_delivered")
+
+
+def test_interrupt_payload_vision_passed_scope_passed_omits_vision_preview() -> None:
+    """双门禁均已通过时不附带图像可见分析（图应直接放行，不依赖 vision_ack HITL）。"""
     state = {
         "orchestrator_path": "vision_first",
         "hitl_rounds": 0,
@@ -286,12 +339,11 @@ def test_interrupt_payload_vision_ack_only_hides_scope_confirm() -> None:
         },
     }
     payload = _build_interrupt_payload(state)
-    assert payload["include_vision_preview"] is True
+    assert payload["include_vision_preview"] is False
     assert payload["include_scope_confirm_preview"] is False
-    assert not payload.get("scope_draft_display")
-    assert payload.get("scope_hitl_assistant_message") == ""
-    assert payload.get("hitl_mode") == HITL_MODE_VISION_ACK_ONLY
-    assert (payload.get("ui_buttons") or [])[0].get("label") == "继续"
+    assert "vision_hitl_assistant_message" not in payload
+    assert not payload.get("hitl_mode")
+    assert not payload.get("ui_buttons")
 
 
 def test_scope_interrupt_sse_event_includes_vision_ack_ui() -> None:
