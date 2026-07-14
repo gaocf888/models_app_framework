@@ -30,6 +30,7 @@ SCOPE_HITL_DISPLAY_FIELDS: tuple[str, ...] = (
 )
 
 SCOPE_HITL_TITLE = "【台账信息确认】"
+SCOPE_HITL_SECTION_HEADING = "## 台账信息"
 
 SCOPE_HITL_DB_NOT_MATCHED_PROMPT = (
     "业务库中未匹配到下面台账信息，请确认机组、受热面、检测位置、排数、管数是否准确"
@@ -320,11 +321,11 @@ def _scope_hitl_markdown_bullet(label: str, value: Any) -> str:
 def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None) -> str:
     """将 scope HITL interrupt 载荷格式化为可写入会话历史的 assistant 正文（Markdown）。"""
     if not interrupt_payload:
-        return SCOPE_HITL_TITLE
+        return f"{SCOPE_HITL_TITLE}\n{SCOPE_HITL_SECTION_HEADING}"
     if interrupt_payload.get("include_scope_confirm_preview") is False:
         return ""
     if is_image_only_initial_scope_hitl(interrupt_payload):
-        lines: list[str] = [SCOPE_HITL_TITLE]
+        lines: list[str] = [SCOPE_HITL_TITLE, SCOPE_HITL_SECTION_HEADING]
         prompt = resolve_scope_hitl_display_prompt(interrupt_payload=interrupt_payload)
         if prompt:
             lines.append(prompt)
@@ -332,7 +333,7 @@ def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None
         if example:
             lines.extend(["", "**回复示例**", example])
         return "\n".join(lines)
-    lines: list[str] = [SCOPE_HITL_TITLE]
+    lines: list[str] = [SCOPE_HITL_TITLE, SCOPE_HITL_SECTION_HEADING]
     prompt = resolve_scope_hitl_display_prompt(interrupt_payload=interrupt_payload)
     if prompt:
         lines.append(prompt)

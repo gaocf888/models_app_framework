@@ -28,6 +28,8 @@ class TestScopeHitlConversationFormat(unittest.TestCase):
             }
         )
         self.assertIn("【台账信息确认】", text)
+        self.assertIn("## 台账信息", text)
+        self.assertLess(text.index("【台账信息确认】"), text.index("## 台账信息"))
         self.assertIn("请补充机组、受热面", text)
         self.assertIn("1号锅炉", text)
 

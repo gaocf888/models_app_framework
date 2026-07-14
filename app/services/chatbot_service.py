@@ -784,16 +784,9 @@ class ChatbotService:
             soft_direct=faq_decision.active,
             snippet_top_n=cfg.faq_soft_direct_snippet_top_n,
         )
-        rag_block = ""
-        if snippets_for_llm:
-            rag_block = format_rag_snippets_for_generation(
-                snippets_for_llm,
-                soft_direct=faq_decision.active,
-                base_formatter=format_rag_snippets_system_block,
-            )
         image_urls = [u for u in req.image_urls if isinstance(u, str) and u.strip()]
 
-        def build_from_history(hist: list[dict]) -> list[dict[str, Any]]:
+        def build_messages(hist: list[dict], snippets: list[str]) -> list[dict[str, Any]]:
             chunks = list(system_chunks)
             if cfg.anaphora_anchor_block_enabled and at and at != "none" and not faq_decision.active:
                 anchor = build_dialogue_anchor_block(
@@ -806,8 +799,14 @@ class ChatbotService:
                 )
                 if anchor:
                     chunks.append(anchor)
-            if rag_block:
-                chunks.append(rag_block)
+            if snippets:
+                chunks.append(
+                    format_rag_snippets_for_generation(
+                        snippets,
+                        soft_direct=faq_decision.active,
+                        base_formatter=format_rag_snippets_system_block,
+                    )
+                )
             return assemble_chatbot_llm_messages(
                 system_chunks=chunks,
                 history=hist,
@@ -817,7 +816,8 @@ class ChatbotService:
 
         return trim_history_and_build_chatbot_messages(
             history_for_llm,
-            build_from_history=build_from_history,
+            build_messages=build_messages,
+            rag_snippets=list(snippets_for_llm),
             context_total_tokens=cfg.llm_context_total_tokens,
             requested_max_tokens=self._main_llm_max_tokens(),
             slack_tokens=cfg.llm_completion_budget_slack_tokens,
