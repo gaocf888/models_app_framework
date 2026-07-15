@@ -27,6 +27,30 @@ def test_data_query_ledger():
     assert "structured" in r.intent_reason
 
 
+def test_how_much_with_ops_context_is_data_query():
+    """「是多少」须同时命中负荷/当前/锅炉等正配语境才走查数。"""
+    r = classify_chatbot_intent_by_rules(
+        "本厂1号锅炉当前负荷是多少",
+        enable_nl2sql_route=True,
+        image_urls=[],
+    )
+    assert r.intent_label == "data_query"
+    assert r.intent_reason == "structured_query_heuristic"
+    assert r.intent_confidence >= 0.8
+
+
+def test_how_much_without_ops_context_stays_kb():
+    """无工况语境的「是多少」仍默认知识问答，降低规范/建议值误入 NL2SQL。"""
+    for q in (
+        "蠕变寿命一般是多少",
+        "建议值是多少",
+        "标准规定允许偏差是多少",
+    ):
+        r = classify_chatbot_intent_by_rules(q, enable_nl2sql_route=True, image_urls=[])
+        assert r.intent_label == "kb_qa", q
+        assert r.intent_reason in {"default_kb_qa", "conceptual_qa_heuristic"}, (q, r.intent_reason)
+
+
 def test_images_force_kb():
     r = classify_chatbot_intent_by_rules(
         "统计缺陷数量",

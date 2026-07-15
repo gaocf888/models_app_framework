@@ -99,6 +99,34 @@ _STRONG_DATA_RE = re.compile(
     re.I,
 )
 
+# 「是多少」alone 易误把规范/建议值问句打成查库；须同时命中工况/实体/测点正配语境
+_HOW_MUCH_IS_PHRASE = "是多少"
+_HOW_MUCH_OPS_CONTEXT_MARKERS = (
+    "当前",
+    "实时",
+    "机组",
+    "锅炉",
+    "号炉",
+    "号机",
+    "负荷",
+    "氧量",
+    "壁温",
+    "汽温",
+    "主汽",
+    "再热",
+    "给水",
+    "风量",
+    "煤量",
+    "流量",
+    "压力",
+    "水位",
+    "真空",
+    "功率",
+    "转速",
+    "测点",
+    "监测",
+)
+
 # 助手上一轮若为「请补充信息」类固定话术，用于推断任务延续
 _CLARIFY_REPLY_SNIPPET = "请补充更具体的信息"
 
@@ -220,11 +248,25 @@ def _has_conceptual(q: str) -> bool:
     return any(m in qn for m in _CONCEPTUAL_MARKERS)
 
 
+def _has_how_much_with_ops_context(q: str) -> bool:
+    """
+    「是多少」+ 工况/设备/测点正配 → 倾向结构化查数。
+
+    例如「本厂1号锅炉当前负荷是多少」；不含语境的「建议值是多少」不命中。
+    """
+    qn = (q or "").replace(" ", "")
+    if _HOW_MUCH_IS_PHRASE not in qn:
+        return False
+    return any(m in qn for m in _HOW_MUCH_OPS_CONTEXT_MARKERS)
+
+
 def _has_data(q: str) -> bool:
     qn = q.replace(" ", "")
     if any(m.lower() in qn.lower() for m in _DATA_MARKERS):
         return True
-    return _STRONG_DATA_RE.search(qn) is not None
+    if _STRONG_DATA_RE.search(qn) is not None:
+        return True
+    return _has_how_much_with_ops_context(qn)
 
 
 def apply_intent_hard_gates(
