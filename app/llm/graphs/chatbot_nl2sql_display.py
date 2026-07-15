@@ -1,4 +1,4 @@
-"""智能客服 NL2SQL：用户可见列过滤（隐藏主键/技术 ID）。"""
+"""智能客服 NL2SQL：用户可见列过滤（隐藏主键/技术 ID / 无信息量短码列）。"""
 
 from __future__ import annotations
 
@@ -48,9 +48,125 @@ _UUID_RE = re.compile(
 )
 _HEX32_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
+# 短码：纯数字，或长度 1～2 的字母数字（如 0、C、A1）
+_SHORT_CODE_RE = re.compile(r"^(?:\d+|[A-Za-z0-9]{1,2})$")
+
+# 码维列名闸门（归一化后子串匹配）
+_CODE_DIM_MARKERS: tuple[str, ...] = (
+    "状态",
+    "等级",
+    "级别",
+    "标志",
+    "标识符",  # 少见；避免单独「标识」误伤
+    "status",
+    "state",
+    "level",
+    "grade",
+    "flag",
+    "enabled",
+    "deleted",
+    "valid",
+    "category",
+    "mode",
+    # type/kind：仅后缀或独立词，见 is_code_dimension_column_name
+)
+
+_CODE_DIM_SUFFIXES: tuple[str, ...] = (
+    "_status",
+    "_state",
+    "_level",
+    "_grade",
+    "_flag",
+    "_type",
+    "_kind",
+    "_mode",
+    "_category",
+)
+
+# 强制保留：量纲/时间/名称等，即使取值为数字也不因「短码」隐藏
+_FORCE_KEEP_MARKERS: tuple[str, ...] = (
+    "年份",
+    "年度",
+    "年月",
+    "日期",
+    "时间",
+    "year",
+    "date",
+    "time",
+    "名称",
+    "name",
+    "title",
+    "label",
+    "描述",
+    "说明",
+    "intro",
+    "desc",
+    "remark",
+    "数量",
+    "次数",
+    "个数",
+    "根数",
+    "处数",
+    "count",
+    "qty",
+    "amount",
+    "金额",
+    "价格",
+    "费用",
+    "容量",
+    "负荷",
+    "蒸发量",
+    "温度",
+    "压力",
+    "厚度",
+    "时长",
+    "秒",
+    "分钟",
+    "小时",
+    "capacity",
+    "load",
+    "temp",
+    "press",
+    "mw",
+    "型号",
+    "model",
+    "厂家",
+    "producer",
+)
+
 
 def _norm_col(name: str) -> str:
     return str(name or "").strip().lower().replace(" ", "").replace("　", "")
+
+
+def is_force_keep_display_column(col_name: str) -> bool:
+    """年份/日期/量纲/名称等强制保留，不因短码启发式隐藏。"""
+    low = _norm_col(col_name)
+    if not low:
+        return False
+    return any(m in low for m in _FORCE_KEEP_MARKERS)
+
+
+def is_code_dimension_column_name(col_name: str) -> bool:
+    """列名是否像状态/等级/类型等码维。"""
+    low = _norm_col(col_name)
+    if not low:
+        return False
+    if is_force_keep_display_column(col_name):
+        return False
+    # 「类型名称」带名称 → 强制保留已覆盖；裸「类型」才作码维
+    if low in {"type", "kind", "mode", "category", "等级", "状态", "级别", "标志"}:
+        return True
+    if any(low.endswith(suf) for suf in _CODE_DIM_SUFFIXES):
+        return True
+    if any(m in low for m in _CODE_DIM_MARKERS):
+        # 避免「状态说明」「等级名称」等描述类（含名称/说明已 force keep）
+        return True
+    if "类型" in low and "名称" not in low:
+        return True
+    if low.startswith("is_") or low.startswith("has_"):
+        return True
+    return False
 
 
 def is_technical_id_column_name(col_name: str) -> bool:
@@ -64,7 +180,6 @@ def is_technical_id_column_name(col_name: str) -> bool:
     for pat in _HIDE_NAME_PATTERNS:
         if pat.match(low):
             return True
-    # 中文表头：检修计划ID / 记录ID / 主键 …
     if low.endswith("计划id") or low.endswith("记录id") or low.endswith("主键"):
         return True
     if "主键" in low or "唯一标识" in low:
@@ -85,24 +200,68 @@ def _looks_like_uuid_or_hex_id(val: Any) -> bool:
 
 def is_uuid_like_display_column(col_name: str, values: list[Any]) -> bool:
     """样本值几乎全是 UUID/32hex 时，也视为技术标识列。"""
-    samples = [v for v in values if v is not None and str(v).strip()]
+    samples = [v for v in values if v is not None and str(v).strip() != ""]
     if len(samples) < 2:
         return False
     hits = sum(1 for v in samples if _looks_like_uuid_or_hex_id(v))
     return hits / len(samples) >= 0.8
 
 
+def _looks_like_short_code(val: Any) -> bool:
+    if val is None:
+        return False
+    if isinstance(val, bool):
+        return True
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        # 整数/浮点整值视为数字码；保留超大年份已由列名白名单兜底
+        try:
+            if float(val) == int(val):
+                return True
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return False
+    s = str(val).strip()
+    if not s:
+        return False
+    return bool(_SHORT_CODE_RE.match(s))
+
+
+def is_opaque_short_code_column(col_name: str, values: list[Any]) -> bool:
+    """
+    码维列名 + 样本几乎全是短码（数字或单/双字符字母数字）→ 对用户无信息量，隐藏。
+    """
+    if not is_code_dimension_column_name(col_name):
+        return False
+    if is_force_keep_display_column(col_name):
+        return False
+    samples = [v for v in values if v is not None and str(v).strip() != ""]
+    if len(samples) < 2:
+        return False
+    hits = sum(1 for v in samples if _looks_like_short_code(v))
+    return hits / len(samples) >= 0.8
+
+
 def should_hide_chatbot_nl2sql_column(col_name: str, sample_values: list[Any] | None = None) -> bool:
+    if is_force_keep_display_column(col_name):
+        # 仍允许藏技术 id：年份列不会匹配 id 规则；若误配 uuid 则强制保留优先
+        if is_technical_id_column_name(col_name):
+            return True
+        return False
     if is_technical_id_column_name(col_name):
         return True
-    if sample_values and is_uuid_like_display_column(col_name, sample_values):
+    samples = list(sample_values or [])
+    if samples and is_uuid_like_display_column(col_name, samples):
+        return True
+    if samples and is_opaque_short_code_column(col_name, samples):
         return True
     return False
 
 
 def filter_chatbot_nl2sql_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    过滤智能客服 NL2SQL 结果中的技术 ID 列（不改 SQL，只改展示）。
+    过滤智能客服 NL2SQL 展示列（不改 SQL）：
+    1) 技术 ID / UUID；
+    2) 状态/等级等码维列且取值几乎全是无信息量短码。
     若过滤后无剩余列，则回退为原行，避免空表。
     """
     if not rows:
