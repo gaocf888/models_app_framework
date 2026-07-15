@@ -46,6 +46,10 @@ class NL2SQLQueryRequest(BaseModel):
         default=None,
         description="可选：用户原始问句，confirmed_scope 模式下时间解析兜底来源。",
     )
+    sql_gen_extra_hint: str | None = Field(
+        default=None,
+        description="可选：追加到 NL2SQL 生成 prompt 的场景说明（如智能客服 SELECT 可读性约束）。",
+    )
 
     @field_validator("user_id")
     @classmethod

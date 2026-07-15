@@ -40,6 +40,7 @@ from .chatbot_similar_cases import (
     retrieve_similar_case_snippets,
     run_fault_case_gate_decision,
 )
+from app.llm.context_budget import ensure_chatbot_stream_max_tokens
 from .chatbot_llm_messages import assemble_chatbot_llm_messages, trim_history_and_build_chatbot_messages
 from app.services.nl2sql_service import NL2SQLService
 from app.services.chatbot_image_utils import build_user_message_with_images
@@ -331,7 +332,20 @@ class ChatbotLangGraphRunner:
                 cite_parser = CitationStreamParser(
                     max_ref_index=max_citation_ref_index(list(state.get("rag_citations") or []))
                 )
-            stream_kw: Dict[str, Any] = {"max_tokens": int(state.get("llm_max_tokens") or self._main_llm_max_tokens)}
+            requested_max = int(state.get("llm_max_tokens") or self._main_llm_max_tokens)
+            safe_max = ensure_chatbot_stream_max_tokens(
+                list(llm_messages),
+                requested_max_tokens=requested_max,
+                context_total_tokens=self._llm_context_total_tokens,
+                slack_tokens=self._llm_completion_slack_tokens,
+            )
+            if safe_max < requested_max:
+                logger.info(
+                    "chatbot.stream_max_tokens adjusted requested=%s safe=%s",
+                    requested_max,
+                    safe_max,
+                )
+            stream_kw: Dict[str, Any] = {"max_tokens": safe_max}
             if self._main_llm_temperature is not None:
                 stream_kw["temperature"] = float(self._main_llm_temperature)
             try:
@@ -961,13 +975,6 @@ class ChatbotLangGraphRunner:
             soft_direct=faq_decision.active,
             snippet_top_n=self._faq_soft_direct_snippet_top_n,
         )
-        rag_block = ""
-        if snippets_for_llm:
-            rag_block = format_rag_snippets_for_generation(
-                snippets_for_llm,
-                soft_direct=faq_decision.active,
-                base_formatter=format_rag_snippets_system_block,
-            )
         # 软直通：不注入 history_messages；否则保持原有多轮上下文
         history_for_llm: List[Dict[str, Any]] = (
             [] if faq_decision.active else list(state.get("history_messages") or [])
@@ -977,7 +984,7 @@ class ChatbotLangGraphRunner:
         anaphora_type = str(state.get("anaphora_type") or "none")
         slot_bullets = state.get("anaphora_slot_bullets") or []
 
-        def build_from_history(hist: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        def build_messages(hist: List[Dict[str, Any]], snippets: List[str]) -> List[Dict[str, Any]]:
             chunks = list(system_chunks)
             if self._anaphora_anchor_enabled and not faq_decision.active:
                 anchor = build_dialogue_anchor_block(
@@ -990,8 +997,14 @@ class ChatbotLangGraphRunner:
                 )
                 if anchor:
                     chunks.append(anchor)
-            if rag_block:
-                chunks.append(rag_block)
+            if snippets:
+                chunks.append(
+                    format_rag_snippets_for_generation(
+                        snippets,
+                        soft_direct=faq_decision.active,
+                        base_formatter=format_rag_snippets_system_block,
+                    )
+                )
             return assemble_chatbot_llm_messages(
                 system_chunks=chunks,
                 history=hist,
@@ -999,9 +1012,11 @@ class ChatbotLangGraphRunner:
                 image_urls=image_urls,
             )
 
+        # 先裁历史，再裁排序靠后的 RAG 片段；预算用中文安全 token 上界
         build_result = trim_history_and_build_chatbot_messages(
             history_for_llm,
-            build_from_history=build_from_history,
+            build_messages=build_messages,
+            rag_snippets=list(snippets_for_llm),
             context_total_tokens=self._llm_context_total_tokens,
             requested_max_tokens=self._main_llm_max_tokens,
             slack_tokens=self._llm_completion_slack_tokens,

@@ -208,6 +208,8 @@ class NL2SQLChain:
         confirmed_scope: dict | None = None,
         scope_intent_text: str | None = None,
         original_query: str | None = None,
+        *,
+        sql_gen_extra_hint: str | None = None,
     ) -> tuple[str, NL2SQLValidationContext]:
         if confirmed_scope:
             time_src = (
@@ -567,6 +569,10 @@ class NL2SQLChain:
         )
         if inject_parsed_intent_enabled():
             prompt = f"{prompt}\n\n{format_parsed_intent_prompt_block(question_intent)}"
+        extra_hint = (sql_gen_extra_hint or "").strip()
+        if extra_hint:
+            prompt = f"{prompt}\n\n{extra_hint}"
+            logger.info("NL2SQLChain sql_gen_extra_hint injected hint_len=%d", len(extra_hint))
         logger.info(
             "NL2SQLChain prompt built version=%s catalog_in_template=%s catalog_source=%s "
             "replacement_chars=%d prompt_catalog_chars=%s prompt_total_chars=%d",

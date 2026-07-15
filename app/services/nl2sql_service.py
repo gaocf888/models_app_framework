@@ -69,6 +69,7 @@ class NL2SQLService:
             confirmed_scope=req.confirmed_scope,
             scope_intent_text=req.scope_intent_text,
             original_query=req.original_query,
+            sql_gen_extra_hint=req.sql_gen_extra_hint,
         )
         rows: list = []
         execute_succeeded = False

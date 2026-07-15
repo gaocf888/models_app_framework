@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from typing import Any, List
 
 from app.core.logging import get_logger
+from app.llm.graphs.chatbot_nl2sql_display import (
+    CHATBOT_NL2SQL_SELECT_DISPLAY_RULES,
+    filter_chatbot_nl2sql_display_rows,
+)
 from app.models.nl2sql import NL2SQLQueryRequest
 from app.nl2sql.errors import NL2SQLExecutionError
 from app.services.nl2sql_service import NL2SQLService
@@ -70,7 +74,12 @@ async def run_chatbot_nl2sql_query(
     question: str,
 ) -> ChatbotNL2SQLOutcome:
     """智能客服 NL2SQL 统一入口：成功则整理结果，失败则友好文案且不向上抛异常。"""
-    req = NL2SQLQueryRequest(user_id=user_id, session_id=session_id, question=question)
+    req = NL2SQLQueryRequest(
+        user_id=user_id,
+        session_id=session_id,
+        question=question,
+        sql_gen_extra_hint=CHATBOT_NL2SQL_SELECT_DISPLAY_RULES,
+    )
     try:
         resp = await nl2sql.query(req, record_conversation=False)
         text = await summarize_nl2sql_with_llm(
@@ -202,7 +211,10 @@ async def summarize_nl2sql_with_llm(
             "若预期应有数据，请检查筛选条件或确认业务库是否已同步。"
         )
 
-    out = _rows_to_markdown_table(slice_rows, total_row_count=len(rows))
+    display_rows = filter_chatbot_nl2sql_display_rows(
+        [_row_to_mapping(r) for r in slice_rows]
+    )
+    out = _rows_to_markdown_table(display_rows, total_row_count=len(rows))
     logger.info(
         "智能客服 NL2SQL：已向用户返回 Markdown 表格（总行数=%s，本表展示行数=%s）。用户问题摘要=%s",
         len(rows),
