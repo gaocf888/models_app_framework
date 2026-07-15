@@ -220,6 +220,7 @@ class NL2SQLChain:
         *,
         skip_sql_cache: bool = False,
         nl2sql_retry_hint: str | None = None,
+        sql_gen_extra_hint: str | None = None,
     ) -> tuple[str, NL2SQLValidationContext]:
         if confirmed_scope:
             time_src = (
@@ -591,6 +592,10 @@ class NL2SQLChain:
                 len(retry_hint),
                 skip_sql_cache,
             )
+        extra_hint = (sql_gen_extra_hint or "").strip()
+        if extra_hint:
+            prompt = f"{prompt}\n\n{extra_hint}"
+            logger.info("NL2SQLChain sql_gen_extra_hint injected hint_len=%d", len(extra_hint))
         logger.info(
             "NL2SQLChain prompt built version=%s catalog_in_template=%s catalog_source=%s "
             "replacement_chars=%d prompt_catalog_chars=%s prompt_total_chars=%d",

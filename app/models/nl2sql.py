@@ -54,6 +54,10 @@ class NL2SQLQueryRequest(BaseModel):
         default=None,
         description="可选：注入 NL2SQL 生成 prompt 的失败修正提示（客服 HITL 重试）。",
     )
+    sql_gen_extra_hint: str | None = Field(
+        default=None,
+        description="可选：追加到 NL2SQL 生成 prompt 的场景说明（如智能客服 SELECT 可读性约束）。",
+    )
 
     @field_validator("user_id")
     @classmethod

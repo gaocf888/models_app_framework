@@ -71,6 +71,7 @@ class NL2SQLService:
             original_query=req.original_query,
             skip_sql_cache=bool(req.skip_sql_cache),
             nl2sql_retry_hint=req.nl2sql_retry_hint,
+            sql_gen_extra_hint=req.sql_gen_extra_hint,
         )
         rows: list = []
         execute_succeeded = False
