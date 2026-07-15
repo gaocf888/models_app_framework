@@ -11,25 +11,26 @@
 
 - 编排与执行分离：LangGraph 负责状态流转，LLM/RAG/会话仍用现有服务。
 - 兼容优先：请求/响应协议尽量不变，支持灰度发布与一键回退。
-- 结构先行：先完整建图（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；意图后端支持 **`rules | llm | bert`**（默认 `rules`，`llm` 为模式 B 窄触发，见 `docs/智能客服意图识别轻量LLM接入说明.md`）。结束 `meta` 含 **`suggested_questions`**（`kb_qa`/`clarify` 路径；**`data_query` 流式不下发**，见 §4.3）、**`rag_citations`**（RAG 路径结构化引用，见 §4.5）等；关联问题生成规则为规则预设表 + 复用本轮 `context_snippets` 首行种子 + 可选 LLM JSON 补全，**不为关联问题单独做二次向量检索**。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**高分 FAQ 软直通**见 **§4.4**。**本厂专属知识库 RAG 范围（`rag_scope_resolve`）**见 **第 16 节**。**上下文指代消解（P0～P3）**见 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。
+- 结构先行：先完整建图（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；意图后端支持 **`rules | llm | bert`**（默认 `rules`，`llm` 为模式 B 窄触发，见 `docs/智能客服意图识别轻量LLM接入说明.md`）。结束 `meta` 含 **`suggested_questions`**（`kb_qa`/`clarify` 路径；**`data_query` 流式不下发**，见 §4.3）、**`rag_citations`**（RAG 路径结构化引用，见 §4.5）等；关联问题生成规则为规则预设表 + 复用本轮 `context_snippets` 首行种子 + 可选 LLM JSON 补全，**不为关联问题单独做二次向量检索**。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**高分 FAQ 软直通**见 **§4.4**。**本厂专属知识库 RAG 范围（`rag_scope_resolve`）**见 **第 16 节**。**上下文指代消解（P0～P3）**见 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。**意图确认 / NL2SQL 生成失败人机协同（HITL）**见 **第 17 节** 与 `framework-guide/智能客服整体实现技术说明.md` **§12**。
 - 可观测优先：接入 LangSmith，节点级记录耗时、路由、重试与失败原因。
 
 ## 3. 总体架构
 
-客户端 → `POST /chatbot/chat/stream`（或兼容 deprecated `POST /chatbot/chat`）→ `ChatbotService` → `ChatbotLangGraphRunner` → LangGraph（或 Legacy 顺序链路）→ SSE / JSON 返回；多模态图片可先经 **`POST /chatbot/upload`** 上传 MinIO 取得预签名 URL；可通过 `POST /chatbot/chat/stop` + `stream_id` 显式中断（`terminate_reason=user_cancelled`）。
+客户端 → `POST /chatbot/chat/stream`（或兼容 deprecated `POST /chatbot/chat`）→ `ChatbotService` → `ChatbotLangGraphRunner` → LangGraph（或 Legacy 顺序链路）→ SSE / JSON 返回；若开启 HITL，中断后由 `POST /chatbot/chat/resume-stream` 续跑（见 **第 17 节**）；多模态图片可先经 **`POST /chatbot/upload`** 上传 MinIO 取得预签名 URL；可通过 `POST /chatbot/chat/stop` + `stream_id` 显式中断（`terminate_reason=user_cancelled`）。
 
 组件职责：
 
-- `app/api/chatbot.py`：HTTP、SSE 帧封装、`/upload` 图片上传。
-- `ChatbotService`（`chatbot_service.py`）：图开关、异常回退 Legacy、会话与 Runner 共用 `ConversationManager`。
+- `app/api/chatbot.py`：HTTP、SSE 帧封装、`/upload` 图片上传、**`/chat/resume-stream` HITL 续跑**。
+- `ChatbotService`（`chatbot_service.py`）：图开关、异常回退 Legacy、HITL 续跑入口、会话与 Runner 共用 `ConversationManager`。
 - `ChatbotImagePreprocessor`（`chatbot_image_preprocessor.py`）：在 `ChatbotService` 入口前对 `image_urls` 做缩放/压缩并存储；默认 **`CHATBOT_IMAGE_STORAGE_BACKEND=minio`**（预签名 URL），可选本地目录 + `StaticFiles`（前缀默认 `/chatbot/media`），降低多模态上下文与传输开销。
 - `ChatbotOutlineStore`（`chatbot_outline.py`）：回答后异步提取“第N点”结构化索引，写 Redis 热层（可选 EasySearch 冷层）；在新一轮对“上文第N点”请求做旁路引用增强，不改变主链路。
 - **上下文指代消解（P0～P3）**：规则判型 + 检索 query 与历史融合（P0，默认开）、可选对话锚块（P1，默认关）、会话槽位（P2，默认关）、灰区 Coref 小模型 + 短时缓存（P3，默认关）；清单与开关见 **`configs/chatbot_anaphora.yaml`**，设计见 **`docs/智能客服上下文理指代实现优化方案-20260514.md`**，编排落点见 **第 15 节**。
   - 槽位（P2）：上一轮 assistant **落库后**同步抽取要点数组，写入 Redis（按 `user_id + session_id`）
   - 对话锚（P1）：**本轮**组装 system 时按需注入，优先消费槽位要点
   - Coref 缓存（P3）：灰区 LLM 分类结果短时缓存，落库后按会话失效
-- `ChatbotLangGraphRunner`（`chatbot_graph_runner.py`）：`StateGraph` 编译与执行、**图后**流式生成、相似案例追加、**关联问题** `_fill_suggested_questions`、落库。
-- LangGraph：状态机（模板、历史、意图、故障门控、**按意图分支**、RAG/C-RAG 或 NL2SQL、`finalize`）。
+- `ChatbotLangGraphRunner`（`chatbot_graph_runner.py`）：`StateGraph` 编译与执行、**HITL 顺序执行路径**、**图后**流式生成、相似案例追加、**关联问题** `_fill_suggested_questions`、落库。
+- LangGraph：状态机（模板、历史、意图、故障门控、**按意图分支**、RAG/C-RAG 或 NL2SQL、`finalize`）；HITL 开启时 Runner 侧可顺序打断。
+- `chatbot_hitl.py` / `chatbot_hitl_display.py` / `chatbot_hitl_session_store.py`：意图确认与 NL2SQL 失败 HITL（见 **第 17 节**）。
 - `HybridRAGService` / `AgenticRAGService`：主链路检索；相似案例为 Runner 层**二次** `retrieve(namespace=…)`。
 - `NL2SQLService`（`nl2sql_service.py`）：`data_query` 分支生成 SQL 与执行；客服内嵌调用时 `record_conversation=False`。NL2SQL 与 RAG 同为基座基础能力；直连 HTTP 见 `POST /nl2sql/query`；**综合分析 V2** 在 **`POST /analysis/run-with-nl2sql`**（及流式 **`run-with-nl2sql-stream`**）与 **`POST /analysis/run-img-diag`**（及流式 **`run-img-diag-stream`**）（NL2SQL 并行臂 **`acquire_data`** → **`_execute_data_plan`**，**默认同 dependency 层并行多次 `query`**）阶段亦多次复用同一服务（`record_conversation=False`）。接入形态总览见 **`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`**。
 - `chatbot_intent.py` / `chatbot_intent_rules.py` / `chatbot_intent_llm.py` / `chatbot_intent_bert.py`：意图统一入口与三后端（`rules | llm | bert`）；生产路径须 `classify_chatbot_intent_async`。
@@ -551,6 +552,7 @@ flowchart TB
 10. **FAQ 软直通**：高分 FAQ 命中时跳过 history；低分/指代续问时不触发（§4.4）。
 11. **RAG 引用**：`citation_ref` 与 `finished.meta.rag_citations` 的 `ref_index` 对齐；`data_query` 无引用（§4.5）。
 12. **`CHATBOT_INTENT_BACKEND=llm`**：窄触发与 rules 回退（可选）。
+13. **HITL（可选）**：意图确认三按钮续跑；NL2SQL 生成失败重试 / 改 RAG；`resume_token` 单次失效（第 17 节）。
 
 通过标准：
 
@@ -752,3 +754,71 @@ flowchart LR
 | 单测 | `tests/test_chatbot_rag_scope.py` |
 
 入库时向量 chunk 的 **`namespace` 字段须与 `CHATBOT_PLANT_KB_NAMESPACE` 完全一致**（大小写敏感）。
+
+---
+
+## 17. 人机协同 HITL（意图确认 + NL2SQL 生成失败）
+
+### 17.1 目标与边界
+
+| 项 | 说明 |
+|----|------|
+| **目标** | 意图在「查数 vs 知识问答」边界不清时，由用户确认路由；内嵌 NL2SQL **SQL 生成失败**时，提供「重试查数 / 改走知识库」降级 |
+| **API** | 中断：`POST /chatbot/chat/stream` SSE `chatbot_hitl_required`；续跑：`POST /chatbot/chat/resume-stream` |
+| **总开关** | `CHATBOT_HITL_ENABLED`（默认 `false`）；子开关 `CHATBOT_INTENT_HITL_*`、`CHATBOT_NL2SQL_HITL_*` |
+| **执行方式** | HITL 开启或续跑时走 Runner **顺序执行**（`_run_graph_sequential` / `_run_graph_resume`），可 `pending_hitl` 中断 |
+| **非本范围** | 看图诊断 scope HITL、综合分析章节 HITL；Legacy 非 HITL 对齐路径 |
+
+逐步实现与前端对接见 `framework-guide/智能客服整体实现技术说明.md` **§12**；OpenAPI 说明见 `app/api/chatbot.py`。
+
+### 17.2 策略摘要
+
+**意图路由确认（`intent_route_confirm`）**
+
+- 时机：意图分类后、分支路由前。
+- 窄触发：低置信、混合/歧义 reason、查数与概念词互相交叉等（`should_trigger_intent_hitl`）；高置信启发式、已确认路由、澄清、带图等跳过。
+- 按钮：`route_data_query` / `route_kb_qa` / `route_clarify`。
+
+**NL2SQL 生成失败（`nl2sql_gen_failed`）**
+
+- 时机：`nl2sql_answer` 判定 `gen_failed`，且重试次数未超 `CHATBOT_NL2SQL_HITL_MAX_RETRIES`。
+- 按钮：`nl2sql_retry`（跳过 SQL 缓存 + 注入失败原因 hint）/ `fallback_kb_qa`（改 RAG）。
+- 超限后返回固定失败话术，不再中断。
+
+### 17.3 流程图
+
+```mermaid
+flowchart LR
+    Stream["/chat/stream"] --> Intent["intent_classify"]
+    Intent --> IH{"intent HITL?"}
+    IH -->|yes| Pause1["chatbot_hitl_required"]
+    IH -->|no| Route["route by intent"]
+    Pause1 --> Resume["/chat/resume-stream"]
+    Resume --> Route
+    Route -->|data_query| SQL["nl2sql_answer"]
+    Route -->|kb_qa| RAG["RAG path"]
+    Route -->|clarify| CL["clarify"]
+    SQL --> NH{"gen_failed HITL?"}
+    NH -->|yes| Pause2["chatbot_hitl_required"]
+    NH -->|no| Done["answer / fail text"]
+    Pause2 --> Resume2["/chat/resume-stream"]
+    Resume2 -->|retry| SQL
+    Resume2 -->|fallback| RAG
+```
+
+### 17.4 状态与代码落点
+
+| 字段 / 模块 | 含义 |
+|-------------|------|
+| `pending_hitl` / `hitl_kind` / `hitl_original_query` | 中断态与场景 |
+| `confirmed_route` / `hitl_resume_action` | 用户确认后的路由与 action |
+| `nl2sql_retry_count` / `nl2sql_skip_cache` / `nl2sql_retry_hint` | 生成失败重试参数 |
+| `resume_token` | 写入 HITL 会话存储，TTL 由 `CHATBOT_HITL_RESUME_TTL_SEC` 控制 |
+| `chatbot_hitl.py` | 触发判定、`apply_chatbot_hitl_action` |
+| `chatbot_hitl_display.py` | prompt、`ui_buttons` |
+| `chatbot_hitl_session_store.py` | memory/redis 快照 |
+| `ChatbotHitlResumeRequest` | `app/models/chatbot.py` |
+
+### 17.5 配置速查
+
+见 `app/app-deploy/.env.example` 中「人机协同 HITL」段：`CHATBOT_HITL_ENABLED`、`CHATBOT_INTENT_HITL_*`、`CHATBOT_NL2SQL_HITL_*`、`CHATBOT_HITL_SESSION_*`。
