@@ -14,7 +14,7 @@ from typing import NamedTuple
 from app.inspection_v2.docx_v2_table_parse import (
     ROW_RE,
     _DOWN_LABELS,
-    _IDX_HEADER_LABELS,
+    _is_idx_header_text,
     _UP_LABELS,
 )
 
@@ -61,7 +61,7 @@ def _row_has_index_thk_header(body: str) -> bool:
     for part in body.split(" | "):
         part = part.strip()
         cm = re.search(r"='([^']*)'", part)
-        if cm and (cm.group(1) or "").strip() in _IDX_HEADER_LABELS:
+        if cm and _is_idx_header_text((cm.group(1) or "").strip()):
             return True
     return False
 

@@ -53,6 +53,25 @@ def _resolve_combo_row_tube(row: str, tube: str) -> tuple[str, str, bool]:
     return row, tube, False
 
 
+def _looks_like_already_split_combo(row: str, tube: str) -> bool:
+    """
+    LLM 已将组合编号拆成两字段（如 行号=4、管号=2）。
+
+    仅用于过热器/省煤器系「管号→1」豁免：
+    - 管号段为 ±1/0 不触发（避免与水冷壁「管号=1」冲突，且省煤器已归一管号=1 为 no-op）
+    - 行号仍为 0/1 不触发（保留「编号误写入管号、行号默认 1」时的迁移校正）
+    """
+    if not _is_pure_int(row) or not _is_pure_int(tube):
+        return False
+    ri = int(row)
+    ti = int(tube)
+    if ri in (0, 1):
+        return False
+    if abs(ti) <= 1:
+        return False
+    return True
+
+
 def is_combo_index_protected(item: dict[str, Any]) -> bool:
     """record 已由 chunk 组合编号守卫标记，跳过设备语义与管号符号校正。"""
     if item.get(COMBO_INDEX_FROM_CHUNK):
@@ -115,6 +134,10 @@ def normalize_device_row_tube_by_location(
             warns.append("deterministic_row_fix:水冷壁系行号→1")
 
     if _loc_has(loc, _REHEATER_TUBE1_MARKERS):
+        # 方案 B：已拆分组合（行号=4,管号=2）跳过管号→1，避免误伤
+        if _looks_like_already_split_combo(row, tube):
+            warns.append("deterministic_combo_index:已拆分组合编号跳过过热器系管号校正")
+            return loc, row, tube, warns
         digits = _digits_only(row)
         if digits and row != digits:
             row = digits

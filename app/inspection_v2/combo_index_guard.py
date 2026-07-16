@@ -100,6 +100,11 @@ def _pick_combo_cell(cells: list[ComboIndexCell], rec: dict[str, Any]) -> ComboI
     narrowed = [c for c in cells if _cell_matches_record_parts(c, rec)]
     if len(narrowed) == 1:
         return narrowed[0]
+    # 多候选但行段+管段一致（同编号重复出现）时取首个，仍打保护标记
+    if narrowed:
+        keys = {(c.row_part, c.tube_part) for c in narrowed}
+        if len(keys) == 1:
+            return narrowed[0]
     return None
 
 

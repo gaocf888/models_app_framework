@@ -104,3 +104,84 @@ def test_without_chunk_flag_wall_rules_still_apply() -> None:
     )
     assert out["行号"] == "1"
     assert out["管号"] == "2"
+
+
+CHUNK_ECONOMIZER_COMBO = """
+[DOCX_V2_TABLE idx=1 rows=4 cols=4]
+r0: c0='管子编号' | c1='壁厚 mm' | c2='管子编号' | c3='壁厚 mm'
+r1: c0='4-2' | c1='6.69' | c2='127-2' | c3='6.98'
+r2: c0='17-2' | c1='7.11' | c2='130-2' | c3='6.69'
+"""
+
+
+def test_economizer_管子编号_builds_combo_cells() -> None:
+    lines = [ln for ln in CHUNK_ECONOMIZER_COMBO.strip().splitlines() if ln.strip()]
+    cells = parse_table_rows(lines)
+    combo = build_combo_cells(lines, cells)
+    assert len(combo) >= 4
+    c42 = next(c for c in combo if c.raw == "4-2")
+    assert c42.row_part == "4"
+    assert c42.tube_part == "2"
+    assert c42.thickness == 6.69
+
+
+def test_economizer_combo_guard_protects_split_tube() -> None:
+    """省煤器 + 已拆分组合：guard 打标后设备规则不得把管号改成 1。"""
+    records = [
+        {
+            "检测位置": "省煤器上部区域吹灰器01/02通道下方",
+            "行号": "4",
+            "管号": "2",
+            "壁厚": 6.69,
+            "检测类型": "测厚",
+        }
+    ]
+    guarded = apply_docx_v2_combo_index_guard(records, CHUNK_ECONOMIZER_COMBO)
+    assert guarded[0][COMBO_INDEX_FROM_CHUNK] is True
+    assert guarded[0]["行号"] == "4"
+    assert guarded[0]["管号"] == "2"
+    norm = apply_deterministic_rules_to_record(guarded[0])
+    assert norm["行号"] == "4"
+    assert norm["管号"] == "2"
+    assert not any("tube_fix" in str(w) for w in norm.get("warnings") or [])
+
+
+def test_economizer_split_combo_skips_tube_fix_without_guard() -> None:
+    """方案 B：无 guard 标记时，已拆分组合（管号≠±1）仍跳过省煤器管号→1。"""
+    out = apply_deterministic_rules_to_record(
+        {
+            "检测位置": "省煤器上部区域吹灰器01/02通道下方",
+            "行号": "4",
+            "管号": "2",
+            "壁厚": 6.69,
+        }
+    )
+    assert out["行号"] == "4"
+    assert out["管号"] == "2"
+    assert any("已拆分组合" in str(w) for w in out.get("warnings") or [])
+    assert not any("tube_fix" in str(w) for w in out.get("warnings") or [])
+
+
+def test_economizer_non_combo_still_forces_tube_one() -> None:
+    """省煤器非组合：管号已是 1 保持；编号误写在管号且行号=1 时仍迁移。"""
+    out2 = apply_deterministic_rules_to_record(
+        {
+            "检测位置": "省煤器上部",
+            "行号": "10",
+            "管号": "1",
+            "壁厚": 6.5,
+        }
+    )
+    assert out2["行号"] == "10"
+    assert out2["管号"] == "1"
+    # LLM 把编号只放在管号、行号为 1：仍应迁到行号并管号→1
+    out3 = apply_deterministic_rules_to_record(
+        {
+            "检测位置": "省煤器上部",
+            "行号": "1",
+            "管号": "17",
+            "壁厚": 6.5,
+        }
+    )
+    assert out3["行号"] == "17"
+    assert out3["管号"] == "1"

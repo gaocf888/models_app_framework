@@ -22,7 +22,7 @@ CELL_RE = re.compile(
 
 _UP_LABELS = frozenset({"上", "向上", "上数", "上部", "上排", "上行", "上测"})
 _DOWN_LABELS = frozenset({"下", "向下", "下数", "下部", "下排", "下行", "下测"})
-_IDX_HEADER_LABELS = frozenset({"编号", "根数", "序号"})
+_IDX_HEADER_LABELS = frozenset({"编号", "根数", "序号", "管子编号", "管号", "管编号"})
 _THK_HEADER_LABELS = frozenset({"测量值", "测厚", "厚度", "壁厚"})
 # sign_guard 置信度来源（与 tube_direction_sign_guard 对齐）
 DIRECTION_SOURCE_EXPLICIT = "explicit_nearest"
@@ -30,6 +30,7 @@ DIRECTION_SOURCE_DEFAULT_DOWN = "default_down"
 DIRECTION_SOURCE_LOCATION_SKIP = "location_only_skip"
 DIRECTION_SOURCE_FALLBACK_4COL = "fallback_4col"
 DIRECTION_SOURCE_NONE = "none"
+# 注意：勿单独用 "mm"/"测厚" 作位置判定——「壁厚 mm」等测厚表头会误命中
 _LOCATION_SCOPE_MARKERS = (
     "水冷壁",
     "包墙",
@@ -41,8 +42,6 @@ _LOCATION_SCOPE_MARKERS = (
     "层",
     "段",
     "φ",
-    "mm",
-    "测厚",
     "蠕胀",
     "水平",
     "垂直",
@@ -163,9 +162,37 @@ def _is_exact_direction_label(label: str) -> bool:
     return t in _UP_LABELS or t in _DOWN_LABELS
 
 
+def _is_idx_header_text(text: str) -> bool:
+    """编号列表头：精确集合，或短文本含「编号」且非测厚语义。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if t in _IDX_HEADER_LABELS:
+        return True
+    if len(t) <= 8 and "编号" in t and not _is_thk_header_text(t):
+        return True
+    return False
+
+
+def _is_thk_header_text(text: str) -> bool:
+    """测厚列表头：精确集合，或「壁厚/测厚/测量值/厚度」开头（含「壁厚 mm」）。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if t in _THK_HEADER_LABELS:
+        return True
+    for prefix in ("壁厚", "测厚", "测量值", "厚度"):
+        if t.startswith(prefix):
+            return True
+    return False
+
+
 def _is_location_scope_label(label: str) -> bool:
     t = (label or "").strip()
     if not t or _is_exact_direction_label(t):
+        return False
+    # 编号/测厚表头不算检测位置（避免「壁厚 mm」因含 mm 误判）
+    if _is_idx_header_text(t) or _is_thk_header_text(t):
         return False
     if len(t) >= 8:
         return True
@@ -236,7 +263,7 @@ def _find_number_header_row(
     for ri in range(start, min(band_end, start + 6) + 1):
         for ci in range(0, 32):
             text = (cells.get((ri, ci)) or {}).get("text", "").strip()
-            if text in _IDX_HEADER_LABELS:
+            if _is_idx_header_text(text):
                 return ri
     return None
 
@@ -253,7 +280,7 @@ def _idx_thk_pairs_in_span(
     while ci + 1 <= col_hi:
         t0 = (cells.get((header_ri, ci)) or {}).get("text", "").strip()
         t1 = (cells.get((header_ri, ci + 1)) or {}).get("text", "").strip()
-        if t0 in _IDX_HEADER_LABELS and (t1 in _THK_HEADER_LABELS or ci + 1 <= col_hi):
+        if _is_idx_header_text(t0) and (_is_thk_header_text(t1) or ci + 1 <= col_hi):
             pairs.append((ci, ci + 1))
             ci += 2
         else:
