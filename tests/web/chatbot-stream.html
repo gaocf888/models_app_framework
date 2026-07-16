@@ -441,11 +441,15 @@
     applyKatexToAnswer();
   }
 
-  function resetAnswerState() {
+  function resetAnswerContent() {
     answerSegments = [];
     lastRagCitations = [];
     pendingKatexText = "";
     $("answer").innerHTML = "";
+  }
+
+  function resetAnswerState() {
+    resetAnswerContent();
     clearHitlPanel();
   }
 
@@ -495,6 +499,8 @@
     hitlBusy = true;
     $("hitlButtons").querySelectorAll("button").forEach((b) => (b.disabled = true));
     appendStatus("HITL 续跑中… action=" + action);
+    // 续跑回答从空白开始，不要把新 delta 追加在先前 HITL 话术后面
+    resetAnswerContent();
     abortCtrl = new AbortController();
     setBusy(true);
     const url = baseUrl() + "/chatbot/chat/resume-stream";
