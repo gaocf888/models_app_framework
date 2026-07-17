@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, List
 from uuid import UUID
+import inspect
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -108,6 +110,51 @@ def format_nl2sql_user_error(exc: NL2SQLExecutionError | None = None) -> str:
 
 
 @dataclass
+class Nl2sqlAnalysisStreamPlan:
+    """查数成功且需 LLM 收紧分析时，供 SSE 流式生成；失败则回退 table_fallback。"""
+
+    system: str
+    user_content: str
+    table_fallback: str
+    display_rows: list[dict[str, Any]] = field(default_factory=list)
+    total_row_count: int = 0
+    sql: str = ""
+    user_query: str = ""
+
+    def to_state_dict(self) -> dict[str, Any]:
+        return {
+            "system": self.system,
+            "user_content": self.user_content,
+            "table_fallback": self.table_fallback,
+            "display_rows": json_safe_rows(list(self.display_rows)),
+            "total_row_count": int(self.total_row_count),
+            "sql": self.sql or "",
+            "user_query": self.user_query or "",
+        }
+
+    @classmethod
+    def from_state_dict(cls, raw: dict[str, Any] | None) -> Nl2sqlAnalysisStreamPlan | None:
+        if not isinstance(raw, dict):
+            return None
+        system = str(raw.get("system") or "").strip()
+        user_content = str(raw.get("user_content") or "").strip()
+        table_fallback = str(raw.get("table_fallback") or "").strip()
+        if not system or not user_content or not table_fallback:
+            return None
+        rows_raw = raw.get("display_rows")
+        display_rows = [r for r in rows_raw if isinstance(r, dict)] if isinstance(rows_raw, list) else []
+        return cls(
+            system=system,
+            user_content=user_content,
+            table_fallback=table_fallback,
+            display_rows=display_rows,
+            total_row_count=int(raw.get("total_row_count") or len(display_rows)),
+            sql=str(raw.get("sql") or ""),
+            user_query=str(raw.get("user_query") or ""),
+        )
+
+
+@dataclass
 class ChatbotNL2SQLOutcome:
     answer_text: str
     nl2sql_sql: str | None = None
@@ -118,12 +165,15 @@ class ChatbotNL2SQLOutcome:
     terminate_reason: str | None = None
     # Phase 3：旁路结构化（列/行样本等），供 finished.meta.nl2sql_analysis
     nl2sql_analysis: dict[str, Any] | None = None
+    # 非空时：SQL 已成功，分析待 SSE 流式输出（answer_text 通常为空）
+    analysis_stream_plan: Nl2sqlAnalysisStreamPlan | None = None
 
 
 @dataclass
 class Nl2sqlSummarizeResult:
     answer_text: str
     analysis_meta: dict[str, Any] | None = None
+    stream_plan: Nl2sqlAnalysisStreamPlan | None = None
 
 
 def json_safe_value(value: Any) -> Any:
@@ -167,8 +217,13 @@ async def run_chatbot_nl2sql_query(
     question: str,
     skip_sql_cache: bool = False,
     nl2sql_retry_hint: str | None = None,
+    defer_analysis_stream: bool = False,
 ) -> ChatbotNL2SQLOutcome:
-    """智能客服 NL2SQL 统一入口：成功则整理结果，失败则友好文案且不向上抛异常。"""
+    """智能客服 NL2SQL 统一入口：成功则整理结果，失败则友好文案且不向上抛异常。
+
+    defer_analysis_stream=True：查数成功且需 LLM 分析时不阻塞等待全文，返回 analysis_stream_plan
+    供调用方用 stream_chat 推 SSE delta（同步 chat / 关分析时仍返回完整 answer_text）。
+    """
     req = NL2SQLQueryRequest(
         user_id=user_id,
         session_id=session_id,
@@ -199,11 +254,13 @@ async def run_chatbot_nl2sql_query(
             sql=resp.sql,
             rows=list(resp.rows or []),
             user_id=user_id,
+            defer_analysis_stream=defer_analysis_stream,
         )
         return ChatbotNL2SQLOutcome(
             answer_text=summarized.answer_text,
             nl2sql_sql=resp.sql or None,
             nl2sql_analysis=summarized.analysis_meta,
+            analysis_stream_plan=summarized.stream_plan,
         )
     except NL2SQLExecutionError as exc:
         logger.warning(
@@ -398,6 +455,17 @@ def _analysis_timeout_sec() -> float:
         return 120.0
 
 
+def _analysis_llm_kwargs() -> dict[str, Any]:
+    cfg = get_app_config().chatbot
+    kwargs: dict[str, Any] = {
+        "max_tokens": max(256, int(cfg.nl2sql_analysis_max_tokens)),
+        "timeout": _analysis_timeout_sec(),
+    }
+    if cfg.nl2sql_analysis_temperature is not None:
+        kwargs["temperature"] = float(cfg.nl2sql_analysis_temperature)
+    return kwargs
+
+
 async def _call_analysis_llm(
     llm_client: Any,
     *,
@@ -406,14 +474,6 @@ async def _call_analysis_llm(
 ) -> str | None:
     if llm_client is None or not hasattr(llm_client, "chat"):
         return None
-    cfg = get_app_config().chatbot
-    kwargs: dict[str, Any] = {
-        "max_tokens": max(256, int(cfg.nl2sql_analysis_max_tokens)),
-        # 默认 VLLMHttpClient 读超时仅 30s；分析宽表时常需更长
-        "timeout": _analysis_timeout_sec(),
-    }
-    if cfg.nl2sql_analysis_temperature is not None:
-        kwargs["temperature"] = float(cfg.nl2sql_analysis_temperature)
     try:
         text = await llm_client.chat(
             model=None,
@@ -421,13 +481,100 @@ async def _call_analysis_llm(
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_content},
             ],
-            **kwargs,
+            **_analysis_llm_kwargs(),
         )
         out = (text or "").strip()
         return out or None
     except Exception:
         logger.warning("chatbot.nl2sql_analysis LLM call failed", exc_info=True)
         return None
+
+
+async def iter_analysis_llm_deltas(
+    llm_client: Any,
+    *,
+    system: str,
+    user_content: str,
+) -> AsyncIterator[str]:
+    """流式产出收紧分析文本；无可用 stream_chat 时退化为一次 chat 整段 yield。"""
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_content},
+    ]
+    kwargs = _analysis_llm_kwargs()
+    stream_fn = getattr(llm_client, "stream_chat", None) if llm_client is not None else None
+    raw_fn = getattr(stream_fn, "__func__", stream_fn)
+    if stream_fn is not None and inspect.isasyncgenfunction(raw_fn):
+        async for delta in stream_fn(model=None, messages=messages, **kwargs):
+            if isinstance(delta, str) and delta:
+                yield delta
+        return
+    text = await _call_analysis_llm(llm_client, system=system, user_content=user_content)
+    if text:
+        yield text
+
+
+def finalize_streamed_nl2sql_analysis(
+    plan: Nl2sqlAnalysisStreamPlan,
+    streamed_text: str,
+) -> Nl2sqlSummarizeResult:
+    """流式结束后组装正文与 meta；无有效输出则回退 Markdown 表。"""
+    answer = (streamed_text or "").strip()
+    llm_used = bool(answer)
+    if not answer:
+        answer = plan.table_fallback
+        llm_used = False
+        logger.info(
+            "chatbot.nl2sql_analysis fallback_to_table question=%s prompt_chars=%s",
+            (plan.user_query or "")[:200],
+            len(plan.user_content or ""),
+        )
+    logger.info(
+        "智能客服 NL2SQL：已向用户返回整理结果（总行数=%s，展示行数=%s，llm_analysis=%s）。用户问题摘要=%s",
+        plan.total_row_count,
+        len(plan.display_rows),
+        llm_used,
+        (plan.user_query or "")[:400],
+    )
+    logger.info(
+        "智能客服 NL2SQL：本次查询使用的 SQL（仅日志，不写入用户可见内容）\n%s",
+        (plan.sql or "")[:8000] + ("..." if len(plan.sql or "") > 8000 else ""),
+    )
+    meta = _build_analysis_meta(
+        display_rows=list(plan.display_rows),
+        total_row_count=int(plan.total_row_count),
+        llm_analysis_used=llm_used,
+        empty=False,
+    )
+    return Nl2sqlSummarizeResult(answer_text=answer, analysis_meta=meta)
+
+
+def _build_analysis_user_content(
+    *,
+    user_query: str,
+    rows_total: int,
+    prompt_rows: list[dict[str, Any]],
+) -> str:
+    full_cols = _collect_column_order(prompt_rows)
+    analysis_cols = _slim_columns_for_analysis(full_cols)
+    table_for_prompt = _rows_to_markdown_table(
+        prompt_rows,
+        total_row_count=rows_total,
+        columns=analysis_cols,
+    )
+    col_note = ""
+    if len(analysis_cols) < len(full_cols):
+        col_note = f"；分析用表已从 {len(full_cols)} 列收窄为 {len(analysis_cols)} 列关键字段"
+    return _clip_prompt_text(
+        f"用户问题：{user_query or ''}\n\n"
+        f"结果总行数：{rows_total}；以下仅提供前 {len(prompt_rows)} 行供分析"
+        f"{col_note}"
+        f"（请在结论中说明基于样本，勿臆造未给出的行）。\n\n"
+        "【查询结果 · Markdown 表（已执行完的事实源）】\n"
+        f"{table_for_prompt}\n\n"
+        "请基于以上已执行结果输出用户可读的 Markdown 分析；"
+        "明细表请整理精简，不要原样粘贴全部行；不要输出 SQL。"
+    )
 
 
 async def summarize_nl2sql_with_llm(
@@ -437,10 +584,12 @@ async def summarize_nl2sql_with_llm(
     sql: str,
     rows: List[dict],
     user_id: str | None = None,
+    defer_analysis_stream: bool = False,
 ) -> Nl2sqlSummarizeResult:
     """
     智能客服 NL2SQL 结果整理：
 
+    - 有数据 + 分析开关 + defer_analysis_stream：返回 stream_plan，不调 LLM；
     - 有数据 + 分析开关：主模型 Markdown 收紧分析（失败则回退纯表）；
     - 有数据 + 关分析：仅 Markdown 表（旧行为）；
     - 空行：可选 LLM 引导，否则固定文案；
@@ -495,69 +644,60 @@ async def summarize_nl2sql_with_llm(
     display_rows = filter_chatbot_nl2sql_display_rows(
         [_row_to_mapping(r) for r in slice_rows]
     )
-    # 用户可见回退表：行数再截断，避免宽表刷屏
     ui_rows = display_rows[:_UI_TABLE_MAX_ROWS]
     table_fallback = _rows_to_markdown_table(ui_rows, total_row_count=len(rows))
-    llm_used = False
-    answer = table_fallback
 
-    if bool(cfg.nl2sql_llm_analysis_enabled):
-        system = _load_scene_system(
-            "chatbot_nl2sql_analysis",
-            user_id=user_id,
-            fallback=_DEFAULT_ANALYSIS_SYSTEM,
+    if not bool(cfg.nl2sql_llm_analysis_enabled):
+        logger.info(
+            "智能客服 NL2SQL：已向用户返回整理结果（总行数=%s，展示行数=%s，llm_analysis=%s）。用户问题摘要=%s",
+            len(rows),
+            len(display_rows),
+            False,
+            (user_query or "")[:400],
         )
-        prompt_n = _analysis_prompt_max_rows()
-        prompt_rows = display_rows[:prompt_n]
-        full_cols = _collect_column_order(prompt_rows)
-        analysis_cols = _slim_columns_for_analysis(full_cols)
-        # 仅送一份紧凑 Markdown 表（限行+优先列），避免宽表拖慢/超时
-        table_for_prompt = _rows_to_markdown_table(
-            prompt_rows,
+        logger.info(
+            "智能客服 NL2SQL：本次查询使用的 SQL（仅日志，不写入用户可见内容）\n%s",
+            sql[:8000] + ("..." if len(sql) > 8000 else ""),
+        )
+        meta = _build_analysis_meta(
+            display_rows=display_rows,
             total_row_count=len(rows),
-            columns=analysis_cols,
+            llm_analysis_used=False,
+            empty=False,
         )
-        col_note = ""
-        if len(analysis_cols) < len(full_cols):
-            col_note = (
-                f"；分析用表已从 {len(full_cols)} 列收窄为 {len(analysis_cols)} 列关键字段"
-            )
-        user_content = _clip_prompt_text(
-            f"用户问题：{user_query or ''}\n\n"
-            f"结果总行数：{len(rows)}；以下仅提供前 {len(prompt_rows)} 行供分析"
-            f"{col_note}"
-            f"（请在结论中说明基于样本，勿臆造未给出的行）。\n\n"
-            "【查询结果 · Markdown 表（已执行完的事实源）】\n"
-            f"{table_for_prompt}\n\n"
-            "请基于以上已执行结果输出用户可读的 Markdown 分析；"
-            "明细表请整理精简，不要原样粘贴全部行；不要输出 SQL。"
-        )
-        analyzed = await _call_analysis_llm(llm_client, system=system, user_content=user_content)
-        if analyzed:
-            answer = analyzed
-            llm_used = True
-        else:
-            logger.info(
-                "chatbot.nl2sql_analysis fallback_to_table question=%s prompt_rows=%s",
-                (user_query or "")[:200],
-                len(prompt_rows),
-            )
+        return Nl2sqlSummarizeResult(answer_text=table_fallback, analysis_meta=meta)
 
-    logger.info(
-        "智能客服 NL2SQL：已向用户返回整理结果（总行数=%s，展示行数=%s，llm_analysis=%s）。用户问题摘要=%s",
-        len(rows),
-        len(display_rows),
-        llm_used,
-        (user_query or "")[:400],
+    system = _load_scene_system(
+        "chatbot_nl2sql_analysis",
+        user_id=user_id,
+        fallback=_DEFAULT_ANALYSIS_SYSTEM,
     )
-    logger.info(
-        "智能客服 NL2SQL：本次查询使用的 SQL（仅日志，不写入用户可见内容）\n%s",
-        sql[:8000] + ("..." if len(sql) > 8000 else ""),
+    prompt_n = _analysis_prompt_max_rows()
+    prompt_rows = display_rows[:prompt_n]
+    user_content = _build_analysis_user_content(
+        user_query=user_query or "",
+        rows_total=len(rows),
+        prompt_rows=prompt_rows,
     )
-    meta = _build_analysis_meta(
+    plan = Nl2sqlAnalysisStreamPlan(
+        system=system,
+        user_content=user_content,
+        table_fallback=table_fallback,
         display_rows=display_rows,
         total_row_count=len(rows),
-        llm_analysis_used=llm_used,
-        empty=False,
+        sql=sql,
+        user_query=user_query or "",
     )
-    return Nl2sqlSummarizeResult(answer_text=answer, analysis_meta=meta)
+    if defer_analysis_stream:
+        return Nl2sqlSummarizeResult(answer_text="", stream_plan=plan)
+
+    parts: list[str] = []
+    try:
+        async for delta in iter_analysis_llm_deltas(
+            llm_client, system=system, user_content=user_content
+        ):
+            parts.append(delta)
+    except Exception:
+        logger.warning("chatbot.nl2sql_analysis LLM stream failed", exc_info=True)
+        parts = []
+    return finalize_streamed_nl2sql_analysis(plan, "".join(parts))

@@ -277,7 +277,76 @@ async def test_llm_prompt_slims_wide_columns():
 
 
 @pytest.mark.asyncio
-async def test_run_chatbot_nl2sql_query_success_path() -> None:
+async def test_defer_analysis_stream_returns_plan_without_llm():
+    llm = MagicMock()
+    llm.chat = AsyncMock(return_value="should-not-call")
+    with patch("app.llm.graphs.chatbot_nl2sql_answer.get_app_config") as gac:
+        gac.return_value = type(
+            "A",
+            (),
+            {"chatbot": _cfg(nl2sql_llm_analysis_enabled=True)},
+        )()
+        with patch(
+            "app.llm.graphs.chatbot_nl2sql_answer._load_scene_system",
+            return_value="sys",
+        ):
+            result = await summarize_nl2sql_with_llm(
+                llm,
+                user_query="超温明细",
+                sql="SELECT 1",
+                rows=[{"最高壁温_℃": 500, "限值_℃": 480}],
+                defer_analysis_stream=True,
+            )
+    assert result.answer_text == ""
+    assert result.stream_plan is not None
+    assert result.stream_plan.table_fallback
+    assert "sys" == result.stream_plan.system
+    llm.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_iter_analysis_llm_deltas_streams_chunks():
+    from app.llm.graphs.chatbot_nl2sql_answer import iter_analysis_llm_deltas
+
+    class _Client:
+        async def stream_chat(self, model=None, messages=None, **kwargs):
+            assert kwargs.get("timeout") == 120.0
+            yield "## "
+            yield "结论"
+
+    with patch("app.llm.graphs.chatbot_nl2sql_answer.get_app_config") as gac:
+        gac.return_value = type("A", (), {"chatbot": _cfg()})()
+        parts = [
+            d
+            async for d in iter_analysis_llm_deltas(
+                _Client(), system="s", user_content="u"
+            )
+        ]
+    assert parts == ["## ", "结论"]
+
+
+@pytest.mark.asyncio
+async def test_finalize_stream_fallback_to_table():
+    from app.llm.graphs.chatbot_nl2sql_answer import (
+        Nl2sqlAnalysisStreamPlan,
+        finalize_streamed_nl2sql_analysis,
+    )
+
+    with patch("app.llm.graphs.chatbot_nl2sql_answer.get_app_config") as gac:
+        gac.return_value = type("A", (), {"chatbot": _cfg()})()
+        plan = Nl2sqlAnalysisStreamPlan(
+            system="s",
+            user_content="u",
+            table_fallback="| a |\n| --- |\n| 1 |",
+            display_rows=[{"a": 1}],
+            total_row_count=1,
+            sql="SELECT 1",
+            user_query="q",
+        )
+        result = finalize_streamed_nl2sql_analysis(plan, "")
+    assert "|" in result.answer_text
+    assert result.analysis_meta and result.analysis_meta.get("llm_analysis_used") is False
+
     nl2sql = MagicMock()
     nl2sql.query = AsyncMock(return_value=NL2SQLQueryResponse(sql="SELECT 1", rows=[{"v": 1}]))
     with patch("app.llm.graphs.chatbot_nl2sql_answer.get_app_config") as gac:
