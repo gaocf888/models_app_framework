@@ -108,10 +108,13 @@ class DocumentParser:
     @staticmethod
     def _parse_docx(content: str) -> str:
         """
-        解析 DOCX：按文档顺序输出段落与表格（旧实现仅段落，表格会丢失）。
+        解析 DOCX：按文档顺序输出段落与表格。
 
+        Heading / 标题 N 样式转为 Markdown ``#`` 标题行，供结构切分写入 ``section_path``。
         说明：.doc 老格式需用户自行转换为 .docx；python-docx 不支持二进制 .doc。
         """
+        from app.rag.document_pipeline.section_utils import docx_style_to_markdown_heading
+
         p = DocumentParser.resolve_local_path(content)
         if p is None:
             return content
@@ -129,8 +132,11 @@ class DocumentParser:
             if child.tag == qn("w:p"):
                 para = Paragraph(child, d)
                 t = para.text.strip()
-                if t:
-                    segments.append(t)
+                if not t:
+                    continue
+                style_name = (para.style.name or "") if para.style else ""
+                md_heading = docx_style_to_markdown_heading(style_name, t)
+                segments.append(md_heading if md_heading else t)
             elif child.tag == qn("w:tbl"):
                 tbl = Table(child, d)
                 tbl_text = DocumentParser._serialize_docx_table(tbl)

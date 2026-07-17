@@ -33,13 +33,10 @@ class ExtractedFigure:
 
 
 def _section_path_before_markdown(parsed: str, anchor_start: int) -> str | None:
-    import re
+    from app.rag.document_pipeline.section_utils import section_path_before_offset
 
-    region = parsed[: max(0, anchor_start)]
-    matches = list(re.finditer(r"^(#{1,6})\s+(.+)$", region, re.MULTILINE))
-    if matches:
-        return matches[-1].group(2).strip()
-    return None
+    path, _ = section_path_before_offset(parsed, max(0, anchor_start))
+    return path
 
 
 def _save_docx_embed_image(document: object, embed: str, tmp_dir: Path, figure_index: int) -> str | None:
@@ -74,10 +71,14 @@ def _walk_docx_paragraph_images(
     from docx.oxml.ns import qn
 
     style = (para.style.name or "") if getattr(para, "style", None) else ""
-    if style.startswith("Heading") and para.text.strip():
-        parsed_parts.append(para.text.strip())
-        parsed_parts.append("\n\n")
-        return figure_index
+    if para.text.strip():
+        from app.rag.document_pipeline.section_utils import docx_style_to_markdown_heading
+
+        md_heading = docx_style_to_markdown_heading(style, para.text.strip())
+        if md_heading:
+            parsed_parts.append(md_heading)
+            parsed_parts.append("\n\n")
+            return figure_index
 
     run_buf: list[str] = []
     for run in para.runs:
@@ -140,8 +141,15 @@ def _extract_docx_figures(doc: DocumentSource) -> tuple[list[ExtractedFigure], s
         if child.tag == qn("w:p"):
             para = Paragraph(child, document)
             style = (para.style.name or "") if para.style else ""
-            if style.startswith("Heading") and para.text.strip():
-                current_section = para.text.strip()
+            if para.text.strip():
+                from app.rag.document_pipeline.section_utils import (
+                    docx_style_to_markdown_heading,
+                    normalize_heading_title,
+                )
+
+                md_heading = docx_style_to_markdown_heading(style, para.text.strip())
+                if md_heading:
+                    current_section = normalize_heading_title(para.text.strip())
             figure_index = _walk_docx_paragraph_images(
                 para,
                 document=document,

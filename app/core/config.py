@@ -242,7 +242,8 @@ class RAGIngestionConfig:
     ingest_async_enabled: bool = True
     max_concurrency: int = 4
     ingest_batch_size: int = 32
-    pipeline_version: str = "1.0.0"
+    # 1.1.0：chunk metadata 写入 section_path / section_level（章节引用）
+    pipeline_version: str = "1.1.0"
     default_chunk_strategy: str = "structure"
     chunk_size: int = 500
     chunk_overlap: int = 80
@@ -1090,7 +1091,7 @@ def _load_from_env() -> AppConfig:
         ingest_async_enabled=os.getenv("RAG_INGEST_ASYNC_ENABLED", "true").lower() == "true",
         max_concurrency=int(os.getenv("RAG_INGEST_MAX_CONCURRENCY", "4")),
         ingest_batch_size=int(os.getenv("RAG_INGEST_BATCH_SIZE", "32")),
-        pipeline_version=os.getenv("RAG_PIPELINE_VERSION", "1.0.0"),
+        pipeline_version=os.getenv("RAG_PIPELINE_VERSION", "1.1.0"),
         default_chunk_strategy=os.getenv("RAG_DEFAULT_CHUNK_STRATEGY", "structure").lower(),
         chunk_size=int(os.getenv("RAG_CHUNK_SIZE", "500")),
         chunk_overlap=int(os.getenv("RAG_CHUNK_OVERLAP", "80")),
