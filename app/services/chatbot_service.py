@@ -29,7 +29,11 @@ from app.llm.graphs.chatbot_llm_messages import (
 from app.llm.graphs.chatbot_anaphora_detect import classify_anaphora_rules
 from app.llm.graphs.chatbot_dialogue_anchor import build_dialogue_anchor_block
 from app.llm.graphs.chatbot_anaphora_store import get_anaphora_slots, slot_bullets_list, update_anaphora_slots_after_assistant
-from app.llm.graphs.chatbot_nl2sql_answer import run_chatbot_nl2sql_query
+from app.llm.graphs.chatbot_nl2sql_answer import (
+    finalize_streamed_nl2sql_analysis,
+    iter_analysis_llm_deltas,
+    run_chatbot_nl2sql_query,
+)
 from app.llm.graphs.chatbot_similar_cases import (
     FaultCaseGateInput,
     format_similar_cases_block,
@@ -469,12 +473,34 @@ class ChatbotService:
                 user_id=req.user_id,
                 session_id=req.session_id,
                 question=(original_query or req.query),
+                defer_analysis_stream=True,
             )
             answer = outcome.answer_text
+            analysis_meta = outcome.nl2sql_analysis
+            plan = outcome.analysis_stream_plan
+            if plan is not None:
+                parts: list[str] = []
+                try:
+                    async for delta in iter_analysis_llm_deltas(
+                        self._llm,
+                        system=plan.system,
+                        user_content=plan.user_content,
+                    ):
+                        parts.append(delta)
+                        yield {"type": "delta", "delta": delta}
+                except Exception:
+                    logger.warning("chatbot.legacy nl2sql analysis stream failed", exc_info=True)
+                    parts = []
+                streamed = "".join(parts).strip()
+                finalized = finalize_streamed_nl2sql_analysis(plan, streamed)
+                answer = finalized.answer_text
+                analysis_meta = finalized.analysis_meta
+                if not streamed and answer:
+                    yield {"type": "delta", "delta": answer}
+            elif answer:
+                yield {"type": "delta", "delta": answer}
             # data_query：不在 finished.meta 中下发关联问句（与 LangGraph 路径一致，且不调用推荐问 LLM）。
             suggested: list[str] = []
-            if answer:
-                yield {"type": "delta", "delta": answer}
             self._append_user_with_images(persist_req, original_image_urls=original_image_urls)
             self._conv.append_assistant_message(req.user_id, req.session_id, answer, rag_citations=[])
             self._schedule_outline_index(req.user_id, req.session_id)
@@ -486,7 +512,7 @@ class ChatbotService:
                     "nl2sql_failed": outcome.nl2sql_failed or None,
                     "nl2sql_error_code": outcome.nl2sql_error_code,
                     "nl2sql_sql": outcome.nl2sql_sql,
-                    "nl2sql_analysis": outcome.nl2sql_analysis,
+                    "nl2sql_analysis": analysis_meta,
                     "intent_label": ilabel,
                     "retrieval_attempts": 0,
                     "rag_engine": None,

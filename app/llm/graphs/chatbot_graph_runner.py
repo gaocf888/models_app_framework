@@ -21,7 +21,12 @@ from .chatbot_citation_stream import CitationStreamParser, citation_stream_enabl
 from .chatbot_follow_up import build_suggested_questions
 from .chatbot_graph_state import ChatbotGraphState
 from .chatbot_intent import classify_chatbot_intent_async
-from .chatbot_nl2sql_answer import run_chatbot_nl2sql_query
+from .chatbot_nl2sql_answer import (
+    Nl2sqlAnalysisStreamPlan,
+    finalize_streamed_nl2sql_analysis,
+    iter_analysis_llm_deltas,
+    run_chatbot_nl2sql_query,
+)
 from .chatbot_rag_citations import chunks_to_rag_context, filter_rag_citation_dicts
 from .chatbot_retrieval_query import build_retrieval_query_with_anaphora, format_rag_snippets_system_block
 from .chatbot_faq_soft_direct import (
@@ -302,6 +307,13 @@ class ChatbotLangGraphRunner:
             state = await self._run_graph(state)
             self._ensure_within_latency(start_ts)
 
+            if state.get("nl2sql_analysis_stream_plan"):
+                async for ev in self._emit_nl2sql_analysis_stream(
+                    state, req, start_ts, stream_id, cancel_checker, persist_mode="success"
+                ):
+                    yield ev
+                return
+
             pre_answer = (state.get("answer_text") or "").strip()
             llm_messages = state.get("llm_messages") or []
             # 意图澄清、或仅有固定话术而无 llm_messages（如检索触发的澄清/占位分支）
@@ -478,6 +490,7 @@ class ChatbotLangGraphRunner:
             "nl2sql_failed": False,
             "nl2sql_error_code": None,
             "nl2sql_analysis": None,
+            "nl2sql_analysis_stream_plan": None,
             "suggested_questions": [],
             "error": None,
             "answer_parts": [],
@@ -640,7 +653,10 @@ class ChatbotLangGraphRunner:
         }
 
     async def _node_nl2sql_answer(self, state: ChatbotGraphState) -> ChatbotGraphState:
-        """结构化问数：NL2SQL + 结果自然语言化（会话写入由 Runner 层统一 persist）。"""
+        """结构化问数：NL2SQL + 结果自然语言化（会话写入由 Runner 层统一 persist）。
+
+        有数据且开启收紧分析时：仅完成查数并挂上 stream_plan，正文由 run_stream_events 流式推送。
+        """
         q = str(state.get("query") or "")
         outcome = await run_chatbot_nl2sql_query(
             self._nl2sql,
@@ -648,12 +664,15 @@ class ChatbotLangGraphRunner:
             user_id=state["user_id"],
             session_id=state["session_id"],
             question=q,
+            defer_analysis_stream=True,
         )
+        stream_plan = outcome.analysis_stream_plan
         patch: ChatbotGraphState = {
             "answer_text": outcome.answer_text,
             "used_nl2sql": True,
             "nl2sql_sql": outcome.nl2sql_sql or "",
             "nl2sql_analysis": outcome.nl2sql_analysis,
+            "nl2sql_analysis_stream_plan": stream_plan.to_state_dict() if stream_plan else None,
             "used_rag": False,
             "llm_messages": [],
             "context_snippets": [],
@@ -663,6 +682,81 @@ class ChatbotLangGraphRunner:
             patch["nl2sql_error_code"] = outcome.nl2sql_error_code
             patch["terminate_reason"] = outcome.terminate_reason
         return patch
+
+    async def _emit_nl2sql_analysis_stream(
+        self,
+        state: ChatbotGraphState,
+        req: ChatRequest,
+        start_ts: float,
+        stream_id: str | None,
+        cancel_checker: Any | None = None,
+        *,
+        persist_mode: str = "success",
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """NL2SQL 收紧分析：stream_chat 推 delta；失败/空输出回退 Markdown 表。"""
+        plan = Nl2sqlAnalysisStreamPlan.from_state_dict(state.get("nl2sql_analysis_stream_plan"))
+        state["nl2sql_analysis_stream_plan"] = None
+        if plan is None:
+            answer = (state.get("answer_text") or "").strip()
+            if answer:
+                yield {"type": "delta", "delta": answer}
+            if persist_mode == "success":
+                await self._fill_suggested_questions(state, req, answer)
+                self._persist_success(state, req, answer, is_partial=False, terminate_reason=None)
+            yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
+            return
+
+        parts: List[str] = []
+        try:
+            async for delta in iter_analysis_llm_deltas(
+                self._llm,
+                system=plan.system,
+                user_content=plan.user_content,
+            ):
+                if await self._is_cancelled(req, stream_id, cancel_checker):
+                    partial = "".join(parts).strip()
+                    self._persist_disconnect(state, req, partial)
+                    state["status"] = "aborted"
+                    state["terminate_reason"] = "user_cancelled"
+                    yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
+                    return
+                parts.append(delta)
+                yield {"type": "delta", "delta": delta}
+        except Exception:
+            logger.warning("chatbot.nl2sql_analysis stream failed", exc_info=True)
+            parts = []
+
+        streamed = "".join(parts).strip()
+        if streamed:
+            finalized = finalize_streamed_nl2sql_analysis(plan, streamed)
+            answer = finalized.answer_text
+            state["answer_text"] = answer
+            state["nl2sql_analysis"] = finalized.analysis_meta
+        else:
+            finalized = finalize_streamed_nl2sql_analysis(plan, "")
+            answer = finalized.answer_text
+            state["answer_text"] = answer
+            state["nl2sql_analysis"] = finalized.analysis_meta
+            if answer:
+                yield {"type": "delta", "delta": answer}
+
+        extra = self._maybe_similar_cases_extra(state)
+        state["similar_cases_appended"] = bool(extra)
+        full = (answer + extra).strip()
+        if persist_mode == "success":
+            await self._fill_suggested_questions(state, req, full)
+            self._persist_success(state, req, full, is_partial=False, terminate_reason=None)
+        else:
+            # resume 路径：自行 append assistant
+            await self._fill_suggested_questions(state, req, full)
+            if full:
+                rc_list = state.get("rag_citations")
+                rag_kw = [x for x in rc_list if isinstance(x, dict)] if isinstance(rc_list, list) else None
+                self._conv.append_assistant_message(req.user_id, req.session_id, full, rag_citations=rag_kw)
+            state["status"] = "answered"
+        if extra:
+            yield {"type": "delta", "delta": extra}
+        yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
 
     async def _node_fault_case_gate(self, state: ChatbotGraphState) -> ChatbotGraphState:
         """锅炉/管材故障域判定 + 是否在本轮末尾追加相似案例（检索在 Runner 层执行）。"""
