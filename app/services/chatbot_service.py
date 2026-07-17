@@ -237,6 +237,7 @@ class ChatbotService:
                 suggested_questions=suggested,
                 context_snippets=[],
                 rag_citations=[],
+                nl2sql_analysis=outcome.nl2sql_analysis,
             )
 
         if ilabel == "clarify":
@@ -485,6 +486,7 @@ class ChatbotService:
                     "nl2sql_failed": outcome.nl2sql_failed or None,
                     "nl2sql_error_code": outcome.nl2sql_error_code,
                     "nl2sql_sql": outcome.nl2sql_sql,
+                    "nl2sql_analysis": outcome.nl2sql_analysis,
                     "intent_label": ilabel,
                     "retrieval_attempts": 0,
                     "rag_engine": None,

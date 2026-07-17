@@ -216,7 +216,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             - `{"started": true, "stream_id": "..."}`：流式已建立，可用于 `/chat/stop` 中断；
             - `{"delta": "...", "finished": false}`：增量正文（不含完整 `[n]` 引用标记；引用由独立事件下发）；
             - `{"citation_ref": n, "finished": false}`：知识引用标注（`n` 与 `meta.rag_citations[].ref_index` 对齐）；
-            - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag`、`used_nl2sql`、`nl2sql_sql`（仅 NL2SQL 路径有值，否则为 null）、`intent_label`、`suggested_questions`、`rag_citations` 等；
+            - `{"finished": true, "meta": {...}}`：结束帧，可含 `used_rag`、`used_nl2sql`、`nl2sql_sql`（仅 NL2SQL 路径有值，否则为 null）、`nl2sql_analysis`（查数旁路结构化：列/样本行等，正文仍为 Markdown delta）、`intent_label`、`suggested_questions`、`rag_citations` 等；
             - `{"error": "...", "finished": true}`：异常时错误事件。
 
     **RAG 内联引用（前端用法）**
@@ -263,7 +263,11 @@ async def chat_stream(req: ChatRequest, request: Request):
                     )
                     yield f"data: {payload}\n\n"
                 elif ev.get("type") == "finished":
-                    payload = json.dumps({"finished": True, "meta": ev.get("meta", {})}, ensure_ascii=False)
+                    payload = json.dumps(
+                        {"finished": True, "meta": ev.get("meta", {})},
+                        ensure_ascii=False,
+                        default=str,
+                    )
                     yield f"data: {payload}\n\n"
         except Exception as exc:  # noqa: BLE001
             err = json.dumps({"error": str(exc), "finished": True}, ensure_ascii=False)

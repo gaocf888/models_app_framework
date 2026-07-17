@@ -90,25 +90,47 @@ def test_filter_rows_drops_id_status_level_keeps_names_dates():
 
 @pytest.mark.asyncio
 async def test_summarize_hides_technical_id_and_short_code_cols():
-    text = await summarize_nl2sql_with_llm(
-        None,
-        user_query="查检修计划",
-        sql="SELECT id, name FROM t",
-        rows=[
+    from unittest.mock import patch
+
+    with patch("app.llm.graphs.chatbot_nl2sql_answer.get_app_config") as gac:
+        gac.return_value = type(
+            "A",
+            (),
             {
-                "id": "21477de7aa7e11f0a8600242ac110002",
-                "锅炉名称": "1号",
-                "检修等级": "C",
-                "检修状态": 0,
+                "chatbot": type(
+                    "C",
+                    (),
+                    {
+                        "nl2sql_llm_analysis_enabled": False,
+                        "nl2sql_empty_llm_guide_enabled": False,
+                        "nl2sql_analysis_max_rows": 80,
+                        "nl2sql_analysis_max_tokens": 2048,
+                        "nl2sql_analysis_temperature": 0.2,
+                        "nl2sql_analysis_meta_enabled": False,
+                    },
+                )()
             },
-            {
-                "id": "a2477de7aa7e11f0a8600242ac110003",
-                "锅炉名称": "2号",
-                "检修等级": "A",
-                "检修状态": 0,
-            },
-        ],
-    )
+        )()
+        result = await summarize_nl2sql_with_llm(
+            None,
+            user_query="查检修计划",
+            sql="SELECT id, name FROM t",
+            rows=[
+                {
+                    "id": "21477de7aa7e11f0a8600242ac110002",
+                    "锅炉名称": "1号",
+                    "检修等级": "C",
+                    "检修状态": 0,
+                },
+                {
+                    "id": "a2477de7aa7e11f0a8600242ac110003",
+                    "锅炉名称": "2号",
+                    "检修等级": "A",
+                    "检修状态": 0,
+                },
+            ],
+        )
+    text = result.answer_text
     assert "锅炉名称" in text
     assert "21477de7" not in text
     assert "检修等级" not in text
