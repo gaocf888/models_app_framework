@@ -241,6 +241,13 @@ class ChatResponse(BaseModel):
     answer: str = Field(..., description="助手回答全文")
     used_rag: bool = Field(..., description="本轮是否实际走了检索（无命中时也可能为 false）")
     used_nl2sql: bool = Field(False, description="本轮是否走了 NL2SQL（结构化查库）分支")
+    nl2sql_analysis: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "查数结果旁路结构化（列名、样本行、是否经 LLM 分析等），便于前端图表；"
+            "用户可见正文仍在 answer。流式结束帧 meta.nl2sql_analysis 同形。"
+        ),
+    )
     intent_label: str | None = Field(None, description="规则/图编排判定的意图标签（如 kb_qa、data_query、clarify）")
     suggested_questions: list[str] = Field(
         default_factory=list,

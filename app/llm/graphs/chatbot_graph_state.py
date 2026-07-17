@@ -111,6 +111,8 @@ class ChatbotGraphState(TypedDict, total=False):
     nl2sql_sql: str
     nl2sql_failed: bool
     nl2sql_error_code: Optional[str]
+    # 查数收紧分析旁路结构（列/行样本等）；正文仍为 answer_text Markdown
+    nl2sql_analysis: Optional[Dict[str, Any]]
 
     # ===== 关联问题推荐 =====
     suggested_questions: List[str]

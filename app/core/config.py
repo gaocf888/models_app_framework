@@ -475,6 +475,20 @@ class ChatbotConfig:
     fault_min_confidence: float = 0.5
     # 结构化问数走 NL2SQL（意图 data_query），与文档 RAG（kb_qa）分流
     nl2sql_route_enabled: bool = True
+    # 查数成功后：主模型基于 SQL 结果做 Markdown 收紧分析（关则仅出 Markdown 表，兼容旧行为）
+    nl2sql_llm_analysis_enabled: bool = True
+    # 查数空结果：是否用轻量 LLM 友好引导改问（关则固定文案；执行失败始终固定文案，不调 LLM）
+    nl2sql_empty_llm_guide_enabled: bool = True
+    # 分析/空结果引导注入模型的最大行数（与展示截断一致）
+    nl2sql_analysis_max_rows: int = 80
+    # 收紧分析输出长度；过大易拖慢生成并触发 httpx ReadTimeout
+    nl2sql_analysis_max_tokens: int = 1024
+    # 分析/空结果引导 LLM 读超时（秒）；默认客户端仅 30s，宽表明细易超时
+    nl2sql_analysis_timeout_sec: float = 120.0
+    # None 表示沿用主答 temperature / 模型默认
+    nl2sql_analysis_temperature: float | None = 0.2
+    # finished.meta.nl2sql_analysis：旁路结构化（列/行样本），便于前端图表；正文仍为 Markdown
+    nl2sql_analysis_meta_enabled: bool = True
     # 主问答流式 LLM 的 sampling temperature（环境变量 CHATBOT_MAIN_LLM_TEMPERATURE）。
     # None 表示不在请求中覆盖，沿用 LLMModelConfig.temperature；仅作用于主答 stream_chat，不影响指代/相似案例等硬编码子调用。
     main_llm_temperature: float | None = None
@@ -1243,6 +1257,20 @@ def _load_from_env() -> AppConfig:
         fault_detect_mode=(os.getenv("CHATBOT_FAULT_DETECT_MODE", "hybrid") or "hybrid").lower(),
         fault_min_confidence=max(0.0, min(1.0, float(os.getenv("CHATBOT_FAULT_MIN_CONFIDENCE", "0.5")))),
         nl2sql_route_enabled=os.getenv("CHATBOT_NL2SQL_ROUTE_ENABLED", "true").lower() == "true",
+        nl2sql_llm_analysis_enabled=os.getenv("CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED", "true").lower() == "true",
+        nl2sql_empty_llm_guide_enabled=os.getenv("CHATBOT_NL2SQL_EMPTY_LLM_GUIDE_ENABLED", "true").lower()
+        == "true",
+        nl2sql_analysis_max_rows=max(1, min(200, int(os.getenv("CHATBOT_NL2SQL_ANALYSIS_MAX_ROWS", "80")))),
+        nl2sql_analysis_max_tokens=max(256, int(os.getenv("CHATBOT_NL2SQL_ANALYSIS_MAX_TOKENS", "1024"))),
+        nl2sql_analysis_timeout_sec=max(
+            15.0, float(os.getenv("CHATBOT_NL2SQL_ANALYSIS_TIMEOUT_SEC", "120"))
+        ),
+        nl2sql_analysis_temperature=(
+            max(0.0, min(2.0, float(os.getenv("CHATBOT_NL2SQL_ANALYSIS_TEMPERATURE", "0.2"))))
+            if str(os.getenv("CHATBOT_NL2SQL_ANALYSIS_TEMPERATURE", "0.2") or "").strip()
+            else None
+        ),
+        nl2sql_analysis_meta_enabled=os.getenv("CHATBOT_NL2SQL_ANALYSIS_META_ENABLED", "true").lower() == "true",
         main_llm_temperature=_optional_clamped_temperature("CHATBOT_MAIN_LLM_TEMPERATURE"),
         default_prompt_version=(os.getenv("CHATBOT_PROMPT_DEFAULT_VERSION", "boiler_v1") or "boiler_v1").strip(),
         suggested_questions_enabled=os.getenv("CHATBOT_SUGGESTED_QUESTIONS_ENABLED", "true").lower() == "true",
