@@ -367,11 +367,13 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
        （``intent_route_confirm`` / ``intent_disambiguation_suggest`` / ``nl2sql_gen_failed``）。
 
         （意图识别失败 返回的ui_buttons：[{"id": "route_data_query", "label": "查实时/台账数据"}, {"id": "route_kb_qa", "label": "基于知识库分析"}, {"id": "route_clarify", "label": "我先补充问题"}]）
-		（意图消歧 返回动态 ui_buttons，如 pick_disambiguation_0/1/2，label 为短标题）
+		（意图消歧 返回动态 ui_buttons：id 为 pick_disambiguation_0/1/2，**label 为完整候选问句 query**；
+		 前端在 ``hitl_kind=intent_disambiguation_suggest`` 时应渲染为**链接**，其它 hitl_kind 仍渲染为按钮）
 		（数据查询失败 返回的ui_buttons: [{"id": "nl2sql_retry", "label": "重试查数"}, {"id": "fallback_kb_qa", "label": "基于知识库分析"}]）
 
-    2. **渲染按钮**：按 ``ui_buttons`` 渲染操作区（按钮/链接）；``prompt`` 通常已通过 ``delta`` 出现在正文中。
-       勿对 ``intent_disambiguation_suggest`` 回落到默认三路由按钮。
+    2. **渲染操作区**：按 ``ui_buttons`` 渲染；``intent_disambiguation_suggest`` 渲染为问题链接，
+       其它场景渲染为按钮。``prompt`` 为对话引导（消歧时不含问题编号列表，请用户点击下方链接）；
+       ``prompt`` 通常已通过 ``delta`` 出现在正文中。
     3. **发起续跑**：用户点击后 ``POST /chatbot/chat/resume-stream``，Body 示例::
 
            {

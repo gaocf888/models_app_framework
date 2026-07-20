@@ -12,14 +12,16 @@ from app.llm.prompt_registry import PromptTemplateRegistry
 
 logger = get_logger(__name__)
 
-_FALLBACK_SYSTEM = """你是电厂锅炉领域智能客服的意图消歧助手。用户问题边界不清，请只输出一个 JSON 对象，不要 Markdown。
+_FALLBACK_SYSTEM = """你是电厂锅炉领域的智能客服助手。用户问题一次问了多件事、边界不清。请只输出一个 JSON 对象，不要 Markdown。
 格式：
-{"analysis":"简短中文分析","options":[{"title":"短标题","query":"完整可执行问句","route_hint":"data_query|kb_qa"}]}
+{"analysis":"一两句对用户说的话","options":[{"title":"短标题","query":"完整可执行问句","route_hint":"data_query|kb_qa"}]}
 硬性要求：
-1) options 必须恰好 3 条；
-2) 至少 1 条 route_hint=data_query（偏查实时/台账数据），至少 1 条 route_hint=kb_qa（偏知识库说明）；
-3) query 具体可执行，不要简单复述用户原话；title 尽量短（不超过 16 字）；
-4) route_hint 只能是 data_query 或 kb_qa。"""
+1) analysis 必须像客服当面回复：用「您」，1～2 句；说明「问题里不止一块、怕答偏了、想先对齐」；
+   禁止「用户询问」「明确意图」「系统」「结构化查数」等旁白/诊断腔；
+2) options 必须恰好 3 条；
+3) 至少 1 条 route_hint=data_query（偏查实时/台账数据），至少 1 条 route_hint=kb_qa（偏知识库说明）；
+4) query 具体可执行，一条 ideally 只问一件事，不要简单复述用户原话；title 尽量短（不超过 16 字）；
+5) route_hint 只能是 data_query 或 kb_qa。"""
 
 _ROUTE_HINTS = frozenset({"data_query", "kb_qa"})
 
@@ -98,8 +100,8 @@ def build_fallback_disambiguation(*, query: str) -> dict[str, Any]:
     base = q.rstrip("？?。.!！")
     return {
         "analysis": (
-            f"您的问题「{q}」同时可能涉及结构化查数与知识说明，"
-            "请选择更贴近您意图的具体问法："
+            "您这个问题里，既像在查相关数据，也像在问原因或说明。"
+            "我怕一次答偏了，想先跟您对齐一下想先解决哪一块。"
         ),
         "options": [
             {
@@ -154,7 +156,10 @@ def _coerce_disambiguation_result(
             analysis = fb["analysis"]
         return {"analysis": analysis, "options": options, "source": "llm_partial_fallback"}
     if not analysis:
-        analysis = f"您的问题「{(query or '').strip()}」意图不够明确，请选择更具体的问法："
+        analysis = (
+            "您这个问题里，既像在查相关数据，也像在问原因或说明。"
+            "我怕一次答偏了，想先跟您对齐一下想先解决哪一块。"
+        )
     return {"analysis": analysis, "options": options[:3], "source": "llm"}
 
 

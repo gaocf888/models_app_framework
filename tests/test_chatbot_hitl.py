@@ -280,6 +280,17 @@ def test_prepare_disambiguation_hitl_patch():
     assert patch_state["disambiguation_source"] == "fallback_rules"
 
 
+def test_build_hitl_payload_disambiguation_strips_user_inquiry_phrase():
+    from app.llm.graphs.chatbot_hitl_display import build_disambiguation_hitl_prompt
+
+    prompt = build_disambiguation_hitl_prompt(
+        analysis="用户询问今天超温数据的数量及原因，问题同时涉及数据查询和知识说明，需要进一步明确意图。"
+    )
+    assert "用户询问" not in prompt
+    assert "明确意图" not in prompt
+    assert "点最贴近您意思的那一句" in prompt
+
+
 def test_build_hitl_payload_disambiguation_dynamic_buttons():
     fb = build_fallback_disambiguation(query="混合问")
     state = {
@@ -294,6 +305,13 @@ def test_build_hitl_payload_disambiguation_dynamic_buttons():
     assert len(payload["ui_buttons"]) == 3
     assert payload["ui_buttons"][0]["id"] == "pick_disambiguation_0"
     assert payload["ui_buttons"][0]["id"] != "route_data_query"
+    # label 为完整 query，供前端渲染链接
+    assert payload["ui_buttons"][0]["label"] == fb["options"][0]["query"]
+    assert "请点击下方按钮" not in payload["prompt"]
+    assert "1. 【" not in payload["prompt"]
+    assert "用户询问" not in payload["prompt"]
+    assert "明确意图" not in payload["prompt"]
+    assert "点最贴近您意思的那一句" in payload["prompt"]
     assert payload["context"]["disambiguation_source"] == "fallback_rules"
 
 

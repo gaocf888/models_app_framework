@@ -57,30 +57,77 @@ def build_nl2sql_hitl_prompt(*, query: str, fail_reason: str | None) -> str:
     )
 
 
+_DISAMBIGUATION_GUIDE = (
+    "下面有几句更具体的问法，您点最贴近您意思的那一句就行，我按您选的继续答。"
+)
+
+_DISAMBIGUATION_FALLBACK_ANALYSIS = (
+    "您这个问题里，既像在查相关数据，也像在问原因或说明。"
+    "我怕一次答偏了，想先跟您对齐一下想先解决哪一块。"
+)
+
+_META_ANALYSIS_MARKERS = (
+    "需要进一步明确意图",
+    "进一步明确意图",
+    "问题同时涉及",
+    "需要进一步确认",
+    "意图不够明确",
+    "结构化查数",
+)
+
+
+def _is_meta_disambiguation_analysis(text: str) -> bool:
+    s = (text or "").strip()
+    if not s:
+        return True
+    return any(m in s for m in _META_ANALYSIS_MARKERS)
+
+
+def _sanitize_disambiguation_analysis(text: str) -> str:
+    """去掉旁白腔，尤其禁止出现「用户询问」。"""
+    s = (text or "").strip()
+    if not s:
+        return _DISAMBIGUATION_FALLBACK_ANALYSIS
+    # 去掉「用户询问」及同类旁白前缀/夹杂
+    for phrase in ("用户询问", "用户提问", "用户想问", "用户想了解"):
+        s = s.replace(phrase, "")
+    s = s.strip(" ：:，,")
+    for junk in (
+        "请点击下方按钮选择一项继续：",
+        "请点击下方按钮",
+        "请选择一项继续：",
+        "请直接点击下方您更想继续的那一句，我会按您选的问题继续处理。",
+        "我帮您拆成几种更具体的问法。请直接点击下方您更想继续的那一句，我会按您选的问题继续处理。",
+    ):
+        if s.endswith(junk):
+            s = s[: -len(junk)].rstrip(" \n：:")
+    if _is_meta_disambiguation_analysis(s):
+        return _DISAMBIGUATION_FALLBACK_ANALYSIS
+    return s or _DISAMBIGUATION_FALLBACK_ANALYSIS
+
+
 def build_disambiguation_hitl_prompt(
     *,
     analysis: str,
-    options: list[dict[str, Any]],
+    options: list[dict[str, Any]] | None = None,
 ) -> str:
-    lines = [(analysis or "").strip() or "您的问题意图不够明确，请选择更具体的问法：", ""]
-    for i, opt in enumerate(options or []):
-        title = str(opt.get("title") or "").strip()
-        query = str(opt.get("query") or "").strip()
-        route = str(opt.get("route_hint") or "").strip()
-        route_zh = "查数" if route == "data_query" else "知识库"
-        lines.append(f"{i + 1}. 【{route_zh}】{title}")
-        if query and query != title:
-            lines.append(f"   {query}")
-    lines.append("")
-    lines.append("请点击下方按钮选择一项继续：")
-    return "\n".join(lines).strip()
+    """客服问答口吻引导；问题列表由前端按 ui_buttons 渲染为链接，不在 prompt 中罗列。"""
+    _ = options
+    body = _sanitize_disambiguation_analysis(analysis)
+    return f"{body}\n\n{_DISAMBIGUATION_GUIDE}".strip()
 
 
 def build_disambiguation_ui_buttons(options: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """label 使用完整候选问句 query，供前端渲染为可点击链接。"""
     buttons: list[dict[str, str]] = []
     for i, opt in enumerate(options or []):
-        title = str(opt.get("title") or opt.get("query") or f"选项{i + 1}").strip()
-        buttons.append({"id": disambiguation_button_id(i), "label": title[:32]})
+        query = str(opt.get("query") or "").strip()
+        title = str(opt.get("title") or "").strip()
+        label = query or title or f"选项{i + 1}"
+        # 过长时截断展示；完整问句仍在 context.disambiguation_options
+        if len(label) > 120:
+            label = label[:117] + "…"
+        buttons.append({"id": disambiguation_button_id(i), "label": label})
     return buttons
 
 

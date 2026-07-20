@@ -148,6 +148,26 @@
     }
     #hitlButtons button.hitl-action:hover:not(:disabled) { background: var(--accent-hover); }
     #hitlButtons button.hitl-action:disabled { opacity: 0.5; cursor: not-allowed; }
+    #hitlButtons.hitl-links {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.65rem;
+    }
+    #hitlButtons a.hitl-link {
+      color: #93c5fd;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      line-height: 1.45;
+      max-width: 100%;
+    }
+    #hitlButtons a.hitl-link:hover { color: #bfdbfe; }
+    #hitlButtons a.hitl-link.is-disabled {
+      opacity: 0.5;
+      pointer-events: none;
+      cursor: not-allowed;
+    }
     .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
     code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
     #uploadResult {
@@ -460,6 +480,17 @@
     $("hitlPanel").style.display = "none";
     $("hitlPrompt").textContent = "";
     $("hitlButtons").innerHTML = "";
+    $("hitlButtons").classList.remove("hitl-links");
+  }
+
+  function setHitlActionsDisabled(disabled) {
+    $("hitlButtons").querySelectorAll("button.hitl-action").forEach((b) => {
+      b.disabled = !!disabled;
+    });
+    $("hitlButtons").querySelectorAll("a.hitl-link").forEach((a) => {
+      a.classList.toggle("is-disabled", !!disabled);
+      a.setAttribute("aria-disabled", disabled ? "true" : "false");
+    });
   }
 
   function showHitlPanel(ev) {
@@ -484,17 +515,31 @@
     }
     const box = $("hitlButtons");
     box.innerHTML = "";
+    const asLinks = pendingHitl.hitl_kind === "intent_disambiguation_suggest";
+    box.classList.toggle("hitl-links", asLinks);
     pendingHitl.ui_buttons.forEach((btn) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "hitl-action";
-      b.textContent = btn.label || btn.id;
-      b.dataset.action = btn.id;
-      // 续跑 SSE 中再次触发 HITL 时 hitlBusy 仍为 true；按钮应对用户可选。
-      // 防重入由 resumeHitl 入口的 hitlBusy 判断负责。
-      b.disabled = false;
-      b.addEventListener("click", () => resumeHitl(btn.id));
-      box.appendChild(b);
+      const label = btn.label || btn.id;
+      if (asLinks) {
+        const a = document.createElement("a");
+        a.href = "#";
+        a.className = "hitl-link";
+        a.textContent = label;
+        a.dataset.action = btn.id;
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          resumeHitl(btn.id);
+        });
+        box.appendChild(a);
+      } else {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "hitl-action";
+        b.textContent = label;
+        b.dataset.action = btn.id;
+        b.disabled = false;
+        b.addEventListener("click", () => resumeHitl(btn.id));
+        box.appendChild(b);
+      }
     });
   }
 
@@ -506,7 +551,7 @@
       return;
     }
     hitlBusy = true;
-    $("hitlButtons").querySelectorAll("button").forEach((b) => (b.disabled = true));
+    setHitlActionsDisabled(true);
     appendStatus("HITL 续跑中… action=" + action);
     // 续跑回答从空白开始，不要把新 delta 追加在先前 HITL 话术后面
     resetAnswerContent();
@@ -547,12 +592,8 @@
       setBusy(false);
       $("btnStop").disabled = true;
       abortCtrl = null;
-      // 续跑中若再次 pending_hitl，按钮可能在 hitlBusy=true 时已渲染；结束后确保可点
-      if (pendingHitl) {
-        $("hitlButtons").querySelectorAll("button").forEach((b) => {
-          b.disabled = false;
-        });
-      }
+      // 续跑中若再次 pending_hitl，操作区可能在 hitlBusy=true 时已渲染；结束后确保可点
+      if (pendingHitl) setHitlActionsDisabled(false);
     }
   }
 
