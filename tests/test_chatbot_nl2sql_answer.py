@@ -153,9 +153,8 @@ async def test_run_chatbot_nl2sql_query_returns_friendly_text_on_execution_error
 @pytest.mark.asyncio
 async def test_run_chatbot_nl2sql_query_gen_failed_keeps_hitl_contract() -> None:
     nl2sql = MagicMock()
-    nl2sql.query = AsyncMock(
-        return_value=NL2SQLQueryResponse(sql="", rows=[], gen_fail_reason="empty_sql")
-    )
+    # djs 的 NL2SQLQueryResponse 可能尚无 gen_fail_reason 字段；空 sql 即视为生成失败
+    nl2sql.query = AsyncMock(return_value=NL2SQLQueryResponse(sql="", rows=[]))
     outcome = await run_chatbot_nl2sql_query(
         nl2sql,
         None,
@@ -167,6 +166,7 @@ async def test_run_chatbot_nl2sql_query_gen_failed_keeps_hitl_contract() -> None
     assert outcome.answer_text == ""
     assert outcome.terminate_reason == "nl2sql_gen_failed"
     assert outcome.nl2sql_analysis is None
+    assert outcome.gen_fail_reason == "empty_sql"
 
 
 @pytest.mark.asyncio

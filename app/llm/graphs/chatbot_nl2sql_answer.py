@@ -163,6 +163,8 @@ class ChatbotNL2SQLOutcome:
     nl2sql_sql: str | None = None
     nl2sql_failed: bool = False
     nl2sql_error_code: str | None = None
+    gen_failed: bool = False
+    gen_fail_reason: str | None = None
     terminate_reason: str | None = None
     # Phase 3：旁路结构化（列/行样本等），供 finished.meta.nl2sql_analysis
     nl2sql_analysis: dict[str, Any] | None = None
@@ -232,7 +234,7 @@ async def run_chatbot_nl2sql_query(
     try:
         resp = await nl2sql.query(req, record_conversation=False)
         if not (resp.sql or "").strip():
-            fail_reason = resp.gen_fail_reason or "empty_sql"
+            fail_reason = getattr(resp, "gen_fail_reason", None) or "empty_sql"
             logger.info(
                 "智能客服 NL2SQL：未生成有效 SQL（仅日志）。用户问题摘要=%s reason=%s",
                 (question or "")[:400],

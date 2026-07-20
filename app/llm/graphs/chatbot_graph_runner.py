@@ -677,6 +677,14 @@ class ChatbotLangGraphRunner:
             "llm_messages": [],
             "context_snippets": [],
         }
+        if outcome.gen_failed:
+            patch["answer_text"] = (
+                "未能生成有效的 SQL 查询。请换一种方式描述要查的台账或记录条件，或改用知识库问答。"
+            )
+            patch["nl2sql_failed"] = True
+            patch["terminate_reason"] = outcome.terminate_reason or "nl2sql_gen_failed"
+            patch["nl2sql_analysis_stream_plan"] = None
+            return patch
         if outcome.nl2sql_failed:
             patch["nl2sql_failed"] = True
             patch["nl2sql_error_code"] = outcome.nl2sql_error_code
