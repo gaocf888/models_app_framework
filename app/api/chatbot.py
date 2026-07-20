@@ -328,11 +328,13 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
 
     - ``hitl_id``：本轮 HITL 标识；
     - ``resume_token``：续跑凭证（调用本接口时回传）；
-    - ``hitl_kind``：``intent_route_confirm``（意图路由确认）或 ``nl2sql_gen_failed``（NL2SQL 生成失败）；
+    - ``hitl_kind``：``intent_route_confirm``（意图路由确认）、
+      ``intent_disambiguation_suggest``（补充问句后仍模糊时的 LLM 消歧选项）、
+      或 ``nl2sql_gen_failed``（NL2SQL 生成失败）；
     - ``prompt``：展示给用户的确认话术（已随 ``delta`` 写入会话）；
     - ``ui_buttons``：按钮列表，每项 ``{"id": "<action>", "label": "<展示文案>"}``；
     - ``context``：辅助上下文（``intent_label``、``intent_confidence``、``original_query``、
-      ``nl2sql_fail_reason`` 等），供前端展示详情，非必填回传。
+      ``nl2sql_fail_reason``、``disambiguation_options`` 等），供前端展示详情，非必填回传。
 
     **action 枚举（须与 ui_buttons[].id 一致）**
 
@@ -341,7 +343,14 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
     - ``route_data_query``：确认为结构化查数，走 NL2SQL；
     - ``route_kb_qa``：确认为知识库问答，走 RAG；
     - ``route_clarify``：用户在问句框补充完整问题（``payload.refined_query`` **必填**），
-      系统更新 ``query`` 后**重新意图分类**并按新意图路由（查数 / 知识库等），不返回固定澄清话术。
+      系统更新 ``query`` 后**重新意图分类**并按新意图路由；若仍模糊则进入消歧 HITL
+      （``intent_disambiguation_suggest``），不再重复三路由按钮。
+
+    意图消歧（``hitl_kind=intent_disambiguation_suggest``）：
+
+    - ``pick_disambiguation_0`` / ``pick_disambiguation_1`` / ``pick_disambiguation_2``：
+      选择对应候选问句；或统一 ``pick_disambiguation_option`` + ``payload.option_index``；
+      系统用选项的 ``query`` + ``route_hint`` **直接路由**（不再跑意图分类）。
 
     NL2SQL 生成失败（``hitl_kind=nl2sql_gen_failed``）：
 
@@ -352,12 +361,15 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
     目前 意图识别失败/数据查询生成sql失败 会触发人机协同 处理逻辑
     1. **监听 HITL**：在 ``/chat/stream`` 的 SSE 回调中识别
        ``ev.chatbot_hitl_required === true && ev.finished === false``；
-       保存 ``resume_token``(用于 人机协同接口续跑)、``ui_buttons``(用于渲染前端 选项按钮)、``prompt``(用于展示到前端 的信息)、``hitl_kind``(intent_route_confirm/nl2sql_gen_failed  ，非必要保存，用于区分 触发的人机交互类型 -- 意图识别失败/数据查询失败)。
+       保存 ``resume_token``、``ui_buttons``、``prompt``、``hitl_kind``
+       （``intent_route_confirm`` / ``intent_disambiguation_suggest`` / ``nl2sql_gen_failed``）。
 
         （意图识别失败 返回的ui_buttons：[{"id": "route_data_query", "label": "查实时/台账数据"}, {"id": "route_kb_qa", "label": "基于知识库分析"}, {"id": "route_clarify", "label": "我先补充问题"}]）
+		（意图消歧 返回动态 ui_buttons，如 pick_disambiguation_0/1/2，label 为短标题）
 		（数据查询失败 返回的ui_buttons: [{"id": "nl2sql_retry", "label": "重试查数"}, {"id": "fallback_kb_qa", "label": "基于知识库分析"}]）
 
     2. **渲染按钮**：按 ``ui_buttons`` 渲染操作区（按钮/链接）；``prompt`` 通常已通过 ``delta`` 出现在正文中。
+       勿对 ``intent_disambiguation_suggest`` 回落到默认三路由按钮。
     3. **发起续跑**：用户点击后 ``POST /chatbot/chat/resume-stream``，Body 示例::
 
            {
@@ -378,11 +390,22 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
              "action": "route_clarify",
              "payload": { "refined_query": "1号炉当前负荷是多少？" }
            }
+
+       消歧选项示例::
+
+           {
+             "user_id": "u1",
+             "session_id": "s1",
+             "resume_token": "cb_rt_xxx",
+             "action": "pick_disambiguation_0",
+             "payload": {}
+           }
         **说明：**
         1）resume_token -- 上述保存得resume_token；action -- 上述保存的ui_buttons中的id
-		- （意图识别失败对应ui_buttons中的id：route_data_query(查实时/台账数据)、route_kb_qa(基于知识库分析)、route_clarify(我先补充问题)）
-		- （查询数据失败对应ui_buttons中的id：nl2sql_retry(重试查数)、fallback_kb_qa(基于知识库分析)）
-       2）``route_clarify`` 时 ``payload.refined_query`` **必填**（前后端均校验）；其它 action 可选 ``refined_query`` 覆盖原问句。
+		- （意图识别失败：route_data_query / route_kb_qa / route_clarify）
+		- （意图消歧：pick_disambiguation_0/1/2 或 pick_disambiguation_option）
+		- （查询数据失败：nl2sql_retry / fallback_kb_qa）
+       2）``route_clarify`` 时 ``payload.refined_query`` **必填**；其它 action 可选 ``refined_query``。
     4. **处理续跑 SSE**：与 ``/chat/stream`` 相同拼接 ``delta`` / ``citation_ref``；
        若再次收到 ``chatbot_hitl_required``，重复步骤 2–3（使用新的 ``resume_token``）。
     5. **结束**：收到 ``finished: true`` 后读取 ``meta``（``used_nl2sql``、``rag_citations`` 等）；

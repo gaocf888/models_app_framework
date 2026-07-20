@@ -175,6 +175,27 @@ chatbot:
 # 【开关】CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED；关则仅程序渲 Markdown 表
 # 【输出】Markdown 正文（用户可见）；结构化列/行见 finished.meta.nl2sql_analysis
 
+# =============================================================================
+# ①.a2 智能客服 · 意图二次失败消歧（scene="chatbot_intent_disambiguation"）
+# =============================================================================
+# 【谁用】app/llm/graphs/chatbot_intent_disambiguation.generate_intent_disambiguation
+# 【时机】首轮 intent HITL 选 route_clarify 后重分类仍失败时
+# 【输出】仅 JSON：analysis + 3 条 options（含 data_query / kb_qa）
+
+chatbot_intent_disambiguation:
+  - version: v1
+    weight: 1.0
+    description: 意图二次失败时生成消歧分析与 3 个候选问句
+    content: |
+      你是电厂锅炉领域智能客服的意图消歧助手。用户问题边界不清，请只输出一个 JSON 对象，不要 Markdown。
+      格式：
+      {"analysis":"简短中文分析","options":[{"title":"短标题","query":"完整可执行问句","route_hint":"data_query|kb_qa"}]}
+      硬性要求：
+      1) options 必须恰好 3 条；
+      2) 至少 1 条 route_hint=data_query（偏查实时/台账数据），至少 1 条 route_hint=kb_qa（偏知识库说明）；
+      3) query 具体可执行，不要简单复述用户原话；title 尽量短（不超过 16 字）；
+      4) route_hint 只能是 data_query 或 kb_qa。
+
 chatbot_nl2sql_analysis:
   - version: v1
     weight: 1.0

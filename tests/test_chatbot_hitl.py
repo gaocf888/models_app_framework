@@ -9,20 +9,27 @@ import pytest
 from app.llm.graphs.chatbot_hitl import (
     ACTION_FALLBACK_KB_QA,
     ACTION_NL2SQL_RETRY,
+    ACTION_PICK_DISAMBIGUATION_OPTION,
     ACTION_ROUTE_CLARIFY,
     ACTION_ROUTE_DATA_QUERY,
     ACTION_ROUTE_KB_QA,
     ChatbotHitlValidationError,
     apply_chatbot_hitl_action,
     build_nl2sql_retry_hint,
+    prepare_intent_disambiguation_hitl_patch,
+    prepare_intent_hitl_patch,
     should_trigger_intent_hitl,
     should_trigger_nl2sql_hitl,
 )
-from app.llm.graphs.chatbot_hitl_display import HITL_KIND_INTENT_ROUTE, HITL_KIND_NL2SQL_GEN_FAILED
-from app.llm.graphs.chatbot_hitl_session_store import (
-    create_chatbot_hitl_resume_session,
-    delete_chatbot_hitl_resume_session,
-    get_chatbot_hitl_resume_session,
+from app.llm.graphs.chatbot_hitl_display import (
+    HITL_KIND_INTENT_DISAMBIGUATION,
+    HITL_KIND_INTENT_ROUTE,
+    HITL_KIND_NL2SQL_GEN_FAILED,
+    build_hitl_interrupt_payload,
+)
+from app.llm.graphs.chatbot_intent_disambiguation import (
+    build_fallback_disambiguation,
+    _coerce_disambiguation_result,
 )
 
 
@@ -31,6 +38,9 @@ def _hitl_on(**overrides):
         "hitl_enabled": True,
         "intent_hitl_enabled": True,
         "intent_hitl_min_confidence": 0.75,
+        "intent_disambiguation_enabled": True,
+        "intent_disambiguation_timeout_sec": 8.0,
+        "intent_hitl_max_rounds": 2,
         "nl2sql_hitl_enabled": True,
         "nl2sql_hitl_max_retries": 1,
     }
@@ -39,6 +49,13 @@ def _hitl_on(**overrides):
         "app.llm.graphs.chatbot_hitl._cfg",
         return_value=type("C", (), cfg)(),
     )
+
+
+from app.llm.graphs.chatbot_hitl_session_store import (
+    create_chatbot_hitl_resume_session,
+    delete_chatbot_hitl_resume_session,
+    get_chatbot_hitl_resume_session,
+)
 
 
 def test_should_trigger_intent_hitl_low_confidence():
@@ -207,3 +224,106 @@ def test_apply_hitl_clears_pending(action: str):
 
 def test_nl2sql_gen_failed_kind_constant():
     assert HITL_KIND_NL2SQL_GEN_FAILED == "nl2sql_gen_failed"
+
+
+def test_prepare_intent_hitl_sets_round_one():
+    patch_state = prepare_intent_hitl_patch({"query": "混合问句"})
+    assert patch_state["hitl_kind"] == HITL_KIND_INTENT_ROUTE
+    assert patch_state["intent_hitl_round"] == 1
+
+
+def test_should_not_trigger_intent_hitl_when_round_at_max():
+    state = {
+        "intent_label": "kb_qa",
+        "intent_confidence": 0.5,
+        "intent_reason": "mixed_data_and_concept",
+        "query": "为什么当前负荷是多少",
+        "intent_hitl_round": 2,
+    }
+    with _hitl_on(intent_hitl_max_rounds=2):
+        assert should_trigger_intent_hitl(state) is False
+
+
+def test_fallback_disambiguation_covers_both_routes():
+    fb = build_fallback_disambiguation(query="今天有多少超温数据，什么原因")
+    assert len(fb["options"]) == 3
+    routes = {o["route_hint"] for o in fb["options"]}
+    assert "data_query" in routes and "kb_qa" in routes
+
+
+def test_coerce_partial_llm_falls_back_to_cover_routes():
+    out = _coerce_disambiguation_result(
+        {
+            "analysis": "边界不清",
+            "options": [
+                {"title": "只查数", "query": "今天超温条数？", "route_hint": "data_query"},
+            ],
+        },
+        query="今天有多少超温数据，什么原因",
+    )
+    assert len(out["options"]) == 3
+    routes = {o["route_hint"] for o in out["options"]}
+    assert "data_query" in routes and "kb_qa" in routes
+
+
+def test_prepare_disambiguation_hitl_patch():
+    fb = build_fallback_disambiguation(query="混合问")
+    patch_state = prepare_intent_disambiguation_hitl_patch(
+        {"query": "混合问"},
+        analysis=fb["analysis"],
+        options=fb["options"],
+    )
+    assert patch_state["hitl_kind"] == HITL_KIND_INTENT_DISAMBIGUATION
+    assert patch_state["intent_hitl_round"] == 2
+    assert len(patch_state["disambiguation_options"]) == 3
+
+
+def test_build_hitl_payload_disambiguation_dynamic_buttons():
+    fb = build_fallback_disambiguation(query="混合问")
+    state = {
+        "hitl_kind": HITL_KIND_INTENT_DISAMBIGUATION,
+        "disambiguation_analysis": fb["analysis"],
+        "disambiguation_options": fb["options"],
+        "query": "混合问",
+    }
+    payload = build_hitl_interrupt_payload(state)
+    assert payload["hitl_kind"] == HITL_KIND_INTENT_DISAMBIGUATION
+    assert len(payload["ui_buttons"]) == 3
+    assert payload["ui_buttons"][0]["id"] == "pick_disambiguation_0"
+    assert payload["ui_buttons"][0]["id"] != "route_data_query"
+
+
+def test_apply_pick_disambiguation_by_button_id():
+    fb = build_fallback_disambiguation(query="混合问")
+    out = apply_chatbot_hitl_action(
+        {
+            "query": "混合问",
+            "disambiguation_options": fb["options"],
+            "hitl_kind": HITL_KIND_INTENT_DISAMBIGUATION,
+        },
+        action="pick_disambiguation_0",
+    )
+    assert out["query"] == fb["options"][0]["query"]
+    assert out["confirmed_route"] == fb["options"][0]["route_hint"]
+    assert out["pending_hitl"] is False
+    assert out["intent_prev_task_type"] == "after_intent_confirm"
+
+
+def test_apply_pick_disambiguation_by_option_index():
+    fb = build_fallback_disambiguation(query="混合问")
+    out = apply_chatbot_hitl_action(
+        {"query": "混合问", "disambiguation_options": fb["options"]},
+        action=ACTION_PICK_DISAMBIGUATION_OPTION,
+        payload={"option_index": 1},
+    )
+    assert out["query"] == fb["options"][1]["query"]
+    assert out["confirmed_route"] == fb["options"][1]["route_hint"]
+
+
+def test_apply_pick_disambiguation_invalid_index():
+    with pytest.raises(ChatbotHitlValidationError, match="option_index"):
+        apply_chatbot_hitl_action(
+            {"disambiguation_options": []},
+            action=ACTION_PICK_DISAMBIGUATION_OPTION,
+            payload={"option_index": 0},
+        )

@@ -312,20 +312,32 @@ class ChatbotHitlResumeRequest(BaseModel):
     action: str = Field(
         ...,
         description=(
-            "route_data_query | route_kb_qa | route_clarify | nl2sql_retry | fallback_kb_qa"
+            "route_data_query | route_kb_qa | route_clarify | pick_disambiguation_N | "
+            "pick_disambiguation_option | nl2sql_retry | fallback_kb_qa"
         ),
     )
     payload: dict[str, Any] = Field(
         default_factory=dict,
-        description="补充参数；route_clarify 时 refined_query 必填，其它 action 可选 refined_query 覆盖问句",
+        description=(
+            "补充参数；route_clarify 时 refined_query 必填；"
+            "pick_disambiguation_option 时 option_index 必填；其它 action 可选 refined_query"
+        ),
     )
 
     @model_validator(mode="after")
-    def _validate_route_clarify_refined_query(self) -> "ChatbotHitlResumeRequest":
+    def _validate_hitl_payload(self) -> "ChatbotHitlResumeRequest":
         if self.action == "route_clarify":
             refined = str((self.payload or {}).get("refined_query") or "").strip()
             if not refined:
                 raise ValueError("refined_query is required in payload for route_clarify")
+        if self.action == "pick_disambiguation_option":
+            raw = (self.payload or {}).get("option_index")
+            try:
+                idx = int(raw)
+            except (TypeError, ValueError):
+                raise ValueError("option_index is required in payload for pick_disambiguation_option") from None
+            if idx < 0:
+                raise ValueError("option_index must be >= 0")
         return self
 
     @field_validator("user_id")

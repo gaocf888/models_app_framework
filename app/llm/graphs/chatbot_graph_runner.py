@@ -26,6 +26,7 @@ from .chatbot_hitl import (
     build_hitl_sse_event,
     hitl_button_label,
     hitl_globally_enabled,
+    prepare_intent_disambiguation_hitl_patch,
     prepare_intent_hitl_patch,
     prepare_nl2sql_hitl_patch,
     should_trigger_intent_hitl,
@@ -33,9 +34,14 @@ from .chatbot_hitl import (
 )
 from .chatbot_hitl_display import (
     ACTION_ROUTE_CLARIFY,
+    HITL_KIND_INTENT_DISAMBIGUATION,
     build_hitl_interrupt_payload,
     format_hitl_assistant_message,
     format_hitl_user_choice_message,
+)
+from .chatbot_intent_disambiguation import (
+    generate_intent_disambiguation,
+    intent_disambiguation_enabled,
 )
 from .chatbot_hitl_session_store import (
     create_chatbot_hitl_resume_session,
@@ -540,6 +546,10 @@ class ChatbotLangGraphRunner:
             "hitl_kind": "",
             "hitl_original_query": "",
             "hitl_resume_action": "",
+            "hitl_choice_label": "",
+            "intent_hitl_round": 0,
+            "disambiguation_analysis": "",
+            "disambiguation_options": [],
             "human_interactions": [],
             "nl2sql_retry_count": 0,
             "nl2sql_skip_cache": False,
@@ -607,13 +617,42 @@ class ChatbotLangGraphRunner:
         m = self._merge_graph_state
         kind = str(state.get("hitl_kind") or "")
         action = str(state.get("hitl_resume_action") or "")
+        if kind == HITL_KIND_INTENT_DISAMBIGUATION:
+            # 点选消歧选项后：已写入 confirmed_route，直接路由，不再意图 HITL
+            route = self._route_by_intent(state)
+            return await self._execute_route(state, route)
         if kind == "intent_route_confirm":
             if action == ACTION_ROUTE_CLARIFY:
                 state = m(state, await self._node_intent_classify(state))
                 state = m(state, await self._node_fault_case_gate(state))
                 if should_trigger_intent_hitl(state):
-                    state = m(state, prepare_intent_hitl_patch(state))
-                    return state
+                    if intent_disambiguation_enabled():
+                        disamb = await generate_intent_disambiguation(
+                            query=str(state.get("query") or ""),
+                            intent_label=str(state.get("intent_label") or ""),
+                            intent_confidence=float(state.get("intent_confidence") or 0.0),
+                            intent_reason=str(state.get("intent_reason") or ""),
+                            history_summary=str(state.get("intent_history_summary") or ""),
+                            llm_client=self._llm,
+                            user_id=str(state.get("user_id") or "") or None,
+                        )
+                        state = m(
+                            state,
+                            prepare_intent_disambiguation_hitl_patch(
+                                state,
+                                analysis=str(disamb.get("analysis") or ""),
+                                options=list(disamb.get("options") or []),
+                            ),
+                        )
+                        return state
+                    # 消歧关闭：已走过一轮意图 HITL，不再重复三路由，默认走知识库
+                    state = dict(state)
+                    state["confirmed_route"] = "kb_qa"
+                    state["intent_label"] = "kb_qa"
+                    state["intent_hitl_round"] = max(
+                        2, int(state.get("intent_hitl_round") or 0)
+                    )
+                    return await self._execute_route(state, "kb_qa")
                 route = self._route_by_intent(state)
                 return await self._execute_route(state, route)
             route = self._route_by_intent(state)
@@ -1423,12 +1462,14 @@ class ChatbotLangGraphRunner:
         user_id: str,
         session_id: str,
         action: str,
+        *,
+        label: str | None = None,
     ) -> None:
-        label = hitl_button_label(action) or action
+        choice_label = (label or "").strip() or hitl_button_label(action) or action
         self._conv.append_user_message(
             user_id,
             session_id,
-            format_hitl_user_choice_message(action=action, label=label),
+            format_hitl_user_choice_message(action=action, label=choice_label),
         )
 
     async def _emit_hitl_events(
@@ -1487,7 +1528,12 @@ class ChatbotLangGraphRunner:
             yield {"type": "finished", "meta": {"status": "failed", "error": str(exc)}}
             return
         delete_chatbot_hitl_resume_session(resume_token)
-        self._persist_resume_user_choice(user_id, session_id, action)
+        self._persist_resume_user_choice(
+            user_id,
+            session_id,
+            action,
+            label=str(state.get("hitl_choice_label") or "") or None,
+        )
 
         req = ChatRequest(
             user_id=user_id,

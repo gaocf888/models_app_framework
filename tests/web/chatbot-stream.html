@@ -301,6 +301,8 @@
       { id: "nl2sql_retry", label: "重试查数" },
       { id: "fallback_kb_qa", label: "基于知识库分析" },
     ],
+    // 消歧按钮由服务端动态下发；勿回落到三路由
+    intent_disambiguation_suggest: [],
   };
 
   function defaultButtonsForHitlKind(kind) {
@@ -512,7 +514,8 @@
     setBusy(true);
     const url = baseUrl() + "/chatbot/chat/resume-stream";
     const payload = {};
-    if (refined) payload.refined_query = refined;
+    // 仅 route_clarify 必填/传递 refined_query；其它按钮不附带，避免误改问句
+    if (action === "route_clarify" && refined) payload.refined_query = refined;
     const body = {
       user_id: $("userId").value.trim(),
       session_id: $("sessionId").value.trim(),

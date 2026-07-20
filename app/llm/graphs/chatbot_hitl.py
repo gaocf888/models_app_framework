@@ -1,7 +1,8 @@
-"""智能客服人机协同（HITL）：意图路由确认与 NL2SQL 生成失败降级。"""
+"""智能客服人机协同（HITL）：意图路由确认、意图消歧与 NL2SQL 生成失败降级。"""
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -9,9 +10,11 @@ from app.core.config import get_app_config
 from app.llm.graphs.chatbot_hitl_display import (
     ACTION_FALLBACK_KB_QA,
     ACTION_NL2SQL_RETRY,
+    ACTION_PICK_DISAMBIGUATION_OPTION,
     ACTION_ROUTE_CLARIFY,
     ACTION_ROUTE_DATA_QUERY,
     ACTION_ROUTE_KB_QA,
+    HITL_KIND_INTENT_DISAMBIGUATION,
     HITL_KIND_INTENT_ROUTE,
     HITL_KIND_NL2SQL_GEN_FAILED,
     build_hitl_interrupt_payload,
@@ -21,6 +24,7 @@ from app.llm.graphs.chatbot_intent_rules import _has_conceptual, _has_data
 
 _DATA_HINT_WORDS = ("多少", "列表", "查询", "当前", "台账", "统计", "记录", "查一下", "查下")
 _CONCEPT_HINT_WORDS = ("为什么", "原因", "机理", "原理", "如何形成", "如何预防", "标准", "规定")
+_PICK_DISAMBIGUATION_RE = re.compile(r"^pick_disambiguation_(\d+)$")
 
 
 class ChatbotHitlValidationError(ValueError):
@@ -48,6 +52,10 @@ def should_trigger_intent_hitl(state: dict[str, Any]) -> bool:
     if not intent_hitl_enabled():
         return False
     if state.get("confirmed_route"):
+        return False
+    round_n = int(state.get("intent_hitl_round") or 0)
+    max_rounds = max(1, int(getattr(_cfg(), "intent_hitl_max_rounds", 2)))
+    if round_n >= max_rounds:
         return False
     label = str(state.get("intent_label") or "kb_qa").lower()
     if label == "clarify":
@@ -95,8 +103,30 @@ def prepare_intent_hitl_patch(state: dict[str, Any]) -> dict[str, Any]:
         "pending_hitl": True,
         "hitl_kind": HITL_KIND_INTENT_ROUTE,
         "hitl_original_query": original,
+        "intent_hitl_round": 1,
         "status": "awaiting_hitl",
         "terminate_reason": "hitl_intent_confirm",
+        "answer_text": "",
+        "llm_messages": [],
+    }
+
+
+def prepare_intent_disambiguation_hitl_patch(
+    state: dict[str, Any],
+    *,
+    analysis: str,
+    options: list[dict[str, Any]],
+) -> dict[str, Any]:
+    original = str(state.get("query") or "").strip()
+    return {
+        "pending_hitl": True,
+        "hitl_kind": HITL_KIND_INTENT_DISAMBIGUATION,
+        "hitl_original_query": original,
+        "intent_hitl_round": 2,
+        "disambiguation_analysis": (analysis or "").strip(),
+        "disambiguation_options": list(options or []),
+        "status": "awaiting_hitl",
+        "terminate_reason": "hitl_intent_disambiguation",
         "answer_text": "",
         "llm_messages": [],
     }
@@ -134,6 +164,19 @@ def build_nl2sql_retry_hint(fail_reason: str | None) -> str:
     )
 
 
+def _resolve_disambiguation_index(action: str, payload: dict[str, Any]) -> int | None:
+    if action == ACTION_PICK_DISAMBIGUATION_OPTION:
+        raw = payload.get("option_index")
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+    m = _PICK_DISAMBIGUATION_RE.match(action)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def apply_chatbot_hitl_action(
     state: dict[str, Any],
     *,
@@ -155,8 +198,10 @@ def apply_chatbot_hitl_action(
     out["pending_hitl"] = False
     out["hitl_resume_action"] = action
     out["status"] = "intented"
+    out["hitl_choice_label"] = hitl_button_label(action) or action
 
     refined = str(payload.get("refined_query") or "").strip()
+    disambiguation_index = _resolve_disambiguation_index(action, payload)
 
     if action == ACTION_ROUTE_DATA_QUERY:
         out["confirmed_route"] = "data_query"
@@ -174,6 +219,24 @@ def apply_chatbot_hitl_action(
         out["query"] = refined
         out["confirmed_route"] = ""
         out["intent_prev_task_type"] = "after_intent_confirm"
+        out["hitl_choice_label"] = "我先补充问题"
+    elif disambiguation_index is not None:
+        options = list(out.get("disambiguation_options") or [])
+        if disambiguation_index < 0 or disambiguation_index >= len(options):
+            raise ChatbotHitlValidationError(
+                f"invalid disambiguation option_index: {disambiguation_index}"
+            )
+        opt = options[disambiguation_index] if isinstance(options[disambiguation_index], dict) else {}
+        opt_query = str(opt.get("query") or "").strip()
+        route_hint = str(opt.get("route_hint") or "").strip().lower()
+        if not opt_query or route_hint not in {"data_query", "kb_qa"}:
+            raise ChatbotHitlValidationError("disambiguation option missing query/route_hint")
+        out["query"] = opt_query
+        out["confirmed_route"] = route_hint
+        out["intent_label"] = route_hint  # type: ignore[assignment]
+        out["intent_prev_task_type"] = "after_intent_confirm"
+        out["intent_hitl_round"] = max(2, int(out.get("intent_hitl_round") or 0))
+        out["hitl_choice_label"] = str(opt.get("title") or opt_query).strip()
     elif action == ACTION_NL2SQL_RETRY:
         out["confirmed_route"] = "data_query"
         out["intent_label"] = "data_query"

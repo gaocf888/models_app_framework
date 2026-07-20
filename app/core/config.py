@@ -455,10 +455,13 @@ class ChatbotConfig:
     checkpoint_backend: str = "none"
     checkpoint_redis_url: str | None = None
     checkpoint_namespace: str = "chatbot_graph"
-    # 人机协同（意图边界确认、NL2SQL 生成失败降级）
+    # 人机协同（意图边界确认、意图消歧、NL2SQL 生成失败降级）
     hitl_enabled: bool = False
     intent_hitl_enabled: bool = True
     intent_hitl_min_confidence: float = 0.75
+    intent_disambiguation_enabled: bool = True
+    intent_disambiguation_timeout_sec: float = 8.0
+    intent_hitl_max_rounds: int = 2
     nl2sql_hitl_enabled: bool = True
     nl2sql_hitl_max_retries: int = 1
     hitl_resume_ttl_seconds: int = 1800
@@ -1243,6 +1246,12 @@ def _load_from_env() -> AppConfig:
         intent_hitl_min_confidence=max(
             0.0, min(1.0, float(os.getenv("CHATBOT_INTENT_HITL_MIN_CONF", "0.75")))
         ),
+        intent_disambiguation_enabled=os.getenv("CHATBOT_INTENT_DISAMBIGUATION_ENABLED", "true").lower()
+        == "true",
+        intent_disambiguation_timeout_sec=max(
+            3.0, float(os.getenv("CHATBOT_INTENT_DISAMBIGUATION_TIMEOUT_SEC", "8"))
+        ),
+        intent_hitl_max_rounds=max(1, int(os.getenv("CHATBOT_INTENT_HITL_MAX_ROUNDS", "2"))),
         nl2sql_hitl_enabled=os.getenv("CHATBOT_NL2SQL_HITL_ENABLED", "true").lower() == "true",
         nl2sql_hitl_max_retries=max(0, int(os.getenv("CHATBOT_NL2SQL_HITL_MAX_RETRIES", "1"))),
         hitl_resume_ttl_seconds=max(60, int(os.getenv("CHATBOT_HITL_RESUME_TTL_SEC", "1800"))),

@@ -777,7 +777,8 @@ flowchart LR
 
 - 时机：意图分类后、分支路由前。
 - 窄触发：低置信、混合/歧义 reason、查数与概念词互相交叉等（`should_trigger_intent_hitl`）；高置信启发式、已确认路由、澄清、带图等跳过。
-- 按钮：`route_data_query` / `route_kb_qa` / `route_clarify`（补充问句时 **必填** `payload.refined_query`，重新意图分类后路由，不走固定澄清话术）。
+- 按钮：`route_data_query` / `route_kb_qa` / `route_clarify`（补充问句时 **必填** `payload.refined_query`；若重分类仍失败则进入 `intent_disambiguation_suggest`）。
+- 二次消歧：LLM（或规则兜底）生成 3 个候选问句；点选后按 `route_hint` 直路由，不再意图分类。
 
 **NL2SQL 生成失败（`nl2sql_gen_failed`）**
 
@@ -795,7 +796,10 @@ flowchart LR
     IH -->|no| Route["route by intent"]
     Pause1 --> Resume["/chat/resume-stream"]
     Resume -->|route_clarify| ReIntent["re intent_classify"]
-    ReIntent --> Route
+    ReIntent -->|仍模糊| Disamb["intent_disambiguation_suggest"]
+    Disamb --> Pick["pick option → confirmed_route"]
+    Pick --> Route
+    ReIntent -->|清晰| Route
     Resume -->|其它 action| Route
     Route -->|data_query| SQL["nl2sql_answer"]
     Route -->|kb_qa| RAG["RAG path"]
