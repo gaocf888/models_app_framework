@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.conversation.ids import validate_session_id, validate_user_id
 
@@ -317,8 +317,16 @@ class ChatbotHitlResumeRequest(BaseModel):
     )
     payload: dict[str, Any] = Field(
         default_factory=dict,
-        description="可选补充，如 refined_query",
+        description="补充参数；route_clarify 时 refined_query 必填，其它 action 可选 refined_query 覆盖问句",
     )
+
+    @model_validator(mode="after")
+    def _validate_route_clarify_refined_query(self) -> "ChatbotHitlResumeRequest":
+        if self.action == "route_clarify":
+            refined = str((self.payload or {}).get("refined_query") or "").strip()
+            if not refined:
+                raise ValueError("refined_query is required in payload for route_clarify")
+        return self
 
     @field_validator("user_id")
     @classmethod

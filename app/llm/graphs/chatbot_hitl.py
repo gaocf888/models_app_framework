@@ -23,6 +23,10 @@ _DATA_HINT_WORDS = ("多少", "列表", "查询", "当前", "台账", "统计", 
 _CONCEPT_HINT_WORDS = ("为什么", "原因", "机理", "原理", "如何形成", "如何预防", "标准", "规定")
 
 
+class ChatbotHitlValidationError(ValueError):
+    """HITL 续跑参数校验失败（如 route_clarify 缺少 refined_query）。"""
+
+
 def _cfg():
     return get_app_config().chatbot
 
@@ -165,8 +169,11 @@ def apply_chatbot_hitl_action(
         if refined:
             out["query"] = refined
     elif action == ACTION_ROUTE_CLARIFY:
-        out["confirmed_route"] = "clarify"
-        out["intent_label"] = "clarify"
+        if not refined:
+            raise ChatbotHitlValidationError("refined_query is required for route_clarify")
+        out["query"] = refined
+        out["confirmed_route"] = ""
+        out["intent_prev_task_type"] = "after_intent_confirm"
     elif action == ACTION_NL2SQL_RETRY:
         out["confirmed_route"] = "data_query"
         out["intent_label"] = "data_query"

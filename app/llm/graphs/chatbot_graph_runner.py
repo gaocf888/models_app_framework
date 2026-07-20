@@ -21,6 +21,7 @@ from .chatbot_citation_stream import CitationStreamParser, citation_stream_enabl
 from .chatbot_follow_up import build_suggested_questions
 from .chatbot_graph_state import ChatbotGraphState
 from .chatbot_hitl import (
+    ChatbotHitlValidationError,
     apply_chatbot_hitl_action,
     build_hitl_sse_event,
     hitl_button_label,
@@ -31,6 +32,7 @@ from .chatbot_hitl import (
     should_trigger_nl2sql_hitl,
 )
 from .chatbot_hitl_display import (
+    ACTION_ROUTE_CLARIFY,
     build_hitl_interrupt_payload,
     format_hitl_assistant_message,
     format_hitl_user_choice_message,
@@ -606,6 +608,14 @@ class ChatbotLangGraphRunner:
         kind = str(state.get("hitl_kind") or "")
         action = str(state.get("hitl_resume_action") or "")
         if kind == "intent_route_confirm":
+            if action == ACTION_ROUTE_CLARIFY:
+                state = m(state, await self._node_intent_classify(state))
+                state = m(state, await self._node_fault_case_gate(state))
+                if should_trigger_intent_hitl(state):
+                    state = m(state, prepare_intent_hitl_patch(state))
+                    return state
+                route = self._route_by_intent(state)
+                return await self._execute_route(state, route)
             route = self._route_by_intent(state)
             return await self._execute_route(state, route)
         if kind == "nl2sql_gen_failed":
@@ -1470,7 +1480,12 @@ class ChatbotLangGraphRunner:
             return
 
         state: ChatbotGraphState = dict(session.state_snapshot)  # type: ignore[assignment]
-        state = apply_chatbot_hitl_action(state, action=action, payload=payload or {})  # type: ignore[assignment]
+        try:
+            state = apply_chatbot_hitl_action(state, action=action, payload=payload or {})  # type: ignore[assignment]
+        except ChatbotHitlValidationError as exc:
+            yield {"type": "error", "error": str(exc)}
+            yield {"type": "finished", "meta": {"status": "failed", "error": str(exc)}}
+            return
         delete_chatbot_hitl_resume_session(resume_token)
         self._persist_resume_user_choice(user_id, session_id, action)
 

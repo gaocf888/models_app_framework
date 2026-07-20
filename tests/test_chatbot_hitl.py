@@ -9,8 +9,10 @@ import pytest
 from app.llm.graphs.chatbot_hitl import (
     ACTION_FALLBACK_KB_QA,
     ACTION_NL2SQL_RETRY,
+    ACTION_ROUTE_CLARIFY,
     ACTION_ROUTE_DATA_QUERY,
     ACTION_ROUTE_KB_QA,
+    ChatbotHitlValidationError,
     apply_chatbot_hitl_action,
     build_nl2sql_retry_hint,
     should_trigger_intent_hitl,
@@ -155,6 +157,43 @@ def test_apply_route_kb_qa_with_refined_query():
         payload={"refined_query": "改写后的问句"},
     )
     assert out["query"] == "改写后的问句"
+
+
+def test_apply_route_clarify_requires_refined_query():
+    with pytest.raises(ChatbotHitlValidationError, match="refined_query is required"):
+        apply_chatbot_hitl_action(
+            {"query": "原问句", "intent_label": "kb_qa"},
+            action=ACTION_ROUTE_CLARIFY,
+        )
+
+
+def test_apply_route_clarify_sets_query_and_clears_confirmed_route():
+    out = apply_chatbot_hitl_action(
+        {
+            "query": "原问句",
+            "intent_label": "kb_qa",
+            "confirmed_route": "kb_qa",
+        },
+        action=ACTION_ROUTE_CLARIFY,
+        payload={"refined_query": "  补充后的完整问句  "},
+    )
+    assert out["query"] == "补充后的完整问句"
+    assert out.get("confirmed_route") == ""
+    assert out["intent_prev_task_type"] == "after_intent_confirm"
+    assert out.get("intent_label") != "clarify"
+
+
+def test_chatbot_hitl_resume_request_route_clarify_requires_refined_query():
+    from app.models.chatbot import ChatbotHitlResumeRequest
+
+    with pytest.raises(ValueError, match="refined_query is required"):
+        ChatbotHitlResumeRequest(
+            user_id="u1",
+            session_id="s1",
+            resume_token="cb_rt_test",
+            action="route_clarify",
+            payload={},
+        )
 
 
 @pytest.mark.parametrize("action", [ACTION_ROUTE_DATA_QUERY, ACTION_ROUTE_KB_QA, ACTION_NL2SQL_RETRY])

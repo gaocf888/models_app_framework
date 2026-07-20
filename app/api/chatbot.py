@@ -307,7 +307,8 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
               结束帧 ``meta.resume_token``；单次有效，过期后返回错误帧。
             - ``action`` (str, 必填)：用户选择的按钮 id，取值见下方 **action 枚举**。
             - ``payload`` (dict, 可选)：补充参数，常用键：
-              - ``refined_query`` (str)：改写后的问句；意图确认或 NL2SQL 重试时可覆盖原问句。
+              - ``refined_query`` (str)：改写/补充后的问句。``route_clarify`` 时**必填**；
+                其它 action 可选，若提供则覆盖原 ``query``。
         request (Request): Starlette 请求对象，用于检测客户端断开。
 
     Returns:
@@ -339,7 +340,8 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
 
     - ``route_data_query``：确认为结构化查数，走 NL2SQL；
     - ``route_kb_qa``：确认为知识库问答，走 RAG；
-    - ``route_clarify``：用户补充问题，返回澄清话术。
+    - ``route_clarify``：用户在问句框补充完整问题（``payload.refined_query`` **必填**），
+      系统更新 ``query`` 后**重新意图分类**并按新意图路由（查数 / 知识库等），不返回固定澄清话术。
 
     NL2SQL 生成失败（``hitl_kind=nl2sql_gen_failed``）：
 
@@ -365,11 +367,22 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
              "action": "route_data_query",
              "payload": {}
            }
+
+       选择「我先补充问题」（``route_clarify``）时，须在 ``payload.refined_query`` 传入补充后的完整问句
+       （测试页 ``tests/web/chatbot-stream.html`` 复用上方 ``#query`` 问句框，无需新增控件）::
+
+           {
+             "user_id": "u1",
+             "session_id": "s1",
+             "resume_token": "cb_rt_xxx",
+             "action": "route_clarify",
+             "payload": { "refined_query": "1号炉当前负荷是多少？" }
+           }
         **说明：**
         1）resume_token -- 上述保存得resume_token；action -- 上述保存的ui_buttons中的id
 		- （意图识别失败对应ui_buttons中的id：route_data_query(查实时/台账数据)、route_kb_qa(基于知识库分析)、route_clarify(我先补充问题)）
 		- （查询数据失败对应ui_buttons中的id：nl2sql_retry(重试查数)、fallback_kb_qa(基于知识库分析)）
-       2）针对 意图识别失败，action传route_clarify时(即用户点击“我先补充问题”)，可在 ``payload.refined_query`` 传入用户补充后的问句。
+       2）``route_clarify`` 时 ``payload.refined_query`` **必填**（前后端均校验）；其它 action 可选 ``refined_query`` 覆盖原问句。
     4. **处理续跑 SSE**：与 ``/chat/stream`` 相同拼接 ``delta`` / ``citation_ref``；
        若再次收到 ``chatbot_hitl_required``，重复步骤 2–3（使用新的 ``resume_token``）。
     5. **结束**：收到 ``finished: true`` 后读取 ``meta``（``used_nl2sql``、``rag_citations`` 等）；

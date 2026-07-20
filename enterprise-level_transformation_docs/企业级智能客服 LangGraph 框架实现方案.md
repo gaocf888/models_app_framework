@@ -777,7 +777,7 @@ flowchart LR
 
 - 时机：意图分类后、分支路由前。
 - 窄触发：低置信、混合/歧义 reason、查数与概念词互相交叉等（`should_trigger_intent_hitl`）；高置信启发式、已确认路由、澄清、带图等跳过。
-- 按钮：`route_data_query` / `route_kb_qa` / `route_clarify`。
+- 按钮：`route_data_query` / `route_kb_qa` / `route_clarify`（补充问句时 **必填** `payload.refined_query`，重新意图分类后路由，不走固定澄清话术）。
 
 **NL2SQL 生成失败（`nl2sql_gen_failed`）**
 
@@ -794,7 +794,9 @@ flowchart LR
     IH -->|yes| Pause1["chatbot_hitl_required"]
     IH -->|no| Route["route by intent"]
     Pause1 --> Resume["/chat/resume-stream"]
-    Resume --> Route
+    Resume -->|route_clarify| ReIntent["re intent_classify"]
+    ReIntent --> Route
+    Resume -->|其它 action| Route
     Route -->|data_query| SQL["nl2sql_answer"]
     Route -->|kb_qa| RAG["RAG path"]
     Route -->|clarify| CL["clarify"]

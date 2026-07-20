@@ -496,6 +496,11 @@
 
   async function resumeHitl(action) {
     if (!pendingHitl || !pendingHitl.resume_token || hitlBusy) return;
+    const refined = $("query").value.trim();
+    if (action === "route_clarify" && !refined) {
+      showErr("选择「我先补充问题」时，请在上方问句框填写补充后的完整问题。");
+      return;
+    }
     hitlBusy = true;
     $("hitlButtons").querySelectorAll("button").forEach((b) => (b.disabled = true));
     appendStatus("HITL 续跑中… action=" + action);
@@ -504,12 +509,14 @@
     abortCtrl = new AbortController();
     setBusy(true);
     const url = baseUrl() + "/chatbot/chat/resume-stream";
+    const payload = {};
+    if (refined) payload.refined_query = refined;
     const body = {
       user_id: $("userId").value.trim(),
       session_id: $("sessionId").value.trim(),
       resume_token: pendingHitl.resume_token,
       action: action,
-      payload: {},
+      payload: payload,
     };
     try {
       const resp = await fetch(url, {
