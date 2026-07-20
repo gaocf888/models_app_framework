@@ -488,7 +488,9 @@
       b.className = "hitl-action";
       b.textContent = btn.label || btn.id;
       b.dataset.action = btn.id;
-      b.disabled = hitlBusy;
+      // 续跑 SSE 中再次触发 HITL 时 hitlBusy 仍为 true；按钮应对用户可选。
+      // 防重入由 resumeHitl 入口的 hitlBusy 判断负责。
+      b.disabled = false;
       b.addEventListener("click", () => resumeHitl(btn.id));
       box.appendChild(b);
     });
@@ -542,6 +544,12 @@
       setBusy(false);
       $("btnStop").disabled = true;
       abortCtrl = null;
+      // 续跑中若再次 pending_hitl，按钮可能在 hitlBusy=true 时已渲染；结束后确保可点
+      if (pendingHitl) {
+        $("hitlButtons").querySelectorAll("button").forEach((b) => {
+          b.disabled = false;
+        });
+      }
     }
   }
 
