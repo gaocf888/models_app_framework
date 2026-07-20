@@ -39,7 +39,7 @@ def _hitl_on(**overrides):
         "intent_hitl_enabled": True,
         "intent_hitl_min_confidence": 0.75,
         "intent_disambiguation_enabled": True,
-        "intent_disambiguation_timeout_sec": 8.0,
+        "intent_disambiguation_timeout_sec": 15.0,
         "intent_hitl_max_rounds": 2,
         "nl2sql_hitl_enabled": True,
         "nl2sql_hitl_max_retries": 1,
@@ -272,10 +272,12 @@ def test_prepare_disambiguation_hitl_patch():
         {"query": "混合问"},
         analysis=fb["analysis"],
         options=fb["options"],
+        source="fallback_rules",
     )
     assert patch_state["hitl_kind"] == HITL_KIND_INTENT_DISAMBIGUATION
     assert patch_state["intent_hitl_round"] == 2
     assert len(patch_state["disambiguation_options"]) == 3
+    assert patch_state["disambiguation_source"] == "fallback_rules"
 
 
 def test_build_hitl_payload_disambiguation_dynamic_buttons():
@@ -284,6 +286,7 @@ def test_build_hitl_payload_disambiguation_dynamic_buttons():
         "hitl_kind": HITL_KIND_INTENT_DISAMBIGUATION,
         "disambiguation_analysis": fb["analysis"],
         "disambiguation_options": fb["options"],
+        "disambiguation_source": "fallback_rules",
         "query": "混合问",
     }
     payload = build_hitl_interrupt_payload(state)
@@ -291,6 +294,7 @@ def test_build_hitl_payload_disambiguation_dynamic_buttons():
     assert len(payload["ui_buttons"]) == 3
     assert payload["ui_buttons"][0]["id"] == "pick_disambiguation_0"
     assert payload["ui_buttons"][0]["id"] != "route_data_query"
+    assert payload["context"]["disambiguation_source"] == "fallback_rules"
 
 
 def test_apply_pick_disambiguation_by_button_id():

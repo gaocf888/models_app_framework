@@ -59,6 +59,7 @@ class ChatbotGraphState(TypedDict, total=False):
     intent_hitl_round: int
     disambiguation_analysis: str
     disambiguation_options: List[Dict[str, Any]]
+    disambiguation_source: str
     human_interactions: List[Dict[str, Any]]
     nl2sql_retry_count: int
     nl2sql_skip_cache: bool

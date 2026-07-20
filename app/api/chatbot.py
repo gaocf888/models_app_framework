@@ -334,7 +334,9 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
     - ``prompt``：展示给用户的确认话术（已随 ``delta`` 写入会话）；
     - ``ui_buttons``：按钮列表，每项 ``{"id": "<action>", "label": "<展示文案>"}``；
     - ``context``：辅助上下文（``intent_label``、``intent_confidence``、``original_query``、
-      ``nl2sql_fail_reason``、``disambiguation_options`` 等），供前端展示详情，非必填回传。
+      ``nl2sql_fail_reason``、``disambiguation_options``、``disambiguation_source`` 等），
+      供前端展示详情，非必填回传。``disambiguation_source`` 取值如
+      ``llm`` / ``fallback_rules`` / ``llm_partial_fallback``，用于区分消歧来源。
 
     **action 枚举（须与 ui_buttons[].id 一致）**
 

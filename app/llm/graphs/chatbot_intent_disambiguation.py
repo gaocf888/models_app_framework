@@ -174,7 +174,7 @@ async def generate_intent_disambiguation(
         return build_fallback_disambiguation(query=q)
 
     cfg = get_app_config().chatbot
-    timeout_sec = max(3.0, float(getattr(cfg, "intent_disambiguation_timeout_sec", 8.0)))
+    timeout_sec = max(3.0, float(getattr(cfg, "intent_disambiguation_timeout_sec", 15.0)))
     system = _load_system_prompt(user_id=user_id)
     user_msg = (
         f"用户问题：{q}\n"
@@ -204,5 +204,13 @@ async def generate_intent_disambiguation(
         )
         return result
     except Exception as exc:  # noqa: BLE001
-        logger.warning("intent disambiguation LLM failed: %s", exc)
-        return build_fallback_disambiguation(query=q)
+        logger.warning(
+            "intent disambiguation LLM failed type=%s err=%r timeout_sec=%.1f",
+            type(exc).__name__,
+            exc,
+            timeout_sec,
+            exc_info=True,
+        )
+        fb = build_fallback_disambiguation(query=q)
+        fb["source"] = "fallback_rules"
+        return fb

@@ -146,5 +146,8 @@ def build_hitl_interrupt_payload(state: dict[str, Any]) -> dict[str, Any]:
             "nl2sql_fail_reason": state.get("nl2sql_fail_reason"),
             "intent_hitl_round": state.get("intent_hitl_round"),
             "disambiguation_options": options if kind == HITL_KIND_INTENT_DISAMBIGUATION else None,
+            "disambiguation_source": (
+                state.get("disambiguation_source") if kind == HITL_KIND_INTENT_DISAMBIGUATION else None
+            ),
         },
     }

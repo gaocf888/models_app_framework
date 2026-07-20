@@ -116,6 +116,7 @@ def prepare_intent_disambiguation_hitl_patch(
     *,
     analysis: str,
     options: list[dict[str, Any]],
+    source: str | None = None,
 ) -> dict[str, Any]:
     original = str(state.get("query") or "").strip()
     return {
@@ -125,6 +126,7 @@ def prepare_intent_disambiguation_hitl_patch(
         "intent_hitl_round": 2,
         "disambiguation_analysis": (analysis or "").strip(),
         "disambiguation_options": list(options or []),
+        "disambiguation_source": (source or "unknown").strip() or "unknown",
         "status": "awaiting_hitl",
         "terminate_reason": "hitl_intent_disambiguation",
         "answer_text": "",

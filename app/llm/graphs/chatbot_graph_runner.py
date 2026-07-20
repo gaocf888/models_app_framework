@@ -550,6 +550,7 @@ class ChatbotLangGraphRunner:
             "intent_hitl_round": 0,
             "disambiguation_analysis": "",
             "disambiguation_options": [],
+            "disambiguation_source": "",
             "human_interactions": [],
             "nl2sql_retry_count": 0,
             "nl2sql_skip_cache": False,
@@ -642,6 +643,7 @@ class ChatbotLangGraphRunner:
                                 state,
                                 analysis=str(disamb.get("analysis") or ""),
                                 options=list(disamb.get("options") or []),
+                                source=str(disamb.get("source") or "unknown"),
                             ),
                         )
                         return state
