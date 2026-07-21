@@ -97,7 +97,7 @@ NL2SQL后续效果优化方向：
 2. 构造 **`NL2SQLQueryRequest`**，调用 **`NL2SQLService.query(..., record_conversation=False)`**，复用 **与 HTTP 相同的步骤 3～4**（含校验与执行闭环）。  
 3. 将 `sql` 与 `rows` 交给 **`summarize_nl2sql_with_llm`** 生成用户可见的自然语言回答。  
 4. Runner **`finalize`** 输出中带 `used_nl2sql`、`nl2sql_sql` 等 meta。  
-5. **可选人机协同**：若开启 `CHATBOT_HITL_ENABLED` 且 **SQL 生成失败**，可中断下发 `chatbot_hitl_required`（`hitl_kind=nl2sql_gen_failed`），用户经 `POST /chatbot/chat/resume-stream` 选择「重试查数」或「基于知识库分析」。意图边界确认（查数 vs RAG）见同链路 **intent HITL**。策略与流程图：`framework-guide/智能客服整体实现技术说明.md` **§12**、`enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` **§17**。
+5. **可选人机协同**：若开启 `CHATBOT_HITL_ENABLED` 且 **SQL 生成失败**，可中断下发 `chatbot_hitl_required`（`hitl_kind=nl2sql_gen_failed`），用户经 `POST /chatbot/chat/resume-stream` 选择「重试查数」或「基于知识库分析」。同链路还有 **意图边界确认** 与 **二次消歧候选问法**（`intent_route_confirm` / `intent_disambiguation_suggest`）。策略与流程图：`framework-guide/智能客服整体实现技术说明.md` **§12**、`enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` **§17**。
 
 ### 4.3 综合分析 V2 内嵌（`POST /analysis/run-with-nl2sql`）
 
@@ -356,7 +356,7 @@ flowchart TB
 | `docs/大小模型应用技术架构与实现方案.md` | §1 基础能力、§4.6 NL2SQL |
 | `docs/NL2SQL系统概要设计.md` | 产品与模块概要 |
 | `docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md` | 问句时间/范围解析、SQL 改写与环境变量 |
-| `enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` | `data_query` 与 NL2SQL 节点；**§17** HITL（生成失败 / 意图确认） |
+| `enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` | `data_query` 与 NL2SQL 节点；**§17** HITL（生成失败 / 意图确认 / 二次消歧） |
 | `framework-guide/智能客服整体实现技术说明.md` | 客服主链路与 **§12** HITL 实现说明 |
 | `enterprise-level_transformation_docs/企业级综合分析实现和使用说明.md` | **`run-with-nl2sql`** / **`run-with-nl2sql-stream`** / **`run-img-diag`** / **`run-img-diag-stream`** 编排、`acquire_data`、`_execute_data_plan` 与 NL2SQL 计划模板 |
 | `enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md` | **`img_diag`** 并行语义、占位符、`vision_findings` 与 **`parallel_lane_trace`** |
