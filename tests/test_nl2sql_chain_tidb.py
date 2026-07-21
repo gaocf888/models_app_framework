@@ -222,11 +222,21 @@ def test_rewrite_entity_scope_boiler_from_question() -> None:
         ("请分析二号机组昨天的超温", "2号锅炉"),
         ("请分析一号锅炉昨天的超温", "1号锅炉"),
         ("请分析一号机组昨天的超温", "1号锅炉"),
+        ("1号炉当前负荷是多少", "1号锅炉"),
+        ("请分析一号炉昨天的超温", "1号锅炉"),
+        ("请分析2号炉昨天的超温", "2号锅炉"),
     ],
 )
 def test_extract_boiler_scope_label_unit_aliases_to_boiler(question: str, expected: str) -> None:
     chain = _build_chain_for_unit()
     assert chain._extract_boiler_scope_label_from_question(question) == expected
+
+
+def test_extract_boiler_scope_label_does_not_match_lutang() -> None:
+    """无序号的「炉膛」不得误判为锅炉；带序号的「1号炉膛」应归一为 1号锅炉。"""
+    chain = _build_chain_for_unit()
+    assert chain._extract_boiler_scope_label_from_question("炉膛负压偏高怎么办") is None
+    assert chain._extract_boiler_scope_label_from_question("1号炉膛温度") == "1号锅炉"
 
 
 def test_rewrite_entity_scope_cn_boiler_index_to_arabic() -> None:

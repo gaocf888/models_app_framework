@@ -1968,7 +1968,8 @@ class NL2SQLChain:
     def _extract_boiler_scope_label_from_question(cls, question: str) -> str | None:
         """
         从问句解析锅炉范围（与 account_boiler.boiler_name 一致，统一为「N号锅炉」）。
-        用户若写「N号机组」「N#机组」「#N机组」「一号锅炉」等，均归一为「1号锅炉」形式。
+        用户若写「N号机组」「N号炉」「N号炉膛」「N#机组」「#N机组」「一号锅炉」等，均归一为「1号锅炉」形式。
+        「号炉」可带可选「膛」（1号炉膛），避免与无序号的「炉膛」混淆。
         """
         q = (question or "").strip()
         if not q:
@@ -1981,6 +1982,9 @@ class NL2SQLChain:
             r"([一二两三四五六七八九十百]+)号机组",
             r"(\d+)#机组",
             r"#(\d+)机组",
+            # 口语简称「1号炉 / 一号炉 / 1号炉膛」→「1号锅炉」（须在「号锅炉」之后匹配）
+            r"(\d+)号炉(?:膛)?",
+            r"([一二两三四五六七八九十百]+)号炉(?:膛)?",
         )
         for pat in unit_as_boiler_patterns:
             m = re.search(pat, q)
