@@ -2049,9 +2049,15 @@ class NL2SQLChain:
             time_intent_source=time_intent_source,
         )
 
-    # QA 模板中常见的示例锅炉名字面量（strict replay 需按问句全局替换）
+    # SQL 中常见的机组/锅炉字面量（含口语「号炉」）；改写为问句归一后的「N号锅炉」
     _BOILER_UNIT_LITERAL_IN_QUOTES = re.compile(
-        r"'(\d+号锅炉|[一二两三四五六七八九十百]+号锅炉)'"
+        r"'("
+        r"(?:\d+|[一二两三四五六七八九十百]+)号锅炉"
+        r"|(?:\d+|[一二两三四五六七八九十百]+)号机组"
+        r"|(?:\d+)#机组"
+        r"|#(?:\d+)机组"
+        r"|(?:\d+|[一二两三四五六七八九十百]+)号炉(?:膛)?"
+        r")'"
     )
 
     @staticmethod
@@ -2110,27 +2116,38 @@ class NL2SQLChain:
 
         if boiler := scopes.get("boiler"):
             safe = boiler.replace("'", "''")
+            # 等值：boiler_name='1号炉' / '2号机组' 等口语别名
             boiler_pat = re.compile(
-                r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*=\s*'([^']*锅炉[^']*)'"
+                r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*=\s*("
+                + self._BOILER_UNIT_LITERAL_IN_QUOTES.pattern
+                + r")"
             )
 
             def _boiler_repl(m: re.Match[str]) -> str:
                 col = m.group(1)
                 if "boiler" not in col.lower():
                     return m.group(0)
+                old = m.group(2).strip("'")
+                if old == boiler:
+                    return m.group(0)
                 notes.append("entity_scope_boiler_name")
                 return f"{col} = '{safe}'"
 
             rewritten = boiler_pat.sub(_boiler_repl, rewritten)
 
+            # LIKE CONCAT('%', '1号炉', '%') 等（缓存命中 SQL 常带口语字面量）
             like_concat_pat = re.compile(
                 r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s+LIKE\s+CONCAT\s*\(\s*'%'\s*,\s*"
-                r"'([^']*号锅炉[^']*)'\s*,\s*'%'\s*\)"
+                + self._BOILER_UNIT_LITERAL_IN_QUOTES.pattern
+                + r"\s*,\s*'%'\s*\)"
             )
 
             def _boiler_like_concat_repl(m: re.Match[str]) -> str:
                 col = m.group(1)
                 if "boiler" not in col.lower():
+                    return m.group(0)
+                old = m.group(2)
+                if old == boiler:
                     return m.group(0)
                 notes.append("entity_scope_boiler_name")
                 return f"{col} LIKE CONCAT('%', '{safe}', '%')"

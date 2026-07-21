@@ -298,6 +298,23 @@ def test_entity_scope_uses_time_intent_not_rag_guide_boiler_example() -> None:
     )
 
 
+def test_rewrite_entity_scope_rewrites_hao_lu_like_concat() -> None:
+    """缓存/LLM SQL 若写「1号炉」，改写须归一为「1号锅炉」（与 parse 一致）。"""
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT ab.boiler_name FROM account_boiler ab "
+        "WHERE ab.boiler_name LIKE CONCAT('%', '1号炉', '%')"
+    )
+    rewritten, notes = chain._rewrite_query_filters(
+        sql,
+        question="1号炉当前负荷是多少，为什么负荷波动影响燃烧？",
+        time_intent_source="1号炉当前负荷是多少，为什么负荷波动影响燃烧？",
+    )
+    assert "LIKE CONCAT('%', '1号锅炉', '%')" in rewritten
+    assert "'1号炉'" not in rewritten
+    assert "entity_scope_boiler_name" in notes
+
+
 def test_rewrite_entity_scope_boiler_like_concat_global() -> None:
     """QA strict replay 常见 LIKE CONCAT('%', '1号锅炉', '%') 应随问句替换为 2号锅炉。"""
     chain = _build_chain_for_unit()
