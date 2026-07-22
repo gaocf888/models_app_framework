@@ -116,8 +116,8 @@ services:
       vllm-external: {}
       rag-external: {}
       mineru-external: {}
-      paddle-layout-external: {}
-      face-milvus-external: {}
+#      paddle-layout-external: {}
+#      face-milvus-external: {}
       # 暂未部署Neo4j，对应网络注释掉
       # graph-external: {}
     volumes:
@@ -179,8 +179,8 @@ services:
       vllm-external: {}
       rag-external: {}
       mineru-external: {}
-      paddle-layout-external: {}
-      face-milvus-external: {}
+#      paddle-layout-external: {}
+#      face-milvus-external: {}
       # 暂未部署Neo4j，对应网络注释掉
       # graph-external: {}
     # 说明：原本使用 compose 的 `gpus: all` 字段声明 GPU 需求，
