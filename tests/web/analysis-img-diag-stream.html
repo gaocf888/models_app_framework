@@ -86,6 +86,51 @@
     button.primary:hover:not(:disabled) { background: var(--accent-hover); }
     button.secondary { background: var(--border); color: var(--text); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #uiButtons {
+      display: none;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      align-items: center;
+    }
+    #uiButtons.hitl-links {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.65rem;
+    }
+    #uiButtons a.hitl-link {
+      color: #93c5fd;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      line-height: 1.45;
+      max-width: 100%;
+    }
+    #uiButtons a.hitl-link:hover { color: #bfdbfe; }
+    #uiButtons a.hitl-link.is-disabled {
+      opacity: 0.5;
+      pointer-events: none;
+      cursor: not-allowed;
+    }
+    #uiButtons button.hitl-action {
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.875rem;
+      cursor: pointer;
+      font-weight: 500;
+      background: var(--accent);
+      color: #fff;
+    }
+    #uiButtons button.hitl-action.secondary {
+      background: var(--border);
+      color: var(--text);
+    }
+    #uiButtons button.hitl-action:hover:not(:disabled) { background: var(--accent-hover); }
+    #uiButtons button.hitl-action.secondary:hover:not(:disabled) { filter: brightness(1.08); }
+    #uiButtons button.hitl-action:disabled { opacity: 0.5; cursor: not-allowed; }
+    #uiButtonsHint { color: var(--muted); font-size: 0.8rem; }
     .out {
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -248,11 +293,8 @@
       <div id="uploadResult">（尚未上传）</div>
       <h2 style="margin-top: 1rem;">summary（HITL / Markdown 增量）</h2>
       <div id="answer"></div>
-      <div id="visionAckActions" class="actions" style="margin-top: 0.75rem; display: none;">
-        <button type="button" class="primary" id="btnVisionContinue" disabled>继续</button>
-        <span class="hint" id="visionAckHint">（等待 resume_token…）</span>
-      </div>
-      <div id="candidatePickActions" class="actions" style="margin-top: 0.75rem; display: none; flex-wrap: wrap; gap: 0.5rem;"></div>
+      <div id="uiButtons" class="actions" aria-live="polite"></div>
+      <div id="uiButtonsHint" class="hint" style="margin-top: 0.35rem; display: none;"></div>
       <h2 style="margin-top: 1rem;">知识来源 rag_citations（finished 帧，与智能客服同形）</h2>
       <div id="ragCitations">（尚未开始）</div>
       <h2 style="margin-top: 1rem;">末帧与 meta</h2>
@@ -282,7 +324,7 @@
   const QUERY_PLACEHOLDER_DEFAULT = "请识别图片缺陷并给出处置建议，位置是1号锅炉低温过热器A侧第2排第3根";
   const QUERY_PLACEHOLDER_HITL = "在此补充或修正机组/受热面，例如：水冷壁螺旋段后墙螺旋管组";
   const QUERY_PLACEHOLDER_VISION_ACK = "可选：输入「确认」或「继续」后点击下方按钮；或直接点「继续」";
-  const QUERY_PLACEHOLDER_CANDIDATE = "也可在此文本补充；优先点击下方候选项按钮";
+  const QUERY_PLACEHOLDER_CANDIDATE = "也可在此文本补充；优先点击下方候选项链接";
 
   function isVisionAckOnlyEvent(ev) {
     if (!ev) return false;
@@ -298,64 +340,112 @@
     return !!(ev && ev.hitl_mode === "scope_candidate_pick");
   }
 
-  function clearCandidatePickUi() {
-    const panel = $("candidatePickActions");
+  function clearUiButtons() {
+    const panel = $("uiButtons");
+    const hint = $("uiButtonsHint");
     panel.replaceChildren();
     panel.style.display = "none";
+    panel.classList.remove("hitl-links");
+    hint.style.display = "none";
+    hint.textContent = "";
     scopeCandidatePickMode = false;
   }
 
-  function updateCandidatePickUi(ev) {
-    const panel = $("candidatePickActions");
-    panel.replaceChildren();
-    if (!isScopeCandidatePickEvent(ev)) {
-      clearCandidatePickUi();
-      return;
-    }
-    scopeCandidatePickMode = true;
-    const buttons = Array.isArray(ev.ui_buttons) ? ev.ui_buttons : [];
-    if (!buttons.length) {
-      panel.style.display = "none";
-      return;
-    }
-    panel.style.display = "flex";
-    panel.style.alignItems = "center";
-    buttons.forEach((btnDef) => {
-      if (!btnDef || typeof btnDef !== "object") return;
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "primary";
-      b.textContent = String(btnDef.label || btnDef.id || "候选");
-      b.disabled = !scopeHitlWaiting || !scopeResumeToken;
-      b.addEventListener("click", async () => {
-        await runScopeResume(
-          String(btnDef.action || "confirm_scope"),
-          btnDef.payload && typeof btnDef.payload === "object" ? btnDef.payload : {}
-        );
-      });
-      panel.appendChild(b);
+  function setUiButtonsDisabled(disabled) {
+    $("uiButtons").querySelectorAll("button.hitl-action").forEach((b) => {
+      b.disabled = !!disabled;
+    });
+    $("uiButtons").querySelectorAll("a.hitl-link").forEach((a) => {
+      a.classList.toggle("is-disabled", !!disabled);
+      a.setAttribute("aria-disabled", disabled ? "true" : "false");
     });
   }
 
-  function updateVisionAckUi(ev) {
-    const panel = $("visionAckActions");
-    const btn = $("btnVisionContinue");
-    const hint = $("visionAckHint");
-    if (!isVisionAckOnlyEvent(ev)) {
-      visionAckOnlyMode = false;
-      panel.style.display = "none";
-      btn.disabled = true;
+  /**
+   * 按 SSE ui_buttons 渲染：
+   * - scope_candidate_pick → 链接（与客服意图消歧一致）
+   * - 其它（含 vision_ack_only）→ 按钮
+   */
+  function updateUiButtons(ev) {
+    const panel = $("uiButtons");
+    const hint = $("uiButtonsHint");
+    panel.replaceChildren();
+    panel.classList.remove("hitl-links");
+    if (!ev) {
+      clearUiButtons();
       return;
     }
-    visionAckOnlyMode = true;
+    let buttons = Array.isArray(ev.ui_buttons) ? ev.ui_buttons.filter((b) => b && typeof b === "object") : [];
+    // 兼容旧路径：vision_ack_only 未带 ui_buttons 时补「继续」
+    if (!buttons.length && isVisionAckOnlyEvent(ev)) {
+      buttons = [
+        {
+          id: "continue",
+          label: "继续",
+          variant: "primary",
+          action: "confirm_scope",
+          payload: {},
+          requires_input: false,
+        },
+      ];
+    }
+    if (!buttons.length) {
+      clearUiButtons();
+      return;
+    }
+
+    const asLinks = isScopeCandidatePickEvent(ev);
+    scopeCandidatePickMode = asLinks;
+    panel.classList.toggle("hitl-links", asLinks);
     panel.style.display = "flex";
-    panel.style.alignItems = "center";
-    panel.style.gap = "0.75rem";
-    const hasToken = !!(ev && ev.resume_token);
-    btn.disabled = !hasToken || !scopeHitlWaiting;
-    hint.textContent = hasToken
-      ? "可点击继续，或在 query 框输入「确认」后点右侧按钮"
-      : "（等待 resume_token…）";
+    const canClick = !!(scopeHitlWaiting && scopeResumeToken);
+
+    buttons.forEach((btnDef) => {
+      const label = String(btnDef.label || btnDef.id || "选项");
+      const action = String(btnDef.action || "confirm_scope");
+      const payload =
+        btnDef.payload && typeof btnDef.payload === "object" ? btnDef.payload : {};
+      if (asLinks) {
+        const a = document.createElement("a");
+        a.href = "#";
+        a.className = "hitl-link";
+        a.textContent = label;
+        if (btnDef.id) a.dataset.buttonId = String(btnDef.id);
+        a.setAttribute("aria-disabled", canClick ? "false" : "true");
+        if (!canClick) a.classList.add("is-disabled");
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          if (a.classList.contains("is-disabled")) return;
+          runScopeResume(action, payload);
+        });
+        panel.appendChild(a);
+      } else {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className =
+          "hitl-action" + (String(btnDef.variant || "") === "secondary" ? " secondary" : "");
+        b.textContent = label;
+        if (btnDef.id) b.dataset.buttonId = String(btnDef.id);
+        b.disabled = !canClick;
+        b.addEventListener("click", () => runScopeResume(action, payload));
+        panel.appendChild(b);
+      }
+    });
+
+    if (asLinks) {
+      hint.style.display = "block";
+      hint.textContent = canClick
+        ? "请点击上方候选项链接；也可在 query 框文本补充后点右侧「继续」按钮"
+        : "（等待 resume_token…）";
+    } else if (isVisionAckOnlyEvent(ev)) {
+      hint.style.display = "block";
+      hint.textContent = canClick
+        ? "可点击「继续」，或在 query 框输入「确认」后点右侧按钮"
+        : "（等待 resume_token…）";
+    } else {
+      hint.style.display = "none";
+      hint.textContent = "";
+    }
   }
 
   /** HITL 展示文案由后端 SSE 字段提供，测试页不做业务拼装。 */
@@ -381,21 +471,23 @@
     $("answer").textContent = text || "（后端未返回 HITL 展示文案）";
     $("query").value = "";
     if (isVisionAckOnlyEvent(ev)) {
+      visionAckOnlyMode = true;
       $("query").placeholder = QUERY_PLACEHOLDER_VISION_ACK;
       $("btnRun").textContent = BTN_RUN_LABEL_VISION_ACK;
       setStatus("图像可见分析已完成：可点「继续」，或在 query 输入确认文字后提交");
     } else if (isScopeCandidatePickEvent(ev)) {
+      visionAckOnlyMode = false;
       $("query").placeholder = QUERY_PLACEHOLDER_CANDIDATE;
       $("btnRun").textContent = BTN_RUN_LABEL_CANDIDATE;
-      setStatus("库未匹配候选点选：请点下方候选项，或在 query 文本补充后继续");
+      setStatus("库未匹配候选点选：请点击下方候选项链接，或在 query 文本补充后继续");
     } else {
+      visionAckOnlyMode = false;
       $("query").placeholder = QUERY_PLACEHOLDER_HITL;
       $("btnRun").textContent = BTN_RUN_LABEL_RESUME;
       setStatus("等待台账信息确认：请在 query 框补充后点击继续");
     }
     $("btnScopeAbort").disabled = false;
-    updateVisionAckUi(ev);
-    updateCandidatePickUi(ev);
+    updateUiButtons(ev);
     setBusy(false);
   }
 
@@ -406,8 +498,7 @@
     $("query").placeholder = QUERY_PLACEHOLDER_DEFAULT;
     $("btnRun").textContent = BTN_RUN_LABEL_START;
     $("btnScopeAbort").disabled = true;
-    updateVisionAckUi(null);
-    clearCandidatePickUi();
+    clearUiButtons();
   }
 
   function processSseEvents(onDelta) {
@@ -424,7 +515,7 @@
           lastVisionPreview = ev;
           const visionMsg = String(ev.vision_hitl_assistant_message || "").trim();
           $("answer").textContent = visionMsg || "（后端未返回视觉分析展示文案）";
-          updateVisionAckUi(ev);
+          updateUiButtons(ev);
           setStatus(
             isVisionAckOnlyEvent(ev)
               ? "已收到图像可见分析，等待 resume_token 后可点「继续」…"
@@ -691,6 +782,7 @@
     if (resumeImageUrls.length) resumePayload.image_urls = resumeImageUrls;
     abortCtrl = new AbortController();
     setBusy(true);
+    setUiButtonsDisabled(true);
     setStatus("scope resume-stream 连接中…");
     try {
       const resp = await fetch(baseUrl() + "/analysis/run-img-diag-resume-stream", {
@@ -872,14 +964,6 @@
       return;
     }
     await runImgDiagStream();
-  });
-
-  $("btnVisionContinue").addEventListener("click", async () => {
-    if (!scopeHitlWaiting || !scopeResumeToken) {
-      showErr("无 resume_token，请等待 img_diag_scope_input_required 事件");
-      return;
-    }
-    await runScopeResume("confirm_scope");
   });
 
   $("btnAbort").addEventListener("click", () => {
