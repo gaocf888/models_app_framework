@@ -329,7 +329,14 @@ class ImgDiagScopeResumeRequest(BaseModel):
     user_id: str = Field(..., description="用户 ID")
     session_id: str = Field(..., description="会话 ID")
     action: str = Field(default="confirm_scope", description="confirm_scope|edit_scope|abort")
-    payload: Optional[Dict[str, Any]] = Field(default=None, description="user_supplement / scope_patch 等")
+    payload: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "续跑载荷。常用：user_supplement（文本校正）、image_urls（换图）、"
+            "scope_patch（结构化修正）、candidate_pick_id / candidate_pick_value"
+            "（hitl_mode=scope_candidate_pick 时由 ui_buttons 带回）、reason（abort）"
+        ),
+    )
     user_supplement: Optional[str] = Field(
         default=None,
         description="可选；与 payload.user_supplement 等价，便于顶层传参",

@@ -679,6 +679,20 @@ class AnalysisConfig:
     img_diag_scope_validate_sql: str | None = None
     img_diag_scope_validate_timeout_s: float = 10.0
     img_diag_scope_validate_skip_on_error: bool = False
+    # 库未匹配 ≥N 轮校正后：失败层诊断 + 候选 + LLM TopK + 选择 HITL（策略 A，默认开启）
+    img_diag_scope_candidate_pick_enabled: bool = True
+    img_diag_scope_candidate_pick_after_mismatch_rounds: int = 2
+    img_diag_scope_candidate_limit: int = 50
+    img_diag_scope_candidate_top_k: int = 5
+    img_diag_scope_candidate_rank_prompt_version: str = "v1"
+    img_diag_scope_candidate_rank_timeout_s: float = 20.0
+    # 诊断/候选 SQL（可选覆盖；默认与 overhaul_new_checklocation / base_temp_point 口径一致）
+    img_diag_scope_diagnose_boiler_sql: str | None = None
+    img_diag_scope_candidate_sql_boiler: str | None = None
+    img_diag_scope_candidate_sql_device: str | None = None
+    img_diag_scope_candidate_sql_location: str | None = None
+    img_diag_scope_candidate_sql_row: str | None = None
+    img_diag_scope_candidate_sql_tube: str | None = None
     # scope HITL 持久化：默认 redis（须 REDIS_URL 或 ANALYSIS_IMG_DIAG_*_REDIS_URL）；无 Redis 时改 memory
     img_diag_checkpoint_backend: str = "redis"
     img_diag_checkpoint_redis_url: str | None = None
@@ -1524,6 +1538,51 @@ def _load_from_env() -> AppConfig:
             "ANALYSIS_IMG_DIAG_SCOPE_VALIDATE_SKIP_ON_ERROR", "false"
         ).lower()
         == "true",
+        img_diag_scope_candidate_pick_enabled=os.getenv(
+            "ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_PICK_ENABLED", "true"
+        ).lower()
+        != "false",
+        img_diag_scope_candidate_pick_after_mismatch_rounds=max(
+            1,
+            int(os.getenv("ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_PICK_AFTER_MISMATCH_ROUNDS", "2")),
+        ),
+        img_diag_scope_candidate_limit=max(
+            1, int(os.getenv("ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_LIMIT", "50"))
+        ),
+        img_diag_scope_candidate_top_k=max(
+            1, int(os.getenv("ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_TOP_K", "5"))
+        ),
+        img_diag_scope_candidate_rank_prompt_version=(
+            os.getenv("ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_RANK_PROMPT_VERSION") or "v1"
+        ).strip()
+        or "v1",
+        img_diag_scope_candidate_rank_timeout_s=max(
+            1.0, float(os.getenv("ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_RANK_TIMEOUT_S", "20"))
+        ),
+        img_diag_scope_diagnose_boiler_sql=(
+            os.getenv("ANALYSIS_IMG_DIAG_SCOPE_DIAGNOSE_BOILER_SQL") or ""
+        ).strip()
+        or None,
+        img_diag_scope_candidate_sql_boiler=(
+            os.getenv("ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_SQL_BOILER") or ""
+        ).strip()
+        or None,
+        img_diag_scope_candidate_sql_device=(
+            os.getenv("ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_SQL_DEVICE") or ""
+        ).strip()
+        or None,
+        img_diag_scope_candidate_sql_location=(
+            os.getenv("ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_SQL_LOCATION") or ""
+        ).strip()
+        or None,
+        img_diag_scope_candidate_sql_row=(
+            os.getenv("ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_SQL_ROW") or ""
+        ).strip()
+        or None,
+        img_diag_scope_candidate_sql_tube=(
+            os.getenv("ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_SQL_TUBE") or ""
+        ).strip()
+        or None,
         img_diag_checkpoint_backend=(
             os.getenv("ANALYSIS_IMG_DIAG_CHECKPOINT_BACKEND", _img_diag_persist_default)
             or _img_diag_persist_default

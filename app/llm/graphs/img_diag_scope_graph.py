@@ -116,6 +116,13 @@ class ImgDiagScopeGraphState(TypedDict, total=False):
     scope_pending_reparse_supplement: str
     vision_hitl_preview_delivered: bool
     pending_vision_user_ack: bool
+    scope_db_mismatch_rounds: int
+    pending_scope_candidate_pick: bool
+    scope_candidate_failed_field: str
+    scope_candidate_matched_prefix: dict[str, Any]
+    scope_candidates: list[dict[str, Any]]
+    scope_candidate_suggestions: list[dict[str, Any]]
+    scope_diagnose: dict[str, Any]
 
 
 _SCOPE_CHECKPOINT_PRIORITY_KEYS: frozenset[str] = frozenset(
@@ -138,6 +145,13 @@ _SCOPE_CHECKPOINT_PRIORITY_KEYS: frozenset[str] = frozenset(
         "scope_intent_text",
         "vision_hitl_preview_delivered",
         "pending_vision_user_ack",
+        "scope_db_mismatch_rounds",
+        "pending_scope_candidate_pick",
+        "scope_candidate_failed_field",
+        "scope_candidate_matched_prefix",
+        "scope_candidates",
+        "scope_candidate_suggestions",
+        "scope_diagnose",
     }
 )
 
@@ -349,6 +363,110 @@ def scope_auto_relax_allowed(*, hitl_rounds: int) -> bool:
     return int(hitl_rounds or 0) >= 2
 
 
+def scope_candidate_pick_enabled() -> bool:
+    return bool(getattr(_cfg(), "img_diag_scope_candidate_pick_enabled", True))
+
+
+def scope_candidate_pick_after_mismatch_rounds() -> int:
+    return max(1, int(getattr(_cfg(), "img_diag_scope_candidate_pick_after_mismatch_rounds", 2) or 2))
+
+
+def _clear_scope_candidate_pick_state(state: ImgDiagScopeGraphState) -> None:
+    state.pop("pending_scope_candidate_pick", None)
+    state.pop("scope_candidate_failed_field", None)
+    state.pop("scope_candidate_matched_prefix", None)
+    state.pop("scope_candidates", None)
+    state.pop("scope_candidate_suggestions", None)
+    state.pop("scope_diagnose", None)
+
+
+async def _maybe_attach_scope_candidate_pick(
+    state: ImgDiagScopeGraphState,
+    *,
+    scope: dict[str, Any],
+) -> bool:
+    """
+    库未匹配且独立计数达标时：诊断失败层 → 拉候选 → LLM TopK → 置 pending_scope_candidate_pick。
+    返回是否已进入候选选择 HITL。
+    """
+    if not scope_candidate_pick_enabled():
+        return False
+    mismatch_rounds = int(state.get("scope_db_mismatch_rounds") or 0)
+    if mismatch_rounds < scope_candidate_pick_after_mismatch_rounds():
+        return False
+
+    from app.llm.graphs.img_diag_scope_candidate_rank import rank_scope_candidates_async
+    from app.llm.graphs.img_diag_scope_diagnose import (
+        diagnose_scope_db_failure,
+        fetch_scope_candidates,
+    )
+    from app.llm.graphs.img_diag_scope_display import (
+        SCOPE_FIELD_LABELS,
+        SCOPE_HITL_CANDIDATE_PICK_PROMPT,
+    )
+
+    cumulative = str(state.get("scope_cumulative_text") or state.get("query") or "")
+    diagnose = await diagnose_scope_db_failure(scope, cumulative_text=cumulative)
+    failed_field = diagnose.failed_field
+    if not failed_field:
+        return False
+
+    candidates = await fetch_scope_candidates(
+        failed_field=failed_field,
+        matched_prefix=diagnose.matched_prefix,
+    )
+    if not candidates:
+        logger.info(
+            "img_diag scope candidate pick skipped: empty candidates field=%s",
+            failed_field,
+        )
+        return False
+
+    suggestions = await rank_scope_candidates_async(
+        user_text=cumulative,
+        failed_field=failed_field,
+        failed_field_label=SCOPE_FIELD_LABELS.get(failed_field, failed_field),
+        user_value=diagnose.user_value,
+        matched_prefix=diagnose.matched_prefix,
+        candidates=candidates,
+        llm_client=None,
+        prompt_registry=None,
+    )
+    if not suggestions:
+        suggestions = [
+            {
+                "id": str(c.get("id") or i + 1),
+                "value": c.get("value"),
+                "label": c.get("label") or c.get("value"),
+                "rank": i + 1,
+                "reason": "",
+            }
+            for i, c in enumerate(candidates[:5])
+        ]
+
+    state["pending_scope_candidate_pick"] = True
+    state["scope_candidate_failed_field"] = failed_field
+    state["scope_candidate_matched_prefix"] = dict(diagnose.matched_prefix)
+    state["scope_candidates"] = candidates
+    state["scope_candidate_suggestions"] = suggestions
+    state["scope_diagnose"] = diagnose.to_dict()
+    state["human_prompt"] = SCOPE_HITL_CANDIDATE_PICK_PROMPT
+    record_scope_hitl_context(
+        state,
+        reason="db_validate_zero_rows",
+        prompt=SCOPE_HITL_CANDIDATE_PICK_PROMPT,
+    )
+    logger.info(
+        "img_diag scope candidate pick armed field=%s candidates=%s suggestions=%s "
+        "mismatch_rounds=%s",
+        failed_field,
+        len(candidates),
+        len(suggestions),
+        mismatch_rounds,
+    )
+    return True
+
+
 def _scope_matched_confirm_enabled() -> bool:
     return bool(getattr(_cfg(), "img_diag_scope_matched_confirm_enabled", True))
 
@@ -420,8 +538,12 @@ def _enrich_interrupt_payload_from_state(state: ImgDiagScopeGraphState, payload:
         payload["initial_query_empty"] = True
         payload["scope_cumulative_text"] = str(state.get("scope_cumulative_text") or "").strip()
     payload["confirm_reply_example"] = build_scope_hitl_confirm_reply_example(payload)
-    from app.llm.graphs.img_diag_scope_display import apply_vision_ack_only_hitl_ui_from_state
+    from app.llm.graphs.img_diag_scope_display import (
+        apply_scope_candidate_pick_hitl_ui_from_state,
+        apply_vision_ack_only_hitl_ui_from_state,
+    )
 
+    apply_scope_candidate_pick_hitl_ui_from_state(state, payload)
     apply_vision_ack_only_hitl_ui_from_state(state, payload)
 
 
@@ -1044,6 +1166,26 @@ def _apply_scope_correction_from_payload(
     correction_changed = False
     supplement = str(payload.get("user_supplement") or "").strip()
     patch = payload.get("scope_patch")
+    # 候选点选：把标准值写入 cumulative，避免仅 patch 后被 preflight 用旧文覆盖
+    pick_id = payload.get("candidate_pick_id")
+    pick_value = payload.get("candidate_pick_value")
+    if pick_id is not None or pick_value is not None:
+        failed_field = str(state.get("scope_candidate_failed_field") or "").strip()
+        if failed_field and pick_value is not None:
+            from app.llm.graphs.img_diag_scope_display import SCOPE_FIELD_LABELS
+
+            if not isinstance(patch, dict):
+                patch = {}
+            else:
+                patch = dict(patch)
+            if failed_field not in patch:
+                patch[failed_field] = pick_value
+            label = SCOPE_FIELD_LABELS.get(failed_field, failed_field)
+            pick_line = f"{label}应为{pick_value}"
+            if not supplement:
+                supplement = pick_line
+            elif pick_line not in supplement:
+                supplement = f"{supplement}\n{pick_line}".strip()
 
     new_excluded: set[str] = set()
     if supplement:
@@ -1084,6 +1226,11 @@ def _apply_scope_correction_from_payload(
         state.pop("scope_intent_text", None)
         changed = True
 
+    if changed:
+        _clear_scope_candidate_pick_state(state)
+        if isinstance(patch, dict) and patch:
+            state["scope_forced_patch"] = dict(patch)
+
     if changed and not _scope_correction_needs_reparse(state):
         _mark_scope_correction_written(state)
     if changed:
@@ -1117,6 +1264,13 @@ async def _run_scope_reparse_pipeline(
     )
     state = await nodes["scope_preflight_llm"](parse_input)
     state["scope_cumulative_text"] = full_cumulative
+    forced = state.pop("scope_forced_patch", None)
+    if isinstance(forced, dict) and forced and state.get("scope_draft"):
+        tm = parse_img_diag_scope_draft(full_cumulative).time_meta
+        draft = draft_from_scope_dict(state["scope_draft"], time_meta=tm)
+        draft = apply_scope_patch(draft, normalize_scope_patch_keys(forced))
+        excluded = frozenset(state.get("scope_field_exclusions") or ())
+        state["scope_draft"] = apply_scope_field_exclusions_to_draft(draft, excluded).to_dict()
     state = await nodes["scope_db_validate"](state)
     _mark_scope_correction_parsed(state)
     return state
@@ -1272,6 +1426,14 @@ def make_img_diag_scope_nodes(
         return _apply_human_scope_response(state, human)
 
     async def scope_db_validate(state: ImgDiagScopeGraphState) -> ImgDiagScopeGraphState:
+        forced = state.pop("scope_forced_patch", None)
+        if isinstance(forced, dict) and forced and state.get("scope_draft"):
+            tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
+            draft = draft_from_scope_dict(state["scope_draft"], time_meta=tm)
+            draft = apply_scope_patch(draft, normalize_scope_patch_keys(forced))
+            excluded = frozenset(state.get("scope_field_exclusions") or ())
+            state["scope_draft"] = apply_scope_field_exclusions_to_draft(draft, excluded).to_dict()
+
         draft_dict = state.get("scope_draft") or {}
         scope = _scope_draft_payload(state)
         hitl_rounds = int(state.get("hitl_rounds") or 0)
@@ -1285,14 +1447,19 @@ def make_img_diag_scope_nodes(
         if count <= 0:
             state["validation_error"] = err or "scope_not_found_in_catalog"
             state["needs_db_retry"] = True
-            state["human_prompt"] = SCOPE_HITL_DB_NOT_MATCHED_PROMPT
             state["interrupt_reason"] = "db_validate_zero_rows"
             state["scope_relaxed_fields"] = []
-            record_scope_hitl_context(
-                state,
-                reason="db_validate_zero_rows",
-                prompt=SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
-            )
+            armed = await _maybe_attach_scope_candidate_pick(state, scope=scope)
+            if not armed:
+                _clear_scope_candidate_pick_state(state)
+                state["human_prompt"] = SCOPE_HITL_DB_NOT_MATCHED_PROMPT
+                record_scope_hitl_context(
+                    state,
+                    reason="db_validate_zero_rows",
+                    prompt=SCOPE_HITL_DB_NOT_MATCHED_PROMPT,
+                )
+            # 独立计数：每次库未匹配展示一轮后 +1（含本轮候选/自由文本）
+            state["scope_db_mismatch_rounds"] = int(state.get("scope_db_mismatch_rounds") or 0) + 1
             return state
 
         tm = parse_img_diag_scope_draft(state.get("scope_cumulative_text") or "").time_meta
@@ -1303,6 +1470,8 @@ def make_img_diag_scope_nodes(
         state["scope_draft"] = merged.to_dict()
         state["needs_db_retry"] = False
         state["validation_error"] = None
+        state["scope_db_mismatch_rounds"] = 0
+        _clear_scope_candidate_pick_state(state)
         if relaxed_fields:
             state["scope_relaxed_fields"] = relaxed_fields
             logger.info(

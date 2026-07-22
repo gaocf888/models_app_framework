@@ -582,6 +582,19 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
             event["hitl_mode"] = intr.get("hitl_mode")
         if intr.get("ui_buttons"):
             event["ui_buttons"] = intr.get("ui_buttons")
+        if intr.get("hitl_mode") == "scope_candidate_pick" or intr.get("candidates") is not None:
+            if intr.get("failed_field") is not None:
+                event["failed_field"] = intr.get("failed_field")
+            if intr.get("failed_field_label") is not None:
+                event["failed_field_label"] = intr.get("failed_field_label")
+            if intr.get("matched_prefix") is not None:
+                event["matched_prefix"] = intr.get("matched_prefix")
+            if intr.get("user_value") is not None:
+                event["user_value"] = intr.get("user_value")
+            if isinstance(intr.get("candidates"), list):
+                event["candidates"] = intr.get("candidates")
+            if isinstance(intr.get("llm_suggestions"), list):
+                event["llm_suggestions"] = intr.get("llm_suggestions")
         if include_scope:
             event["scope_draft"] = intr.get("scope_draft")
             event["scope_draft_display"] = intr.get("scope_draft_display")

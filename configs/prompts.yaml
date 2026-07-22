@@ -2371,6 +2371,30 @@ img_diag_scope_parse:
       {{QUESTION}}
 
 # =============================================================================
+# ⑤-a2 看图诊断 scope 候选排序（scene="img_diag_scope_candidate_rank"）
+# 【谁用】app/llm/graphs/img_diag_scope_candidate_rank.py；库未匹配多轮后 TopK 推荐
+# 【版本】ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_RANK_PROMPT_VERSION（默认 v1）
+# =============================================================================
+img_diag_scope_candidate_rank:
+  - version: v1
+    weight: 1.0
+    description: 从业务库候选列表中选出与用户自然语言最匹配的若干台账项
+    content: |
+      你是看图诊断台账纠错助手。用户自然语言描述的台账在业务库中未精确命中。
+      请仅从【候选列表】中选出与用户意图最匹配的若干项（最多 {{TOP_K}} 个），按匹配度从高到低排序。
+      禁止编造候选之外的名称；若都不像，可返回空 suggestions。
+
+      仅输出一个 JSON 对象，不要 markdown：
+      {"suggestions":[{"value":"候选原文","reason":"简短理由"}]}
+
+      【失败字段】{{FAILED_FIELD_LABEL}}（用户原值：{{USER_VALUE}}）
+      【已确认上级】{{MATCHED_PREFIX}}
+      【用户自然语言】
+      {{USER_TEXT}}
+      【候选列表】
+      {{CANDIDATES}}
+
+# =============================================================================
 # ⑤-b NL2SQL 问句范围解析（scene="nl2sql_scope_parse"）
 # 【谁用】app/nl2sql/scope_parser_llm.py；Phase 3 LLM 解析 device/piperow/row/tube（锅炉仍走程序规则）
 # 【版本】NL2SQL_SCOPE_PARSE_PROMPT_VERSION（默认 v1）

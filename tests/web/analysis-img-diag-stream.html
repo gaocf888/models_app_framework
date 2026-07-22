@@ -252,6 +252,7 @@
         <button type="button" class="primary" id="btnVisionContinue" disabled>继续</button>
         <span class="hint" id="visionAckHint">（等待 resume_token…）</span>
       </div>
+      <div id="candidatePickActions" class="actions" style="margin-top: 0.75rem; display: none; flex-wrap: wrap; gap: 0.5rem;"></div>
       <h2 style="margin-top: 1rem;">知识来源 rag_citations（finished 帧，与智能客服同形）</h2>
       <div id="ragCitations">（尚未开始）</div>
       <h2 style="margin-top: 1rem;">末帧与 meta</h2>
@@ -271,14 +272,17 @@
   let scopeResumeToken = null;
   let scopeHitlWaiting = false;
   let visionAckOnlyMode = false;
+  let scopeCandidatePickMode = false;
   let lastVisionPreview = null;
   let visionPreviewShown = false;
   const BTN_RUN_LABEL_START = "2) 开始流式看图诊断";
   const BTN_RUN_LABEL_RESUME = "3) 提交 scope 补充并继续流式诊断";
   const BTN_RUN_LABEL_VISION_ACK = "3) 提交确认文字并继续（可选）";
+  const BTN_RUN_LABEL_CANDIDATE = "3) 点选候选项或文本补充后继续";
   const QUERY_PLACEHOLDER_DEFAULT = "请识别图片缺陷并给出处置建议，位置是1号锅炉低温过热器A侧第2排第3根";
   const QUERY_PLACEHOLDER_HITL = "在此补充或修正机组/受热面，例如：水冷壁螺旋段后墙螺旋管组";
   const QUERY_PLACEHOLDER_VISION_ACK = "可选：输入「确认」或「继续」后点击下方按钮；或直接点「继续」";
+  const QUERY_PLACEHOLDER_CANDIDATE = "也可在此文本补充；优先点击下方候选项按钮";
 
   function isVisionAckOnlyEvent(ev) {
     if (!ev) return false;
@@ -288,6 +292,49 @@
       ev.include_vision_preview === true &&
       !ev.vision_confirm_blocked
     );
+  }
+
+  function isScopeCandidatePickEvent(ev) {
+    return !!(ev && ev.hitl_mode === "scope_candidate_pick");
+  }
+
+  function clearCandidatePickUi() {
+    const panel = $("candidatePickActions");
+    panel.replaceChildren();
+    panel.style.display = "none";
+    scopeCandidatePickMode = false;
+  }
+
+  function updateCandidatePickUi(ev) {
+    const panel = $("candidatePickActions");
+    panel.replaceChildren();
+    if (!isScopeCandidatePickEvent(ev)) {
+      clearCandidatePickUi();
+      return;
+    }
+    scopeCandidatePickMode = true;
+    const buttons = Array.isArray(ev.ui_buttons) ? ev.ui_buttons : [];
+    if (!buttons.length) {
+      panel.style.display = "none";
+      return;
+    }
+    panel.style.display = "flex";
+    panel.style.alignItems = "center";
+    buttons.forEach((btnDef) => {
+      if (!btnDef || typeof btnDef !== "object") return;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "primary";
+      b.textContent = String(btnDef.label || btnDef.id || "候选");
+      b.disabled = !scopeHitlWaiting || !scopeResumeToken;
+      b.addEventListener("click", async () => {
+        await runScopeResume(
+          String(btnDef.action || "confirm_scope"),
+          btnDef.payload && typeof btnDef.payload === "object" ? btnDef.payload : {}
+        );
+      });
+      panel.appendChild(b);
+    });
   }
 
   function updateVisionAckUi(ev) {
@@ -337,6 +384,10 @@
       $("query").placeholder = QUERY_PLACEHOLDER_VISION_ACK;
       $("btnRun").textContent = BTN_RUN_LABEL_VISION_ACK;
       setStatus("图像可见分析已完成：可点「继续」，或在 query 输入确认文字后提交");
+    } else if (isScopeCandidatePickEvent(ev)) {
+      $("query").placeholder = QUERY_PLACEHOLDER_CANDIDATE;
+      $("btnRun").textContent = BTN_RUN_LABEL_CANDIDATE;
+      setStatus("库未匹配候选点选：请点下方候选项，或在 query 文本补充后继续");
     } else {
       $("query").placeholder = QUERY_PLACEHOLDER_HITL;
       $("btnRun").textContent = BTN_RUN_LABEL_RESUME;
@@ -344,6 +395,7 @@
     }
     $("btnScopeAbort").disabled = false;
     updateVisionAckUi(ev);
+    updateCandidatePickUi(ev);
     setBusy(false);
   }
 
@@ -355,6 +407,7 @@
     $("btnRun").textContent = BTN_RUN_LABEL_START;
     $("btnScopeAbort").disabled = true;
     updateVisionAckUi(null);
+    clearCandidatePickUi();
   }
 
   function processSseEvents(onDelta) {
@@ -604,7 +657,7 @@
     }
   }
 
-  async function runScopeResume(action) {
+  async function runScopeResume(action, buttonPayload) {
     const token = scopeResumeToken;
     if (!token) {
       showErr("无 resume_token，请先发起看图诊断并等待 scope 确认");
@@ -614,16 +667,26 @@
     const sid = $("sessionId").value.trim();
     const supplement = $("query").value.trim();
     const resumeImageUrls = imageUrlsList();
+    const hasButtonPayload =
+      buttonPayload && typeof buttonPayload === "object" && Object.keys(buttonPayload).length > 0;
     if (
       action === "confirm_scope" &&
       !visionAckOnlyMode &&
+      !hasButtonPayload &&
       !supplement &&
       !resumeImageUrls.length
     ) {
-      showErr("请在 query 填写 scope 补充，和/或在 image_urls 填入换图 URL。");
+      showErr(
+        scopeCandidatePickMode
+          ? "请点选下方候选项，或在 query 填写补充 / image_urls 换图。"
+          : "请在 query 填写 scope 补充，和/或在 image_urls 填入换图 URL。"
+      );
       return;
     }
     const resumePayload = action === "abort" ? { reason: "user abort" } : {};
+    if (hasButtonPayload) {
+      Object.assign(resumePayload, buttonPayload);
+    }
     if (supplement) resumePayload.user_supplement = supplement;
     if (resumeImageUrls.length) resumePayload.image_urls = resumeImageUrls;
     abortCtrl = new AbortController();

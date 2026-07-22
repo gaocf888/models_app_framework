@@ -338,14 +338,42 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
     | `validation_error` | 库表校验错误码/说明（可选） |
     | `interrupt_reason` | 如 `missing:boiler`、`db_validate_zero_rows` |
     | `suggested_actions` | 建议动作：`confirm_scope` / `edit_scope` / `abort` |
-    | `hitl_mode` | 可选。台账已通过、仅待看完图像后继续时为 `vision_ack_only` |
-    | `ui_buttons` | 可选。`vision_ack_only` 时含「继续」按钮（`action=confirm_scope`，`payload={}`）；与输入「确认」等价 |
+    | `hitl_mode` | 可选。`vision_ack_only`：台账已通过、仅待看完图像后继续；`scope_candidate_pick`：库表未匹配达阈值轮次后的候选项点选 |
+    | `ui_buttons` | 可选。按钮数组，每项含 `id`/`label`/`action`/`payload`/`requires_input`。`vision_ack_only` 时为「继续」（`action=confirm_scope`，`payload={}`）；`scope_candidate_pick` 时为 TopK 候选项（`action=confirm_scope`，`payload` 含 `scope_patch`、`candidate_pick_id`、`candidate_pick_value`） |
+    | `failed_field` | 仅 `scope_candidate_pick`：诊断出的失败层英文字段（如 `device_name`、`check_location_name`、`row_no`、`tube_no`） |
+    | `failed_field_label` | 仅 `scope_candidate_pick`：失败层中文名（如 `受热面`） |
+    | `matched_prefix` | 仅 `scope_candidate_pick`：已命中的上级台账前缀（object） |
+    | `user_value` | 仅 `scope_candidate_pick`：用户原输入中该失败层的值（可选） |
+    | `candidates` | 仅 `scope_candidate_pick`：库表白名单候选（最多 `CANDIDATE_LIMIT`，项含 `id`/`value`/`label`） |
+    | `llm_suggestions` | 仅 `scope_candidate_pick`：LLM TopK 推荐（驱动 `ui_buttons`；项含 `id`/`value`/`label`/`rank`） |
 
     前端建议流程：
-    人机协同触发(用户问题中解析确认 机组/受热面)： -
-    1.	监听 `event === "img_diag_scope_input_required"`（台账确认信息） 和 `event === "img_diag_vision_preview"`(视觉分析结果)，
-    2.	监听到后，前端展示流中 vision_hitl_assistant_message（`event === "img_diag_vision_preview"`） 和 scope_hitl_assistant_message（`event === "img_diag_scope_input_required"`）；用户在输入框补充说明、通过payload.image_urls重传图片url，调用人机协同恢复接口 **`/run-img-diag-resume-stream`**（携带 `resume_token`(第一次从看图诊断主接口获取，后续从人机协同接口获取)）续跑
-    3.	没监听到，同一条首流 SSE 直接到 meta → 报告流，不需要 resume 接口
+    1. 监听 `event === "img_diag_scope_input_required"`（台账确认）与 `event === "img_diag_vision_preview"`（视觉预览）
+    2. 展示后端下发的 `vision_hitl_assistant_message` / `scope_hitl_assistant_message`（勿前端自拼业务文案）
+    3. 续跑 **`POST /run-img-diag-resume-stream`**（`resume_token` 取自首流或上一轮 HITL）：
+       - **文本校正**（前两轮台账校正方式。缺字段 / 库未匹配前两轮）：`payload.user_supplement` 和/或 `payload.image_urls` 换图
+       - **候选项点选**（两轮之后台账校正方式。`hitl_mode=scope_candidate_pick`）：优先渲染 `ui_buttons`，点击后原样提交该按钮信息中的 `action` + `payload`（见下方示例）；也可仍用文本补充
+    4. 未收到 HITL 事件则同一条 SSE 直接到 `meta` → 报告流，无需 resume
+    5. resume 流中可能再次出现 `img_diag_scope_input_required`（含新 `resume_token`），重复上述步骤
+
+    台账人机协同返回ui_buttons候选项示例：
+    "hitl_mode": "scope_candidate_pick",
+    "ui_buttons": [
+        {
+            "id": "pick_13",
+            "label": "1. 吹灰孔7",
+            "variant": "secondary",
+            "action": "confirm_scope",
+            "payload": {
+                "scope_patch": {
+                    "check_location_name": "吹灰孔7"
+                },
+                "candidate_pick_id": "13",
+                "candidate_pick_value": "吹灰孔7"
+            },
+            "requires_input": false
+        }
+    ],
 
 
 
@@ -382,16 +410,17 @@ async def run_analysis_img_diag_scope_resume_stream(
     - `user_id`：**必填**。须与发起首流时一致。
     - `session_id`：**必填**。须与发起首流时一致。
     - `action`：可选，默认 `confirm_scope`。
-      - `confirm_scope`：确认当前草案；可配合 `payload.user_supplement` 追加自然语言补充后重新解析 scope。
+      - `confirm_scope`：确认当前草案；可配合 `payload.user_supplement` 文本补充，或候选点选时的 `scope_patch` / `candidate_pick_*`。
       - `edit_scope`：显式编辑；可配合 `payload.scope_patch` 结构化修正。
       - `abort`：用户取消 scope 确认流程。
     - `payload`：可选 JSON 对象，常用子字段：
       - `user_supplement`（string）：用户在输入框的补充说明（如「2号锅炉水冷壁」），会与累计问句合并后重新 LLM 解析。
       - `image_urls`（string[]）：可选，整表替换首流图片 URL（须先经 **`/img-diag/upload`** 上传）；换图后会重跑视觉臂并覆盖 session 中的视觉结果。
-      - `scope_patch`（object）：结构化修正；键可为英文字段名（`boiler`、`device_name`）或中文展示名（`机组`、`受热面`）。
+      - `scope_patch`（object）：结构化修正；键可为英文字段名（`boiler`、`device_name`、`check_location_name`、`row_no`、`tube_no`）或中文展示名（`机组`、`受热面`、`检测位置`、`排数`、`管数`）。
+      - `candidate_pick_id` / `candidate_pick_value`：候选点选时由 `ui_buttons[].payload` 带回；与 `scope_patch` 一并提交，服务端强制回写失败层后重跑库表校验。
       - `reason`（string）：`action=abort` 时可选取消原因。
 
-    **请求示例**
+    **请求示例（文本补充）**
     ```json
     {
       "resume_token": "<来自 img_diag_scope_input_required>",
@@ -399,6 +428,21 @@ async def run_analysis_img_diag_scope_resume_stream(
       "session_id": "s_001",
       "action": "confirm_scope",
       "payload": { "user_supplement": "1号锅炉低温过热器" }
+    }
+    ```
+
+    **请求示例（候选项点选，字段与 `ui_buttons[].payload` 一致）**
+    ```json
+    {
+      "resume_token": "<来自 img_diag_scope_input_required>",
+      "user_id": "u_001",
+      "session_id": "s_001",
+      "action": "confirm_scope",
+      "payload": {
+        "scope_patch": { "device_name": "水冷壁螺旋段" },
+        "candidate_pick_id": "1",
+        "candidate_pick_value": "水冷壁螺旋段"
+      }
     }
     ```
 

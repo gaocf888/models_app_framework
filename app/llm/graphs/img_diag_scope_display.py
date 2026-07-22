@@ -51,6 +51,13 @@ SCOPE_HITL_RELAXED_PROMPT = (
 
 # vision_first 首轮台账已通过、仅待用户看完图像后继续（pending_vision_user_ack）
 HITL_MODE_VISION_ACK_ONLY = "vision_ack_only"
+# 库未匹配多轮校正后：失败层候选点选
+HITL_MODE_SCOPE_CANDIDATE_PICK = "scope_candidate_pick"
+
+SCOPE_HITL_CANDIDATE_PICK_PROMPT = (
+    "业务库仍未匹配到台账信息。请从下列推荐选项中选择最接近的一项，"
+    "或继续用自然语言补充修正。"
+)
 
 VISION_ACK_CONTINUE_UI_BUTTON: dict[str, Any] = {
     "id": "continue",
@@ -67,6 +74,93 @@ def is_vision_ack_only_hitl(payload: dict[str, Any] | None) -> bool:
     if not isinstance(payload, dict):
         return False
     return str(payload.get("hitl_mode") or "") == HITL_MODE_VISION_ACK_ONLY
+
+
+def is_scope_candidate_pick_hitl(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("hitl_mode") or "") == HITL_MODE_SCOPE_CANDIDATE_PICK
+
+
+def build_scope_candidate_pick_ui_buttons(
+    suggestions: list[dict[str, Any]] | None,
+    *,
+    failed_field: str,
+) -> list[dict[str, Any]]:
+    """前端点选：每项按钮带 scope_patch，选中后 confirm_scope 回写失败字段。"""
+    buttons: list[dict[str, Any]] = []
+    for item in suggestions or []:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("value")
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        if failed_field in ("row_no", "tube_no"):
+            try:
+                patch_val: Any = int(value)
+            except (TypeError, ValueError):
+                patch_val = value
+        else:
+            patch_val = str(value).strip()
+        cid = str(item.get("id") or len(buttons) + 1)
+        label = str(item.get("label") or value).strip()
+        rank = item.get("rank")
+        if rank is not None:
+            label = f"{rank}. {label}"
+        buttons.append(
+            {
+                "id": f"pick_{cid}",
+                "label": label,
+                "variant": "secondary",
+                "action": "confirm_scope",
+                "payload": {
+                    "scope_patch": {failed_field: patch_val},
+                    "candidate_pick_id": cid,
+                    "candidate_pick_value": patch_val,
+                },
+                "requires_input": False,
+            }
+        )
+    return buttons
+
+
+def apply_scope_candidate_pick_hitl_ui_from_state(
+    state: dict[str, Any] | None,
+    payload: dict[str, Any],
+) -> None:
+    """库未匹配候选选择：写入 hitl_mode / ui_buttons / 候选列表字段。"""
+    if not isinstance(state, dict):
+        return
+    if not state.get("pending_scope_candidate_pick"):
+        return
+    failed_field = str(state.get("scope_candidate_failed_field") or "").strip()
+    if not failed_field:
+        return
+    suggestions = state.get("scope_candidate_suggestions")
+    if not isinstance(suggestions, list):
+        suggestions = []
+    candidates = state.get("scope_candidates")
+    if not isinstance(candidates, list):
+        candidates = []
+    diagnose = state.get("scope_diagnose")
+    if not isinstance(diagnose, dict):
+        diagnose = {}
+
+    payload["hitl_mode"] = HITL_MODE_SCOPE_CANDIDATE_PICK
+    payload["failed_field"] = failed_field
+    payload["failed_field_label"] = SCOPE_FIELD_LABELS.get(failed_field, failed_field)
+    payload["matched_prefix"] = diagnose.get("matched_prefix") or state.get(
+        "scope_candidate_matched_prefix"
+    ) or {}
+    payload["user_value"] = diagnose.get("user_value")
+    payload["candidates"] = candidates
+    payload["llm_suggestions"] = suggestions
+    payload["ui_buttons"] = build_scope_candidate_pick_ui_buttons(
+        suggestions or candidates[:5],
+        failed_field=failed_field,
+    )
+    if not payload.get("prompt"):
+        payload["prompt"] = SCOPE_HITL_CANDIDATE_PICK_PROMPT
 
 
 def apply_vision_ack_only_hitl_ui_from_state(
@@ -111,6 +205,11 @@ def resolve_scope_hitl_display_prompt(
     from app.llm.graphs.img_diag_vision_display import VISION_HITL_REUPLOAD_PROMPT
 
     src: dict[str, Any] = interrupt_payload if interrupt_payload is not None else (state or {})
+
+    if str(src.get("hitl_mode") or "") == HITL_MODE_SCOPE_CANDIDATE_PICK:
+        return SCOPE_HITL_CANDIDATE_PICK_PROMPT
+    if isinstance(state, dict) and state.get("pending_scope_candidate_pick"):
+        return SCOPE_HITL_CANDIDATE_PICK_PROMPT
 
     scope_prompt = str(src.get("scope_hitl_prompt") or "").strip()
     if scope_prompt and scope_prompt != VISION_HITL_REUPLOAD_PROMPT:
@@ -362,11 +461,40 @@ def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None
     relaxed = interrupt_payload.get("scope_relaxed_fields") or []
     if relaxed:
         lines.append(f"**已自动放宽字段**：{'、'.join(str(x) for x in relaxed if str(x).strip())}")
+    if is_scope_candidate_pick_hitl(interrupt_payload):
+        field_label = str(
+            interrupt_payload.get("failed_field_label")
+            or interrupt_payload.get("failed_field")
+            or "台账字段"
+        )
+        user_val = interrupt_payload.get("user_value")
+        lines.extend(["", f"**待选择（{field_label}）**"])
+        if user_val is not None and str(user_val).strip():
+            lines.append(f"原解析值：{user_val}")
+        suggestions = interrupt_payload.get("llm_suggestions") or []
+        if isinstance(suggestions, list) and suggestions:
+            lines.append("推荐选项：")
+            for item in suggestions:
+                if not isinstance(item, dict):
+                    continue
+                val = item.get("value")
+                if val is None or (isinstance(val, str) and not str(val).strip()):
+                    continue
+                rank = item.get("rank")
+                reason = str(item.get("reason") or "").strip()
+                prefix = f"{rank}. " if rank is not None else "- "
+                line = f"{prefix}{val}"
+                if reason:
+                    line = f"{line}（{reason}）"
+                lines.append(line)
+        lines.append("请点击上方选项，或继续用自然语言补充修正。")
     example = str(interrupt_payload.get("confirm_reply_example") or "").strip()
     if not example:
         example = build_scope_hitl_confirm_reply_example(interrupt_payload)
-    if example:
+    if example and not is_scope_candidate_pick_hitl(interrupt_payload):
         lines.extend(["", "**确认回复示例**", example])
+    elif example and is_scope_candidate_pick_hitl(interrupt_payload):
+        lines.extend(["", "**也可文字回复**", example])
     return "\n".join(lines)
 
 
