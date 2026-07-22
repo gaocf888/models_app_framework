@@ -133,7 +133,7 @@ services:
       # 嵌入模型离线挂载
       - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
       # 重排模型离线挂载
-      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/workspace/models/rerank/bge-reranker-large:ro
+      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-base:/workspace/models/rerank/bge-reranker-base:ro
       # BERT 意图：须为已微调三分类 HF 目录；CHATBOT_INTENT_BACKEND=bert 时使用
       - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
       # 意图轻量 LLM（与嵌入模型相同：HF 目录直挂）；CHATBOT_INTENT_BACKEND=llm 时使用
@@ -144,7 +144,7 @@ services:
       - face-galleries-data:/workspace/data/face_galleries
       - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
     environment:
-      - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-large
+      - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-base
 
   # ---------------------------------------------------------------------------
   # models-app-gpu：仅当 docker compose --profile small-model-gpu 时启动
@@ -189,7 +189,7 @@ services:
     # NVIDIA Container Toolkit，并将 Docker 默认 runtime 配置为 nvidia。
     environment:
       NVIDIA_VISIBLE_DEVICES: ${SMALL_MODEL_NVIDIA_VISIBLE_DEVICES:-all}
-      RAG_RERANKER_MODEL_PATH: /models/rerank/bge-reranker-large
+      RAG_RERANKER_MODEL_PATH: /models/rerank/bge-reranker-base
     volumes:
       - huggingface-cache:/root/.cache/huggingface
       - ./logs:/workspace/logs
@@ -209,7 +209,7 @@ services:
       - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
       # 重排模型离线挂载
-      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-base:/models/rerank/bge-reranker-base:ro
       # BERT 意图：须为已微调三分类 HF 目录；CHATBOT_INTENT_BACKEND=bert 时使用
       - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
       # 意图轻量 LLM（HF 目录直挂）；CHATBOT_INTENT_BACKEND=llm 时使用
