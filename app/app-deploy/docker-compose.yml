@@ -232,13 +232,13 @@ networks:
     name: ${MINERU_DOCKER_NETWORK:-mineru-stack}
     external: true
   # 与 paddleocr-layout-api 互通（须已存在；由 paddleocr-layout-deploy 创建，默认名 paddle-layout-stack）
-  paddle-layout-external:
-    name: ${PADDLE_LAYOUT_DOCKER_NETWORK:-paddle-layout-stack}
-    external: true
-  # 与 Milvus Standalone 互通（face_db-deploy；FACE_VECTOR_BACKEND=milvus 时使用）
-  face-milvus-external:
-    name: ${FACE_MILVUS_NETWORK:-face-milvus-stack}
-    external: true
+#  paddle-layout-external:
+#    name: ${PADDLE_LAYOUT_DOCKER_NETWORK:-paddle-layout-stack}
+#    external: true
+#  # 与 Milvus Standalone 互通（face_db-deploy；FACE_VECTOR_BACKEND=milvus 时使用）
+#  face-milvus-external:
+#    name: ${FACE_MILVUS_NETWORK:-face-milvus-stack}
+#    external: true
   # 与 Neo4j（GraphRAG）互通（可选；启用 GRAPH_RAG_ENABLED 时建议加入）
   # 暂未部署Neo4j，对应网络注释掉
 #  graph-external:
