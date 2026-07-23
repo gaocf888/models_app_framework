@@ -471,23 +471,7 @@ def format_scope_hitl_assistant_message(interrupt_payload: dict[str, Any] | None
         lines.extend(["", f"**待选择（{field_label}）**"])
         if user_val is not None and str(user_val).strip():
             lines.append(f"原解析值：{user_val}")
-        suggestions = interrupt_payload.get("llm_suggestions") or []
-        if isinstance(suggestions, list) and suggestions:
-            lines.append("推荐选项：")
-            for item in suggestions:
-                if not isinstance(item, dict):
-                    continue
-                val = item.get("value")
-                if val is None or (isinstance(val, str) and not str(val).strip()):
-                    continue
-                rank = item.get("rank")
-                reason = str(item.get("reason") or "").strip()
-                prefix = f"{rank}. " if rank is not None else "- "
-                line = f"{prefix}{val}"
-                if reason:
-                    line = f"{line}（{reason}）"
-                lines.append(line)
-        lines.append("请点击上方选项，或继续用自然语言补充修正。")
+        lines.append("推荐选项：（请点击下方选项，或继续用自然语言补充修正）")
     example = str(interrupt_payload.get("confirm_reply_example") or "").strip()
     if not example:
         example = build_scope_hitl_confirm_reply_example(interrupt_payload)

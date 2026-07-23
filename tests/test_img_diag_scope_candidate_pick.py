@@ -120,7 +120,10 @@ def test_format_scope_hitl_includes_candidate_section() -> None:
     assert "【台账信息确认】" in text
     assert "## 台账信息" in text
     assert "待选择（检测位置）" in text
-    assert "吹灰孔70" in text
+    assert "原解析值：吹灰孔71" in text
+    assert "推荐选项：（请点击下方选项，或继续用自然语言补充修正）" in text
+    assert "数字接近" not in text
+    assert "1. 吹灰孔70" not in text
 
 
 def test_interrupt_payload_candidate_pick_mode() -> None:
