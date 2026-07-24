@@ -1,0 +1,46 @@
+# =============================================================================
+# 昇腾（Ascend）MinerU GPU 镜像
+# =============================================================================
+# 底座与 vLLM/app 统一：quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+# 不安装 CUDA torch；安装 mineru 后校验 torch_npu 仍在。
+# =============================================================================
+
+ARG BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+FROM ${BASE_IMAGE}
+
+ARG MINERU_PIP_SPEC=mineru[core]
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN set -eux; \
+    if command -v apt-get >/dev/null 2>&1; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        python3-pip python3-venv python3-setuptools python3-wheel \
+        curl tini \
+        libxcb1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 libgl1 \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+RUN python3 -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 --index-url "${PIP_INDEX_URL}" \
+    || python3 -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 --index-url "https://pypi.org/simple"
+
+# 禁止 INSTALL_CUDA_TORCH；昇腾栈使用镜像内 torch_npu
+RUN set -eux; \
+    if [ -n "${PIP_INDEX_URL}" ]; then \
+      python3 -m pip install --index-url "${PIP_INDEX_URL}" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20 \
+      || python3 -m pip install --index-url "https://pypi.org/simple" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20; \
+    else \
+      python3 -m pip install --index-url "https://pypi.org/simple" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20; \
+    fi; \
+    python3 -c "import importlib.util as u; assert u.find_spec('torch_npu') is not None, 'torch_npu missing after mineru install'"
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+
+WORKDIR /workspace
+ENTRYPOINT ["/usr/bin/tini", "--", "/bin/sh", "/entrypoint.sh"]
+CMD ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]

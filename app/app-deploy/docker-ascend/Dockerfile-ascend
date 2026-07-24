@@ -1,0 +1,58 @@
+# =============================================================================
+# 昇腾（Ascend / Atlas 300I Duo）在线应用镜像
+# =============================================================================
+# 构建上下文：仓库根目录 models_app_framework
+#   docker compose -f app/app-deploy/docker-ascend/docker-compose-ascend.yml build
+#
+# 底座：quay.io/ascend/vllm-ascend:v0.10.0rc1-310p（内含 CANN 8.2.RC1 + torch_npu）
+# 策略：用镜像内 python3 装业务依赖；禁止 pip 安装 CUDA torch / 覆盖 torch_npu
+# =============================================================================
+
+ARG BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+FROM ${BASE_IMAGE}
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/workspace \
+    PIP_DEFAULT_TIMEOUT=300 \
+    DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /workspace
+
+RUN set -eux; \
+    if command -v apt-get >/dev/null 2>&1; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libglib2.0-0 libsm6 libxext6 libgl1 libgomp1 libxcb1 \
+        && rm -rf /var/lib/apt/lists/*; \
+    else \
+      echo "WARN: apt-get not found; ensure BASE_IMAGE has build deps"; \
+    fi
+
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+COPY requirements-大模型应用.txt /workspace/requirements-app.txt
+COPY requirements-人脸识别-CPU.txt /workspace/requirements-face-cpu.txt
+
+# 安装业务依赖后必须仍能 import torch；优先保留镜像自带 torch_npu
+RUN set -eux; \
+    python3 -m pip install --upgrade pip setuptools wheel; \
+    python3 -c "import torch; print('torch before', torch.__version__)"; \
+    python3 -m pip install --no-cache-dir --timeout=300 --retries=15 \
+        ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
+        ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
+        -r /workspace/requirements-app.txt -r /workspace/requirements-face-cpu.txt; \
+    python3 -c "import torch; print('torch after', torch.__version__)"; \
+    python3 -c "import importlib.util as u; \
+s=u.find_spec('torch_npu'); \
+print('torch_npu', 'OK' if s else 'MISSING — 若被 pip 覆盖为 CUDA/CPU torch，请钉住依赖或改用 --no-deps 装冲突包'); \
+assert s is not None, 'torch_npu missing after pip install'"
+
+COPY app /workspace/app
+COPY configs /workspace/configs
+
+EXPOSE 8083
+
+CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8083"]

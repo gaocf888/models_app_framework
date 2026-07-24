@@ -54,11 +54,11 @@
 
 | ID | 工作项 | 状态 | 目录/文件（目标） |
 |----|--------|------|-------------------|
-| C1 | **完善** `vllm-deploy` Ascend overlay（默认 `BASE_IMAGE=…v0.10.0rc1-310p`、设备挂载、文档与 `.env` 示例） | ☐ | `vllm-deploy/docker/docker-compose.ascend.yml`、`.env.example`、`README.md` |
-| C2 | **新增** `app-deploy` 昇腾栈（`FROM` 同上底座 + 业务依赖；对齐 `docker-mx` / `docker-nvidia`） | ☐ | `app/app-deploy/docker-ascend/`（Dockerfile + compose + 简要 README） |
-| C3 | **新增** `mineru-deploy` 昇腾 GPU 编排与镜像构建（底座同上） | ☐ | `Dockerfile.gpu.ascend`、`docker-compose.gpu.ascend.yml`、`.env.example` |
-| C4 | 三栈默认镜像 tag 固化为 **`quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`**（ARM；与驱动/固件/CANN 配套） | ☐ | 与方案 §3 一致；代码默认值对齐 |
-| C5 | **四卡**资源切分（§5：vLLM `0,1,2,3` / app `4,5` / MinerU `6`） | ☐ | `.env` 中的 `ASCEND_RT_VISIBLE_DEVICES` 与切分表一致 |
+| C1 | **完善** `vllm-deploy` Ascend overlay（默认 `BASE_IMAGE=…v0.10.0rc1-310p`、设备挂载、文档与 `.env` 示例） | ☑ | `Dockerfile-ascend`、`docker-compose.ascend.yml`、`.env.example`、`README.md` |
+| C2 | **新增** `app-deploy` 昇腾栈（`FROM` 同上底座 + 业务依赖；对齐 `docker-mx` / `docker-nvidia`） | ☑ | `app/app-deploy/docker-ascend/` |
+| C3 | **新增** `mineru-deploy` 昇腾 GPU 编排与镜像构建（底座同上） | ☑ | `Dockerfile.gpu.ascend`、`docker-compose.gpu.ascend.yml`、`.env.example` |
+| C4 | 三栈默认镜像 tag 固化为 **`quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`**（ARM；与驱动/固件/CANN 配套） | ☑ | 与方案 §3 一致；各 `.env.example` 已对齐 |
+| C5 | **四卡**资源切分（§5：vLLM `0,1,2,3` / app `4,5` / MinerU `6`） | ☑ | 各栈 `.env.example` / compose 默认值 |
 | C6 | 更新运维手册交叉引用（可选） | ☐ | `enterprise-level_transformation_docs/项目整体部署运维手册.md` |
 
 ---

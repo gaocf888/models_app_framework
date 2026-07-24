@@ -1,9 +1,10 @@
 # MinerU 部署说明（CPU/GPU 独立版）
 
-本目录将 CPU 与 GPU 运行方式拆分为两套独立实现：
+本目录将 CPU 与 GPU 运行方式拆分为独立实现：
 
 - CPU：`Dockerfile.cpu` + `docker-compose.cpu.yml`
-- GPU：`Dockerfile.gpu` + `docker-compose.gpu.yml`
+- GPU（英伟达）：`Dockerfile.gpu` + `docker-compose.gpu.yml`
+- GPU（昇腾 Ascend）：`Dockerfile.gpu.ascend` + `docker-compose.gpu.ascend.yml`
 
 目标：
 - 模型不进镜像，统一通过宿主机挂载卷提供
@@ -12,21 +13,21 @@
 ## 1. 目录结构
 
 - `Dockerfile.cpu`：CPU 镜像构建
-- `Dockerfile.gpu`：GPU 镜像构建（CUDA 基础镜像）
+- `Dockerfile.gpu`：英伟达 GPU 镜像构建（CUDA 基础镜像）
+- `Dockerfile.gpu.ascend`：昇腾 GPU 镜像（底座 `vllm-ascend:v0.10.0rc1-310p`）
 - `docker-compose.cpu.yml`：CPU 编排（推荐入口）
-- `docker-compose.gpu.yml`：GPU 编排（独立可运行）
+- `docker-compose.gpu.yml`：英伟达 GPU 编排
+- `docker-compose.gpu.ascend.yml`：昇腾 GPU 编排
 - `docker-compose.yml`：CPU 兼容入口（与 `docker-compose.cpu.yml` 等效）
 - `docker/entrypoint.sh`：容器入口（初始化 `/io/.hf_cache` 和 `/io/mineru-output`）
-- `.env.example`：统一环境变量模板
+- `.env.example`：统一环境变量模板（含英伟达 / 昇腾注释）
 
 ## 2. 前提条件
 
 - Docker / Docker Compose 可用
 - 在线构建时可访问 PyPI（或配置 `PIP_INDEX_URL`）
-- GPU 模式需：
-  - NVIDIA 驱动
-  - `nvidia-container-toolkit`
-  - `docker run --rm --gpus all nvidia/cuda:12.3.0-base-ubuntu22.04 nvidia-smi` 可正常输出
+- **英伟达 GPU** 模式需：NVIDIA 驱动 + `nvidia-container-toolkit`；`nvidia-smi` 正常
+- **昇腾 GPU** 模式需：NPU 驱动/固件 + Ascend Docker Runtime 7.1.RC1；`npu-smi` 正常
 
 > 下方3、4、5、6、7是完整的部署流程
 
@@ -116,17 +117,25 @@ curl -l http://127.0.0.1:8009/health
 
 ### 6.1 关键说明
 
-- `docker-compose.gpu.yml` 为独立编排，不依赖 CPU compose
-- GPU 镜像使用 `Dockerfile.gpu` 构建
-- 基础镜像默认 **`nvidia/cuda:12.3.0-runtime-ubuntu22.04`**（与 `vllm-deploy` 英伟达栈一致）；PyTorch 仍从 `cu121` wheel 安装
-- 默认安装 CUDA 版 PyTorch（可通过 `.env` 开关控制）
+- `docker-compose.gpu.yml`(英伟达)/`docker-compose.gpu.ascend.yml`(晟腾) 为独立编排，不依赖 CPU compose
+- GPU 镜像使用 `Dockerfile.gpu`(英伟达)/`Dockerfile.gpu.ascend`(晟腾) 构建
+- 英伟达版基础镜像默认 **`nvidia/cuda:12.3.0-runtime-ubuntu22.04`**（与 `vllm-deploy` 英伟达栈一致）；PyTorch 仍从 `cu121` wheel 安装
+- 晟腾版基础镜像默认 **`quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`（与 `app-deploy`/`vllm-deploy`晟腾栈一致）**
+- 英伟达版默认安装 CUDA 版 PyTorch，晟腾版不安装（通过 `.env` INSTALL_CUDA_TORCH开关控制）
 
 ### 6.2 关键 `.env` 配置
 
-```env
+```英伟达版（见 .env.example 英伟达段）
+MINERU_DEVICE_MODE=cuda
 MINERU_NVIDIA_VISIBLE_DEVICES=0
 INSTALL_CUDA_TORCH=1
 TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+```
+
+```晟腾版（见 .env.example 昇腾段）
+MINERU_DEVICE_MODE=npu
+ASCEND_RT_VISIBLE_DEVICES=6
+INSTALL_CUDA_TORCH=0
 ```
 
 ### 6.3 构建并启动
@@ -134,10 +143,16 @@ TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
 推荐使用 **Compose V2**（`docker compose`，空格）：
 
 ```bash
-docker compose --env-file .env -f docker-compose.gpu.yml build
-docker compose --env-file .env -f docker-compose.gpu.yml up -d
+# 英伟达版部署
+docker compose --env-file .env -f docker-compose.gpu.yml up -d --build
 docker compose --env-file .env -f docker-compose.gpu.yml logs -f mineru-api
+
+# 晟腾版部署
+docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
+docker compose --env-file .env -f docker-compose.gpu.ascend.yml logs -f mineru-api
 ```
+
+若 NPU 侧 MinerU 暂不稳定，可先用 `docker-compose.cpu.yml` 保功能。
 
 若宿主机只有旧版 **`docker-compose`**（连字符），本文件使用 `runtime: nvidia` + `NVIDIA_VISIBLE_DEVICES`（与 `app-deploy` 一致），需安装 **nvidia-container-toolkit** 并注册 `nvidia` runtime。更推荐升级 **Docker Compose 插件 V2**（`docker compose`）。
 
@@ -161,6 +176,7 @@ docker compose --env-file .env -f docker-compose.gpu.yml up -d --build
 ```
 
 若仍失败，可删除旧镜像标签后再建：`docker rmi mineru-gpu:cu124 2>/dev/null; docker rmi mineru-gpu:cu123 2>/dev/null`（保留当前 `.env` 中 `MINERU_GPU_IMAGE` 对应 tag）。
+
 
 ## 7. 离线服务器部署
 

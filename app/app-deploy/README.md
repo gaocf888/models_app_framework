@@ -1,6 +1,6 @@
 # 应用服务 Docker 部署（在线 API）
 
-本目录提供 **FastAPI 应用层** 的容器化部署，与仓库内 **`vllm-deploy/`**、**`rag_db-deploy/`** 对接。本文档说明**如何配置、如何启动、多种运行形态（CPU / 英伟达 GPU / 沐曦 GPU / 小模型 GPU profile）的差异与排错**。
+本目录提供 **FastAPI 应用层** 的容器化部署，与仓库内 **`vllm-deploy/`**、**`rag_db-deploy/`** 对接。本文档说明**如何配置、如何启动、多种运行形态（CPU / 英伟达 GPU / 沐曦 GPU / 昇腾 Ascend / 小模型 GPU profile）的差异与排错**。
 
 > 局域网/离线部署外挂服务（vLLM、EasySearch、MinerU、**检修 V0 版面侧车 paddleocr-layout-deploy**）请配合阅读：`README-external-services-lan-deploy.md`。  
 > 值班排障请配合阅读：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
@@ -8,7 +8,7 @@
 **目录**
 
 - [能力对照与组件](#能力对照与组件)
-- [部署形态选择（CPU / 英伟达 GPU / 沐曦 GPU）](#部署形态选择cpu--英伟达-gpu--沐曦-gpu)
+- [部署形态选择（CPU / 英伟达 GPU / 沐曦 GPU / 昇腾 Ascend）](#部署形态选择cpu--英伟达-gpu--沐曦-gpu--昇腾-ascend)
 - [配置分层：谁在读哪些变量](#配置分层谁在读哪些变量)
 - [Service API Key（业务 HTTP 鉴权）](#service-api-key业务-http-鉴权)
 - [前置条件](#前置条件)
@@ -39,6 +39,7 @@
 | 完整部署与参数说明（本文件） | `README.md` |
 | **英伟达 GPU 嵌入/重排（Qwen3）** | **`docker-nvidia/README.md`** + **`docker-nvidia/docker-compose-nvidia.yml`** + 本文「部署形态选择」 |
 | **沐曦 GPU 嵌入/重排** | **`docker-mx/docker-compose-mx.yml`** + 本文「部署形态选择」 |
+| **昇腾 Ascend 嵌入/重排** | **`docker-ascend/README.md`** + **`docker-ascend/docker-compose-ascend.yml`** + 本文「部署形态选择」 |
 | 局域网/离线外挂服务（vLLM/EasySearch/MinerU/**Paddle 版面侧车**） | `README-external-services-lan-deploy.md` |
 | 值班排障（当前先覆盖智能客服） | `deploy-docs/online-services-oncall-runbook.md` |
 
@@ -59,29 +60,32 @@
 
 ---
 
-## 部署形态选择（CPU / 英伟达 GPU / 沐曦 GPU）
+## 部署形态选择（CPU / 英伟达 GPU / 沐曦 GPU / 昇腾 Ascend）
 
 RAG **嵌入**与**重排**模型当前默认为 **Qwen3-Embedding-0.6B** + **Qwen3-Reranker-0.6B**（见 `.env.example`）。按宿主机算力与显卡类型选择 compose 栈：
 
 | 形态 | Compose / Dockerfile | 嵌入/重排设备 | 适用场景 |
 |------|----------------------|---------------|----------|
-| **CPU（默认）** | `docker-compose.yml` + `Dockerfile` | **CPU**（镜像无 CUDA PyTorch；`.env` 中 `cuda:N` 不生效） | 开发联调、无 GPU、或 Qwen3 0.6B 可接受 CPU 延迟 |
-| **英伟达 GPU** | **`docker-nvidia/docker-compose-nvidia.yml`** + **`Dockerfile-nvidia`** | **GPU**（cu121 PyTorch + `EMBEDDING_DEVICE` / `RAG_RERANKER_DEVICE`） | 英伟达服务器；与 vLLM 分卡跑嵌入/重排 |
-| **沐曦 GPU** | **`docker-mx/docker-compose-mx.yml`** + **`Dockerfile-mx`** | **GPU**（Metax 基础镜像 + conda Python） | 沐曦/麒麟等 Metax 栈 |
-| **小模型 GPU profile** | 任上表 compose + `--profile small-model-gpu` | 同上 + YOLO/通道等小模型 | 需 `/small-model/*`、视频通道等 |
+| **CPU（默认）** | `docker-compose.yml` + `Dockerfile` | **CPU**（镜像无 CUDA/NPU PyTorch；`.env` 中 `cuda:N` / `npu:N` 不生效） | 开发联调、无加速卡、或 Qwen3 0.6B 可接受 CPU 延迟 |
+| **英伟达 GPU** | **`docker-nvidia/docker-compose-nvidia.yml`** + **`Dockerfile-nvidia`** | **GPU**（cu121 + `cuda:0` / `cuda:1`） | 英伟达服务器；与 vLLM 分卡跑嵌入/重排 |
+| **沐曦 GPU** | **`docker-mx/docker-compose-mx.yml`** + **`Dockerfile-mx`** | **GPU**（Metax 基础镜像 + conda；常用 `cuda:N` 串） | 沐曦/麒麟等 Metax 栈 |
+| **昇腾 Ascend** | **`docker-ascend/docker-compose-ascend.yml`** + **`Dockerfile-ascend`** | **NPU**（`vllm-ascend:v0.10.0rc1-310p` + `npu:0` / `npu:1`） | Atlas 300I Duo；与 vLLM/MinerU 同底座 |
+| **小模型 GPU profile** | 英伟达/沐曦 compose + `--profile small-model-gpu` | 同上 + YOLO/通道等小模型 | 需 `/small-model/*`、视频通道等（昇腾默认不含） |
 
-**`.env` 共用**：三种主栈均读取 **`app/app-deploy/.env`**（`docker-nvidia` / `docker-mx` 通过 `../.env` 或复制引用）。
+**`.env` 共用**：各主栈均读取 **`app/app-deploy/.env`**（`docker-nvidia` / `docker-ascend` 用 `../.env`；`docker-mx` 常需复制到子目录）。显卡相关注释见 `.env.example`。
 
-**Qwen3 嵌入/重排推荐 `.env` 片段**（GPU 栈）：
+**Qwen3 嵌入/重排推荐 `.env` 片段**：
 
 ```env
-EMBEDDING_MODEL_PATH=/workspace/models/embeddings/Qwen3-Embedding-0.6B
-EMBEDDING_QUERY_PROMPT_NAME=query
-EMBEDDING_TRUST_REMOTE_CODE=true
-EMBEDDING_DEVICE=cuda:0
-RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
-RAG_RERANKER_TRUST_REMOTE_CODE=true
-RAG_RERANKER_DEVICE=cuda:1
+# 英伟达 / 沐曦
+# EMBEDDING_DEVICE=cuda:0
+# RAG_RERANKER_DEVICE=cuda:1
+
+# 昇腾 Ascend（§5：ASCEND_RT_VISIBLE_DEVICES=4,5 → 容器内相对 npu:0 / npu:1）
+EMBEDDING_DEVICE=npu:0
+RAG_RERANKER_DEVICE=npu:1
+ASCEND_RT_VISIBLE_DEVICES=4,5
+# 底座镜像默认见 docker-ascend/Dockerfile-ascend，一般不必配 BASE_IMAGE
 ```
 
 > `models-app-gpu` 的重排容器路径为 **`/models/rerank/Qwen3-Reranker-0.6B`**（与 `models-app` 的 `/workspace/models/rerank/...` 不同），compose 已写死挂载，`.env` 中 `RAG_RERANKER_MODEL_PATH` 会被 compose `environment` 覆盖为对应值。
@@ -106,6 +110,9 @@ docker compose -f docker-nvidia/docker-compose-nvidia.yml up -d --build
 # 沐曦 GPU
 cp .env docker-mx/   # 或 docker-mx 使用 ../.env
 cd docker-mx && docker compose -f docker-compose-mx.yml up -d --build
+
+# 昇腾 Ascend
+docker compose -f docker-ascend/docker-compose-ascend.yml up -d --build
 
 # 可选小模型 GPU（英伟达栈示例）
 docker compose -f docker-nvidia/docker-compose-nvidia.yml --profile small-model-gpu up -d models-app-gpu
@@ -691,7 +698,10 @@ docker compose --profile small-model-gpu down
 | **`docker-nvidia/README.md`** | 英伟达 GPU 栈快速说明 |
 | **`docker-mx/Dockerfile-mx`** | **沐曦 GPU** 主镜像：Metax 基础镜像 + conda |
 | **`docker-mx/docker-compose-mx.yml`** | **沐曦 GPU** 栈 |
-| `.env.example` | 环境变量模板（含 Qwen3 嵌入/重排、GPU 分卡、索引版本） |
+| **`docker-ascend/Dockerfile-ascend`** | **昇腾 Ascend** 主镜像：`vllm-ascend:v0.10.0rc1-310p` + 业务依赖 |
+| **`docker-ascend/docker-compose-ascend.yml`** | **昇腾 Ascend** 栈 |
+| **`docker-ascend/README.md`** | 昇腾栈快速说明 |
+| `.env.example` | 环境变量模板（含英伟达/沐曦/昇腾显卡注释、Qwen3 嵌入/重排、索引版本） |
 | `README.md` | 本文档 |
 | `README-simple-deploy.md` | 简明上线流程 |
 | `README-external-services-lan-deploy.md` | 局域网/离线外挂服务 |

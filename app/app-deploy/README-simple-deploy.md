@@ -7,8 +7,9 @@
 
 > 文档分工建议：  
 > - 以本文件作为“上线执行主线”；  
-> - **嵌入/重排 GPU 部署**（Qwen3 + 英伟达/沐曦）：见 `README.md`「部署形态选择」；  
+> - **嵌入/重排 GPU/NPU 部署**（Qwen3 + 英伟达 / 沐曦 / **昇腾 Ascend**）：见下方 §3.2 与 `README.md`「部署形态选择」；  
 > - 遇到高级参数、GPU profile 细节、运维表格清单时再跳转 `README.md`；  
+> - Atlas 300I Duo 宿主机基础环境：`docs/基础环境及部署/华为Atlas300IDuo基础环境及应用部署方案.md`；  
 > - 不在本文件重复维护离线外挂服务与值班排障长文，分别以对应文档为准。
 
 ---
@@ -220,7 +221,7 @@ LOG_FILE_COMPRESS=true
 - `LOG_FILE_ENABLED=false` 时，仅 stdout。  
 - `LOG_FILE_ENABLED=true` 时，stdout + 文件双写。  
 - 轮转触发后会生成 `app.log.1.gz`、`app.log.2.gz` ...（当 `LOG_FILE_COMPRESS=true`）。  
-- compose 将 `/workspace/logs` bind 到 **app-deploy/logs**（`docker-compose.yml` 为 `./logs`，`docker-mx/docker-compose-mx.yml` 为 `../logs`，宿主机目录一致），容器重建后日志仍保留在宿主机。
+- compose 将 `/workspace/logs` bind 到 **app-deploy/logs**（`docker-compose.yml` 为 `./logs`，`docker-nvidia` / `docker-mx` / `docker-ascend` 为 `../logs`，宿主机目录一致），容器重建后日志仍保留在宿主机。
 
 ### 2.9 模型离线使用（Qwen3 嵌入/重排）
 
@@ -235,24 +236,32 @@ LOG_FILE_COMPRESS=true
 | 轻量意图 LLM | `CHATBOT_INTENT_BACKEND=llm` | 见 `docs/智能客服意图识别轻量LLM接入说明.md` |
 | MinerU | 扫描 PDF | 见下文 mineru 小节 |
 
-**Qwen3 专用 `.env`（GPU 栈生效；CPU 栈下 `EMBEDDING_DEVICE` / `RAG_RERANKER_DEVICE` 无效）**：
+**Qwen3 专用 `.env`（GPU/NPU 栈生效；CPU 栈下 `EMBEDDING_DEVICE` / `RAG_RERANKER_DEVICE` 无效）**：
 
 ```env
 EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
 EMBEDDING_MODEL_PATH=/workspace/models/embeddings/Qwen3-Embedding-0.6B
 EMBEDDING_QUERY_PROMPT_NAME=query
 EMBEDDING_TRUST_REMOTE_CODE=true
-EMBEDDING_DEVICE=cuda:0
 
 RAG_RERANKER_MODEL_NAME=Qwen/Qwen3-Reranker-0.6B
 RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
 RAG_RERANKER_TRUST_REMOTE_CODE=true
-RAG_RERANKER_DEVICE=cuda:1
+
+# --- 英伟达 / 沐曦 ---
+# EMBEDDING_DEVICE=cuda:0
+# RAG_RERANKER_DEVICE=cuda:1
+
+# --- 昇腾 Ascend（Atlas 300I Duo · §5：ASCEND_RT_VISIBLE_DEVICES=4,5 → 容器内相对 npu:0 / npu:1）---
+EMBEDDING_DEVICE=npu:0
+RAG_RERANKER_DEVICE=npu:1
+ASCEND_RT_VISIBLE_DEVICES=4,5
+# 底座镜像默认见 docker-ascend/Dockerfile-ascend，一般不必配 BASE_IMAGE
 ```
 
 **从 BGE 升级**：向量维度 512→1024，须递增 `RAG_ES_INDEX_VERSION` 并 **全量 re-ingest**；FAQ 软直通阈值 `CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE` 可能需重调（Qwen rerank 为 logit 分）。
 
-若部署环境**无法访问 Hugging Face Hub**，推荐预下载到宿主机并挂载（compose 三栈均已预置 Qwen3 挂载）：
+若部署环境**无法访问 Hugging Face Hub**，推荐预下载到宿主机并挂载（compose 四栈均已预置 Qwen3 挂载）：
 > 嵌入模型和重排序模型离线下载方法：魔塔社区中搜索模型名称，然后使用 git lfs 下载到下述路径中。  
 > ollama的模型(qwen2.5-0.5-instract)需要从huggingface下载（git clone https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct /aidata/models/llm/qwen2.5-0.5b-instruct）
 > **例外**：BERT 意图模型**不适用**「直接魔塔下载通用预训练 BERT」的方式，须使用已微调三分类模型（见下文说明）。
@@ -339,7 +348,7 @@ RAG_RERANKER_DEVICE=cuda:1
 
 2. **compose 挂载（已预置，一般无需手改）**
 
-   `docker-compose.yml`、`docker-nvidia/docker-compose-nvidia.yml`、`docker-mx/docker-compose-mx.yml` 均已挂载 Qwen3 子目录。仅当更换模型目录名时需同步改 compose 与 `.env`。
+   `docker-compose.yml`、`docker-nvidia/docker-compose-nvidia.yml`、`docker-mx/docker-compose-mx.yml`、`docker-ascend/docker-compose-ascend.yml` 均已挂载 Qwen3 子目录。仅当更换模型目录名时需同步改 compose 与 `.env`。
 
    ```yaml
    # models-app 示例
@@ -363,6 +372,10 @@ RAG_RERANKER_DEVICE=cuda:1
    # GPU 栈（docker-nvidia / docker-mx）：
    # EMBEDDING_DEVICE=cuda:0
    # RAG_RERANKER_DEVICE=cuda:1
+   # 昇腾栈（docker-ascend）：
+   # EMBEDDING_DEVICE=npu:0
+   # RAG_RERANKER_DEVICE=npu:1
+   # ASCEND_RT_VISIBLE_DEVICES=4,5
 
    # 换嵌入模型后须升版本并 re-ingest
    RAG_ES_INDEX_VERSION=3
@@ -374,7 +387,7 @@ RAG_RERANKER_DEVICE=cuda:1
 
 4. **启动/重启应用栈**
 
-   见 [§3.2 启动应用栈](#32-启动应用栈)（按 CPU / 英伟达 GPU / 沐曦 GPU 选择 compose）。
+   见 [§3.2 启动应用栈](#32-启动应用栈)（按 CPU / 英伟达 / 沐曦 / **昇腾 Ascend** 选择 compose）。
 
 更换嵌入或重排模型时：更新宿主机模型目录 → 同步 compose 挂载子目录名 → 递增 `RAG_ES_INDEX_VERSION` 并 re-ingest。
 
@@ -392,7 +405,11 @@ docker compose -f docker-compose.easysearch_bak0.yml --env-file .env up -d
 
 # vLLM
 cd ../vllm-deploy
+cp .env.example .env          # 首次；按卡型改 VLLM_PLATFORM / 设备变量（见 .env.example 注释）
 chmod +x deploy.sh
+# 英伟达：./deploy.sh --platform nvidia
+# 沐曦：  ./deploy.sh --platform mthreads
+# 昇腾：  ./deploy.sh --platform ascend
 ./deploy.sh
 
 # 可选：MinerU（扫描件 PDF 解析）
@@ -400,6 +417,9 @@ cd ../../mineru-deploy
 cp .env.example .env          # 首次
 # 如 app 使用 external 网络 mineru-stack，但该网络尚不存在，可先手动创建一次
 docker network create mineru-stack || true
+# CPU：docker compose --env-file .env -f docker-compose.cpu.yml up -d
+# 英伟达：docker compose --env-file .env -f docker-compose.gpu.yml up -d --build
+# 昇腾：  docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
 docker compose --env-file .env -f docker-compose.cpu.yml up -d
 
 # 可选：Neo4j / GraphRAG
@@ -410,10 +430,9 @@ docker compose -f docker-compose.neo4j.yml --env-file .env up -d
 
 ### 3.2 启动应用栈
 
-目前主应用部署，基于使用的服务器的算力类型，部署分为基础部署(无加速卡)、英伟达部署(英伟达显卡)、沐曦部署(沐曦显卡),后续其他算力服务器部署时 增加对应配置即可
-（详见 `README.md`「部署形态选择」）：
+目前主应用部署按服务器算力类型分为：**基础（CPU）**、**英伟达**、**沐曦**、**昇腾 Ascend**（详见 `README.md`「部署形态选择」与 `.env.example` 显卡注释）：
 
-**基础部署** — 基于cpu运行 嵌入/重排 模型(`.env` 中 `cuda:N` 不生效)
+**基础部署** — 基于cpu运行 嵌入/重排 模型(`.env` 中 `cuda:N` / `npu:N` 不生效)
 > 使用 app/app-deploy/路径下的 Dockerfile和docker-compose.yml部署
 ```bash
 cd app/app-deploy
@@ -425,9 +444,11 @@ docker compose --env-file .env -f docker-compose.yml up -d --build
 **英伟达部署** — 基于N卡运行 Qwen3 嵌入/重排 模型（需宿主机 NVIDIA Container Toolkit）
 > 使用 app/app-deploy/docker-nvidia/路径下的 Dockerfile-nvidia和docker-compose-nvidia.yml部署
 ```bash
-cp .env docker-nvidia/            # 或 docker-nvidia 使用 ../.env
-cd docker-nvidia
-docker compose --env-file .env -f docker-compose-nvidia.yml up -d --build
+cd app/app-deploy
+cp .env.example .env
+# 确认 .env：EMBEDDING_DEVICE=cuda:0  RAG_RERANKER_DEVICE=cuda:1
+#           MODELS_APP_NVIDIA_VISIBLE_DEVICES=all
+docker compose -f docker-nvidia/docker-compose-nvidia.yml up -d --build
 # 可选小模型 GPU：
 # docker compose -f docker-nvidia/docker-compose-nvidia.yml --profile small-model-gpu up -d models-app-gpu
 ```
@@ -435,9 +456,28 @@ docker compose --env-file .env -f docker-compose-nvidia.yml up -d --build
 **沐曦部署** — 基于沐曦显卡运行 Qwen3 嵌入/重排 模型（使用Metax AI镜像栈）
 > 使用 app/app-deploy/docker-mx/路径下的 Dockerfile-mx和docker-compose-mx.yml部署
 ```bash
-cp .env docker-mx/            # 或 docker-mx 使用 ../.env
-cd docker-mx
-docker compose --env-file .env -f docker-compose-mx.yml up -d --build
+cd app/app-deploy
+cp .env.example .env
+# 确认 .env：EMBEDDING_DEVICE=cuda:0  RAG_RERANKER_DEVICE=cuda:1（Metax 常用 cuda 串）
+docker compose docker-mx/docker-compose-mx.yml up -d --build
+```
+
+**昇腾部署** — 基于 Atlas 300I Duo / Ascend NPU（底座默认见 `Dockerfile-ascend`）
+> 使用 `docker-ascend/`；宿主机须已装 NPU 驱动/固件 + Ascend Docker Runtime 7.1.RC1  
+> 四卡切分：app 默认 `ASCEND_RT_VISIBLE_DEVICES=4,5`，嵌入/重排 `npu:0` / `npu:1`
+```bash
+cd app/app-deploy
+cp .env.example .env
+# 确认 .env：EMBEDDING_DEVICE=npu:0  RAG_RERANKER_DEVICE=npu:1
+#           ASCEND_RT_VISIBLE_DEVICES=4,5
+# （底座镜像一般不必在 .env 配 BASE_IMAGE，默认在 Dockerfile-ascend）
+docker compose -f docker-ascend/docker-compose-ascend.yml up -d --build
+```
+
+> 针对当前没有启动和使用face_db-deploy和paddleocr-layout-deploy，需要单独手动启动一下这两个网络(app-deploy的compose中默认配置了)
+```text
+docker network create paddle-layout-stack 2>/dev/null || true
+docker network create face-milvus-stack 2>/dev/null || true
 ```
 
 > 启动前确认：**`LLM_DEFAULT_MODEL`** 与 `vllm-deploy/` 实际部署的大模型名称一致。
@@ -641,23 +681,19 @@ curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:${MINIO_PORT:-9000}/m
 
 ### 5.3 本栈常用命令
 
-在 `app/app-deploy` 目录（沐曦：`docker-mx/` + `docker-compose-mx.yml`；英伟达：`docker-nvidia/docker-compose-nvidia.yml`）：
+在 `app/app-deploy` 目录按形态选择 compose（示例为昇腾；英伟达/沐曦/CPU 将 `-f` 换成对应文件即可）：
 
 ```bash
-# 查看状态
-docker compose ps
+COMPOSE="-f docker-ascend/docker-compose-ascend.yml"
+# 英伟达：COMPOSE="-f docker-nvidia/docker-compose-nvidia.yml"
+# 沐曦：  先 cd docker-mx，再 COMPOSE="-f docker-compose-mx.yml"
+# CPU：   COMPOSE="-f docker-compose.yml"
 
-# 应用日志（stdout + 若开启则含文件日志挂载）
-docker compose logs -f models-app
-
-# Redis / MinIO 日志
-docker compose logs -f redis minio
-
-# 重启应用（不动 vLLM / EasySearch 等外挂）
-docker compose restart models-app
-
-# 停止本栈（不删 vLLM / EasySearch / Neo4j 数据）
-docker compose down
+docker compose $COMPOSE ps
+docker compose $COMPOSE logs -f models-app
+docker compose $COMPOSE logs -f redis minio
+docker compose $COMPOSE restart models-app
+docker compose $COMPOSE down
 ```
 
 GPU 实例曾启动时：
@@ -687,4 +723,6 @@ docker compose --profile small-model-gpu down
 - **检修 V0 + 版面侧车**：`framework-guide/报告解析企业级实现方案V0.md`、`enterprise-level_transformation_docs/企业级检修报告结构化提取V0版本实现和使用说明.md`、`paddleocr-layout-deploy/README.md`。  
 - RAG / GraphRAG 细节：`framework-guide/RAG整体实现技术说明.md`。  
 - 底座数据库部署：`rag_db-deploy/README.md`、`graphrag_db-deploy/README.md`。  
-- 大模型服务部署：`vllm-deploy/README.md`。
+- 大模型服务部署：`vllm-deploy/README.md`（含 `--platform ascend`）。  
+- 昇腾应用栈：`docker-ascend/README.md`。  
+- Atlas 宿主机：`docs/基础环境及部署/华为Atlas300IDuo基础环境及应用部署方案.md`。

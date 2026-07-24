@@ -1,0 +1,63 @@
+# =============================================================================
+# 昇腾（Ascend / Atlas 300I Duo）vLLM 镜像
+# =============================================================================
+# 基础镜像已含 vLLM-Ascend + CANN + torch_npu；本文件仅安装 extras（yaml/requests/psutil）。
+# 构建上下文：vllm-deploy/（与 docker-compose 中 context: .. 一致）
+#
+# 默认底座（与文档固化一致）：
+#   quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+#
+# 说明（勿与沐曦 Dockerfile-mx 混淆）：
+# - 宿主机：昇腾 / 沐曦现场均可为麒麟 V10；宿主机 OS ≠ 容器底座 OS。
+# - 本 Dockerfile 面向官方 vllm-ascend 镜像（多为 Ubuntu 系），容器内优先 apt。
+# - 沐曦栈请使用 docker-compose.mthreads.yml → Dockerfile-mx（Metax 底座多为
+#   Kylin/RHEL 系，容器内 yum/dnf），不要在本文件里“改用 Dockerfile-mx”。
+# =============================================================================
+
+ARG BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+FROM ${BASE_IMAGE}
+
+ARG VLLM_REQUIREMENTS_PROFILE=extras
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    WORKSPACE=/workspace
+
+# 按容器内实际包管理器安装少量工具；官方 310p 底座通常走 apt
+RUN set -eux; \
+    if command -v apt-get >/dev/null 2>&1; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv curl ca-certificates \
+        && rm -rf /var/lib/apt/lists/*; \
+    elif command -v yum >/dev/null 2>&1; then \
+      yum install -y python3 python3-pip curl && yum clean all; \
+    elif command -v dnf >/dev/null 2>&1; then \
+      dnf install -y python3 python3-pip curl && dnf clean all; \
+    else \
+      echo "WARN: no apt/yum/dnf; assume BASE_IMAGE already has python3/pip"; \
+    fi; \
+    if [ -x /usr/bin/python3 ] && [ ! -e /usr/bin/python ]; then \
+      ln -sf /usr/bin/python3 /usr/bin/python; \
+    fi
+
+WORKDIR ${WORKSPACE}
+
+RUN mkdir -p ${WORKSPACE}/{config,scripts,logs,models,media}
+
+COPY requirements.txt requirements-extras.txt ${WORKSPACE}/
+
+# extras：禁止安装 PyPI vllm/torch，以免覆盖镜像内昇腾栈
+RUN set -eux; \
+    if [ "${VLLM_REQUIREMENTS_PROFILE}" = "extras" ]; then \
+      REQ="${WORKSPACE}/requirements-extras.txt"; \
+    else \
+      echo "ERROR: Ascend 栈请使用 VLLM_REQUIREMENTS_PROFILE=extras（勿用 full 覆盖厂商 vLLM）"; \
+      exit 1; \
+    fi; \
+    python3 -m pip install --no-cache-dir -r "${REQ}" \
+      -i https://mirrors.aliyun.com/pypi/simple/ \
+      --trusted-host mirrors.aliyun.com \
+      --default-timeout=600 --retries=20; \
+    python3 -c "import torch; print('torch', torch.__version__)"
+
+EXPOSE 8000

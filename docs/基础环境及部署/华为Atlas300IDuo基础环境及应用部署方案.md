@@ -74,12 +74,12 @@ lscpu | sed -n '1,40p'
 
 | 栈 | 现状（`dev_djs`） | 本方案目标 |
 |----|------------------|------------|
-| `vllm-deploy` | 已有 `docker-compose.ascend.yml` 骨架 + `deploy.sh --platform ascend`；**缺**默认昇腾 `BASE_IMAGE`、完整设备挂载说明与可用 `.env` 示例 | 完善 overlay，现场可 `./deploy.sh --platform ascend` |
-| `app/app-deploy` | 仅 CPU / `docker-nvidia` / `docker-mx` | 新增 **`docker-ascend/`**（对齐沐曦目录结构） |
-| `mineru-deploy` | 仅 CPU + **NVIDIA** GPU | 新增 Ascend GPU Dockerfile + compose |
-| 宿主机文档 | 无 Atlas/Kylin V10 SP3 专项 | 以本文为准 |
+| `vllm-deploy` | 已有 Ascend overlay：`Dockerfile-ascend` + `docker-compose.ascend.yml`；默认 `vllm-ascend:v0.10.0rc1-310p` | 现场 `./deploy.sh --platform ascend` |
+| `app/app-deploy` | 已有 **`docker-ascend/`**（对齐 nvidia/mx） | `docker compose -f docker-ascend/docker-compose-ascend.yml up` |
+| `mineru-deploy` | 已有 **`Dockerfile.gpu.ascend`** + **`docker-compose.gpu.ascend.yml`** | 昇腾 GPU 编排；失败可降级 CPU |
+| 宿主机文档 | Atlas/Kylin V10 SP3 专项 | 以本文为准 |
 
-未完成「仓库侧适配」前，可先完成宿主机 H 类工作与镜像/版本选型；**应用层升腾一键部署以代码合入为准**。
+仓库侧 C1–C5 已落地后，应用层昇腾部署以代码与本文版本矩阵为准；**实机冒烟仍须在 Atlas 机器上验收**。
 
 ---
 
@@ -852,7 +852,8 @@ docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
 #### 6.3.2 目标配置（`.env` 示例）
 
 ```env
-BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+# 底座默认见 Dockerfile-ascend / docker-compose.ascend.yml；一般不必写 BASE_IMAGE
+# BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
 
 VLLM_REQUIREMENTS_PROFILE=extras
 VLLM_PLATFORM=ascend
@@ -873,7 +874,7 @@ VLLM_PORT=8000
 
 在 `docker-compose.ascend.yml` 中相对当前骨架，建议：
 
-- 默认 `BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`；
+- Dockerfile-ascend / compose overlay 默认底座 `quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`（一般不必在 `.env` 写 `BASE_IMAGE`）；
 - 按需增加精确 `--device` / 驱动目录 volume（收敛 `privileged`+全量 `/dev`）；
 - 文档写明 Kylin V10 SP3 ARM + Atlas 300I Duo 的验证命令。
 
@@ -936,7 +937,7 @@ cp .env.example .env
 # MINERU_MODELS_HOST_PATH=/aidata/mineru/models
 # MINERU_IO_HOST_PATH=/aidata/mineru/io
 # ASCEND_RT_VISIBLE_DEVICES=6   # §5：独占卡3；勿与 vLLM/app 重叠
-# BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+# （底座默认见 Dockerfile.gpu.ascend；一般不必配 MINERU_BASE_IMAGE）
 
 docker network create mineru-stack || true
 docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
@@ -985,8 +986,8 @@ app/app-deploy/docker-ascend/
 ```env
 SERVICE_API_KEYS=<本地生成密钥>
 
-# 构建时使用（若 Dockerfile ARG）
-BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+# 底座默认见 docker-ascend/Dockerfile-ascend；一般不必配 BASE_IMAGE
+# BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
 
 LLM_DEFAULT_ENDPOINT=http://vllm-service:8000/v1
 LLM_DEFAULT_MODEL=<与 vLLM served name 一致>

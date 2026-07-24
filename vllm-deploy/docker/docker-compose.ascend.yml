@@ -1,14 +1,31 @@
+# =============================================================================
+# 昇腾（Ascend）平台 overlay — 须与 docker-compose.yml 合并使用
+# =============================================================================
+# 启动：
+#   ./deploy.sh --platform ascend
+#   或：docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.ascend.yml up -d --build
+#
+# 前置：宿主机已装 NPU 驱动/固件 + Ascend Docker Runtime 7.1.RC1（见 docs/基础环境及部署）
+# 默认底座：quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+# 四卡切分（Atlas 300I Duo ×4）：本栈默认设备 0,1,2,3（物理卡0+卡1）
+# =============================================================================
+
 version: '3.8'
 
 services:
   vllm:
     build:
-      dockerfile: docker/Dockerfile-mx
+      dockerfile: docker/Dockerfile-ascend
       args:
+        BASE_IMAGE: ${BASE_IMAGE:-quay.io/ascend/vllm-ascend:v0.10.0rc1-310p}
         VLLM_REQUIREMENTS_PROFILE: ${VLLM_REQUIREMENTS_PROFILE:-extras}
+    # Ascend Docker Runtime 已装且 default-runtime=ascend 时可省略；显式写出更清晰
+    runtime: ${ASCEND_DOCKER_RUNTIME:-ascend}
     privileged: true
     environment:
-      - ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0}
+      - ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3}
     volumes:
-      # 昇腾（npu）在部分环境需要透传 /dev；若厂商要求专用 runtime/设备目录，请按现场文档调整。
+      # Runtime 通常会自动注入设备；下列挂载为兼容旧环境 / 兜底（路径以现场驱动安装为准）
+      - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
       - /dev:/dev

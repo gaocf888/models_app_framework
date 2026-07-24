@@ -1,0 +1,63 @@
+# =============================================================================
+# MinerU · 昇腾 Ascend GPU 编排（与 docker-compose.gpu.yml 英伟达版并列）
+# =============================================================================
+# 启动：
+#   docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
+#
+# 四卡切分 §5：本栈默认 ASCEND_RT_VISIBLE_DEVICES=6（物理卡3）；勿与 vLLM/app 重叠
+# 底座：quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+# =============================================================================
+
+version: '3.8'
+
+services:
+  mineru-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu.ascend
+      args:
+        BASE_IMAGE: ${MINERU_BASE_IMAGE:-quay.io/ascend/vllm-ascend:v0.10.0rc1-310p}
+        MINERU_PIP_SPEC: ${MINERU_GPU_PIP_SPEC:-mineru[core]}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+    image: ${MINERU_ASCEND_IMAGE:-mineru-gpu:ascend-310p}
+    container_name: ${MINERU_CONTAINER_NAME:-mineru-api}
+    restart: unless-stopped
+    runtime: ${ASCEND_DOCKER_RUNTIME:-ascend}
+    privileged: true
+    ports:
+      - "${MINERU_PORT:-8009}:8000"
+    environment:
+      # 昇腾设备模式以现场 MinerU 适配为准；不支持时可改 cpu 并改用 docker-compose.cpu.yml
+      - MINERU_DEVICE_MODE=${MINERU_DEVICE_MODE:-npu}
+      - ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-6}
+      - MINERU_MODEL_SOURCE=${MINERU_MODEL_SOURCE:-modelscope}
+      - MINERU_API_OUTPUT_ROOT=/io/mineru-output
+      - HF_HOME=/io/.hf_cache
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
+      - MKL_NUM_THREADS=${MKL_NUM_THREADS:-8}
+      - OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-8}
+      - NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-8}
+      - TORCH_NUM_THREADS=${TORCH_NUM_THREADS:-8}
+      - TORCH_NUM_INTEROP_THREADS=${TORCH_NUM_INTEROP_THREADS:-2}
+    volumes:
+      - ${MINERU_MODELS_HOST_PATH}:/models:ro
+      - ${MINERU_IO_HOST_PATH}:/io
+      - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
+      - /dev:/dev
+    command: ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mineru-net
+    mem_limit: ${MINERU_MEM_LIMIT:-16g}
+
+networks:
+  mineru-net:
+    name: ${MINERU_NETWORK_NAME:-mineru-stack}
+    driver: bridge
