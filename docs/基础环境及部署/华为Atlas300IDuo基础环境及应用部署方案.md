@@ -74,7 +74,7 @@ lscpu | sed -n '1,40p'
 
 | 栈 | 现状（`dev_djs`） | 本方案目标 |
 |----|------------------|------------|
-| `vllm-deploy` | 已有 Ascend overlay：`Dockerfile-ascend` + `docker-compose.ascend.yml`；默认 `vllm-ascend:v0.10.0rc1-310p` | 现场 `./deploy.sh --platform ascend` |
+| `vllm-deploy` | 已有 Ascend overlay：`Dockerfile-ascend` + `docker-compose.ascend.yml`；默认 `vllm-ascend:v0.10.0rc1-310p` | 现场 `docker compose -f docker-compose.yml -f docker-compose.ascend.yml up -d --build` |
 | `app/app-deploy` | 已有 **`docker-ascend/`**（对齐 nvidia/mx） | `docker compose -f docker-ascend/docker-compose-ascend.yml up` |
 | `mineru-deploy` | 已有 **`Dockerfile.gpu.ascend`** + **`docker-compose.gpu.ascend.yml`** | 昇腾 GPU 编排；失败可降级 CPU |
 | 宿主机文档 | Atlas/Kylin V10 SP3 专项 | 以本文为准 |
@@ -836,7 +836,7 @@ curl -k -u admin:<密码> "https://127.0.0.1:9200/_cluster/health?pretty"
 #### 6.3.1 现状与底座
 
 - 平台 overlay：`docker/docker-compose.ascend.yml`
-- 启动：`./deploy.sh --platform ascend` 或 `.env` 中 `VLLM_PLATFORM=ascend`
+- 启动：`docker compose` + `docker-compose.ascend.yml`（见 §6.3.4）；`.env` 中 `VLLM_PLATFORM=ascend`
 - **统一底座镜像（已固化）**：`quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`（[tags](https://quay.io/repository/ascend/vllm-ascend?tab=tags)）
 - 构建：若需业务 extras，可用 `Dockerfile-mx` 思路，但 **Ubuntu 系底座请用 apt Dockerfile**，勿硬套 yum；`VLLM_REQUIREMENTS_PROFILE=extras` 时禁止覆盖为 CUDA `torch` / 通用 `vllm`
 
@@ -880,16 +880,16 @@ VLLM_PORT=8000
 
 #### 6.3.4 启动
 
+本现场使用 **docker compose overlay**（不用 `deploy.sh`）：
+
 ```bash
 cd vllm-deploy
 cp .env.example .env
 # 按 6.3.2 修改
 
-chmod +x deploy.sh
-./deploy.sh --platform ascend
-# 等价：
-# cd docker && docker compose --env-file ../.env \
-#   -f docker-compose.yml -f docker-compose.ascend.yml up -d --build
+cd docker
+docker compose --env-file ../.env \
+  -f docker-compose.yml -f docker-compose.ascend.yml up -d --build
 ```
 
 **验收**：
