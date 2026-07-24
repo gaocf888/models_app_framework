@@ -1,9 +1,9 @@
 # 华为 Atlas 300I Duo_96G 基础环境及应用部署方案
 
-> **文档性质**：面向 `dev_djs`（地面沉降）项目在 **华为 Atlas 300I Duo_96G + 双路 32 核 CPU（ARM/C86 适配）+ 银河麒麟 Kylin V10 SP3** 上的宿主机基础环境与默认必部应用部署方案。  
+> **文档性质**：面向 `dev_djs`（地面沉降）项目在 **华为 Atlas 300I Duo_96G ×4 + 双路 32 核 ARM（aarch64）+ 银河麒麟 Kylin V10 SP3** 上的宿主机基础环境与默认必部应用部署方案。  
 > **配套清单**：勾选式进度见 [`工作清单-华为Atlas300IDuo.md`](./工作清单-华为Atlas300IDuo.md)。  
 > **对齐仓库**：`vllm-deploy/`、`rag_db-deploy/`、`mineru-deploy/`、`app/app-deploy/`；通用运维见 `enterprise-level_transformation_docs/项目整体部署运维手册.md`。  
-> **版本**：2026-07（目标态方案；昇腾侧部分 compose 仍待合入，文中以「现状 / 目标」标注）。
+> **版本**：2026-07（已固化：ARM + HDK 25.2.0 驱动/固件 + CANN 8.2.RC1 经官方镜像提供 + 三栈统一 `vllm-ascend:v0.10.0rc1-310p`）。
 
 ---
 
@@ -11,45 +11,45 @@
 
 ### 1.1 目标
 
-在单台（或同构）Atlas 300I Duo_96G 推理服务器上，完成：
+在单台（或同构）**配备 4 张 Atlas 300I Duo_96G** 的推理服务器上，完成：
 
-1. **宿主机基础环境**：NPU 驱动/固件、Docker、Ascend 容器运行时、目录与内核参数；
-2. **默认必部应用栈**：EasySearch → vLLM（昇腾）→ MinerU（昇腾）→ models-app（昇腾嵌入/重排）+ Redis + MinIO；
+1. **宿主机基础环境**：RAID/分区、NPU 驱动/固件、Docker/Compose、容器 NPU 注入、目录与内核参数；  
+2. **默认必部应用栈**：EasySearch → vLLM（昇腾）→ MinerU（昇腾）→ models-app（昇腾嵌入/重排）+ Redis + MinIO；  
 3. **可验收、可回滚** 的配置约定与资源切分。
 
 ### 1.2 现场约束（已确认）
 
 | 项 | 值 |
 |----|-----|
-| 加速卡 | 华为 **Atlas 300I Duo_96G**（双芯推理卡，合计约 96GB 显存） |
-| CPU | **双路**，单颗 **32 核**（合计 **64 逻辑核量级**，以 `lscpu` 为准），主频 **≥2.0GHz** |
-| CPU 架构要求 | 标书/交付要求 **支持 ARM / C86 架构适配**；现场必须落成其一并全程同架构选型（见 §1.2.1） |
-| 操作系统 | **银河麒麟 Kylin V10 SP3**（安装介质须与 CPU 架构匹配） |
+| 加速卡 | 华为 **Atlas 300I Duo_96G × 4 张**（每张 Duo 双芯、单卡约 96GB HBM；整机约 **8 颗 NPU / 合计约 384GB**） |
+| CPU | **双路**，单颗 **32 核**（合计约 **64** 核），主频 **≥2.0GHz** |
+| CPU 架构 | **已锁定 ARM（`aarch64`）**；驱动/Docker/昇腾镜像一律 **arm64 / aarch64** |
+| 操作系统 | **银河麒麟 Kylin V10 SP3**（ARM 安装介质） |
+| 统一 AI 底座镜像 | **`quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`**（vLLM / MinerU 底座 / app 底座） |
+| 镜像内 CANN | **8.2.RC1**（**宿主机不单独安装 CANN**，由官方 AI 镜像提供） |
+| NPU 驱动 | **`Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run`**（Ascend HDK 25.2.0） |
+| NPU 固件 | **`Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run`**（与上同页齐套） |
+| 驱动/固件下载 | [昇腾社区 Firmware-Drivers（CANN 8.2.RC1 / HDK 25.2.0 / 300I Duo）](https://www.hiascend.com/hardware/firmware-drivers/community?product=2&model=17&cann=8.2.RC1&driver=Ascend+HDK+25.2.0) |
 | 项目分支 | `dev_djs` |
-| 设备可见性变量 | `ASCEND_RT_VISIBLE_DEVICES`（昇腾；勿与 CUDA/沐曦变量混用作为唯一依据） |
+| 设备可见性变量 | `ASCEND_RT_VISIBLE_DEVICES` |
 
-#### 1.2.1 ARM 与 C86：必须先锁定落地架构
+#### 1.2.1 架构说明（已锁定 ARM）
 
-「支持 ARM/C86 适配」表示方案与制品要能覆盖两条信创 CPU 路线，**不等于**一台机器同时跑两种指令集。上线前用现场机器确认唯一落地值：
-
-| 落地路线 | 典型 CPU | `uname -m` | Docker / 昇腾镜像架构 | 说明 |
-|----------|----------|------------|------------------------|------|
-| **C86** | 海光（Hygon）等 | **`x86_64`** | **`linux/amd64`** | 指令集兼容 x86_64；驱动 run 包选 `x86_64`/`amd64` 变体 |
-| **ARM** | 鲲鹏 / 飞腾等 | **`aarch64`** | **`linux/arm64`** | 驱动、CANN、vLLM/torch_npu 镜像均须 **arm64**；与 amd64 制品 **不互通** |
+| 落地 | `uname -m` | 镜像 platform | 本现场 |
+|------|------------|---------------|--------|
+| **ARM** | **`aarch64`** | **`linux/arm64`** | **已采用** |
 
 硬性规则：
 
-1. **NPU 驱动 `.run`、CANN、基础镜像、业务镜像四者架构必须与 `uname -m` 一致**；混用会出现 `exec format error` 或驱动无法加载。  
-2. 麒麟 V10 SP3 亦有按架构区分的安装包/内核；换 CPU 路线等于换一整套 OS+驱动+镜像矩阵，而不是只改一个 compose 文件。  
-3. 仓库内沐曦示例镜像多为 `…-amd64`，**不可**在 ARM 昇腾机上直接复用；昇腾侧须按本节另选官方/现场 Harbor tag。  
-4. 双路 64 核主要影响 **CPU 侧线程与 EasySearch/应用 worker 容量**，不改变 NPU 双芯切分逻辑（仍见 §5）。
+1. 驱动 `.run`、Docker 静态包、`vllm-ascend:…-310p` 均须 **aarch64/arm64**，禁止混用 amd64。  
+2. 麒麟安装介质须为 ARM 版。  
+3. 双路 64 核影响 CPU 侧线程与 worker，不改变 §5 四卡切分。  
 
-现场确认命令：
+确认命令：
 
 ```bash
-uname -m
+uname -m    # 期望：aarch64
 lscpu | sed -n '1,40p'
-# 记录：Architecture、CPU(s)、Socket(s)、Core(s) per socket、Model name
 ```
 
 
@@ -85,34 +85,37 @@ lscpu | sed -n '1,40p'
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│  Kylin V10 SP3 宿主机                                            │
-│  NPU Driver/Firmware + Ascend Docker Runtime + Docker Compose    │
-│  /aidata/{models,data,mineru,...}                                │
+│  Kylin V10 SP3 · ARM aarch64                                     │
+│  Atlas 300I Duo_96G ×4 · Driver 25.2.0 + Firmware 7.7.0.6.236   │
+│  Docker/Compose ·（可选）Ascend Docker Runtime                    │
+│  统一底座：vllm-ascend:v0.10.0rc1-310p（内含 CANN 8.2.RC1）       │
+│  /aidata/{models,data,mineru,...} · /opt/deploy                  │
 └─────────────────────────────────────────────────────────────────┘
          │
          ▼
   [1] rag-easysearch          （无 NPU）
          │
          ▼
-  [2] vllm-service            （NPU：双芯主用于大模型，TP 视模型）
+  [2] vllm-service            （底座镜像直接用；设备 0,1,2,3＝卡0+卡1）
          │
          ▼
-  [3] mineru-api              （NPU：可与 vLLM 分时或分芯）
+  [3] mineru-api              （同底座 + MinerU NPU 层；设备 6＝卡3）
          │
          ▼
   [4] models-app + redis + minio
-      （NPU：嵌入/重排；与 vLLM 分芯或错峰）
+      （同底座 + 业务依赖；设备 4,5＝卡2 嵌入/重排）
 ```
 
 **推荐顺序（必须）**：
 
 ```text
-宿主机基础环境验收
-  → EasySearch
-  → 模型权重落盘
-  → vLLM（ascend）
-  → MinerU（ascend）
-  → app 昇腾栈（接入外部网络）
+RAID 确认 + 引导分区已就绪
+  → 系统 OK 后补齐 §4.0 剩余分区并 fstab
+  → 安装 NPU 驱动/固件（§4.3，指定包名）
+  → 安装 Docker/Compose（§4.4 在线或离线）
+  → （可选）Ascend Docker Runtime / 或 compose 设备挂载（§4.5）
+  → 拉取统一镜像 vllm-ascend:v0.10.0rc1-310p
+  → EasySearch → 模型落盘 → vLLM → MinerU → app
   → 端到端冒烟
 ```
 
@@ -129,33 +132,149 @@ lscpu | sed -n '1,40p'
 
 ---
 
-## 3. 硬件与软件版本矩阵（落地前必填）
+## 3. 硬件与软件版本矩阵（已固化）
 
-> Atlas / CANN / 镜像 **强版本绑定**。下表「现场填写」列在实施前由交付人员填实，并与华为支持包、制品库 tag 对齐。
+> 下列版本已与 **`vllm-ascend:v0.10.0rc1-310p`（内含 CANN 8.2.RC1）** 对齐；实施时按包名下载，**勿擅自换成「更新」驱动/镜像破坏配套**。
 
-| 类别 | 建议记录项 | 现场填写 |
-|------|------------|----------|
-| 卡 | Atlas 300I Duo，芯片数、单芯显存、PCIe | |
-| CPU | 双路 × 32 核；主频；**Model name**；落地为 ARM 或 C86 | |
-| OS | Kylin V10 SP3，`uname -r`（确认与 CPU 架构介质一致） | |
-| CPU 架构 | `uname -m` → `x86_64`（C86）或 `aarch64`（ARM）；镜像 platform 必须同架构 | |
-| NPU 驱动 | `Ascend-hdk-*-npu-driver_*.run` 版本（**含 arch 后缀**） | |
-| NPU 固件 | `Ascend-hdk-*-npu-firmware_*.run` 版本 | |
-| CANN | `ascend-toolkit` / kernels 版本（同架构） | |
-| Ascend Docker Runtime | 包版本（同架构） | |
-| vLLM 基础镜像 | 厂商或现场 Harbor 的 vLLM-Ascend / MindIE 镜像 tag（**amd64 或 arm64**） | |
-| app 基础镜像 | 含 `torch_npu` 的推理镜像 tag（同架构） | |
-| MinerU 基础镜像 | 可跑 MinerU + `torch_npu` 的镜像 tag（同架构） | |
-| Docker | Engine + Compose V2 版本 | |
+| 类别 | 固化值 |
+|------|--------|
+| 卡 | Atlas 300I Duo_96G **×4**（约 8 逻辑 NPU） |
+| CPU | 双路 × 32 核；**ARM `aarch64`** |
+| OS | Kylin V10 SP3（ARM） |
+| NPU 驱动 | **`Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run`**（Ascend HDK **25.2.0**） |
+| NPU 固件 | **`Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run`** |
+| 驱动/固件下载 | https://www.hiascend.com/hardware/firmware-drivers/community?product=2&model=17&cann=8.2.RC1&driver=Ascend+HDK+25.2.0 |
+| CANN | **8.2.RC1** — **不在宿主机单独安装**；由官方 AI 镜像提供 |
+| 统一底座镜像 | **`quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`**（[tags](https://quay.io/repository/ascend/vllm-ascend?tab=tags)） |
+| vllm-deploy | 同上镜像（直接或 `BASE_IMAGE` + `extras`） |
+| app-deploy | 同上镜像作 **BASE_IMAGE**，再装业务依赖 |
+| mineru-deploy | 同上镜像作 **BASE_IMAGE**，按 MinerU Ascend/`npu.Dockerfile` 构建业务层 |
+| Docker 离线包 | **`docker-20.10.24.tgz`**（aarch64）+ **`docker-compose-linux-aarch64`**（见 §4.4） |
 
-**选型原则（与沐曦栈一致）**：
+**配套关系（摘要）**：
 
-- **国产卡**：`BASE_IMAGE` 使用厂商已适配 **PyTorch + vLLM（或等价推理栈）** 的镜像；应用侧仅装业务依赖（`VLLM_REQUIREMENTS_PROFILE=extras`），**禁止**用 PyPI 通用 `vllm`/CUDA `torch` 覆盖厂商栈。
-- 镜像 OS 族优先与麒麟/RHEL 系一致时，继续走仓库已有 `Dockerfile-mx`（`yum/dnf`）路径；若官方镜像为 Ubuntu 系，则需单独 Ascend Dockerfile（`apt`），不要硬套 yum。
+```text
+宿主机：Driver 25.2.0 + Firmware 7.7.0.6.236  (HDK 25.2.0 / CANN 8.2.RC1 配套页)
+容器内：vllm-ascend:v0.10.0rc1-310p → 内置 cann 8.2.rc1-310p + torch_npu
+```
+
+**原则**：
+
+- 三栈 **共用同一底座 tag**；app / MinerU **再构建业务层**，禁止 pip 覆盖为 CUDA `torch`。  
+- Ubuntu 系镜像叠加业务层时用 **apt**，勿硬套 yum 的 `Dockerfile-mx`。  
+- 镜像拉取：`docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`（国内可用 `m.daocloud.io/quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`）；麒麟直拉失败时按 FAQ 离线 `docker save/load`。
+
+### 3.1 版本变更原则
+
+现场已固化上表。若未来升级镜像或 HDK，必须 **整线更换**（驱动 + 固件 + 镜像），并重新验收；禁止只升驱动或只升镜像。
 
 ---
 
 ## 4. 宿主机基础环境部署方案
+
+### 4.0 RAID 与磁盘分区方案
+
+本节为现场存储规划；**安装系统时已完成引导分区，其余在系统就绪后按目标表补齐**。
+
+#### 4.0.1 RAID（已规划 / 须确认已做）
+
+| 磁盘组 | 成员盘 | RAID 级别 | 可用容量（约） | 用途 |
+|--------|--------|-----------|----------------|------|
+| 组1 | 2 × 480GB SSD | **RAID1** | **480GB** | 系统、Docker、热数据（`/aidata/data` 等） |
+| 组2 | 2 × 600GB SAS | **RAID1** | **600GB** | 模型、MinerU、MinIO 大文件、备份、部署代码 |
+
+验收：
+
+```bash
+# 以现场 RAID 卡工具或 mdadm 为准，确认两套 RAID1 均 Optimal/正常
+cat /proc/mdstat 2>/dev/null || true
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
+```
+
+#### 4.0.2 现场安装阶段已完成的分区
+
+机房/装机侧说明（已落实）：
+
+> 整个 **1G 的 `/boot`**，**512M 的引导（`/boot/efi`）**；**剩余空间等系统 OK 后再由部署侧划分**。
+
+| 挂载点 | 大小 | 状态 | 所在盘（目标） |
+|--------|------|------|----------------|
+| `/boot/efi` | **512MB** | **已完成** | SSD RAID1 |
+| `/boot` | **1GB** | **已完成** | SSD RAID1 |
+| 其余分区 | — | **待系统就绪后划分** | 见下表 |
+
+装机后先确认：
+
+```bash
+df -h /boot /boot/efi
+lsblk -f
+```
+
+#### 4.0.3 系统就绪后的目标分区（在已完成 boot 基础上继续）
+
+**SSD RAID1（约 480GB）— 系统与热数据**
+
+| 挂载点 | 大小 | 内容 |
+|--------|------|------|
+| `/boot/efi` | 512MB | 引导（**已完成，勿改**） |
+| `/boot` | 1GB | 内核（**已完成，勿改**） |
+| `swap` | 16GB | 交换分区 |
+| `/` | 70GB | 系统、昇腾驱动等 |
+| `/var/lib/docker` | 130GB | Docker 镜像与容器层 |
+| `/aidata/data` | **260GB**（约剩余） | EasySearch 本地数据、Redis、会话等热数据 |
+
+> 容量按 512M+1G+16G+70G+130G+260G ≈ 477.5GB 对齐约 480GB；若实际可用略少，优先保证 `/` 与 `/var/lib/docker`，再压缩 `/aidata/data`。
+
+**SAS/HDD RAID1（约 600GB）— 模型与大文件**
+
+| 挂载点 | 大小 | 内容 |
+|--------|------|------|
+| `/aidata/models` | 260GB | 大模型、嵌入、重排权重 |
+| `/aidata/mineru` | 80GB | MinerU 模型与 IO |
+| `/aidata/data/minio_data` | 80GB | 上传文件、图片、PDF 等对象存储 |
+| `/aidata/backup` | 80GB | 备份 |
+| `/opt/deploy` | 100GB | 项目代码与配置 |
+
+> 260+80+80+80+100 = 600GB。若实际可用不足，优先保证 `/aidata/models`，再压缩 backup / deploy。
+
+#### 4.0.4 补分区操作要点（系统 OK 后）
+
+1. **先摸清现状**：`lsblk`、`df -h`、`vgs/lvs`（若用 LVM）。若当前 `/` 已占满 SSD 剩余空间，需 **缩减根分区或改用 LVM 再切分**，避免直接删盘；生产机操作前做快照/备份。  
+2. **推荐顺序**：创建 `swap` → 调整/固定 `/` 至约 70GB → 独立挂载 `/var/lib/docker` → 挂载 `/aidata/data` → 在 SAS 盘上依次创建并挂载 models / mineru / minio_data / backup / deploy。  
+3. **写入 `/etc/fstab`**，`mount -a` 无报错后再装 Docker（保证 Docker 数据目录落在独立分区）。  
+4. **权限**：部署用户对 `/aidata`、`/opt/deploy` 可写；Docker 目录按 root/docker 组惯例。  
+5. 子目录创建见 **§4.8**（须在对应挂载点就绪后执行）。
+
+示例（设备名须换成现场 `lsblk` 结果，下列仅为结构示意）：
+
+```bash
+# 查看
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,UUID
+
+# 挂载点
+sudo mkdir -p /var/lib/docker /aidata/data \
+  /aidata/models /aidata/mineru /aidata/data/minio_data \
+  /aidata/backup /opt/deploy
+
+# 格式化与挂载示例（不要照抄设备名）
+# sudo mkfs.xfs /dev/<ssd_part_docker>
+# sudo mkfs.xfs /dev/<ssd_part_aidata_data>
+# sudo mkfs.xfs /dev/<sas_part_models>
+# ... 写入 fstab 后：
+# sudo mount -a
+df -h
+```
+
+#### 4.0.5 分区与本项目路径对应
+
+| 本项目用途 | 宿主机路径 | 所在分区 |
+|------------|------------|----------|
+| EasySearch / Redis / 会话等 | `/aidata/data/...` | SSD `/aidata/data` |
+| MinIO | `/aidata/data/minio_data` | SAS 独立分区（挂到该路径） |
+| LLM / 嵌入 / 重排 | `/aidata/models/...` | SAS `/aidata/models` |
+| MinerU | `/aidata/mineru/...` | SAS `/aidata/mineru` |
+| 仓库与 compose 配置 | `/opt/deploy/...` | SAS `/opt/deploy` |
+| Docker 镜像 | `/var/lib/docker` | SSD 独立分区 |
 
 ### 4.1 环境信息采集
 
@@ -170,9 +289,9 @@ df -h
 
 确认：
 
-1. OS 为 Kylin V10 SP3，且安装介质与 **ARM / C86** 落地架构一致；
-2. 内核版本在所选 **驱动 run 包** 支持列表内（不匹配需换驱动包或按华为文档安装 `kernel-devel` 后编译安装）；
-3. **`uname -m` 与后续 Docker / 昇腾镜像架构一致**（C86→`x86_64`/`amd64`；ARM→`aarch64`/`arm64`）；
+1. OS 为 Kylin V10 SP3，且为 **ARM** 安装介质；
+2. **`uname -m` 输出 `aarch64`**（本现场已锁定 ARM，禁止用 amd64 驱动/镜像）；
+3. 内核版本在 **HDK 25.2.0 / 驱动 25.2.0** 支持列表内（不匹配按华为文档安装 `kernel-devel` 或换配套内核）；
 4. `lscpu` 可见双路、每路约 32 核（合计约 64 核，以现场为准）。
 
 ### 4.2 系统依赖（按驱动包文档安装）
@@ -189,10 +308,13 @@ sudo yum install -y gcc gcc-c++ make perl pciutils \
 
 ### 4.3 安装 NPU 驱动与固件
 
-软件包从华为支持网站或现场交付介质获取，文件名形如：
+> **已固化包名**（与 CANN 8.2.RC1 / `vllm-ascend:v0.10.0rc1-310p` 配套；**勿换「更新」版本**）。  
+> 下载页：[昇腾社区 Firmware-Drivers（CANN 8.2.RC1 / HDK 25.2.0 / 300I Duo）](https://www.hiascend.com/hardware/firmware-drivers/community?product=2&model=17&cann=8.2.RC1&driver=Ascend+HDK+25.2.0)
 
-- `Ascend-hdk-xxx-npu-driver_<version>_linux-<arch>.run`
-- `Ascend-hdk-xxx-npu-firmware_<version>.run`
+| 组件 | 固化包名 |
+|------|----------|
+| 驱动 | **`Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run`** |
+| 固件 | **`Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run`** |
 
 **顺序（务必按华为官方当前文档执行，下列为常见规则摘要）**：
 
@@ -201,14 +323,14 @@ sudo yum install -y gcc gcc-c++ make perl pciutils \
 | 首次安装（无驱动或已卸载） | 多数文档：**先驱动，后固件**（以现场 HDK 手册为准） |
 | 覆盖安装（已有驱动未卸载） | 多数文档：**先固件，后驱动** |
 
-示例（版本号与 arch 替换为现场包）：
+示例（首次安装常见写法，以官方手册为准）：
 
 ```bash
-chmod +x Ascend-hdk-*-npu-driver_*.run Ascend-hdk-*-npu-firmware_*.run
+chmod +x Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run \
+         Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run
 
-# 示例：首次安装常见写法（以官方手册为准）
-sudo ./Ascend-hdk-xxx-npu-driver_*.run --full --install-for-all
-sudo ./Ascend-hdk-xxx-npu-firmware_*.run --full
+sudo ./Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run --full --install-for-all
+sudo ./Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run --full
 
 sudo reboot
 ```
@@ -217,8 +339,10 @@ sudo reboot
 
 ```bash
 npu-smi info
-# 期望：可见 NPU，芯片数与 Duo 一致（通常为 2），无异常 Error 码刷屏
+# 期望：可见 4 张 Duo 卡对应的 NPU（常见为 8 个 Chip/逻辑设备），无异常 Error 码刷屏
+# 同时记录：NPU ID（物理卡）与 Chip/Device 编号的对应关系，供 §5 切分填写
 ls -l /dev/davinci* /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc 2>/dev/null
+# 常见：/dev/davinci0 … /dev/davinci7（以现场为准）
 ```
 
 将运维用户加入驱动相关组（常见 `HwHiAiUser`，以安装日志为准）：
@@ -231,21 +355,170 @@ sudo usermod -aG HwHiAiUser "$USER"
 
 ### 4.4 安装 Docker 与 Compose
 
-Kylin V10 可按机房规范安装 Docker Engine，并确保 Compose **插件 V2**：
+> **前置**：§4.0 中 `/var/lib/docker` 独立分区建议已挂载；未挂载则先装后迁数据，或装前在 `daemon.json` 指定 `data-root`。  
+> **目标**：`docker`（Engine）可用，且可用 **`docker compose`（推荐）** 或至少 `docker-compose`。  
+> **架构**：本现场为 **ARM `aarch64`**；离线包使用 **`docker-20.10.24.tgz`（aarch64）** + **`docker-compose-linux-aarch64`**。
+
+本方案提供两种安装方式：**在线一键**（可临时上网）与 **离线静态包（方案 A，信创/专网推荐）**。
+
+#### 4.4.1 方式一：在线一键安装（轩辕脚本）
+
+适用于能访问外网（或能访问 `xuanyuan.cloud` 及脚本所用镜像源）的麒麟环境。仓库既有说明亦采用该入口：
+
+```bash
+bash <(wget -qO- https://xuanyuan.cloud/docker.sh)
+# 若无 wget、有 curl，可用：
+# bash <(curl -fsSL https://xuanyuan.cloud/docker.sh)
+```
+
+说明与注意：
+
+| 项 | 说明 |
+|----|------|
+| 作用 | 自动识别麒麟等系统，安装 Docker CE，并尝试安装 Compose |
+| 风险 | 远程脚本直接执行，生产/信创需评估供应链；会改写 `/etc/docker/daemon.json`（镜像加速等） |
+| Compose | 脚本常优先安装独立二进制 `docker-compose`（如 1.29.x）；**不保证**一定有 Compose V2 插件 |
+| 验收 | 必须执行下文 §4.4.3；若仅有 `docker-compose` 而无 `docker compose`，可再按 §4.4.2 只补装 Compose 二进制 |
+
+装完后建议核对 Docker 根目录是否落在规划分区：
+
+```bash
+docker info 2>/dev/null | grep -i "Docker Root Dir"
+# 期望类似：Docker Root Dir: /var/lib/docker
+```
+
+#### 4.4.2 方式二：离线静态包安装（方案 A，推荐）
+
+**本现场固化制品（ARM / aarch64）：**
+
+| 组件 | 文件名 | 获取来源（有网机下载） |
+|------|--------|------------------------|
+| Docker Engine | **`docker-20.10.24.tgz`** | `https://download.docker.com/linux/static/stable/aarch64/docker-20.10.24.tgz`（可用华为云/阿里云等 `docker-ce/linux/static/stable/aarch64/` 镜像） |
+| Docker Compose | **`docker-compose-linux-aarch64`** | GitHub `docker/compose` Releases（选与交付一致的 V2 版本资产名） |
+
+将上述两个文件拷到目标机（示例目录 `/opt/deploy/offline-docker/`）。
+
+**（1）安装 Docker Engine 20.10.24**
+
+```bash
+cd /opt/deploy/offline-docker
+tar -zxvf docker-20.10.24.tgz
+sudo cp docker/* /usr/bin/
+# 确认
+docker -v
+# 期望含 20.10.24
+```
+
+编写 systemd 服务（若系统尚无 `docker.service`）：
+
+```bash
+sudo tee /etc/systemd/system/docker.service > /dev/null <<'EOF'
+[Unit]
+Description=Docker Application Container Engine
+Documentation=https://docs.docker.com
+After=network-online.target firewalld.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/dockerd
+ExecReload=/bin/kill -s HUP $MAINPID
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=infinity
+TimeoutStartSec=0
+Delegate=yes
+KillMode=process
+Restart=on-failure
+StartLimitBurst=3
+StartLimitInterval=60s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee /etc/systemd/system/docker.socket > /dev/null <<'EOF'
+[Unit]
+Description=Docker Socket for the API
+
+[Socket]
+ListenStream=/var/run/docker.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=docker
+
+[Install]
+WantedBy=sockets.target
+EOF
+
+sudo groupadd -f docker
+sudo systemctl daemon-reload
+```
+
+**（2）安装 Compose（`docker-compose-linux-aarch64`）**
+
+同时提供 `docker compose`（CLI 插件）与 `docker-compose` 命令，兼容本仓库文档两种写法：
+
+```bash
+cd /opt/deploy/offline-docker
+sudo chmod +x docker-compose-linux-aarch64
+
+# Compose V2 插件（推荐：docker compose ...）
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo cp docker-compose-linux-aarch64 /usr/local/lib/docker/cli-plugins/docker-compose
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# 兼容旧命令 docker-compose
+sudo cp docker-compose-linux-aarch64 /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+```
+
+**（3）daemon.json 与启动（离线/在线装完后均建议执行）**
+
+按现场安全策略配置镜像加速或内网 Harbor；**数据目录指向已挂载的 `/var/lib/docker`**：
+
+```bash
+sudo mkdir -p /etc/docker /var/lib/docker
+sudo tee /etc/docker/daemon.json > /dev/null <<'EOF'
+{
+  "data-root": "/var/lib/docker",
+  "registry-mirrors": [
+    "https://docker.xuanyuan.me",
+    "https://mirror.ccs.tencentyun.com",
+    "https://docker.mirrors.ustc.edu.cn"
+  ],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "3"
+  }
+}
+EOF
+
+sudo systemctl enable --now docker.socket docker.service
+# 可选：当前用户免 root
+# sudo usermod -aG docker "$USER"   # 重新登录后生效
+```
+
+> 纯内网无外网镜像时，删除或改写 `registry-mirrors`，改为现场 Harbor。昇腾 runtime 等字段在 §4.5 再合并写入，避免互相覆盖。
+
+#### 4.4.3 安装验收
 
 ```bash
 docker version
-docker compose version
+docker compose version          # 推荐有输出
+docker-compose version          # 离线方案应有输出；在线一键通常也有
+systemctl is-active docker
+docker info | grep -i "Docker Root Dir"
+docker run --rm hello-world     # 离线环境需事先 docker load 本地 hello-world 镜像，可跳过
 ```
 
-离线环境：在有网机器导出 rpm/deb 与 `docker-ce` 依赖，或使用经审批的一键安装包。
-
-配置镜像加速/私有仓库（Harbor）写入 `/etc/docker/daemon.json`（按现场安全策略），然后：
-
-```bash
-sudo systemctl restart docker
-sudo systemctl enable docker
-```
+| 检查项 | 通过标准 |
+|--------|----------|
+| Engine | `docker version` 显示 Client/Server；离线方案 Server 为 **20.10.24** |
+| Compose | 至少 `docker compose version` 或 `docker-compose version` 其一成功；**本仓库命令以 `docker compose` 为准** |
+| 数据目录 | Root Dir 为 `/var/lib/docker`（且该路径在独立分区上） |
+| 服务 | `systemctl is-active docker` → `active` |
 
 ### 4.5 Ascend 容器运行时与设备注入
 
@@ -253,11 +526,31 @@ sudo systemctl enable docker
 
 **方式 A（推荐，若现场提供）**：安装 **Ascend Docker Runtime**，在 `daemon.json` 注册默认或按 compose 指定 `runtime`。
 
+```text
+nvidia的/etc/docker/daemon.json 配置示例
+{
+    "registry-mirrors": [
+        "https://docker.xuanyuan.me",
+        "https://6w70nuxx.mirror.aliyuncs.com",
+        "https://mirror.ccs.tencentyun.com",
+        "https://docker.1ms.run",
+        "https://docker.mirrors.ustc.edu.cn",
+        "https://mirror.baidubce.com"
+    ],
+    "runtimes": {
+        "nvidia": {
+            "args": [],
+            "path": "nvidia-container-runtime"
+        }
+    }
+}
+```
+
 **方式 B（与仓库国产卡 overlay 一致）**：compose 使用 `privileged: true` + 挂载 `/dev` 与驱动目录（当前 `docker-compose.ascend.yml` 骨架即此思路），并按华为「运行容器」文档补齐卷，例如：
 
 ```text
-设备（示例）：
-  /dev/davinci0、/dev/davinci1（Duo 双芯）
+设备（示例，四卡常见 8 设备；按现场 npu-smi / ls /dev/davinci* 裁剪）：
+  /dev/davinci0 … /dev/davinci7
   /dev/davinci_manager、/dev/devmm_svm、/dev/hisi_hdc
 
 卷（示例，路径以现场安装为准）：
@@ -267,9 +560,14 @@ sudo systemctl enable docker
   /var/log/npu
 ```
 
-**冒烟容器（镜像 tag 换成现场可用的昇腾基础镜像）**：
+**冒烟容器（统一底座镜像；至少挂载拟分配给该栈的设备）**：
 
 ```bash
+# 先拉取统一底座（国内可用 DaoCloud 前缀）
+docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+# 或：docker pull m.daocloud.io/quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+
+# 示例：验证卡0 双芯（设备 0,1）；四卡验收应再对 2..7 做同样抽检或一次性挂载全部 davinci*
 docker run --rm -it --privileged \
   --device=/dev/davinci0 \
   --device=/dev/davinci1 \
@@ -278,16 +576,31 @@ docker run --rm -it --privileged \
   --device=/dev/hisi_hdc \
   -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
   -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
-  <ascend-base-image:tag> \
+  quay.io/ascend/vllm-ascend:v0.10.0rc1-310p \
   npu-smi info
 ```
 
 容器内可见 NPU 信息即视为 **容器算力注入验收通过**。
 
-### 4.6 CANN 与镜像内工具链
+### 4.6 CANN 与镜像内工具链（宿主机不装 CANN）
 
-- 若选用的 **vLLM / PyTorch 镜像已内置匹配 CANN**，宿主机可只保留驱动+runtime，避免双份 CANN 冲突。
-- 若镜像要求宿主机 CANN 挂载进容器，则严格按镜像说明 `source .../set_env.sh`，并保证 **驱动 ↔ CANN ↔ 镜像** 版本矩阵一致。
+本现场策略（已固化）：
+
+| 项 | 约定 |
+|----|------|
+| CANN 版本 | **8.2.RC1** |
+| 安装位置 | **仅在官方 AI 镜像内**（`vllm-ascend:v0.10.0rc1-310p`） |
+| 宿主机 | **只装驱动 + 固件**（§4.3）；**不单独安装** `ascend-toolkit` / CANN |
+
+验收时核对容器内 CANN 与宿主机驱动配套即可，例如：
+
+```bash
+docker run --rm quay.io/ascend/vllm-ascend:v0.10.0rc1-310p \
+  bash -lc 'ls /usr/local/Ascend/ascend-toolkit 2>/dev/null; cat /usr/local/Ascend/ascend-toolkit/*/version.cfg 2>/dev/null | head'
+# 期望可见 cann 8.2.rc1 相关标识（以镜像实际路径为准）
+```
+
+禁止在宿主机再装一套不同版本 CANN 并强行挂进容器，以免与镜像内工具链冲突。
 
 ### 4.7 EasySearch 内核参数
 
@@ -297,7 +610,9 @@ sudo sysctl --system
 sysctl vm.max_map_count
 ```
 
-### 4.8 目录规划（建议）
+### 4.8 目录规划（须在 §4.0 挂载就绪后）
+
+在对应分区已挂载的前提下创建子目录（勿把大模型写到未挂载的空目录导致占满根分区）：
 
 ```bash
 sudo mkdir -p \
@@ -309,17 +624,23 @@ sudo mkdir -p \
   /aidata/data/redis_data \
   /aidata/data/minio_data \
   /aidata/data/session_storage \
-  /aidata/data/easysearch
+  /aidata/data/easysearch \
+  /aidata/backup \
+  /opt/deploy
 
 # 权限按实际运行用户调整
-sudo chown -R "$USER:$USER" /aidata
+sudo chown -R "$USER:$USER" /aidata /opt/deploy
 ```
 
-磁盘建议：模型与 EasySearch 索引分盘或预留充足空间（视模型体量，通常数百 GB 级起步）。
+确认挂载正确：
+
+```bash
+df -h / /var/lib/docker /aidata/data /aidata/models /aidata/mineru /aidata/data/minio_data /aidata/backup /opt/deploy
+```
 
 ### 4.9 CPU 侧容量建议（双路 64 核）
 
-NPU 承担大模型与（目标态）嵌入/重排/MinerU 算力后，CPU 仍承担：EasySearch、Redis、MinIO、应用异步、分词/预处理、以及 **方案 B 下的 CPU 嵌入/重排**。建议：
+NPU 承担大模型与（目标态）嵌入/重排/MinerU 算力后，CPU 仍承担：EasySearch、Redis、MinIO、应用异步、分词/预处理等。建议：
 
 | 组件 | 建议 |
 |------|------|
@@ -334,44 +655,72 @@ NPU 承担大模型与（目标态）嵌入/重排/MinerU 算力后，CPU 仍承
 
 | 检查项 | 命令/标准 |
 |--------|-----------|
-| OS / 内核 | Kylin V10 SP3；内核在驱动支持列表；介质与 CPU 架构一致 |
-| CPU | 双路、约 32 核/路；落地 ARM 或 C86 已记录；`uname -m` 明确 |
-| NPU | `npu-smi info` 正常，双芯可见 |
-| 设备节点 | `/dev/davinci*` 等存在 |
-| Docker | Engine + `docker compose` 可用 |
-| 容器 NPU | 冒烟容器内 `npu-smi info` 成功；容器镜像架构正确 |
+| OS / 内核 | Kylin V10 SP3（ARM）；内核在 HDK 25.2.0 支持列表 |
+| RAID / 分区 | 两套 RAID1 正常；`/boot` `/boot/efi` 已挂载；§4.0 目标挂载均已 `df -h` 可见 |
+| CPU | 双路、约 32 核/路；**`uname -m` = `aarch64`** |
+| NPU 驱动/固件 | 驱动 **25.2.0**、固件 **7.7.0.6.236**；`npu-smi` 可见 **4 卡 / ~8 设备** |
+| CANN | **不在宿主机安装**；容器内为镜像自带 **8.2.RC1** |
+| 设备节点 | `/dev/davinci0`…`/dev/davinci7`（以现场为准）等存在 |
+| Docker | Engine + `docker compose`（或 `docker-compose`）可用；Root Dir=`/var/lib/docker` |
+| 统一镜像 | 已 `docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`；冒烟容器 `npu-smi` 成功 |
 | sysctl | `vm.max_map_count=262144` |
-| 目录 | `/aidata/...` 已建 |
+| 目录 | `/aidata/...`、`/opt/deploy` 已建 |
 
 ---
 
-## 5. 双芯资源切分建议（96GB Duo）
+## 5. 四卡资源切分方案（Atlas 300I Duo_96G ×4）
 
-Atlas 300I Duo 为 **两颗 NPU**。同机同时跑 vLLM + 嵌入/重排 + MinerU 时，必须显式切分，避免三栈抢同一芯导致 OOM。
+本节为现场 **唯一明确的资源切分方案**（按物理卡隔离三栈）。
 
-### 5.1 推荐方案（生产默认）
+### 5.1 拓扑约定
 
-| 服务 | `ASCEND_RT_VISIBLE_DEVICES` | 说明 |
-|------|-----------------------------|------|
-| vLLM | `0,1`（或仅 `0` 若模型单芯可放下） | 大模型为主；大模型需 TP=2 时占用双芯 |
-| models-app 嵌入/重排 | 与 vLLM **错峰**：若 vLLM 占满双芯，则嵌入改 **CPU** 或错峰批处理；若 vLLM 仅占 `0`，则 app 用 `1` | 见下「方案 A/B」 |
-| MinerU | 与高峰推理错峰；或单独窗口用 `1` | 知识摄入非实时路径优先错峰 |
+| 项 | 约定（须用现场 `npu-smi info` 核对后改号） |
+|----|---------------------------------------------|
+| 物理卡 | **4 张** Atlas 300I Duo_96G |
+| 单卡 | Duo = **2 颗** Ascend 芯片，单卡 HBM ≈ **96GB** |
+| 整机 | 约 **8 个逻辑 NPU 设备**，合计 HBM ≈ **384GB** |
+| 设备号 | 下文默认按连续编号 **`0..7`**（卡0→`0,1`，卡1→`2,3`，卡2→`4,5`，卡3→`6,7`） |
 
-**方案 A（吞吐优先，推荐有双芯且模型可单芯）**
+```text
+物理卡0 (≈96GB)     物理卡1 (≈96GB)     物理卡2 (≈96GB)     物理卡3 (≈96GB)
+  dev 0,1              dev 2,3              dev 4,5              dev 6,7
+        └──── vLLM ────┘                    └ models-app ┘      └ MinerU ┘
+```
 
-- vLLM：`ASCEND_RT_VISIBLE_DEVICES=0`，`TENSOR_PARALLEL_SIZE=1`
-- app：`ASCEND_RT_VISIBLE_DEVICES=1`，`EMBEDDING_DEVICE` / `RAG_RERANKER_DEVICE` 指向 NPU（设备名以镜像内 torch_npu 约定为准，常为 `npu:0` 映射到可见的那一张）
-- MinerU：夜间/低峰使用 `1`，或临时停 app 重排占卡
+> 若现场 `npu-smi` 按「NPU ID / Chip ID」展示且与上表不一致，**以现场编号改写本节所有 `ASCEND_RT_VISIBLE_DEVICES`**，切分原则不变：三栈 **按物理卡隔离**，禁止设备号重叠。
 
-**方案 B（大模型优先，双芯 TP）**
+### 5.2 切分表（必须执行）
 
-- vLLM：`ASCEND_RT_VISIBLE_DEVICES=0,1`，`TENSOR_PARALLEL_SIZE=2`
-- app 嵌入/重排：**CPU**（仍用昇腾基础镜像亦可，但 device 配 CPU），或独立第二台机器
-- MinerU：错峰或 CPU 模式（`docker-compose.cpu.yml`）作为降级
+| 服务 | 物理卡 | `ASCEND_RT_VISIBLE_DEVICES` | `TENSOR_PARALLEL_SIZE` / 设备 | 说明 |
+|------|--------|-----------------------------|-------------------------------|------|
+| **vLLM** | 卡0 + 卡1 | `0,1,2,3` | 默认 `2`；更大模型且镜像支持时可设 `4` | 大模型主算力；约 192GB 级显存池 |
+| **models-app** | 卡2 | `4,5` | 嵌入 `npu:0`、重排 `npu:1`（相对容器可见集） | Qwen3 嵌入/重排常驻，与推理隔离 |
+| **MinerU** | 卡3 | `6` | — | 知识摄入；设备 `7` 预留，默认不占用 |
 
-> 地面沉降现场模型选型未定时：先用方案 A 做联调；若 `models.yaml` 预设要求 TP=2，再切方案 B 并明确 app 不占 NPU。
+同机同时跑上述三栈时，必须按上表配置；**禁止**三栈都写 `0,1` 或互相重叠。
 
-### 5.2 与沐曦/英伟达变量对照
+### 5.3 `.env` 配置（与上表一致）
+
+```env
+# vllm-deploy/.env
+ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
+TENSOR_PARALLEL_SIZE=2
+# 更大模型且镜像支持时：TENSOR_PARALLEL_SIZE=4
+
+# app/app-deploy/.env（昇腾栈）
+ASCEND_RT_VISIBLE_DEVICES=4,5
+EMBEDDING_DEVICE=npu:0
+RAG_RERANKER_DEVICE=npu:1
+
+# mineru-deploy/.env
+ASCEND_RT_VISIBLE_DEVICES=6
+```
+
+> 容器内 `npu:0` / `npu:1` 是 **可见设备集合内的相对编号**，不是宿主机全局号。app 仅暴露 `4,5` 时，容器内第一张仍是 `npu:0`。
+
+联调时可临时让 vLLM 只用 `0,1` 验证通路，确认后再恢复为上表的 `0,1,2,3`。
+
+### 5.4 与沐曦/英伟达变量对照
 
 | 平台 | 可见设备变量 |
 |------|----------------|
@@ -424,17 +773,26 @@ curl -k -u admin:<密码> "https://127.0.0.1:9200/_cluster/health?pretty"
 
 ### 6.3 vLLM（`vllm-deploy`，昇腾）
 
-#### 6.3.1 现状
+#### 6.3.1 现状与底座
 
 - 平台 overlay：`docker/docker-compose.ascend.yml`
 - 启动：`./deploy.sh --platform ascend` 或 `.env` 中 `VLLM_PLATFORM=ascend`
-- 构建：国产路径使用 `docker/Dockerfile-mx` + `VLLM_REQUIREMENTS_PROFILE=extras`
+- **统一底座镜像（已固化）**：`quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`（[tags](https://quay.io/repository/ascend/vllm-ascend?tab=tags)）
+- 构建：若需业务 extras，可用 `Dockerfile-mx` 思路，但 **Ubuntu 系底座请用 apt Dockerfile**，勿硬套 yum；`VLLM_REQUIREMENTS_PROFILE=extras` 时禁止覆盖为 CUDA `torch` / 通用 `vllm`
+
+拉取：
+
+```bash
+docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+# 国内：docker pull m.daocloud.io/quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+```
+
+本栈可 **几乎直接使用该镜像** 作为 `BASE_IMAGE` / 运行镜像（按需加 `extras`）。
 
 #### 6.3.2 目标配置（`.env` 示例）
 
 ```env
-# 替换为现场昇腾 vLLM 镜像（勿用沐曦/CUDA 镜像）
-BASE_IMAGE=<registry>/vllm-ascend:<tag-for-atlas300i-duo-kylinv10>
+BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
 
 VLLM_REQUIREMENTS_PROFILE=extras
 VLLM_PLATFORM=ascend
@@ -443,9 +801,9 @@ VLLM_IMAGE=vllm-service:ascend
 MODEL_PRESET=<与 models.yaml 中昇腾可用预设一致>
 MODEL_PATH=/aidata/models/llm
 
-ASCEND_RT_VISIBLE_DEVICES=0,1
+ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
 TENSOR_PARALLEL_SIZE=2
-# 若方案 A 单芯：ASCEND_RT_VISIBLE_DEVICES=0 且 TENSOR_PARALLEL_SIZE=1
+# 更大模型且镜像支持时：TENSOR_PARALLEL_SIZE=4（仍仅使用设备 0..3，见 §5）
 
 VLLM_HOST=0.0.0.0
 VLLM_PORT=8000
@@ -453,11 +811,11 @@ VLLM_PORT=8000
 
 #### 6.3.3 完善 overlay 时建议补齐（仓库改造项 C1）
 
-在 `docker-compose.ascend.yml` 中相对当前骨架，建议对齐华为容器运行文档：
+在 `docker-compose.ascend.yml` 中相对当前骨架，建议：
 
-- 明确 `BASE_IMAGE` 默认值（现场 Harbor tag）；
-- 按需增加精确 `--device` / 驱动目录 volume（收敛 `privileged`+全量 `/dev` 的范围，满足安全要求时）；
-- 文档中写明 Kylin V10 SP3 + Atlas 300I Duo 的验证命令。
+- 默认 `BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`；
+- 按需增加精确 `--device` / 驱动目录 volume（收敛 `privileged`+全量 `/dev`）；
+- 文档写明 Kylin V10 SP3 ARM + Atlas 300I Duo 的验证命令。
 
 #### 6.3.4 启动
 
@@ -478,7 +836,6 @@ chmod +x deploy.sh
 ```bash
 curl -s "http://127.0.0.1:8000/health"
 curl -s "http://127.0.0.1:8000/v1/models"
-# 容器内（若已挂载 npu-smi）
 docker exec -it vllm-service npu-smi info
 ```
 
@@ -493,16 +850,23 @@ docker exec -it vllm-service npu-smi info
 - GPU 路径仅为 **NVIDIA**（`Dockerfile.gpu` + `docker-compose.gpu.yml` + `runtime: nvidia`）。
 - **无** Ascend compose；落地前需完成改造项 C3。
 
-#### 6.4.2 目标形态（对齐沐曦/vLLM 国产 overlay 思路）
+#### 6.4.2 目标形态（统一底座 + MinerU 业务层）
+
+**底座（与 vLLM/app 相同）**：
+
+```bash
+docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+```
 
 新增例如：
 
-- `Dockerfile.gpu.ascend`：`FROM` 昇腾 PyTorch/`torch_npu` 基础镜像，安装 `mineru[core]`（版本需验证昇腾兼容性）；
-- `docker-compose.gpu.ascend.yml`：`privileged` + 设备/驱动挂载 + `ASCEND_RT_VISIBLE_DEVICES`；
-- `.env`：`MINERU_DEVICE_MODE` 按 MinerU 在 NPU 上的实际取值（以适配结果为准，可能为自定义或先 CPU 降级）。
+- `Dockerfile.gpu.ascend`：`FROM quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`，按 Ascend 官方 MinerU / `npu.Dockerfile` 思路安装 NPU 侧 MinerU（Ubuntu 底座用 **apt**）；保护 `torch_npu`，禁止换成 CUDA `torch`；
+- `docker-compose.gpu.ascend.yml`：`privileged` + 设备/驱动挂载 + `ASCEND_RT_VISIBLE_DEVICES=6`；
+- Duo 上建议尝试 `--enforce-eager --dtype float16`（以适配结果为准）；
+- `.env`：`MINERU_DEVICE_MODE` 按 MinerU 在 NPU 上的实际取值配置。
 
-**降级策略**：若短期无法在 NPU 上稳定跑 MinerU，默认必部可先用 **`docker-compose.cpu.yml`** 保证功能，同时保留 C3 为性能项——但需在清单中注明「功能必部 / 性能待昇腾适配」。  
-**本方案默认目标仍为 Ascend GPU**，与前期范围一致。
+**降级策略**：若短期无法在 NPU 上稳定跑 MinerU，可用 **`docker-compose.cpu.yml`** 保功能，同时保留 C3——清单中注明「功能必部 / 性能待昇腾适配」。  
+**本方案默认目标仍为 Ascend GPU**。
 
 #### 6.4.3 启动（目标命令）
 
@@ -511,7 +875,8 @@ cd mineru-deploy
 cp .env.example .env
 # MINERU_MODELS_HOST_PATH=/aidata/mineru/models
 # MINERU_IO_HOST_PATH=/aidata/mineru/io
-# ASCEND_RT_VISIBLE_DEVICES=1   # 示例：与 vLLM 分芯
+# ASCEND_RT_VISIBLE_DEVICES=6   # §5：独占卡3；勿与 vLLM/app 重叠
+# BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
 
 docker network create mineru-stack || true
 docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
@@ -534,24 +899,34 @@ docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
 
 沐曦参考实现要点（昇腾应对齐）：
 
-- 基础镜像含厂商适配 PyTorch；
+- **底座**：`FROM quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`（内含 CANN 8.2.RC1 + `torch_npu`）；
+- 业务层用 **pip + python3** 装 `requirements-大模型应用.txt` 等，**保护 `torch_npu`**，禁止换成 CUDA `torch`；Ubuntu 底座用 **apt**，勿硬套 `Dockerfile-mx` 的 yum；
 - compose：`privileged` / 设备可见性 / 外部网络 `vllm-external`、`rag-external`、`mineru-external`；
 - 嵌入/重排：`EMBEDDING_DEVICE`、`RAG_RERANKER_DEVICE`；
 - Redis、MinIO 同栈启动。
+
+拉取底座：
+
+```bash
+docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+```
 
 #### 6.5.2 目标目录结构
 
 ```text
 app/app-deploy/docker-ascend/
-  Dockerfile-ascend          # FROM 昇腾 torch_npu 镜像，装 requirements-大模型应用.txt
+  Dockerfile-ascend          # FROM quay.io/ascend/vllm-ascend:v0.10.0rc1-310p + 业务依赖
   docker-compose-ascend.yml  # Redis + MinIO + models-app（+ 可选 profile）
-  README.md                  # 麒麟 + Atlas 启动说明
+  README.md                  # 麒麟 ARM + Atlas 启动说明
 ```
 
 #### 6.5.3 `.env` 关键项（与平台无关但必配）
 
 ```env
 SERVICE_API_KEYS=<本地生成密钥>
+
+# 构建时使用（若 Dockerfile ARG）
+BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
 
 LLM_DEFAULT_ENDPOINT=http://vllm-service:8000/v1
 LLM_DEFAULT_MODEL=<与 vLLM served name 一致>
@@ -563,9 +938,9 @@ RAG_ES_PASSWORD=<与 EasySearch 一致>
 
 EMBEDDING_MODEL_PATH=/workspace/models/embeddings/Qwen3-Embedding-0.6B
 RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
-# 设备：按 torch_npu 实际字符串配置，例如 npu:0（相对 ASCEND_RT_VISIBLE_DEVICES 映射）
+# 设备：相对 ASCEND_RT_VISIBLE_DEVICES 可见集（§5：宿主机 4,5 → 容器内 npu:0 / npu:1）
 EMBEDDING_DEVICE=npu:0
-RAG_RERANKER_DEVICE=npu:0
+RAG_RERANKER_DEVICE=npu:1
 
 MINERU_ENABLED=true
 MINERU_BASE_URL=http://mineru-api:8000
@@ -574,7 +949,7 @@ MINERU_IO_HOST_PATH=/aidata/mineru/io
 REDIS_DATA_HOST_PATH=/aidata/data/redis_data
 # MinIO / 会话等路径按 .env.example
 
-ASCEND_RT_VISIBLE_DEVICES=1
+ASCEND_RT_VISIBLE_DEVICES=4,5
 ```
 
 网络名与 `VLLM_DOCKER_NETWORK`、`RAG_DOCKER_NETWORK`、`MINERU_DOCKER_NETWORK` 必须与已创建外部网络一致。
@@ -610,7 +985,7 @@ docker logs models-app 2>&1 | tail -n 100
 
 | 序号 | 用例 | 期望 |
 |------|------|------|
-| 1 | `npu-smi info`（宿主机） | 双芯正常 |
+| 1 | `npu-smi info`（宿主机） | **4 张卡 / 约 8 设备**正常；与 §5 编号表一致 |
 | 2 | EasySearch `_cluster/health` | yellow/green |
 | 3 | vLLM `/v1/models` | 返回目标模型 |
 | 4 | MinerU `/health` | 200 |
@@ -618,7 +993,7 @@ docker logs models-app 2>&1 | tail -n 100
 | 6 | 带 API Key 的简单 chat/LLM 调用 | 有有效回复 |
 | 7 | RAG 摄入一篇文本 + 问答 | 召回与回答合理 |
 | 8 | （若启用）扫描 PDF 经 MinerU 再摄入 | 产出 Markdown 且可检索 |
-| 9 | 观察 NPU 占用是否符合切分方案 | 无意外双栈同芯打满 OOM |
+| 9 | 观察 NPU 占用是否符合 §5 切分表 | **三栈设备号无重叠**；无意外 OOM |
 
 ---
 
@@ -667,16 +1042,19 @@ app（models-app / redis / minio）→ MinerU → vLLM → EasySearch
 
 | 风险 | 对策 |
 |------|------|
-| 驱动与 Kylin V10 SP3 内核不匹配 | 安装前核对 HDK 支持列表；准备匹配内核的 driver 包 |
-| **标书写 ARM/C86，现场架构未锁定就拉镜像** | 先 `uname -m` / `lscpu` 锁定路线；版本矩阵填「ARM 或 C86」后再下载驱动与镜像 |
-| **C86 机误用 arm64 镜像（或相反）** | 一律同架构；出现 `exec format error` 即查镜像 platform |
-| 镜像架构与主机不一致 | `uname -m` 与镜像 `amd64/arm64` 对齐；驱动 run 包 arch 后缀一致 |
-| 用 CUDA/沐曦镜像跑昇腾 | 禁止；必须换 Ascend 镜像与 `ASCEND_*` 变量 |
-| 三栈抢双芯 OOM | 执行 §5 切分；大模型 TP=2 时 app 改 CPU 或错峰 |
+| 驱动与 Kylin V10 SP3 内核不匹配 | 安装前核对 HDK 25.2.0 支持列表；准备匹配内核 |
+| **误用 amd64 驱动/镜像** | 本现场已锁定 **ARM**；一律 `aarch64` / `linux/arm64`；`exec format error` 即查 architecture |
+| 驱动/固件/镜像版本漂移 | 严格使用 §3 固化包名与 `v0.10.0rc1-310p`；升级须整线更换 |
+| 宿主机再装一套 CANN | **禁止**；CANN 8.2.RC1 仅来自官方 AI 镜像 |
+| 用 CUDA/沐曦/`800I-A3` 等非 310p 镜像 | 禁止；统一 `…-310p` 底座 |
+| 三栈设备号重叠导致 OOM / 互相挤占 | 严格执行 §5 切分表；禁止三栈设备号重叠 |
+| 设备号与物理卡映射和文档不一致 | 以现场 `npu-smi` 重绘 §5.1 表后再改 `.env` |
+| 大模型 TP 与可见设备数不匹配 | `TENSOR_PARALLEL_SIZE` ≤ 可见 NPU 个数（本节为 ≤4），且为镜像支持值 |
 | CPU 线程打满 64 核拖垮延迟 | 按 §4.9 限制 ES/MinerU/应用线程与 worker |
 | MinerU 昇腾适配周期长 | 功能先 CPU 保交付，性能跟 C3 |
 | vLLM Ascend 对某模型不支持 | 换 `MODEL_PRESET`；更新 `models.yaml` 注释限制 |
 | 容器内无设备 | 复查 runtime、`--device`、驱动卷、用户组 |
+| app/MinerU 构建覆盖 `torch_npu` | Dockerfile 钉住厂商包；禁止 `pip install torch`（CUDA） |
 
 ---
 
@@ -684,11 +1062,11 @@ app（models-app / redis / minio）→ MinerU → vLLM → EasySearch
 
 与 [`工作清单-华为Atlas300IDuo.md`](./工作清单-华为Atlas300IDuo.md) 中 C1–C5 对应：
 
-1. **C1 vLLM**：为 `docker-compose.ascend.yml` 增加默认可替换的 `BASE_IMAGE`、完善设备/驱动挂载注释；`.env.example` 增加 Atlas 300I Duo + Kylin V10 SP3 注释段；README 增加昇腾章节（可引用本文）。
-2. **C2 app**：新增 `docker-ascend/`，以 `docker-mx` 为模板替换基础镜像、设备变量、README；主 `README.md`「部署形态选择」表增加昇腾一行。
-3. **C3 MinerU**：新增 Ascend GPU Dockerfile/compose；README 增加「昇腾」小节；失败时文档写明 CPU 降级命令。
-4. **C4 版本矩阵**：把现场最终 tag **与 ARM/C86 落地架构** 回填本文 §3。  
-5. **C5 资源切分**：三份 `.env.example` 用注释写清方案 A/B 默认值；CPU 线程类变量参考 §4.9。
+1. **C1 vLLM**：`BASE_IMAGE` 默认 `quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`；完善设备/驱动挂载；`.env.example` / README 增加 Atlas 300I Duo + Kylin ARM 说明。
+2. **C2 app**：新增 `docker-ascend/`，`FROM` 同上底座 + 业务依赖（apt）；主 README「部署形态」增加昇腾一行。
+3. **C3 MinerU**：新增 Ascend GPU Dockerfile/compose，底座同上；失败时写明 CPU 降级。
+4. **C4 版本矩阵**：已固化于本文 §3（驱动 25.2.0 / 固件 7.7.0.6.236 / CANN 8.2.RC1 经镜像 / tag `v0.10.0rc1-310p`）；代码侧默认值与文档一致即可。  
+5. **C5 资源切分**：三份 `.env.example` 按 §5（vLLM `0,1,2,3` / app `4,5` / MinerU `6`）写清注释；CPU 线程类变量参考 §4.9。
 
 ---
 
@@ -708,10 +1086,11 @@ app（models-app / redis / minio）→ MinerU → vLLM → EasySearch
 
 ## 12. 附录：华为官方文档入口（实施时以最新版为准）
 
-实施驱动/固件/容器时，请以华为支持网站对应 **Atlas 300I Duo** 与当前 HDK 版本手册为准，例如：
+本现场已固化版本见 **§3**。实施驱动/固件/容器时，仍以华为支持网站对应手册核对步骤细节：
 
-- Atlas 300I Duo NPU 驱动和固件安装指南  
-- 昇腾软件安装指南中的「运行容器 / 多容器场景」  
-- CANN 安装指南与版本配套表  
+- Atlas 300I Duo NPU 驱动和固件安装指南（对应 **HDK 25.2.0**）  
+- 昇腾「运行容器 / 多容器场景」  
+- [Firmware-Drivers 社区下载页（CANN 8.2.RC1 / HDK 25.2.0）](https://www.hiascend.com/hardware/firmware-drivers/community?product=2&model=17&cann=8.2.RC1&driver=Ascend+HDK+25.2.0)  
+- [vllm-ascend 镜像 tags](https://quay.io/repository/ascend/vllm-ascend?tab=tags)（本现场：`v0.10.0rc1-310p`）  
 
-将实际使用的文档编号与版本号记入 §3 版本矩阵「现场填写」列，便于审计与升级。
+> 手册步骤细节可随官网更新，但 **包名与镜像 tag 以本文 §3 为准**，勿擅自升到「最新」。
