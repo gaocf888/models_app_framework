@@ -3,7 +3,7 @@
 > **文档性质**：面向 `dev_djs`（地面沉降）项目在 **华为 Atlas 300I Duo_96G ×4 + 双路 32 核 ARM（aarch64）+ 银河麒麟 Kylin V10 SP3** 上的宿主机基础环境与默认必部应用部署方案。  
 > **配套清单**：勾选式进度见 [`工作清单-华为Atlas300IDuo.md`](./工作清单-华为Atlas300IDuo.md)。  
 > **对齐仓库**：`vllm-deploy/`、`rag_db-deploy/`、`mineru-deploy/`、`app/app-deploy/`；通用运维见 `enterprise-level_transformation_docs/项目整体部署运维手册.md`。  
-> **版本**：2026-07（已固化：ARM + HDK 25.2.0 驱动/固件 + CANN 8.2.RC1 经官方镜像提供 + 三栈统一 `vllm-ascend:v0.10.0rc1-310p`）。
+> **版本**：2026-07（已固化：ARM + HDK 25.2.0 驱动/固件 + Ascend Docker Runtime 7.1.RC1 + CANN 8.2.RC1 经官方镜像提供 + 三栈统一 `vllm-ascend:v0.10.0rc1-310p`）。
 
 ---
 
@@ -30,6 +30,8 @@
 | NPU 驱动 | **`Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run`**（Ascend HDK 25.2.0） |
 | NPU 固件 | **`Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run`**（与上同页齐套） |
 | 驱动/固件下载 | [昇腾社区 Firmware-Drivers（CANN 8.2.RC1 / HDK 25.2.0 / 300I Duo）](https://www.hiascend.com/hardware/firmware-drivers/community?product=2&model=17&cann=8.2.RC1&driver=Ascend+HDK+25.2.0) |
+| Ascend Docker Runtime | **`Ascend-docker-runtime_7.1.RC1_linux-aarch64.run`** |
+| Runtime 下载 | [MindCluster v7.1.RC1 Releases](https://gitcode.com/Ascend/mind-cluster/releases/v7.1.RC1) |
 | 项目分支 | `dev_djs` |
 | 设备可见性变量 | `ASCEND_RT_VISIBLE_DEVICES` |
 
@@ -87,7 +89,7 @@ lscpu | sed -n '1,40p'
 ┌─────────────────────────────────────────────────────────────────┐
 │  Kylin V10 SP3 · ARM aarch64                                     │
 │  Atlas 300I Duo_96G ×4 · Driver 25.2.0 + Firmware 7.7.0.6.236   │
-│  Docker/Compose ·（可选）Ascend Docker Runtime                    │
+│  Docker/Compose · Ascend Docker Runtime 7.1.RC1                   │
 │  统一底座：vllm-ascend:v0.10.0rc1-310p（内含 CANN 8.2.RC1）       │
 │  /aidata/{models,data,mineru,...} · /opt/deploy                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -113,7 +115,7 @@ RAID 确认 + 引导分区已就绪
   → 系统 OK 后补齐 §4.0 剩余分区并 fstab
   → 安装 NPU 驱动/固件（§4.3，指定包名）
   → 安装 Docker/Compose（§4.4 在线或离线）
-  → （可选）Ascend Docker Runtime / 或 compose 设备挂载（§4.5）
+  → 安装 Ascend Docker Runtime 7.1.RC1（§4.5）
   → 拉取统一镜像 vllm-ascend:v0.10.0rc1-310p
   → EasySearch → 模型落盘 → vLLM → MinerU → app
   → 端到端冒烟
@@ -150,11 +152,14 @@ RAID 确认 + 引导分区已就绪
 | app-deploy | 同上镜像作 **BASE_IMAGE**，再装业务依赖 |
 | mineru-deploy | 同上镜像作 **BASE_IMAGE**，按 MinerU Ascend/`npu.Dockerfile` 构建业务层 |
 | Docker 离线包 | **`docker-20.10.24.tgz`**（aarch64）+ **`docker-compose-linux-aarch64`**（见 §4.4） |
+| Ascend Docker Runtime | **`Ascend-docker-runtime_7.1.RC1_linux-aarch64.run`**（见 §4.5） |
+| Runtime 下载 | https://gitcode.com/Ascend/mind-cluster/releases/v7.1.RC1 |
 
 **配套关系（摘要）**：
 
 ```text
-宿主机：Driver 25.2.0 + Firmware 7.7.0.6.236  (HDK 25.2.0 / CANN 8.2.RC1 配套页)
+宿主机：Driver 25.2.0 + Firmware 7.7.0.6.236
+        + Ascend-docker-runtime 7.1.RC1
 容器内：vllm-ascend:v0.10.0rc1-310p → 内置 cann 8.2.rc1-310p + torch_npu
 ```
 
@@ -166,7 +171,7 @@ RAID 确认 + 引导分区已就绪
 
 ### 3.1 版本变更原则
 
-现场已固化上表。若未来升级镜像或 HDK，必须 **整线更换**（驱动 + 固件 + 镜像），并重新验收；禁止只升驱动或只升镜像。
+现场已固化上表。若未来升级镜像或 HDK，必须 **整线更换**（驱动 + 固件 + Docker Runtime + 镜像），并重新验收；禁止只升其中一项。
 
 ---
 
@@ -520,33 +525,92 @@ docker run --rm hello-world     # 离线环境需事先 docker load 本地 hello
 | 数据目录 | Root Dir 为 `/var/lib/docker`（且该路径在独立分区上） |
 | 服务 | `systemctl is-active docker` → `active` |
 
-### 4.5 Ascend 容器运行时与设备注入
+### 4.5 Ascend Docker Runtime 与设备注入
 
-目标：容器内能看到 NPU 设备并执行 `npu-smi`。
+目标：容器内能看到 NPU 设备并执行 `npu-smi`。本现场 **明确安装 Ascend Docker Runtime 7.1.RC1**（推荐主路径）；若 Runtime 不可用，再用方式 B 手工挂设备兜底。
 
-**方式 A（推荐，若现场提供）**：安装 **Ascend Docker Runtime**，在 `daemon.json` 注册默认或按 compose 指定 `runtime`。
+官方安装说明参考：[Ascend Docker Runtime 手动安装（MindCluster 7.1.RC1）](https://www.hiascend.com/document/detail/zh/mindcluster/71RC1/clustersched/dlug/dlug_installation_017.html)。
 
-```text
-nvidia的/etc/docker/daemon.json 配置示例
+#### 4.5.1 方式 A（本现场必须）：安装 Ascend Docker Runtime 7.1.RC1
+
+**前置**：§4.3 驱动/固件已装且 `npu-smi` 正常；§4.4 Docker 已安装并可 `systemctl` 管理。
+
+| 项 | 固化值 |
+|----|--------|
+| 包名 | **`Ascend-docker-runtime_7.1.RC1_linux-aarch64.run`** |
+| 下载 | [gitcode Ascend/mind-cluster Releases v7.1.RC1](https://gitcode.com/Ascend/mind-cluster/releases/v7.1.RC1) |
+| 默认安装路径 | `/usr/local/Ascend`（可用 `--install-path` 改，须绝对路径） |
+| 默认 Docker 配置 | `/etc/docker/daemon.json`（非默认路径时加 `--config-file-path=`） |
+
+安装（默认路径）：
+
+```bash
+# 将 run 包放到目标机，例如 /opt/deploy/offline-ascend/
+cd /opt/deploy/offline-ascend
+chmod u+x Ascend-docker-runtime_7.1.RC1_linux-aarch64.run
+
+# 安装（会改写 /etc/docker/daemon.json，注册 ascend runtime）
+sudo ./Ascend-docker-runtime_7.1.RC1_linux-aarch64.run --install
+
+# 若 daemon.json 不在默认路径：
+# sudo ./Ascend-docker-runtime_7.1.RC1_linux-aarch64.run --install \
+#   --config-file-path=/path/to/daemon.json
+
+# 使配置生效
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+安装到指定目录示例：
+
+```bash
+sudo ./Ascend-docker-runtime_7.1.RC1_linux-aarch64.run --install \
+  --install-path=/usr/local/Ascend
+```
+
+安装成功后，`daemon.json` 中通常会出现类似内容（安装器自动合并；**勿手工删掉已有 `data-root` / 镜像加速**，冲突时以现场合并结果为准）：
+
+```json
 {
-    "registry-mirrors": [
-        "https://docker.xuanyuan.me",
-        "https://6w70nuxx.mirror.aliyuncs.com",
-        "https://mirror.ccs.tencentyun.com",
-        "https://docker.1ms.run",
-        "https://docker.mirrors.ustc.edu.cn",
-        "https://mirror.baidubce.com"
-    ],
-    "runtimes": {
-        "nvidia": {
-            "args": [],
-            "path": "nvidia-container-runtime"
-        }
+  "default-runtime": "ascend",
+  "runtimes": {
+    "ascend": {
+      "path": "/usr/local/Ascend/Ascend-Docker-Runtime/ascend-docker-runtime",
+      "runtimeArgs": []
     }
+  }
 }
 ```
 
-**方式 B（与仓库国产卡 overlay 一致）**：compose 使用 `privileged: true` + 挂载 `/dev` 与驱动目录（当前 `docker-compose.ascend.yml` 骨架即此思路），并按华为「运行容器」文档补齐卷，例如：
+同时会生成默认挂载清单（常见路径）：`/etc/ascend-docker-runtime.d/base.list`。
+
+**验收**：
+
+```bash
+docker info | grep -i -E 'Runtimes|Default Runtime'
+# 期望类似：
+#   Runtimes: ascend runc
+#   Default Runtime: ascend
+
+# 用默认 ascend runtime 冒烟（无需再写一长串 --device；仍建议先 pull 底座）
+docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+docker run --rm --runtime=ascend \
+  quay.io/ascend/vllm-ascend:v0.10.0rc1-310p \
+  npu-smi info
+```
+
+> 若 `Default Runtime` 已是 `ascend`，compose/`docker run` 可不显式写 `--runtime=ascend`；显式写上更清晰。
+
+卸载（需要时，以官方手册为准）：
+
+```bash
+sudo ./Ascend-docker-runtime_7.1.RC1_linux-aarch64.run --uninstall
+sudo systemctl daemon-reload && sudo systemctl restart docker
+```
+
+#### 4.5.2 方式 B（兜底）：compose 手工挂设备
+
+仅在 Runtime 安装失败或策略不允许改 `default-runtime` 时使用。compose 使用 `privileged: true` + 挂载 `/dev` 与驱动目录（当前 `docker-compose.ascend.yml` 骨架即此思路），并按华为「运行容器」文档补齐卷，例如：
 
 ```text
 设备（示例，四卡常见 8 设备；按现场 npu-smi / ls /dev/davinci* 裁剪）：
@@ -560,14 +624,9 @@ nvidia的/etc/docker/daemon.json 配置示例
   /var/log/npu
 ```
 
-**冒烟容器（统一底座镜像；至少挂载拟分配给该栈的设备）**：
+兜底冒烟：
 
 ```bash
-# 先拉取统一底座（国内可用 DaoCloud 前缀）
-docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
-# 或：docker pull m.daocloud.io/quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
-
-# 示例：验证卡0 双芯（设备 0,1）；四卡验收应再对 2..7 做同样抽检或一次性挂载全部 davinci*
 docker run --rm -it --privileged \
   --device=/dev/davinci0 \
   --device=/dev/davinci1 \
@@ -590,7 +649,7 @@ docker run --rm -it --privileged \
 |----|------|
 | CANN 版本 | **8.2.RC1** |
 | 安装位置 | **仅在官方 AI 镜像内**（`vllm-ascend:v0.10.0rc1-310p`） |
-| 宿主机 | **只装驱动 + 固件**（§4.3）；**不单独安装** `ascend-toolkit` / CANN |
+| 宿主机 | **驱动 + 固件（§4.3）+ Ascend Docker Runtime 7.1.RC1（§4.5）**；**不单独安装** `ascend-toolkit` / CANN |
 
 验收时核对容器内 CANN 与宿主机驱动配套即可，例如：
 
@@ -662,7 +721,8 @@ NPU 承担大模型与（目标态）嵌入/重排/MinerU 算力后，CPU 仍承
 | CANN | **不在宿主机安装**；容器内为镜像自带 **8.2.RC1** |
 | 设备节点 | `/dev/davinci0`…`/dev/davinci7`（以现场为准）等存在 |
 | Docker | Engine + `docker compose`（或 `docker-compose`）可用；Root Dir=`/var/lib/docker` |
-| 统一镜像 | 已 `docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`；冒烟容器 `npu-smi` 成功 |
+| Ascend Docker Runtime | **`Ascend-docker-runtime_7.1.RC1`**；`docker info` 显示 `Default Runtime: ascend`；`--runtime=ascend` 容器内 `npu-smi` 成功 |
+| 统一镜像 | 已 `docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p` |
 | sysctl | `vm.max_map_count=262144` |
 | 目录 | `/aidata/...`、`/opt/deploy` 已建 |
 
@@ -1091,6 +1151,8 @@ app（models-app / redis / minio）→ MinerU → vLLM → EasySearch
 - Atlas 300I Duo NPU 驱动和固件安装指南（对应 **HDK 25.2.0**）  
 - 昇腾「运行容器 / 多容器场景」  
 - [Firmware-Drivers 社区下载页（CANN 8.2.RC1 / HDK 25.2.0）](https://www.hiascend.com/hardware/firmware-drivers/community?product=2&model=17&cann=8.2.RC1&driver=Ascend+HDK+25.2.0)  
+- [Ascend Docker Runtime 7.1.RC1 包](https://gitcode.com/Ascend/mind-cluster/releases/v7.1.RC1)（`Ascend-docker-runtime_7.1.RC1_linux-aarch64.run`）  
+- [Ascend Docker Runtime 手动安装说明](https://www.hiascend.com/document/detail/zh/mindcluster/71RC1/clustersched/dlug/dlug_installation_017.html)  
 - [vllm-ascend 镜像 tags](https://quay.io/repository/ascend/vllm-ascend?tab=tags)（本现场：`v0.10.0rc1-310p`）  
 
 > 手册步骤细节可随官网更新，但 **包名与镜像 tag 以本文 §3 为准**，勿擅自升到「最新」。

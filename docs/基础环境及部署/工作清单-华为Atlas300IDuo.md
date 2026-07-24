@@ -6,6 +6,7 @@
 > **操作系统**：银河麒麟 Kylin V10 SP3（**ARM** 安装介质）  
 > **统一底座镜像**：`quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`（vLLM / app / MinerU 共用；内含 **CANN 8.2.RC1**）  
 > **NPU 驱动 / 固件**：`Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run` + `Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run`  
+> **Ascend Docker Runtime**：`Ascend-docker-runtime_7.1.RC1_linux-aarch64.run`（[下载](https://gitcode.com/Ascend/mind-cluster/releases/v7.1.RC1)）  
 > **CANN**：宿主机 **不单独安装**；由官方 AI 镜像提供  
 > **详细步骤与参数**：见同目录 [`华为Atlas300IDuo基础环境及应用部署方案.md`](./华为Atlas300IDuo基础环境及应用部署方案.md)
 
@@ -39,11 +40,11 @@
 | H3 | 安装 NPU **驱动 25.2.0 + 固件 7.7.0.6.236**（按华为文档区分首次/覆盖安装顺序） | ☐ | 重启后 `npu-smi info` 可见 **4 卡 / 约 8 设备** |
 | H4 | 设备节点与权限（`/dev/davinci*`、`HwHiAiUser` 等） | ☐ | 业务用户可访问 NPU |
 | H5 | 安装 Docker + Compose（§4.4：**在线一键** 或 **离线** `docker-20.10.24.tgz` + `docker-compose-linux-aarch64`） | ☐ | `docker version`；`docker compose` 或 `docker-compose`；Root Dir=`/var/lib/docker` |
-| H6 | 安装 **Ascend Docker Runtime**（或 compose 设备挂载方案）并验证 | ☐ | 容器内可见 davinci / `npu-smi` |
+| H6 | 安装 **Ascend Docker Runtime 7.1.RC1**（`Ascend-docker-runtime_7.1.RC1_linux-aarch64.run`；见方案 §4.5） | ☐ | `docker info` → `Default Runtime: ascend`；`docker run --runtime=ascend … npu-smi info` 成功；[下载](https://gitcode.com/Ascend/mind-cluster/releases/v7.1.RC1) |
 | H7 | **不在宿主机安装 CANN**；拉取并核对镜像内 CANN **8.2.RC1** | ☐ | `docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`；容器内版本标识落档 |
 | H8 | 内核参数：`vm.max_map_count=262144`（EasySearch） | ☐ | `sysctl vm.max_map_count` |
 | H9 | 在已挂载分区上创建 `/aidata/...`、`/opt/deploy` 子目录 | ☐ | 目录存在、权限正确；大文件不在根分区 |
-| H10 | 离线制品：驱动+固件包、**docker-20.10.24.tgz + docker-compose-linux-aarch64**、底座镜像 `v0.10.0rc1-310p`、模型权重 | ☐ | 内网可达或已拷贝/`docker load` |
+| H10 | 离线制品：驱动+固件、**Ascend-docker-runtime_7.1.RC1_linux-aarch64.run**、**docker-20.10.24.tgz + docker-compose-linux-aarch64**、底座镜像 `v0.10.0rc1-310p`、模型权重 | ☐ | 内网可达或已拷贝/`docker load` |
 
 ---
 
@@ -83,7 +84,7 @@
 
 | ID | 工作项 | 状态 | 产出 |
 |----|--------|------|------|
-| A1 | 宿主机：`npu-smi`、驱动 **25.2.0**、固件 **7.7.0.6.236**；镜像内 CANN **8.2.RC1**（宿主机无独立 CANN） | ☐ | 交付附件 |
+| A1 | 宿主机：`npu-smi`、驱动 **25.2.0**、固件 **7.7.0.6.236**、Runtime **7.1.RC1**（`Default Runtime: ascend`）；镜像内 CANN **8.2.RC1** | ☐ | 交付附件 |
 | A2 | 容器：各服务健康检查与关键日志无致命错误 | ☐ | 检查记录 |
 | A3 | 资源：四卡占用与 §5 切分一致（三栈设备号无重叠） | ☐ | 截图/命令输出 |
 | A4 | 回滚要点：停栈顺序、镜像/配置备份位置 | ☐ | 写入运维备忘 |
