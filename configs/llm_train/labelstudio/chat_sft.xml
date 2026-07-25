@@ -1,0 +1,6 @@
+<View>
+  <Text name="prompt" value="$prompt"/>
+  <TextArea name="response" toName="prompt"
+            placeholder="请填写助手回答..."
+            editable="true" required="true" rows="6"/>
+</View>

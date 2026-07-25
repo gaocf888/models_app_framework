@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLM 微调控制台</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root { --bg:#0f1419; --card:#1a2332; --fg:#e7ecf3; --muted:#9aa7b8; --acc:#3d8bfd; --ok:#3dd68c; --err:#f07178; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: "Segoe UI", system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+    header { padding:16px 24px; border-bottom:1px solid #243044; display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+    h1 { font-size:18px; margin:0; }
+    main { padding:16px 24px; display:grid; gap:16px; grid-template-columns:1fr 1fr; }
+    @media (max-width: 1100px) { main { grid-template-columns:1fr; } }
+    section { background:var(--card); border-radius:10px; padding:14px 16px; border:1px solid #243044; }
+    section h2 { margin:0 0 12px; font-size:15px; color:var(--acc); }
+    label { display:block; font-size:12px; color:var(--muted); margin:8px 0 4px; }
+    input, select, textarea { width:100%; padding:8px 10px; border-radius:6px; border:1px solid #334155; background:#0b1220; color:var(--fg); }
+    textarea { min-height:72px; font-family: ui-monospace, Consolas, monospace; font-size:12px; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .btns { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+    button { background:var(--acc); color:#fff; border:0; border-radius:6px; padding:8px 12px; cursor:pointer; }
+    button.secondary { background:#334155; }
+    button.danger { background:var(--err); }
+    pre { background:#0b1220; padding:10px; border-radius:6px; overflow:auto; max-height:220px; font-size:12px; }
+    .muted { color:var(--muted); font-size:12px; }
+    .ok { color:var(--ok); } .err { color:var(--err); }
+    canvas { max-height:220px; }
+    #authBox input { max-width:360px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>LLM / VLM LoRA 微调控制台</h1>
+  <div id="authBox">
+    <label>API Base</label>
+    <input id="apiBase" value="http://127.0.0.1:8000" />
+    <label>SERVICE_API_KEY (Bearer)</label>
+    <input id="apiKey" placeholder="可选" />
+  </div>
+</header>
+<main>
+  <section>
+    <h2>1. 数据工具</h2>
+    <label>LabelStudio 导出 / 旧格式路径</label>
+    <input id="exportPath" value="configs/llm_train/samples/sample_legacy_ops.json" />
+    <div class="row">
+      <div>
+        <label>task_profile</label>
+        <select id="taskProfile">
+          <option value="vl_ops">vl_ops</option>
+          <option value="defect_vl">defect_vl</option>
+          <option value="chat_sft">chat_sft</option>
+        </select>
+      </div>
+      <div>
+        <label>image_root</label>
+        <input id="imageRoot" value="data/llm_train/images" />
+      </div>
+    </div>
+    <label>输出路径</label>
+    <input id="convertOut" value="data/llm_train/converted/from_ui.jsonl" />
+    <label><input type="checkbox" id="legacy" checked /> 旧格式（image_path + structured）</label>
+    <div class="btns">
+      <button onclick="doConvert()">转换</button>
+      <button class="secondary" onclick="doValidate()">校验数据集</button>
+    </div>
+    <label>校验数据路径</label>
+    <input id="validatePath" value="configs/llm_train/samples/sample_chat_sft.jsonl" />
+    <pre id="dataOut" class="muted">等待操作…</pre>
+  </section>
+
+  <section>
+    <h2>2. 训练配置</h2>
+    <div class="row">
+      <div>
+        <label>base_model</label>
+        <input id="baseModel" value="models/Qwen2.5-VL-7B-Instruct" />
+      </div>
+      <div>
+        <label>modality</label>
+        <select id="modality">
+          <option value="auto">auto</option>
+          <option value="text" selected>text</option>
+          <option value="vision">vision</option>
+        </select>
+      </div>
+    </div>
+    <label>dataset_path</label>
+    <input id="datasetPath" value="configs/llm_train/samples/sample_chat_sft.jsonl" />
+    <label>output_dir</label>
+    <input id="outputDir" value="outputs/llm_train/ui_job" />
+    <label>config_yaml（可选）</label>
+    <input id="configYaml" value="configs/llm_train/train_lora.yaml" />
+    <div class="row">
+      <div><label>epochs</label><input id="epochs" type="number" value="1" /></div>
+      <div><label>batch_size</label><input id="batchSize" type="number" value="1" /></div>
+      <div><label>lr</label><input id="lr" value="1e-5" /></div>
+      <div><label>lora_r</label><input id="loraR" type="number" value="8" /></div>
+    </div>
+    <div class="btns">
+      <button onclick="doStart()">启动训练 (code/LoRA)</button>
+      <button class="danger" onclick="doStop()">停止</button>
+      <button class="secondary" onclick="refreshStatus()">刷新状态</button>
+    </div>
+    <pre id="jobOut" class="muted">尚无任务</pre>
+  </section>
+
+  <section>
+    <h2>3. 过程监视</h2>
+    <p class="muted">当前 job_id: <span id="curJob">-</span></p>
+    <canvas id="lossChart"></canvas>
+    <div class="btns">
+      <button class="secondary" onclick="pollMetrics()">拉取 metrics</button>
+      <button class="secondary" onclick="pollLogs()">拉取 logs</button>
+    </div>
+    <pre id="logOut" class="muted">日志尾部…</pre>
+  </section>
+
+  <section>
+    <h2>4. 结果 / 产物</h2>
+    <div class="btns">
+      <button class="secondary" onclick="listArtifacts()">刷新产物列表</button>
+    </div>
+    <pre id="artOut" class="muted">outputs/llm_train …</pre>
+  </section>
+</main>
+<script>
+  let currentJobId = null;
+  let chart = null;
+  let timer = null;
+
+  function headers() {
+    const h = { "Content-Type": "application/json" };
+    const key = document.getElementById("apiKey").value.trim();
+    if (key) h["Authorization"] = "Bearer " + key;
+    return h;
+  }
+  function base() { return document.getElementById("apiBase").value.replace(/\/$/, ""); }
+
+  async function api(path, opts={}) {
+    const res = await fetch(base() + path, { ...opts, headers: { ...headers(), ...(opts.headers||{}) } });
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+    if (!res.ok) throw new Error((data && (data.detail || data.message)) || text || res.status);
+    return data;
+  }
+
+  async function doConvert() {
+    const body = {
+      export_path: document.getElementById("exportPath").value,
+      task_profile: document.getElementById("taskProfile").value,
+      image_root: document.getElementById("imageRoot").value || null,
+      out_path: document.getElementById("convertOut").value,
+      legacy: document.getElementById("legacy").checked,
+    };
+    try {
+      const data = await api("/train/llm/data/convert", { method: "POST", body: JSON.stringify(body) });
+      document.getElementById("dataOut").textContent = JSON.stringify(data, null, 2);
+      if (data.out_path) document.getElementById("validatePath").value = data.out_path;
+      document.getElementById("datasetPath").value = data.out_path || document.getElementById("datasetPath").value;
+    } catch (e) {
+      document.getElementById("dataOut").innerHTML = '<span class="err">' + e.message + '</span>';
+    }
+  }
+
+  async function doValidate() {
+    const body = {
+      dataset_path: document.getElementById("validatePath").value,
+      check_images: true,
+      write_report: true,
+    };
+    try {
+      const data = await api("/train/llm/data/validate", { method: "POST", body: JSON.stringify(body) });
+      document.getElementById("dataOut").textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      document.getElementById("dataOut").innerHTML = '<span class="err">' + e.message + '</span>';
+    }
+  }
+
+  async function doStart() {
+    const body = {
+      mode: "code",
+      base_model: document.getElementById("baseModel").value,
+      dataset_path: document.getElementById("datasetPath").value,
+      output_dir: document.getElementById("outputDir").value,
+      modality: document.getElementById("modality").value,
+      task_profile: document.getElementById("taskProfile").value,
+      config_yaml: document.getElementById("configYaml").value || null,
+      num_epochs: Number(document.getElementById("epochs").value || 1),
+      batch_size: Number(document.getElementById("batchSize").value || 1),
+      learning_rate: Number(document.getElementById("lr").value || 1e-5),
+      lora_r: Number(document.getElementById("loraR").value || 8),
+    };
+    try {
+      const data = await api("/train/llm/start", { method: "POST", body: JSON.stringify(body) });
+      currentJobId = data.job_id;
+      document.getElementById("curJob").textContent = currentJobId;
+      document.getElementById("jobOut").textContent = JSON.stringify(data, null, 2);
+      if (timer) clearInterval(timer);
+      timer = setInterval(() => { refreshStatus(); pollMetrics(); pollLogs(); }, 3000);
+    } catch (e) {
+      document.getElementById("jobOut").innerHTML = '<span class="err">' + e.message + '</span>';
+    }
+  }
+
+  async function doStop() {
+    if (!currentJobId) return;
+    try {
+      const data = await api("/train/llm/jobs/" + encodeURIComponent(currentJobId) + "/stop", { method: "POST", body: "{}" });
+      document.getElementById("jobOut").textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      document.getElementById("jobOut").innerHTML = '<span class="err">' + e.message + '</span>';
+    }
+  }
+
+  async function refreshStatus() {
+    const q = currentJobId ? ("?job_id=" + encodeURIComponent(currentJobId)) : "";
+    try {
+      const data = await api("/train/llm/status" + q);
+      document.getElementById("jobOut").textContent = JSON.stringify(data, null, 2);
+      if (data.jobs && data.jobs[0]) {
+        currentJobId = data.jobs[0].job_id;
+        document.getElementById("curJob").textContent = currentJobId;
+      }
+    } catch (e) {
+      document.getElementById("jobOut").innerHTML = '<span class="err">' + e.message + '</span>';
+    }
+  }
+
+  function ensureChart(labels, losses) {
+    const ctx = document.getElementById("lossChart");
+    if (!chart) {
+      chart = new Chart(ctx, {
+        type: "line",
+        data: { labels, datasets: [{ label: "loss", data: losses, borderColor: "#3d8bfd", tension: 0.2 }] },
+        options: { responsive: true, plugins: { legend: { labels: { color: "#e7ecf3" } } },
+          scales: { x: { ticks: { color: "#9aa7b8" } }, y: { ticks: { color: "#9aa7b8" } } } }
+      });
+    } else {
+      chart.data.labels = labels;
+      chart.data.datasets[0].data = losses;
+      chart.update();
+    }
+  }
+
+  async function pollMetrics() {
+    if (!currentJobId) return;
+    try {
+      const data = await api("/train/llm/jobs/" + encodeURIComponent(currentJobId) + "/metrics?limit=500");
+      const metrics = data.metrics || [];
+      const labels = metrics.map(m => m.step);
+      const losses = metrics.map(m => m.loss);
+      ensureChart(labels, losses);
+    } catch (e) { /* ignore while starting */ }
+  }
+
+  async function pollLogs() {
+    if (!currentJobId) return;
+    try {
+      const data = await api("/train/llm/jobs/" + encodeURIComponent(currentJobId) + "/logs?tail=200");
+      document.getElementById("logOut").textContent = data.logs || "(empty)";
+    } catch (e) {
+      document.getElementById("logOut").textContent = e.message;
+    }
+  }
+
+  async function listArtifacts() {
+    try {
+      const data = await api("/train/llm/artifacts");
+      document.getElementById("artOut").textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      document.getElementById("artOut").innerHTML = '<span class="err">' + e.message + '</span>';
+    }
+  }
+</script>
+</body>
+</html>

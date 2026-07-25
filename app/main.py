@@ -69,9 +69,9 @@ def create_app() -> FastAPI:
 """,
         },
         {
-            "name": "dajia-admin",
+            "name": "train-llm-admin",
             "description": (
-                "大模型训练/管理类管理接口（`/dajia`）。"
+                "大模型 LLM/VLM LoRA 微调管理接口（`/train/llm/*`）：数据转换、启停训练、metrics/日志、产物。"
                 "须携带 `Authorization: Bearer <SERVICE_API_KEY>`（密钥生成见 `app/auth/keygen.py` 与部署文档）。"
             ),
         },
@@ -135,7 +135,7 @@ def create_app() -> FastAPI:
     async def health_api_prefix() -> dict:
         return {"status": "ok"}
 
-    from app.api import analysis, analysis_agent, chatbot, graph_admin, inspection_extract, inspection_extract_v0, llm_inference, nl2sql, rag_admin, train_admin
+    from app.api import analysis, analysis_agent, chatbot, graph_admin, inspection_extract, inspection_extract_v0, llm_inference, nl2sql, rag_admin, train_llm_admin
     from app.api.small_models import face_gallery, small_model
 
     _auth = [Depends(require_service_api_key)]
@@ -208,9 +208,9 @@ def create_app() -> FastAPI:
         dependencies=_auth,
     )
     app.include_router(
-        train_admin.router,
-        prefix="/dajia",
-        tags=["dajia-admin"],
+        train_llm_admin.router,
+        prefix="/train",
+        tags=["train-llm-admin"],
         dependencies=_auth,
     )
 

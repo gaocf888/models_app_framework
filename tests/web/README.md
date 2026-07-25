@@ -26,6 +26,7 @@ python3 -m http.server 8765
 | [analysis-nl2sql-overheat-stream-v1.html](analysis-nl2sql-overheat-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（超温专项页）**                                                                            |
 | [analysis-nl2sql-stream-v2.html](analysis-nl2sql-stream-v2.html) | 综合分析 **NL2SQL 流式 synthesis v2（超温多槽位；需服务端 env）**：同上接口，可收 `table_payload` / `chart_payload`                         |
 | [analysis-agent-stream.html](analysis-agent-stream.html) | **综合分析智能体** `POST /analysis-agent/run-stream`（按章 SSE、HITL resume、ECharts）                                         |
+| [train-llm-console.html](train-llm-console.html) | **大模型 LoRA 微调控制台**：数据转换/校验、启停训练、loss/日志监视、产物列表（`/train/llm/*`） |
 
 ---
 

@@ -1,0 +1,46 @@
+<View>
+  <Image name="image" value="$image" zoom="true"/>
+
+  <RectangleLabels name="special_operations" toName="image">
+    <Label value="动火作业" background="red"/>
+    <Label value="高处作业" background="blue"/>
+    <Label value="动土作业" background="green"/>
+    <Label value="盲板抽堵作业" background="orange"/>
+    <Label value="受限空间作业" background="purple"/>
+    <Label value="吊装作业" background="yellow"/>
+    <Label value="临时用电作业" background="pink"/>
+    <Label value="断路作业" background="brown"/>
+    <Label value="一般作业" background="gray"/>
+    <Label value="疑似正在进行作业" background="cyan"/>
+    <Label value="无作业" background="lightgray"/>
+  </RectangleLabels>
+
+  <Choices name="risk_points" toName="image" choice="multiple">
+    <Choice value="个人防护缺失"/>
+    <Choice value="环境风险"/>
+    <Choice value="作业违规"/>
+    <Choice value="设备故障"/>
+    <Choice value="安全标识缺失"/>
+    <Choice value="无风险点"/>
+  </Choices>
+
+  <Choices name="risk_level" toName="image">
+    <Choice value="重大风险"/>
+    <Choice value="较大风险"/>
+    <Choice value="一般风险"/>
+    <Choice value="低风险"/>
+    <Choice value="null"/>
+  </Choices>
+
+  <TextArea name="risk_description" toName="image"
+            placeholder="类型：描述；类型：描述"
+            editable="true" maxSubmissions="5" rows="2"/>
+
+  <TextArea name="safety_measures" toName="image"
+            placeholder="请输入措施建议..."
+            editable="true" maxSubmissions="10" rows="3"/>
+
+  <TextArea name="operation_overview" toName="image"
+            placeholder="整体作业情况描述..."
+            editable="true" maxSubmissions="5" rows="2"/>
+</View>

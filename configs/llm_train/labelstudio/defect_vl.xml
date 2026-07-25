@@ -1,0 +1,16 @@
+<View>
+  <Image name="image" value="$image" zoom="true"/>
+
+  <RectangleLabels name="defects" toName="image">
+    <Label value="裂纹" background="red"/>
+    <Label value="腐蚀" background="orange"/>
+    <Label value="磨损" background="yellow"/>
+    <Label value="变形" background="blue"/>
+    <Label value="泄漏痕迹" background="purple"/>
+    <Label value="其他缺陷" background="gray"/>
+  </RectangleLabels>
+
+  <TextArea name="defect_description" toName="image"
+            placeholder="缺陷补充描述..."
+            editable="true" maxSubmissions="5" rows="3"/>
+</View>

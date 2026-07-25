@@ -21,6 +21,9 @@ env/
 *.sqlite
 data/
 
+# 大模型训练产出
+outputs/llm_train/
+
 # 数据集文件
 app/train/yolo/datasets/processed/*
 app/train/yolo/datasets/source/*

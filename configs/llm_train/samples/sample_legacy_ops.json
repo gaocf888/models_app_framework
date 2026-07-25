@@ -1,0 +1,29 @@
+[
+  {
+    "id": "ops_001",
+    "image_path": "data/llm_train/images/sample_ops.jpg",
+    "safety_analysis": {
+      "special_operations": [
+        {
+          "operation_type": "高处作业",
+          "bbox": [100, 200, 150, 280],
+          "description": "工人在平台进行检修"
+        }
+      ],
+      "risk_level": "较大风险",
+      "risk_points": [
+        {
+          "risk_type": "个人防护缺失",
+          "description": "未佩戴安全帽"
+        }
+      ],
+      "safety_measures": [
+        {
+          "measure_type": "个人防护",
+          "description": "佩戴安全帽和安全带"
+        }
+      ],
+      "operation_overview": "现场有一名工人在高处平台作业"
+    }
+  }
+]

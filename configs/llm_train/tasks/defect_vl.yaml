@@ -1,0 +1,9 @@
+# task_profile: defect_vl — 缺陷识别图文 SFT
+task_profile: defect_vl
+modality: vision
+user_prompt: |
+  <image>
+  请识别图中设备/管线缺陷类型、位置并给出简要描述。
+assistant_sections:
+  - defects
+include_bbox_in_assistant: true

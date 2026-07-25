@@ -1,0 +1,13 @@
+# task_profile: vl_ops — 作业/风险/措施类图文 SFT
+task_profile: vl_ops
+modality: vision
+user_prompt: |
+  <image>
+  请分析以下监控图像，识别特殊作业类型、风险点并给出措施建议。
+assistant_sections:
+  - special_operations
+  - risk_level
+  - operation_overview
+  - risk_points
+  - measures
+include_bbox_in_assistant: true

@@ -1,0 +1,2 @@
+{"id": "chat_001", "modality": "text", "task_profile": "chat_sft", "images": [], "messages": [{"role": "user", "content": "什么是管壁超温？"}, {"role": "assistant", "content": "管壁超温是指受热面金属壁温超过设计允许值，长期运行可能导致蠕变损伤与寿命缩短。"}], "meta": {"source": "sample"}}
+{"id": "chat_002", "modality": "text", "task_profile": "chat_sft", "images": [], "messages": [{"role": "user", "content": "如何降低再热器超温风险？"}, {"role": "assistant", "content": "可通过优化燃烧与配风、控制减温水、核对测点准确性，并排查结焦/积灰等因素综合治理。"}], "meta": {"source": "sample"}}

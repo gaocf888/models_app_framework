@@ -1,0 +1,28 @@
+# 大模型 LoRA 微调默认配置（configs/llm_train/train_lora.yaml）
+modality: auto
+base_model: models/Qwen2.5-VL-7B-Instruct
+dataset_path: configs/llm_train/samples/sample_chat_sft.jsonl
+output_dir: outputs/llm_train/default
+task_profile: chat_sft
+
+num_epochs: 3
+batch_size: 1
+learning_rate: 1.0e-5
+max_length: 2048
+image_size: 224
+gradient_accumulation_steps: 4
+warmup_steps: 50
+weight_decay: 0.01
+max_grad_norm: 1.0
+
+lora:
+  r: 8
+  alpha: 32
+  dropout: 0.1
+  target_modules: auto
+
+save_steps: 200
+logging_steps: 10
+save_total_limit: 3
+fp16: true
+bf16: false

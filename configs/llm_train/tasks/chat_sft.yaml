@@ -1,0 +1,5 @@
+# task_profile: chat_sft — 纯文本对话 SFT
+task_profile: chat_sft
+modality: text
+user_prompt: ""
+notes: 样本直接提供 messages；无需图像。
