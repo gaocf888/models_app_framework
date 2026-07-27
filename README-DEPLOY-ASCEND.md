@@ -623,26 +623,47 @@ LLM / 嵌入 / 重排目录须与各栈 `.env`、compose 挂载一致（见各�
 
 仓库建议放在 `/opt/deploy/models_app_framework`（以下命令相对仓库根）。
 
-### 6.1 EasySearch
+### 6.1 EasySearch（rag_db-deploy）
 
 ```bash
 cd rag_db-deploy
 cp .env.example .env
 # 按需改管理员密码等；记下 RAG_ES_* 供 app 使用
-docker compose -f docker-compose.easysearch_bak0.yml --env-file .env up -d
-# 若现场文件名为 docker-compose.easysearch.yml，以实际为准
+docker compose --env-file .env -f docker-compose.easysearch.yml up -d
 ```
 
 验收：`https://<host>:9200` 健康；admin 密码与后续 `RAG_ES_PASSWORD` 一致。
 
-### 6.2 vLLM（昇腾）
+> 启动easysearch的容器后，进入容器，初始化设置固定密码
+```text
+# 1. 进入容器
+docker exec -it rag-easysearch bash
+
+# 2. 执行curl请求，设置密码
+curl -X PUT \
+  --cert /app/easysearch/config/admin.crt \
+  --key /app/easysearch/config/admin.key \
+  -H 'Content-Type: application/json' \
+  -k \
+  -d '{
+    "password": "ChangeMe_123!", 
+    "external_roles": ["admin"]
+  }' \
+  https://localhost:9200/_security/user/admin
+```
+
+验证可用性：
+curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
+
+
+### 6.2 vLLM（vllm-deploy）
 
 ```bash
 cd vllm-deploy
 cp .env.example .env
 ```
 
-关键项（与 `.env.example` 昇腾段一致）：
+关键环境变量配置项（与 `.env.example` 昇腾段一致，不同加速卡配置见该环境变量配置文件最上方）：
 
 ```env
 VLLM_PLATFORM=ascend
@@ -651,7 +672,6 @@ ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
 TENSOR_PARALLEL_SIZE=2
 MODEL_PRESET=<与 config/models.yaml 一致>
 MODEL_PATH=/aidata/models/llm
-VLLM_IMAGE=vllm-service:ascend
 ```
 
 > 底座默认在 `docker/Dockerfile-ascend`，一般不必写 `BASE_IMAGE`。
@@ -678,14 +698,14 @@ curl -s http://127.0.0.1:8000/health
 curl -s http://127.0.0.1:8000/v1/models
 ```
 
-### 6.3 MinerU（昇腾）
+### 6.3 MinerU（mineru-deploy）
 
 ```bash
 cd mineru-deploy
 cp .env.example .env
 ```
 
-关键项：
+关键环境变量配置项：
 
 ```env
 MINERU_DEVICE_MODE=npu
@@ -693,18 +713,20 @@ ASCEND_RT_VISIBLE_DEVICES=6
 INSTALL_CUDA_TORCH=0
 MINERU_MODELS_HOST_PATH=/aidata/mineru/models
 MINERU_IO_HOST_PATH=/aidata/mineru/io
-MINERU_NETWORK_NAME=mineru-stack
 ```
 
 ```bash
 docker network create mineru-stack || true
+# gpu模式运行（上述关键环境变量配置项针对GPU模式）-- 不同加速卡的docker-compose配置文件要对应上述关键配置项
 docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
+# cpu模式运行（针对不支持mineru的加速卡环境，可使用cpu模式运行mineru）
+docker compose --env-file .env -f docker-compose.cpu.yml up -d --build
 ```
 
 验收：`http://127.0.0.1:8009/health`（宿主机端口以 `MINERU_PORT` 为准）。  
 若 NPU 暂不稳定，可临时改用 `docker-compose.cpu.yml` 保功能。
 
-### 6.4 应用栈（昇腾）
+### 6.4 应用栈（app/app-deploy）
 
 ```bash
 cd app/app-deploy
@@ -763,7 +785,8 @@ PYTHONPATH=. python -c "from app.auth.keygen import generate_service_api_key; pr
 docker network create paddle-layout-stack 2>/dev/null || true
 docker network create face-milvus-stack 2>/dev/null || true
 
-docker compose -f docker-ascend/docker-compose-ascend.yml up -d --build
+# 启动  加速卡docker-compose配置文件与上方关键配置项对应
+docker compose --env-file .env -f docker-ascend/docker-compose-ascend.yml up -d --build
 ```
 
 验收：
