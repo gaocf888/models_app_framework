@@ -107,20 +107,68 @@ def test_strip_nl2sql_analysis_section_headings():
     from app.llm.graphs.chatbot_nl2sql_answer import strip_nl2sql_analysis_section_headings
 
     raw = (
-        "### 查询总结\n"
+        "### 概括\n"
         "已查到1号锅炉负荷421MW。\n\n"
-        "### 明细数据\n"
+        "### 精简 Markdown 表\n"
         "| 锅炉 | 负荷 |\n| --- | --- |\n| 1号 | 421 |\n\n"
-        "**数据业务分析**\n"
+        "### 业务解读\n"
         "处于高负荷区间，建议关注燃烧稳定性。"
     )
     out = strip_nl2sql_analysis_section_headings(raw)
     assert "已查到1号锅炉负荷421MW" in out
     assert "| 1号 | 421 |" in out
     assert "处于高负荷区间" in out
-    assert "查询总结" not in out
-    assert "明细数据" not in out
-    assert "数据业务分析" not in out
+    assert "概括" not in out
+    assert "业务解读" not in out
+    assert "精简 Markdown 表" not in out
+    assert "###" not in out
+
+
+def test_ensure_nl2sql_partial_rows_note_inserts_after_table():
+    from app.llm.graphs.chatbot_nl2sql_answer import (
+        ensure_nl2sql_partial_rows_note,
+        finalize_streamed_nl2sql_analysis,
+        Nl2sqlAnalysisStreamPlan,
+    )
+
+    raw = (
+        "2号锅炉昨日共发生91次超温。\n\n"
+        "| 机组 | 测点 |\n| --- | --- |\n"
+        "| 2号 | A |\n| 2号 | B |\n\n"
+        "建议关注水冷壁螺旋管段测点。"
+    )
+    out = ensure_nl2sql_partial_rows_note(raw, total_row_count=91, shown_row_count=2)
+    assert "> 共 91 条，上表仅展示其中 2 条代表性明细。" in out
+    assert out.index("| 2号 | B |") < out.index("共 91 条")
+    assert out.index("共 91 条") < out.index("建议关注")
+
+    # 已有提示不重复
+    once = ensure_nl2sql_partial_rows_note(out, total_row_count=91, shown_row_count=2)
+    assert once.count("共 91 条") == 1
+
+    plan = Nl2sqlAnalysisStreamPlan(
+        system="sys",
+        user_content="user",
+        table_fallback="| a | b |\n| --- | --- |\n| 1 | 2 |",
+        display_rows=[{"机组": "2号"}, {"机组": "2号"}],
+        total_row_count=91,
+        analysis_prompt_row_count=2,
+        sql="SELECT 1",
+        user_query="查超温",
+    )
+    finalized = finalize_streamed_nl2sql_analysis(
+        plan,
+        "### 概括\n昨日共91次超温，其中前20条明细数据已展示。\n\n"
+        "### 精简 Markdown 表\n"
+        "| 机组 | 测点 |\n| --- | --- |\n| 2号 | A |\n| 2号 | B |\n\n"
+        "### 业务解读\n请现场核对。",
+    )
+    assert "### 概括" not in finalized.answer_text
+    assert "### 业务解读" not in finalized.answer_text
+    assert "精简 Markdown 表" not in finalized.answer_text
+    assert "前20条" not in finalized.answer_text
+    assert "前2条明细已展示" in finalized.answer_text
+    assert "> 共 91 条，上表仅展示其中 2 条代表性明细。" in finalized.answer_text
 
 
 @pytest.mark.asyncio
