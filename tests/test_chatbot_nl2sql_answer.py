@@ -67,7 +67,16 @@ async def test_summarize_with_rows_omits_sql_from_user_text():
 @pytest.mark.asyncio
 async def test_summarize_with_llm_analysis_uses_model_markdown():
     llm = MagicMock()
-    llm.chat = AsyncMock(return_value="## 结论\n负荷正常。\n\n| 锅炉 | 负荷 |\n| --- | --- |\n| 1号 | 100 |")
+    llm.chat = AsyncMock(
+        return_value=(
+            "### 查询总结\n"
+            "负荷正常。\n\n"
+            "### 明细数据\n"
+            "| 锅炉 | 负荷 |\n| --- | --- |\n| 1号 | 100 |\n\n"
+            "### 数据业务分析\n"
+            "请关注负荷波动。"
+        )
+    )
     with patch("app.llm.graphs.chatbot_nl2sql_answer.get_app_config") as gac:
         gac.return_value = type(
             "A",
@@ -84,10 +93,34 @@ async def test_summarize_with_llm_analysis_uses_model_markdown():
                 sql="SELECT load FROM t",
                 rows=[{"锅炉": "1号", "负荷": 100}],
             )
-    assert "结论" in result.answer_text
+    assert "负荷正常" in result.answer_text
+    assert "请关注负荷波动" in result.answer_text
+    assert "### 查询总结" not in result.answer_text
+    assert "### 明细数据" not in result.answer_text
+    assert "### 数据业务分析" not in result.answer_text
     assert result.analysis_meta is not None
     assert result.analysis_meta.get("llm_analysis_used") is True
     llm.chat.assert_awaited()
+
+
+def test_strip_nl2sql_analysis_section_headings():
+    from app.llm.graphs.chatbot_nl2sql_answer import strip_nl2sql_analysis_section_headings
+
+    raw = (
+        "### 查询总结\n"
+        "已查到1号锅炉负荷421MW。\n\n"
+        "### 明细数据\n"
+        "| 锅炉 | 负荷 |\n| --- | --- |\n| 1号 | 421 |\n\n"
+        "**数据业务分析**\n"
+        "处于高负荷区间，建议关注燃烧稳定性。"
+    )
+    out = strip_nl2sql_analysis_section_headings(raw)
+    assert "已查到1号锅炉负荷421MW" in out
+    assert "| 1号 | 421 |" in out
+    assert "处于高负荷区间" in out
+    assert "查询总结" not in out
+    assert "明细数据" not in out
+    assert "数据业务分析" not in out
 
 
 @pytest.mark.asyncio

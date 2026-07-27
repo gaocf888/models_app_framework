@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import inspect
 import os
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, List
 from uuid import UUID
-import inspect
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -90,9 +91,18 @@ _EMPTY_ROWS_FIXED_MESSAGE = (
 _DEFAULT_ANALYSIS_SYSTEM = (
     "你是数据助手。下方查询结果是已执行完的事实源，只能基于其中字段与数值做中文 Markdown 整理与分析，"
     "禁止编造数字或库外因果；禁止输出 SQL。"
-    "结构可参考：核心结论、明细表、业务洞察（示例，非强制）。"
+    "输出版式：开头直接写一段话概括结果，空一行后只输出一张 Markdown 表，"
+    "再空一行写一段业务解读（无依据可省略）；正文中不得出现任何 Markdown 标题行（#/##/###）"
+    "或单独成行的板块名。"
     "禁止「注意/注意事项」独立章节与客套收尾；"
     "禁止建议用户补充字段、补充历史数据或扩大分析范围（列由系统生成，非用户手填）；只解读已给出且与问句相关的内容。"
+)
+
+# 模型常把版式说明抄成 ### 小标题；定稿时剥离（仅整行标题，不影响正文句子）。
+_NL2SQL_SECTION_HEADING_RE = re.compile(
+    r"^\s{0,3}(?:#{1,6}\s*|(?:\*\*|__)\s*)?"
+    r"(?:查询总结|明细数据|明细表|数据业务分析|业务洞察|核心结论|数据分析|分析结论|结论)"
+    r"(?:\s*(?:\*\*|__))?\s*$"
 )
 
 _DEFAULT_EMPTY_SYSTEM = (
@@ -110,6 +120,21 @@ def format_nl2sql_user_error(exc: NL2SQLExecutionError | None = None) -> str:
         return _DEFAULT_USER_ERROR_MESSAGE
     key = exc.user_message_key if exc.user_message_key in _USER_ERROR_MESSAGES else "default"
     return _USER_ERROR_MESSAGES.get(key, _DEFAULT_USER_ERROR_MESSAGE)
+
+
+def strip_nl2sql_analysis_section_headings(text: str) -> str:
+    """去掉模型误加的板块小标题行，保留段落与表格正文。"""
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    kept: list[str] = []
+    for line in raw.splitlines():
+        if _NL2SQL_SECTION_HEADING_RE.match(line):
+            continue
+        kept.append(line)
+    cleaned = "\n".join(kept)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
 
 
 @dataclass
@@ -522,7 +547,7 @@ def finalize_streamed_nl2sql_analysis(
     streamed_text: str,
 ) -> Nl2sqlSummarizeResult:
     """流式结束后组装正文与 meta；无有效输出则回退 Markdown 表。"""
-    answer = (streamed_text or "").strip()
+    answer = strip_nl2sql_analysis_section_headings((streamed_text or "").strip())
     llm_used = bool(answer)
     if not answer:
         answer = plan.table_fallback
@@ -576,9 +601,10 @@ def _build_analysis_user_content(
         f"勿建议用户补充字段、补充数据或扩大分析范围）。\n\n"
         "【查询结果 · Markdown 表（已执行完的事实源）】\n"
         f"{table_for_prompt}\n\n"
-        "请基于以上已执行结果输出用户可读的 Markdown 分析；"
-        "明细表请整理精简，不要原样粘贴全部行；不要输出 SQL；"
-        "不要写「注意/注意事项」，不要写「未提供××请补充字段」之类内容。"
+        "请基于以上已执行结果按固定版式输出："
+        "开头直接一段概括 → 空一行后一张精简 Markdown 表 → 再空一行一段业务解读（无依据可省略）；"
+        "严禁输出任何 #/##/### 标题行，也严禁单独成行写「查询总结」「明细数据」「数据业务分析」等板块名；"
+        "不要输出 SQL；不要写「注意/注意事项」，不要写「未提供××请补充字段」之类内容。"
     )
 
 
