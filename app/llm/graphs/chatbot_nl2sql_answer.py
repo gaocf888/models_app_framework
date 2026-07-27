@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import inspect
 import os
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, List
 from uuid import UUID
-import inspect
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -90,10 +91,39 @@ _EMPTY_ROWS_FIXED_MESSAGE = (
 _DEFAULT_ANALYSIS_SYSTEM = (
     "你是数据助手。下方查询结果是已执行完的事实源，只能基于其中字段与数值做中文 Markdown 整理与分析，"
     "禁止编造数字或库外因果；禁止输出 SQL。"
-    "结构可参考：核心结论、明细表、业务洞察（示例，非强制）。"
+    "输出版式：开头直接写一段话概括结果，空一行后只输出一张 Markdown 表，"
+    "再空一行写一段业务解读（无依据可省略）；正文中不得出现任何 Markdown 标题行（#/##/###）"
+    "或单独成行的板块名。"
+    "明细表必须完整输出事实源提供的全部样本行，禁止再抽稀到更少行；"
+    "概括中的展示条数须与表内行数一致。"
     "禁止「注意/注意事项」独立章节与客套收尾；"
     "禁止建议用户补充字段、补充历史数据或扩大分析范围（列由系统生成，非用户手填）；只解读已给出且与问句相关的内容。"
 )
+
+# 模型常把版式说明抄成 ### 小标题；定稿时剥离（仅整行标题，不影响正文句子）。
+# 1) 任意 Markdown AT1～H6 短行（本链路禁止章节标题）
+# 2) 无 # 的加粗/纯文本板块名
+_NL2SQL_MD_ATX_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S.{0,80}$")
+_NL2SQL_SECTION_HEADING_RE = re.compile(
+    r"^\s{0,3}(?:(?:\*\*|__)\s*)?"
+    r"(?:查询总结|概括|查询概况|明细数据|明细表|数据明细|"
+    r"精简\s*Markdown\s*表|Markdown\s*表|Markdown\s*明细表|"
+    r"数据业务分析|业务解读|业务洞察|核心结论|数据分析|分析结论|结论|解读)"
+    r"(?:\s*(?:\*\*|__))?"
+    r"(?:\s*[:：])?\s*$",
+    re.IGNORECASE,
+)
+_NL2SQL_PARTIAL_NOTE_ALREADY_RE = re.compile(
+    r"(共\s*\d+\s*(?:条|行).{0,40}(?:仅|以下).{0,20}(?:展示|输出|列出))"
+    r"|(仅展示其中\s*\d+)"
+    r"|(以下展示前\s*\d+)"
+)
+# 概括中常见「前N条已展示」与表内行数不一致时校正
+_NL2SQL_SHOWN_COUNT_CLAIM_RE = re.compile(
+    r"(其中)?前\s*(\d+)\s*条(?:明细(?:数据)?)?(?:已展示|已列出|如下)"
+)
+_MARKDOWN_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
+_MARKDOWN_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 
 _DEFAULT_EMPTY_SYSTEM = (
     "用户查询已执行但无数据行。用简洁中文说明无数据，并给出改问建议；禁止编造数值与 SQL。"
@@ -112,6 +142,124 @@ def format_nl2sql_user_error(exc: NL2SQLExecutionError | None = None) -> str:
     return _USER_ERROR_MESSAGES.get(key, _DEFAULT_USER_ERROR_MESSAGE)
 
 
+def strip_nl2sql_analysis_section_headings(text: str) -> str:
+    """去掉模型误加的板块小标题行（含任意 ### 短标题），保留段落与表格正文。"""
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    kept: list[str] = []
+    for line in raw.splitlines():
+        if _NL2SQL_MD_ATX_HEADING_RE.match(line):
+            continue
+        if _NL2SQL_SECTION_HEADING_RE.match(line):
+            continue
+        kept.append(line)
+    cleaned = "\n".join(kept)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def align_nl2sql_shown_count_claims(text: str, *, shown_row_count: int) -> str:
+    """将概括中的「前N条已展示」与明细表实际行数对齐；N 与表一致则不动。"""
+    body = text or ""
+    shown_n = int(shown_row_count or 0)
+    if shown_n <= 0 or not body:
+        return body
+
+    def _repl(m: re.Match[str]) -> str:
+        claimed = int(m.group(2))
+        if claimed == shown_n:
+            return m.group(0)
+        prefix = m.group(1) or ""
+        return f"{prefix}前{shown_n}条明细已展示"
+
+    return _NL2SQL_SHOWN_COUNT_CLAIM_RE.sub(_repl, body)
+
+
+def format_nl2sql_partial_rows_note(*, total_row_count: int, shown_row_count: int) -> str:
+    """明细截断提示（总行数大于展示行数时）；与纯表回退口径一致。"""
+    total_n = int(total_row_count or 0)
+    shown_n = int(shown_row_count or 0)
+    if total_n <= 0 or shown_n <= 0 or total_n <= shown_n:
+        return ""
+    return f"> 共 {total_n} 条，上表仅展示其中 {shown_n} 条代表性明细。"
+
+
+def count_markdown_table_data_rows(text: str) -> int:
+    """统计正文中首张 Markdown 表的数据行数（不含表头与分隔行）。"""
+    lines = (text or "").splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not _MARKDOWN_TABLE_ROW_RE.match(line) or _MARKDOWN_TABLE_SEP_RE.match(line):
+            i += 1
+            continue
+        # 可能的表头
+        if i + 1 < len(lines) and _MARKDOWN_TABLE_SEP_RE.match(lines[i + 1]):
+            i += 2
+            data_rows = 0
+            while i < len(lines) and _MARKDOWN_TABLE_ROW_RE.match(lines[i]) and not _MARKDOWN_TABLE_SEP_RE.match(lines[i]):
+                data_rows += 1
+                i += 1
+            return data_rows
+        i += 1
+    return 0
+
+
+def ensure_nl2sql_partial_rows_note(
+    text: str,
+    *,
+    total_row_count: int,
+    shown_row_count: int | None = None,
+) -> str:
+    """
+    若结果被截断，在首张明细表后插入截断提示；已有同类文案则不重复插入。
+    shown_row_count 为空时，按正文表数据行数推断。
+    """
+    body = (text or "").strip()
+    if not body:
+        return body
+    shown = int(shown_row_count) if shown_row_count is not None else count_markdown_table_data_rows(body)
+    if shown <= 0:
+        shown = count_markdown_table_data_rows(body)
+    note = format_nl2sql_partial_rows_note(total_row_count=total_row_count, shown_row_count=shown)
+    if not note:
+        return body
+    if _NL2SQL_PARTIAL_NOTE_ALREADY_RE.search(body):
+        return body
+
+    lines = body.splitlines()
+    insert_at: int | None = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not _MARKDOWN_TABLE_ROW_RE.match(line) or _MARKDOWN_TABLE_SEP_RE.match(line):
+            i += 1
+            continue
+        if i + 1 < len(lines) and _MARKDOWN_TABLE_SEP_RE.match(lines[i + 1]):
+            j = i + 2
+            while j < len(lines) and _MARKDOWN_TABLE_ROW_RE.match(lines[j]) and not _MARKDOWN_TABLE_SEP_RE.match(lines[j]):
+                j += 1
+            insert_at = j
+            break
+        i += 1
+
+    if insert_at is None:
+        # 无表时附在文末，仍提示总数与抽样口径
+        return f"{body}\n\n{note}".strip()
+
+    new_lines = list(lines[:insert_at])
+    new_lines.append("")
+    new_lines.append(note)
+    rest = list(lines[insert_at:])
+    while rest and not rest[0].strip():
+        rest.pop(0)
+    if rest:
+        new_lines.append("")
+        new_lines.extend(rest)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(new_lines)).strip()
+
+
 @dataclass
 class Nl2sqlAnalysisStreamPlan:
     """查数成功且需 LLM 收紧分析时，供 SSE 流式生成；失败则回退 table_fallback。"""
@@ -121,6 +269,7 @@ class Nl2sqlAnalysisStreamPlan:
     table_fallback: str
     display_rows: list[dict[str, Any]] = field(default_factory=list)
     total_row_count: int = 0
+    analysis_prompt_row_count: int = 0
     sql: str = ""
     user_query: str = ""
 
@@ -131,6 +280,7 @@ class Nl2sqlAnalysisStreamPlan:
             "table_fallback": self.table_fallback,
             "display_rows": json_safe_rows(list(self.display_rows)),
             "total_row_count": int(self.total_row_count),
+            "analysis_prompt_row_count": int(self.analysis_prompt_row_count),
             "sql": self.sql or "",
             "user_query": self.user_query or "",
         }
@@ -152,6 +302,7 @@ class Nl2sqlAnalysisStreamPlan:
             table_fallback=table_fallback,
             display_rows=display_rows,
             total_row_count=int(raw.get("total_row_count") or len(display_rows)),
+            analysis_prompt_row_count=int(raw.get("analysis_prompt_row_count") or 0),
             sql=str(raw.get("sql") or ""),
             user_query=str(raw.get("user_query") or ""),
         )
@@ -370,7 +521,12 @@ def _rows_to_markdown_table(
         body.append(line)
     out = "\n".join([header, sep, *body])
     if total_row_count > len(slice_rows):
-        out += f"\n\n> 共 {total_row_count} 行，以下展示前 {len(slice_rows)} 行。"
+        note = format_nl2sql_partial_rows_note(
+            total_row_count=total_row_count,
+            shown_row_count=len(slice_rows),
+        )
+        if note:
+            out += f"\n\n{note}"
     return out
 
 
@@ -518,7 +674,7 @@ def finalize_streamed_nl2sql_analysis(
     streamed_text: str,
 ) -> Nl2sqlSummarizeResult:
     """流式结束后组装正文与 meta；无有效输出则回退 Markdown 表。"""
-    answer = (streamed_text or "").strip()
+    answer = strip_nl2sql_analysis_section_headings((streamed_text or "").strip())
     llm_used = bool(answer)
     if not answer:
         answer = plan.table_fallback
@@ -527,6 +683,16 @@ def finalize_streamed_nl2sql_analysis(
             "chatbot.nl2sql_analysis fallback_to_table question=%s prompt_chars=%s",
             (plan.user_query or "")[:200],
             len(plan.user_content or ""),
+        )
+    else:
+        table_shown = count_markdown_table_data_rows(answer)
+        shown_fallback = int(plan.analysis_prompt_row_count or 0) or len(plan.display_rows)
+        shown_n = table_shown if table_shown > 0 else shown_fallback
+        answer = align_nl2sql_shown_count_claims(answer, shown_row_count=shown_n)
+        answer = ensure_nl2sql_partial_rows_note(
+            answer,
+            total_row_count=int(plan.total_row_count),
+            shown_row_count=shown_n,
         )
     logger.info(
         "智能客服 NL2SQL：已向用户返回整理结果（总行数=%s，展示行数=%s，llm_analysis=%s）。用户问题摘要=%s",
@@ -572,9 +738,15 @@ def _build_analysis_user_content(
         f"勿建议用户补充字段、补充数据或扩大分析范围）。\n\n"
         "【查询结果 · Markdown 表（已执行完的事实源）】\n"
         f"{table_for_prompt}\n\n"
-        "请基于以上已执行结果输出用户可读的 Markdown 分析；"
-        "明细表请整理精简，不要原样粘贴全部行；不要输出 SQL；"
-        "不要写「注意/注意事项」，不要写「未提供××请补充字段」之类内容。"
+        "请基于以上已执行结果按固定版式输出："
+        "开头直接一段概括 → 空一行后一张 Markdown 明细表 → 再空一行一段业务解读（无依据可省略）；"
+        f"明细表必须完整输出事实源中的全部 {len(prompt_rows)} 行，禁止再抽稀到更少行；"
+        "概括里若提到「展示条数」，必须与明细表行数一致，且等于上述事实源行数；"
+        "严禁输出任何 #/##/### 标题行或单独成行的板块名；"
+        "不要把版式说明里的词抄成标题；"
+        "总行数大于事实源行数时，可在概括中写清命中总数，但不要把截断样本写成「全部明细」"
+        "（表后截断说明由系统自动追加，你不必重复写「仅展示部分」）；"
+        "不要输出 SQL；不要写「注意/注意事项」，不要写「未提供××请补充字段」之类内容。"
     )
 
 
@@ -686,6 +858,7 @@ async def summarize_nl2sql_with_llm(
         table_fallback=table_fallback,
         display_rows=display_rows,
         total_row_count=len(rows),
+        analysis_prompt_row_count=len(prompt_rows),
         sql=sql,
         user_query=user_query or "",
     )
