@@ -311,30 +311,26 @@ findmnt / && lsblk /dev/sda
 
 #### 4.1.6 步骤 4：对 VD1 分区（`parted`）
 
-> 下列起止按「约 1.7T 可用」编排；执行前务必 `print free` 核对。超界则改小 BACKUP/MINERU。
+> 下列起止按「约 1.7T 可用」编排。超界则改小 BACKUP/MINERU。  
+> **新建 VD 尚无分区表时**，`parted … print free` 可能报「无法辨识的磁盘卷标 / 分区表 unknown」——**属正常**，须先 `mklabel gpt`。
 
 ```bash
-# 再次确认目标盘
+# 再次确认目标盘（确认 $DATA 不是 sda！）
 echo "即将分区的磁盘: $DATA"
 lsblk "$DATA"
-sudo parted "$DATA" unit GiB print free
 
-# 空盘建 GPT（确认 $DATA 不是 sda！）
+# 1) 先建 GPT（空盘必做；消除 “无法辨识的磁盘卷标”）
 sudo parted -s "$DATA" mklabel gpt
 
-# 六分区（名称仅标签，便于识别）
-sudo parted -s "$DATA" \
-  mkpart MODELS xfs 1MiB 801GiB
-sudo parted -s "$DATA" \
-  mkpart MINERU xfs 801GiB 921GiB
-sudo parted -s "$DATA" \
-  mkpart AIDATA xfs 921GiB 1271GiB
-sudo parted -s "$DATA" \
-  mkpart MINIO  xfs 1271GiB 1451GiB
-sudo parted -s "$DATA" \
-  mkpart BACKUP xfs 1451GiB 1551GiB
-sudo parted -s "$DATA" \
-  mkpart DEPLOY xfs 1551GiB 100%
+# 2) 再查看空闲并切分
+sudo parted "$DATA" unit GiB print free
+
+sudo parted -s "$DATA" mkpart MODELS xfs 1MiB 801GiB
+sudo parted -s "$DATA" mkpart MINERU xfs 801GiB 921GiB
+sudo parted -s "$DATA" mkpart AIDATA xfs 921GiB 1271GiB
+sudo parted -s "$DATA" mkpart MINIO  xfs 1271GiB 1451GiB
+sudo parted -s "$DATA" mkpart BACKUP xfs 1451GiB 1551GiB
+sudo parted -s "$DATA" mkpart DEPLOY xfs 1551GiB 100%
 
 sudo parted "$DATA" unit GiB print
 lsblk "$DATA"
@@ -355,9 +351,13 @@ lsblk "$P_MODELS" "$P_MINERU" "$P_AIDATA" "$P_MINIO" "$P_BACKUP" "$P_DEPLOY"
 
 ---
 
-#### 4.1.7 步骤 5：格式化、挂载、`fstab`
+#### 4.1.7 步骤 5：格式化、挂载、**写入 fstab（必须）**
+
+> **关键**：仅 `mount` 而不写 `/etc/fstab`，**重启后 `df` 会看不到业务盘**（`lsblk` 仍有 `sdb*` 分区、无 MOUNTPOINT）。现场曾因此误判为“盘丢了”。  
+> `mkfs.xfs` **一次只能格式化一块设备**，勿把多个分区写在同一条命令里。
 
 ```bash
+# 逐个格式化（不要写成 mkfs.xfs -f "$P_MODELS" "$P_MINERU" ...）
 sudo mkfs.xfs -f "$P_MODELS"
 sudo mkfs.xfs -f "$P_MINERU"
 sudo mkfs.xfs -f "$P_AIDATA"
@@ -371,7 +371,7 @@ sudo mkdir -p /aidata/models /aidata/mineru /aidata/data \
 sudo mount "$P_MODELS" /aidata/models
 sudo mount "$P_MINERU" /aidata/mineru
 sudo mount "$P_AIDATA" /aidata/data
-# minio 挂到 data 下的子路径：须先有 /aidata/data
+# minio 挂到 data 下的子路径：须先挂好 /aidata/data
 sudo mkdir -p /aidata/data/minio_data
 sudo mount "$P_MINIO"  /aidata/data/minio_data
 sudo mount "$P_BACKUP" /aidata/backup
@@ -380,29 +380,32 @@ sudo mount "$P_DEPLOY" /opt/deploy
 df -hT | grep -E 'aidata|deploy|Filesystem'
 ```
 
-写入 `fstab`（**只用 UUID**）：
+**写入 fstab（推荐：按当前挂载自动生成 UUID，避免手抄错误）**：
 
 ```bash
-sudo blkid "$P_MODELS" "$P_MINERU" "$P_AIDATA" "$P_MINIO" "$P_BACKUP" "$P_DEPLOY"
-sudo cp -a /etc/fstab /etc/fstab.bak.$(date +%F)
+sudo cp -a /etc/fstab /etc/fstab.bak.$(date +%F-%H%M)
 
-# 将下面 UUID 替换为 blkid 输出后追加
-sudo tee -a /etc/fstab >/dev/null <<'EOF'
-# --- VD1 aidata（MegaRAID 新建盘，务必替换 UUID）---
-UUID=<models-uuid>  /aidata/models           xfs  defaults  0 0
-UUID=<mineru-uuid>  /aidata/mineru           xfs  defaults  0 0
-UUID=<aidata-uuid>  /aidata/data             xfs  defaults  0 0
-UUID=<minio-uuid>   /aidata/data/minio_data  xfs  defaults  0 0
-UUID=<backup-uuid>  /aidata/backup           xfs  defaults  0 0
-UUID=<deploy-uuid>  /opt/deploy              xfs  defaults  0 0
-EOF
+# 若曾手写过错误行，先删掉旧的 aidata/deploy 行再追加
+sudo sed -i -E '/[[:space:]]\/aidata(\/|$)|[[:space:]]\/opt\/deploy/d' /etc/fstab
 
+sudo bash -c '
+for mp in /aidata/models /aidata/mineru /aidata/data /aidata/data/minio_data /aidata/backup /opt/deploy; do
+  src=$(findmnt -n -o SOURCE --target "$mp")
+  uuid=$(blkid -s UUID -o value "$src")
+  test -n "$uuid" || { echo "缺少 UUID: $mp"; exit 1; }
+  echo "UUID=$uuid  $mp  xfs  defaults  0 0"
+done >> /etc/fstab
+'
+
+# 必须能 grep 到六行
+grep -E 'aidata|/opt/deploy' /etc/fstab
 sudo mount -a
-df -hT | grep -E 'aidata|deploy|Filesystem'
+echo "mount -a exit: $?"
 findmnt /aidata/models /aidata/mineru /aidata/data /aidata/data/minio_data /aidata/backup /opt/deploy
 ```
 
-> **挂载顺序**：`/aidata/data` 须先于 `/aidata/data/minio_data`。`fstab` 中 AIDATA 行写在 MINIO 行之前即可。
+> **挂载顺序**：`/aidata/data` 须先于 `/aidata/data/minio_data`。上面脚本顺序已保证；手写时 AIDATA 行也须在 MINIO 行之前。  
+> **验收本步**：`grep aidata /etc/fstab` 非空；仅有系统盘三条 UUID（`/` `/boot` `/boot/efi`）而不含 aidata 则 **未完成**，重启必丢挂载。
 
 ---
 
@@ -421,23 +424,62 @@ sudo chown -R "$USER:$USER" /aidata /opt/deploy
 
 ---
 
-#### 4.1.9 步骤 7：总验收
+#### 4.1.9 步骤 7：总验收（含 **reboot 后** 验证）
+
+**当次挂载验收：**
 
 ```bash
 storcli64 /c0 /vall show
 storcli64 /c0 /eall /sall show
+grep -E 'aidata|/opt/deploy' /etc/fstab    # 必须有 6 行
 lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
-df -hT
+df -hT | grep -E 'aidata|deploy|Filesystem'
 ```
 
 | 检查项 | 期望 |
 |--------|------|
 | VD 数量 | 2；均为 RAID1 Optl |
-| 252:4 | 热备（非 UGood） |
+| 252:4 | 热备（GHS/DHS，非 UGood） |
 | `sda` | 仍为系统；分区未改 |
-| `sdb`（或实际 DATA） | 六分区已挂到 aidata/deploy |
+| `sdb`（或实际 DATA） | 六分区 **且 MOUNTPOINT 非空** |
+| fstab | 含 `/aidata/...` 与 `/opt/deploy` 的 UUID 行 |
 | `/` | 无大模型长期目录 |
-| Docker | 仍可用默认 `/var/lib/docker`（在 `/`）；装 Docker 前建议本步已完成 |
+
+**强制：reboot 后再验一次（否则不算完成）**
+
+```bash
+sudo reboot
+# 登录后：
+lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT | grep -E 'sdb|NAME'
+df -hT | grep -E 'aidata|deploy'
+```
+
+| 现象 | 含义 | 处理 |
+|------|------|------|
+| `lsblk` 有 `sdb1…6`（xfs），但 **无 MOUNTPOINT**，`df` 无 aidata | **fstab 未写或写错**；阵列/分区仍在 | 见下「排障」；补写 fstab 后 `mount -a` |
+| `lsblk` 无 `sdb` | 控制器/驱动未认出 VD | `storcli64 /c0 /vall show`；SCSI rescan 或查驱动 |
+| storcli 无第二 VD | 阵列被删/未创建 | 回到 §4.1.3 |
+
+**排障：reboot 后 df 看不到业务盘（现场已验证根因）**
+
+```bash
+# 1) 区分「盘在但未挂」vs「盘丢了」
+lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT   # 有 sdb* + xfs、无挂载点 → 未挂载
+grep -E 'aidata|deploy' /etc/fstab || echo "fstab 缺条目 ← 最常见原因"
+
+# 2) 临时挂上
+sudo mkdir -p /aidata/models /aidata/mineru /aidata/data \
+  /aidata/data/minio_data /aidata/backup /opt/deploy
+sudo mount /dev/sdb1 /aidata/models
+sudo mount /dev/sdb2 /aidata/mineru
+sudo mount /dev/sdb3 /aidata/data
+sudo mkdir -p /aidata/data/minio_data
+sudo mount /dev/sdb4 /aidata/data/minio_data
+sudo mount /dev/sdb5 /aidata/backup
+sudo mount /dev/sdb6 /opt/deploy
+
+# 3) 按 §4.1.7 自动追加 UUID 到 fstab，再 mount -a / reboot 验证
+```
 
 **运维**：监控 `/` 使用率；可选后续将 Docker `data-root` 迁到 `/aidata/docker`（仍不必重切 `sda`）。
 
@@ -863,3 +905,6 @@ cd app/app-deploy && docker compose -f docker-ascend/docker-compose-ascend.yml l
 | MinerU NPU 不稳 | 先 `docker-compose.cpu.yml` 保功能，再迭代 NPU |
 | 只升驱动或只升镜像 | **禁止**；按 §2 矩阵整线升级 |
 | 找不到下载包 | 回 §2.2：驱动/固件走昇腾社区页，Runtime 走 gitcode Releases，Docker 走 download.docker.com / GitHub compose |
+| reboot 后 `df` 无 sdb/aidata，但 `lsblk` 仍有 `sdb*` | **fstab 未写业务盘**；按 §4.1.9 排障补 UUID 后 `mount -a`，再 reboot 验证 |
+| `parted print free` 报无法辨识磁盘卷标 | 新 VD 尚无 GPT；先 `mklabel gpt`（§4.1.6） |
+| `mkfs.xfs` 报 `extra arguments` | 一次只格式化一块设备（§4.1.7） |
