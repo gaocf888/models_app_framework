@@ -30,21 +30,20 @@
 
 | ID | 工作项 | 状态 | 产出/验收 |
 |----|--------|------|-----------|
-| H0 | 用 **storcli** 核对 MegaRAID：**VD0** RAID1 Optl（系统 ~894G）；物理盘与方案 §4.0 一致 | ☐ | `storcli64 /c0 show`；见方案现场实测表 |
-| H0a | 确认引导分区：`/boot/efi`≈1G、`/boot`≈1G；**VD0 不重切**（系统+Docker 留在 `/`） | ☐ | `df -h /boot /boot/efi /`；勿缩根 |
-| H0b | **新建 VD1**：空闲盘 2×~1.75T 做 RAID1 + 1 块热备；OS 见第二块盘（常为 `sdb`） | ☐ | `storcli64 /c0 /vall show`；两 VD 均 Optl + Hot Spare |
-| H0c | 仅对 **VD1** 按方案 §4.0 分区并 fstab（含 `/aidata/data`、models、mineru、minio、backup、deploy） | ☐ | `df -h` 目标挂载均在 VD1；大文件不在 `/` |
+| H0 | 确认 RAID1（2×480G SSD + 2×600G SAS）状态正常 | ☐ | `lsblk` / RAID 工具显示 Optimal |
+| H0a | 确认已完成：`/boot/efi`=512M、`/boot`=1G | ☐ | `df -h /boot /boot/efi` |
+| H0b | 系统 OK 后按方案 §4.0 补齐剩余分区并写入 fstab | ☐ | 目标挂载均可见；Docker 目录独立 |
 | H1 | 系统与内核匹配性检查（HDK 25.2.0 支持 Kylin V10 SP3 / 本机内核 / **aarch64**） | ☐ | 预检通过；`uname -m`=`aarch64` |
 | H1a | 核对制品均为 **aarch64/arm64**（驱动 run、Docker 静态包、`vllm-ascend:…-310p`） | ☐ | 禁止 ARM 机拉 amd64 昇腾镜像 |
 | H1b | 按固化包名准备驱动/固件（对齐 CANN 8.2.RC1 / 镜像；勿装「最新」） | ☐ | 驱动 `…driver_25.2.0_linux-aarch64.run`；固件 `…7.7.0.6.236.run`；[下载页](https://www.hiascend.com/hardware/firmware-drivers/community?product=2&model=17&cann=8.2.RC1&driver=Ascend+HDK+25.2.0) |
 | H2 | 安装编译/内核依赖（gcc、make、kernel-devel 等，按驱动包要求） | ☐ | 依赖齐备 |
 | H3 | 安装 NPU **驱动 25.2.0 + 固件 7.7.0.6.236**（按华为文档区分首次/覆盖安装顺序） | ☐ | 重启后 `npu-smi info` 可见 **4 卡 / 约 8 设备** |
 | H4 | 设备节点与权限（`/dev/davinci*`、`HwHiAiUser` 等） | ☐ | 业务用户可访问 NPU |
-| H5 | 安装 Docker + Compose（§4.4：**在线一键** 或 **离线** `docker-20.10.24.tgz` + `docker-compose-linux-aarch64`） | ☐ | `docker version`；`docker compose` 或 `docker-compose`；Root Dir=`/var/lib/docker`（本现场与 `/` 同盘，须监控根分区用量） |
+| H5 | 安装 Docker + Compose（§4.4：**在线一键** 或 **离线** `docker-20.10.24.tgz` + `docker-compose-linux-aarch64`） | ☐ | `docker version`；`docker compose` 或 `docker-compose`；Root Dir=`/var/lib/docker` |
 | H6 | 安装 **Ascend Docker Runtime 7.1.RC1**（`Ascend-docker-runtime_7.1.RC1_linux-aarch64.run`；见方案 §4.5） | ☐ | `docker info` → `Default Runtime: ascend`；`docker run --runtime=ascend … npu-smi info` 成功；[下载](https://gitcode.com/Ascend/mind-cluster/releases/v7.1.RC1) |
 | H7 | **不在宿主机安装 CANN**；拉取并核对镜像内 CANN **8.2.RC1** | ☐ | `docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`；容器内版本标识落档 |
 | H8 | 内核参数：`vm.max_map_count=262144`（EasySearch） | ☐ | `sysctl vm.max_map_count` |
-| H9 | 在 **VD1 已挂载** 路径上创建 `/aidata/...`、`/opt/deploy` 子目录 | ☐ | 目录存在、权限正确；模型/ES/MinIO **不在** `/` |
+| H9 | 在已挂载分区上创建 `/aidata/...`、`/opt/deploy` 子目录 | ☐ | 目录存在、权限正确；大文件不在根分区 |
 | H10 | 离线制品：驱动+固件、**Ascend-docker-runtime_7.1.RC1_linux-aarch64.run**、**docker-20.10.24.tgz + docker-compose-linux-aarch64**、底座镜像 `v0.10.0rc1-310p`、模型权重 | ☐ | 内网可达或已拷贝/`docker load` |
 
 ---
@@ -97,7 +96,7 @@
 
 | 阶段 | 内容 | 依赖 |
 |------|------|------|
-| P0 | H0–H10 宿主机（storcli 核对 VD0、新建 VD1+分区、驱动/固件、Docker、拉底座镜像） | 硬件到位、厂商软件包；StorCLI aarch64 |
+| P0 | H0–H10 宿主机（RAID/分区、固化驱动/固件、Docker、拉底座镜像） | 硬件到位、厂商软件包 |
 | P1 | C1–C5 仓库昇腾适配合入 `dev_djs` | P0；镜像 tag 已固化 |
 | P2 | D1–D4 数据面 + 推理 + MinerU | P0+P1 |
 | P3 | D5–D8 应用联调与冒烟 | P2 |

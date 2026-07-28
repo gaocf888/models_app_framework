@@ -3,7 +3,7 @@
 > **文档性质**：面向 `dev_djs`（地面沉降）项目在 **华为 Atlas 300I Duo_96G ×4 + 双路 32 核 ARM（aarch64）+ 银河麒麟 Kylin V10 SP3** 上的宿主机基础环境与默认必部应用部署方案。  
 > **配套清单**：勾选式进度见 [`工作清单-华为Atlas300IDuo.md`](./工作清单-华为Atlas300IDuo.md)。  
 > **对齐仓库**：`vllm-deploy/`、`rag_db-deploy/`、`mineru-deploy/`、`app/app-deploy/`；通用运维见 `enterprise-level_transformation_docs/项目整体部署运维手册.md`。  
-> **版本**：2026-07（已固化：ARM + HDK 25.2.0 驱动/固件 + Ascend Docker Runtime 7.1.RC1 + CANN 8.2.RC1 经官方镜像提供 + 三栈统一 `vllm-ascend:v0.10.0rc1-310p`；**存储以现场 MegaRAID 实测为准**：VD0 系统 RAID1 不重切，业务数据在新建 VD1）。
+> **版本**：2026-07（已固化：ARM + HDK 25.2.0 驱动/固件 + Ascend Docker Runtime 7.1.RC1 + CANN 8.2.RC1 经官方镜像提供 + 三栈统一 `vllm-ascend:v0.10.0rc1-310p`）。
 
 ---
 
@@ -32,7 +32,6 @@
 | 驱动/固件下载 | [昇腾社区 Firmware-Drivers（CANN 8.2.RC1 / HDK 25.2.0 / 300I Duo）](https://www.hiascend.com/hardware/firmware-drivers/community?product=2&model=17&cann=8.2.RC1&driver=Ascend+HDK+25.2.0) |
 | Ascend Docker Runtime | **`Ascend-docker-runtime_7.1.RC1_linux-aarch64.run`** |
 | Runtime 下载 | [MindCluster v7.1.RC1 Releases](https://gitcode.com/Ascend/mind-cluster/releases/v7.1.RC1) |
-| 存储（现场实测） | MegaRAID **9560-8i**：VD0≈894G RAID1（系统，**不重切**）；VD1≈1.75T RAID1+热备（业务数据，见 §4.0） |
 | 项目分支 | `dev_djs` |
 | 设备可见性变量 | `ASCEND_RT_VISIBLE_DEVICES` |
 
@@ -112,13 +111,13 @@ lscpu | sed -n '1,40p'
 **推荐顺序（必须）**：
 
 ```text
-storcli 核对 VD0（系统 RAID1，不重切）
-  → 新建 VD1（2 盘 RAID1 + 1 热备）并对 VD1 分区 + fstab（§4.0）
+RAID 确认 + 引导分区已就绪
+  → 系统 OK 后补齐 §4.0 剩余分区并 fstab
   → 安装 NPU 驱动/固件（§4.3，指定包名）
-  → 安装 Docker/Compose（§4.4 在线或离线；本现场 Docker 与系统共位于 `/`）
+  → 安装 Docker/Compose（§4.4 在线或离线）
   → 安装 Ascend Docker Runtime 7.1.RC1（§4.5）
   → 拉取统一镜像 vllm-ascend:v0.10.0rc1-310p
-  → EasySearch → 模型落盘（/aidata/models 在 VD1）→ vLLM → MinerU → app
+  → EasySearch → 模型落盘 → vLLM → MinerU → app
   → 端到端冒烟
 ```
 
@@ -155,7 +154,6 @@ storcli 核对 VD0（系统 RAID1，不重切）
 | Docker 离线包 | **`docker-20.10.24.tgz`**（aarch64）+ **`docker-compose-linux-aarch64`**（见 §4.4） |
 | Ascend Docker Runtime | **`Ascend-docker-runtime_7.1.RC1_linux-aarch64.run`**（见 §4.5） |
 | Runtime 下载 | https://gitcode.com/Ascend/mind-cluster/releases/v7.1.RC1 |
-| 存储（现场实测） | MegaRAID 9560-8i：VD0≈894G RAID1（**不重切**）；VD1≈1.75T RAID1+热备（§4.0） |
 
 **配套关系（摘要）**：
 
@@ -179,109 +177,109 @@ storcli 核对 VD0（系统 RAID1，不重切）
 
 ## 4. 宿主机基础环境部署方案
 
-### 4.0 RAID 与磁盘分区方案（现场实测 · 折中落地）
+### 4.0 RAID 与磁盘分区方案
 
-> **原则**：以 **storcli 实测** 为准，不再沿用早期「2×480G SSD + 2×600G SAS」假设。  
-> **折中方案（已采纳）**：  
-> 1. **保留 VD0**（系统 RAID1），**不重切** `/`（系统与 Docker 均在根分区）；  
-> 2. **新建 VD1**：空闲盘中 **2 块做 RAID1 + 1 块热备**；  
-> 3. 原规划中落在系统盘的 **`/aidata/data` 一并放到 VD1**（与 models/mineru/minio 等业务数据同盘族）。
+本节为现场存储规划；**安装系统时已完成引导分区，其余在系统就绪后按目标表补齐**。
 
-#### 4.0.1 现场存储实测（MegaRAID 9560-8i）
+#### 4.0.1 RAID（已规划 / 须确认已做）
 
-| 项 | 实测值 |
-|----|--------|
-| 控制器 | Broadcom MegaRAID **9560-8i**（`Product Name = MegaRAID 9560-8i 4GB`） |
-| 管理工具 | StorCLI（ARM：`storcli-*-aarch64.rpm` → `/opt/MegaRAID/storcli/storcli64`） |
-| VD0（已有） | **RAID1**，约 **893.8G**，Optimal；成员槽 **252:0 / 252:1**（华为 `HWE74ST3960L007N` ~894G SATA SSD） |
-| OS 对应 | `/dev/sda`：`sda1`=/boot/efi(~1G)、`sda2`=/boot(~1G)、`sda3`=/ (~892G) |
-| 空闲盘（建 VD1 前） | 槽 **252:2 / 3 / 4**：三星 `MZ7L31T9HBLT` 各约 **1.746T** SATA SSD，状态 **UGood** |
+| 磁盘组 | 成员盘 | RAID 级别 | 可用容量（约） | 用途 |
+|--------|--------|-----------|----------------|------|
+| 组1 | 2 × 480GB SSD | **RAID1** | **480GB** | 系统、Docker、热数据（`/aidata/data` 等） |
+| 组2 | 2 × 600GB SAS | **RAID1** | **600GB** | 模型、MinerU、MinIO 大文件、备份、部署代码 |
 
-查询命令：
+验收：
 
 ```bash
-storcli64 /c0 show
-storcli64 /c0 /vall show
-storcli64 /c0 /eall /sall show
-lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL
+# 以现场 RAID 卡工具或 mdadm 为准，确认两套 RAID1 均 Optimal/正常
+cat /proc/mdstat 2>/dev/null || true
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
 ```
 
-#### 4.0.2 目标阵列（方案 A）
+#### 4.0.2 现场安装阶段已完成的分区
 
-| 逻辑盘 | 成员 | RAID | 可用容量（约） | 热备 | 用途 |
-|--------|------|------|----------------|------|------|
-| **VD0**（保留） | 252:0 + 252:1 | RAID1 | **~894G** | — | 系统、Docker（`/var/lib/docker` 在 `/` 下） |
-| **VD1**（新建） | 252:2 + 252:3（槽位可对调） | RAID1 | **~1.746T** | **252:4** Global Hot Spare | 全部业务数据盘 |
+机房/装机侧说明（已落实）：
 
-验收：`storcli64 /c0 /vall show` 见 **2 个** VD 均为 Optl；PD 列表中 1 块为 Hot Spare / GHS。  
-新建后 OS 通常出现第二块盘（示例 **`/dev/sdb`**，以 `lsblk` 为准）。
+> 整个 **1G 的 `/boot`**，**512M 的引导（`/boot/efi`）**；**剩余空间等系统 OK 后再由部署侧划分**。
 
-#### 4.0.3 VD0 分区策略（不重切）
+| 挂载点 | 大小 | 状态 | 所在盘（目标） |
+|--------|------|------|----------------|
+| `/boot/efi` | **512MB** | **已完成** | SSD RAID1 |
+| `/boot` | **1GB** | **已完成** | SSD RAID1 |
+| 其余分区 | — | **待系统就绪后划分** | 见下表 |
 
-| 挂载点 | 大小（现状） | 策略 |
-|--------|--------------|------|
-| `/boot/efi` | ~1G | **保持，勿改**（装机为 1G，非早期文档的 512M） |
-| `/boot` | ~1G | **保持，勿改** |
-| `/` | ~892G（`sda3`） | **不缩根、不重切**；容纳 OS、昇腾驱动、**Docker 镜像层** |
-| 独立 `swap` / `/var/lib/docker` / `/aidata/data` | — | **本期不做**（避免缩根风险） |
-
-**运维要求**：监控 `/` 使用率（建议告警 >70%）；模型、ES、MinIO、离线镜像 tar **禁止**长期堆在 `/`；定期 `docker system df` / `prune`。  
-**可选增强（仍不改 VD0 分区表）**：将 Docker `data-root` 迁到 VD1（如 `/aidata/docker`），见 §4.4 说明。
-
-#### 4.0.4 VD1 目标分区（约 1.746T）
-
-仅对 **数据盘**（示例 `/dev/sdb`）划分；容量可按现场微调，**优先保证 `/aidata/models`**。
-
-| 挂载点 | 建议大小 | 内容 |
-|--------|----------|------|
-| `/aidata/models` | **1000G** | LLM、嵌入、重排权重 |
-| `/aidata/mineru` | **150G** | MinerU 模型与 IO |
-| `/aidata/data` | **400G** | EasySearch、Redis、会话等（**原系统盘 data 改挂此处**） |
-| `/aidata/data/minio_data` | **200G** | MinIO 对象（独立分区挂到该路径） |
-| `/aidata/backup` | **150G** | 备份 |
-| `/opt/deploy` | **100G** | 项目代码与离线制品 |
-| （余量） | ~**96G** | 可并入 models 或留空 |
-
-> 1000+150+400+200+150+100 ≈ 2000G 量级按 GiB/厂商标称略有出入时，以 `parted print free` 为准压缩 backup/mineru，保 models 与 `/aidata/data`。
-
-#### 4.0.5 VD1 分区操作要点
-
-1. **先建阵列、再分区**：确认 VD1 Optimal 且 `lsblk` 可见新盘后再 `parted`/`mkfs`。  
-2. **禁止**对 VD0/`sda` 执行 `mklabel`、删改 `sda3`。  
-3. 写入 `/etc/fstab`（**UUID**），`mount -a` 无报错后再大量落盘模型/镜像。  
-4. 权限：部署用户对 `/aidata`、`/opt/deploy` 可写。  
-5. 子目录见 **§4.8**。
-
-示例（**设备名须换成现场 `lsblk`**，下列 `$DATA` 常为 `/dev/sdb`）：
+装机后先确认：
 
 ```bash
-export DATA=/dev/sdb   # VD1，以现场为准
-sudo parted "$DATA" print free
-# 按 §4.0.4 切分后：
-# sudo mkfs.xfs /dev/${DATA##*/}1   # 示例分区号以 lsblk 为准
-sudo mkdir -p /aidata/models /aidata/mineru /aidata/data \
-  /aidata/data/minio_data /aidata/backup /opt/deploy
-# sudo mount ... ；写入 fstab 后：
-sudo mount -a
-df -hT | grep -E 'aidata|deploy|Filesystem'
+df -h /boot /boot/efi
+lsblk -f
 ```
 
-#### 4.0.6 分区与本项目路径对应
+#### 4.0.3 系统就绪后的目标分区（在已完成 boot 基础上继续）
 
-| 本项目用途 | 宿主机路径 | 所在卷 |
-|------------|------------|--------|
-| OS / 昇腾驱动 | `/` | **VD0** |
-| Docker 镜像与容器层 | `/var/lib/docker`（默认） | **VD0**（与 `/` 同分区） |
-| EasySearch / Redis / 会话等 | `/aidata/data/...` | **VD1** |
-| MinIO | `/aidata/data/minio_data` | **VD1** 独立分区 |
-| LLM / 嵌入 / 重排 | `/aidata/models/...` | **VD1** |
-| MinerU | `/aidata/mineru/...` | **VD1** |
-| 仓库与 compose | `/opt/deploy/...` | **VD1** |
-| 备份 | `/aidata/backup` | **VD1** |
+**SSD RAID1（约 480GB）— 系统与热数据**
 
-#### 4.0.7（参考）早期容量假设 — 已废弃
+| 挂载点 | 大小 | 内容 |
+|--------|------|------|
+| `/boot/efi` | 512MB | 引导（**已完成，勿改**） |
+| `/boot` | 1GB | 内核（**已完成，勿改**） |
+| `swap` | 16GB | 交换分区 |
+| `/` | 70GB | 系统、昇腾驱动等 |
+| `/var/lib/docker` | 130GB | Docker 镜像与容器层 |
+| `/aidata/data` | **260GB**（约剩余） | EasySearch 本地数据、Redis、会话等热数据 |
 
-早期文档中的「2×480G SSD + 2×600G SAS」及在系统盘上切 `/` 70G、独立 docker 130G、`/aidata/data` 260G 的规划，**与本机实测不符，仅作历史参考，实施以 §4.0.1–4.0.6 为准**。
+> 容量按 512M+1G+16G+70G+130G+260G ≈ 477.5GB 对齐约 480GB；若实际可用略少，优先保证 `/` 与 `/var/lib/docker`，再压缩 `/aidata/data`。
+
+**SAS/HDD RAID1（约 600GB）— 模型与大文件**
+
+| 挂载点 | 大小 | 内容 |
+|--------|------|------|
+| `/aidata/models` | 260GB | 大模型、嵌入、重排权重 |
+| `/aidata/mineru` | 80GB | MinerU 模型与 IO |
+| `/aidata/data/minio_data` | 80GB | 上传文件、图片、PDF 等对象存储 |
+| `/aidata/backup` | 80GB | 备份 |
+| `/opt/deploy` | 100GB | 项目代码与配置 |
+
+> 260+80+80+80+100 = 600GB。若实际可用不足，优先保证 `/aidata/models`，再压缩 backup / deploy。
+
+#### 4.0.4 补分区操作要点（系统 OK 后）
+
+1. **先摸清现状**：`lsblk`、`df -h`、`vgs/lvs`（若用 LVM）。若当前 `/` 已占满 SSD 剩余空间，需 **缩减根分区或改用 LVM 再切分**，避免直接删盘；生产机操作前做快照/备份。  
+2. **推荐顺序**：创建 `swap` → 调整/固定 `/` 至约 70GB → 独立挂载 `/var/lib/docker` → 挂载 `/aidata/data` → 在 SAS 盘上依次创建并挂载 models / mineru / minio_data / backup / deploy。  
+3. **写入 `/etc/fstab`**，`mount -a` 无报错后再装 Docker（保证 Docker 数据目录落在独立分区）。  
+4. **权限**：部署用户对 `/aidata`、`/opt/deploy` 可写；Docker 目录按 root/docker 组惯例。  
+5. 子目录创建见 **§4.8**（须在对应挂载点就绪后执行）。
+
+示例（设备名须换成现场 `lsblk` 结果，下列仅为结构示意）：
+
+```bash
+# 查看
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,UUID
+
+# 挂载点
+sudo mkdir -p /var/lib/docker /aidata/data \
+  /aidata/models /aidata/mineru /aidata/data/minio_data \
+  /aidata/backup /opt/deploy
+
+# 格式化与挂载示例（不要照抄设备名）
+# sudo mkfs.xfs /dev/<ssd_part_docker>
+# sudo mkfs.xfs /dev/<ssd_part_aidata_data>
+# sudo mkfs.xfs /dev/<sas_part_models>
+# ... 写入 fstab 后：
+# sudo mount -a
+df -h
+```
+
+#### 4.0.5 分区与本项目路径对应
+
+| 本项目用途 | 宿主机路径 | 所在分区 |
+|------------|------------|----------|
+| EasySearch / Redis / 会话等 | `/aidata/data/...` | SSD `/aidata/data` |
+| MinIO | `/aidata/data/minio_data` | SAS 独立分区（挂到该路径） |
+| LLM / 嵌入 / 重排 | `/aidata/models/...` | SAS `/aidata/models` |
+| MinerU | `/aidata/mineru/...` | SAS `/aidata/mineru` |
+| 仓库与 compose 配置 | `/opt/deploy/...` | SAS `/opt/deploy` |
+| Docker 镜像 | `/var/lib/docker` | SSD 独立分区 |
 
 ### 4.1 环境信息采集
 
@@ -362,7 +360,7 @@ sudo usermod -aG HwHiAiUser "$USER"
 
 ### 4.4 安装 Docker 与 Compose
 
-> **前置**：本现场 **不要求** `/var/lib/docker` 独立分区（与 `/` 同在 VD0）。装 Docker 前建议 **VD1 业务挂载已就绪**，避免大镜像/数据误写入未挂载的空目录。可选：在 `daemon.json` 将 `data-root` 指到 VD1（如 `/aidata/docker`）以减轻根分区压力。  
+> **前置**：§4.0 中 `/var/lib/docker` 独立分区建议已挂载；未挂载则先装后迁数据，或装前在 `daemon.json` 指定 `data-root`。  
 > **目标**：`docker`（Engine）可用，且可用 **`docker compose`（推荐）** 或至少 `docker-compose`。  
 > **架构**：本现场为 **ARM `aarch64`**；离线包使用 **`docker-20.10.24.tgz`（aarch64）** + **`docker-compose-linux-aarch64`**。
 
@@ -387,12 +385,11 @@ bash <(wget -qO- https://xuanyuan.cloud/docker.sh)
 | Compose | 脚本常优先安装独立二进制 `docker-compose`（如 1.29.x）；**不保证**一定有 Compose V2 插件 |
 | 验收 | 必须执行下文 §4.4.3；若仅有 `docker-compose` 而无 `docker compose`，可再按 §4.4.2 只补装 Compose 二进制 |
 
-装完后核对 Docker 根目录，并关注其落在 VD0 根分区上：
+装完后建议核对 Docker 根目录是否落在规划分区：
 
 ```bash
 docker info 2>/dev/null | grep -i "Docker Root Dir"
-# 本现场默认期望：Docker Root Dir: /var/lib/docker（位于 / 所在分区）
-df -h / /var/lib/docker
+# 期望类似：Docker Root Dir: /var/lib/docker
 ```
 
 #### 4.4.2 方式二：离线静态包安装（方案 A，推荐）
@@ -525,7 +522,7 @@ docker run --rm hello-world     # 离线环境需事先 docker load 本地 hello
 |--------|----------|
 | Engine | `docker version` 显示 Client/Server；离线方案 Server 为 **20.10.24** |
 | Compose | 至少 `docker compose version` 或 `docker-compose version` 其一成功；**本仓库命令以 `docker compose` 为准** |
-| 数据目录 | Root Dir 为 `/var/lib/docker`（本现场与 `/` 同盘；须监控根分区容量） |
+| 数据目录 | Root Dir 为 `/var/lib/docker`（且该路径在独立分区上） |
 | 服务 | `systemctl is-active docker` → `active` |
 
 ### 4.5 Ascend Docker Runtime 与设备注入
@@ -672,9 +669,9 @@ sudo sysctl --system
 sysctl vm.max_map_count
 ```
 
-### 4.8 目录规划（须在 §4.0 VD1 挂载就绪后）
+### 4.8 目录规划（须在 §4.0 挂载就绪后）
 
-在 **VD1 对应挂载点已就绪** 的前提下创建子目录（勿把大模型写到未挂载的空目录导致占满 **VD0 根分区**）：
+在对应分区已挂载的前提下创建子目录（勿把大模型写到未挂载的空目录导致占满根分区）：
 
 ```bash
 sudo mkdir -p \
@@ -718,7 +715,7 @@ NPU 承担大模型与（目标态）嵌入/重排/MinerU 算力后，CPU 仍承
 | 检查项 | 命令/标准 |
 |--------|-----------|
 | OS / 内核 | Kylin V10 SP3（ARM）；内核在 HDK 25.2.0 支持列表 |
-| RAID / 分区 | VD0+VD1 两套 RAID1 Optl；1 热备；`/boot` `/boot/efi` 正常；§4.0.4 业务挂载均在 VD1 且 `df -h` 可见；**未**对 VD0 缩根 |
+| RAID / 分区 | 两套 RAID1 正常；`/boot` `/boot/efi` 已挂载；§4.0 目标挂载均已 `df -h` 可见 |
 | CPU | 双路、约 32 核/路；**`uname -m` = `aarch64`** |
 | NPU 驱动/固件 | 驱动 **25.2.0**、固件 **7.7.0.6.236**；`npu-smi` 可见 **4 卡 / ~8 设备** |
 | CANN | **不在宿主机安装**；容器内为镜像自带 **8.2.RC1** |

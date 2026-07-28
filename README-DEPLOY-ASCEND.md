@@ -24,9 +24,10 @@
 ### 1.2 推荐流水线
 
 ```text
-确认 ARM + RAID/分区
+确认 ARM + storcli 核对 VD0
+  → 新建 VD1（RAID1+热备）并只对 VD1 分区
   → 按 §2 下载制品 → NPU 驱动/固件 → Docker/Compose → Ascend Docker Runtime
-  → 拉底座镜像 → 落盘模型 → EasySearch → vLLM → MinerU → app
+  → 拉底座镜像 → 落盘模型（VD1）→ EasySearch → vLLM → MinerU → app
   → 冒烟验收
 ```
 
@@ -66,6 +67,7 @@ cat /etc/os-release
 | AI 底座镜像 | `quay.io/ascend/vllm-ascend:v0.10.0rc1-310p` |
 | Docker Engine（离线） | `docker-20.10.24.tgz`（**aarch64**） |
 | Docker Compose（离线） | `docker-compose-linux-aarch64`（Compose V2 二进制） |
+| 存储（现场实测） | MegaRAID 9560-8i：VD0≈894G RAID1（系统**不重切**）；VD1≈1.75T RAID1+1 热备（业务数据） |
 
 ```text
 宿主机：Driver 25.2.0 + Firmware 7.7.0.6.236 + Runtime 7.1.RC1
@@ -166,266 +168,245 @@ docker load -i vllm-ascend-v0.10.0rc1-310p.tar
 
 ## 4. 宿主机基础环境
 
-### 4.1 RAID 与分区
+### 4.1 RAID 与分区（现场实测 · 详细操作）
 
-> **危险操作**：下列命令会改分区表 / 格式化磁盘。生产机先备份；**设备名必须用现场 `lsblk` 结果替换**，禁止照抄 `nvme0n1` / `sda` / `md0`。  
-> **已完成勿动**：`/boot/efi`（512M）、`/boot`（1G）。
+> **原则**：保留 **VD0**（系统 RAID1）**不重切**；新建 **VD1**（2 盘 RAID1 + 1 热备）；业务数据（含 `/aidata/data`）全部在 VD1。  
+> **危险**：下列命令会新建阵列并格式化 **数据盘**。执行前确认槽位仍为 UGood、**不会**改到 252:0/252:1（系统盘）。  
+> **禁止**：对 `/dev/sda` 做 `mklabel`、删除 `sda3`、缩根。
 
-#### 4.1.1 目标规划
+#### 4.1.1 目标一览
 
-| RAID | 成员 | 用途 |
-|------|------|------|
-| RAID1 | 2×480G SSD | 系统、Docker、热数据 |
-| RAID1 | 2×600G SAS | 模型、MinerU、MinIO、备份、代码 |
+| 项 | 值 |
+|----|-----|
+| 控制器 | MegaRAID **9560-8i**（`/c0`） |
+| VD0（不动） | RAID1 ~894G；槽 **252:0 + 252:1** → `/dev/sda`（系统+Docker） |
+| VD1（新建） | RAID1 ~1.746T；槽 **252:2 + 252:3** → 新建后常为 `/dev/sdb` |
+| 热备 | 槽 **252:4** → Global Hot Spare（或专保 VD1 所在 DG） |
+| 工具 | `storcli64`（已装到 `/opt/MegaRAID/storcli/storcli64`） |
 
-**SSD RAID1（约 480G）**
+**VD1 分区规划（约 1.75T 可用；下列 GiB 已按 ≈1700GiB 内可落地微调）**
 
-| 挂载点 | 约大小 | 状态 |
-|--------|--------|------|
-| `/boot/efi` | 512M | 装机已完成，勿改 |
-| `/boot` | 1G | 装机已完成，勿改 |
-| `swap` | 16G | 待补 |
-| `/` | 70G | 待确认/调整 |
-| `/var/lib/docker` | 130G | 待补 |
-| `/aidata/data` | ~260G | 待补 |
+| 分区名 | 挂载点 | 约大小 | 内容 |
+|--------|--------|--------|------|
+| MODELS | `/aidata/models` | 800G | LLM / 嵌入 / 重排 |
+| MINERU | `/aidata/mineru` | 120G | MinerU |
+| AIDATA | `/aidata/data` | 350G | EasySearch / Redis / 会话 |
+| MINIO | `/aidata/data/minio_data` | 180G | MinIO |
+| BACKUP | `/aidata/backup` | 100G | 备份 |
+| DEPLOY | `/opt/deploy` | 剩余(~100G+) | 代码与离线包 |
 
-**SAS RAID1（约 600G）**
+> 若 `parted` 报超出磁盘末尾，从 BACKUP / MINERU 再压缩；**优先保 MODELS 与 AIDATA**。
 
-| 挂载点 | 约大小 |
-|--------|--------|
-| `/aidata/models` | 260G |
-| `/aidata/mineru` | 80G |
-| `/aidata/data/minio_data` | 80G |
-| `/aidata/backup` | 80G |
-| `/opt/deploy` | 100G |
+---
 
-#### 4.1.2 摸清现状（必做）
+#### 4.1.2 步骤 0：操作前核对（必做）
 
 ```bash
-lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,UUID,MODEL
-cat /proc/mdstat 2>/dev/null || true
-df -hT
-sudo fdisk -l
-# 若有硬件 RAID 卡，再用厂商工具看阵列状态（如 storcli / ssacli / MegaCLI，以机房为准）
+# 架构与 storcli
+uname -m    # aarch64
+which storcli64 || ls -l /opt/MegaRAID/storcli/storcli64
+# 若无 PATH：export PATH=/opt/MegaRAID/storcli:$PATH
+
+# 当前阵列与物理盘（确认 252:2/3/4 仍为 UGood）
+storcli64 /c0 show
+storcli64 /c0 /vall show
+storcli64 /c0 /eall /sall show
+
+# OS 盘：只应看到 sda（系统），尚无 sdb
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL
+df -hT /
 ```
 
-记下：
+**通过标准**：
 
-- SSD 虚拟盘 / `md` 设备名（下文记为 **`$SSD`**，例 `/dev/md0` 或 `/dev/sda`）
-- SAS 虚拟盘 / `md` 设备名（下文记为 **`$SAS`**，例 `/dev/md1` 或 `/dev/sdb`）
-- 当前 `/` 是否已占满 SSD 剩余空间（若已占满，须先缩根或改 LVM 再切分，**不可直接删根分区**）
+- VD LIST 仅 **1** 个 RAID1（~893.75G），State=Optl  
+- PD：252:0/1 = Onln DG0；252:2/3/4 = **UGood**  
+- `/` 在 `sda3`，业务尚未依赖即将格式化的盘  
+
+若 252:2/3/4 状态不是 UGood，**停止**，先排障（Foreign 等）再继续。
+
+---
+
+#### 4.1.3 步骤 1：新建 VD1（RAID1）
+
+> 仅使用空闲槽 **252:2** 与 **252:3**。名称 `aidata` 可改，勿动 252:0/1。
 
 ```bash
-# 确认引导分区仍在
-df -h /boot /boot/efi
+# 创建 RAID1，用满两盘容量；WriteBack + ReadAhead + Direct（与现场 VD0 策略接近，可按机房规范改 WT）
+storcli64 /c0 add vd r1 name=aidata drives=252:2,252:3 WB RA Direct
+
+# 若报错提示需 force（确认槽位无误后再加）：
+# storcli64 /c0 add vd r1 name=aidata drives=252:2,252:3 WB RA Direct force
 ```
 
-#### 4.1.3 RAID1（两种路径选一）
-
-**路径 A：硬件 RAID（现场常见）**
-
-在 BIOS / RAID 卡工具中建好两组 RAID1 后，OS 只看到两块虚拟盘。本步只需验收：
+验收：
 
 ```bash
+storcli64 /c0 /vall show
+storcli64 /c0 show
+# 期望：Virtual Drives = 2；新 VD 为 RAID1，Size≈1.746T，State 为 Optl（或初始化中）
+# TOPOLOGY 中新增 DG（常见为 DG=1），两成员 Onln
+```
+
+若长时间非 Optl，可查看初始化进度：
+
+```bash
+storcli64 /c0 /vall show all
+storcli64 /c0 show cc
+# 可继续后续分区；生产更稳妥是等新 VD 为 Optl / Consist=Yes 再大量写数据
+```
+
+---
+
+#### 4.1.4 步骤 2：设置热备（槽 252:4）
+
+```bash
+# 全局热备（推荐，可覆盖 VD0/VD1）
+storcli64 /c0 /e252 /s4 add hotsparedrive
+
+# 若只要守护新建数据组（DG 号以 /c0 show 的 TOPOLOGY 为准，常见为 1）：
+# storcli64 /c0 /e252 /s4 add hotsparedrive dgs=1
+```
+
+验收：
+
+```bash
+storcli64 /c0 /eall /sall show
+# 期望：252:4 状态为 GHS / DHS / Hotspare（不再是 UGood）
+```
+
+---
+
+#### 4.1.5 步骤 3：让 OS 识别新磁盘
+
+```bash
+# 查看是否已出现第二块盘（常见 /dev/sdb）
+lsblk -o NAME,SIZE,TYPE,MODEL
+dmesg | tail -n 50
+
+# 若尚未出现，触发 SCSI 扫描（host 号以现场为准）
+ls /sys/class/scsi_host/
+for h in /sys/class/scsi_host/host*; do
+  echo "- - -" | sudo tee "$h/scan" >/dev/null
+done
+sleep 2
+lsblk -o NAME,SIZE,TYPE,MODEL
+
+# 仍没有则重启一次（最稳）
+# sudo reboot
+```
+
+确认后固定变量（**按实际盘符修改**）：
+
+```bash
+# 用大小约 1.7T、无挂载的那块；切勿选中 sda
 lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
-# 期望看到约 480G、约 600G 两块逻辑盘（名称因卡而异）
-# 阵列状态以 RAID 卡工具显示 Optimal/正常为准
+export DATA=/dev/sdb
+lsblk "$DATA"
+# 再确认一次不是系统盘：
+findmnt / && lsblk /dev/sda
 ```
 
-**路径 B：软件 RAID（`mdadm`，仅当无硬件 RAID、且盘仍是裸盘时）**
+---
 
-> 会清空成员盘数据。成员盘名用 `lsblk` 替换（示例：SSD=`nvme0n1`+`nvme1n1`，SAS=`sda`+`sdb`）。
+#### 4.1.6 步骤 4：对 VD1 分区（`parted`）
+
+> 下列起止按「约 1.7T 可用」编排；执行前务必 `print free` 核对。超界则改小 BACKUP/MINERU。
 
 ```bash
-# 依赖
-sudo yum install -y mdadm 2>/dev/null || sudo apt-get install -y mdadm
+# 再次确认目标盘
+echo "即将分区的磁盘: $DATA"
+lsblk "$DATA"
+sudo parted "$DATA" unit GiB print free
 
-# --- SSD 组：2×480G → /dev/md0 ---
-sudo mdadm --create /dev/md0 --level=1 --raid-devices=2 /dev/nvme0n1 /dev/nvme1n1
-# --- SAS 组：2×600G → /dev/md1 ---
-sudo mdadm --create /dev/md1 --level=1 --raid-devices=2 /dev/sda /dev/sdb
+# 空盘建 GPT（确认 $DATA 不是 sda！）
+sudo parted -s "$DATA" mklabel gpt
 
-# 等待同步（可后台进行，状态看 cat /proc/mdstat）
-cat /proc/mdstat
-watch -n 2 cat /proc/mdstat   # 可选
+# 六分区（名称仅标签，便于识别）
+sudo parted -s "$DATA" \
+  mkpart MODELS xfs 1MiB 801GiB
+sudo parted -s "$DATA" \
+  mkpart MINERU xfs 801GiB 921GiB
+sudo parted -s "$DATA" \
+  mkpart AIDATA xfs 921GiB 1271GiB
+sudo parted -s "$DATA" \
+  mkpart MINIO  xfs 1271GiB 1451GiB
+sudo parted -s "$DATA" \
+  mkpart BACKUP xfs 1451GiB 1551GiB
+sudo parted -s "$DATA" \
+  mkpart DEPLOY xfs 1551GiB 100%
 
-# 持久化阵列配置
-sudo mdadm --detail --scan | sudo tee -a /etc/mdadm.conf
-# 部分发行版：
-# sudo mdadm --detail --scan | sudo tee -a /etc/mdadm/mdadm.conf
-sudo dracut -f 2>/dev/null || true
+sudo parted "$DATA" unit GiB print
+lsblk "$DATA"
 ```
 
-完成后：`$SSD=/dev/md0`，`$SAS=/dev/md1`（以实际为准）。
-
-#### 4.1.4 分区（`parted`）
-
-> 下列按「SSD 上 **仅有** `/boot/efi` + `/boot`，其余未切；SAS 整盘未用」的理想情况编写。  
-> 若 `/` 已存在且过大：先用 LVM/`parted`/`resize2fs` 或厂商工具缩根到约 70G，再在空闲区切 `swap` / docker / aidata；**不要**对已挂载的根分区 `mkfs`。
-
-先设变量（**按现场改**）：
+分区设备名（SCSI 盘常见为 `sdb1`…；若为 `nvme`/`mpath` 另论）：
 
 ```bash
-export SSD=/dev/md0    # 例：硬件 RAID 虚拟盘或 /dev/sda
-export SAS=/dev/md1    # 例：/dev/sdb
-lsblk "$SSD" "$SAS"
+# 按 lsblk 结果设置（示例）
+export P_MODELS=${DATA}1
+export P_MINERU=${DATA}2
+export P_AIDATA=${DATA}3
+export P_MINIO=${DATA}4
+export P_BACKUP=${DATA}5
+export P_DEPLOY=${DATA}6
+lsblk "$P_MODELS" "$P_MINERU" "$P_AIDATA" "$P_MINIO" "$P_BACKUP" "$P_DEPLOY"
 ```
 
-**（1）SSD：在空闲区补 swap / 根 / docker / aidata（示意）**
+---
 
-若 SSD 尚无根分区、需一次划满（全新机、未装系统时才整盘这样切；**已装机切勿对含 `/boot` 的盘 `mklabel`**）：
-
-```bash
-# !!! 仅空盘或确认可重建时使用 mklabel；已有 /boot/efi+/boot 的系统盘跳过 mklabel !!!
-# sudo parted -s "$SSD" mklabel gpt
-# sudo parted -s "$SSD" mkpart ESP fat32 1MiB 513MiB
-# sudo parted -s "$SSD" set 1 esp on
-# sudo parted -s "$SSD" mkpart BOOT ext4 513MiB 1537MiB
-```
-
-**已装机、boot 已完成时**：只在空闲空间继续建分区（起止扇区用 `parted print free` 核对）：
+#### 4.1.7 步骤 5：格式化、挂载、`fstab`
 
 ```bash
-sudo parted "$SSD" print free
-sudo parted "$SSD" unit GiB print free
-
-# 以下起止为「在 boot 之后」的示意，必须按 print free 的 Free Space 改数字
-# 假设空闲从约 1.5GiB 开始（512M+1G）：
-sudo parted -s "$SSD" \
-  mkpart SWAP linux-swap 1537MiB 17921MiB      # ~16G swap
-sudo parted -s "$SSD" \
-  mkpart ROOT xfs 17921MiB 89601MiB            # ~70G /
-sudo parted -s "$SSD" \
-  mkpart DOCKER xfs 89601MiB 222721MiB         # ~130G /var/lib/docker
-sudo parted -s "$SSD" \
-  mkpart AIDATA xfs 222721MiB 100%             # 剩余 → /aidata/data
-
-sudo parted "$SSD" print
-lsblk "$SSD"
-```
-
-分区号因现有分区数量而变。记下例如：
-
-| 用途 | 示例设备（按 `lsblk` 改） |
-|------|---------------------------|
-| swap | `${SSD}p4` 或 `${SSD}4` |
-| `/` | `${SSD}p5` |
-| `/var/lib/docker` | `${SSD}p6` |
-| `/aidata/data` | `${SSD}p7` |
-
-> 命名规则：`/dev/md0` → 常为 `/dev/md0p1`；`/dev/sda` → `/dev/sda1`。以 `lsblk` 为准。
-
-**（2）SAS：整盘五分区**
-
-```bash
-sudo parted "$SAS" print free
-
-# 空盘才执行 mklabel；已有数据先停
-sudo parted -s "$SAS" mklabel gpt
-sudo parted -s "$SAS" \
-  mkpart MODELS xfs 1MiB 260GiB
-sudo parted -s "$SAS" \
-  mkpart MINERU xfs 260GiB 340GiB
-sudo parted -s "$SAS" \
-  mkpart MINIO xfs 340GiB 420GiB
-sudo parted -s "$SAS" \
-  mkpart BACKUP xfs 420GiB 500GiB
-sudo parted -s "$SAS" \
-  mkpart DEPLOY xfs 500GiB 100%
-
-sudo parted "$SAS" print
-lsblk "$SAS"
-```
-
-记下例如：`${SAS}p1`→models，`p2`→mineru，`p3`→minio，`p4`→backup，`p5`→deploy。
-
-#### 4.1.5 格式化、挂载、`fstab`
-
-先设分区变量（**按现场改**）：
-
-```bash
-# SSD
-export P_SWAP=${SSD}p4
-export P_ROOT=${SSD}p5          # 若根已存在且已格式化，跳过对本设备的 mkfs
-export P_DOCKER=${SSD}p6
-export P_AIDATA=${SSD}p7
-# SAS
-export P_MODELS=${SAS}p1
-export P_MINERU=${SAS}p2
-export P_MINIO=${SAS}p3
-export P_BACKUP=${SAS}p4
-export P_DEPLOY=${SAS}p5
-
-lsblk "$P_SWAP" "$P_ROOT" "$P_DOCKER" "$P_AIDATA" \
-      "$P_MODELS" "$P_MINERU" "$P_MINIO" "$P_BACKUP" "$P_DEPLOY"
-```
-
-格式化：
-
-```bash
-sudo mkswap "$P_SWAP"
-# 仅当根分区是新建空分区时：
-# sudo mkfs.xfs -f "$P_ROOT"
-sudo mkfs.xfs -f "$P_DOCKER"
-sudo mkfs.xfs -f "$P_AIDATA"
 sudo mkfs.xfs -f "$P_MODELS"
 sudo mkfs.xfs -f "$P_MINERU"
+sudo mkfs.xfs -f "$P_AIDATA"
 sudo mkfs.xfs -f "$P_MINIO"
 sudo mkfs.xfs -f "$P_BACKUP"
 sudo mkfs.xfs -f "$P_DEPLOY"
-```
 
-创建挂载点并挂载：
+sudo mkdir -p /aidata/models /aidata/mineru /aidata/data \
+  /aidata/data/minio_data /aidata/backup /opt/deploy
 
-```bash
-sudo mkdir -p /var/lib/docker /aidata/data \
-  /aidata/models /aidata/mineru /aidata/data/minio_data \
-  /aidata/backup /opt/deploy
-
-sudo swapon "$P_SWAP"
-# 根分区若是新盘需按装机流程处理；已运行系统通常已挂载 /
-sudo mount "$P_DOCKER" /var/lib/docker
-sudo mount "$P_AIDATA" /aidata/data
 sudo mount "$P_MODELS" /aidata/models
 sudo mount "$P_MINERU" /aidata/mineru
+sudo mount "$P_AIDATA" /aidata/data
+# minio 挂到 data 下的子路径：须先有 /aidata/data
+sudo mkdir -p /aidata/data/minio_data
 sudo mount "$P_MINIO"  /aidata/data/minio_data
 sudo mount "$P_BACKUP" /aidata/backup
 sudo mount "$P_DEPLOY" /opt/deploy
 
-df -hT
-swapon --show
+df -hT | grep -E 'aidata|deploy|Filesystem'
 ```
 
-写入 `/etc/fstab`（**用 UUID，勿写死 `/dev/sdX`**）：
+写入 `fstab`（**只用 UUID**）：
 
 ```bash
-# 查看 UUID
-sudo blkid "$P_SWAP" "$P_DOCKER" "$P_AIDATA" \
-  "$P_MODELS" "$P_MINERU" "$P_MINIO" "$P_BACKUP" "$P_DEPLOY"
-
-# 备份后追加（把下面 UUID=... 换成 blkid 输出）
+sudo blkid "$P_MODELS" "$P_MINERU" "$P_AIDATA" "$P_MINIO" "$P_BACKUP" "$P_DEPLOY"
 sudo cp -a /etc/fstab /etc/fstab.bak.$(date +%F)
+
+# 将下面 UUID 替换为 blkid 输出后追加
 sudo tee -a /etc/fstab >/dev/null <<'EOF'
-# --- Atlas 300I Duo 现场分区（示例，务必替换 UUID）---
-UUID=<swap-uuid>    none                    swap    defaults        0 0
-UUID=<docker-uuid>  /var/lib/docker          xfs     defaults        0 0
-UUID=<aidata-uuid>  /aidata/data             xfs     defaults        0 0
-UUID=<models-uuid>  /aidata/models           xfs     defaults        0 0
-UUID=<mineru-uuid>  /aidata/mineru           xfs     defaults        0 0
-UUID=<minio-uuid>   /aidata/data/minio_data  xfs     defaults        0 0
-UUID=<backup-uuid>  /aidata/backup           xfs     defaults        0 0
-UUID=<deploy-uuid>  /opt/deploy              xfs     defaults        0 0
+# --- VD1 aidata（MegaRAID 新建盘，务必替换 UUID）---
+UUID=<models-uuid>  /aidata/models           xfs  defaults  0 0
+UUID=<mineru-uuid>  /aidata/mineru           xfs  defaults  0 0
+UUID=<aidata-uuid>  /aidata/data             xfs  defaults  0 0
+UUID=<minio-uuid>   /aidata/data/minio_data  xfs  defaults  0 0
+UUID=<backup-uuid>  /aidata/backup           xfs  defaults  0 0
+UUID=<deploy-uuid>  /opt/deploy              xfs  defaults  0 0
 EOF
 
-# 验证（应无报错；已挂载的会提示 busy/already，可接受）
 sudo mount -a
-df -hT
-swapon --show
+df -hT | grep -E 'aidata|deploy|Filesystem'
+findmnt /aidata/models /aidata/mineru /aidata/data /aidata/data/minio_data /aidata/backup /opt/deploy
 ```
 
-> **再装 Docker**。确保 `docker info` 中 Root Dir 落在已挂载的 `/var/lib/docker`。
+> **挂载顺序**：`/aidata/data` 须先于 `/aidata/data/minio_data`。`fstab` 中 AIDATA 行写在 MINIO 行之前即可。
 
-#### 4.1.6 业务子目录
+---
+
+#### 4.1.8 步骤 6：业务子目录与权限
 
 ```bash
 sudo mkdir -p \
@@ -433,21 +414,39 @@ sudo mkdir -p \
   /aidata/models/embeddings/Qwen3-Embedding-0.6B \
   /aidata/models/reranker/Qwen3-Reranker-0.6B \
   /aidata/mineru/models /aidata/mineru/io \
-  /aidata/data/{redis_data,minio_data,session_storage,easysearch} \
-  /aidata/backup /opt/deploy /opt/deploy/offline
+  /aidata/data/{redis_data,session_storage,easysearch} \
+  /aidata/backup /opt/deploy/offline
 sudo chown -R "$USER:$USER" /aidata /opt/deploy
 ```
 
-#### 4.1.7 验收
+---
+
+#### 4.1.9 步骤 7：总验收
 
 ```bash
-cat /proc/mdstat 2>/dev/null || true
+storcli64 /c0 /vall show
+storcli64 /c0 /eall /sall show
 lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
-df -hT | grep -E 'boot|docker|aidata|deploy|Filesystem'
-swapon --show
-# 期望：/boot、/boot/efi、/、/var/lib/docker、/aidata/data、
-#       /aidata/models、/aidata/mineru、/aidata/data/minio_data、
-#       /aidata/backup、/opt/deploy 均可见且容量大致符合规划
+df -hT
+```
+
+| 检查项 | 期望 |
+|--------|------|
+| VD 数量 | 2；均为 RAID1 Optl |
+| 252:4 | 热备（非 UGood） |
+| `sda` | 仍为系统；分区未改 |
+| `sdb`（或实际 DATA） | 六分区已挂到 aidata/deploy |
+| `/` | 无大模型长期目录 |
+| Docker | 仍可用默认 `/var/lib/docker`（在 `/`）；装 Docker 前建议本步已完成 |
+
+**运维**：监控 `/` 使用率；可选后续将 Docker `data-root` 迁到 `/aidata/docker`（仍不必重切 `sda`）。
+
+**回滚提示（仅数据盘）**：若 VD1 建错且尚未写业务数据，可删除虚拟盘后重来（**绝不**对 VD0 执行 delete）：
+
+```bash
+# 先 umount 所有 VD1 挂载并恢复 fstab，再：
+# storcli64 /c0 /vX delete force    # X = 新 VD 编号，删除前务必确认不是系统 VD
+# storcli64 /c0 /e252 /s4 delete hotsparedrive
 ```
 
 ### 4.2 NPU 驱动与固件
@@ -475,7 +474,7 @@ ls -l /dev/davinci*
 ### 4.3 Docker 与 Compose
 
 **架构**：离线包必须是 **aarch64**。  
-**前置**：`/var/lib/docker` 分区建议已挂载。
+**前置**：本现场 Docker 与 `/` 同在 VD0；建议 VD1 业务挂载已就绪后再大量 load 镜像。
 
 #### 方式一：在线一键（可临时上网）
 
