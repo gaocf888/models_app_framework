@@ -495,6 +495,20 @@ sudo mount /dev/sdb6 /opt/deploy
 
 制品与下载见 **§2.2**（昇腾社区 Firmware-Drivers 页）。首次安装常见顺序（以官方 HDK 手册为准）：**先驱动，后固件**。
 
+**前置（必须）**：驱动安装会检查 `HwHiAiUser`；若不存在会报 `ERR_NO:0x0091; HwHiAiUser not exists`。
+
+```bash
+# 创建昇腾驱动所需用户/组（已存在则跳过）
+id HwHiAiUser 2>/dev/null || sudo useradd -m HwHiAiUser
+# 部分环境需显式建组（useradd 通常会建同名组）
+getent group HwHiAiUser >/dev/null || sudo groupadd HwHiAiUser
+
+# 可选：将当前运维用户加入该组（装完驱动后也需，便于访问 /dev/davinci*）
+sudo usermod -aG HwHiAiUser "$USER"
+```
+
+安装：
+
 ```bash
 cd /opt/deploy/offline/npu   # 或你的实际存放目录
 chmod +x Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run \
@@ -509,8 +523,8 @@ sudo reboot
 ```bash
 npu-smi info          # 期望约 4 卡 / 8 设备
 ls -l /dev/davinci*
-# 若容器访问设备报权限问题，将当前用户加入驱动安装创建的用户组（常见 HwHiAiUser）后重新登录
-# sudo usermod -aG HwHiAiUser "$USER"
+# 若仍有设备权限问题：确认已在 HwHiAiUser 组并重新登录
+# id; groups
 ```
 
 ### 4.3 Docker 与 Compose
@@ -908,3 +922,4 @@ cd app/app-deploy && docker compose -f docker-ascend/docker-compose-ascend.yml l
 | reboot 后 `df` 无 sdb/aidata，但 `lsblk` 仍有 `sdb*` | **fstab 未写业务盘**；按 §4.1.9 排障补 UUID 后 `mount -a`，再 reboot 验证 |
 | `parted print free` 报无法辨识磁盘卷标 | 新 VD 尚无 GPT；先 `mklabel gpt`（§4.1.6） |
 | `mkfs.xfs` 报 `extra arguments` | 一次只格式化一块设备（§4.1.7） |
+| 驱动安装报 `HwHiAiUser not exists` / `0x0091` | 先 `useradd -m HwHiAiUser`（§4.2），再重跑 `.run` |

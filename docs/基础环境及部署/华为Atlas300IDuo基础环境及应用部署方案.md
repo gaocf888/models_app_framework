@@ -330,6 +330,14 @@ sudo yum install -y gcc gcc-c++ make perl pciutils \
 | 首次安装（无驱动或已卸载） | 多数文档：**先驱动，后固件**（以现场 HDK 手册为准） |
 | 覆盖安装（已有驱动未卸载） | 多数文档：**先固件，后驱动** |
 
+**前置**：须存在用户 `HwHiAiUser`，否则驱动会报 `ERR_NO:0x0091; HwHiAiUser not exists`。
+
+```bash
+id HwHiAiUser 2>/dev/null || sudo useradd -m HwHiAiUser
+getent group HwHiAiUser >/dev/null || sudo groupadd HwHiAiUser
+sudo usermod -aG HwHiAiUser "$USER"
+```
+
 示例（首次安装常见写法，以官方手册为准）：
 
 ```bash
