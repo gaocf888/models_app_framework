@@ -664,7 +664,7 @@ docker compose --profile small-model-gpu down
 | F1 | 密钥与配置 | 生产密钥来自 Secret/保险库；`.env` 权限收紧 | ☐ |
 | F2 | 网关与 TLS | 对外 HTTPS、限流、按需屏蔽 `/dajia/*` 等内部训练接口 | ☐ |
 | F3 | 备份 | Redis/EasySearch/业务库按 RPO/RTO 有备份或快照策略 | ☐ |
-| F4 | 日志与监控 | 容器日志采集；Prometheus 抓取 `/metrics`（若接入） | ☐ |
+| F4 | 日志与监控 | 容器日志采集；完整监控见仓库根目录 `monitoring-deploy/`（Prometheus 抓取 `/metrics` + Grafana）；方案：`docs/系统Prometheus资源监控实现方案.md` | ☐ |
 
 ---
 

@@ -1,0 +1,112 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "RAG queries QPS",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(rag_queries_total[5m])",
+          "legendFormat": "rag_queries",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+      "id": 2,
+      "title": "RAG recall / rerank QPS",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(rag_semantic_recall_total[5m])",
+          "legendFormat": "semantic",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(rag_keyword_recall_total[5m])",
+          "legendFormat": "keyword",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(rag_rerank_total[5m])",
+          "legendFormat": "rerank",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "id": 3,
+      "title": "RAG doc delete QPS",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (namespace) (rate(rag_doc_delete_total[5m]))",
+          "legendFormat": "{{namespace}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 4,
+      "title": "NL2SQL QPS",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(nl2sql_queries_total[5m])",
+          "legendFormat": "queries",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(nl2sql_query_errors_total[5m])",
+          "legendFormat": "errors",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "max": 1, "min": 0 },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 5,
+      "title": "NL2SQL error ratio",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(nl2sql_query_errors_total[5m]) / clamp_min(rate(nl2sql_queries_total[5m]), 1e-9)",
+          "legendFormat": "error_ratio",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["rag", "nl2sql"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "03 RAG and NL2SQL",
+  "uid": "models-app-rag-nl2sql",
+  "version": 1
+}

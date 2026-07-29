@@ -43,6 +43,11 @@ services:
         max-size: "100m"
         max-file: "5"
 
+  # ---------------------------------------------------------------------------
+  # [DEPRECATED] 内嵌 Prometheus 已废弃，请改用仓库根目录 monitoring-deploy/
+  # 见 docs/系统Prometheus资源监控实现方案.md 与 monitoring-deploy/README.md
+  # 保留仅供过渡；新环境勿再启用本 profile。
+  # ---------------------------------------------------------------------------
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus

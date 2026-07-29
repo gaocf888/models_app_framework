@@ -1,0 +1,21 @@
+# 可选：将下列 scrape job 合并进 prometheus.yml（需 EasySearch 可达且配置认证）
+# EasySearch 默认 HTTPS + basic auth，建议用 blackbox http_2xx_insecure，并在
+# blackbox.yml 中为模块增加 basic_auth（勿把密码提交到公开仓库）。
+
+# - job_name: blackbox-easysearch
+#   metrics_path: /probe
+#   params:
+#     module: [http_2xx_insecure]
+#   static_configs:
+#     - targets:
+#         - https://rag-easysearch:9200/_cluster/health
+#       labels:
+#         stack: blackbox
+#         service: easysearch
+#   relabel_configs:
+#     - source_labels: [__address__]
+#       target_label: __param_target
+#     - source_labels: [__param_target]
+#       target_label: instance
+#     - target_label: __address__
+#       replacement: blackbox-exporter:9115

@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from app.core.config import get_app_config
 from app.core.logging import setup_logging
 from app.core.metrics import REQUEST_COUNT, REQUEST_LATENCY
+from app.core.metrics_path import metrics_path_label
 from app.auth.dependencies import require_service_api_key
 from app.api import healthcheck
 from app.api.request_logging import register_api_request_logging
@@ -248,8 +249,10 @@ def create_app() -> FastAPI:
         response = await call_next(request)
         duration = perf_counter() - start
 
-        REQUEST_COUNT.labels(method=request.method, path=request.url.path, status=response.status_code).inc()
-        REQUEST_LATENCY.labels(method=request.method, path=request.url.path).observe(duration)
+        # 使用路由模板 / 折叠动态段，避免 path 高基数撑爆 Prometheus
+        path_label = metrics_path_label(request)
+        REQUEST_COUNT.labels(method=request.method, path=path_label, status=response.status_code).inc()
+        REQUEST_LATENCY.labels(method=request.method, path=path_label).observe(duration)
 
         return response
 

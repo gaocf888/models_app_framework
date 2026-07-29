@@ -1008,6 +1008,36 @@ docker compose -f docker-ascend/docker-compose-ascend.yml logs -f models-app
 业务请求头：`Authorization: Bearer <SERVICE_API_KEYS>`。  
 更多业务项（NL2SQL、会话、综合分析等）见 `app/app-deploy/.env.example`。
 
+### 6.5 监控栈（`monitoring-deploy`，可选）
+
+权威方案：`docs/系统Prometheus资源监控实现方案.md`。
+
+业务栈就绪后：
+
+```bash
+cd monitoring-deploy
+cp .env.example .env
+# 修改 GF_SECURITY_ADMIN_PASSWORD；数据目录建议：
+# PROMETHEUS_DATA_HOST_PATH=/aidata/data/prometheus
+# GRAFANA_DATA_HOST_PATH=/aidata/data/grafana
+# ALERTMANAGER_DATA_HOST_PATH=/aidata/data/alertmanager
+# 网络名与 app/vllm/.env 中 VLLM_DOCKER_NETWORK 等一致
+
+mkdir -p /aidata/data/prometheus /aidata/data/grafana /aidata/data/alertmanager
+bash scripts/check-baseline.sh   # Phase 0
+docker compose --env-file .env up -d
+```
+
+验收：
+
+| 检查 | 期望 |
+|------|------|
+| `http://127.0.0.1:9090/targets` | `models-app`、`vllm` UP |
+| `http://127.0.0.1:3000` | Grafana 可见 Models App 看板 |
+| `curl -s http://127.0.0.1:9090/-/ready` | Ready |
+
+> 勿再使用 `vllm-deploy` 的 `--profile monitoring`（已废弃）。
+
 ---
 
 ## 7. 冒烟与验收清单
@@ -1024,6 +1054,7 @@ docker compose -f docker-ascend/docker-compose-ascend.yml logs -f models-app
 | 8 | RAG 摄入 + 问答 | 召回合理 |
 | 9 | （可选）扫描 PDF → MinerU → 摄入 | Markdown 可检索 |
 | 10 | 三栈设备号 | **无重叠**（0–3 / 4–5 / 6） |
+| 11 | （可选）监控 `monitoring-deploy` | Prometheus Targets UP；Grafana 有曲线 |
 
 ---
 

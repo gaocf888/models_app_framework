@@ -2,7 +2,7 @@
 
 > 本文是 `README.md` 的**精简版**，重点面向「应用配置 + 生产/测试环境部署」，不讨论代码开发细节。  
 > 若需要完整说明（包括治理策略、GPU profile 细节、运维检查清单），请阅读同目录 `README.md`。
-> 若为局域网/离线环境部署外挂服务（vLLM、EasySearch、MinerU、**检修 V0 版面侧车 paddleocr-layout-deploy**），请阅读：`README-external-services-lan-deploy.md`。
+> 若为局域网/离线环境部署外挂服务（vLLM、EasySearch、MinerU、**检修 V0 版面侧车 paddleocr-layout-deploy**、**可选监控 monitoring-deploy**），请阅读：`README-external-services-lan-deploy.md`（监控细则见 `monitoring-deploy/README.md`）。
 > 值班排障请阅读：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
 
 > 文档分工建议：  
@@ -10,6 +10,7 @@
 > - **嵌入/重排 GPU/NPU 部署**（Qwen3 + 英伟达 / 沐曦 / **昇腾 Ascend**）：见下方 §3.2 与 `README.md`「部署形态选择」；  
 > - 遇到高级参数、GPU profile 细节、运维表格清单时再跳转 `README.md`；  
 > - Atlas 300I Duo 宿主机基础环境：`docs/基础环境及部署/华为Atlas300IDuo基础环境及应用部署方案.md`；  
+> - **系统监控（可选）**：Prometheus / Grafana 见仓库根目录 `monitoring-deploy/`；使用说明见 `enterprise-level_transformation_docs/系统整体监控实现和使用说明(prometheus).md`；  
 > - 不在本文件重复维护离线外挂服务与值班排障长文，分别以对应文档为准。
 
 ---
@@ -31,10 +32,11 @@
 | PDF 扫描解析（可选） | `mineru-deploy/` | 提供 `mineru-api`（扫描件 PDF 转 Markdown） |
 | **版面 OCR 侧车（可选，检修 V0）** | **`paddleocr-layout-deploy/`** | **`paddleocr-layout-api`**；主应用 **`INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT`**；须与 **`models-app`** 同 Docker 网络（`PADDLE_LAYOUT_DOCKER_NETWORK`） |
 | 图数据库（可选 GraphRAG） | `graphrag_db-deploy/` | Neo4j，当前聊天默认仍以向量 RAG 为主 |
-| 应用 API | `app/app-deploy/` | FastAPI 服务，暴露 `/chatbot/*`、`/llm/*`、`/analysis/*`、`/inspection-extract/*`、**`/inspection-extract-v0/*`** 等 |
+| 应用 API | `app/app-deploy/` | FastAPI 服务，暴露 `/chatbot/*`、`/llm/*`、`/analysis/*`、`/inspection-extract/*`、**`/inspection-extract-v0/*`**、`/metrics` 等 |
 | 会话存储 | `app/app-deploy/` 内置 Redis | 存储会话历史，可通过 `REDIS_URL` 切换到外部 Redis |
+| **系统监控（可选）** | **`monitoring-deploy/`** | **Prometheus + Grafana + Alertmanager**；采集 `models-app` / `vllm-service` 的 `/metrics` |
 
-部署顺序推荐：**EasySearch → vLLM →（可选）MinerU →（可选）`paddleocr-layout-deploy` →（可选 Neo4j）→ 应用栈**。
+部署顺序推荐：**EasySearch → vLLM →（可选）MinerU →（可选）`paddleocr-layout-deploy` →（可选 Neo4j）→ 应用栈 →（可选）`monitoring-deploy`**。
 
 ---
 
@@ -499,6 +501,23 @@ docker compose --profile small-model-gpu up -d --build
 
 > GPU profile 的详细说明见 `README.md`，简化版只需知道：不加 `--profile small-model-gpu` 时不会占用 GPU。
 
+### 3.3 可选：系统监控（Prometheus / Grafana）
+
+> 应用已暴露 `GET /metrics`；**长期看板与告警**需另起监控栈（须在应用 / vLLM 就绪之后）。勿使用已废弃的 `vllm-deploy --profile monitoring`。  
+> 细则：`monitoring-deploy/README.md`、`enterprise-level_transformation_docs/系统整体监控实现和使用说明(prometheus).md`。
+
+```bash
+# 仓库根目录执行，或从 app/app-deploy：cd ../../monitoring-deploy
+cd monitoring-deploy
+cp .env.example .env
+# 修改 GF_SECURITY_ADMIN_PASSWORD；核对 VLLM_DOCKER_NETWORK 与 app/app-deploy/.env 一致
+bash scripts/check-baseline.sh   # Windows: powershell -File scripts/check-baseline.ps1
+mkdir -p /aidata/data/prometheus /aidata/data/grafana /aidata/data/alertmanager
+docker compose --env-file .env up -d
+```
+
+验收：`http://<host>:9090/targets` 中 `models-app`、`vllm` 为 UP；Grafana `http://<host>:3000`（账号见 `.env`）。
+
 ### 3.1 人脸识别（InsightFace，`/face/*`）
 
 **主镜像 `models-app`（端口 `${APP_PORT:-8083}`）已内置 CPU 版 InsightFace**，无需 `--profile small-model-gpu` 即可使用人脸库录入与 `/face/identify` 等 API。
@@ -552,7 +571,7 @@ curl -X POST "http://127.0.0.1:${APP_PORT_GPU:-8081}/small-model/channel/start" 
 # 应用
 curl -s "http://127.0.0.1:${APP_PORT:-8083}/health/"
 
-# 指标
+# 指标（Prometheus 文本；进程内已打点，长期看板见 §3.3 monitoring-deploy）
 curl -s "http://127.0.0.1:${APP_PORT:-8083}/metrics" | head
 
 # vLLM
@@ -560,6 +579,10 @@ curl -s "http://127.0.0.1:8000/health"
 
 # EasySearch
 curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
+
+# （可选）监控栈
+curl -s "http://127.0.0.1:9090/-/ready"
+# 浏览器：http://<host>:9090/targets 、 http://<host>:3000
 ```
 
 ### 4.1.1 `/inspection-extract/upload` + `/inspection-extract/run` 测试（检修报告结构化提取）
@@ -660,6 +683,9 @@ data: {"finished":true,"meta":{"status":"answered","intent_label":"kb_qa","retri
 | **MinerU（可选）** | `mineru-api` | `http://<host>:${MINERU_PORT:-8009}/health` | `http://mineru-api:8000` | 扫描 PDF 解析；API 文档 `/docs` |
 | **Neo4j（可选）** | `graph-neo4j` | `http://<host>:7474` | `bolt://graph-neo4j:7687` | GraphRAG；`graphrag_db-deploy/` |
 | **版面 OCR 侧车（可选）** | `paddleocr-layout-api` | `http://<host>:8010/health` | `http://paddleocr-layout-api:8000` | 检修 V0；`paddleocr-layout-deploy/` |
+| **Prometheus（可选）** | `monitoring-prometheus` | `http://<host>:9090` | — | Targets / 告警；`monitoring-deploy/` |
+| **Grafana（可选）** | `monitoring-grafana` | `http://<host>:3000` | — | 看板；账号见 `monitoring-deploy/.env` |
+| **Alertmanager（可选）** | `monitoring-alertmanager` | `http://<host>:9093` | — | 告警通知；Webhook 需现场配置 |
 
 **MinIO 控制台登录**（`.env` 中 `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`，示例默认 `minioadmin` / `minioadmin123`）：
 
@@ -680,6 +706,9 @@ curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
 
 # MinIO（API 存活，需 mc 或 Console 看对象）
 curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:${MINIO_PORT:-9000}/minio/health/live"
+
+# （可选）监控
+curl -s "http://127.0.0.1:9090/-/ready"
 ```
 
 ### 5.3 本栈常用命令
@@ -726,6 +755,7 @@ docker compose --profile small-model-gpu down
 - **检修 V0 + 版面侧车**：`framework-guide/报告解析企业级实现方案V0.md`、`enterprise-level_transformation_docs/企业级检修报告结构化提取V0版本实现和使用说明.md`、`paddleocr-layout-deploy/README.md`。  
 - RAG / GraphRAG 细节：`framework-guide/RAG整体实现技术说明.md`。  
 - 底座数据库部署：`rag_db-deploy/README.md`、`graphrag_db-deploy/README.md`。  
-- 大模型服务部署：`vllm-deploy/README.md`（含 `--platform ascend`）。  
+- 大模型服务部署：`vllm-deploy/README.md`（含 `--platform ascend`；**勿**再用 `--profile monitoring`）。  
+- **系统监控（Prometheus / Grafana）**：`monitoring-deploy/README.md`、`enterprise-level_transformation_docs/系统整体监控实现和使用说明(prometheus).md`、`docs/系统Prometheus资源监控实现方案.md`。  
 - 昇腾应用栈：`docker-ascend/README.md`。  
 - Atlas 宿主机：`docs/基础环境及部署/华为Atlas300IDuo基础环境及应用部署方案.md`。

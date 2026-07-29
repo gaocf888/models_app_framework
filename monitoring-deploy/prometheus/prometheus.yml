@@ -1,0 +1,75 @@
+# 全栈 scrape 配置（权威监控栈）
+# 目标容器名/端口须与各业务栈一致；默认经 Docker DNS 访问。
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: models-app-framework
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          stack: monitoring
+
+  - job_name: models-app
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["models-app:8083"]
+        labels:
+          stack: app
+          service: models-app
+
+  # 启用 models-app-gpu 时取消注释：
+  # - job_name: models-app-gpu
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ["models-app-gpu:8083"]
+  #       labels:
+  #         stack: app
+  #         service: models-app-gpu
+
+  - job_name: vllm
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["vllm-service:8000"]
+        labels:
+          stack: vllm
+          service: vllm-service
+
+  - job_name: blackbox-http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://models-app:8083/health
+          - http://vllm-service:8000/health
+          # 未部署 MinerU 时请注释下一行，避免 BlackboxProbeFailed 噪声
+          - http://mineru-api:8000/health
+        labels:
+          stack: blackbox
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # 仅当 compose --profile infra 时启用；未启用可注释本 job
+  # - job_name: node
+  #   static_configs:
+  #     - targets: ["node-exporter:9100"]
+  #       labels:
+  #         stack: infra

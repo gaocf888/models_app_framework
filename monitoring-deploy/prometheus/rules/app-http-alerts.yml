@@ -1,0 +1,53 @@
+groups:
+  - name: scrape-availability
+    interval: 30s
+    rules:
+      - alert: ModelsAppDown
+        expr: up{job="models-app"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: models-app
+        annotations:
+          summary: "models-app scrape failed"
+          description: "Prometheus cannot scrape models-app /metrics for 2m."
+
+      - alert: VllmDown
+        expr: up{job="vllm"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: vllm
+        annotations:
+          summary: "vllm-service scrape failed"
+          description: "Prometheus cannot scrape vllm-service /metrics for 2m."
+
+      - alert: ModelsAppHttp5xxHigh
+        expr: |
+          (
+            sum(rate(http_requests_total{job="models-app",status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(http_requests_total{job="models-app"}[5m])), 1e-9)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: models-app
+        annotations:
+          summary: "models-app HTTP 5xx rate high"
+          description: "Global 5xx ratio over 5% for 10m."
+
+      - alert: ChatbotHttp5xxHigh
+        expr: |
+          (
+            sum(rate(http_requests_total{job="models-app",path=~"/chatbot/chat.*",status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(http_requests_total{job="models-app",path=~"/chatbot/chat.*"}[5m])), 1e-9)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: chatbot
+        annotations:
+          summary: "chatbot HTTP 5xx rate high"
+          description: "Chatbot endpoint 5xx ratio over 5% for 10m."

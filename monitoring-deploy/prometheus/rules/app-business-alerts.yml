@@ -1,0 +1,73 @@
+groups:
+  - name: llm-rag-nl2sql-alerts
+    interval: 30s
+    rules:
+      - alert: HighLLMLatencyP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(llm_request_latency_seconds_bucket[5m])) by (le, model)
+          ) > 30
+        for: 15m
+        labels:
+          severity: warning
+          service: llm
+        annotations:
+          summary: "LLM P95 latency high"
+          description: "LLM request P95 latency exceeds 30s for 15m (model={{ $labels.model }})."
+
+      - alert: HighNL2SQLErrorRate
+        expr: |
+          (
+            rate(nl2sql_query_errors_total[5m])
+            /
+            clamp_min(rate(nl2sql_queries_total[5m]), 1e-9)
+          ) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: nl2sql
+        annotations:
+          summary: "NL2SQL error rate high"
+          description: "NL2SQL error ratio over 10% for 10m."
+
+      - alert: AnalysisRequestFailRateHigh
+        expr: |
+          (
+            sum(rate(analysis_requests_total{status=~"error|failed|fail"}[5m]))
+            /
+            clamp_min(sum(rate(analysis_requests_total[5m])), 1e-9)
+          ) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          service: analysis
+        annotations:
+          summary: "Analysis failure rate high"
+          description: "Analysis non-success rate over 10% for 15m."
+
+      - alert: SmallModelNoFramesProcessed
+        expr: |
+          sum(increase(small_model_frames_processed_total[10m])) == 0
+          and
+          sum(small_model_frames_processed_total) > 0
+        for: 10m
+        labels:
+          severity: critical
+          service: small-model
+        annotations:
+          summary: "Small model channel idle"
+          description: "No frames processed in 10m while counter was previously non-zero."
+
+  - name: blackbox-probes
+    interval: 30s
+    rules:
+      - alert: BlackboxProbeFailed
+        expr: probe_success == 0
+        for: 3m
+        labels:
+          severity: warning
+          service: blackbox
+        annotations:
+          summary: "Blackbox probe failed"
+          description: "HTTP probe failed for {{ $labels.instance }}."

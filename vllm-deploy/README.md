@@ -179,14 +179,20 @@ docker compose logs -f
 docker compose down
 ```
 
-## 监控（可选）
+## 监控（已废弃内嵌 profile）
+
+> **Deprecated**：本目录 `docker compose --profile monitoring` 仅抓取 vLLM，且与全栈监控职责冲突。  
+> **请改用** 仓库根目录 [`monitoring-deploy/`](../monitoring-deploy/README.md)（Prometheus + Grafana + Alertmanager + Blackbox）。  
+> 方案说明：[`docs/系统Prometheus资源监控实现方案.md`](../docs/系统Prometheus资源监控实现方案.md)。
+
+过渡期若仍使用旧 profile：
 
 ```bash
 cd docker
 docker compose --profile monitoring up -d
 ```
 
-Prometheus 监听 `9090`，配置见 `docker/prometheus.yml`。
+Prometheus 监听 `9090`，配置见 `docker/prometheus.yml`（**仅** vLLM）。
 
 ## 部署后快速验证
 

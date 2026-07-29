@@ -1,0 +1,128 @@
+# 独立监控栈：Prometheus + Grafana + Alertmanager + Blackbox
+# 权威方案：docs/系统Prometheus资源监控实现方案.md
+#
+# 启动（业务栈须先起，且外部网络已存在）：
+#   cp .env.example .env
+#   docker network create docker_vllm-network 2>/dev/null || true
+#   docker network create ai-stack 2>/dev/null || true
+#   docker network create mineru-stack 2>/dev/null || true
+#   docker compose --env-file .env up -d
+#
+# 可选节点指标：
+#   docker compose --env-file .env --profile infra up -d
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: monitoring-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - ${PROMETHEUS_DATA_HOST_PATH:-prometheus-data}:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - monitoring-internal
+      - vllm-external
+      - rag-external
+      - mineru-external
+    depends_on:
+      - blackbox-exporter
+      - alertmanager
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: monitoring-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      GF_SERVER_ROOT_URL: ${GF_SERVER_ROOT_URL:-http://localhost:3000}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ${GRAFANA_DATA_HOST_PATH:-grafana-data}:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - monitoring-internal
+    depends_on:
+      - prometheus
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: monitoring-alertmanager
+    restart: unless-stopped
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ${ALERTMANAGER_DATA_HOST_PATH:-alertmanager-data}:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    networks:
+      - monitoring-internal
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: monitoring-blackbox
+    restart: unless-stopped
+    ports:
+      - "${BLACKBOX_PORT:-9115}:9115"
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    networks:
+      - monitoring-internal
+      - vllm-external
+      - rag-external
+      - mineru-external
+
+  # Phase 3：可选宿主机节点指标（Linux / 需挂载宿主机路径）
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: monitoring-node-exporter
+    restart: unless-stopped
+    profiles: ["infra"]
+    ports:
+      - "${NODE_EXPORTER_PORT:-9100}:9100"
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    networks:
+      - monitoring-internal
+
+networks:
+  monitoring-internal:
+    driver: bridge
+  vllm-external:
+    name: ${VLLM_DOCKER_NETWORK:-docker_vllm-network}
+    external: true
+  rag-external:
+    name: ${RAG_DOCKER_NETWORK:-ai-stack}
+    external: true
+  mineru-external:
+    name: ${MINERU_DOCKER_NETWORK:-mineru-stack}
+    external: true
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  alertmanager-data:

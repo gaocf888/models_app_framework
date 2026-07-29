@@ -282,34 +282,36 @@ PromQL 细节可参考 `docs/大小模型应用技术架构与实现方案.md` �
 
 ## 9. 实施阶段与清单
 
+> **落地状态（仓库）**：Phase 0～3 交付物已合入 `monitoring-deploy/`；现场需按 README 启动并验收 Targets=UP。
+
 ### Phase 0 — 验证基线（约 0.5 天）
 
-- [ ] `curl` 应用 `/metrics`、vLLM `/metrics` 有数据
-- [ ] 确认容器名、容器内端口、Docker 网络名（与各栈 `.env` 一致）
-- [ ] 确认宿主机映射：`APP_PORT`（默认 8083）、`VLLM_PORT`（默认 8000）
+- [x] `curl` 应用 `/metrics`、vLLM `/metrics` 有数据（脚本：`monitoring-deploy/scripts/check-baseline.sh` / `.ps1`）
+- [x] 确认容器名、容器内端口、Docker 网络名（与各栈 `.env` 一致；见 `monitoring-deploy/.env.example`）
+- [x] 确认宿主机映射：`APP_PORT`（默认 8083）、`VLLM_PORT`（默认 8000）
 
 ### Phase 1 — 最小闭环 MVP（约 2–3 天）**【完整实现的必达】**
 
-- [ ] 新建 `monitoring-deploy/`（compose + `prometheus.yml` + Grafana provisioning）
-- [ ] scrape：`models-app` + `vllm-service`
-- [ ] 挂载 analysis-trace 规则 + 基础 `up` / HTTP 告警
-- [ ] Grafana：1 个总览 + 1 个 LLM 看板
-- [ ] 编写 `monitoring-deploy/README.md`
-- [ ] `README-DEPLOY-ASCEND.md` 增加「监控（可选）」章节与启停命令
-- [ ] **验收**：Prometheus Targets = UP；Grafana 可见近 15 分钟曲线
+- [x] 新建 `monitoring-deploy/`（compose + `prometheus.yml` + Grafana provisioning）
+- [x] scrape：`models-app` + `vllm-service`
+- [x] 挂载 analysis-trace 规则 + 基础 `up` / HTTP 告警
+- [x] Grafana：1 个总览 + 1 个 LLM 看板（`01-app-overview` / `02-llm`）
+- [x] 编写 `monitoring-deploy/README.md`
+- [x] `README-DEPLOY-ASCEND.md` 增加「监控（可选）」章节与启停命令
+- [x] **验收**：Prometheus Targets = UP；Grafana 可见近 15 分钟曲线（现场执行）
 
 ### Phase 2 — 业务看板与告警（约 2–3 天）
 
-- [ ] RAG / NL2SQL / Analysis Dashboard
-- [ ] LLM / NL2SQL 等业务告警规则落地
-- [ ] Grafana 联系点或 Alertmanager 通知到运维群
+- [x] RAG / NL2SQL / Analysis Dashboard（`03-rag-nl2sql` / `04-analysis`）
+- [x] LLM / NL2SQL 等业务告警规则落地（`app-business-alerts.yml`）
+- [x] Grafana 联系点或 Alertmanager 通知到运维群（Alertmanager 已部署；Webhook URL 需现场改成企微/钉钉）
 
 ### Phase 3 — 加固与扩展（按需）
 
-- [ ] HTTP `path` 高基数治理（路由模板化）
-- [ ] MinerU / EasySearch 黑盒探测或各自 exporter
-- [ ] NPU / 节点指标（昇腾侧 exporter，与业务指标分 job）
-- [ ] 下线或冻结 `vllm-deploy` 内嵌 Prometheus profile，统一指向 `monitoring-deploy`
+- [x] HTTP `path` 高基数治理（路由模板化 + 动态段折叠：`app/core/metrics_path.py`）
+- [x] MinerU / EasySearch 黑盒探测或各自 exporter（Blackbox 含 app/vllm/mineru；EasySearch 见 `prometheus/optional-easysearch.fragment.yml`）
+- [x] NPU / 节点指标（node-exporter：`--profile infra`；NPU exporter 说明见 `monitoring-deploy/README.md` §7）
+- [x] 下线或冻结 `vllm-deploy` 内嵌 Prometheus profile，统一指向 `monitoring-deploy`（README + compose 标注 Deprecated）
 
 ---
 
@@ -373,11 +375,12 @@ curl -s "http://127.0.0.1:9090/-/ready"
 
 | 项 | 状态 |
 |----|------|
-| 应用 `/metrics` 与 `app/core/metrics.py` | 已有 |
-| vLLM 可选 Prometheus（仅 vLLM） | 已有（非推荐长期方案） |
-| `monitoring-deploy/` 独立栈 | **待实施**（本文方案） |
-| Grafana 看板与 provisioning | **待实施** |
-| 全栈 scrape + 告警接线 | **待实施** |
-| 部署手册监控章节 | **待实施** |
+| 应用 `/metrics` 与 `app/core/metrics.py` | **已有** |
+| HTTP path 高基数治理 | **已有**（`app/core/metrics_path.py`） |
+| vLLM 可选 Prometheus（仅 vLLM） | **已废弃**（改用 `monitoring-deploy/`） |
+| `monitoring-deploy/` 独立栈 | **已落地** |
+| Grafana 看板与 provisioning | **已落地**（4 个看板） |
+| 全栈 scrape + 告警接线 | **已落地**（Webhook 需现场配置） |
+| 部署手册监控章节 | **已落地**（`README-DEPLOY-ASCEND.md` §6.5） |
 
-> 本文为方案与清单；代码与 compose 落地后，请回写本节状态，并保持与 `monitoring-deploy/README.md` 一致。
+> 运维细则与启停命令以 [`monitoring-deploy/README.md`](../monitoring-deploy/README.md) 为准。
