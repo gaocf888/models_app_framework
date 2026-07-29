@@ -949,12 +949,15 @@ cp .env.example .env
 # MINERU_IO_HOST_PATH=/aidata/mineru/io
 # ASCEND_RT_VISIBLE_DEVICES=6   # §5：独占卡3；勿与 vLLM/app 重叠
 # （底座默认见 Dockerfile.gpu.ascend；一般不必配 MINERU_BASE_IMAGE）
+# 专网建议：MINERU_MODEL_SOURCE=local + HF_HUB_OFFLINE=1（权重在 MODELS 目录；
+#   默认 modelscope 缓存在容器 /root/.cache/modelscope，非 io/.hf_cache）
+# 详见 mineru-deploy/README.md §4
 
 docker network create mineru-stack || true
 docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
 ```
 
-**验收**：`http://<host>:<MINERU_PORT>/health`；应用 `MINERU_ENABLED=true`，`MINERU_BASE_URL=http://mineru-api:8000`，**`MINERU_IO_HOST_PATH` 与 app 挂载同一宿主机目录**。
+**验收**：`http://<host>:<MINERU_PORT>/health`；应用 `MINERU_ENABLED=true`，`MINERU_BASE_URL=http://mineru-api:8000`，**`MINERU_IO_HOST_PATH` 与 app 挂载同一宿主机目录**（共享解析 IO，不是 ModelScope 权重缓存）。
 
 ---
 

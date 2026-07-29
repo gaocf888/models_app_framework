@@ -54,17 +54,24 @@ mkdir -p <MINERU_MODELS_HOST_PATH> <MINERU_IO_HOST_PATH>
 ### 4.1 在线模式（默认）
 
 ```env
+# 国内常用
 MINERU_MODEL_SOURCE=modelscope
+# 或：MINERU_MODEL_SOURCE=huggingface
 HF_HUB_OFFLINE=0
 TRANSFORMERS_OFFLINE=0
 ```
 
 说明：
-- 运行时允许在线拉取模型
-- 模型缓存写入 `/io/.hf_cache`（宿主机对应 `${MINERU_IO_HOST_PATH}/.hf_cache`）
+- 运行时允许在线拉取模型；
+- **`MINERU_MODEL_SOURCE=huggingface`**
+  - 使用 compose 中的 `HF_HOME=/io/.hf_cache`
+  - 模型缓存写入容器 **`/io/.hf_cache`**（宿主机：`${MINERU_IO_HOST_PATH}/.hf_cache`）
+- **`MINERU_MODEL_SOURCE=modelscope`**（`.env.example` / Ascend compose 默认）
+  - 模型一般写入容器 **`/root/.cache/modelscope/hub/...`**（常见：`.../hub/models/OpenDataLab/PDF-Extract-Kit-1.0/`）
+  - 该路径默认**未挂载到宿主机**，重建容器可能丢失；持久化请 `docker cp` 到 `${MINERU_MODELS_HOST_PATH}` 后改用 §4.2 离线 `local`
 - 适合可联网环境
 
-> 国内网络可选：`MINERU_MODEL_SOURCE=modelscope`
+> 国内网络推荐：`MINERU_MODEL_SOURCE=modelscope`；海外或已配 HF 镜像时可用 `huggingface`。
 
 ### 4.2 离线模式（提前下载）
 

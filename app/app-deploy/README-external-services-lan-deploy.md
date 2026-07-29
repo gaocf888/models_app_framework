@@ -154,6 +154,10 @@ MINERU_IO_HOST_PATH=/aidata/mineru/io
 MINERU_NETWORK_NAME=mineru-stack
 MINERU_MODELS_HOST_PATH=/aidata/mineru/models
 MINERU_IO_HOST_PATH=/aidata/mineru/io
+# 离线必须 local：权重读 /models ← MINERU_MODELS_HOST_PATH
+# （默认 modelscope 缓存在容器 /root/.cache/modelscope，不会持久化到 IO；
+#  huggingface 在线才写 ${MINERU_IO_HOST_PATH}/.hf_cache。见 mineru-deploy/README.md §4）
+MINERU_MODEL_SOURCE=local
 HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```

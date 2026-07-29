@@ -811,7 +811,7 @@ sudo sysctl --system
 /aidata/models/llm/<MODEL_PRESET 对应目录>
 /aidata/models/embeddings/Qwen3-Embedding-0.6B/
 /aidata/models/reranker/Qwen3-Reranker-0.6B/
-/aidata/mineru/models/          # MinerU 权重
+/aidata/mineru/models/          # MinerU 权重(其中模型路径 OpenDataLab/PDF-Extract-Kit-1.0)
 /aidata/mineru/io/              # 与 app 共享 IO
 ```
 
@@ -913,6 +913,14 @@ ASCEND_RT_VISIBLE_DEVICES=6
 INSTALL_CUDA_TORCH=0
 MINERU_MODELS_HOST_PATH=/aidata/mineru/models
 MINERU_IO_HOST_PATH=/aidata/mineru/io
+# 模型来源（勿与 IO 缓存混为一谈；细节见 mineru-deploy/README.md §4）
+# 专网/离线推荐：
+# MINERU_MODEL_SOURCE=local
+# HF_HUB_OFFLINE=1
+# TRANSFORMERS_OFFLINE=1
+# 可联网默认（.env.example）：MINERU_MODEL_SOURCE=modelscope → 缓存在容器内
+#   /root/.cache/modelscope/...（不会写到 /aidata/mineru/io/.hf_cache）
+# huggingface 在线：缓存在 ${MINERU_IO_HOST_PATH}/.hf_cache（HF_HOME）
 ```
 
 ```bash
@@ -924,6 +932,7 @@ docker compose --env-file .env -f docker-compose.cpu.yml up -d --build
 ```
 
 验收：`http://127.0.0.1:8009/health`（宿主机端口以 `MINERU_PORT` 为准）。  
+`MINERU_IO_HOST_PATH` 与 app 共享的是**解析 IO**，不是 ModelScope 权重目录；离线权重须落在 `MINERU_MODELS_HOST_PATH` 且 `MINERU_MODEL_SOURCE=local`。  
 若 NPU 暂不稳定，可临时改用 `docker-compose.cpu.yml` 保功能。
 
 ### 6.4 应用栈（app/app-deploy）

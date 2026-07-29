@@ -330,9 +330,12 @@ ASCEND_RT_VISIBLE_DEVICES=4,5
    /aidata/mineru/models
    ```
    
-   mineru模型下载说明
+   mineru模型下载说明（权威细节见 `mineru-deploy/README.md` §4）
    ```text
-   mineru使用在线模式时，魔塔社区(modelscope)下载的模型默认存放路径: ~/.cache/modelscope/hub/models
+   在线模式缓存路径随 MINERU_MODEL_SOURCE 不同：
+     - modelscope（默认）：容器内 /root/.cache/modelscope/hub/models/...（默认未挂宿主机；
+       /aidata/mineru/io/.hf_cache 可为空，属正常）
+     - huggingface：容器 /io/.hf_cache ← 宿主机 ${MINERU_IO_HOST_PATH}/.hf_cache
    若使用离线模式，具体步骤如下：
    1. .env 中修改配置项  MINERU_MODEL_SOURCE=local
                         HF_HUB_OFFLINE=1
