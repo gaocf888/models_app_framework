@@ -507,7 +507,150 @@ getent group HwHiAiUser >/dev/null || sudo groupadd HwHiAiUser
 sudo usermod -aG HwHiAiUser "$USER"
 ```
 
-安装：
+**前置（必须）**：本机须有与 `uname -r` **完全一致** 的内核开发目录  
+`/lib/modules/$(uname -r)/build`（通常由 `kernel-devel` 提供）。缺失时驱动 Rebuild 会失败，并提示路径不存在。
+
+先检查：
+
+```bash
+uname -r
+uname -m    # 须为 aarch64
+ls -l /lib/modules/$(uname -r)/build
+# 若 No such file → 按下面离线方式安装 kernel-devel 后再装驱动
+```
+
+**内核开发包：离线安装（下载 RPM → 上传服务器 → 本地安装）**
+
+> 目标服务器为纯内网：在能取到包的环境下载 **aarch64** RPM，再上传安装。  
+> `kernel-devel` / `kernel-headers` 版本必须与目标机 `uname -r` **逐字相同**；下载机**不必**跑同一内核。
+
+**① 目标服务器：记录版本**
+
+```bash
+uname -r
+# 例：4.19.90-89.11.v2401.ky10.aarch64
+# 对应包名一般为：
+#   kernel-devel-4.19.90-89.11.v2401.ky10.aarch64
+#   kernel-headers-4.19.90-89.11.v2401.ky10.aarch64
+```
+
+**② 获取 RPM（任选其一，再上传到服务器）**
+
+| 来源 | 说明 |
+|------|------|
+| 有网电脑 + 麒麟 aarch64 yum 源 | 见下方「方式 1」`yumdownloader` 或**直接 wget 官方包** |
+| **麒麟安装 ISO** | 见下方「方式 2」 |
+| **厂商站点 / 官方更新仓** | 见下方「方式 3」中标麒麟 `update.cs2c.com.cn` |
+| **内网镜像站** | **无固定公网地址**，向机房/集成商索取与现场一致的 Kylin V10 SP3 aarch64 镜像 URL |
+
+对本现场内核 `4.19.90-89.11.v2401.ky10.aarch64`（V10 SP3 **2403**），官方 **base** 仓已收录对应 `kernel-devel` / `kernel-headers`（见方式 3 直链）。
+
+**方式 1：有网电脑按目标机版本下载**
+
+```bash
+# 在已配置「麒麟 V10 SP3 aarch64」yum 源的 Linux 上下载（可为临时虚拟机）
+# 关键：源必须是 aarch64，勿下成 x86_64
+
+VER=4.19.90-89.11.v2401.ky10.aarch64   # ← 改成目标服务器的 uname -r
+mkdir -p ~/offline-kernel-devel && cd ~/offline-kernel-devel
+sudo yum install -y yum-utils
+
+yumdownloader --resolve --destdir=./ \
+  gcc gcc-c++ make perl \
+  "kernel-devel-${VER}" \
+  "kernel-headers-${VER}"
+
+# 确认架构均为 aarch64
+rpm -qp --qf '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n' ./*.rpm | head
+ls -lh
+```
+
+**方式 2：从麒麟 ISO 取包**
+
+官方/试用获取：[https://www.kylinos.cn/](https://www.kylinos.cn/) → 服务支持 → 产品试用申请。  
+
+社区流传的 **服务器 V10 SP3 aarch64 2403** ISO（飞腾/鲲鹏，需自行校验完整性与授权；链接可能变更）：
+
+```text
+https://iso.kylinos.cn/web_pungi/download/cdn/ni3tIfZoEKLDglszRXvh9WymuwOT5r6M/Kylin-Server-V10-SP3-2403-Release-20240426-arm64.iso
+```
+
+```bash
+# 使用与现场一致的 Kylin V10 SP3 ARM（aarch64）安装 ISO
+sudo mkdir -p /mnt/iso
+sudo mount -o loop /path/to/Kylin-Server-V10-SP3-2403-*-arm64.iso /mnt/iso
+
+VER=4.19.90-89.11.v2401.ky10.aarch64   # ← 改成目标服务器 uname -r
+mkdir -p ~/offline-kernel-devel
+find /mnt/iso -name "kernel-devel-${VER}*.rpm" -exec cp -v {} ~/offline-kernel-devel/ \;
+find /mnt/iso -name "kernel-headers-${VER}*.rpm" -exec cp -v {} ~/offline-kernel-devel/ \;
+# 同时从 ISO 拷贝 gcc / gcc-c++ / make / perl 及依赖（名称以 ISO 内为准）
+find /mnt/iso -name 'gcc-*.rpm' -o -name 'gcc-c++-*.rpm' -o -name 'make-*.rpm' -o -name 'perl-*.rpm' \
+  | head   # 按实际依赖挑选拷贝到 offline-kernel-devel
+
+ls -lh ~/offline-kernel-devel/
+sudo umount /mnt/iso
+```
+
+**方式 3：厂商 / 官方更新仓（中标麒麟 cs2c）直链**
+
+> 门户与试用： [https://www.kylinos.cn/](https://www.kylinos.cn/) → 服务支持 / 产品试用申请。  
+> 服务器更新仓（V10 SP3 **2403** aarch64，与本现场内核系列一致）：
+
+| 用途 | 地址 |
+|------|------|
+| base 仓根 | https://update.cs2c.com.cn/NS/V10/V10SP3-2403/os/adv/lic/base/aarch64/ |
+| base Packages | https://update.cs2c.com.cn/NS/V10/V10SP3-2403/os/adv/lic/base/aarch64/Packages/ |
+| updates 仓根 | https://update.cs2c.com.cn/NS/V10/V10SP3-2403/os/adv/lic/updates/aarch64/ |
+| updates Packages | https://update.cs2c.com.cn/NS/V10/V10SP3-2403/os/adv/lic/updates/aarch64/Packages/ |
+| 归档（其它组件，内核版本可能较旧） | https://archive.kylinos.cn/ |
+| 华为支持（昇腾/服务器文档，常指引装 `kernel-devel-$(uname -r)`） | https://support.huawei.com/enterprise/ |
+
+**本现场内核直链（有网机浏览器或 wget 下载后上传）：**
+
+```text
+https://update.cs2c.com.cn/NS/V10/V10SP3-2403/os/adv/lic/base/aarch64/Packages/kernel-devel-4.19.90-89.11.v2401.ky10.aarch64.rpm
+https://update.cs2c.com.cn/NS/V10/V10SP3-2403/os/adv/lic/base/aarch64/Packages/kernel-headers-4.19.90-89.11.v2401.ky10.aarch64.rpm
+```
+
+```bash
+mkdir -p ~/offline-kernel-devel && cd ~/offline-kernel-devel
+wget -c \
+  https://update.cs2c.com.cn/NS/V10/V10SP3-2403/os/adv/lic/base/aarch64/Packages/kernel-devel-4.19.90-89.11.v2401.ky10.aarch64.rpm \
+  https://update.cs2c.com.cn/NS/V10/V10SP3-2403/os/adv/lic/base/aarch64/Packages/kernel-headers-4.19.90-89.11.v2401.ky10.aarch64.rpm
+# 另从同一 Packages/ 或 yumdownloader --resolve 补 gcc gcc-c++ make perl 等依赖
+```
+
+> `updates` 仓里多为更新的 `89.14+` 内核；**不要**用其它小版本 `kernel-devel` 硬套当前 `89.11` 运行内核。若日后升级了内核，改为下载与新 `uname -r` 一致的包。
+
+**方式 4：内网镜像站**
+
+无统一公网 URL。请向机房/华为或麒麟集成商索取现场 yum/HTTP 镜像地址（路径通常仍类似 `.../V10SP3-2403/.../aarch64/Packages/`），在能访问该镜像的电脑上下载后上传服务器。
+
+**③ 上传到服务器**
+
+```bash
+# 示例：scp（或 U 盘拷贝到相同路径）
+scp -r ~/offline-kernel-devel root@<服务器IP>:/opt/deploy/offline/kernel-devel/
+```
+
+**④ 目标服务器：本地安装并验收**
+
+```bash
+cd /opt/deploy/offline/kernel-devel
+# 纯内网必须禁用远程 repo，否则 yum 仍会去拉 repomd.xml 导致超时
+sudo yum localinstall -y --disablerepo='*' ./*.rpm
+# 若无 yum 或仍解析依赖失败，改用 rpm（按依赖可能需执行两次）：
+# sudo rpm -ivh ./*.rpm
+# sudo rpm -ivh --nodeps ./*.rpm   # 仅当确认缺的是无关弱依赖时慎用
+
+ls -l /lib/modules/$(uname -r)/build
+ls /lib/modules/$(uname -r)/build/Makefile   # 必须存在
+```
+
+若报缺依赖（如 `perl`、`libstdc++` 等），在有网机从同一 base Packages 补下对应 aarch64 rpm，再上传后同样用 `--disablerepo='*'` 安装。
+
+安装驱动与固件：
 
 ```bash
 cd /opt/deploy/offline/npu   # 或你的实际存放目录
@@ -602,6 +745,8 @@ EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now docker
+# 离线静态包不会自动建 docker 组，须先创建再建用户
+sudo groupadd -f docker
 sudo usermod -aG docker "$USER"
 # 重新登录后 docker 免 sudo 生效
 ```
@@ -923,3 +1068,4 @@ cd app/app-deploy && docker compose -f docker-ascend/docker-compose-ascend.yml l
 | `parted print free` 报无法辨识磁盘卷标 | 新 VD 尚无 GPT；先 `mklabel gpt`（§4.1.6） |
 | `mkfs.xfs` 报 `extra arguments` | 一次只格式化一块设备（§4.1.7） |
 | 驱动安装报 `HwHiAiUser not exists` / `0x0091` | 先 `useradd -m HwHiAiUser`（§4.2），再重跑 `.run` |
+| 驱动 Rebuild 失败 / `.../build no exist` | 按目标机 `uname -r` 从 yum/ISO/厂商站/内网镜像取 aarch64 的 `kernel-devel` 上传安装（§4.2），确认 `.../build/Makefile` 存在后再装驱动 |
