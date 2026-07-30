@@ -126,7 +126,9 @@ _MARKDOWN_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+
 _MARKDOWN_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 
 _DEFAULT_EMPTY_SYSTEM = (
-    "用户查询已执行但无数据行。用简洁中文说明无数据，并给出改问建议；禁止编造数值与 SQL。"
+    "用户数据查询已执行，结果为 0 行。用简洁中文说明本次未查到数据，并给出 1～3 条可操作的改问建议。"
+    "禁止编造数值与 SQL；禁止断言某年份「尚未到来/未录入」除非与系统给出的「今天日期」对照后确属未来年；"
+    "禁止在 0 行时说「数据量较大/结果太多」；禁止客套收尾邀问续聊。"
 )
 
 
@@ -804,7 +806,10 @@ async def summarize_nl2sql_with_llm(
             )
             user_content = (
                 f"用户问题：{user_query or ''}\n\n"
-                "查询结果：空（0 行）。请按系统要求输出友好引导。"
+                f"今天日期：{date.today().isoformat()}（请以此为唯一时间基准）\n"
+                "查询结果：空（0 行）。已执行完成，不是失败，也不是结果过多。\n"
+                "请按系统要求输出友好引导：说明未查到数据 + 1～3 条改问建议；"
+                "勿断言未到年份；勿写数据量较大；勿客套收尾。"
             )
             guided = await _call_analysis_llm(llm_client, system=system, user_content=user_content)
             if guided:
