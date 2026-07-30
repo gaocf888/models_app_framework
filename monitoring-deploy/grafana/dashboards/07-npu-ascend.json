@@ -1,0 +1,117 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100 },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "NPU AI Core utilization %",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "npu_chip_info_utilization{job=\"npu\"}",
+          "legendFormat": "id={{id}} {{model_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "celsius" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "title": "NPU temperature",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "npu_chip_info_temperature{job=\"npu\"}",
+          "legendFormat": "id={{id}} {{model_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "title": "NPU HBM used / total",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "npu_chip_info_hbm_used_memory{job=\"npu\"}",
+          "legendFormat": "used id={{id}}",
+          "refId": "A"
+        },
+        {
+          "expr": "npu_chip_info_hbm_total_memory{job=\"npu\"}",
+          "legendFormat": "total id={{id}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "watt" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "title": "NPU power",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "npu_chip_info_power{job=\"npu\"}",
+          "legendFormat": "id={{id}} {{model_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 5,
+      "title": "NPU health (1=ok)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "npu_chip_info_health_status{job=\"npu\"}",
+          "legendFormat": "id={{id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 6,
+      "title": "NPU scrape up",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "up{job=\"npu\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["npu", "ascend"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "07 Ascend NPU",
+  "uid": "models-app-npu-ascend",
+  "version": 1
+}

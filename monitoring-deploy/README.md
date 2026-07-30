@@ -17,6 +17,8 @@
 | Alertmanager | `monitoring-alertmanager` | 9093 | 告警通知 |
 | Blackbox | `monitoring-blackbox` | 9115 | HTTP 健康探针 |
 | Node Exporter | `monitoring-node-exporter` | 9100 | 宿主机 CPU/内存/磁盘等（默认启动） |
+| DCGM Exporter（英伟达） | `monitoring-dcgm-exporter` | 9400 | **profile `gpu-nvidia`** |
+| NPU Exporter（昇腾） | `monitoring-npu-exporter` | 8082 | **profile `gpu-ascend`** |
 
 ---
 
@@ -57,14 +59,50 @@ bash scripts/prepare-data-dirs.sh
 docker compose --env-file .env up -d
 ```
 
-可选节点指标（**已默认启动**；若曾用旧版需 `--profile infra`，现可直接 `up -d`）：
+可选：宿主机确认 node-exporter：
 
 ```bash
-# 确认 node-exporter 在跑
 docker ps --filter name=monitoring-node-exporter
-# prometheus.yml 已包含 job_name: node；改配置后可：
-# curl -X POST http://127.0.0.1:9091/-/reload
 ```
+
+### 3.1 GPU / NPU 硬件监控（按卡型启用）
+
+`node-exporter` **不含**显卡/加速卡。本仓库已接入：
+
+| 卡型 | Compose profile | Exporter | Grafana 看板 |
+|------|-----------------|----------|--------------|
+| **英伟达** | `gpu-nvidia` | `nvidia/dcgm-exporter` | **06 NVIDIA GPU (DCGM)** |
+| **昇腾** | `gpu-ascend` | `ascendai/npu-exporter` | **07 Ascend NPU** |
+| **沐曦 / 寒武纪 / 其它** | — | **未内置** | 须单独增加 exporter + scrape job + 看板 |
+
+**英伟达现场：**
+
+```bash
+# .env 中设置：COMPOSE_PROFILES=gpu-nvidia
+# 或命令行：
+docker compose --env-file .env --profile gpu-nvidia up -d
+# 验收：Targets 中 job=dcgm UP；Grafana → 06 NVIDIA GPU (DCGM)
+curl -s http://127.0.0.1:9400/metrics | head
+```
+
+前提：宿主机已装 NVIDIA 驱动 + nvidia-container-toolkit，`runtime: nvidia` 可用。
+
+**昇腾现场：**
+
+```bash
+# .env 中设置：COMPOSE_PROFILES=gpu-ascend
+# 并按驱动/MindCluster 版本调整 ASCEND_NPU_EXPORTER_IMAGE（见 .env.example）
+docker compose --env-file .env --profile gpu-ascend up -d
+# 验收：Targets 中 job=npu UP；Grafana → 07 Ascend NPU
+curl -s http://127.0.0.1:8082/metrics | head
+```
+
+前提：宿主机可执行 `npu-smi info`；驱动/DCMI 路径与 `.env` 中 `ASCEND_*_HOST_PATH` 一致。  
+**指标名随 npu-exporter 版本可能变化**；若看板无数据，在 Prometheus 用 `{job="npu"}` 查看实际序列名后微调 `07-npu-ascend.json`。
+
+**其它加速卡：** 复制本仓库英伟达/昇腾模式，新增厂商 exporter 服务、在 `prometheus.yml` 增加 scrape、新增 Grafana JSON；勿假设 node-exporter 能覆盖。
+
+未启用对应 profile 时，Targets 里 `dcgm` / `npu` 为 **DOWN 属预期**，可忽略。
 
 ---
 
@@ -84,7 +122,9 @@ docker ps --filter name=monitoring-node-exporter
 2. **02 LLM** — LLM QPS 与延迟、vLLM up  
 3. **03 RAG and NL2SQL** — RAG / NL2SQL  
 4. **04 Analysis and Trace** — Analysis、Trace recording、小模型帧  
-5. **05 Host Resources** — CPU / 内存 / Load / 磁盘 / 网络（node-exporter）
+5. **05 Host Resources** — CPU / 内存 / Load / 磁盘 / 网络（node-exporter）  
+6. **06 NVIDIA GPU (DCGM)** — 英伟达利用率 / 显存 / 温度 / 功耗（需 `gpu-nvidia`）  
+7. **07 Ascend NPU** — 昇腾利用率 / HBM / 温度 / 功耗（需 `gpu-ascend`）
 
 ---
 
@@ -97,6 +137,8 @@ docker ps --filter name=monitoring-node-exporter
 - `models-app:8083/metrics`（容器内端口 **8083**，非宿主机映射误解）
 - `vllm-service:8000/metrics`
 - Blackbox：`/health`（app / vllm / mineru）
+- `node-exporter:9100`（主机）
+- `dcgm-exporter:9400` / `npu-exporter:8082`（启用对应 GPU profile 后才 UP）
 
 未部署 MinerU 时，请注释 blackbox 中 `mineru-api` 行，避免 `BlackboxProbeFailed` 噪声。  
 启用 `models-app-gpu` 时，按文件内注释取消对应 job。
@@ -162,8 +204,10 @@ docker pull prom/prometheus:v2.54.1
 docker pull grafana/grafana:11.2.0
 docker pull prom/alertmanager:v0.27.0
 docker pull prom/blackbox-exporter:v0.25.0
-# 可选
 docker pull prom/node-exporter:v1.8.2
+# 按现场卡型二选一
+docker pull nvidia/dcgm-exporter:4.8.3
+docker pull ascendai/npu-exporter:v7.3.2
 
 docker save -o monitoring-images.tar \
   prom/prometheus:v2.54.1 grafana/grafana:11.2.0 \

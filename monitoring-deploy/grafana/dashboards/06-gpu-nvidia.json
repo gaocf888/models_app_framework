@@ -1,0 +1,120 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100 },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "GPU utilization %",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "DCGM_FI_DEV_GPU_UTIL{job=\"dcgm\"}",
+          "legendFormat": "gpu{{gpu}} {{device}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100 },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "title": "GPU memory copy util %",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "DCGM_FI_DEV_MEM_COPY_UTIL{job=\"dcgm\"}",
+          "legendFormat": "gpu{{gpu}} {{device}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "title": "Framebuffer used",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "DCGM_FI_DEV_FB_USED{job=\"dcgm\"} * 1024 * 1024",
+          "legendFormat": "used gpu{{gpu}}",
+          "refId": "A"
+        },
+        {
+          "expr": "DCGM_FI_DEV_FB_FREE{job=\"dcgm\"} * 1024 * 1024",
+          "legendFormat": "free gpu{{gpu}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "celsius" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "title": "GPU temperature",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "DCGM_FI_DEV_GPU_TEMP{job=\"dcgm\"}",
+          "legendFormat": "gpu{{gpu}} {{device}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "watt" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 5,
+      "title": "GPU power usage",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "DCGM_FI_DEV_POWER_USAGE{job=\"dcgm\"}",
+          "legendFormat": "gpu{{gpu}} {{device}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 6,
+      "title": "DCGM scrape up",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "up{job=\"dcgm\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["gpu", "nvidia", "dcgm"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "06 NVIDIA GPU (DCGM)",
+  "uid": "models-app-gpu-nvidia",
+  "version": 1
+}

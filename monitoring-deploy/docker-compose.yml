@@ -8,6 +8,9 @@
 #   docker network create ai-stack 2>/dev/null || true
 #   docker network create mineru-stack 2>/dev/null || true
 #   docker compose --env-file .env up -d
+# 英伟达 GPU：COMPOSE_PROFILES=gpu-nvidia 或 --profile gpu-nvidia
+# 昇腾 NPU：  COMPOSE_PROFILES=gpu-ascend 或 --profile gpu-ascend
+# 其它加速卡：未内置，见 README §3.1
 
 services:
   prometheus:
@@ -104,6 +107,44 @@ services:
       - --path.sysfs=/host/sys
       - --path.rootfs=/rootfs
       - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    networks:
+      - monitoring-internal
+
+  # ---- GPU / NPU 监控（按现场卡型启用 profile，勿默认全开）----
+  # 英伟达：COMPOSE_PROFILES=gpu-nvidia  或  --profile gpu-nvidia
+  # 昇腾：  COMPOSE_PROFILES=gpu-ascend  或  --profile gpu-ascend
+  # 沐曦/寒武纪/其它：本仓库未内置 exporter，须单独增加（见 README §GPU）
+  dcgm-exporter:
+    image: ${DCGM_EXPORTER_IMAGE:-nvidia/dcgm-exporter:4.8.3}
+    container_name: monitoring-dcgm-exporter
+    restart: unless-stopped
+    profiles: ["gpu-nvidia"]
+    runtime: ${NVIDIA_RUNTIME:-nvidia}
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,compat32
+    ports:
+      - "${DCGM_EXPORTER_PORT:-9400}:9400"
+    cap_add:
+      - SYS_ADMIN
+    networks:
+      - monitoring-internal
+
+  npu-exporter:
+    image: ${ASCEND_NPU_EXPORTER_IMAGE:-ascendai/npu-exporter:v7.3.2}
+    container_name: monitoring-npu-exporter
+    restart: unless-stopped
+    profiles: ["gpu-ascend"]
+    privileged: true
+    pid: host
+    ports:
+      - "${ASCEND_NPU_EXPORTER_PORT:-8082}:8082"
+    volumes:
+      - ${ASCEND_DRIVER_HOST_PATH:-/usr/local/Ascend/driver}:/usr/local/Ascend/driver:ro
+      - ${ASCEND_DCMI_HOST_PATH:-/usr/local/dcmi}:/usr/local/dcmi:ro
+      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
+      - /dev:/dev
+    # 默认使用镜像 ENTRYPOINT；若需自定义参数，在 docker-compose.override.yml 写 command
     networks:
       - monitoring-internal
 

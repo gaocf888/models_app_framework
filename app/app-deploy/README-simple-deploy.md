@@ -516,7 +516,18 @@ bash scripts/prepare-data-dirs.sh   # bind 目录 chown（65534/472），避免 
 docker compose --env-file .env up -d
 ```
 
-验收：`http://<host>:9091/targets` 中 `models-app`、`vllm` 为 UP；Grafana `http://<host>:3000`（账号见 `.env`）。
+验收：`http://<host>:9091/targets` 中 `models-app`、`vllm`、`node` 为 UP；Grafana `http://<host>:3000`（账号见 `.env`）。
+
+英伟达 / 昇腾 **卡硬件监控**（可选）：
+
+```bash
+# 英伟达
+docker compose --env-file .env --profile gpu-nvidia up -d
+# 昇腾
+docker compose --env-file .env --profile gpu-ascend up -d
+```
+
+Grafana 看板 **06 NVIDIA GPU** / **07 Ascend NPU**。沐曦等其它卡须单独加 exporter，见 `monitoring-deploy/README.md` §3.1。
 
 ### 3.1 人脸识别（InsightFace，`/face/*`）
 

@@ -72,3 +72,20 @@ scrape_configs:
       - targets: ["node-exporter:9100"]
         labels:
           stack: infra
+
+  # 仅在启用对应 profile 且 exporter 已起时为 UP；未启用会 DOWN（属预期，可忽略）
+  - job_name: dcgm
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["dcgm-exporter:9400"]
+        labels:
+          stack: gpu
+          vendor: nvidia
+
+  - job_name: npu
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["npu-exporter:8082"]
+        labels:
+          stack: npu
+          vendor: ascend

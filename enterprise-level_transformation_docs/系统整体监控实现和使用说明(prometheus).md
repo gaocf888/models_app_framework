@@ -189,6 +189,8 @@ docker compose --env-file .env down
 | **03 RAG and NL2SQL** | 检索与问数 | RAG QPS / 召回 / 重排；NL2SQL QPS 与错误率 |
 | **04 Analysis and Trace** | 综合分析 | 分析请求与降级、节点延迟、Trace 成功率 recording、小模型帧率 |
 | **05 Host Resources** | 宿主机资源 | CPU%、内存%、Load、磁盘、网卡吞吐（依赖 `job=node`） |
+| **06 NVIDIA GPU (DCGM)** | 英伟达 GPU | 利用率/显存/温度/功耗（需 profile `gpu-nvidia`） |
+| **07 Ascend NPU** | 昇腾 NPU | 利用率/HBM/温度/功耗（需 profile `gpu-ascend`） |
 
 **日常用法建议**：
 
@@ -196,6 +198,9 @@ docker compose --env-file .env down
 2. 客服或推理慢：看 **02** 的 LLM P95 与 vLLM 存活。
 3. 知识问答异常：看 **03** RAG；报表问数异常：看 NL2SQL 错误率。
 4. 综合分析 / 降级：看 **04**。
+5. 主机打满：看 **05**；卡侧打满：英伟达看 **06**、昇腾看 **07**（须先启用对应 profile）。
+
+> **其它加速卡**（沐曦、寒武纪等）：仓库未内置硬件 exporter，须单独增加服务、scrape 与看板，详见 `monitoring-deploy/README.md` §3.1。
 
 数据源已通过 provisioning 指向 `http://prometheus:9091`，一般无需手工添加。
 

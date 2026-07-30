@@ -312,7 +312,7 @@ PromQL 细节可参考 `docs/大小模型应用技术架构与实现方案.md` �
 
 - [x] HTTP `path` 高基数治理（路由模板化 + 动态段折叠：`app/core/metrics_path.py`）
 - [x] MinerU / EasySearch 黑盒探测或各自 exporter（Blackbox 含 app/vllm/mineru；EasySearch 见 `prometheus/optional-easysearch.fragment.yml`）
-- [x] NPU / 节点指标（**node-exporter 默认启动**；NPU exporter 说明见 `monitoring-deploy/README.md` §7）
+- [x] NPU / 节点指标（**node-exporter 默认启动**；英伟达 `gpu-nvidia` / 昇腾 `gpu-ascend` profile；其它卡须单独增加，见 `monitoring-deploy/README.md` §3.1）
 - [x] 下线或冻结 `vllm-deploy` 内嵌 Prometheus profile，统一指向 `monitoring-deploy`（README + compose 标注 Deprecated）
 
 ---
@@ -381,7 +381,7 @@ curl -s "http://127.0.0.1:9091/-/ready"
 | HTTP path 高基数治理 | **已有**（`app/core/metrics_path.py`） |
 | vLLM 可选 Prometheus（仅 vLLM） | **已废弃**（改用 `monitoring-deploy/`） |
 | `monitoring-deploy/` 独立栈 | **已落地** |
-| Grafana 看板与 provisioning | **已落地**（5 个看板，含主机资源） |
+| Grafana 看板与 provisioning | **已落地**（主机 + 英伟达 DCGM + 昇腾 NPU 看板；其它厂商卡需另接） |
 | 全栈 scrape + 告警接线 | **已落地**（Webhook 需现场配置） |
 | 部署手册监控章节 | **已落地**（`README-DEPLOY-ASCEND.md` §6.5） |
 

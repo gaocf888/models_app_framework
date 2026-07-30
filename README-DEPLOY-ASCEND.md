@@ -1027,17 +1027,23 @@ mkdir -p /aidata/data/prometheus /aidata/data/grafana /aidata/data/alertmanager
 bash scripts/prepare-data-dirs.sh   # 必须：Prometheus/Grafana 数据目录权限
 bash scripts/check-baseline.sh   # Phase 0
 docker compose --env-file .env up -d
+
+# 昇腾卡硬件监控（可选，推荐本现场开启）
+# 在 .env 增加：COMPOSE_PROFILES=gpu-ascend
+# 并按驱动版本调整 ASCEND_NPU_EXPORTER_IMAGE（默认 ascendai/npu-exporter:v7.3.2）
+docker compose --env-file .env --profile gpu-ascend up -d
 ```
 
 验收：
 
 | 检查 | 期望 |
 |------|------|
-| `http://127.0.0.1:9091/targets` | `models-app`、`vllm` UP |
-| `http://127.0.0.1:3000` | Grafana 可见 Models App 看板 |
+| `http://127.0.0.1:9091/targets` | `models-app`、`vllm`、`node` UP；开启 NPU 后 `npu` UP |
+| `http://127.0.0.1:3000` | Grafana：Models App 看板；NPU 见 **07 Ascend NPU** |
 | `curl -s http://127.0.0.1:9091/-/ready` | Ready |
 
-> 勿再使用 `vllm-deploy` 的 `--profile monitoring`（已废弃）。
+> 勿再使用 `vllm-deploy` 的 `--profile monitoring`（已废弃）。  
+> **沐曦/寒武纪/其它加速卡** 的硬件监控未内置，须在 `monitoring-deploy` 单独增加 exporter（见 `monitoring-deploy/README.md` §3.1）。
 
 ---
 
