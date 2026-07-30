@@ -1945,7 +1945,8 @@ class NL2SQLChain:
     def _extract_boiler_scope_label_from_question(cls, question: str) -> str | None:
         """
         从问句解析锅炉范围（与 account_boiler.boiler_name 一致，统一为「N号锅炉」）。
-        用户若写「N号机组」「N#机组」「#N机组」「一号锅炉」等，均归一为「1号锅炉」形式。
+        用户若写「N号机组」「N号炉」「N号炉膛」「N#机组」「#N机组」「一号锅炉」等，均归一为「1号锅炉」形式。
+        「号炉」可带可选「膛」（1号炉膛），避免与无序号的「炉膛」混淆。
         """
         q = (question or "").strip()
         if not q:
@@ -1958,6 +1959,9 @@ class NL2SQLChain:
             r"([一二两三四五六七八九十百]+)号机组",
             r"(\d+)#机组",
             r"#(\d+)机组",
+            # 口语简称「1号炉 / 一号炉 / 1号炉膛」→「1号锅炉」（须在「号锅炉」之后匹配）
+            r"(\d+)号炉(?:膛)?",
+            r"([一二两三四五六七八九十百]+)号炉(?:膛)?",
         )
         for pat in unit_as_boiler_patterns:
             m = re.search(pat, q)
@@ -2022,9 +2026,15 @@ class NL2SQLChain:
             time_intent_source=time_intent_source,
         )
 
-    # QA 模板中常见的示例锅炉名字面量（strict replay 需按问句全局替换）
+    # SQL 中常见的机组/锅炉字面量（含口语「号炉」）；改写为问句归一后的「N号锅炉」
     _BOILER_UNIT_LITERAL_IN_QUOTES = re.compile(
-        r"'(\d+号锅炉|[一二两三四五六七八九十百]+号锅炉)'"
+        r"'("
+        r"(?:\d+|[一二两三四五六七八九十百]+)号锅炉"
+        r"|(?:\d+|[一二两三四五六七八九十百]+)号机组"
+        r"|(?:\d+)#机组"
+        r"|#(?:\d+)机组"
+        r"|(?:\d+|[一二两三四五六七八九十百]+)号炉(?:膛)?"
+        r")'"
     )
 
     @staticmethod
@@ -2083,32 +2093,67 @@ class NL2SQLChain:
 
         if boiler := scopes.get("boiler"):
             safe = boiler.replace("'", "''")
+            # 等值：boiler_name='1号炉' / '2号机组' 等口语别名
             boiler_pat = re.compile(
-                r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*=\s*'([^']*锅炉[^']*)'"
+                r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s*=\s*("
+                + self._BOILER_UNIT_LITERAL_IN_QUOTES.pattern
+                + r")"
             )
 
             def _boiler_repl(m: re.Match[str]) -> str:
                 col = m.group(1)
                 if "boiler" not in col.lower():
                     return m.group(0)
+                old = m.group(2).strip("'")
+                if old == boiler:
+                    return m.group(0)
                 notes.append("entity_scope_boiler_name")
                 return f"{col} = '{safe}'"
 
             rewritten = boiler_pat.sub(_boiler_repl, rewritten)
 
+            # LIKE CONCAT('%', '1号炉', '%') 等（缓存命中 SQL 常带口语字面量）
             like_concat_pat = re.compile(
                 r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s+LIKE\s+CONCAT\s*\(\s*'%'\s*,\s*"
-                r"'([^']*号锅炉[^']*)'\s*,\s*'%'\s*\)"
+                + self._BOILER_UNIT_LITERAL_IN_QUOTES.pattern
+                + r"\s*,\s*'%'\s*\)"
             )
 
             def _boiler_like_concat_repl(m: re.Match[str]) -> str:
                 col = m.group(1)
                 if "boiler" not in col.lower():
                     return m.group(0)
+                old = m.group(2)
+                if old == boiler:
+                    return m.group(0)
                 notes.append("entity_scope_boiler_name")
                 return f"{col} LIKE CONCAT('%', '{safe}', '%')"
 
             rewritten = like_concat_pat.sub(_boiler_like_concat_repl, rewritten)
+
+            # LIKE '%1号炉%' / LIKE '%2号机组%'（单字面量内嵌通配；缓存命中常见）
+            like_pct_pat = re.compile(
+                r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s+LIKE\s+'"
+                r"%("
+                r"(?:\d+|[一二两三四五六七八九十百]+)号锅炉"
+                r"|(?:\d+|[一二两三四五六七八九十百]+)号机组"
+                r"|(?:\d+)#机组"
+                r"|#(?:\d+)机组"
+                r"|(?:\d+|[一二两三四五六七八九十百]+)号炉(?:膛)?"
+                r")%'"
+            )
+
+            def _boiler_like_pct_repl(m: re.Match[str]) -> str:
+                col = m.group(1)
+                if "boiler" not in col.lower():
+                    return m.group(0)
+                old = m.group(2)
+                if old == boiler:
+                    return m.group(0)
+                notes.append("entity_scope_boiler_name")
+                return f"{col} LIKE '%{safe}%'"
+
+            rewritten = like_pct_pat.sub(_boiler_like_pct_repl, rewritten)
 
             def _global_boiler_lit_repl(m: re.Match[str]) -> str:
                 old = m.group(1)
@@ -2118,6 +2163,26 @@ class NL2SQLChain:
                 return f"'{safe}'"
 
             rewritten = self._BOILER_UNIT_LITERAL_IN_QUOTES.sub(_global_boiler_lit_repl, rewritten)
+
+            # 全局：'%1号炉%' 字面量（无列名前缀约束时的兜底，如嵌套子查询）
+            like_pct_lit_pat = re.compile(
+                r"'%("
+                r"(?:\d+|[一二两三四五六七八九十百]+)号锅炉"
+                r"|(?:\d+|[一二两三四五六七八九十百]+)号机组"
+                r"|(?:\d+)#机组"
+                r"|#(?:\d+)机组"
+                r"|(?:\d+|[一二两三四五六七八九十百]+)号炉(?:膛)?"
+                r")%'"
+            )
+
+            def _global_like_pct_lit_repl(m: re.Match[str]) -> str:
+                old = m.group(1)
+                if old == boiler:
+                    return m.group(0)
+                notes.append("entity_scope_boiler_name")
+                return f"'%{safe}%'"
+
+            rewritten = like_pct_lit_pat.sub(_global_like_pct_lit_repl, rewritten)
 
         from app.nl2sql.scope_sql_rewrite import rewrite_scope_sql_placeholders
 

@@ -173,8 +173,10 @@ def test_ensure_nl2sql_partial_rows_note_inserts_after_table():
 
 @pytest.mark.asyncio
 async def test_summarize_empty_with_llm_guide():
+    from datetime import date as date_cls
+
     llm = MagicMock()
-    llm.chat = AsyncMock(return_value="本次无数据，建议缩小时间范围。")
+    llm.chat = AsyncMock(return_value="本次无数据，建议核对时间条件或放宽位置表述。")
     with patch("app.llm.graphs.chatbot_nl2sql_answer.get_app_config") as gac:
         gac.return_value = type(
             "A",
@@ -191,8 +193,14 @@ async def test_summarize_empty_with_llm_guide():
                 sql="SELECT 1",
                 rows=[],
             )
-    assert "缩小时间范围" in result.answer_text
+    assert "核对时间条件" in result.answer_text or "放宽位置表述" in result.answer_text
     assert result.analysis_meta and result.analysis_meta.get("llm_analysis_used") is True
+    llm.chat.assert_awaited()
+    messages = llm.chat.await_args.kwargs["messages"]
+    user_msg = next(m["content"] for m in messages if m.get("role") == "user")
+    assert f"今天日期：{date_cls.today().isoformat()}" in user_msg
+    assert "0 行" in user_msg
+    assert "不是结果过多" in user_msg
 
 
 def test_format_nl2sql_user_error_hides_technical_detail() -> None:

@@ -126,7 +126,9 @@ _MARKDOWN_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+
 _MARKDOWN_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 
 _DEFAULT_EMPTY_SYSTEM = (
-    "用户查询已执行但无数据行。用简洁中文说明无数据，并给出改问建议；禁止编造数值与 SQL。"
+    "用户数据查询已执行，结果为 0 行。先一句说明未查到，再给 2～3 条改问建议（位置/时间/业务说法）。"
+    "禁止编造数值与 SQL；禁止建议用户区分「号炉」与「号锅炉」（系统已自动归一）；"
+    "禁止「年份尚未到来/较新年份请查更早年」；禁止 0 行时说「数据量较大」；禁止客套收尾。"
 )
 
 
@@ -800,7 +802,11 @@ async def summarize_nl2sql_with_llm(
             )
             user_content = (
                 f"用户问题：{user_query or ''}\n\n"
-                "查询结果：空（0 行）。请按系统要求输出友好引导。"
+                f"今天日期：{date.today().isoformat()}（唯一时间基准；今天所在年份={date.today().year}）\n"
+                "查询结果：空（0 行）。已执行完成，不是失败，也不是结果过多。\n"
+                "系统说明：锅炉口语「号炉/号机组」已自动归一为「号锅炉」，请勿建议用户区分二者。\n"
+                "请输出：1 句未查到说明 + 2～3 条改问建议（优先放宽位置/孔号，其次该年内时间，再次字段说法）；"
+                "勿写号炉与号锅炉差异；勿写较新年份去查更早年；勿客套收尾。"
             )
             guided = await _call_analysis_llm(llm_client, system=system, user_content=user_content)
             if guided:
