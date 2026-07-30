@@ -74,7 +74,7 @@ docker ps --filter name=monitoring-node-exporter
 |------|-------------|------------------------------------------|
 | Prometheus ready | `curl -s http://127.0.0.1:9091/-/ready` | Prometheus Server is Ready               |
 | Targets | 浏览器 `http://127.0.0.1:9091/targets` | `models-app`、`vllm`、`node` **UP**        |
-| Grafana | `http://127.0.0.1:3000` | 登录后见文件夹 Models App 下 4 个看板 登录账密见环境变量配置文件 |
+| Grafana | `http://127.0.0.1:3000` | 登录后见文件夹 Models App 下看板（含主机资源）；账密见 `.env` |
 | Alertmanager | `http://127.0.0.1:9093` | UI 可打开                                   |
 | 人为宕机告警 | `docker stop models-app` 等待 ≥2m | `ModelsAppDown` 触发                       |
 
@@ -84,6 +84,7 @@ docker ps --filter name=monitoring-node-exporter
 2. **02 LLM** — LLM QPS 与延迟、vLLM up  
 3. **03 RAG and NL2SQL** — RAG / NL2SQL  
 4. **04 Analysis and Trace** — Analysis、Trace recording、小模型帧  
+5. **05 Host Resources** — CPU / 内存 / Load / 磁盘 / 网络（node-exporter）
 
 ---
 

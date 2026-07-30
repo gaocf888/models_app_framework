@@ -42,7 +42,7 @@ Blackbox → 对 /health 做存活探测
 | 埋点与暴露 | `app/core/metrics.py`、`app/main.py` | 定义指标；HTTP 中间件与业务路径打点；`/metrics` |
 | path 高基数治理 | `app/core/metrics_path.py` | 优先路由模板，否则折叠 UUID/数字段 |
 | 采集与存储 | `monitoring-prometheus` | 拉取、TSDB、告警规则 |
-| 展示 | `monitoring-grafana` | 预置 4 套看板 |
+| 展示 | `monitoring-grafana` | 预置 5 套看板（含主机资源） |
 | 通知 | `monitoring-alertmanager` | 路由告警到 Webhook（企微/钉钉等需现场配置） |
 | 黑盒 | `monitoring-blackbox` | HTTP 探测 app / vLLM / MinerU 健康检查 |
 | 节点指标 | `monitoring-node-exporter`（默认启动） | 宿主机 CPU/内存/磁盘等 |
@@ -188,6 +188,7 @@ docker compose --env-file .env down
 | **02 LLM** | 大模型 | `llm_requests_total` QPS、延迟 P95（按 model）、vLLM `up` |
 | **03 RAG and NL2SQL** | 检索与问数 | RAG QPS / 召回 / 重排；NL2SQL QPS 与错误率 |
 | **04 Analysis and Trace** | 综合分析 | 分析请求与降级、节点延迟、Trace 成功率 recording、小模型帧率 |
+| **05 Host Resources** | 宿主机资源 | CPU%、内存%、Load、磁盘、网卡吞吐（依赖 `job=node`） |
 
 **日常用法建议**：
 
@@ -255,7 +256,7 @@ docker start models-app
 | 1 | Phase 0 基线脚本 | app + vLLM `/metrics` OK |
 | 2 | `curl http://127.0.0.1:9091/-/ready` | Ready |
 | 3 | Prometheus Targets | `models-app`、`vllm` 为 **UP** |
-| 4 | Grafana 登录 | 可见 4 个 Models App 看板且有近 15 分钟曲线（有流量时） |
+| 4 | Grafana 登录 | 可见 Models App 看板（含 **05 Host Resources**）且有近 15 分钟曲线 |
 | 5 | Alertmanager UI | 可打开；配置真实 Webhook 后可收到测试告警 |
 | 6 | 停 `models-app` ≥2m | `ModelsAppDown` 触发 |
 | 7 | 业务功能 | 监控 down 时对话 / RAG 仍可用 |

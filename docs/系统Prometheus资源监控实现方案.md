@@ -141,8 +141,10 @@ monitoring-deploy/
       dashboards/dashboards.yml
     dashboards/
       01-app-overview.json
-      02-llm-rag-nl2sql.json
-      03-analysis.json
+      02-llm.json
+      03-rag-nl2sql.json
+      04-analysis.json
+      05-host-resources.json
 ```
 
 ### 4.2 网络接入
@@ -379,7 +381,7 @@ curl -s "http://127.0.0.1:9091/-/ready"
 | HTTP path 高基数治理 | **已有**（`app/core/metrics_path.py`） |
 | vLLM 可选 Prometheus（仅 vLLM） | **已废弃**（改用 `monitoring-deploy/`） |
 | `monitoring-deploy/` 独立栈 | **已落地** |
-| Grafana 看板与 provisioning | **已落地**（4 个看板） |
+| Grafana 看板与 provisioning | **已落地**（5 个看板，含主机资源） |
 | 全栈 scrape + 告警接线 | **已落地**（Webhook 需现场配置） |
 | 部署手册监控章节 | **已落地**（`README-DEPLOY-ASCEND.md` §6.5） |
 
