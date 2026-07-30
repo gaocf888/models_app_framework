@@ -1,7 +1,2 @@
-# 可选：--profile infra 启用 node-exporter 后，将下列 job 合并进 prometheus.yml 并 reload
-
-# - job_name: node
-#   static_configs:
-#     - targets: ["node-exporter:9100"]
-#       labels:
-#         stack: infra
+# node scrape 已默认写入 prometheus.yml（job_name: node）。
+# 本文件仅作历史参考，无需再合并。

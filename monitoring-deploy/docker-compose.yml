@@ -8,9 +8,6 @@
 #   docker network create ai-stack 2>/dev/null || true
 #   docker network create mineru-stack 2>/dev/null || true
 #   docker compose --env-file .env up -d
-#
-# 可选节点指标：
-#   docker compose --env-file .env --profile infra up -d
 
 services:
   prometheus:
@@ -90,12 +87,11 @@ services:
       - rag-external
       - mineru-external
 
-  # Phase 3：可选宿主机节点指标（Linux / 需挂载宿主机路径）
+  # 宿主机节点指标（默认启动；Linux 宿主机需挂载 /proc /sys）
   node-exporter:
     image: prom/node-exporter:v1.8.2
     container_name: monitoring-node-exporter
     restart: unless-stopped
-    profiles: ["infra"]
     ports:
       - "${NODE_EXPORTER_PORT:-9100}:9100"
     pid: host

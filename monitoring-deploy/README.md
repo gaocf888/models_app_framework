@@ -16,7 +16,7 @@
 | Grafana | `monitoring-grafana` | 3000 | 看板 |
 | Alertmanager | `monitoring-alertmanager` | 9093 | 告警通知 |
 | Blackbox | `monitoring-blackbox` | 9115 | HTTP 健康探针 |
-| Node Exporter（可选） | `monitoring-node-exporter` | 9100 | `--profile infra` |
+| Node Exporter | `monitoring-node-exporter` | 9100 | 宿主机 CPU/内存/磁盘等（默认启动） |
 
 ---
 
@@ -57,11 +57,12 @@ bash scripts/prepare-data-dirs.sh
 docker compose --env-file .env up -d
 ```
 
-可选节点指标：
+可选节点指标（**已默认启动**；若曾用旧版需 `--profile infra`，现可直接 `up -d`）：
 
 ```bash
-docker compose --env-file .env --profile infra up -d
-# 并在 prometheus/prometheus.yml 取消 node job 注释后 reload：
+# 确认 node-exporter 在跑
+docker ps --filter name=monitoring-node-exporter
+# prometheus.yml 已包含 job_name: node；改配置后可：
 # curl -X POST http://127.0.0.1:9091/-/reload
 ```
 
@@ -72,7 +73,7 @@ docker compose --env-file .env --profile infra up -d
 | 检查 | 命令 / 地址 | 期望 |
 |------|-------------|------|
 | Prometheus ready | `curl -s http://127.0.0.1:9091/-/ready` | Prometheus Server is Ready |
-| Targets | 浏览器 `http://127.0.0.1:9091/targets` | `models-app`、`vllm` **UP** |
+| Targets | 浏览器 `http://127.0.0.1:9091/targets` | `models-app`、`vllm`、`node` **UP** |
 | Grafana | `http://127.0.0.1:3000` | 登录后见文件夹 Models App 下 4 个看板 |
 | Alertmanager | `http://127.0.0.1:9093` | UI 可打开 |
 | 人为宕机告警 | `docker stop models-app` 等待 ≥2m | `ModelsAppDown` 触发 |
@@ -170,7 +171,7 @@ docker save -o monitoring-images.tar \
 
 专网：`docker load -i monitoring-images.tar` 后按 §3 启动。
 
-NPU 专用 exporter（昇腾）因厂商包与现场驱动强绑定，**未打入默认 compose**；节点级资源请先用 `--profile infra` 的 node-exporter，NPU 指标按华为文档另行接入并增加 scrape job。
+NPU 专用 exporter（昇腾）因厂商包与现场驱动强绑定，**未打入默认 compose**；宿主机节点级资源由默认启动的 **node-exporter** 提供，NPU 指标按华为文档另行接入并增加 scrape job。
 
 ---
 

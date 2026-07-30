@@ -310,7 +310,7 @@ PromQL 细节可参考 `docs/大小模型应用技术架构与实现方案.md` �
 
 - [x] HTTP `path` 高基数治理（路由模板化 + 动态段折叠：`app/core/metrics_path.py`）
 - [x] MinerU / EasySearch 黑盒探测或各自 exporter（Blackbox 含 app/vllm/mineru；EasySearch 见 `prometheus/optional-easysearch.fragment.yml`）
-- [x] NPU / 节点指标（node-exporter：`--profile infra`；NPU exporter 说明见 `monitoring-deploy/README.md` §7）
+- [x] NPU / 节点指标（**node-exporter 默认启动**；NPU exporter 说明见 `monitoring-deploy/README.md` §7）
 - [x] 下线或冻结 `vllm-deploy` 内嵌 Prometheus profile，统一指向 `monitoring-deploy`（README + compose 标注 Deprecated）
 
 ---

@@ -45,7 +45,7 @@ Blackbox → 对 /health 做存活探测
 | 展示 | `monitoring-grafana` | 预置 4 套看板 |
 | 通知 | `monitoring-alertmanager` | 路由告警到 Webhook（企微/钉钉等需现场配置） |
 | 黑盒 | `monitoring-blackbox` | HTTP 探测 app / vLLM / MinerU 健康检查 |
-| 可选节点 | `monitoring-node-exporter`（`--profile infra`） | 宿主机 CPU/内存/磁盘等 |
+| 节点指标 | `monitoring-node-exporter`（默认启动） | 宿主机 CPU/内存/磁盘等 |
 
 **推荐启动顺序**（监控放最后）：
 
@@ -151,13 +151,7 @@ docker network create mineru-stack 2>/dev/null || true
 mkdir -p /aidata/data/prometheus /aidata/data/grafana /aidata/data/alertmanager   # 按 .env 路径
 bash scripts/prepare-data-dirs.sh   # 必须：否则 Prometheus permission denied
 docker compose --env-file .env up -d
-```
-
-可选宿主机节点指标：
-
-```bash
-docker compose --env-file .env --profile infra up -d
-# 再按 monitoring-deploy/prometheus/optional-node.fragment.yml 合并 scrape 并 reload
+# node-exporter 已随默认栈启动；Prometheus 含 job_name: node
 ```
 
 昇腾 / 专网步骤亦可对照 `README-DEPLOY-ASCEND.md` §6.5。
@@ -170,6 +164,7 @@ docker compose --env-file .env --profile infra up -d
 | Grafana | 3000 | `http://<host>:3000`（用户/密码见 `.env`） |
 | Alertmanager | 9093 | `http://<host>:9093` |
 | Blackbox | 9115 | 一般无需直接访问 |
+| Node Exporter | 9100 | 宿主机节点指标（默认启动） |
 
 **安全**：上述端口仅建议管理网 / 内网开放；`/metrics` 通常无业务鉴权，勿暴露公网。
 
@@ -249,7 +244,7 @@ docker start models-app
 3. **未部署 MinerU**：注释 `prometheus.yml` 中 blackbox 的 `mineru-api` 目标，避免 `BlackboxProbeFailed` 噪声。
 4. **models-app-gpu**：默认未 scrape；启用时按 `prometheus.yml` 内注释打开对应 job。
 5. **EasySearch**：HTTPS + 账号密码，见 `prometheus/optional-easysearch.fragment.yml`（勿把密码提交公开仓库）。
-6. **NPU 指标**：未打入默认 compose（与驱动/厂商包强绑定）；节点级可先用 `--profile infra`，NPU exporter 按华为文档另接。
+6. **NPU 指标**：未打入默认 compose（与驱动/厂商包强绑定）；**node-exporter 已默认启动**采集宿主机指标，NPU exporter 按华为文档另接。
 
 ---
 
