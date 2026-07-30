@@ -516,7 +516,7 @@ mkdir -p /aidata/data/prometheus /aidata/data/grafana /aidata/data/alertmanager
 docker compose --env-file .env up -d
 ```
 
-验收：`http://<host>:9090/targets` 中 `models-app`、`vllm` 为 UP；Grafana `http://<host>:3000`（账号见 `.env`）。
+验收：`http://<host>:9091/targets` 中 `models-app`、`vllm` 为 UP；Grafana `http://<host>:3000`（账号见 `.env`）。
 
 ### 3.1 人脸识别（InsightFace，`/face/*`）
 
@@ -581,8 +581,8 @@ curl -s "http://127.0.0.1:8000/health"
 curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
 
 # （可选）监控栈
-curl -s "http://127.0.0.1:9090/-/ready"
-# 浏览器：http://<host>:9090/targets 、 http://<host>:3000
+curl -s "http://127.0.0.1:9091/-/ready"
+# 浏览器：http://<host>:9091/targets 、 http://<host>:3000
 ```
 
 ### 4.1.1 `/inspection-extract/upload` + `/inspection-extract/run` 测试（检修报告结构化提取）
@@ -683,7 +683,7 @@ data: {"finished":true,"meta":{"status":"answered","intent_label":"kb_qa","retri
 | **MinerU（可选）** | `mineru-api` | `http://<host>:${MINERU_PORT:-8009}/health` | `http://mineru-api:8000` | 扫描 PDF 解析；API 文档 `/docs` |
 | **Neo4j（可选）** | `graph-neo4j` | `http://<host>:7474` | `bolt://graph-neo4j:7687` | GraphRAG；`graphrag_db-deploy/` |
 | **版面 OCR 侧车（可选）** | `paddleocr-layout-api` | `http://<host>:8010/health` | `http://paddleocr-layout-api:8000` | 检修 V0；`paddleocr-layout-deploy/` |
-| **Prometheus（可选）** | `monitoring-prometheus` | `http://<host>:9090` | — | Targets / 告警；`monitoring-deploy/` |
+| **Prometheus（可选）** | `monitoring-prometheus` | `http://<host>:9091` | — | Targets / 告警；`monitoring-deploy/` |
 | **Grafana（可选）** | `monitoring-grafana` | `http://<host>:3000` | — | 看板；账号见 `monitoring-deploy/.env` |
 | **Alertmanager（可选）** | `monitoring-alertmanager` | `http://<host>:9093` | — | 告警通知；Webhook 需现场配置 |
 
@@ -708,7 +708,7 @@ curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
 curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:${MINIO_PORT:-9000}/minio/health/live"
 
 # （可选）监控
-curl -s "http://127.0.0.1:9090/-/ready"
+curl -s "http://127.0.0.1:9091/-/ready"
 ```
 
 ### 5.3 本栈常用命令

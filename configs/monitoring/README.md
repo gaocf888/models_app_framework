@@ -7,5 +7,5 @@
 修改本文件后，请同步复制到 `monitoring-deploy/prometheus/rules/`，并执行：
 
 ```bash
-curl -X POST http://127.0.0.1:9090/-/reload
+curl -X POST http://127.0.0.1:9091/-/reload
 ```

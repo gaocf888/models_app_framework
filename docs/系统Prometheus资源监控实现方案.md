@@ -97,7 +97,7 @@ curl -s "http://127.0.0.1:8000/metrics" | head   # vLLM
 ```text
                     ┌─────────────────────────────┐
                     │  monitoring-deploy/（新建）   │
-                    │  prometheus :9090             │
+                    │  prometheus :9091             │
                     │  grafana    :3000             │
                     │  （可选）alertmanager :9093   │
                     └──────────────┬──────────────┘
@@ -236,7 +236,7 @@ PromQL 细节可参考 `docs/大小模型应用技术架构与实现方案.md` �
 
 **Grafana 配置约定**：
 
-- 默认数据源：`http://prometheus:9090`
+- 默认数据源：`http://prometheus:9091`
 - admin 密码写入 `monitoring-deploy/.env`，禁止写死进镜像
 - Dashboard 使用 **provisioning 自动加载**，避免手工导入后丢失
 
@@ -272,7 +272,7 @@ PromQL 细节可参考 `docs/大小模型应用技术架构与实现方案.md` �
 
 ## 8. 安全与运维约定
 
-1. **指标与监控 UI 仅内网**：宿主机 `9090` / `3000` 做防火墙或仅管理网开放。
+1. **指标与监控 UI 仅内网**：宿主机 `9091` / `3000` 做防火墙或仅管理网开放。
 2. **`/metrics` 鉴权策略**与现网 Service API Key 策略对齐；若暂不鉴权，Prometheus 与 Grafana **禁止**公网暴露。
 3. **启动顺序**：业务栈（EasySearch → vLLM → 可选 MinerU → app）先起 → `monitoring-deploy`；停栈相反。
 4. **专网 / 离线**：`prom/prometheus`、`grafana/grafana` 镜像在有网机构建或拉取后 `docker save` / `load`；配置与数据目录按 §4.3 落盘。
@@ -349,9 +349,9 @@ docker compose --env-file .env up -d
 
 ```bash
 # Prometheus UI
-curl -s "http://127.0.0.1:9090/-/ready"
+curl -s "http://127.0.0.1:9091/-/ready"
 
-# Targets（浏览器：http://127.0.0.1:9090/targets）
+# Targets（浏览器：http://127.0.0.1:9091/targets）
 # Grafana：http://127.0.0.1:3000 （默认数据源 Prometheus）
 ```
 

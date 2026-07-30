@@ -166,7 +166,7 @@ docker compose --env-file .env --profile infra up -d
 
 | 服务 | 端口 | 入口 |
 |------|------|------|
-| Prometheus | 9090 | `http://<host>:9090` → **Status → Targets** |
+| Prometheus | 9091 | `http://<host>:9091` → **Status → Targets** |
 | Grafana | 3000 | `http://<host>:3000`（用户/密码见 `.env`） |
 | Alertmanager | 9093 | `http://<host>:9093` |
 | Blackbox | 9115 | 一般无需直接访问 |
@@ -201,7 +201,7 @@ docker compose --env-file .env down
 3. 知识问答异常：看 **03** RAG；报表问数异常：看 NL2SQL 错误率。
 4. 综合分析 / 降级：看 **04**。
 
-数据源已通过 provisioning 指向 `http://prometheus:9090`，一般无需手工添加。
+数据源已通过 provisioning 指向 `http://prometheus:9091`，一般无需手工添加。
 
 ---
 
@@ -218,7 +218,7 @@ docker compose --env-file .env down
 修改 `configs/monitoring/analysis-trace-alert-rules.yml` 后，须同步到 `monitoring-deploy/prometheus/rules/`，并：
 
 ```bash
-curl -X POST http://127.0.0.1:9090/-/reload
+curl -X POST http://127.0.0.1:9091/-/reload
 ```
 
 ### 6.2 Alertmanager
@@ -258,7 +258,7 @@ docker start models-app
 | # | 检查项 | 期望 |
 |---|--------|------|
 | 1 | Phase 0 基线脚本 | app + vLLM `/metrics` OK |
-| 2 | `curl http://127.0.0.1:9090/-/ready` | Ready |
+| 2 | `curl http://127.0.0.1:9091/-/ready` | Ready |
 | 3 | Prometheus Targets | `models-app`、`vllm` 为 **UP** |
 | 4 | Grafana 登录 | 可见 4 个 Models App 看板且有近 15 分钟曲线（有流量时） |
 | 5 | Alertmanager UI | 可打开；配置真实 Webhook 后可收到测试告警 |
@@ -276,7 +276,7 @@ docker start models-app
 | 告警不通知 | Webhook 仍为占位 | 改 `alertmanager.yml` |
 | `/metrics` 有数但曲线空 | 无近期流量或 job 标签过滤过严 | 调大时间窗；对看板 PromQL 做 `curl` 验证 |
 | path 序列暴涨 | 旧版本用原始 URL path | 升级含 `metrics_path.py` 的应用镜像并重启 |
-| 与旧 vLLM Prometheus 冲突 | 两套都占 9090 或重复采集 | 停用 `vllm-deploy` 的 monitoring profile |
+| 与旧 vLLM Prometheus 冲突 | 旧 profile 占 9090、本栈默认 9091；若仍冲突检查端口占用 | 停用 `vllm-deploy` 的 monitoring profile |
 
 ---
 

@@ -12,7 +12,7 @@
 
 | 服务 | 容器名 | 默认端口 | 说明 |
 |------|--------|----------|------|
-| Prometheus | `monitoring-prometheus` | 9090 | 采集 + 规则 |
+| Prometheus | `monitoring-prometheus` | 9091 | 采集 + 规则 |
 | Grafana | `monitoring-grafana` | 3000 | 看板 |
 | Alertmanager | `monitoring-alertmanager` | 9093 | 告警通知 |
 | Blackbox | `monitoring-blackbox` | 9115 | HTTP 健康探针 |
@@ -60,7 +60,7 @@ docker compose --env-file .env up -d
 ```bash
 docker compose --env-file .env --profile infra up -d
 # 并在 prometheus/prometheus.yml 取消 node job 注释后 reload：
-# curl -X POST http://127.0.0.1:9090/-/reload
+# curl -X POST http://127.0.0.1:9091/-/reload
 ```
 
 ---
@@ -69,8 +69,8 @@ docker compose --env-file .env --profile infra up -d
 
 | 检查 | 命令 / 地址 | 期望 |
 |------|-------------|------|
-| Prometheus ready | `curl -s http://127.0.0.1:9090/-/ready` | Prometheus Server is Ready |
-| Targets | 浏览器 `http://127.0.0.1:9090/targets` | `models-app`、`vllm` **UP** |
+| Prometheus ready | `curl -s http://127.0.0.1:9091/-/ready` | Prometheus Server is Ready |
+| Targets | 浏览器 `http://127.0.0.1:9091/targets` | `models-app`、`vllm` **UP** |
 | Grafana | `http://127.0.0.1:3000` | 登录后见文件夹 Models App 下 4 个看板 |
 | Alertmanager | `http://127.0.0.1:9093` | UI 可打开 |
 | 人为宕机告警 | `docker stop models-app` 等待 ≥2m | `ModelsAppDown` 触发 |

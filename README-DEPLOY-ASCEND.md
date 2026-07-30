@@ -1032,9 +1032,9 @@ docker compose --env-file .env up -d
 
 | 检查 | 期望 |
 |------|------|
-| `http://127.0.0.1:9090/targets` | `models-app`、`vllm` UP |
+| `http://127.0.0.1:9091/targets` | `models-app`、`vllm` UP |
 | `http://127.0.0.1:3000` | Grafana 可见 Models App 看板 |
-| `curl -s http://127.0.0.1:9090/-/ready` | Ready |
+| `curl -s http://127.0.0.1:9091/-/ready` | Ready |
 
 > 勿再使用 `vllm-deploy` 的 `--profile monitoring`（已废弃）。
 
