@@ -512,7 +512,7 @@ cd monitoring-deploy
 cp .env.example .env
 # 修改 GF_SECURITY_ADMIN_PASSWORD；核对 VLLM_DOCKER_NETWORK 与 app/app-deploy/.env 一致
 bash scripts/check-baseline.sh   # Windows: powershell -File scripts/check-baseline.ps1
-mkdir -p /aidata/data/prometheus /aidata/data/grafana /aidata/data/alertmanager
+bash scripts/prepare-data-dirs.sh   # bind 目录 chown（65534/472），避免 permission denied
 docker compose --env-file .env up -d
 ```
 

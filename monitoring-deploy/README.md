@@ -50,7 +50,9 @@ docker network create docker_vllm-network 2>/dev/null || true
 docker network create ai-stack 2>/dev/null || true
 docker network create mineru-stack 2>/dev/null || true
 
-mkdir -p /aidata/data/prometheus /aidata/data/grafana /aidata/data/alertmanager
+# 重要：bind 目录须给容器内 nobody(65534) / grafana(472) 写权限
+# 否则 Prometheus 报错：open /prometheus/queries.active: permission denied
+bash scripts/prepare-data-dirs.sh
 
 docker compose --env-file .env up -d
 ```
@@ -120,6 +122,23 @@ Prometheus / Blackbox 加入：
 - `RAG_DOCKER_NETWORK` / `MINERU_DOCKER_NETWORK` — 黑盒与扩展用
 
 若现场 vLLM 网络名不是 `docker_vllm-network`，以 `docker network ls` 与 app `.env` 中 `VLLM_DOCKER_NETWORK` 为准。
+
+### 5.5 排障：permission denied / queries.active
+
+```text
+open /prometheus/queries.active: permission denied
+panic: Unable to create mmap-ed active query log
+```
+
+原因：宿主机数据目录由 root 创建，`prom/prometheus` 以 **nobody (65534)** 运行，无法写 `/prometheus`。
+
+```bash
+bash scripts/prepare-data-dirs.sh
+# 或手工：
+# chown -R 65534:65534 /aidata/data/prometheus /aidata/data/alertmanager
+# chown -R 472:472 /aidata/data/grafana
+docker compose --env-file .env up -d
+```
 
 ---
 

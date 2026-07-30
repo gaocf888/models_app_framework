@@ -149,7 +149,7 @@ docker network create ai-stack 2>/dev/null || true
 docker network create mineru-stack 2>/dev/null || true
 
 mkdir -p /aidata/data/prometheus /aidata/data/grafana /aidata/data/alertmanager   # 按 .env 路径
-
+bash scripts/prepare-data-dirs.sh   # 必须：否则 Prometheus permission denied
 docker compose --env-file .env up -d
 ```
 
@@ -272,6 +272,7 @@ docker start models-app
 | 现象 | 可能原因 | 处理 |
 |------|----------|------|
 | Target DOWN | 网络名不一致 / 业务未起 / 端口错误 | 核对 `.env` 网络；`docker exec` 内 `curl models-app:8083/metrics` |
+| Prometheus crash：`queries.active: permission denied` | bind 目录属主为 root，容器内 nobody 无法写 | `bash scripts/prepare-data-dirs.sh` 后重启 |
 | Grafana 无数据 | Prometheus 无序列 / 时间范围 / 数据源 | Targets 先 UP；看 Query Inspector；确认 datasource uid `prometheus` |
 | 告警不通知 | Webhook 仍为占位 | 改 `alertmanager.yml` |
 | `/metrics` 有数但曲线空 | 无近期流量或 job 标签过滤过严 | 调大时间窗；对看板 PromQL 做 `curl` 验证 |

@@ -1024,6 +1024,7 @@ cp .env.example .env
 # 网络名与 app/vllm/.env 中 VLLM_DOCKER_NETWORK 等一致
 
 mkdir -p /aidata/data/prometheus /aidata/data/grafana /aidata/data/alertmanager
+bash scripts/prepare-data-dirs.sh   # 必须：Prometheus/Grafana 数据目录权限
 bash scripts/check-baseline.sh   # Phase 0
 docker compose --env-file .env up -d
 ```

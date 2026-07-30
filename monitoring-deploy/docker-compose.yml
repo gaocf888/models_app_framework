@@ -3,6 +3,7 @@
 #
 # 启动（业务栈须先起，且外部网络已存在）：
 #   cp .env.example .env
+#   bash scripts/prepare-data-dirs.sh   # bind 目录 chown，避免 permission denied
 #   docker network create docker_vllm-network 2>/dev/null || true
 #   docker network create ai-stack 2>/dev/null || true
 #   docker network create mineru-stack 2>/dev/null || true
