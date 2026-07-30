@@ -315,6 +315,23 @@ def test_rewrite_entity_scope_rewrites_hao_lu_like_concat() -> None:
     assert "entity_scope_boiler_name" in notes
 
 
+def test_rewrite_entity_scope_rewrites_hao_lu_like_percent_literal() -> None:
+    """LIKE '%1号炉%'（非 CONCAT）也须改写为 '%1号锅炉%'。"""
+    chain = _build_chain_for_unit()
+    sql = (
+        "SELECT ab.boiler_name AS 锅炉名称 FROM account_boiler ab "
+        "WHERE ab.boiler_name LIKE '%1号炉%' AND YEAR(ort.create_time) = 2025"
+    )
+    rewritten, notes = chain._rewrite_query_filters(
+        sql,
+        question="查询 2025年1号炉机器人检修 水冷壁螺旋段前墙吹灰孔19 的测厚信息",
+        time_intent_source="查询 2025年1号炉机器人检修 水冷壁螺旋段前墙吹灰孔19 的测厚信息",
+    )
+    assert "ab.boiler_name LIKE '%1号锅炉%'" in rewritten
+    assert "%1号炉%" not in rewritten
+    assert "entity_scope_boiler_name" in notes
+
+
 def test_rewrite_entity_scope_boiler_like_concat_global() -> None:
     """QA strict replay 常见 LIKE CONCAT('%', '1号锅炉', '%') 应随问句替换为 2号锅炉。"""
     chain = _build_chain_for_unit()

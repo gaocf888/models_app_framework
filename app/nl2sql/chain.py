@@ -2154,6 +2154,30 @@ class NL2SQLChain:
 
             rewritten = like_concat_pat.sub(_boiler_like_concat_repl, rewritten)
 
+            # LIKE '%1号炉%' / LIKE '%2号机组%'（单字面量内嵌通配；缓存命中常见）
+            like_pct_pat = re.compile(
+                r"(?i)\b([a-zA-Z_][a-zA-Z0-9_\.]*)\s+LIKE\s+'"
+                r"%("
+                r"(?:\d+|[一二两三四五六七八九十百]+)号锅炉"
+                r"|(?:\d+|[一二两三四五六七八九十百]+)号机组"
+                r"|(?:\d+)#机组"
+                r"|#(?:\d+)机组"
+                r"|(?:\d+|[一二两三四五六七八九十百]+)号炉(?:膛)?"
+                r")%'"
+            )
+
+            def _boiler_like_pct_repl(m: re.Match[str]) -> str:
+                col = m.group(1)
+                if "boiler" not in col.lower():
+                    return m.group(0)
+                old = m.group(2)
+                if old == boiler:
+                    return m.group(0)
+                notes.append("entity_scope_boiler_name")
+                return f"{col} LIKE '%{safe}%'"
+
+            rewritten = like_pct_pat.sub(_boiler_like_pct_repl, rewritten)
+
             def _global_boiler_lit_repl(m: re.Match[str]) -> str:
                 old = m.group(1)
                 if old == boiler:
@@ -2162,6 +2186,26 @@ class NL2SQLChain:
                 return f"'{safe}'"
 
             rewritten = self._BOILER_UNIT_LITERAL_IN_QUOTES.sub(_global_boiler_lit_repl, rewritten)
+
+            # 全局：'%1号炉%' 字面量（无列名前缀约束时的兜底，如嵌套子查询）
+            like_pct_lit_pat = re.compile(
+                r"'%("
+                r"(?:\d+|[一二两三四五六七八九十百]+)号锅炉"
+                r"|(?:\d+|[一二两三四五六七八九十百]+)号机组"
+                r"|(?:\d+)#机组"
+                r"|#(?:\d+)机组"
+                r"|(?:\d+|[一二两三四五六七八九十百]+)号炉(?:膛)?"
+                r")%'"
+            )
+
+            def _global_like_pct_lit_repl(m: re.Match[str]) -> str:
+                old = m.group(1)
+                if old == boiler:
+                    return m.group(0)
+                notes.append("entity_scope_boiler_name")
+                return f"'%{safe}%'"
+
+            rewritten = like_pct_lit_pat.sub(_global_like_pct_lit_repl, rewritten)
 
         from app.nl2sql.scope_sql_rewrite import rewrite_scope_sql_placeholders
 
