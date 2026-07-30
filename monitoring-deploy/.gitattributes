@@ -1,0 +1,5 @@
+# Shell scripts / compose must use LF so Linux hosts do not fail on `set -o pipefail` / shebang
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+.env.example text eol=lf
