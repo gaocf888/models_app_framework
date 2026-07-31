@@ -1032,6 +1032,17 @@ docker compose --env-file .env up -d
 # 在 .env 增加：COMPOSE_PROFILES=gpu-ascend
 # 并按驱动版本调整 ASCEND_NPU_EXPORTER_IMAGE（默认 ascendai/npu-exporter:v7.3.2）
 docker compose --env-file .env --profile gpu-ascend up -d
+
+# 请求/任务级 Trace（推荐 Redis + Tempo；见 docs/系统执行轨迹与LangSmith观测改造方案.md）
+# COMPOSE_PROFILES=tracing   # 可与 gpu-ascend 组合：tracing,gpu-ascend
+# docker compose --env-file .env --profile tracing up -d tempo
+# app-deploy/.env：
+#   EXECUTION_TRACE_ENABLED=true
+#   EXECUTION_TRACE_BACKEND=redis          # 复用 REDIS_URL；结构化 /ops/traces*
+#   EXECUTION_TRACE_OTLP_ENABLED=true
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://monitoring-tempo:4318   # 同 docker_vllm-network
+#   # 跨网不通时：http://host.docker.internal:4318
+# 探活：GET /ops/traces-status；详情：GET /ops/traces/{request_id}（Bearer SERVICE_API_KEY）
 ```
 
 验收：
@@ -1039,8 +1050,10 @@ docker compose --env-file .env --profile gpu-ascend up -d
 | 检查 | 期望 |
 |------|------|
 | `http://127.0.0.1:9091/targets` | `models-app`、`vllm`、`node` UP；开启 NPU 后 `npu` UP |
-| `http://127.0.0.1:3000` | Grafana：Models App 看板；NPU 见 **07 Ascend NPU** |
+| `http://127.0.0.1:3000` | Grafana：Models App 看板；NPU 见 **07 Ascend NPU**；开启 tracing 后 Explore→Tempo |
 | `curl -s http://127.0.0.1:9091/-/ready` | Ready |
+| （推荐）`GET /ops/traces-status` | `backend_impl` 含 Redis；开 OTLP 后 `otlp_enabled=true` |
+| （可选）`GET /ops/traces/{id}` | 业务跑过后可查到执行轨迹；`meta.tempo_trace_id` 可对齐 Grafana |
 
 > 勿再使用 `vllm-deploy` 的 `--profile monitoring`（已废弃）。  
 > **沐曦/寒武纪/其它加速卡** 的硬件监控未内置，须在 `monitoring-deploy` 单独增加 exporter（见 `monitoring-deploy/README.md` §3.1）。

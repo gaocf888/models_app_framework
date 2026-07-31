@@ -67,6 +67,35 @@ class LLMInferenceService:
         """
         执行一次大模型推理。
         """
+        import uuid as _uuid
+
+        trace_rid = str(_uuid.uuid4())
+        try:
+            return await self._infer_impl(req, trace_request_id=trace_rid)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                from app.observability.trace_recorder import TraceRecorder
+
+                tr = TraceRecorder.start(
+                    module="llm_infer",
+                    request_id=trace_rid,
+                    kind="request",
+                    scene="llm_inference",
+                    user_id=getattr(req, "user_id", None),
+                    session_id=getattr(req, "session_id", None),
+                    meta={"error": str(exc)[:500]},
+                )
+                tr.record_node("infer", status="failed", error=str(exc)[:500])
+                tr.add_degrade("llm_infer_failed")
+                tr.finalize(status="failed", summary=str(exc)[:200])
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+
+    async def _infer_impl(self, req: LLMInferenceRequest, *, trace_request_id: str) -> LLMInferenceResponse:
+        """
+        执行一次大模型推理（实现体）。
+        """
         if not req.user_id:
             raise ValueError("user_id is required (must be provided by the caller).")
         model_name = req.model or self._cfg_registry.default_model
@@ -165,7 +194,27 @@ class LLMInferenceService:
             },
             outputs={"answer": resp.answer},
             metadata={"scene": "llm_inference"},
+            module="llm_infer",
         )
+        # 统一 ExecutionTrace 旁路
+        try:
+            from app.observability.trace_recorder import TraceRecorder
+
+            tr = TraceRecorder.start(
+                module="llm_infer",
+                request_id=trace_request_id,
+                kind="request",
+                scene="llm_inference",
+                user_id=req.user_id,
+                session_id=req.session_id,
+                meta={"model": model_name, "prompt_version": used_prompt_version, "used_rag": used_rag},
+            )
+            if used_rag:
+                tr.record_node("retrieve")
+            tr.record_node("infer", attributes={"model": model_name})
+            tr.finalize(status="success")
+        except Exception:  # noqa: BLE001
+            pass
 
         return resp
 

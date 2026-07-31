@@ -125,3 +125,21 @@ class GraphRebuildJobRunner:
                 job.error_message = str(exc)
             finally:
                 job.updated_at = utcnow_iso()
+                # 观测旁路
+                try:
+                    from app.observability.trace_recorder import TraceRecorder
+
+                    st = "success" if job.status == GraphRebuildJobStatus.SUCCESS else "failed"
+                    tr = TraceRecorder.start(
+                        module="graph_rebuild",
+                        request_id=job_id,
+                        kind="job",
+                        scene=str(job.mode),
+                        meta={"namespace": job.namespace, "job_id": job_id},
+                    )
+                    tr.record_node("rebuild", status=st, error=job.error_message)
+                    if job.error_message:
+                        tr.add_degrade("rebuild_failed")
+                    tr.finalize(status=st)  # type: ignore[arg-type]
+                except Exception:  # noqa: BLE001
+                    pass

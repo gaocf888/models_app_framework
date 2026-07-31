@@ -238,3 +238,40 @@ ANAPHORA_COREF_CACHE_MISS_COUNT = Counter(
     "Total chatbot anaphora coref cache misses",
 )
 
+# --- Unified execution trace / OTLP / LangSmith ---
+EXECUTION_TRACE_SAVED_TOTAL = Counter(
+    "execution_trace_saved_total",
+    "Execution traces saved to local store",
+    ["module", "kind", "status"],
+)
+EXECUTION_TRACE_SAVE_ERRORS_TOTAL = Counter(
+    "execution_trace_save_errors_total",
+    "Execution trace save failures",
+    ["module", "backend"],
+)
+EXECUTION_TRACE_CHECKPOINT_TOTAL = Counter(
+    "execution_trace_checkpoint_total",
+    "Execution trace checkpoints (in-progress jobs)",
+    ["module"],
+)
+OTLP_EXPORT_TOTAL = Counter(
+    "otlp_export_total",
+    "OTLP trace export attempts",
+    ["module", "result"],
+)
+OTLP_EXPORT_LATENCY = Histogram(
+    "otlp_export_latency_seconds",
+    "OTLP export latency seconds",
+    ["module"],
+)
+LANGSMITH_RUNS_TOTAL = Counter(
+    "langsmith_runs_total",
+    "LangSmith mirror/log_run attempts",
+    ["module", "result"],
+)
+LANGSMITH_EXPORT_LATENCY = Histogram(
+    "langsmith_export_latency_seconds",
+    "LangSmith export latency seconds",
+    ["module"],
+)
+

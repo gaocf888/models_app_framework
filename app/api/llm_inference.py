@@ -52,3 +52,13 @@ async def infer(
         ValueError: 服务层在缺少 `user_id` 等时可能抛出。
     """
     return await svc.infer(req)
+
+
+@router.get(
+    "/traces/{request_id}",
+    summary="查询 LLM 推理执行轨迹（统一 Store 别名）",
+)
+async def get_llm_trace(request_id: str):
+    from app.api.trace_aliases import get_module_trace
+
+    return get_module_trace(request_id, expected_module="llm_infer")

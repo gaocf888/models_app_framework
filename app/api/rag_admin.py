@@ -2222,3 +2222,13 @@ async def rollback_chunks_migration(req: RollbackChunksMigrationRequest) -> Chun
         logger.exception("rag rollback_chunks_migration failed")
         raise HTTPException(status_code=500, detail=f"RAG rollback_chunks_migration failed: {e}") from e
 
+
+@router.get(
+    "/traces/{job_id}",
+    summary="查询 RAG 摄入任务执行轨迹（统一 Store 别名）",
+)
+async def get_rag_ingest_trace(job_id: str):
+    from app.api.trace_aliases import get_module_trace
+
+    return get_module_trace(job_id, expected_module="rag_ingest")
+

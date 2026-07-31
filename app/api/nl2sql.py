@@ -89,3 +89,13 @@ async def nl2sql_query(req: NL2SQLQueryRequest) -> NL2SQLQueryResponse:
         not (resp.sql or "").strip(),
     )
     return resp
+
+
+@router.get(
+    "/traces/{request_id}",
+    summary="查询 NL2SQL 执行轨迹（统一 Store 别名）",
+)
+async def get_nl2sql_trace(request_id: str):
+    from app.api.trace_aliases import get_module_trace
+
+    return get_module_trace(request_id, expected_module="nl2sql")

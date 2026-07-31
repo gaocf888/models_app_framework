@@ -108,6 +108,8 @@ class ChatbotGraphState(TypedDict, total=False):
 
     # ===== 控制与可观测域 =====
     used_rag: bool
+    # 统一执行轨迹 request_id（旁路观测；写入 finished.meta.request_id）
+    trace_request_id: str
     # 状态机建议值：started/intented/retrieved/clarifying/answered/aborted/failed
     # - answered: 正常完成并落库完整 assistant
     # - aborted: 客户端断开，可能落库 partial assistant

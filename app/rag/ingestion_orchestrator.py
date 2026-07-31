@@ -7,7 +7,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -567,6 +567,49 @@ class IngestionOrchestrator:
             job.updated_at = utcnow_iso()
             self._save_state()
             self._save_job_record(job)
+        # 观测旁路：任务终态写入统一 Trace（不改 Job 状态机）
+        try:
+            self._emit_execution_trace(job)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _emit_execution_trace(self, job: Any) -> None:
+        from collections import defaultdict
+
+        from app.observability.trace_recorder import TraceRecorder
+
+        status_map = {
+            "SUCCESS": "success",
+            "PARTIAL": "partial",
+            "FAILED": "failed",
+            "CANCELLED": "aborted",
+        }
+        st = status_map.get(str(getattr(job.status, "value", job.status)), "success")
+        tr = TraceRecorder.start(
+            module="rag_ingest",
+            request_id=str(job.job_id),
+            kind="job",
+            scene="async_ingest",
+            meta={
+                "job_id": job.job_id,
+                "error_code": getattr(job, "error_code", None),
+                "doc_count": len(getattr(job, "documents", None) or []),
+            },
+        )
+        # 聚合 step_durations_ms → 阶段节点
+        by_step: dict[str, int] = defaultdict(int)
+        for item in (job.metrics or {}).get("step_durations_ms") or []:
+            if isinstance(item, dict):
+                by_step[str(item.get("step") or "step")] += int(item.get("ms") or 0)
+        for step_name in ("validate", "parse", "chunk", "embed", "index", "finalize"):
+            if step_name in by_step or step_name == str(getattr(job, "step", "") or ""):
+                tr.record_node(step_name, latency_ms=by_step.get(step_name), attributes={"aggregated": True})
+        for step_name, ms in by_step.items():
+            if step_name not in {"validate", "parse", "chunk", "embed", "index", "finalize"}:
+                tr.record_node(step_name, latency_ms=ms)
+        if getattr(job, "error_code", None):
+            tr.add_degrade(str(job.error_code))
+        tr.finalize(status=st, summary=str(getattr(job, "error_message", None) or st))  # type: ignore[arg-type]
 
     def _set_job_step(self, job: IngestionJob, step: str) -> None:
         with self._lock:
@@ -574,6 +617,10 @@ class IngestionOrchestrator:
             job.updated_at = utcnow_iso()
             self._save_state()
             self._save_job_record(job)
+        try:
+            self._checkpoint_execution_trace(job)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _record_step_ms(self, job: IngestionJob, doc_name: str, step: str, elapsed_ms: int) -> None:
         with self._lock:
@@ -588,6 +635,38 @@ class IngestionOrchestrator:
             job.metrics["step_durations_ms"] = entries
             self._save_state()
             self._save_job_record(job)
+        try:
+            self._checkpoint_execution_trace(job)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _checkpoint_execution_trace(self, job: Any) -> None:
+        """进行中任务阶段 checkpoint（仅 Store；OTLP 仍默认终态）。"""
+        from collections import defaultdict
+
+        from app.observability.trace_recorder import TraceRecorder
+
+        tr = TraceRecorder.start(
+            module="rag_ingest",
+            request_id=str(job.job_id),
+            kind="job",
+            scene="async_ingest",
+            meta={
+                "job_id": job.job_id,
+                "step": getattr(job, "step", None),
+                "doc_count": len(getattr(job, "documents", None) or []),
+            },
+        )
+        by_step: dict[str, int] = defaultdict(int)
+        for item in (job.metrics or {}).get("step_durations_ms") or []:
+            if isinstance(item, dict):
+                by_step[str(item.get("step") or "step")] += int(item.get("ms") or 0)
+        current = str(getattr(job, "step", "") or "")
+        for step_name, ms in by_step.items():
+            tr.record_node(step_name, latency_ms=ms, status="success")
+        if current and current not in by_step:
+            tr.record_node(current, status="running")
+        tr.checkpoint()
 
     @staticmethod
     def _step_duration_entries(job: IngestionJob) -> list[dict]:

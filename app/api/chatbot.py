@@ -490,3 +490,13 @@ async def delete_session_messages(
     """
     _conv_admin.clear_session(user_id, session_id)
     return SessionDeleteResponse(user_id=user_id, session_id=session_id)
+
+
+@router.get(
+    "/traces/{request_id}",
+    summary="查询智能客服执行轨迹（统一 Store 别名）",
+)
+async def get_chatbot_trace(request_id: str):
+    from app.api.trace_aliases import get_module_trace
+
+    return get_module_trace(request_id, expected_module="chatbot")

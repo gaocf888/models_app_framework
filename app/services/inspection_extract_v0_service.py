@@ -424,6 +424,21 @@ class InspectionExtractV0JobScheduler:
                 meta["finished_at"] = utcnow_iso()
                 meta["updated_at"] = utcnow_iso()
                 _atomic_write_json(jd / "job_meta.json", meta)
+            try:
+                from app.observability.trace_recorder import TraceRecorder
+
+                tr = TraceRecorder.start(
+                    module="inspection_extract",
+                    request_id=job_id,
+                    kind="job",
+                    scene="async_extract_v0",
+                    meta={"job_id": job_id, "pipeline": "v0", "error": str(exc)[:500]},
+                )
+                tr.record_node("running_graph", status="failed", error=str(exc)[:500])
+                tr.add_degrade("extract_v0_failed")
+                tr.finalize(status="failed", summary=str(exc)[:200])
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _run_job(self, job_id: str) -> None:
         jd = self._job_dir(job_id)
@@ -485,6 +500,21 @@ class InspectionExtractV0JobScheduler:
         meta["metrics"] = metrics.model_dump(mode="json")
         _atomic_write_json(jd / "job_meta.json", meta)
         (jd / "final_response.json").write_text(resp.model_dump_json(), encoding="utf-8")
+        try:
+            from app.observability.trace_recorder import TraceRecorder
+
+            tr = TraceRecorder.start(
+                module="inspection_extract",
+                request_id=job_id,
+                kind="job",
+                scene="async_extract_v0",
+                meta={"job_id": job_id, "pipeline": "v0"},
+            )
+            for stage, ms in (sm or {}).items():
+                tr.record_node(str(stage), latency_ms=int(ms or 0))
+            tr.finalize(status="success")
+        except Exception:  # noqa: BLE001
+            pass
         ch = jd / "chunks"
         ch.mkdir(parents=True, exist_ok=True)
         chunk_outputs = fin.get("llm_chunk_outputs")

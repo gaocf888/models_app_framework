@@ -287,21 +287,51 @@ class AnalysisService:
         return await upload_analysis_img_diag_image(file_name=file_name, content=content, content_type=content_type)
 
     def get_trace(self, request_id: str) -> AnalysisTraceView | None:
-        """按 request_id 读取单次分析完整 trace（后端由 `ANALYSIS_TRACE_BACKEND` 决定）。"""
+        """按 request_id 读取单次分析完整 trace（优先旧 ANALYSIS store，回退统一 Store 适配）。"""
         started = time.perf_counter()
         try:
             hit = self._trace_store.get(request_id)
+            if hit is not None:
+                ANALYSIS_TRACE_QUERY_COUNT.labels(endpoint="get", status="success").inc()
+                return AnalysisTraceView(
+                    request_id=hit.request_id,
+                    analysis_type=hit.analysis_type,
+                    summary=hit.summary,
+                    data_mode=hit.evidence.data_coverage.get("mode", "payload"),
+                    trace=hit.trace,
+                    data_coverage=hit.evidence.data_coverage,
+                )
+            # 回退：统一 ExecutionTrace → AnalysisTraceView（旧归档过期时仍可看节点）
+            try:
+                from app.models.analysis import AnalysisTrace
+                from app.services.execution_trace_store import get_execution_trace_store
+
+                rec = get_execution_trace_store().get(request_id)
+                if rec is not None and rec.module == "analysis":
+                    node_latency = {n.node_id: int(n.latency_ms or 0) for n in (rec.nodes or [])}
+                    node_status = {n.node_id: str(n.status) for n in (rec.nodes or [])}
+                    view = AnalysisTraceView(
+                        request_id=rec.request_id,
+                        analysis_type=rec.scene or "custom",  # type: ignore[arg-type]
+                        summary=rec.summary or "",
+                        data_mode=(rec.meta or {}).get("data_mode") or "payload",  # type: ignore[arg-type]
+                        trace=AnalysisTrace(
+                            plan_id=str((rec.meta or {}).get("plan_id") or "unknown"),
+                            node_latency_ms=node_latency,
+                            node_status=node_status,
+                            degrade_reasons=list(rec.degrade_reasons or []),
+                            template_versions=dict((rec.meta or {}).get("template_versions") or {}),
+                            execution_summary=dict((rec.meta or {}).get("execution_summary") or {}),
+                            data_plan_trace=list((rec.meta or {}).get("data_plan_trace") or []),
+                        ),
+                        data_coverage={"mode": (rec.meta or {}).get("data_mode") or "payload", "from": "execution_trace"},
+                    )
+                    ANALYSIS_TRACE_QUERY_COUNT.labels(endpoint="get", status="success").inc()
+                    return view
+            except Exception:  # noqa: BLE001
+                pass
             ANALYSIS_TRACE_QUERY_COUNT.labels(endpoint="get", status="success").inc()
-            if hit is None:
-                return None
-            return AnalysisTraceView(
-                request_id=hit.request_id,
-                analysis_type=hit.analysis_type,
-                summary=hit.summary,
-                data_mode=hit.evidence.data_coverage.get("mode", "payload"),
-                trace=hit.trace,
-                data_coverage=hit.evidence.data_coverage,
-            )
+            return None
         except Exception:  # noqa: BLE001
             ANALYSIS_TRACE_QUERY_COUNT.labels(endpoint="get", status="failed").inc()
             raise
@@ -316,6 +346,13 @@ class AnalysisService:
             if self._trace_trend_cache:
                 self._trace_trend_cache.clear()
                 ANALYSIS_TRACE_TREND_CACHE_INVALIDATE_COUNT.inc()
+        # 观测旁路：投影到统一 ExecutionTraceStore（失败不影响业务）
+        try:
+            from app.observability.analysis_projector import project_analysis_result
+
+            project_analysis_result(result)
+        except Exception:  # noqa: BLE001
+            pass
 
     @staticmethod
     def _parse_iso8601(value: str | None) -> datetime | None:

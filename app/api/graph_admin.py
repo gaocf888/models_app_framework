@@ -299,3 +299,13 @@ async def graph_debug_query(req: GraphDebugQueryRequest) -> GraphDebugQueryRespo
     except Exception as e:  # noqa: BLE001
         logger.exception("graph debug query failed")
         raise HTTPException(status_code=500, detail=f"graph debug query failed: {e}") from e
+
+
+@router.get(
+    "/traces/{job_id}",
+    summary="查询 Graph 重建任务执行轨迹（统一 Store 别名）",
+)
+async def get_graph_rebuild_trace(job_id: str):
+    from app.api.trace_aliases import get_module_trace
+
+    return get_module_trace(job_id, expected_module="graph_rebuild")

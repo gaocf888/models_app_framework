@@ -236,3 +236,13 @@ async def get_inspection_extract_job_chunk(job_id: str, work_idx: int) -> Inspec
         raise HTTPException(status_code=404, detail="chunk not available yet")
     return data
 
+
+@router.get(
+    "/traces/{job_id}",
+    summary="查询检修提取任务执行轨迹（统一 Store 别名）",
+)
+async def get_inspection_extract_trace(job_id: str):
+    from app.api.trace_aliases import get_module_trace
+
+    return get_module_trace(job_id, expected_module="inspection_extract")
+

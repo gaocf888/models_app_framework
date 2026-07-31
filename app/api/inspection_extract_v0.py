@@ -113,3 +113,13 @@ async def get_inspection_extract_v0_job_chunk(job_id: str, work_idx: int) -> Ins
     if data is None:
         raise HTTPException(status_code=404, detail="chunk not found")
     return data
+
+
+@router.get(
+    "/traces/{job_id}",
+    summary="查询检修提取 V0 任务执行轨迹（统一 Store 别名，module=inspection_extract）",
+)
+async def get_inspection_extract_v0_trace(job_id: str):
+    from app.api.trace_aliases import get_module_trace
+
+    return get_module_trace(job_id, expected_module="inspection_extract")

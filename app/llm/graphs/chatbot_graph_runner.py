@@ -304,6 +304,11 @@ class ChatbotLangGraphRunner:
         # state 在一次请求生命周期内共享；每个节点只增量更新自己负责字段。
         state = self._initial_state(req, model_req=model_req, original_image_urls=original_image_urls)
         start_ts = time.perf_counter()
+        # 观测旁路：请求级 request_id（不改变业务字段语义，仅写入 finished.meta）
+        import uuid as _uuid
+
+        trace_request_id = str(_uuid.uuid4())
+        state["trace_request_id"] = trace_request_id
         try:
             state = await self._run_graph(state)
             self._ensure_within_latency(start_ts)
@@ -435,6 +440,55 @@ class ChatbotLangGraphRunner:
             self._persist_failure(state, req)
             raise
         finally:
+            # 统一执行轨迹旁路（不改变业务结果）
+            try:
+                from app.observability.trace_recorder import TraceRecorder
+
+                status_raw = str(state.get("status") or "success")
+                if status_raw in {"failed", "error"}:
+                    tr_status = "failed"
+                elif status_raw in {"aborted", "cancelled"}:
+                    tr_status = "aborted"
+                elif bool(state.get("is_partial")):
+                    tr_status = "partial"
+                else:
+                    tr_status = "success"
+                tr = TraceRecorder.start(
+                    module="chatbot",
+                    request_id=str(state.get("trace_request_id") or stream_id or ""),
+                    kind="request",
+                    scene=str(state.get("intent_label") or "") or None,
+                    user_id=req.user_id,
+                    session_id=req.session_id,
+                    meta={
+                        "stream_id": stream_id,
+                        "prompt_variant": state.get("prompt_variant"),
+                        "terminate_reason": state.get("terminate_reason"),
+                    },
+                )
+                # 用关键状态字段投影节点（不侵入图节点实现）
+                if state.get("intent_label"):
+                    tr.record_node("intent", attributes={"intent_label": state.get("intent_label")})
+                if state.get("used_rag") or int(state.get("retrieval_attempts") or 0) > 0:
+                    tr.record_node(
+                        "retrieve",
+                        attributes={
+                            "retrieval_attempts": int(state.get("retrieval_attempts") or 0),
+                            "rag_engine": state.get("rag_engine"),
+                        },
+                    )
+                if state.get("used_nl2sql"):
+                    tr.record_node(
+                        "nl2sql",
+                        status="failed" if state.get("nl2sql_failed") else "success",
+                        attributes={"nl2sql_failed": bool(state.get("nl2sql_failed"))},
+                    )
+                tr.record_node("answer", status="failed" if tr_status == "failed" else "success")
+                if state.get("nl2sql_failed"):
+                    tr.add_degrade("nl2sql_failed")
+                tr.finalize(status=tr_status)  # type: ignore[arg-type]
+            except Exception:  # noqa: BLE001
+                pass
             if self._ls.enabled:
                 self._ls.log_run(
                     name="chatbot_langgraph_stream",
@@ -451,7 +505,9 @@ class ChatbotLangGraphRunner:
                         "error": state.get("error"),
                         "prompt_variant": state.get("prompt_variant"),
                         "terminate_reason": state.get("terminate_reason"),
+                        "request_id": state.get("trace_request_id"),
                     },
+                    module="chatbot",
                 )
 
     def _initial_state(
@@ -1389,6 +1445,7 @@ class ChatbotLangGraphRunner:
             "processed_image_urls": [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
             "original_image_urls": [u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()],
             "stream_id": stream_id,
+            "request_id": state.get("trace_request_id"),
             **self._anaphora_meta_extras(state),
         }
 

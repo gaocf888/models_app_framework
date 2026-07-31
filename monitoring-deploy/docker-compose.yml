@@ -148,6 +148,28 @@ services:
     networks:
       - monitoring-internal
 
+  # ---- 请求/任务级 Trace（可选）：COMPOSE_PROFILES=tracing 或 --profile tracing ----
+  # 推荐：Redis（/ops/traces）+ Tempo（Grafana 瀑布图）
+  # 应用侧：EXECUTION_TRACE_OTLP_ENABLED=true
+  #          OTEL_EXPORTER_OTLP_ENDPOINT=http://monitoring-tempo:4318
+  # models-app 与 tempo 均在 vllm-external（docker_vllm-network）时可直接 DNS 解析容器名
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: monitoring-tempo
+    restart: unless-stopped
+    profiles: ["tracing"]
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    ports:
+      - "${TEMPO_HTTP_PORT:-3200}:3200"
+      - "${TEMPO_OTLP_HTTP_PORT:-4318}:4318"
+      - "${TEMPO_OTLP_GRPC_PORT:-4317}:4317"
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - ${TEMPO_DATA_HOST_PATH:-tempo-data}:/var/tempo
+    networks:
+      - monitoring-internal
+      - vllm-external
+
 networks:
   monitoring-internal:
     driver: bridge
@@ -165,3 +187,4 @@ volumes:
   prometheus-data:
   grafana-data:
   alertmanager-data:
+  tempo-data:

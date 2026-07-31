@@ -19,6 +19,24 @@
 | Node Exporter | `monitoring-node-exporter` | 9100 | 宿主机 CPU/内存/磁盘等（默认启动） |
 | DCGM Exporter（英伟达） | `monitoring-dcgm-exporter` | 9400 | **profile `gpu-nvidia`** |
 | NPU Exporter（昇腾） | `monitoring-npu-exporter` | 8082 | **profile `gpu-ascend`** |
+| Tempo（Trace） | `monitoring-tempo` | 3200 / OTLP 4318 | **profile `tracing`**；Grafana Explore → Tempo，按 `request_id`/`job_id` 查链路 |
+
+请求/任务级 Trace 方案见 [`docs/系统执行轨迹与LangSmith观测改造方案.md`](../docs/系统执行轨迹与LangSmith观测改造方案.md)。
+
+### 1.1 推荐路径：Redis + Tempo
+
+| 层 | 职责 | 配置要点 |
+|----|------|----------|
+| **Redis** | 结构化轨迹 JSON、列表/统计、`/ops/traces*` | `EXECUTION_TRACE_BACKEND=redis` + 已有 `REDIS_URL`；TTL 默认/示例 `2880` 分钟 |
+| **Tempo** | OTLP 瀑布图 / Node Graph（Grafana Explore） | `COMPOSE_PROFILES=tracing` 启 `monitoring-tempo`；应用 `EXECUTION_TRACE_OTLP_ENABLED=true` |
+
+二者**并行、互不替代**：Redis 给运维 API；Tempo 给链路可视化。不要用业务 ES 做 Trace 热库。
+
+启动与 profile 用法见 **§3.2**（`COMPOSE_PROFILES=tracing` 或 `--profile tracing`）。
+
+应用侧打开 OTLP 后：探活 `GET /ops/traces-status`；详情 `GET /ops/traces/{request_id}`（Bearer `SERVICE_API_KEY`）；`meta.tempo_trace_id` 可对齐 Grafana Explore → Tempo（按 `request_id` / `job_id`）。
+
+**网络注意**：同网用 `http://monitoring-tempo:4318`；不通时用 `http://host.docker.internal:4318`（已映射 `TEMPO_OTLP_HTTP_PORT`）。详见 §1 组件表与 §3.2。
 
 ---
 
@@ -42,6 +60,13 @@ docker network ls | grep -E 'vllm|ai-stack|mineru'
 
 ## 3. 启动（Phase 1+）
 
+> 根据需要监控的资源类型，部署分为3.1 基线栈(基础的应用) 和 3.2 可选组件(包括显卡和应用执行追踪)
+> 没有特殊原因，默认选择 按照 3.2部署即可(根据显卡类型 选择gpu-nvidia/gpu-ascend，应用执行追踪Tracing都选择即可)
+
+### 3.1 基线栈
+
+默认拉起：Prometheus / Grafana / Alertmanager / Blackbox / node-exporter（**不含** GPU/NPU exporter、**不含** Tempo）。
+
 ```bash
 cd monitoring-deploy
 cp .env.example .env
@@ -52,57 +77,66 @@ docker network create docker_vllm-network 2>/dev/null || true
 docker network create ai-stack 2>/dev/null || true
 docker network create mineru-stack 2>/dev/null || true
 
-# 重要：bind 目录须给容器内 nobody(65534) / grafana(472) 写权限
-# 否则 Prometheus 报错：open /prometheus/queries.active: permission denied
+# bind 目录权限：nobody(65534) / grafana(472)；若配置 TEMPO_DATA_HOST_PATH 则含 Tempo(10001)
+# 否则 Prometheus 可能报：open /prometheus/queries.active: permission denied
 bash scripts/prepare-data-dirs.sh
 
 docker compose --env-file .env up -d
 ```
 
-可选：宿主机确认 node-exporter：
+确认：`docker ps --filter name=monitoring-node-exporter`
+
+### 3.2 可选组件：用 Compose profile 启用
+
+GPU/NPU、Tempo 均挂在 **profile** 上，**默认不启动**。启用方式二选一（可组合，逗号分隔）：
+
+| 方式 | 做法 |
+|------|------|
+| **`.env` 持久化** | 写入 `COMPOSE_PROFILES=...`，再执行 `docker compose --env-file .env up -d` |
+| **命令行临时** | `docker compose --env-file .env --profile <名> up -d`（可多次 `--profile`） |
+
+可用 profile：
+
+| Profile | 作用 | 验收要点 | 现场前提 / 额外配置 |
+|---------|------|----------|---------------------|
+| `gpu-nvidia` | DCGM Exporter | Targets `job=dcgm` UP；Grafana **06** | 宿主机 NVIDIA 驱动 + nvidia-container-toolkit |
+| `gpu-ascend` | NPU Exporter | Targets `job=npu` UP；Grafana **07** | `npu-smi info` 可用；按需改 `ASCEND_*` / 镜像版本（见 `.env.example`） |
+| `tracing` | Tempo（OTLP） | `monitoring-tempo` Up；`http://127.0.0.1:3200/ready` | 应用侧打开 OTLP（见下）；推荐与 Redis Trace 并用（§1.1） |
+
+示例：
 
 ```bash
-docker ps --filter name=monitoring-node-exporter
-```
+# A. 写在 .env（推荐现场固化）
+# COMPOSE_PROFILES=tracing
+# COMPOSE_PROFILES=gpu-ascend
+# COMPOSE_PROFILES=tracing,gpu-ascend
 
-### 3.1 GPU / NPU 硬件监控（按卡型启用）
+docker compose --env-file .env up -d
 
-`node-exporter` **不含**显卡/加速卡。本仓库已接入：
-
-| 卡型 | Compose profile | Exporter | Grafana 看板 |
-|------|-----------------|----------|--------------|
-| **英伟达** | `gpu-nvidia` | `nvidia/dcgm-exporter` | **06 NVIDIA GPU (DCGM)** |
-| **昇腾** | `gpu-ascend` | `ascendai/npu-exporter` | **07 Ascend NPU** |
-| **沐曦 / 寒武纪 / 其它** | — | **未内置** | 须单独增加 exporter + scrape job + 看板 |
-
-**英伟达现场：**
-
-```bash
-# .env 中设置：COMPOSE_PROFILES=gpu-nvidia
-# 或命令行：
+# B. 命令行（不改 .env）
+docker compose --env-file .env --profile tracing up -d
 docker compose --env-file .env --profile gpu-nvidia up -d
-# 验收：Targets 中 job=dcgm UP；Grafana → 06 NVIDIA GPU (DCGM)
-curl -s http://127.0.0.1:9400/metrics | head
+docker compose --env-file .env --profile tracing --profile gpu-ascend up -d
 ```
 
-前提：宿主机已装 NVIDIA 驱动 + nvidia-container-toolkit，`runtime: nvidia` 可用。
+未启用对应 profile 时：无 `monitoring-tempo`、Targets 里 `dcgm`/`npu` **DOWN 均属预期**。
 
-**昇腾现场：**
+**`tracing` 时应用侧还须打开导出**（否则 Grafana 无 Trace；本目录只起 Tempo）：
 
 ```bash
-# .env 中设置：COMPOSE_PROFILES=gpu-ascend
-# 并按驱动/MindCluster 版本调整 ASCEND_NPU_EXPORTER_IMAGE（见 .env.example）
-docker compose --env-file .env --profile gpu-ascend up -d
-# 验收：Targets 中 job=npu UP；Grafana → 07 Ascend NPU
-curl -s http://127.0.0.1:8082/metrics | head
+# app/app-deploy/.env
+EXECUTION_TRACE_ENABLED=true
+EXECUTION_TRACE_BACKEND=redis
+EXECUTION_TRACE_OTLP_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=http://monitoring-tempo:4318
+# 跨网不通：http://host.docker.internal:4318
 ```
 
-前提：宿主机可执行 `npu-smi info`；驱动/DCMI 路径与 `.env` 中 `ASCEND_*_HOST_PATH` 一致。  
-**指标名随 npu-exporter 版本可能变化**；若看板无数据，在 Prometheus 用 `{job="npu"}` 查看实际序列名后微调 `07-npu-ascend.json`。
+探活：`GET /ops/traces-status`；Grafana Explore → Tempo，按 `request_id` / `job_id` 查。
 
-**其它加速卡：** 复制本仓库英伟达/昇腾模式，新增厂商 exporter 服务、在 `prometheus.yml` 增加 scrape、新增 Grafana JSON；勿假设 node-exporter 能覆盖。
-
-未启用对应 profile 时，Targets 里 `dcgm` / `npu` 为 **DOWN 属预期**，可忽略。
+**说明：**
+- `node-exporter` 不含显卡/加速卡；沐曦/寒武纪等未内置，须自增 exporter + scrape + 看板。
+- 昇腾指标名随 npu-exporter 版本可能变化；看板无数据时在 Prometheus 用 `{job="npu"}` 核对后调 `07-npu-ascend.json`。
 
 ---
 
@@ -114,6 +148,7 @@ curl -s http://127.0.0.1:8082/metrics | head
 | Targets | 浏览器 `http://127.0.0.1:9091/targets` | `models-app`、`vllm`、`node` **UP**        |
 | Grafana | `http://127.0.0.1:3000` | 登录后见文件夹 Models App 下看板（含主机资源）；账密见 `.env` |
 | Alertmanager | `http://127.0.0.1:9093` | UI 可打开                                   |
+| Tempo（需 `tracing`） | `docker ps --filter name=monitoring-tempo`；Explore → Tempo | 容器 Up；按 `request_id` 可查到链路 |
 | 人为宕机告警 | `docker stop models-app` 等待 ≥2m | `ModelsAppDown` 触发                       |
 
 看板清单：

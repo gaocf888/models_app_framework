@@ -205,6 +205,16 @@ class NL2SQLService:
                     req.session_id,
                     sql[:8000] + ("..." if len(sql) > 8000 else ""),
                 )
+            try:
+                self._emit_nl2sql_trace(
+                    req,
+                    sql=sql,
+                    status="failed",
+                    row_count=0,
+                    error=str(exc),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             raise exc from last_execute_error
 
         if record_conversation:
@@ -224,5 +234,56 @@ class NL2SQLService:
                 ((vctx.parsed_intent or {}).get("scope") or {}).get("boiler"),
             )
 
-        return NL2SQLQueryResponse(sql=sql, rows=rows, parsed_intent=parsed_intent)
+        resp = NL2SQLQueryResponse(sql=sql, rows=rows, parsed_intent=parsed_intent)
+        try:
+            self._emit_nl2sql_trace(
+                req,
+                sql=sql,
+                status="success",
+                row_count=len(rows or []),
+                error=None,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return resp
+
+    @staticmethod
+    def _emit_nl2sql_trace(
+        req: NL2SQLQueryRequest,
+        *,
+        sql: str | None,
+        status: str,
+        row_count: int,
+        error: str | None,
+    ) -> None:
+        import uuid as _uuid
+
+        from app.observability.sanitizer import sha256_text, truncate_text
+        from app.observability.trace_recorder import TraceRecorder
+
+        rid = (req.analysis_request_id or "").strip() or str(_uuid.uuid4())
+        tr = TraceRecorder.start(
+            module="nl2sql",
+            request_id=rid,
+            kind="request",
+            scene="nl2sql_query",
+            user_id=req.user_id,
+            session_id=req.session_id,
+            meta={
+                "analysis_request_id": req.analysis_request_id,
+                "plan_item_id": req.plan_item_id,
+                "sql_sha256": sha256_text(sql),
+                "sql_preview": truncate_text(sql, 256),
+            },
+        )
+        tr.record_node("generate_validate", status="success" if sql else "failed")
+        tr.record_node(
+            "execute",
+            status="failed" if status == "failed" else "success",
+            error=error,
+            attributes={"row_count": row_count},
+        )
+        if status == "failed":
+            tr.add_degrade("nl2sql_execute_failed")
+        tr.finalize(status="failed" if status == "failed" else "success", summary=truncate_text(sql, 200))  # type: ignore[arg-type]
 

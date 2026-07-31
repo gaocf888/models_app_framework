@@ -1158,6 +1158,21 @@ class InspectionExtractJobScheduler:
                 json.dumps({"ok": False, "error": err_msg}, ensure_ascii=False),
                 encoding="utf-8",
             )
+            try:
+                from app.observability.trace_recorder import TraceRecorder
+
+                tr = TraceRecorder.start(
+                    module="inspection_extract",
+                    request_id=job_id,
+                    kind="job",
+                    scene="async_extract",
+                    meta={"job_id": job_id},
+                )
+                tr.record_node("parse_chunks", status="failed", error=str(err_msg)[:500])
+                tr.add_degrade("extract_failed")
+                tr.finalize(status="failed", summary=str(err_msg)[:200])
+            except Exception:  # noqa: BLE001
+                pass
             return
 
         async with meta_lock:
@@ -1172,6 +1187,23 @@ class InspectionExtractJobScheduler:
                 m["metrics"]["llm_latency_ms"] = llm_ms
                 _atomic_write_json(jd / "job_meta.json", m)
         (jd / "final_response.json").write_text(resp.model_dump_json(), encoding="utf-8")
+        # 观测旁路：检修提取任务终态
+        try:
+            from app.observability.trace_recorder import TraceRecorder
+
+            tr = TraceRecorder.start(
+                module="inspection_extract",
+                request_id=job_id,
+                kind="job",
+                scene="async_extract",
+                meta={"job_id": job_id, "chunks_total": chunks_total},
+            )
+            tr.record_node("split_chunks", attributes={"chunks_total": chunks_total})
+            tr.record_node("parse_chunks", latency_ms=int(llm_ms or 0) if llm_ms is not None else None)
+            tr.record_node("finalize")
+            tr.finalize(status="success")
+        except Exception:  # noqa: BLE001
+            pass
 
     def get_public_status(self, job_id: str) -> InspectionExtractJobStatusResponse | None:
         jd = self._job_dir(job_id)
