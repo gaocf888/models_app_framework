@@ -107,16 +107,17 @@ GPU/NPU、Tempo 均挂在 **profile** 上，**默认不启动**。启用方式�
 
 ```bash
 # A. 写在 .env（推荐现场固化）
-# COMPOSE_PROFILES=tracing
-# COMPOSE_PROFILES=gpu-ascend
-# COMPOSE_PROFILES=tracing,gpu-ascend
+# COMPOSE_PROFILES=tracing   # 部署应用追踪
+# COMPOSE_PROFILES=gpu-ascend  # 部署显卡监控
+# COMPOSE_PROFILES=tracing,gpu-ascend  # 同时部署应用追踪和显卡监控
 
 docker compose --env-file .env up -d
 
 # B. 命令行（不改 .env）
-docker compose --env-file .env --profile tracing up -d
-docker compose --env-file .env --profile gpu-nvidia up -d
-docker compose --env-file .env --profile tracing --profile gpu-ascend up -d
+docker compose --env-file .env --profile tracing up -d   # 部署应用追踪
+docker compose --env-file .env --profile gpu-nvidia up -d   # 部署英伟达显卡监控
+docker compose --env-file .env --profile tracing --profile gpu-ascend up -d  # 同时部署应用追踪和晟腾显卡监控
+docker compose --env-file .env --profile tracing --profile gpu-nvidia up -d  # 同时部署应用追踪和英伟达显卡监控
 ```
 
 未启用对应 profile 时：无 `monitoring-tempo`、Targets 里 `dcgm`/`npu` **DOWN 均属预期**。
