@@ -81,6 +81,8 @@ def record_to_otlp_payload(record: ExecutionTraceRecord, *, service_name: str) -
         {"key": "module", "value": {"stringValue": record.module}},
         {"key": "status", "value": {"stringValue": record.status}},
     ]
+    if record.kind == "job":
+        root_attrs.append({"key": "job_id", "value": {"stringValue": record.request_id}})
     if record.scene:
         root_attrs.append({"key": "scene", "value": {"stringValue": record.scene}})
     for i, reason in enumerate((record.degrade_reasons or [])[:10]):

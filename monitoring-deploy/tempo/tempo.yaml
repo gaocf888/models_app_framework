@@ -1,5 +1,6 @@
 # Grafana Tempo single-binary（短保留）
 # docs/系统执行轨迹与LangSmith观测改造方案.md §8
+# TraceQL 按属性搜索依赖已 ingest 的 trace；应用须 EXECUTION_TRACE_OTLP_ENABLED=true
 
 server:
   http_listen_port: 3200
@@ -15,6 +16,16 @@ distributor:
 
 ingester:
   max_block_duration: 5m
+  # 刚写入的 trace 在完整落盘前也可被 Search/TraceQL 查到
+  complete_block_timeout: 15m
+
+query_frontend:
+  search:
+    # 0 = 不限制查询时间窗上限（由 Grafana Explore 时间选择器约束）
+    max_duration: 0s
+    # 最近数据查 ingester；更早查 backend blocks
+    query_ingesters_until: 30m
+    query_backend_after: 0s
 
 compactor:
   compaction:
