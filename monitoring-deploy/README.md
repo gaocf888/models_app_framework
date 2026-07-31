@@ -8,6 +8,30 @@
 
 ---
 
+## 0. monitoring-deploy作用定位
+
+**monitoring-deploy** 是独立的运维监控栈：盯住 `models-app` / vLLM 等是否健康、资源是否够用，并可（可选）看单次请求怎么跑完。
+
+在 **Grafana** 里主要有两种看法：
+
+| 方式 | 看什么                                     | 入口 |
+|------|-----------------------------------------|------|
+| **指标看板** | 项目中所有应用的QPS、延迟、报错、CPU/GPU 等（Prometheus） | 左侧 Dashboards → Models App |
+| **链路图** | 项目中所有应用某次请求/任务的瀑布图（Tempo，需开 `tracing`）  | Explore → 数据源 Tempo |
+
+**本仓库里还有第三种（不经过 Grafana）**：应用自己的 Trace API，查 Redis 里落好的 JSON 轨迹，例如：
+
+- 统一：`GET /ops/traces*`、`GET /ops/traces/{request_id}`
+- 模块别名：`/rag/traces/`、`/chatbot/traces/`、`/analysis/traces*` 等  
+
+（需 Bearer `SERVICE_API_KEY`。）
+
+**怎么用（极简）**：本目录 `docker compose up` 起监控 → 浏览器打开 Grafana（默认 `:3000`）看看板；要链路图再开 profile `tracing`，并在应用 `.env` 设 `EXECUTION_TRACE_OTLP_ENABLED=true`。只查 API、不看图时，不必开 Tempo。
+
+更细的组件与启动见下文 §1～§3。
+
+---
+
 ## 1. 组件
 
 | 服务 | 容器名 | 默认端口 | 说明 |
