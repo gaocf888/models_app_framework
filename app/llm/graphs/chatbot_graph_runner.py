@@ -876,18 +876,25 @@ class ChatbotLangGraphRunner:
                     yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
                     return
                 parts.append(delta)
-                # 不逐 token 推送：避免 ### 小标题先出现在前端；定稿剥离后再一次性 delta
+                yield {"type": "delta", "delta": delta}
         except Exception:
             logger.warning("chatbot.nl2sql_analysis stream failed", exc_info=True)
             parts = []
 
         streamed = "".join(parts).strip()
-        finalized = finalize_streamed_nl2sql_analysis(plan, streamed)
-        answer = finalized.answer_text
-        state["answer_text"] = answer
-        state["nl2sql_analysis"] = finalized.analysis_meta
-        if answer:
-            yield {"type": "delta", "delta": answer}
+        if streamed:
+            finalized = finalize_streamed_nl2sql_analysis(plan, streamed)
+            answer = finalized.answer_text
+            state["answer_text"] = answer
+            state["nl2sql_analysis"] = finalized.analysis_meta
+        else:
+            # 流式失败/空输出：回退 Markdown 表并一次性下发
+            finalized = finalize_streamed_nl2sql_analysis(plan, "")
+            answer = finalized.answer_text
+            state["answer_text"] = answer
+            state["nl2sql_analysis"] = finalized.analysis_meta
+            if answer:
+                yield {"type": "delta", "delta": answer}
 
         extra = self._maybe_similar_cases_extra(state)
         state["similar_cases_appended"] = bool(extra)
