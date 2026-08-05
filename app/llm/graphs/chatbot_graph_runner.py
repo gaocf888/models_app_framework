@@ -866,7 +866,11 @@ class ChatbotLangGraphRunner:
             ):
                 if await self._is_cancelled(req, stream_id, cancel_checker):
                     partial = strip_nl2sql_analysis_section_headings("".join(parts).strip())
-                    self._persist_disconnect(state, req, partial)
+                    if persist_mode == "success":
+                        self._persist_disconnect(state, req, partial)
+                    else:
+                        # resume：用户选择已落库，勿再 append user
+                        self._persist_resume_partial(state, req, partial)
                     state["status"] = "aborted"
                     state["terminate_reason"] = "user_cancelled"
                     yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
@@ -1507,8 +1511,9 @@ class ChatbotLangGraphRunner:
         action: str,
         payload: dict[str, Any] | None = None,
         stream_id: str | None = None,
+        cancel_checker: Any | None = None,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """HITL 续跑：应用用户按钮选择后继续图编排。"""
+        """HITL 续跑：应用用户按钮选择后继续图编排。支持 ``/chat/stop`` 经 cancel_checker 中断。"""
         session = get_chatbot_hitl_resume_session(resume_token)
         if session is None:
             yield {"type": "error", "error": "invalid or expired resume_token"}
@@ -1554,7 +1559,7 @@ class ChatbotLangGraphRunner:
 
             if state.get("nl2sql_analysis_stream_plan"):
                 async for ev in self._emit_nl2sql_analysis_stream(
-                    state, req, start_ts, stream_id, cancel_checker=None, persist_mode="resume"
+                    state, req, start_ts, stream_id, cancel_checker, persist_mode="resume"
                 ):
                     yield ev
                 return
@@ -1567,6 +1572,11 @@ class ChatbotLangGraphRunner:
                 or (bool(pre_answer) and not llm_messages)
             )
             if no_stream_path:
+                if await self._is_cancelled(req, stream_id, cancel_checker):
+                    state["status"] = "aborted"
+                    state["terminate_reason"] = "user_cancelled"
+                    yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
+                    return
                 answer = pre_answer
                 extra = self._maybe_similar_cases_extra(state)
                 full = (answer + extra).strip()
@@ -1595,6 +1605,13 @@ class ChatbotLangGraphRunner:
             if self._main_llm_temperature is not None:
                 stream_kw["temperature"] = float(self._main_llm_temperature)
             async for delta in self._llm.stream_chat(model=None, messages=llm_messages, **stream_kw):  # type: ignore[arg-type]
+                if await self._is_cancelled(req, stream_id, cancel_checker):
+                    partial = "".join(parts).strip()
+                    self._persist_resume_partial(state, req, partial)
+                    state["status"] = "aborted"
+                    state["terminate_reason"] = "user_cancelled"
+                    yield {"type": "finished", "meta": self._build_finished_meta(state, start_ts, stream_id)}
+                    return
                 parts.append(delta)
                 yield {"type": "delta", "delta": delta}
             answer = "".join(parts).strip()
@@ -1638,6 +1655,10 @@ class ChatbotLangGraphRunner:
                 processed_image_urls=[u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
             ),
         )
+        self._persist_resume_partial(state, req, partial)
+
+    def _persist_resume_partial(self, state: ChatbotGraphState, req: ChatRequest, partial: str) -> None:
+        """HITL 续跑中断：仅落库 partial assistant（user 选择消息已写入）。"""
         if self._persist_partial and partial:
             rc_list = state.get("rag_citations")
             rag_kw: list[dict[str, Any]] | None = (

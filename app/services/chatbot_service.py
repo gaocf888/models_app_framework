@@ -434,6 +434,7 @@ class ChatbotService:
                 action=req.action,
                 payload=dict(req.payload or {}),
                 stream_id=stream_id,
+                cancel_checker=self._stream_ctrl.is_cancelled,
             ):
                 yield ev
         finally:

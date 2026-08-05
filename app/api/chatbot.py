@@ -412,8 +412,10 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
        2）``route_clarify`` 时 ``payload.refined_query`` **必填**；其它 action 可选 ``refined_query``。
     4. **处理续跑 SSE**：与 ``/chat/stream`` 相同拼接 ``delta`` / ``citation_ref``；
        若再次收到 ``chatbot_hitl_required``，重复步骤 2–3（使用新的 ``resume_token``）。
+       续跑首帧 ``stream_id`` 可调用 ``POST /chatbot/chat/stop`` 中断（与普通问答相同）。
     5. **结束**：收到 ``finished: true`` 后读取 ``meta``（``used_nl2sql``、``rag_citations`` 等）；
        ``resume_token`` 使用后即失效，勿重复提交同一 token。
+       若用户中断，结束帧 ``meta.terminate_reason`` 为 ``user_cancelled``，``meta.status`` 为 ``aborted``。
     6. **错误**：``error`` 帧常见 ``invalid or expired resume_token``、
        ``resume_token session mismatch``；应提示用户重新提问或刷新会话。
 
@@ -468,11 +470,12 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
 @router.post("/chat/stop", response_model=ChatStreamStopResponse, summary="中断指定流式对话")
 async def stop_chat_stream(req: ChatStreamStopRequest) -> ChatStreamStopResponse:
     """
-    显式中断某次流式输出。
+    显式中断某次流式输出（普通对话与 HITL 续跑共用）。
 
     使用方式：
-    - 先从 `/chat/stream` 首帧 `{"started": true, "stream_id": "..."}` 获取 `stream_id`；
-    - 再调用本接口发送停止信号。
+    - 先从 ``/chat/stream`` 或 ``/chat/resume-stream`` 首帧
+      ``{"started": true, "stream_id": "..."}`` 获取 ``stream_id``；
+    - 再调用本接口发送停止信号（``user_id`` / ``session_id`` 须与该次流式请求一致）。
     """
     await service.stop_stream(req.user_id, req.session_id, req.stream_id)
     return ChatStreamStopResponse(

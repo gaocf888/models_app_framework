@@ -275,7 +275,10 @@ class ChatResponse(BaseModel):
 class ChatStreamStopRequest(BaseModel):
     user_id: str = Field(..., description="用户 ID（与 stream 请求一致）")
     session_id: str = Field(..., description="会话 ID（与 stream 请求一致）")
-    stream_id: str = Field(..., description="需要停止的流式请求标识（由 /chat/stream started 事件返回）")
+    stream_id: str = Field(
+        ...,
+        description="需要停止的流式请求标识（由 /chat/stream 或 /chat/resume-stream 的 started 事件返回）",
+    )
 
     @field_validator("user_id")
     @classmethod
