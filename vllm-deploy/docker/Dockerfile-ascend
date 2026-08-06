@@ -47,6 +47,7 @@ RUN mkdir -p ${WORKSPACE}/{config,scripts,logs,models,media}
 COPY requirements.txt requirements-extras.txt ${WORKSPACE}/
 
 # extras：禁止安装 PyPI vllm/torch，以免覆盖镜像内昇腾栈
+# 构建机通常无 NPU 驱动/libascend_hal.so；校验 import 时须关闭 torch_npu 自动加载
 RUN set -eux; \
     if [ "${VLLM_REQUIREMENTS_PROFILE}" = "extras" ]; then \
       REQ="${WORKSPACE}/requirements-extras.txt"; \
@@ -58,6 +59,6 @@ RUN set -eux; \
       -i https://mirrors.aliyun.com/pypi/simple/ \
       --trusted-host mirrors.aliyun.com \
       --default-timeout=600 --retries=20; \
-    python3 -c "import torch; print('torch', torch.__version__)"
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 -c "import torch; print('torch', torch.__version__)"
 
 EXPOSE 8000
