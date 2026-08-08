@@ -11,7 +11,7 @@
 
 - 编排与执行分离：LangGraph 负责状态流转，LLM/RAG/会话仍用现有服务。
 - 兼容优先：请求/响应协议尽量不变，支持灰度发布与一键回退。
-- 结构先行：先完整建图（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；意图后端支持 **`rules | llm | bert`**（默认 `rules`，`llm` 为模式 B 窄触发，见 `docs/智能客服意图识别轻量LLM接入说明.md`）。结束 `meta` 含 **`suggested_questions`**（`kb_qa`/`clarify` 路径；**`data_query` 流式不下发**，见 §4.3）、**`rag_citations`**（RAG 路径结构化引用，见 §4.5）等；关联问题生成规则为规则预设表 + 复用本轮 `context_snippets` 首行种子 + 可选 LLM JSON 补全，**不为关联问题单独做二次向量检索**。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**高分 FAQ 软直通**见 **§4.4**。**本厂专属知识库 RAG 范围（`rag_scope_resolve`）**见 **第 16 节**。**上下文指代消解（P0～P3）**见 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。
+- 结构先行：先完整建图（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL + 收紧分析流，见 §4.6）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；意图后端支持 **`rules | llm | bert`**（默认 `rules`，`llm` 为模式 B 窄触发，见 `docs/智能客服意图识别轻量LLM接入说明.md`）。结束 `meta` 含 **`suggested_questions`**（`kb_qa`/`clarify` 路径；**`data_query` 流式不下发**，见 §4.3）、**`rag_citations`**（RAG 路径结构化引用，见 §4.5）、**`nl2sql_analysis`**（查库旁路结构，见 §4.6）等；关联问题生成规则为规则预设表 + 复用本轮 `context_snippets` 首行种子 + 可选 LLM JSON 补全，**不为关联问题单独做二次向量检索**。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**高分 FAQ 软直通**见 **§4.4**。**本厂专属知识库 RAG 范围（`rag_scope_resolve`）**见 **第 16 节**。**上下文指代消解（P0～P3）**见 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。
 - 可观测优先：接入 LangSmith，节点级记录耗时、路由、重试与失败原因。
 
 ## 3. 总体架构
@@ -21,14 +21,14 @@
 组件职责：
 
 - `app/api/chatbot.py`：HTTP、SSE 帧封装、`/upload` 图片上传。
-- `ChatbotService`（`chatbot_service.py`）：图开关、异常回退 Legacy、会话与 Runner 共用 `ConversationManager`。
+- `ChatbotService`（`chatbot_service.py`）：图开关、异常回退 Legacy、会话与 Runner 共用 `ConversationManager`；入口顺序含图片预处理与可选 Outline「第 N 点」引用改写（`_apply_structured_reference`）。
 - `ChatbotImagePreprocessor`（`chatbot_image_preprocessor.py`）：在 `ChatbotService` 入口前对 `image_urls` 做缩放/压缩并存储；默认 **`CHATBOT_IMAGE_STORAGE_BACKEND=minio`**（预签名 URL），可选本地目录 + `StaticFiles`（前缀默认 `/chatbot/media`），降低多模态上下文与传输开销。
 - `ChatbotOutlineStore`（`chatbot_outline.py`）：回答后异步提取“第N点”结构化索引，写 Redis 热层（可选 EasySearch 冷层）；在新一轮对“上文第N点”请求做旁路引用增强，不改变主链路。
 - **上下文指代消解（P0～P3）**：规则判型 + 检索 query 与历史融合（P0，默认开）、可选对话锚块（P1，默认关）、会话槽位（P2，默认关）、灰区 Coref 小模型 + 短时缓存（P3，默认关）；清单与开关见 **`configs/chatbot_anaphora.yaml`**，设计见 **`docs/智能客服上下文理指代实现优化方案-20260514.md`**，编排落点见 **第 15 节**。
   - 槽位（P2）：上一轮 assistant **落库后**同步抽取要点数组，写入 Redis（按 `user_id + session_id`）
   - 对话锚（P1）：**本轮**组装 system 时按需注入，优先消费槽位要点
   - Coref 缓存（P3）：灰区 LLM 分类结果短时缓存，落库后按会话失效
-- `ChatbotLangGraphRunner`（`chatbot_graph_runner.py`）：`StateGraph` 编译与执行、**图后**流式生成、相似案例追加、**关联问题** `_fill_suggested_questions`、落库。
+- `ChatbotLangGraphRunner`（`chatbot_graph_runner.py`）：`StateGraph` 编译与执行、**图后**流式生成（含 `kb_qa` 主答流、`data_query` 收紧分析流）、相似案例追加、**关联问题** `_fill_suggested_questions`、落库。
 - LangGraph：状态机（模板、历史、意图、故障门控、**按意图分支**、RAG/C-RAG 或 NL2SQL、`finalize`）。
 - `HybridRAGService` / `AgenticRAGService`：主链路检索；相似案例为 Runner 层**二次** `retrieve(namespace=…)`。
 - `NL2SQLService`（`nl2sql_service.py`）：`data_query` 分支生成 SQL 与执行；客服内嵌调用时 `record_conversation=False`。NL2SQL 与 RAG 同为基座基础能力；直连 HTTP 见 `POST /nl2sql/query`；**综合分析 V2** 在 **`POST /analysis/run-with-nl2sql`**（及流式 **`run-with-nl2sql-stream`**）与 **`POST /analysis/run-img-diag`**（及流式 **`run-img-diag-stream`**）（NL2SQL 并行臂 **`acquire_data`** → **`_execute_data_plan`**，**默认同 dependency 层并行多次 `query`**）阶段亦多次复用同一服务（`record_conversation=False`）。接入形态总览见 **`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`**。
@@ -36,10 +36,10 @@
 - `chatbot_faq_soft_direct.py`：高分 FAQ 软直通判定（`kb_build_messages` 阶段，见 **§4.4**）。
 - `chatbot_rag_citations.py` / `chatbot_citation_stream.py`：RAG 结构化引用与流式 `citation_ref` 事件（见 **§4.5**）。
 - `chatbot_follow_up.py`：`build_suggested_questions`（规则表 + 本轮片段种子 + 可选 LLM）。
-- `chatbot_nl2sql_answer.py`：SQL/结果行 → 自然语言。
+- `chatbot_nl2sql_answer.py` / `chatbot_nl2sql_display.py`：查数统一入口 `run_chatbot_nl2sql_query`；列过滤展示；可选 **收紧分析**（`summarize_nl2sql_with_llm` / 流式 `nl2sql_analysis_stream_plan`，见 **§4.6**）。
 - `ConversationManager`：会话真源（`user_id + session_id`）。
 - `PromptTemplateRegistry` + `configs/prompts.yaml`：默认 `boiler_v1`（`CHATBOT_PROMPT_DEFAULT_VERSION`）。
-- `VLLMHttpClient`：对话与 NL2SQL 总结、关联问题 LLM、流式主答。
+- `VLLMHttpClient`：对话与 NL2SQL 收紧分析、关联问题 LLM、流式主答。
 - LangSmith：可选链路追踪（`LangSmithTracker`）。
 
 ## 4. 图设计（状态、节点、路由）
@@ -88,19 +88,19 @@
 ┌──────────┐        ┌──────────────┐              ┌────────────────────────┐
 │固定澄清话│        │NL2SQL 链+执行 │              │select_rag→rag_scope_   │
 │术        │        │→nl2sql_answer│              │resolve→kb_retrieve     │
-│          │        │总结自然语言  │              │→C-RAG→kb_build_messages│
-│          │        │（无主链路RAG）│              │（含 FAQ 软直通 §4.4）  │
+│          │        │（可挂收紧分析│              │→C-RAG→kb_build_messages│
+│          │        │ stream_plan）│              │（含 FAQ 软直通 4.4）   │
 └────┬─────┘        └──────┬───────┘                          ▼
      │                     │                   ┌────────────────────────┐
-     │                     │                   │VLLM 流式主答（Runner）  │
-     │                     │                   └───────────┬────────────┘
-     │                     │                               ▼
-     │                     │                   ┌────────────────────────┐
-     │                     │                   │（条件）相似案例 delta   │
-     │                     │                   │intent=data_query 跳过   │
-     │                     │                   └───────────┬────────────┘
-     │                     │                               │
-     └─────────────────────┴───────────────────────────────┘
+     │                     ▼                   │VLLM 流式主答（Runner）  │
+     │            ┌────────────────┐           └───────────┬────────────┘
+     │            │Runner：收紧分析│                       ▼
+     │            │整段 delta 一次 │           ┌────────────────────────┐
+     │            │（非逐 token）  │           │（条件）相似案例 delta   │
+     │            └───────┬────────┘           │intent=data_query 跳过   │
+     │                    │                    └───────────┬────────────┘
+     │                    │                                │
+     └────────────────────┴────────────────────────────────┘
                                   ▼
               ┌───────────────────────────────────┐
               │ 生成「关联推荐问」（规则表 + 本轮   │
@@ -112,76 +112,171 @@
               ┌───────────────────────────────────┐
               │【结束】落库用户与助手全文；         │
               │ SSE/JSON 结束帧 meta：意图、used_rag、│
-              │ used_nl2sql、rag_citations、推荐问等  │
+              │ used_nl2sql、nl2sql_analysis、        │
+              │ rag_citations、推荐问等               │
               └───────────────────────────────────┘
 ```
 
 补充说明（业务口径）：
 
-- **Legacy（关图或图异常回退）**：`chatbot_service._stream_chat_legacy_events` 对齐同一套 **意图三分支 + 关联问题 + 默认提示词**；与 Graph 差异主要在是否走 `StateGraph` 与 C-RAG 图节点，产品行为应对齐验收（**流式** `data_query` 与 Graph 一致，**不下发** `suggested_questions`）。
+- **Legacy（关图或图异常回退）**：`chatbot_service._stream_chat_legacy_events` 对齐同一套 **意图三分支 + 关联问题 + 默认提示词**；与 Graph 差异主要在是否走 `StateGraph` 与 C-RAG 图节点，产品行为应对齐验收（**流式** `data_query` 与 Graph 一致，**不下发** `suggested_questions`；查数成功亦可走收紧分析流，见 **§4.6**）。
 - **安全拒答、转人工、闲聊**：图内占位，**默认意图不产出**，主流量为 **澄清 / 查库 / 文档问答**。
 - **相似案例**：仅 **C 路径**且非澄清、且门控命中时，在主答流式结束后追加；**B 查库路径不追加**（见 `chatbot_graph_runner._should_append_similar_cases`）。
 - **关联问题**：**不为关联问题单独再做向量检索**；**`data_query` 流式路径不生成、不下发**；详见 `framework-guide/智能客服整体实现技术说明.md` **§7**。
 - **RAG 引用**：`kb_qa` 路径在流式输出中可下发 `citation_ref` 事件，结束帧含 `rag_citations`（见 **§4.5**）。
+- **查库成文**：流式默认走 **收紧分析**（有 `stream_plan` 时 Runner **整段一次** `delta`，非逐 token；见 **§4.6**）。
 
 ---
 
 #### 实现视角（代码级流程图）
 
-对齐 **当前仓库**：入口 `chatbot.py` → `ChatbotService.stream_chat_events`；**LangGraph** 在 `chatbot_graph_runner._build_graph` + `_run_graph` / `ainvoke`；**流式主答、相似案例、关联问题、落库**均在图结束后的 **`run_stream_events`**（Runner 层），未注册为独立图节点。
+对齐 **当前仓库** 的**代码调用链**（流式主路径）。每个框优先标 **Python 文件路径**，再标 **类 / 函数**，并附 **`说明:`** 中文职责摘要；顺序与业务视角一致：**先意图与门控，再分岔**。图后流式/落库在 Runner 层，**不是** LangGraph 独立节点。
 
-```mermaid
-flowchart TB
-  subgraph Entry["① 入口与开关"]
-    C[客户端] --> API["api/chatbot.py\n/chat/stream SSE"]
-    API --> SVC["chatbot_service.py\nstream_chat_events"]
-    SVC --> G0{CHATBOT_GRAPH_ENABLED}
-    G0 -->|false| LEG["chatbot_service.py\n_stream_chat_legacy_events\n意图三分支+NL2SQL+RAG+follow_up"]
-    G0 -->|true| RUN["chatbot_graph_runner.py\nrun_stream_events"]
-    RUN -->|异常且 FALLBACK_LEGACY| LEG
-  end
-
-  subgraph Graph["② LangGraph chatbot_graph_runner._build_graph"]
-    RUN --> RG["_run_graph 或 ainvoke"]
-    RG --> N1["N: load_prompt_template\nregistry+CHATBOT_PROMPT_DEFAULT_VERSION"]
-    N1 --> N2["N: load_history\nConversationManager"]
-    N2 --> N3["N: intent_classify\nclassify_chatbot_intent_async\n(rules|llm|bert)"]
-    N3 --> FG["N: fault_case_gate\nchatbot_similar_cases.run_fault_case_gate_decision"]
-    FG --> R1{"_route_by_intent"}
-    R1 -->|clarify| NC["clarify_build_response"]
-    R1 -->|data_query| NSQ["nl2sql_answer\nNL2SQLService.query record_conversation=False\n+ chatbot_nl2sql_answer.summarize_nl2sql_with_llm"]
-    R1 -->|kb_qa| N4["select_rag_engine"]
-    N4 --> N4b["rag_scope_resolve\nchatbot_rag_scope.resolve_rag_namespace"]
-    N4b --> N5["kb_retrieve\nAgentic/Hybrid + namespace + 指代P0/P3"]
-    N5 --> N6["kb_quality_check"]
-    N6 --> R2{"_route_after_quality_check C-RAG"}
-    R2 -->|retry| N7["kb_rewrite_query"] --> N5
-    R2 -->|build| N8["kb_build_messages\n模板+RAG+锚块P1\n+FAQ软直通§4.4"]
-    R2 -->|clarify| NC
-    R1 -.->|unsafe 等占位\n默认意图不产出| NP["unsafe_guard / handoff / smalltalk"]
-    NP -.-> NF["finalize"]
-    NC --> NF
-    NSQ --> NF
-    N8 --> NF
-    NF --> ENDN([END])
-  end
-
-  subgraph Post["③ Runner run_stream_events 图后"]
-    ENDN --> R3{"有 llm_messages ?"}
-    R3 -->|否| OUT1["yield delta=answer_text\n+ _maybe_similar_cases_extra"]
-    R3 -->|是| STM["VLLMHttpClient.stream_chat"]
-    STM --> CIT["可选 citation_ref 事件\n§4.5"]
-    CIT --> OUT2["yield 增量 delta"]
-    OUT2 --> SC["_maybe_similar_cases_extra\nHybridRAG.retrieve namespace"]
-    OUT1 --> FU["_fill_suggested_questions\nchatbot_follow_up.build_suggested_questions"]
-    SC --> FU
-    FU --> PD["_persist_success\nConversationManager append"]
-    PD --> SSE["yield finished\n_build_finished_meta"]
-    LEG --> SSE
-  end
+```text
+                    【客户端发起流式对话 POST /chatbot/chat/stream】
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【HTTP/SSE 入口】                                               │
+│ file: app/api/chatbot.py                                        │
+│ fn:   chat_stream                                               │
+│ 说明: 接收请求；把内部事件转成 SSE 帧给前端                      │
+│       （started / delta / citation_ref / finished / error）     │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【服务编排与开关】                                              │
+│ file:  app/services/chatbot_service.py                          │
+│ class: ChatbotService                                           │
+│ meth:  stream_chat_events                                       │
+│ 说明: 一轮对话总入口；先预处理，再决定走 Graph 或 Legacy        │
+│  ① _preprocess_request_images  — 图片缩放压缩，降多模态开销    │
+│     └─ file: app/services/chatbot_image_preprocessor.py         │
+│        class: ChatbotImagePreprocessor                          │
+│  ② _apply_structured_reference — 可选解析「上文第N点」改写问句 │
+│     └─ file: app/services/chatbot_outline.py                    │
+│        class: ChatbotOutlineStore                               │
+│  ③ begin_stream → started{stream_id} — 供 /chat/stop 中断      │
+│     └─ file: app/services/chatbot_stream_control.py             │
+│  ④ CHATBOT_GRAPH_ENABLED？                                     │
+│     false → _stream_chat_legacy_events（顺序链路，行为对齐）   │
+│     true  → ChatbotLangGraphRunner.run_stream_events            │
+│     异常且 FALLBACK → 自动回退 Legacy                           │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  │ GRAPH=true（默认）
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【LangGraph Runner】                                            │
+│ file:  app/llm/graphs/chatbot_graph_runner.py                   │
+│ class: ChatbotLangGraphRunner                                   │
+│ meth:  run_stream_events → _run_graph / ainvoke                 │
+│ state: app/llm/graphs/chatbot_graph_state.py · ChatbotGraphState │
+│ 说明: 先跑完整张图得到 state，再在图外做流式输出与落库          │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【图内前缀：模板 → 历史 → 意图 → 门控 → 路由】                  │
+│ file: chatbot_graph_runner.py · _node_*                         │
+│                                                                 │
+│  load_prompt_template — 加载场景话术（默认 boiler_v1）          │
+│    └─ file: app/llm/prompt_registry.py + configs/prompts.yaml  │
+│  load_history — 按会话读近期多轮（enable_context）              │
+│    └─ file: app/conversation/manager.py · ConversationManager  │
+│  intent_classify — 判 clarify / data_query / kb_qa              │
+│    └─ file: app/llm/graphs/chatbot_intent.py                   │
+│       fn: classify_chatbot_intent_async（rules|llm|bert）      │
+│  fault_case_gate — 是否事后追加「相似案例」（默认总关）         │
+│    └─ file: app/llm/graphs/chatbot_similar_cases.py            │
+│       fn: run_fault_case_gate_decision                         │
+│  _route_by_intent — 按意图进入下方 A/B/C 三分支                 │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+              ┌─────────┬─────────┬─────────┐
+              │ A 澄清  │ B 查库  │ C 知识答│
+              │clarify  │data_query│ kb_qa  │
+              └────┬────┴────┬────┴────┬────┘
+                   │         │         │
+     ┌─────────────┘         │         └──────────────────────────┐
+     ▼                       ▼                                    ▼
+┌────────────────┐  ┌────────────────────┐      ┌──────────────────────────────┐
+│【A 澄清】      │  │【B 结构化查库】    │      │【C 文档知识问答 / RAG】      │
+│ file:          │  │ file:              │      │ file: chatbot_graph_runner.py│
+│ chatbot_graph_ │  │ chatbot_graph_     │      │                              │
+│ runner.py      │  │ runner.py          │      │ select_rag_engine            │
+│                │  │ _node_nl2sql_answer│      │  说明: 选 agentic/hybrid     │
+│ _node_clarify_ │  │ 说明: 只查库成文， │      │ rag_scope_resolve            │
+│ build_response │  │ 不做主链路 RAG；   │      │  └─ chatbot_rag_scope.py     │
+│ 说明: 问句过短 │  │ 成功可挂分析计划   │      │  说明: 「本厂」等锁专属库    │
+│ 或证据不足时， │  │   │                │      │ kb_retrieve(+rag_citations)  │
+│ 返回固定澄清话 │  │   ▼                │      │  ├─ Agentic/Hybrid 召回      │
+│ 术，引导补充   │  │ chatbot_nl2sql_    │      │  ├─ retrieval_query 指代P0   │
+└───────┬────────┘  │ answer.py          │      │  └─ anaphora_* 可选P2/P3     │
+        │           │ run_chatbot_       │      │ kb_quality_check             │
+        │           │ nl2sql_query       │      │ kb_rewrite_query             │
+        │           │ (defer_stream=True)│      │  说明: 低分retry/超限转A澄清 │
+        │           │   │                │      │ kb_build_messages            │
+        │           │   ▼                │      │  ├─ faq_soft_direct 高分直通 │
+        │           │ nl2sql_service.py  │      │                              │
+        │           │ NL2SQLService.query│      │  └─ dialogue_anchor P1锚块   │
+        │           │ 说明: 生成SQL并执行│      │  说明: 组装发给大模型的消息 │
+        │           │ (不写NL2SQL会话)   │      └──────────────┬───────────────┘
+        │           │   │                │                     │
+        │           │   ▼                │                     │
+        │           │ summarize_nl2sql_  │                     │
+        │           │ with_llm           │                     │
+        │           │ → stream_plan      │                     │
+        │           │ 说明: 收紧分析计划 │                     │
+        │           │ 留给图后推送       │                     │
+        │           └─────────┬──────────┘                     │
+        │                     │                                │
+        └─────────────────────┴────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【图内收敛】                                                    │
+│ file: chatbot_graph_runner.py · _node_finalize → END            │
+│ 说明: 统一写 status 等；真正的流式吐字在下一步「图后」完成      │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【图后：流式输出 → 增强 → 落库 → 结束帧】                       │
+│ file: chatbot_graph_runner.py                                   │
+│ class: ChatbotLangGraphRunner · run_stream_events               │
+│ 说明: 按 state 选择输出方式，再做案例/关联问/会话写入           │
+│                                                                 │
+│  ① 有 nl2sql_analysis_stream_plan？（B 查库成功常见）           │
+│     → _emit_nl2sql_analysis_stream                              │
+│       └─ chatbot_nl2sql_answer.iter_analysis_llm_deltas         │
+│       └─ finalize_streamed_nl2sql_analysis                      │
+│     说明: 收齐后整段一次 delta，避免小标题刷屏                  │
+│  ② 否则有 llm_messages？（C 知识答）                            │
+│     → app/llm/client.py · VLLMHttpClient.stream_chat            │
+│       └─ chatbot_citation_stream.CitationStreamParser           │
+│     说明: 逐 token 流式；[n] 可拆成 citation_ref 事件           │
+│  ③ 否则一次性 delta=answer_text（A 澄清等）                     │
+│                                                                 │
+│  共性尾部:                                                      │
+│    _maybe_similar_cases_extra — 追加相似案例块（B/A 跳过）      │
+│      └─ chatbot_similar_cases.retrieve_similar_case_snippets    │
+│    _fill_suggested_questions — 关联推荐问（B 查库不下发）       │
+│      └─ chatbot_follow_up.build_suggested_questions             │
+│    _persist_success / _persist_disconnect — 写入会话历史        │
+│      └─ ConversationManager.append_*                            │
+│    yield finished + _build_finished_meta — 结束帧观测字段       │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【SSE 回写客户端】                                              │
+│ file: app/api/chatbot.py · chat_stream                          │
+│ 说明: 输出 started / delta / citation_ref / finished.meta 等    │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**图注**：`LEG → SSE` 为简写；Legacy 在 `chatbot_service._stream_chat_legacy_events` 内顺序完成分支逻辑、可选相似案例、`build_suggested_questions` 后，再 `yield finished`（`meta` 与 Graph 路径字段对齐）。
+**图注（调用约定）**：
+
+- 框内优先 **`file:` + 类/方法**，其后 **`说明:`** 为该步职责摘要。
+- Graph 开关关闭或 Runner 异常回退时，走同文件 **`ChatbotService._stream_chat_legacy_events`**，意图三分支与上图对齐（含收紧分析流）。
+- Runner 优先消费 `nl2sql_analysis_stream_plan`；否则再按 `llm_messages` / 固定 `answer_text`；`data_query` 不生成关联问、不追加相似案例。
 
 **实现落点速查（文件 → 职责）**
 
@@ -201,66 +296,89 @@ flowchart TB
 | 状态字段 | `app/llm/graphs/chatbot_graph_state.py` | `ChatbotGraphState` |
 | 相似案例门控/检索 | `app/llm/graphs/chatbot_similar_cases.py` | `run_fault_case_gate_decision`、`retrieve_similar_case_snippets` |
 | NL2SQL 服务 | `app/services/nl2sql_service.py` | `query(..., record_conversation=)` |
-| SQL 结果成文 | `app/llm/graphs/chatbot_nl2sql_answer.py` | `summarize_nl2sql_with_llm` |
+| 查数成文 / 收紧分析 | `app/llm/graphs/chatbot_nl2sql_answer.py` | `run_chatbot_nl2sql_query`、`summarize_nl2sql_with_llm`、`iter_analysis_llm_deltas`、`finalize_streamed_nl2sql_analysis` |
+| 查数展示列过滤 | `app/llm/graphs/chatbot_nl2sql_display.py` | `filter_chatbot_nl2sql_display_rows`、`CHATBOT_NL2SQL_SELECT_DISPLAY_RULES` |
 | 关联问题 | `app/llm/graphs/chatbot_follow_up.py` | `build_suggested_questions` |
 | 指代消解（P0～P3） | `chatbot_retrieval_query.py`、`chatbot_anaphora_*.py`、`chatbot_dialogue_anchor.py` | 见 **第 15 节** |
 | 提示词 | `app/llm/prompt_registry.py` + `configs/prompts.yaml` | `get_template(..., default_version=)` |
 
-说明（与代码一致）：
+说明（与代码一致；顺序同图 **A/B/C** 与 **§4.2～§4.6**）：
 
-- **`fault_case_gate`**：见 **第 14 节**；`intent=data_query` 时 Runner **不**追加相似案例（`_should_append_similar_cases`）。
-- **`_route_by_intent`**：`clarify` → 澄清；`data_query` → `nl2sql_answer`；`kb_qa` → RAG 链；**unsafe / handoff / smalltalk** 图内有边，**默认意图不产出**，虚线为预留。
-- **`enable_rag=false`**：`kb_retrieve` 空结果，质量路由通常直 **`build`**，C-RAG 不重试。
-- **澄清**：`intent=clarify` 或检索用尽转澄清时，无流式主答或仅 `answer_text`；不追加相似案例。
-- **Legacy**：与 Graph 对齐 **data_query / clarify / kb_qa**、默认 `boiler_v1`；**流式** `data_query` **不下发** `suggested_questions`；`clarify`/`kb_qa` 仍走 `build_suggested_questions`；相似案例逻辑同 `chatbot_similar_cases`。
+- **`fault_case_gate`**：见 **第 14 节**；**A/B** 路径 Runner **不**追加相似案例（`_should_append_similar_cases`）。
+- **`_route_by_intent`**：**A** `clarify` → 澄清；**B** `data_query` → `nl2sql_answer`；**C** `kb_qa` → RAG 链；**unsafe / handoff / smalltalk** 图内有边但默认不产出。
+- **`enable_rag=false`（C）**：`kb_retrieve` 空结果，质量路由通常直 **`build`**，C-RAG 不重试。
+- **A 澄清**：意图澄清或 C-RAG 超限转澄清时，图后多为一次性 `answer_text`；不追加相似案例。
+- **B 查库流式**：图内 `defer_analysis_stream=True`；有 `stream_plan` 时图后走 `_emit_nl2sql_analysis_stream`（§4.6），**不下发** `suggested_questions`。
+- **C 知识答**：`rag_citations` 在 `kb_retrieve` 生成；FAQ 软直通在 `kb_build_messages`（§4.4）；引用流在图后（§4.5）。
+- **Legacy**：与 Graph 对齐三分支、默认 `boiler_v1`；流式 **B** 不下发关联问；**A/C** 仍可 `build_suggested_questions`。
 
 ### 4.1 状态模型（GraphState）
 
-与实现 `ChatbotGraphState` 对齐的最小字段分组：
+与实现 `ChatbotGraphState` 对齐。字段随**实现视角流程图**各阶段写入（入口请求 → 图内前缀 → A/B/C 分支 → 图后落库/meta），分组如下：
 
 - 请求域：`user_id`、`session_id`、`query`、`original_image_urls`、`image_urls`、`enable_rag`、`enable_context`、`enable_nl2sql_route`、`client_prompt_version`（映射请求体 `prompt_version`）、`enable_fault_vision`
-- 提示词域：`prompt_template_id`、`prompt_version`、`prompt_variant`、`system_prompt`
-- 会话域：`history_messages`、`history_limit`
-- 意图域：`intent_label`、`intent_confidence`、`intent_reason`、`intent_history_summary`、`intent_prev_task_type`（后两者仅供观测）
-- 检索域：`rag_namespace`、`rag_scope_reason`、`rag_query_boost`、`rag_scope_fallback`、`context_snippets`、`rag_citations`、`retrieval_score`、`retrieval_attempts`、`rag_engine`、`used_rag`
-- FAQ 软直通域：`faq_soft_direct`、`faq_soft_direct_reason`（`kb_build_messages` 写入，见 **§4.4**）
-- NL2SQL 域：`used_nl2sql`、`nl2sql_sql`、`nl2sql_failed`、`nl2sql_error_code`
-- 相似案例域：`need_similar_cases`、`case_rag_query`、`fault_detect_sources`、`fault_detect_confidence`、`similar_cases_appended`
-- 关联问题域：`suggested_questions`（Runner 写入，进 `meta`；**`data_query` 流式恒为空**）
-- 指代域（`kb_qa` 检索链）：`anaphora_type`、`anaphora_rule_type`、`anaphora_confidence`、`anaphora_score_gap`、`anaphora_source`、`anaphora_slot_bullets`、`anaphora_anchor_block`（P1/P2 默认关，见 **§15**；观测项见 `CHATBOT_ANAPHORA_EXPOSE_META`）
-- 生成域：`llm_messages`、`answer_parts`、`answer_text`、`is_partial`
-- 控制域：`status`、`error`、`terminate_reason`（含 `client_disconnect`、`user_cancelled`）
+- 提示词域：`prompt_template_id`、`prompt_version`、`prompt_variant`、`system_prompt`（`load_prompt_template`）
+- 会话域：`history_messages`、`history_limit`（`load_history`）
+- 意图域：`intent_label`、`intent_confidence`、`intent_reason`、`intent_history_summary`、`intent_prev_task_type`（`intent_classify`；后两者仅供观测）
+- 检索域（**C 知识答**）：`rag_namespace`、`rag_scope_reason`、`rag_query_boost`、`rag_scope_fallback`、`context_snippets`、`rag_citations`、`retrieval_score`、`retrieval_attempts`、`rag_engine`、`used_rag`
+- FAQ 软直通域：`faq_soft_direct`、`faq_soft_direct_reason`（**C** 的 `kb_build_messages` 写入，见 **§4.4**）
+- NL2SQL 域（**B 查库**）：`used_nl2sql`、`nl2sql_sql`、`nl2sql_failed`、`nl2sql_error_code`、**`nl2sql_analysis`**（旁路结构化：列/样本行等）、**`nl2sql_analysis_stream_plan`**（流式收紧分析计划，**图后**消费后清空，见 **§4.6**）
+- 相似案例域：`need_similar_cases`、`case_rag_query`、`fault_detect_sources`、`fault_detect_confidence`、`similar_cases_appended`（门控在图内；追加在**图后**）
+- 关联问题域：`suggested_questions`（**图后** `_fill_suggested_questions` 写入；**B/`data_query` 流式恒为空**）
+- 指代域（**C** 检索链）：`anaphora_type`、`anaphora_rule_type`、`anaphora_confidence`、`anaphora_score_gap`、`anaphora_source`、`anaphora_slot_bullets`、`anaphora_anchor_block`（P1/P2 默认关，见 **§15**；观测项见 `CHATBOT_ANAPHORA_EXPOSE_META`）
+- 生成域：`llm_messages`、`llm_max_tokens`、`history_trim_dropped`、`answer_parts`、`answer_text`、`is_partial`（**A** 多直接写 `answer_text`；**C** 写 `llm_messages` 供图后流式）
+- 控制域：`status`、`error`、`terminate_reason`（含 `client_disconnect`、`user_cancelled`、**`latency_budget_exceeded`**、`nl2sql_gen_failed` / `nl2sql_exec_failed` 等）、**`trace_request_id`**（写入 `meta.request_id`）
 
 说明：
 
 - `status` 用于业务观测，不直接暴露内部节点名；建议枚举：`started`/`intented`/`retrieved`/`clarifying`/`answered`/`aborted`/`failed`。
 - `answer_parts` 仅用于流式拼接；最终 `answer_text` 用于会话落库。
+- `nl2sql_analysis_stream_plan` 仅在流式路径短暂存在；对应图中「图后 ①」；`_emit_nl2sql_analysis_stream` 消费后置 `None`。
 
 ### 4.2 节点清单
 
-图内已注册节点（占位节点仍保留，按意图白名单可达）：
+下列顺序与**实现视角图**一致：**图内前缀 → A/B/C 分支 → finalize → 图后 Runner**（占位意图单独列出，图中主流量未展开）。
 
-1. `load_prompt_template`：`PromptTemplateRegistry`；未传 `prompt_version` 时用 `CHATBOT_PROMPT_DEFAULT_VERSION`（`chatbot_graph_runner._node_load_prompt_template`）。
-2. `load_history`：`ConversationManager` 只读（`enable_context`）。
-3. `intent_classify`：`classify_chatbot_intent_async` → `kb_qa` / `clarify` / `data_query`（`CHATBOT_INTENT_BACKEND=rules|llm|bert`；**llm** 为 rules 主判 + 进程内轻量模型窄触发；**bert** 须已微调三分类 HF 模型；可关 `CHATBOT_INTENT_ENABLED`）。
-4. `fault_case_gate`：`chatbot_similar_cases`；见 **第 14 节**。
-5. **条件路由** `_route_by_intent`（非独立节点）。
-6. `nl2sql_answer`：`NL2SQLService` + `summarize_nl2sql_with_llm`（`data_query`）。
-7. `select_rag_engine`：`agentic` / `hybrid`（`kb_qa`）。
-8. **`rag_scope_resolve`**：`chatbot_rag_scope.resolve_rag_namespace`；厂别指代命中时写入 `rag_namespace`（默认 `Power_plant_knowledge`）、`rag_scope_reason`、`rag_query_boost`；**仅首轮 kb_qa 进入**，C-RAG 重试不再经过本节点。
-9. `kb_retrieve`：`HybridRAGService` / `AgenticRAGService`，传入 **`namespace=state.rag_namespace`**（`None` 为全库）；**并入**指代规则检测、可选 Coref LLM（P3）、检索 query 与上轮摘要融合（P0）、读会话槽位（P2，开关开启时）。
-10. `kb_quality_check` + `kb_rewrite_query`：C-RAG。
-11. `kb_build_messages`：组装 `llm_messages`（system：模板 → **可选对话锚块（P1，默认关）** → RAG 导语与编号片段）；**高分 FAQ 软直通**（§4.4）满足条件时不注入 `history_messages`；写入 `rag_citations` 供 SSE 与落库。
-12. `clarify_build_response`：固定或模板澄清话术。
-13. `unsafe_guard` / `handoff_human` / `smalltalk_generate`：占位，默认意图不命中。
-14. `finalize`：收敛状态。
+**图内前缀（共性）**
 
-**Runner 层（图外，同一文件 `run_stream_events`）**
+1. `load_prompt_template`：加载场景话术；未传 `prompt_version` 时用 `CHATBOT_PROMPT_DEFAULT_VERSION`（默认 `boiler_v1`）。
+2. `load_history`：`ConversationManager` 只读近期多轮（`enable_context`）。
+3. `intent_classify`：`classify_chatbot_intent_async` → **A** `clarify` / **B** `data_query` / **C** `kb_qa`（`CHATBOT_INTENT_BACKEND=rules|llm|bert`；可关 `CHATBOT_INTENT_ENABLED`）。
+4. `fault_case_gate`：判定事后是否追加相似案例（默认总关；见 **第 14 节**）。
+5. **条件路由** `_route_by_intent`（非独立节点）：进入下方 A/B/C。
 
-14. `llm_stream_generate`：`VLLMHttpClient.stream_chat`（有 `llm_messages` 时）。
-15. 相似案例追加：`_maybe_similar_cases_extra`。
-16. 关联问题：`_fill_suggested_questions` → `build_suggested_questions`。
-17. `persist`：`_persist_success` / 断连 `_persist_disconnect`（成功落库 assistant 后可更新指代槽位 P2）。
+**A 澄清（`clarify`）**
+
+6. `clarify_build_response`：问句过短/不清或检索证据用尽时，返回固定或模板澄清话术，引导用户补充；图后一般一次性 `delta=answer_text`。
+
+**B 结构化查库（`data_query`）**
+
+7. `nl2sql_answer`：`run_chatbot_nl2sql_query(..., defer_analysis_stream=True)` → `NL2SQLService.query(record_conversation=False)` + `summarize_nl2sql_with_llm`；**不做主链路 RAG**；成功且开启收紧分析时写入 **`nl2sql_analysis_stream_plan`**，正文由**图后**推送（见 **§4.6**）。
+
+**C 文档知识问答（`kb_qa`）**
+
+8. `select_rag_engine`：选择 `agentic` / `hybrid`。
+9. **`rag_scope_resolve`**：`chatbot_rag_scope.resolve_rag_namespace`；「本厂」等厂别指代命中时锁定 `rag_namespace`（默认 `Power_plant_knowledge`）；**仅首轮进入**，C-RAG 重试复用 state。
+10. `kb_retrieve`：按 `namespace` 召回；并入指代 P0/P2/P3；经 `chunks_to_rag_context` 写入编号片段与 **`rag_citations`**（见 **§4.5**）。
+11. `kb_quality_check` + `kb_rewrite_query`：C-RAG；低分且有预算 → 改写再检索；超限不足 → 转 **A** `clarify_build_response`（见 **§4.3** / **§5**）。
+12. `kb_build_messages`：组装 `llm_messages`（模板 → 可选 P1 锚块 → RAG 编号片段）；可触发 **FAQ 软直通**（§4.4）。
+
+**占位（默认意图不产出；图中未展开）**
+
+13. `unsafe_guard` / `handoff_human` / `smalltalk_generate`。
+
+**图内收敛**
+
+14. `finalize`：统一收敛 `status` 等；**流式吐字不在本节点**。
+
+**图后 Runner（`run_stream_events`，与图中「图后 ①②③ + 共性尾部」一致）**
+
+15. **① NL2SQL 收紧分析流**：有 `nl2sql_analysis_stream_plan` → `_emit_nl2sql_analysis_stream`（优先；见 **§4.6**）。
+16. **② 主答流式**：有 `llm_messages` 且无 stream_plan → `VLLMHttpClient.stream_chat`；可发 `citation_ref`（§4.5）。
+17. **③ 固定话术**：`clarify` 等仅有 `answer_text` 时一次性 `delta`。
+18. 相似案例追加：`_maybe_similar_cases_extra`（**A/B 跳过**；**C** 且门控命中才可能追加）。
+19. 关联问题：`_fill_suggested_questions` → `build_suggested_questions`（**B/`data_query` 跳过**；**A** 仍可生成，条数偏少）。
+20. 落库与结束：`_persist_success` / `_persist_disconnect`；`yield finished` + `_build_finished_meta`（可异步 Outline 索引；落库后可更新指代槽位 P2）。
 
 实现状态：
 
@@ -268,13 +386,20 @@ flowchart TB
 
 ### 4.3 路由策略
 
-**共性前缀**：`load_prompt_template` → `load_history` → `intent_classify` → **`fault_case_gate`** → **`_route_by_intent`**。
+**共性前缀**（与图一致）：`load_prompt_template` → `load_history` → `intent_classify` → **`fault_case_gate`** → **`_route_by_intent`**。
 
-本期生效路由：
+本期生效路由（对应图中 **A / B / C**）：
 
-- `intent_label=clarify` → `clarify_build_response` → `finalize` → Runner 输出 `answer_text`；**不**追加相似案例；**仍**生成 `suggested_questions`（条数偏少，最多 3 条）。
-- `intent_label=data_query` → `nl2sql_answer` → `finalize` → Runner 输出 `answer_text`；**不**追加相似案例；**不**生成、**不下发** `suggested_questions`（`meta.suggested_questions=[]`）；`rag_citations` 为空；失败时 `meta` 含 `nl2sql_failed`、`nl2sql_error_code`。
-- `intent_label=kb_qa` → `select_rag_engine` → **`rag_scope_resolve`** → `kb_retrieve` → `kb_quality_check` →（C-RAG 或）`kb_build_messages` → `finalize` → Runner `stream_chat`；可选相似案例二次 RAG；关联问题含片段种子；结束帧含 `rag_citations`（§4.5）。
+- **A** `intent_label=clarify` → `clarify_build_response` → `finalize` → 图后 **③** 输出 `answer_text`；**不**追加相似案例；**仍**可生成 `suggested_questions`（最多约 3 条）。
+- **B** `intent_label=data_query` → `nl2sql_answer`（`defer_analysis_stream=True`）→ `finalize` → 图后 **①**（有 `stream_plan`）或直接输出图内 `answer_text`；**不**追加相似案例；**不**生成、**不下发** `suggested_questions`；`rag_citations` 为空；失败时 `meta` 含 `nl2sql_failed` / `nl2sql_error_code`；成功时可含 **`nl2sql_analysis`**。
+- **C** `intent_label=kb_qa` → `select_rag_engine` → **`rag_scope_resolve`** → `kb_retrieve` → `kb_quality_check` →（**retry** 回 `kb_rewrite_query`→`kb_retrieve`，或 **build**，或转 **A clarify**）→ `kb_build_messages` → `finalize` → 图后 **②** `stream_chat`；可选相似案例；关联问可含片段种子；结束帧含 `rag_citations`（§4.5）。
+
+**C-RAG 质量路由** `_route_after_quality_check`（图中 C 分支）：
+
+- `enable_rag=false` → 直接 **build**（不重试）。
+- 低分且 `retrieval_attempts < max` → **retry**。
+- 低分且预算用尽 → **clarify**（转入 A）。
+- 否则 → **build**。
 
 预留（默认意图不产出）：
 
@@ -282,12 +407,14 @@ flowchart TB
 
 ### 4.4 高分 FAQ 软直通（生成阶段）
 
-**目标**：当检索首条 citation 与用户问题高度匹配（如「1000 问」类 FAQ 库）且本轮无指代续问时，在 **`kb_build_messages`** 阶段**不注入** `history_messages`，避免旧 assistant 回答把模型带偏；**检索阶段**（指代 P0/P3、`rag_scope_resolve`）不受影响。
+**对应图中**：**C 知识答** → `kb_build_messages`（图后流式之前）。
+
+**目标**：当检索首条 citation 与用户问题高度匹配（如「1000 问」类 FAQ 库）且本轮无指代续问时，在 **`kb_build_messages`** **不注入** `history_messages`，避免旧 assistant 回答把模型带偏；**检索阶段**（指代 P0/P3、`rag_scope_resolve`、`kb_retrieve`）不受影响。
 
 **触发条件**（须全部满足，见 `chatbot_faq_soft_direct.evaluate_faq_soft_direct`）：
 
 - `CHATBOT_FAQ_SOFT_DIRECT_ENABLED=true`（默认开）；
-- `enable_rag` 且 `intent_label=kb_qa`；
+- `enable_rag` 且 `intent_label=kb_qa`（**C**）；
 - `anaphora_type` / `anaphora_rule_type` 均为 `none`，且问句不以显式指代词开头；
 - 首条 `rag_citations[].rerank_score >= CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE`（默认 `0.95`）；
 - 存在非空 `context_snippets` 与首条 citation `text_preview`。
@@ -302,17 +429,43 @@ flowchart TB
 
 ### 4.5 RAG 结构化引用与 citation 流
 
-**目标**：`kb_qa` 路径将召回片段转为编号引用，供前端展示来源并与流式正文中的 `[n]` 对齐。
+**对应图中**：**C** 的 `kb_retrieve`（生成引用列表）→ 图后 **②** `CitationStreamParser`（流式拆 `[n]`）→ SSE / `finished.meta`。
+
+**目标**：将召回片段转为编号引用，供前端展示来源并与流式正文中的 `[n]` 对齐。
 
 **机制**：
 
-- `kb_retrieve` 经 `chunks_to_rag_context` 生成编号 LLM 片段 + `rag_citations` 列表（`ref_index`、`text_preview`、`original_content_url` 等）；
-- 流式主答时，若存在引用，`CitationStreamParser` 将正文中的 `[n]` 映射为 SSE **`{"citation_ref": n, "finished": false}`** 事件（正文 `delta` 不再含该字面量）；
-- 结束帧 `meta.rag_citations` 与 `GET /chatbot/sessions/messages` 中 assistant 消息的 `rag_citations` **同形**；
-- `data_query` 路径：`rag_citations` 为空，无 `citation_ref` 事件；
+- **`kb_retrieve`** 经 `chunks_to_rag_context` 生成编号 LLM 片段 + `rag_citations`（`ref_index`、`text_preview`、`original_content_url` 等）；
+- **`kb_build_messages`** 将编号片段注入 `llm_messages`；
+- 图后流式主答时，若存在引用，`CitationStreamParser` 将正文 `[n]` 映射为 SSE **`{"citation_ref": n, "finished": false}`**（正文 `delta` 不再含该字面量）；
+- 结束帧 `meta.rag_citations` 与 `GET /chatbot/sessions/messages` 中 assistant 的 `rag_citations` **同形**；
+- **B/`data_query`**：`rag_citations` 为空，无 `citation_ref`；
 - NL2SQL 库表/QA namespace 片段在展示层过滤（见 `filter_rag_citation_dicts`）。
 
-**代码落点**：`chatbot_rag_citations.py`、`chatbot_citation_stream.py`；Runner `run_stream_events`；API 注释见 `app/api/chatbot.py` `chat_stream` 文档。
+**代码落点**：`chatbot_rag_citations.py`、`chatbot_citation_stream.py`；Runner `run_stream_events`；API 见 `app/api/chatbot.py` `chat_stream`。
+
+### 4.6 NL2SQL 收紧分析流（`data_query`）
+
+**对应图中**：**B 查库** 图内挂 `stream_plan` → 图后 **①** `_emit_nl2sql_analysis_stream`。
+
+**目标**：查数成功后整理为面向业务的 Markdown 分析（可选 LLM），并以可控方式输出 SSE；避免逐 token 把中间小标题刷到前端。
+
+**图内（`_node_nl2sql_answer`）**：
+
+1. 调用 `run_chatbot_nl2sql_query(..., defer_analysis_stream=True)`。
+2. 内部：`NL2SQLService.query(record_conversation=False)` → `summarize_nl2sql_with_llm`（可叠加 `chatbot_nl2sql_display` 列过滤）。
+3. 当 `CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED=true` 且查数成功需 LLM 分析时：写入 **`nl2sql_analysis_stream_plan`**，**不在图内阻塞等待全文**；失败/空 SQL 则直接写 `answer_text` 友好文案，并清空 stream_plan。
+
+**图后（`run_stream_events` → `_emit_nl2sql_analysis_stream`）**：
+
+1. **优先于** 图后 **②③**（`llm_messages` / 固定话术）：有 stream_plan 则走本路径。
+2. `iter_analysis_llm_deltas` 在 Runner 侧收齐增量（**不对前端逐 token `yield`**）。
+3. `finalize_streamed_nl2sql_analysis`：剥离多余小标题等，失败或空输出回退 Markdown 表；再 **一次性** `yield delta=answer_text`。
+4. 仍走共性尾部：`_fill_suggested_questions`（对 **B** 为空）、`_persist_success`、`finished.meta`（可含 `nl2sql_sql`、`nl2sql_analysis`）；**不**追加相似案例。
+
+**开关与配置**（见 **§9**）：`CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED`、`CHATBOT_NL2SQL_EMPTY_LLM_GUIDE_ENABLED`、`CHATBOT_NL2SQL_ANALYSIS_MAX_ROWS` / `MAX_TOKENS` / `TIMEOUT_SEC` / `TEMPERATURE`、`CHATBOT_NL2SQL_ANALYSIS_META_ENABLED`。
+
+**与非流式差异**：deprecated `POST /chatbot/chat` 的 `data_query` 默认 **不** `defer_analysis_stream`，同步得到完整 `answer_text`，且仍可能返回 `suggested_questions`（见 **§10**）。
 
 ## 5. C-RAG 实现策略（简要）
 
@@ -381,20 +534,30 @@ flowchart TB
   - 启动：`{"started":true,"stream_id":"..."}`（首帧，供 stop 接口调用）
   - 进行中：`{"delta":"...","finished":false}`
   - 引用（RAG 路径，可选）：`{"citation_ref":n,"finished":false}`（`n` 与 `meta.rag_citations[].ref_index` 对齐，见 **§4.5**）
-  - 结束：`{"finished":true,"meta":{...}}`（含 `stream_id`、`used_rag`、`intent_label`、`retrieval_attempts`、**`used_nl2sql`**、**`nl2sql_failed`** / **`nl2sql_error_code`**（查库失败时）、**`nl2sql_sql`**、**`suggested_questions`**、**`rag_citations`**、**`faq_soft_direct`**、**`processed_image_urls`**、**`original_image_urls`** 等，字段可扩展）
+  - 结束：`{"finished":true,"meta":{...}}`，与 `_build_finished_meta` 对齐的核心字段包括：
+    - 通用：`stream_id`、`request_id`（=`trace_request_id`）、`status`、`duration_ms`、`terminate_reason`、`is_partial`
+    - 意图/检索：`intent_label`、`used_rag`、`retrieval_attempts`、`rag_engine`、`rag_namespace`、`rag_scope_reason`、`rag_scope_fallback`
+    - FAQ：`faq_soft_direct`、`faq_soft_direct_reason`
+    - 上下文预算：`history_trim_dropped`
+    - NL2SQL：`used_nl2sql`、`nl2sql_failed` / `nl2sql_error_code`、`nl2sql_sql`、**`nl2sql_analysis`**
+    - 输出增强：`suggested_questions`、`rag_citations`、`similar_cases_appended` 等（§14）、`processed_image_urls` / `original_image_urls`
+    - 可选指代观测：`CHATBOT_ANAPHORA_EXPOSE_META=true` 时附带 `anaphora_*`（§15）
   - 异常：`{"error":"...","finished":true}`
+- **`data_query` 收紧分析**：前端通常只收到 **一次**（或少量）正文 `delta`，不是 kb_qa 式逐 token；`citation_ref` 不会出现。
 - `ensure_ascii=false` 保持不变，中文不转义。
 - 终止语义（企业级默认）：
   1. 正常结束：落库 user + assistant（完整 answer，含 `rag_citations` 若有）。
   2. 模型异常：落库 user，不落库 assistant，`status=failed`。
   3. 客户端断开：落库 user + assistant_partial（默认启用），`terminate_reason=client_disconnect`。
   4. 显式 stop（`/chatbot/chat/stop`）：停止后续 delta，`terminate_reason=user_cancelled`；partial 落库策略同断连配置。
+  5. **时延预算耗尽**（`MAX_GRAPH_LATENCY_MS`）：流式过程中 `_ensure_within_latency` 触发，`terminate_reason=latency_budget_exceeded`；已有部分文本则 partial 落库并仍可填关联问（非 data_query），避免再抛异常触发 Legacy 全量重跑。
 
 实现状态（当前代码）：
 
 - API 层 SSE 已输出结束帧 `meta`；
 - graph 路径与 legacy 回退路径均输出 `finished + meta`；
-- 已实现断连 partial 落库开关 `CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT`。
+- 已实现断连 partial 落库开关 `CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT`；
+- 已实现 NL2SQL 收紧分析流与 `meta.nl2sql_analysis`（§4.6）。
 
 ## 7. LangSmith 实现方案
 
@@ -445,8 +608,14 @@ flowchart TB
 - **轻量意图 LLM**（`backend=llm`）：`CHATBOT_INTENT_LLM_MODEL_PATH` / `CHATBOT_INTENT_LLM_MODEL_NAME` / `CHATBOT_INTENT_LLM_DEVICE` / `CHATBOT_INTENT_LLM_CONF_THRESHOLD` / `CHATBOT_INTENT_LLM_FALLBACK_TO_RULES`（见 `docs/智能客服意图识别轻量LLM接入说明.md`）
 - **BERT 意图**（`backend=bert`）：`CHATBOT_INTENT_BERT_MODEL_PATH` / `CHATBOT_INTENT_BERT_*`（见 `docs/智能客服意图识别BERT接入说明.md`）
 - `CHATBOT_NL2SQL_ROUTE_ENABLED=true`
+- **NL2SQL 收紧分析（客服内嵌，见 §4.6）**：
+  - `CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED=true`
+  - `CHATBOT_NL2SQL_EMPTY_LLM_GUIDE_ENABLED=true`
+  - `CHATBOT_NL2SQL_ANALYSIS_MAX_ROWS` / `CHATBOT_NL2SQL_ANALYSIS_MAX_TOKENS` / `CHATBOT_NL2SQL_ANALYSIS_TIMEOUT_SEC` / `CHATBOT_NL2SQL_ANALYSIS_TEMPERATURE`
+  - `CHATBOT_NL2SQL_ANALYSIS_META_ENABLED=true`（结束帧是否附带 `nl2sql_analysis`）
 - `CHATBOT_PROMPT_DEFAULT_VERSION=boiler_v1`
 - `CHATBOT_MAIN_LLM_TEMPERATURE`（可选，主答流式 sampling temperature）
+- `CHATBOT_LLM_CONTEXT_TOTAL_TOKENS` / `CHATBOT_LLM_COMPLETION_SLACK_TOKENS`（流式 `max_tokens` 预算裁剪）
 - `CHATBOT_SUGGESTED_QUESTIONS_ENABLED=true`
 - `CHATBOT_SUGGESTED_QUESTIONS_MAX=5`
 - `CHATBOT_RAG_ENGINE_MODE=agentic`
@@ -486,7 +655,7 @@ flowchart TB
 
 说明：通过开关支持灰度与回滚，不需要改 API。
 
-**相似案例 / 故障域扩展**相关配置见 **第 14 节**；**上下文指代消解**见 **第 15 节**；**本厂专属知识库 RAG 范围**见 **第 16 节**；**FAQ 软直通 / RAG 引用**见 **§4.4 / §4.5**。
+**相似案例 / 故障域扩展**相关配置见 **第 14 节**；**上下文指代消解**见 **第 15 节**；**本厂专属知识库 RAG 范围**见 **第 16 节**；**FAQ 软直通 / RAG 引用 / NL2SQL 收紧分析**见 **§4.4 / §4.5 / §4.6**。
 
 ## 10. 发布、灰度与回滚
 
@@ -502,8 +671,9 @@ flowchart TB
 - `clarify` / `data_query` / `kb_qa` 意图占比（`meta.intent_label`）
 - C-RAG 平均循环次数与超限率
 - NL2SQL 失败或空结果率（`data_query` 场景，`meta.nl2sql_failed`）
+- **收紧分析**触发与回退表比例（`meta.nl2sql_analysis` / 分析开关）
 - **FAQ 软直通**触发率（`meta.faq_soft_direct`）
-- SSE 错误率、客户端断开率、`user_cancelled`（stop）占比
+- SSE 错误率、客户端断开率、`user_cancelled`（stop）占比、`latency_budget_exceeded` 占比
 - 会话读写失败率、部分落库比例
 - **指代（可选）**：`anaphora_llm_calls_total`、Coref 缓存 hit/miss（见 **第 15 节**）
 
@@ -524,16 +694,17 @@ flowchart TB
 - `unsafe` / `handoff_human` / `smalltalk` 节点占位，默认不命中。
 - 关联问题**不**单独二次向量检索（见 `framework-guide/智能客服整体实现技术说明.md` §7）；**流式 `data_query` 不下发** `suggested_questions`。
 - **FAQ 软直通**（§4.4）与 **RAG 引用流**（§4.5）为 `kb_qa` 路径增强，Legacy 流式与 Graph 对齐。
+- **NL2SQL 收紧分析流**（§4.6）为 `data_query` 路径默认能力；关 `CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED` 时退回表/友好文案。
 - **指代消解 P1（对话锚）/ P2（槽位）/ P3（Coref LLM）** 默认关闭；P0 检索融合默认开；开启 P3 时以 **LangGraph `kb_retrieve` 路径** 为主实现，Legacy 流式与图在 **P0/P1/P2** 上对齐；**LangChain `ChatbotChain` 非流式路径**未接入同一套指代链（见 **第 15 节**）。
 - 鉴权绑定后续在接口层统一接入。
 
 ## 12. 验收标准（最小可上线）
 
-- 功能：`kb_qa`、`clarify`、`data_query` 可达；SSE `finished.meta` 含 `suggested_questions`（`kb_qa`/`clarify`，开关开启时；**`data_query` 为空**）、`rag_citations`（RAG 路径）、`faq_soft_direct`（若触发）；默认模板 `boiler_v1` 可加载。
-- 稳定：C-RAG 有循环上限与超时保护，无无限重试。
+- 功能：`kb_qa`、`clarify`、`data_query` 可达；SSE `finished.meta` 含 `suggested_questions`（`kb_qa`/`clarify`，开关开启时；**`data_query` 为空**）、`rag_citations`（RAG 路径）、`faq_soft_direct`（若触发）、**`nl2sql_analysis`**（查库成功且 meta 开关开）；默认模板 `boiler_v1` 可加载；`data_query` 收紧分析路径可一次 delta 出文（§4.6）。
+- 稳定：C-RAG 有循环上限与超时保护，无无限重试；`MAX_GRAPH_LATENCY_MS` 超预算可优雅终止（`latency_budget_exceeded`）。
 - 兼容：Prompt 模板策略、RAG 双引擎、会话落库顺序与现网一致；assistant 落库可携带 `rag_citations`。
-- 可观测：LangSmith 可查看 run；`meta` 可观测意图、检索/查库标记及 NL2SQL 失败码。
-- 可运维：`CHATBOT_GRAPH_ENABLED=false` 或异常回退 Legacy 行为与 Graph 对齐主流程（含流式 `data_query` 不下发关联问）。
+- 可观测：LangSmith 可查看 run；`meta` 可观测意图、检索/查库标记、`request_id` 及 NL2SQL 失败码。
+- 可运维：`CHATBOT_GRAPH_ENABLED=false` 或异常回退 Legacy 行为与 Graph 对齐主流程（含流式 `data_query` 不下发关联问、收紧分析对齐）。
 
 ## 13. 回归测试矩阵（防改造遗漏）
 
@@ -551,6 +722,8 @@ flowchart TB
 10. **FAQ 软直通**：高分 FAQ 命中时跳过 history；低分/指代续问时不触发（§4.4）。
 11. **RAG 引用**：`citation_ref` 与 `finished.meta.rag_citations` 的 `ref_index` 对齐；`data_query` 无引用（§4.5）。
 12. **`CHATBOT_INTENT_BACKEND=llm`**：窄触发与 rules 回退（可选）。
+13. **NL2SQL 收紧分析**：开/关 `CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED`；流式一次 delta；失败回退表；`meta.nl2sql_analysis`（§4.6）。
+14. **时延预算**：人为拉长链路触发 `latency_budget_exceeded`，确认不触发 Legacy 重复作答。
 
 通过标准：
 
