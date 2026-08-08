@@ -89,11 +89,10 @@ CONV_MAX_HISTORY_MESSAGES=50
 ### 2.3.1 智能客服 LangGraph（建议显式配置）
 
 ```env
-CHATBOT_GRAPH_ENABLED=true
 CHATBOT_INTENT_ENABLED=true
 CHATBOT_INTENT_BACKEND=rules
 # 启用轻量意图 LLM 时：CHATBOT_INTENT_BACKEND=llm + docs/智能客服意图识别轻量LLM接入说明.md
-CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query
+CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query,hybrid_qa
 CHATBOT_NL2SQL_ROUTE_ENABLED=true
 CHATBOT_PROMPT_DEFAULT_VERSION=boiler_v1
 CHATBOT_SUGGESTED_QUESTIONS_ENABLED=true
@@ -107,14 +106,13 @@ CHATBOT_PLANT_KB_ENABLED=true
 CHATBOT_PLANT_KB_NAMESPACE=Power_plant_knowledge
 CHATBOT_HISTORY_LIMIT=20
 CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT=true
-CHATBOT_FALLBACK_LEGACY_ON_ERROR=true
 MAX_REWRITE_QUERY_LENGTH=256
 MAX_GRAPH_LATENCY_MS=60000
 CHATBOT_CHECKPOINT_BACKEND=none
 CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph
 ```
 
-说明：`CHATBOT_HISTORY_LIMIT` 用于“每轮读取历史窗口”，`CONV_MAX_HISTORY_MESSAGES` 用于“会话总保留上限”。
+说明：对话入口仅 `POST /chatbot/chat/stream`（须安装 `langgraph`）。`CHATBOT_HISTORY_LIMIT` 用于“每轮读取历史窗口”，`CONV_MAX_HISTORY_MESSAGES` 用于“会话总保留上限”。
 
 ### 2.3.2 Service API Key（调用应用业务 HTTP 接口）
 
@@ -631,10 +629,10 @@ curl -s -X POST "http://127.0.0.1:${APP_PORT:-8083}/inspection-extract/run" \
 
 前置：**`INSPECT_EXTRACT_V0_ENABLED=true`**；版面 OCR 需 **`paddleocr-layout-deploy`** 已启动且与主应用同网（见 **`enterprise-level_transformation_docs/企业级检修报告结构化提取V0版本实现和使用说明.md`**）。路由与现网镜像：`upload` → `run` 或 `run/async` → `GET jobs/{id}`。
 
-### 4.2 `/chatbot/chat` 测试（兼容接口）
+### 4.2 `/chatbot/chat/stream` 测试（SSE）
 
 ```bash
-curl -s -X POST "http://127.0.0.1:${APP_PORT:-8083}/chatbot/chat" \
+curl -N -X POST "http://127.0.0.1:${APP_PORT:-8083}/chatbot/chat/stream" \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "demo-user",
@@ -647,8 +645,8 @@ curl -s -X POST "http://127.0.0.1:${APP_PORT:-8083}/chatbot/chat" \
 
 期望响应：
 
-- HTTP 200；  
-- JSON 中 `answer` 字段为模型返回文本（`used_rag=false`、`context_snippets=[]`）。
+- HTTP 200，`Content-Type: text/event-stream`；
+- 收到 `started` / `delta` / `finished` 等 SSE 事件帧。
 
 如需测试带 RAG 的对话，请先按 `rag_db-deploy/README.md` 完成知识摄入，再将 `enable_rag` 设为 `true`。
 

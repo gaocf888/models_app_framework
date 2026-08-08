@@ -425,14 +425,15 @@ class ChatbotConfig:
 
     说明：
     - 该配置用于统一管理 `CHATBOT_*` 环境变量，避免业务代码散落读取 env。
-    - 当前实现以流式接口为主，非流式接口仍保留兼容路径（deprecated）。
+    - 对话入口仅流式 SSE（``POST /chatbot/chat/stream``）+ LangGraph StateGraph 编排。
     """
 
-    graph_enabled: bool = True
     intent_enabled: bool = True
     # 意图分类后端：rules（默认）| llm（规则+进程内轻量 LLM 窄触发）| bert（微调 BERT，需训练）
     intent_backend: str = "rules"
-    intent_output_labels: list[str] = field(default_factory=lambda: ["kb_qa", "clarify", "data_query"])
+    intent_output_labels: list[str] = field(
+        default_factory=lambda: ["kb_qa", "clarify", "data_query", "hybrid_qa"]
+    )
     # 模式 B：进程内轻量意图 LLM（CHATBOT_INTENT_BACKEND=llm），与嵌入模型相同的离线优先策略
     intent_llm_model_path: str | None = None
     intent_llm_model_name: str = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -448,7 +449,6 @@ class ChatbotConfig:
     intent_bert_max_length: int = 256
     intent_bert_fallback_to_rules: bool = True
     crag_enabled: bool = True
-    fallback_legacy_on_error: bool = True
     persist_partial_on_disconnect: bool = True
     # 图执行总时长预算（毫秒），用于硬超时保护。
     max_graph_latency_ms: int = 60000
@@ -1207,10 +1207,11 @@ def _load_from_env() -> AppConfig:
     )
 
     chatbot_cfg = ChatbotConfig(
-        graph_enabled=os.getenv("CHATBOT_GRAPH_ENABLED", "true").lower() == "true",
         intent_enabled=os.getenv("CHATBOT_INTENT_ENABLED", "true").lower() == "true",
         intent_backend=(os.getenv("CHATBOT_INTENT_BACKEND", "rules") or "rules").strip().lower(),
-        intent_output_labels=_split_csv_env("CHATBOT_INTENT_OUTPUT_LABELS", "kb_qa,clarify,data_query"),
+        intent_output_labels=_split_csv_env(
+            "CHATBOT_INTENT_OUTPUT_LABELS", "kb_qa,clarify,data_query,hybrid_qa"
+        ),
         intent_llm_model_path=(os.getenv("CHATBOT_INTENT_LLM_MODEL_PATH") or "").strip() or None,
         intent_llm_model_name=(
             os.getenv("CHATBOT_INTENT_LLM_MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct") or "Qwen/Qwen2.5-0.5B-Instruct"
@@ -1226,7 +1227,6 @@ def _load_from_env() -> AppConfig:
         intent_bert_max_length=max(32, int(os.getenv("CHATBOT_INTENT_BERT_MAX_LENGTH", "256"))),
         intent_bert_fallback_to_rules=os.getenv("CHATBOT_INTENT_BERT_FALLBACK_TO_RULES", "true").lower() == "true",
         crag_enabled=os.getenv("CHATBOT_CRAG_ENABLED", "true").lower() == "true",
-        fallback_legacy_on_error=os.getenv("CHATBOT_FALLBACK_LEGACY_ON_ERROR", "true").lower() == "true",
         persist_partial_on_disconnect=os.getenv("CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT", "true").lower() == "true",
         max_graph_latency_ms=max(1000, int(os.getenv("MAX_GRAPH_LATENCY_MS", "60000"))),
         history_limit=max(1, int(os.getenv("CHATBOT_HISTORY_LIMIT", "20"))),

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 """
-简单的 /chatbot/chat 压测脚本骨架。
+简单的 /chatbot/chat/stream（SSE）压测脚本骨架。
 """
 
 import asyncio
+import json
 import statistics
 import time
 from typing import List
@@ -22,8 +23,20 @@ async def worker(client: httpx.AsyncClient, num_requests: int, latencies: List[f
     }
     for _ in range(num_requests):
         t0 = time.perf_counter()
-        resp = await client.post("/chatbot/chat", json=payload)
-        resp.raise_for_status()
+        async with client.stream("POST", "/chatbot/chat/stream", json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("finished") is True or ev.get("error"):
+                    break
         latencies.append(time.perf_counter() - t0)
 
 
@@ -31,31 +44,22 @@ async def main(concurrency: int = 5, total: int = 50, base_url: str = "http://lo
     per_worker = total // concurrency
     latencies: List[float] = []
 
-    async with httpx.AsyncClient(base_url=base_url, timeout=30.0) as client:
+    async with httpx.AsyncClient(base_url=base_url, timeout=60.0) as client:
         tasks = [worker(client, per_worker, latencies) for _ in range(concurrency)]
         t0 = time.perf_counter()
         await asyncio.gather(*tasks)
         duration = time.perf_counter() - t0
 
     if not latencies:
-        print("no requests completed")
+        print("no successful requests")
         return
 
-    latencies_ms = [x * 1000 for x in latencies]
-    latencies_ms.sort()
-    p95 = latencies_ms[int(0.95 * len(latencies_ms)) - 1]
-    p99 = latencies_ms[int(0.99 * len(latencies_ms)) - 1]
-    avg = statistics.mean(latencies_ms)
-    qps = len(latencies) / duration
-
-    print(f"Total requests: {len(latencies)}")
-    print(f"Total time: {duration:.2f}s")
-    print(f"QPS: {qps:.2f}")
-    print(f"Avg latency: {avg:.2f} ms")
-    print(f"P95 latency: {p95:.2f} ms")
-    print(f"P99 latency: {p99:.2f} ms")
+    print(f"requests={len(latencies)} concurrency={concurrency} wall_s={duration:.2f}")
+    print(f"latency_avg_s={statistics.mean(latencies):.3f}")
+    print(f"latency_p50_s={statistics.median(latencies):.3f}")
+    if len(latencies) >= 20:
+        print(f"latency_p95_s={statistics.quantiles(latencies, n=20)[18]:.3f}")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-

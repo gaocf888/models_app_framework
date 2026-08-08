@@ -44,7 +44,7 @@ curl -N -X POST "http://127.0.0.1:8083/chatbot/chat/stream" \
 
 ## 3. 智能客服接口级排障（主用）
 
-当前主用接口：`POST /chatbot/chat/stream`（`/chatbot/chat` 为兼容保留）。
+当前主用接口：`POST /chatbot/chat/stream`（唯一对话回答入口；须安装 `langgraph`）。
 
 ### 3.1 症状：接口 5xx / 超时
 

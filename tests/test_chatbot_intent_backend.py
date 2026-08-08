@@ -42,8 +42,8 @@ def test_sync_classify_llm_backend_falls_back_rules():
         image_urls=[],
         backend="llm",
     )
-    # sync 路径不调用 Ollama，回退 rules（混合句 rules 初判）
-    assert r.intent_label in {"kb_qa", "data_query"}
+    # sync 路径不调用 Ollama，回退 rules（混合句 → hybrid_qa）
+    assert r.intent_label in {"kb_qa", "data_query", "hybrid_qa"}
 
 
 def test_facade_bert_hard_gate_images_still_kb():

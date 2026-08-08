@@ -58,7 +58,7 @@ logger = get_logger(__name__)
 
 
 
-_VALID_LABELS = frozenset({"kb_qa", "data_query", "clarify"})
+_VALID_LABELS = frozenset({"kb_qa", "data_query", "clarify", "hybrid_qa"})
 
 _LLM_TRIGGER_REASON_MARKERS = (
 
@@ -83,6 +83,7 @@ _INTENT_LLM_EXAMPLES = (
     '- kb_qa：「过热器爆管常见原因」「锅炉启停注意事项」「什么是蠕变」\n'
 
     '- clarify：「这个」「怎么办」（且无足够会话上下文）\n'
+    '- hybrid_qa：「查出超温列表并结合规程说明如何处置」\n'
 
 )
 
@@ -292,7 +293,7 @@ def _build_intent_llm_messages(
 
         "你是电力设备智能客服的意图分类器。只输出一个 JSON 对象，不要其它文字。\n"
 
-        "字段：intent_label（枚举之一：kb_qa、data_query、clarify）、"
+        "字段：intent_label（枚举之一：kb_qa、data_query、clarify、hybrid_qa）、"
 
         "confidence（0~1）、reason_zh（短句中文理由）。\n\n"
 
@@ -302,11 +303,13 @@ def _build_intent_llm_messages(
 
         "- data_query：查台账/统计/列表/数量/检修记录/缺陷单等结构化库表数据；\n"
 
+        "- hybrid_qa：既要查库表数据又要结合知识库解释机理/标准/处置；\n"
+
         "- clarify：过短、指代不清、无法判断用户要什么。\n\n"
 
         f"{_INTENT_LLM_EXAMPLES}\n"
 
-        f"NL2SQL 路由是否开启：{enable_nl2sql_route}（关闭时不应输出 data_query）。\n"
+        f"NL2SQL 路由是否开启：{enable_nl2sql_route}（关闭时不应输出 data_query / hybrid_qa）。\n"
 
         f"{rule_hint}\n"
 
@@ -402,7 +405,7 @@ async def classify_chatbot_intent_by_llm(
 
 
 
-    if not enable_nl2sql_route and ruled.intent_label == "data_query":
+    if not enable_nl2sql_route and ruled.intent_label in {"data_query", "hybrid_qa"}:
 
         return ruled
 
@@ -469,7 +472,7 @@ async def classify_chatbot_intent_by_llm(
 
         label, conf, reason_zh = parsed
 
-        if not enable_nl2sql_route and label == "data_query":
+        if not enable_nl2sql_route and label in {"data_query", "hybrid_qa"}:
 
             label = "kb_qa"
 

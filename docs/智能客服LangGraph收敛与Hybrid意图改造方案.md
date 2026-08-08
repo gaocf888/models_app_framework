@@ -1,6 +1,6 @@
 # 智能客服 LangGraph 收敛与 Hybrid 意图改造方案（简要）
 
-> **状态**：方案稿（待排期实施）  
+> **状态**：已落地（代码主链路）  
 > **范围**：**仅**流式 `POST /chatbot/chat/stream`（及配套 upload/stop/sessions）；对齐现网 `dev_djs` / `ChatbotLangGraphRunner`  
 > **对照**：`enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md`  
 > **目标**：① 去掉 Legacy / 非流式 / 一切非图兜底，**仅** `StateGraph` + SSE；② 图后非流式步骤收编进图；③ 新增 RAG+NL2SQL 综合意图  

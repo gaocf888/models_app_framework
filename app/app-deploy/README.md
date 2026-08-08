@@ -189,10 +189,9 @@ cp .env.example .env
 
 建议同时在 `.env` 显式补充智能客服 LangGraph 参数（即便有默认值）：
 
-- `CHATBOT_GRAPH_ENABLED=true`
 - `CHATBOT_INTENT_ENABLED=true`
-- `CHATBOT_INTENT_BACKEND=rules`（可选 `bert`；**bert 须已微调三分类模型，不可用魔塔通用预训练 BERT**；见 `docs/智能客服意图识别BERT接入说明.md`）
-- `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query`
+- `CHATBOT_INTENT_BACKEND=rules`（可选 `bert`；**bert 须已微调分类模型，不可用魔塔通用预训练 BERT**；见 `docs/智能客服意图识别BERT接入说明.md`）
+- `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query,hybrid_qa`
 - `CHATBOT_NL2SQL_ROUTE_ENABLED=true`（智能客服内嵌 NL2SQL 分流）
 - `CHATBOT_PROMPT_DEFAULT_VERSION=boiler_v1`（默认锅炉领域客服模板）
 - `CHATBOT_SUGGESTED_QUESTIONS_ENABLED=true` / `CHATBOT_SUGGESTED_QUESTIONS_MAX=5`
@@ -204,14 +203,13 @@ cp .env.example .env
 - `CHATBOT_PLANT_KB_ENABLED=true` / `CHATBOT_PLANT_KB_NAMESPACE=Power_plant_knowledge`（本厂指代锁定主 RAG namespace，见企业方案 §16）
 - `CHATBOT_HISTORY_LIMIT=20`
 - `CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT=true`
-- `CHATBOT_FALLBACK_LEGACY_ON_ERROR=true`
 - `MAX_REWRITE_QUERY_LENGTH=256`
 - `MAX_GRAPH_LATENCY_MS=60000`
 - `CHATBOT_CHECKPOINT_BACKEND=none`
 - `CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph`
 - **上下文指代（可选）**：`CHATBOT_ANAPHORA_*`（检索融合 P0、锚块 P1、槽位 P2、Coref P3）；说明见 `enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` **第 15 节**。
 
-说明：`CHATBOT_HISTORY_LIMIT` 控制“单轮读取历史条数”，`CONV_MAX_HISTORY_MESSAGES` 控制“会话总保留上限”；建议两者同时配置。
+说明：对话入口仅 `POST /chatbot/chat/stream`（须安装 `langgraph`）；`CHATBOT_HISTORY_LIMIT` 控制“单轮读取历史条数”，`CONV_MAX_HISTORY_MESSAGES` 控制“会话总保留上限”；建议两者同时配置。
 
 若启用扫描件 PDF 解析，建议同时确认以下变量：
 

@@ -61,13 +61,11 @@ class ChatbotLangGraphRunner:
     智能客服 LangGraph 运行器（流式主链路）。
 
     这层负责“编排”，不负责“模型协议”：
-    - 编排侧：意图判断、RAG 路由、C-RAG 重试、消息组装、终止语义；
+    - 编排侧：意图判断、RAG 路由、C-RAG 重试、Hybrid 综合、消息组装、终止语义；
     - 执行侧：仍使用现有 `VLLMHttpClient.stream_chat` 发起模型流式调用。
 
-    为什么这样分层：
-    - 保持与历史实现兼容（不重写 vLLM 协议栈）；
-    - 便于灰度：编排可随时切换，底层推理调用稳定不动；
-    - 排障时能明确区分“图路由问题”与“模型服务问题”。
+    langgraph 为硬依赖：图编译失败直接报错，无顺序节点回退。
+    流式 token / citation / NL2SQL 分析 yield 仍在 Runner 图后执行。
     """
 
     def __init__(
@@ -89,7 +87,6 @@ class ChatbotLangGraphRunner:
         self._ls = LangSmithTracker()
 
         cfg = get_app_config().chatbot
-        self._graph_enabled = cfg.graph_enabled
         self._intent_enabled = cfg.intent_enabled
         self._intent_output_labels = {x.strip().lower() for x in (cfg.intent_output_labels or []) if x.strip()}
         self._crag_enabled = cfg.crag_enabled
@@ -146,16 +143,15 @@ class ChatbotLangGraphRunner:
         model_entry = llm_cfg.models.get(default_model)
         self._main_llm_max_tokens = max(64, int(getattr(model_entry, "max_tokens", 2048) or 2048))
 
-        self._graph = None
-        if self._graph_enabled:
-            self._graph = self._build_graph()
+        self._graph = self._build_graph()
 
     def _build_graph(self):
         try:
             from langgraph.graph import END, StateGraph  # type: ignore[import-not-found]
         except Exception as exc:  # noqa: BLE001
-            logger.warning("ChatbotLangGraphRunner: langgraph unavailable, fallback to sequential. err=%s", exc)
-            return None
+            raise RuntimeError(
+                "langgraph is required for ChatbotLangGraphRunner; install langgraph and retry."
+            ) from exc
 
         # 图编排分三段（请保持该顺序，避免行为回退）：
         # 1) 输入预处理：模板/历史/意图
@@ -178,7 +174,11 @@ class ChatbotLangGraphRunner:
         graph.add_node("kb_build_messages", self._node_kb_build_messages)
         graph.add_node("clarify_build_response", self._node_clarify_build_response)
         graph.add_node("nl2sql_answer", self._node_nl2sql_answer)
+        graph.add_node("hybrid_acquire", self._node_hybrid_acquire)
+        graph.add_node("hybrid_synthesize", self._node_hybrid_synthesize)
         graph.add_node("finalize", self._node_finalize)
+        graph.add_node("similar_cases_retrieve", self._node_similar_cases_retrieve)
+        graph.add_node("suggest_followups", self._node_suggest_followups)
 
         # 入口固定为模板加载：
         # - 保证每轮都有一致 system prompt；
@@ -196,6 +196,7 @@ class ChatbotLangGraphRunner:
             {
                 "kb_qa": "select_rag_engine",
                 "data_query": "nl2sql_answer",
+                "hybrid_qa": "hybrid_acquire",
                 "clarify": "clarify_build_response",
                 "unsafe": "unsafe_guard",
                 "handoff_human": "handoff_human",
@@ -206,6 +207,8 @@ class ChatbotLangGraphRunner:
         graph.add_edge("handoff_human", "finalize")
         graph.add_edge("smalltalk_generate", "finalize")
         graph.add_edge("nl2sql_answer", "finalize")
+        graph.add_edge("hybrid_acquire", "hybrid_synthesize")
+        graph.add_edge("hybrid_synthesize", "finalize")
         graph.add_edge("select_rag_engine", "rag_scope_resolve")
         graph.add_edge("rag_scope_resolve", "kb_retrieve")
         graph.add_edge("kb_retrieve", "kb_quality_check")
@@ -225,9 +228,9 @@ class ChatbotLangGraphRunner:
         graph.add_edge("kb_rewrite_query", "kb_retrieve")
         graph.add_edge("kb_build_messages", "finalize")
         graph.add_edge("clarify_build_response", "finalize")
-        # 所有分支统一收敛到 finalize，再结束。
-        # 好处：可统一写 status/终止原因，SSE 结束 meta 与埋点口径一致。
-        graph.add_edge("finalize", END)
+        graph.add_edge("finalize", "similar_cases_retrieve")
+        graph.add_edge("similar_cases_retrieve", "suggest_followups")
+        graph.add_edge("suggest_followups", END)
         checkpointer = self._build_checkpointer()
         if checkpointer is not None:
             return graph.compile(checkpointer=checkpointer)
@@ -388,7 +391,7 @@ class ChatbotLangGraphRunner:
                         yield ev
             except TimeoutError as exc:
                 # 与 MAX_GRAPH_LATENCY_MS 同源：总耗时（图+RAG+流式）超预算。
-                # 若已向前端输出过 delta，再抛给上层会触发 legacy 全量重跑，表现为「停几秒后又答一遍」且会话里可能重复 user。
+                # 若已向前端输出过 delta，再抛给上层会变成未处理异常；此处改为 finished + partial 落库，避免重复回答。
                 if "latency budget exceeded" not in str(exc):
                     raise
                 partial = "".join(parts).strip()
@@ -558,6 +561,8 @@ class ChatbotLangGraphRunner:
             "fault_detect_confidence": 0.0,
             "enable_fault_vision": req.enable_fault_vision,
             "similar_cases_appended": False,
+            "similar_cases_block": "",
+            "hybrid_degraded": "",
         }
 
     @staticmethod
@@ -578,16 +583,7 @@ class ChatbotLangGraphRunner:
         return True
 
     def _maybe_similar_cases_extra(self, state: ChatbotGraphState) -> str:
-        if not self._similar_case_enabled or not self._should_append_similar_cases(state):
-            return ""
-        q = (state.get("case_rag_query") or state.get("query") or "").strip()
-        snippets = retrieve_similar_case_snippets(
-            self._hybrid_rag,
-            query=q,
-            namespace=self._similar_case_namespace,
-            top_k=self._similar_case_top_k,
-        )
-        return format_similar_cases_block(snippets)
+        return str(state.get("similar_cases_block") or "")
 
     def _ensure_within_latency(self, start_ts: float) -> None:
         elapsed_ms = int((time.perf_counter() - start_ts) * 1000)
@@ -598,36 +594,9 @@ class ChatbotLangGraphRunner:
 
     async def _run_graph(self, state: ChatbotGraphState) -> ChatbotGraphState:
         if self._graph is None:
-            # langgraph 不可用时退化为顺序执行：
-            # - 目标是“可用性优先”，不能因依赖缺失直接中断主业务；
-            # - 顺序分支必须与图语义一致，避免线上行为双轨分叉。
-            # - 节点返回值均为增量字段，须合并进完整 state（与 LangGraph ainvoke 合并语义一致）。
-            m = self._merge_graph_state
-            state = m(state, await self._node_load_prompt_template(state))
-            state = m(state, await self._node_load_history(state))
-            state = m(state, await self._node_intent_classify(state))
-            state = m(state, await self._node_fault_case_gate(state))
-            rintent = self._route_by_intent(state)
-            if rintent == "clarify":
-                state = m(state, await self._node_clarify_build_response(state))
-                return m(state, await self._node_finalize(state))
-            if rintent == "data_query":
-                state = m(state, await self._node_nl2sql_answer(state))
-                return m(state, await self._node_finalize(state))
-            state = m(state, await self._node_select_rag_engine(state))
-            state = m(state, await self._node_rag_scope_resolve(state))
-            while True:
-                state = m(state, await self._node_kb_retrieve(state))
-                state = m(state, await self._node_kb_quality_check(state))
-                route = self._route_after_quality_check(state)
-                if route == "retry":
-                    state = m(state, await self._node_kb_rewrite_query(state))
-                    continue
-                if route == "clarify":
-                    state = m(state, await self._node_clarify_build_response(state))
-                else:
-                    state = m(state, await self._node_kb_build_messages(state))
-                return m(state, await self._node_finalize(state))
+            raise RuntimeError(
+                "Chatbot LangGraph is not compiled; langgraph is a hard dependency."
+            )
         return await self._graph.ainvoke(state)
 
     async def _node_load_prompt_template(self, state: ChatbotGraphState) -> ChatbotGraphState:
@@ -747,6 +716,195 @@ class ChatbotLangGraphRunner:
             patch["nl2sql_error_code"] = outcome.nl2sql_error_code
             patch["terminate_reason"] = outcome.terminate_reason
         return patch
+
+    async def _node_hybrid_acquire(self, state: ChatbotGraphState) -> ChatbotGraphState:
+        """并行获取 NL2SQL 与 RAG 证据（Hybrid 路径不做 C-RAG 重试）。"""
+        q = str(state.get("query") or "")
+
+        async def _rag_arm() -> ChatbotGraphState:
+            m = self._merge_graph_state
+            s = m(state, await self._node_select_rag_engine(state))
+            s = m(s, await self._node_rag_scope_resolve(s))
+            s = m(s, await self._node_kb_retrieve(s))
+            return {
+                "used_rag": bool(s.get("used_rag")),
+                "context_snippets": list(s.get("context_snippets") or []),
+                "rag_citations": list(s.get("rag_citations") or []),
+                "retrieval_score": float(s.get("retrieval_score") or 0.0),
+                "retrieval_attempts": int(s.get("retrieval_attempts") or 0),
+                "rag_engine": s.get("rag_engine"),
+                "rag_namespace": s.get("rag_namespace"),
+                "rag_scope_reason": str(s.get("rag_scope_reason") or ""),
+                "rag_scope_fallback": bool(s.get("rag_scope_fallback")),
+                "rag_query_boost": s.get("rag_query_boost"),
+                "anaphora_type": s.get("anaphora_type"),
+                "anaphora_rule_type": s.get("anaphora_rule_type"),
+                "anaphora_confidence": s.get("anaphora_confidence"),
+                "anaphora_score_gap": s.get("anaphora_score_gap"),
+                "anaphora_source": s.get("anaphora_source"),
+                "anaphora_slot_bullets": list(s.get("anaphora_slot_bullets") or []),
+                "status": s.get("status"),
+            }
+
+        outcome, rag_patch = await asyncio.gather(
+            run_chatbot_nl2sql_query(
+                self._nl2sql,
+                self._llm,
+                user_id=state["user_id"],
+                session_id=state["session_id"],
+                question=q,
+                defer_analysis_stream=False,
+            ),
+            _rag_arm(),
+        )
+
+        snippets = list(rag_patch.get("context_snippets") or [])
+        rag_ok = len(snippets) > 0
+        enable_rag = bool(state.get("enable_rag", True))
+        nl2sql_fail = bool(outcome.gen_failed or outcome.nl2sql_failed)
+        nl2sql_ok = not nl2sql_fail
+
+        if nl2sql_ok and rag_ok:
+            hybrid_degraded = ""
+        elif nl2sql_fail and rag_ok:
+            hybrid_degraded = "nl2sql"
+        elif nl2sql_ok and enable_rag and not rag_ok:
+            hybrid_degraded = "rag"
+        else:
+            hybrid_degraded = "both"
+
+        patch: ChatbotGraphState = {
+            "used_nl2sql": True,
+            "nl2sql_sql": outcome.nl2sql_sql or "",
+            "nl2sql_analysis": outcome.nl2sql_analysis,
+            "nl2sql_analysis_stream_plan": None,
+            "hybrid_degraded": hybrid_degraded,
+            **rag_patch,
+        }
+        if outcome.gen_failed:
+            patch["nl2sql_failed"] = True
+            patch["terminate_reason"] = outcome.terminate_reason or "nl2sql_gen_failed"
+        elif outcome.nl2sql_failed:
+            patch["nl2sql_failed"] = True
+            patch["nl2sql_error_code"] = outcome.nl2sql_error_code
+            patch["terminate_reason"] = outcome.terminate_reason
+
+        if nl2sql_ok and not rag_ok:
+            patch["answer_text"] = outcome.answer_text
+        elif nl2sql_fail and rag_ok:
+            patch["answer_text"] = ""
+        elif nl2sql_ok and rag_ok:
+            patch["answer_text"] = outcome.answer_text
+        elif not nl2sql_ok and not rag_ok:
+            patch["answer_text"] = (
+                "未能同时获取查询结果与知识库依据，请换一种方式描述问题，或拆分为查数与知识问答。"
+            )
+            patch["terminate_reason"] = patch.get("terminate_reason") or "hybrid_both_failed"
+        return patch
+
+    async def _node_hybrid_synthesize(self, state: ChatbotGraphState) -> ChatbotGraphState:
+        snippets = list(state.get("context_snippets") or [])
+        rag_ok = len(snippets) > 0 and bool(state.get("used_rag"))
+        nl2sql_ok = bool(state.get("used_nl2sql")) and not bool(state.get("nl2sql_failed"))
+        answer_text = (state.get("answer_text") or "").strip()
+
+        if nl2sql_ok and not rag_ok:
+            return {"llm_messages": [], "used_rag": False, "answer_text": answer_text}
+
+        if rag_ok and not nl2sql_ok:
+            return await self._node_kb_build_messages(state)
+
+        if nl2sql_ok and rag_ok:
+            nl2sql_block = answer_text
+            if len(nl2sql_block) > 4000:
+                nl2sql_block = nl2sql_block[:3990] + "\n…(truncated)"
+            rag_block = format_rag_snippets_system_block(snippets)
+            synth_block = (
+                "【综合回答约束】数值与列表以【查询结果】为准；机理、标准、处置以【知识库】为准；禁止编造表数据。\n"
+                f"【查询结果】\n{nl2sql_block}\n"
+                f"【知识库】\n{rag_block}"
+            )
+            system_chunks: List[str] = []
+            sp = str(state.get("system_prompt") or "").strip()
+            if sp:
+                system_chunks.append(sp)
+            system_chunks.append(synth_block)
+            query = str(state.get("query") or "")
+            image_urls = [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()]
+            hist = list(state.get("history_messages") or []) if state.get("enable_context", True) else []
+
+            def build_messages(h: List[Dict[str, Any]], _snippets: List[str]) -> List[Dict[str, Any]]:
+                return assemble_chatbot_llm_messages(
+                    system_chunks=system_chunks,
+                    history=h,
+                    query=query,
+                    image_urls=image_urls,
+                )
+
+            build_result = trim_history_and_build_chatbot_messages(
+                hist,
+                build_messages=build_messages,
+                rag_snippets=[],
+                context_total_tokens=self._llm_context_total_tokens,
+                requested_max_tokens=self._main_llm_max_tokens,
+                slack_tokens=self._llm_completion_slack_tokens,
+                trim_enabled=self._history_trim_enabled and bool(hist),
+                min_keep=self._history_trim_min_keep,
+            )
+            return {
+                "llm_messages": build_result.messages,
+                "llm_max_tokens": build_result.max_tokens,
+                "history_trim_dropped": build_result.history_dropped,
+                "used_rag": True,
+                "used_nl2sql": True,
+                "answer_text": "",
+            }
+
+        if not (state.get("answer_text") or "").strip():
+            return {
+                "answer_text": (
+                    "未能同时获取查询结果与知识库依据，请换一种方式描述问题，或拆分为查数与知识问答。"
+                ),
+                "llm_messages": [],
+                "terminate_reason": state.get("terminate_reason") or "hybrid_both_failed",
+            }
+        return {"llm_messages": [], "used_rag": False}
+
+    async def _node_similar_cases_retrieve(self, state: ChatbotGraphState) -> ChatbotGraphState:
+        if not self._similar_case_enabled or not self._should_append_similar_cases(state):
+            return {"similar_cases_block": "", "similar_cases_appended": False}
+        q = (state.get("case_rag_query") or state.get("query") or "").strip()
+        snippets = retrieve_similar_case_snippets(
+            self._hybrid_rag,
+            query=q,
+            namespace=self._similar_case_namespace,
+            top_k=self._similar_case_top_k,
+        )
+        block = format_similar_cases_block(snippets)
+        return {"similar_cases_block": block, "similar_cases_appended": bool(block)}
+
+    async def _node_suggest_followups(self, state: ChatbotGraphState) -> ChatbotGraphState:
+        if not self._suggested_questions_enabled:
+            return {"suggested_questions": []}
+        if state.get("intent_label") == "data_query":
+            return {"suggested_questions": []}
+        if state.get("nl2sql_analysis_stream_plan"):
+            return {}
+        llm_messages = state.get("llm_messages") or []
+        answer_text = (state.get("answer_text") or "").strip()
+        if llm_messages and not answer_text:
+            return {}
+        if answer_text:
+            sq = await build_suggested_questions(
+                query=str(state.get("query") or ""),
+                answer=answer_text,
+                context_snippets=list(state.get("context_snippets") or []),
+                intent_label=str(state.get("intent_label") or "kb_qa"),
+                llm_client=self._llm,
+                max_total=self._suggested_questions_max,
+            )
+            return {"suggested_questions": sq}
+        return {"suggested_questions": []}
 
     async def _emit_nl2sql_analysis_stream(
         self,
@@ -1217,6 +1375,8 @@ class ChatbotLangGraphRunner:
             route = "clarify"
         elif label == "data_query":
             route = "data_query"
+        elif label == "hybrid_qa":
+            route = "hybrid_qa"
         elif label == "unsafe":
             route = "unsafe"
         elif label == "handoff_human":
@@ -1377,11 +1537,12 @@ class ChatbotLangGraphRunner:
             )
 
     async def _fill_suggested_questions(self, state: ChatbotGraphState, req: ChatRequest, answer_text: str) -> None:
+        if state.get("suggested_questions"):
+            return
         if not self._suggested_questions_enabled:
             state["suggested_questions"] = []
             return
-        # 数据查询（NL2SQL）不在 meta 中下发关联问句，也不调用推荐问 LLM。
-        if state.get("used_nl2sql") or state.get("intent_label") == "data_query":
+        if state.get("intent_label") == "data_query":
             state["suggested_questions"] = []
             return
         sq = await build_suggested_questions(
@@ -1399,11 +1560,11 @@ class ChatbotLangGraphRunner:
         # 1) SSE 最后一帧给前端；
         # 2) LangSmith outputs 聚合。
         # 字段名应尽量保持稳定，避免下游解析兼容性问题。
-        is_data_query = bool(state.get("used_nl2sql")) or state.get("intent_label") == "data_query"
-        suggested = [] if is_data_query else list(state.get("suggested_questions") or [])
+        is_pure_data_query = state.get("intent_label") == "data_query"
+        suggested = [] if is_pure_data_query else list(state.get("suggested_questions") or [])
         citations = (
             []
-            if is_data_query
+            if is_pure_data_query
             else filter_rag_citation_dicts(list(state.get("rag_citations") or []))
         )
         used_nl2sql = bool(state.get("used_nl2sql", False))
@@ -1442,6 +1603,7 @@ class ChatbotLangGraphRunner:
             "nl2sql_analysis": (state.get("nl2sql_analysis") if used_nl2sql else None),
             "suggested_questions": suggested,
             "rag_citations": citations,
+            "hybrid_degraded": state.get("hybrid_degraded") or None,
             "processed_image_urls": [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
             "original_image_urls": [u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()],
             "stream_id": stream_id,

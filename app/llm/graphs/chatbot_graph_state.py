@@ -3,7 +3,15 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 
-IntentLabel = Literal["kb_qa", "clarify", "data_query", "unsafe", "handoff_human", "smalltalk"]
+IntentLabel = Literal[
+    "kb_qa",
+    "clarify",
+    "data_query",
+    "hybrid_qa",
+    "unsafe",
+    "handoff_human",
+    "smalltalk",
+]
 
 
 class ChatbotGraphState(TypedDict, total=False):
@@ -92,6 +100,8 @@ class ChatbotGraphState(TypedDict, total=False):
     fault_detect_confidence: float
     enable_fault_vision: Optional[bool]
     similar_cases_appended: bool
+    # 图内 similar_cases_retrieve 预取的附加正文（Runner 流式后再 yield）
+    similar_cases_block: str
 
     # ===== NL2SQL 分支 =====
     used_nl2sql: bool
@@ -102,6 +112,10 @@ class ChatbotGraphState(TypedDict, total=False):
     nl2sql_analysis: Optional[Dict[str, Any]]
     # 查数成功待流式分析：含 system/user_content/table_fallback/display_rows 等
     nl2sql_analysis_stream_plan: Optional[Dict[str, Any]]
+
+    # ===== Hybrid（RAG + NL2SQL）=====
+    # 单臂失败降级标记："" | "nl2sql" | "rag" | "both"
+    hybrid_degraded: str
 
     # ===== 关联问题推荐 =====
     suggested_questions: List[str]

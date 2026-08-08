@@ -20,12 +20,14 @@ from .chatbot_intent_rules import (
     apply_intent_hard_gates,
     build_intent_context_from_history,
     classify_chatbot_intent_by_rules,
+    _has_conceptual,
+    _has_data,
 )
 
 logger = get_logger(__name__)
 
-_VALID_LABELS = frozenset({"kb_qa", "data_query", "clarify"})
-_DEFAULT_ID2LABEL = {0: "kb_qa", 1: "data_query", 2: "clarify"}
+_VALID_LABELS = frozenset({"kb_qa", "data_query", "clarify", "hybrid_qa"})
+_DEFAULT_ID2LABEL = {0: "kb_qa", 1: "data_query", 2: "clarify", 3: "hybrid_qa"}
 
 
 class ChatbotIntentBertClassifier:
@@ -189,9 +191,15 @@ def classify_chatbot_intent_by_bert(
     if gated is not None:
         return gated
 
+    # 三分类旧模型无法产出 hybrid：规则层双信号命中时直接走综合意图
+    if enable_nl2sql_route and _has_data(q) and _has_conceptual(q):
+        return _out("hybrid_qa", "bert_rules_mixed_hybrid", 0.75)
+
     classifier = ChatbotIntentBertClassifier.get_instance()
     try:
         label, conf = classifier.classify(q, history_summary=h_sum, prev_task_type=prev_task)
+        if not enable_nl2sql_route and label in {"data_query", "hybrid_qa"}:
+            return _out("kb_qa", f"bert_nl2sql_disabled|{label}", min(conf, 0.7))
         return _out(label, f"bert_classifier|label={label}", conf)
     except Exception as e:
         cfg = get_app_config().chatbot

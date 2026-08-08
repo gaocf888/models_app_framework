@@ -1,8 +1,8 @@
 # 智能客服部署与配置指南（端到端）
 
 > 面向：负责在测试/生产环境落地本项目「智能客服」能力的开发 & 运维同学。  
-> 目标：按本文完成后，能够通过 HTTP 调用 `/chatbot/chat` / `/chatbot/chat/stream`，并正确联通大模型、RAG 知识库与会话存储。  
-> 当前推荐主链路为 **LangGraph + SSE 流式接口**，`/chatbot/chat` 保留为兼容接口。
+> 目标：按本文完成后，能够通过 HTTP 调用 `/chatbot/chat/stream`（SSE），并正确联通大模型、RAG 知识库与会话存储。  
+> 当前主链路为 **LangGraph + SSE 流式接口**（无非流式 `/chatbot/chat`、无 Legacy 关图回退）。
 > 值班排障建议配合：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
 
 ---
@@ -49,8 +49,8 @@ curl -N -X POST "http://127.0.0.1:8083/chatbot/chat/stream" \
 - [ ] `LLM_DEFAULT_MODEL` 与 `vllm-deploy/config/models.yaml` 的 `served_model_name` 一致
 - [ ] `RAG_ES_HOSTS` / `RAG_ES_USERNAME` / `RAG_ES_PASSWORD` 与 `rag_db-deploy/.env` 完全一致
 - [ ] `REDIS_URL=redis://redis:6379/0`（或已切换为可用外部 Redis）
-- [ ] `CHATBOT_GRAPH_ENABLED=true` 且 `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify`
-- [ ] `CHATBOT_FALLBACK_LEGACY_ON_ERROR=true`（建议灰度阶段保留兜底）
+- [ ] 已安装 `langgraph`；`CHATBOT_INTENT_OUTPUT_LABELS` 含 `kb_qa,clarify,data_query,hybrid_qa`（按放量调整）
+- [ ] 对话入口仅使用 `/chatbot/chat/stream`（无非流式 `/chat`、无 `CHATBOT_GRAPH_ENABLED` / Legacy 回退）
 
 上线后（5 分钟内）：
 
@@ -76,14 +76,12 @@ curl -N -X POST "http://127.0.0.1:8083/chatbot/chat/stream" \
 
 调用主链路（简化）：
 
-1. 客户端 → `POST /chatbot/chat` 或 `POST /chatbot/chat/stream`。  
-2. FastAPI 路由 → `ChatbotService`。  
-3. ChatbotService：  
-   - 使用 `ConversationManager` 写入会话；  
-   - 可选调用 `HybridRAGService` 从 EasySearch 检索上下文；  
-   - 构建多模态 `messages`，调用 `VLLMHttpClient` → vLLM；  
-   - 同步或流式返回结果，并写回助手消息。  
-4. `ChatbotService` 默认走 LangGraph 编排（意图 + C-RAG + 统一 finalize），必要时按配置回退 legacy 顺序链路。
+1. 客户端 → `POST /chatbot/chat/stream`（SSE）。  
+2. FastAPI 路由 → `ChatbotService.stream_chat_events`。  
+3. `ChatbotLangGraphRunner`（必选 LangGraph）：  
+   - 意图路由（含 `hybrid_qa`）→ RAG / NL2SQL / 澄清 / Hybrid；  
+   - 图后由 Runner 负责 token 流式输出、引用拆流与落库。  
+4. 会话：`ConversationManager`；可选 RAG / 多模态图片。
 
 ---
 
@@ -97,7 +95,7 @@ curl -N -X POST "http://127.0.0.1:8083/chatbot/chat/stream" \
 4. **部署应用服务（FastAPI + Redis）**：`app/app-deploy/`。  
 5. 验证：  
    - EasySearch / vLLM / 应用 `/health/`；  
-   - 简单调用 `/chatbot/chat` 或脚本完成端到端连通性测试。
+   - 调用 `/chatbot/chat/stream` 完成端到端连通性测试。
 
 ---
 
@@ -276,10 +274,9 @@ CONV_MAX_HISTORY_MESSAGES=50
 #### 6.1.4 智能客服 LangGraph（建议显式配置）
 
 ```env
-CHATBOT_GRAPH_ENABLED=true
 CHATBOT_INTENT_ENABLED=true
 CHATBOT_INTENT_BACKEND=rules
-CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify
+CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query,hybrid_qa
 CHATBOT_CRAG_ENABLED=true
 CHATBOT_CRAG_MAX_ATTEMPTS=2
 CHATBOT_CRAG_MIN_SCORE=0.55
@@ -287,7 +284,6 @@ CHATBOT_RAG_ENGINE_MODE=agentic
 CHATBOT_RAG_ENGINE_FALLBACK=hybrid
 CHATBOT_HISTORY_LIMIT=20
 CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT=true
-CHATBOT_FALLBACK_LEGACY_ON_ERROR=true
 MAX_REWRITE_QUERY_LENGTH=120
 MAX_GRAPH_LATENCY_MS=20000
 CHATBOT_CHECKPOINT_BACKEND=none
@@ -297,10 +293,10 @@ CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph
 
 说明：
 
+- 对话入口仅 `/chatbot/chat/stream`；须安装 `langgraph`（无 `CHATBOT_GRAPH_ENABLED` / Legacy 回退）；
 - `CHATBOT_HISTORY_LIMIT` 控制“单轮读取历史窗口”，`CONV_MAX_HISTORY_MESSAGES` 控制“会话总保留上限”；
-- `CHATBOT_INTENT_OUTPUT_LABELS` 默认建议仅放量 `kb_qa,clarify`；
-- `CHATBOT_INTENT_BACKEND` 默认 `rules`；轻量 LLM 灰度为 `llm`（进程内 CPU + 模式 B，见 `docs/智能客服意图识别轻量LLM接入说明.md`）；`bert` 须微调模型；
-- 生产场景建议先保持 `CHATBOT_FALLBACK_LEGACY_ON_ERROR=true`，用于图异常兜底。
+- `CHATBOT_INTENT_OUTPUT_LABELS` 建议含 `hybrid_qa`（RAG+NL2SQL 综合）；
+- `CHATBOT_INTENT_BACKEND` 默认 `rules`；轻量 LLM 灰度为 `llm`（进程内 CPU + 模式 B，见 `docs/智能客服意图识别轻量LLM接入说明.md`）；`bert` 须微调模型。
 
 #### 6.1.5 业务数据库（NL2SQL，可选）
 
@@ -359,7 +355,7 @@ curl -s "http://127.0.0.1:8000/health"
 ### 7.2 基础对话测试（无 RAG）
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8080/chatbot/chat" \
+curl -N -X POST "http://127.0.0.1:8080/chatbot/chat/stream" \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "u1",
@@ -370,22 +366,14 @@ curl -s -X POST "http://127.0.0.1:8080/chatbot/chat" \
   }'
 ```
 
-应返回形如：
-
-```json
-{
-  "answer": "...",
-  "used_rag": false,
-  "context_snippets": []
-}
-```
+应收到 SSE 帧：`started` / `delta` / `finished`（`meta.used_rag=false`）。
 
 ### 7.3 启用 RAG 的对话测试
 
 在完成 RAG 知识摄入（`/rag/...` 接口或管理脚本）后，测试：
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8080/chatbot/chat" \
+curl -N -X POST "http://127.0.0.1:8080/chatbot/chat/stream" \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "u1",

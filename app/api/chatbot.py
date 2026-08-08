@@ -4,7 +4,7 @@ from __future__ import annotations
 智能客服 HTTP 接口模块。
 
 职责概览：
-    - 提供非流式 `/chat`（已弃用，保留兼容）与流式 `/chat/stream`（SSE）对话入口；
+    - 提供流式 `/chat/stream`（SSE）对话入口（唯一对话回答接口）；
     - 提供多模态图片上传：`POST /upload`（MinIO 预签名 URL，填入 `image_urls`）；
     - 提供会话目录：`GET /sessions`（按 `user_id` 分页列举会话；方案 B：Redis `conv:index:` + `conv:meta:`，内存模式对齐）；
     - 提供会话运维：`GET/DELETE /sessions/messages`、`DELETE /sessions/message`（单条/批量消息）、`PATCH /sessions/title`（修改展示标题）。
@@ -44,7 +44,6 @@ from app.conversation.session_catalog import session_list_limit_cap
 from app.models.inspection_extract import InspectionUploadResponse
 from app.models.chatbot import (
     ChatRequest,
-    ChatResponse,
     ChatStreamStopRequest,
     ChatStreamStopResponse,
     SessionDeleteResponse,
@@ -115,7 +114,7 @@ async def upload_chatbot_image_endpoint(file: UploadFile = File(...)) -> Inspect
     """
     上传本轮对话关联的图片，返回 MinIO 预签名 URL。
 
-    将响应中的 `url` 填入 `POST /chatbot/chat/stream`（或 `/chat`）请求体的 `image_urls` 数组即可。
+    将响应中的 `url` 填入 `POST /chatbot/chat/stream` 请求体的 `image_urls` 数组即可。
     对象前缀为 `chatbot/`（与综合分析看图诊断 `analysis_img_diag/` 区分）。
 
     **注意**：预签名 URL 有效期由 `CHATBOT_IMAGE_MINIO_PRESIGN_TTL_SECONDS` 控制（默认 900 秒），
@@ -176,38 +175,16 @@ async def upload_chatbot_image_endpoint(file: UploadFile = File(...)) -> Inspect
         raise HTTPException(status_code=500, detail=f"chatbot upload failed: {e}") from e
 
 
-@router.post("/chat", response_model=ChatResponse, summary="智能客服对话（基础版）", deprecated=True, include_in_schema=False)
-async def chat(req: ChatRequest) -> ChatResponse:
-    """
-    智能客服对话接口（基础版，已弃用）
-
-    一次性返回完整回答；生产环境建议优先使用 `/chat/stream`（SSE，首字节更快、体验更好）。
-
-    Args:
-        req (ChatRequest): 对话请求。必填 `user_id`、`session_id`、`query`；
-            可选 `image_urls`（多模态，空项会被过滤）、`enable_rag`、`enable_context` 等，详见模型 Field 说明。
-
-    Returns:
-        ChatResponse: 包含 `answer`、`used_rag`、`used_nl2sql`、`intent_label`、`suggested_questions`、
-            `context_snippets` 等字段。
-
-    Raises:
-        HTTPException: 本函数不直接抛出；Pydantic 校验失败时由框架返回 422。
-        ValueError: 服务层在 `user_id` 为空时可能抛出（正常请求不应出现）。
-    """
-    return await service.chat(req)
-
-
 @router.post("/chat/stream", summary="智能客服对话（流式 SSE）")
 async def chat_stream(req: ChatRequest, request: Request):
     """
-    智能客服流式对话（Server-Sent Events）。
+    智能客服流式对话（Server-Sent Events）。唯一对话回答入口。
 
-    业务逻辑在 `ChatbotService.stream_chat_events`：可选 RAG、可选历史上下文、LangGraph 与 legacy 链路由配置决定；
+    业务逻辑在 `ChatbotService.stream_chat_events` → `ChatbotLangGraphRunner`（必选 LangGraph）；
     本路由仅负责将事件编码为 SSE 帧写出。
 
     Args:
-        req (ChatRequest): 同 `/chat`，须含 `user_id`、`session_id`、`query` 等。
+        req (ChatRequest): 须含 `user_id`、`session_id`、`query` 等，详见模型 Field 说明。
         request (Request): Starlette 请求对象，用于检测客户端断开（`is_disconnected`）以便停止生成。
 
     Returns:

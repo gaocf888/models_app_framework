@@ -17,6 +17,16 @@ def test_conceptual_prefers_kb():
     assert "conceptual" in r.intent_reason or r.intent_reason == "default_kb_qa"
 
 
+def test_mixed_hybrid():
+    r = classify_chatbot_intent_by_rules(
+        "查出超温点列表并结合规程说明如何处置",
+        enable_nl2sql_route=True,
+        image_urls=[],
+    )
+    assert r.intent_label == "hybrid_qa"
+    assert "hybrid" in r.intent_reason
+
+
 def test_data_query_ledger():
     r = classify_chatbot_intent_by_rules(
         "查询台账里1号炉最近一次检修记录",
