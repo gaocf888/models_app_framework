@@ -1,54 +1,56 @@
 # 企业级 NL2SQL 实现方案
 
-> 本文档描述本仓库 **当前已实现** 的 NL2SQL 能力：与 **RAG** 并列的 **AI 应用基础能力**；接入形态包括 **独立 HTTP**、**智能客服内嵌**、**综合分析 V2（`run-with-nl2sql` / `run-with-nl2sql-stream`）** 与 **综合分析看图诊断（`run-img-diag` / `run-img-diag-stream`，NL2SQL 并行臂）** 等，底层均复用同一 `NL2SQLService`；并说明 DB 反射与专用 RAG 协同、安全执行与可观测性。  
-> 实现细节与文件映射见 `framework-guide/NL2SQL整体实现技术说明.md`；总体设计见 `docs/NL2SQL系统概要设计.md`；架构位置见 `docs/大小模型应用技术架构与实现方案.md` §1、§4.6。
+> 本文档描述本仓库 **当前已实现** 的 NL2SQL 能力：与 **RAG** 并列的 **AI 应用基础能力**；接入形态包括 **独立 HTTP**、**智能客服内嵌**、**综合分析 V2（`run-with-nl2sql` / `run-with-nl2sql-stream`）** 与 **综合分析看图诊断（`run-img-diag` / `run-img-diag-stream`，NL2SQL 并行臂）** 等，底层均复用同一 `NL2SQLService`。  
+> 实现细节与文件映射见 `framework-guide/NL2SQL整体实现技术说明.md`；代码行为明细见 `enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md`；问句时间/范围详设见 `docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`。  
+> **流程图体例**对齐 `enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` §4.0：先 **业务视角（文字流程）**，再 **实现视角（代码级流程图）**（框内优先 `file:` / 类·函数 + `说明:`）。
 
-> 当前 NL2SQL 已实现 L1/L2 时间口径缓存，以及校验通过后将 SQL+问题写入 **`nl2sql_qa_examples`**（**五元组**去重，含 **`plan_template_version`**，与综合分析 plan 模板 v1/v2 对齐）；运维 **`GET`/`PATCH /rag/nl2sql-auto-qa`** 支持按类型/q*/plan 版本筛选。
-> - 生成sql缓存配置开关：
-> - rag中生成并校验通过sql+问题问答对的查询接口和更新接口：/rag/nl2sql-auto-qa(get)、/rag/nl2sql-auto-qa(patch)
+> 当前 NL2SQL 已实现 L2/L1 生成阶段缓存、校验通过后可选写入 **`nl2sql_qa_examples`**（**五元组**去重，含 **`plan_template_version`**）；运维 **`GET`/`PATCH /rag/nl2sql-auto-qa`** 支持按类型/q*/plan 版本筛选。
+
 ---
 
 ## 0. 前提重要说明
-> 实现效果较好的NL2SQL的前提是：要有教完善的知识库知识摄入（因为当前NL2SQL对表结构、字段、表间关系的认知，是通过RAG知识库+数据库反射两种方式融合获取的）
-    1.  首先RAG知识摄入时，要确保摄入namespace分别为`nl2sql_schema`、`nl2sql_biz_knowledge`、`nl2sql_qa_examples`的三种知识（分别是数据库结构、数据库知识文档、数据库知识问答对（问法 → 标准 SQL））
-    2.  app/app-deploy/.env中配置业务数据库的连接信息
 
-NL2SQL后续效果优化方向：
+> 效果较好的 NL2SQL 前提：知识库摄入较完善（表结构、字段、表间关系认知 = **RAG 知识库 + 数据库反射** 融合）。
+
+1. RAG 摄入须覆盖命名空间：`nl2sql_schema`、`nl2sql_biz_knowledge`、`nl2sql_qa_examples`（库表结构 / 业务口径文档 / 问法→标准 SQL）。  
+2. `app/app-deploy/.env` 配置业务库连接（`DB_URL` 或 `DB_*`）。  
+3. 新项目若库结构、实体口径变化：须同步调整 **连接信息、表白名单、范围词表/规则、RAG 资产、SQL 提示词** 等（编排代码可复用）。
+
+**效果优化方向（摘要）**：
+
 ```text
-启用 nl2sql_qa_examples（强烈建议）
-日志里 nl2sql_qa_examples: 0：为「锅炉名 + 时间 + 磨煤机 + 平均电流」各写 2～5 条「问法 → 标准 SQL」摄入该命名空间，通常比再写十页表结构更省 tokens、更提准确率。
-
-启用 nl2sql_biz_knowledge（建议）
-用短文档写：业务术语、统计口径、时间字段用哪列（如 record_time）、与 Word 表结构不重复的叙述，补日志里 biz=0 的空白。
-
-在库里补外键（若业务与 DBA 允许）
-针对日志 fk_edges=0：对真实存在的关系加 FK，让运行时 catalog 出现 FK: 提示，减轻多表 JOIN 全靠文档记忆的问题。
-
-图检索（若已部署 GraphRAG）
-日志 graph_enabled=False：若后续打开图侧且与 Schema/设备关系对齐，可补充「实体关系」召回（与 FK、文档三选一或组合）。
+启用 nl2sql_qa_examples（强烈建议）——「问法 → 标准 SQL」样例通常比堆表结构更提准确率。
+启用 nl2sql_biz_knowledge（建议）——术语、统计口径、时间字段叙述。
+库内补外键（若允许）——catalog 出现 FK: 提示，减轻多表 JOIN 全靠文档记忆。
+图检索（若已部署 GraphRAG）——补充实体关系召回（与 FK、文档组合）。
 ```
+
+---
 
 ## 1. 文档目的与范围
 
 | 项 | 说明 |
 |----|------|
-| **目的** | 为企业集成、运维排障、二次开发提供 **统一叙述 + 可对照代码的流程图**。 |
-| **范围** | `app/nl2sql/*`、`app/services/nl2sql_service.py`、`app/api/nl2sql.py`、智能客服 `data_query` 分支、**综合分析** `POST /analysis/run-with-nl2sql`（及 **`run-with-nl2sql-stream`**）、**`POST /analysis/run-img-diag`**（及 **`run-img-diag-stream`**）（NL2SQL 臂内 **`_execute_data_plan`**，`app/api/analysis.py`）、相关配置与日志。 |
-| **不在范围** | 业务库建模规范、SQL 准确率评估体系（可另文补充）。 |
+| **目的** | 为企业集成、运维排障、二次开发提供 **统一叙述 + 可对照代码的双视角流程图**。 |
+| **范围** | `app/nl2sql/*`、`app/services/nl2sql_service.py`、`app/api/nl2sql.py`；客服 `data_query`；综合分析 `run-with-nl2sql*` / `run-img-diag*`（`acquire_data` → `_execute_data_plan`）；相关配置与日志。 |
+| **不在范围** | 业务库建模规范、SQL 准确率评测体系；地降所五阶段改造见 `docs/基于地降所项目改造/NL2SQL基座五阶段改造方案.md`（演进方案，非现网默认行为）。 |
 
 ---
 
 ## 2. 基座定位：与 RAG 并列的基础能力
 
-- **共性**：NL2SQL 与通用 RAG 共用 **向量检索基座**（`RAGService` + 命名空间隔离）、**场景化检索策略**（`scene="nl2sql"`）、**大模型 endpoint**、**Prompt 模板注册**（`PromptTemplateRegistry`）、**日志与 Prometheus 指标**。
+- **共性**：共用向量检索基座、`scene="nl2sql"` 检索策略、大模型 endpoint、`PromptTemplateRegistry`、日志与 Prometheus 指标。  
 - **差异**：  
-  - **RAG**：非结构化/半结构化知识 → 检索片段 → 生成自然语言回答。  
-  - **NL2SQL**：自然语言 → **受控只读 SQL** → **结构化结果集**（`rows`），强依赖 **数据库反射** 与 **SQL 安全校验**。
-- **接入形态**：  
-  1. **直接调用**：`POST /nl2sql/query`（`NL2SQLQueryRequest` → `sql` + `rows`），适合 BI、低代码、内部工具。  
-  2. **内嵌复用（智能客服）**：意图 **`data_query`** 调用同一 `NL2SQLService`（通常 `record_conversation=False`），再由 `chatbot_nl2sql_answer.summarize_nl2sql_with_llm` 将 SQL/结果转为自然语言。  
-  3. **内嵌复用（综合分析 V2 · nl2sql 主图）**：`POST /analysis/run-with-nl2sql` 经 `AnalysisService.run_analysis_nl2sql` → `AnalysisGraphRunner.run_with_nl2sql`；在图节点 **`acquire_data`**（顺序回退路径同名逻辑）中由 **`_execute_data_plan`** 按计划任务 **多次** 调用 `NL2SQLService.query(..., record_conversation=False)`（**默认同 dependency 层并行**调度各次 `query`，见 **`ANALYSIS_NL2SQL_ACQUIRE_*`**；每项最多 2 次尝试，受 `options.max_nl2sql_calls` 等与模板合并后的任务列表约束）。取数结果进入质量门、业务侧 RAG（`scene=analysis`）与 **`synthesis`** 生成结构化报告，**不再**走 `summarize_nl2sql_with_llm` 的客服式口语化链路。详细编排与配置见 **`enterprise-level_transformation_docs/企业级综合分析实现和使用说明.md`**。  
-  4. **内嵌复用（综合分析 · 看图诊断）**：`POST /analysis/run-img-diag`（同步）或 **`POST /analysis/run-img-diag-stream`**（流式 synthesis）经 **`AnalysisService`** → **`AnalysisImgDiagGraphRunner`**；NL2SQL **并行臂** 内 **顺序执行父类 nl2sql 节点链**直至 **`data_quality_gate`**（其中 **`acquire_data`** → **`_execute_data_plan`** 与 nl2sql 主图 **同源**，含 **同层多任务并行 `query`**）；与 **`run-with-nl2sql`** 同源 **`NL2SQLService.query`** 语义；取数后与视觉结论、并行业务 RAG 汇合后，同步路径 **`_generate_summary`**，流式路径 **`_stream_summary_text`**（完整结构化结果仍由 **`_finalize_img_diag_v2`** 组装）。模板占位符 **`analysis_plan_img_diag`**、**`analysis_type=img_diag`** 见 **`enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md`**。
+  - **RAG**：非结构化知识 → 片段 → 自然语言回答。  
+  - **NL2SQL**：自然语言 → **受控只读 SQL** → **结构化 `rows`**，强依赖 **DB 反射** 与 **SQL 安全校验**。  
+- **接入形态**（均复用 `NL2SQLService.query`）：  
+
+  | # | 形态 | 入口 | 要点 |
+  |---|------|------|------|
+  | 1 | 直连问数 | `POST /nl2sql/query` | 返回 `sql` + `rows`（可选 `parsed_intent`） |
+  | 2 | 智能客服 | 图节点 `nl2sql_answer` | `record_conversation=False`；再收紧分析成文（§4.6 客服方案） |
+  | 3 | 综合分析 V2 | `POST /analysis/run-with-nl2sql*` | `acquire_data` 按 plan **多次** `query`（默认同层并行） |
+  | 4 | 看图诊断 | `POST /analysis/run-img-diag*` | NL 并行臂同源 `_execute_data_plan`；可传 `confirmed_scope`（HITL） |
 
 ---
 
@@ -56,247 +58,437 @@ NL2SQL后续效果优化方向：
 
 | 模块 | 路径 | 职责摘要 |
 |------|------|-----------|
-| HTTP API（直连问数） | `app/api/nl2sql.py` | 鉴权后转发 `NL2SQLService`；起止日志 |
-| HTTP API（分析取数） | `app/api/analysis.py` 中 `POST /analysis/run-with-nl2sql`、`POST /analysis/run-with-nl2sql-stream`、`POST /analysis/run-img-diag`、`POST /analysis/run-img-diag-stream` | 鉴权后对应 **`run_analysis_*`**；编排内循环调用同一 `NL2SQLService`（流式路由仅在 synthesis 阶段差异） |
-| 分析编排（nl2sql 模式 / img_diag NL 臂） | `analysis_graph_runner.py`、`analysis_img_diag_runner.py` | `_build_nl2sql_graph` / `_execute_data_plan`（**dependency 分层、默认同层并行 query**；看图诊断并行臂内同源）：多任务 NL2SQL、`analysis_nl2sql_calls_total` 等指标 |
-| 服务层 | `app/services/nl2sql_service.py` | Chain + Executor + 可选 **EXPLAIN 预检** + **执行失败 refine 闭环** + 会话 + 指标 |
-| 生成链路 | `app/nl2sql/chain.py` | 反射、规划、RAG、Prompt、LLM、归一化、**多层校验**、**生成期 refine**；对外提供 `generate_sql` / `generate_sql_with_validation_context` 与 **`refine_sql_after_executor_error`** |
-| Schema | `app/nl2sql/schema_service.py` | DB 反射、`TableSchema`、**外键** → catalog |
-| 专用 RAG | `app/nl2sql/rag_service.py` | 三命名空间检索 + 策略层/可选图 |
-| Prompt | `app/nl2sql/prompt_builder.py` + `configs/prompts.yaml` | 拼装 + `{{NL2SQL_SCHEMA_CATALOG}}` |
-| 业务实体规则 | `app/nl2sql/entity_rules.py` | 从环境变量加载 **否定规则**（问题关键词 + SQL 正则），与链上校验联动 |
-| 校验/执行 | `app/nl2sql/validator.py`、`executor.py` | 只读、表/列白名单、**列–表绑定**（`alias.col` 对照反射表→列）、引号外单行化；**`EXPLAIN` + `execute`** |
-| 问句意图 | `question_intent.py`、`time_intent_display.py`、`scope_parser_rule.py`、`scope_parser_llm.py` | 时间窗（程序规则）+ 实体范围（默认 rule，可选 LLM）；结果供 `_rewrite_query_filters` 与可选 trace/API |
+| HTTP 直连 | `app/api/nl2sql.py` | 鉴权后转发 `NL2SQLService` |
+| HTTP 分析 | `app/api/analysis.py` | `run-with-nl2sql*` / `run-img-diag*` |
+| 分析编排 | `analysis_graph_runner.py`、`analysis_img_diag_runner.py` | `_execute_data_plan`：分层、默认同层并行 `query` |
+| 客服查数成文 | `chatbot_nl2sql_answer.py` | `run_chatbot_nl2sql_query` → 可选收紧分析流 |
+| 服务层 | `app/services/nl2sql_service.py` | Chain + Executor + EXPLAIN/执行 refine + 会话 + 指标 |
+| 生成链路 | `app/nl2sql/chain.py` | 意图 → Schema → 规划 → RAG → 缓存 → Prompt → LLM → **时间/范围改写** → 校验/refine |
+| 问句意图 | `question_intent.py`、`time_intent_display.py`、`scope_parser_rule.py`、`scope_parser_llm.py` | 时间 **始终规则**；范围默认 **rule**，可选 LLM；`confirmed_scope` → `human_confirmed` |
+| Schema | `schema_service.py` | DB 反射、外键 → catalog |
+| 专用 RAG | `rag_service.py` | 三命名空间检索 |
+| 缓存 / QA | `sql_cache.py`、`sql_skeleton.py`、`qa_feedback.py` | L2/L1；可选 QA 槽位回放与自动沉淀 |
+| Prompt | `prompt_builder.py` + `configs/prompts.yaml` | `nl2sql` / `nl2sql_scope_parse` |
+| 校验/执行 | `validator.py`、`executor.py` | 只读、白名单、列–表绑定；`EXPLAIN` + `SELECT` |
+| 实体规则 | `entity_rules.py` | 可选否定规则（问题关键词 + SQL 正则） |
 
 ---
 
-## 4. 文字版逻辑流程
+## 4. 业务逻辑流程图
 
-### 4.1 端到端（HTTP 直连）
+> 体例同智能客服方案 §4.0：**业务视角**不出现文件名，便于产品/运维对齐；**实现视角**每个框标 `file:` / 类·函数 + `说明:`，与当前仓库调用链一致。
 
-1. 客户端调用 **`POST /nl2sql/query`**，携带 `user_id`、`session_id`、`question`。  
-2. **API 层** 打日志后调用 **`NL2SQLService.query`**（可选写入会话与指标计数）。  
-3. **`NL2SQLChain.generate_sql_with_validation_context`**（`generate_sql` 为其便捷封装，仅返回 `str`）：  
-   - **首次** 尝试 **`SchemaMetadataService.refresh_from_db()`**；成功则内存中有真实表、列、**外键**；失败则仅 Demo 或后续依赖 RAG。  
-   - 判断是否 **真实库已就绪**（非仅 `orders` Demo）。  
-   - **规划 `_plan`**：仅当 LangChain 可用且 **未** 处于「禁用规划 + 真实库」组合时执行；默认 **真实库成功则跳过规划**，减少虚构表名进入 RAG query。  
-   - **RAG**：`NL2SQLRAGService.retrieve` 在 `nl2sql_schema`、`nl2sql_biz_knowledge`、`nl2sql_qa_examples` 检索并去重；若有规划摘要则与问题拼接为检索 query。  
-   - **白名单**：真实库 → 反射表列集合；否则从片段抽取；同时构建 **`table_columns`（表→列集合）** 供绑定校验。  
-   - **业务实体规则**：可选从 **`NL2SQL_ENTITY_RULES` / `NL2SQL_ENTITY_RULES_FILE`** 加载 JSON 规则列表（否定模式：问题含某关键词且 SQL 命中正则 → 校验失败）。  
-   - **Prompt**：加载 `nl2sql` 场景模板，替换 **`{{NL2SQL_SCHEMA_CATALOG}}`** 为全库 enriched 目录（含 **FK:列→表.列**），或与 RAG hints/降级文案组合。  
-   - **LLM** 生成 SQL → **`normalize_sql`** → **TiDB/过滤器改写**（时间占位符 `@t_*`、锅炉 `@unit_keyword`、可选 scope 占位符）→ **校验**：只读安全 → 表/列白名单 →（真实库时）**`alias.column` / `table.column` 列–表绑定** →（若配置）**实体规则**；失败且 LangChain 可用则 **`_refine_sql`** 后再验。  
-   - 返回 **`(sql, NL2SQLValidationContext)`**：`ctx` 内含白名单与 `table_columns`，供服务层 **执行阶段 refine** 复用同一套校验标准。  
-4. **`NL2SQLService.query`** 在 SQL 非空时进入 **执行闭环**（受环境变量控制）：  
-   - 若 **`NL2SQL_EXPLAIN_BEFORE_EXECUTE=true`**：先 **`SQLExecutor.explain`**（`EXPLAIN <sql>`），失败则（在 **`NL2SQL_REFINE_ON_EXEC_ERROR`** 允许且 LangChain 可用时）调用 **`refine_sql_after_executor_error`**，用错误信息修正 SQL，再 **最多重试 `NL2SQL_MAX_EXEC_REFINES` 次**；仍失败则记指标、写会话错误摘要，**不再执行 SELECT**。  
-   - 再 **`SQLExecutor.execute`**；失败时同样可走 **refine + 重试** 路径。  
-5. 返回 **`NL2SQLQueryResponse(sql, rows)`**（`sql` 为最后一次尝试的语句，可能因 refine 与初稿不同）。
+### 4.0 端到端主路径（`POST /nl2sql/query` 与所有内嵌复用的同一基座闭环）
 
-### 4.2 智能客服内嵌（`data_query`）
+#### 业务视角（文字流程）
 
-1. 意图路由到 **`nl2sql_answer`** 节点。  
-2. 构造 **`NL2SQLQueryRequest`**，调用 **`NL2SQLService.query(..., record_conversation=False)`**，复用 **与 HTTP 相同的步骤 3～4**（含校验与执行闭环）。  
-3. 将 `sql` 与 `rows` 交给 **`summarize_nl2sql_with_llm`** 生成用户可见的自然语言回答。  
-4. Runner **`finalize`** 输出中带 `used_nl2sql`、`nl2sql_sql` 等 meta。
-
-### 4.3 综合分析 V2 内嵌（`POST /analysis/run-with-nl2sql`）
-
-1. 客户端调用 **`POST /analysis/run-with-nl2sql`**（`AnalysisNL2SQLRequest`：`user_id`、`session_id`、`analysis_type`、`query`、可选 `data_requirements_hint` 与 `options` 等），鉴权同其他分析接口。  
-2. **`AnalysisService.run_analysis_nl2sql`** 将请求交给 **`AnalysisGraphRunner.run_with_nl2sql`**（`langgraph` 不可用时顺序回退 **`_run_with_nl2sql_sequential`**，节点语义一致）。  
-3. 图在 **`plan_context_rag`** 等节点完成规划前检索（`scene=nl2sql`）与可选 **`intent_llm` / `plan_llm`** 后，得到 **`plan_tasks`**（模板 `analysis_plan_<analysis_type>` 与 LLM 计划合并，受 **`max_nl2sql_calls`** 截断）。  
-4. **`acquire_data`** 调用 **`_execute_data_plan`**：按 **`dependency_ids` 分层**；同层 Runnable 任务默认 **`asyncio.gather` 并行**发起 **`await self._nl2sql.query(..., record_conversation=False)`**（可 **`ANALYSIS_NL2SQL_ACQUIRE_PARALLEL_ENABLED`** 关闭）。对每条任务构造 **`NL2SQLQueryRequest(user_id, session_id, question=task.question)`**；单次任务失败时 **最多再试 1 次**（合计最多 2 次尝试）；依赖未满足的任务记为 **`skipped`**。每次 `query` 内部仍走 **与 §4.1 相同的 Chain 生成 + 执行闭环**（`NL2SQL_EXPLAIN_*`、`refine` 等由全局 NL2SQL 环境变量控制）。  
-5. 聚合后的行集进入 **`data_quality_gate`**、**`rag_enrichment`**（`scene=analysis`）、**`synthesis`** 与 **`finalize`**，输出 **`AnalysisV2Result`**（含 NL2SQL 调用轨迹、报告章节等）。  
-
-与客服场景的差异：**一次分析请求可触发多次 `NL2SQLService.query`**；会话侧不在 NL2SQL 服务内重复写入（`record_conversation=False`），由分析 trace / 报告承担审计面。
-
-### 4.4 综合分析看图诊断内嵌（`POST /analysis/run-img-diag` / `run-img-diag-stream`）
-
-1. 客户端调用 **`POST /analysis/run-img-diag`** 或 **`POST /analysis/run-img-diag-stream`**（同一 **`AnalysisImgDiagRequest`**：`unit_id`、`leak_location_text`、`query`、`image_urls` 等），鉴权同其他分析接口；可先 **`POST /analysis/img-diag/upload`** 取得 **`image_urls`**。  
-2. **`AnalysisService.run_analysis_img_diag`** / **`run_analysis_img_diag_stream`** 调用 **`AnalysisImgDiagGraphRunner.run_with_img_diag`** / **`iter_img_diag_stream_events`**：并行 **`_lane_vision`**、NL2SQL **子序列**（规划前 **`scene=nl2sql`** → **`acquire_data`** → **`_execute_data_plan`** → **`data_quality_gate`**）、业务 **`scene=analysis`** RAG。  
-3. **`acquire_data`** 内通过父类 **`_execute_data_plan`** 调度 **`plan_tasks`**（**默认同层并行** **`NL2SQLService.query(..., record_conversation=False)`**，与 nl2sql 主图一致），约束与 **`analysis_plan_img_diag`** / **`max_nl2sql_calls`** 等一致（含占位符 **`{unit_id}`** 等替换）。  
-4. **合成**：**不**再走 nl2sql 图尾部 **`rag_enrichment`**；并行臂产出汇入 **`_generate_summary`**（同步）或 **`_stream_summary_text`**（流式 SSE），最终 **`AnalysisV2Result`** 结构一致（**`evidence.data_coverage.mode=img_diag`**、**`vision_findings`**、**`parallel_lane_trace`**）；流式完整 JSON 异步落日志 / trace。
-
-### 4.5 文字版流程图（纯文本）
-
-以下为 **不含 `|` 竖线的缩进流程图**，避免多数 Markdown 渲染器把 `|` 误判为「表格列」而拆碎版面；语义与 §5 Mermaid 一致。若需可编辑图示，请直接改 §5 中对应 Mermaid。
+从**业务与使用方**看，一次「自然语言 → 查库结果」主线如下（客服/综合分析只是**多次或包装后**调用同一闭环）。
 
 ```text
-[Client]
-       POST /nl2sql/query
-            v
-    [NL2SQL API]
-            v
-   [NL2SQLService.query]
-            |
-            +------------------+------------------+
-            v                                     v
-   [NL2SQLChain 生成]                    [SQLExecutor 执行闭环]
-            |                           EXPLAIN? -> execute
-            |                           失败 -> refine?（有次数上限）
-            v
-   Refresh Schema（首次）
-            v
-   Plan?（可选，真实库默认跳过）
-            v
-   RAG 三命名空间检索
-            v
-   Prompt + NL2SQL_SCHEMA_CATALOG
-            v
-   LLM -> normalize_sql
-            v
-   Validate+（白名单 / 列–表绑定 / 实体规则）
-            v
-   Refine?（校验失败且 LangChain 可用）
-            v
-   输出 (sql, NL2SQLValidationContext)
-            v
-   回到 NL2SQLService：预检与执行（见上右支）
+                    【调用方发起自然语言问数】
+                                  │
+                                  ▼
+              ┌───────────────────────────────────┐
+              │ 接入：用户、会话、自然语言问题；     │
+              │ 可选：分析场景、计划子任务、时间意图 │
+              │ 文本、人工确认范围（看图诊断 HITL） │
+              └───────────────────┬───────────────┘
+                                  ▼
+              ┌───────────────────────────────────┐
+              │ 问句意图解析（基座内、先于生成 SQL） │
+              │ · 时间：程序规则（近一周/昨天/季度…）│
+              │ · 范围：默认规则（机组/设备/管排等）；│
+              │   可选 LLM；若已人工确认则直接采用  │
+              └───────────────────┬───────────────┘
+                                  ▼
+              ┌───────────────────────────────────┐
+              │ 认识库表：反射业务库表/列/外键；     │
+              │ 用 Schema/业务/样例三类知识检索补语义 │
+              └───────────────────┬───────────────┘
+                                  ▼
+              ┌───────────────────────────────────┐
+              │（可选）命中生成缓存或 QA 样例回放 → │
+              │ 仍须过校验与时间/范围改写           │
+              │ 未命中 → 拼装 Prompt → 大模型出 SQL │
+              └───────────────────┬───────────────┘
+                                  ▼
+              ┌───────────────────────────────────┐
+              │ 程序改写：时间窗占位符、机组/锅炉、  │
+              │ 可选设备/管排/排管占位符 → 安全校验 │
+              │ （失败可让模型按错误修正再验）      │
+              └───────────────────┬───────────────┘
+                                  ▼
+              ┌───────────────────────────────────┐
+              │ 执行：可选先 EXPLAIN，再只读 SELECT；│
+              │ 执行失败可再修正（有次数上限）      │
+              └───────────────────┬───────────────┘
+                                  ▼
+              ┌───────────────────────────────────┐
+              │【结束】返回 SQL + 结果行；          │
+              │ 可选带回解析后的时间/范围意图 JSON  │
+              └───────────────────────────────────┘
+```
+
+补充说明（业务口径）：
+
+- **时间**始终由基座规则解析；业务侧可用 `time_intent_text` 指定「从哪段文本抽时间」，**不能**靠 `confirmed_scope` 覆盖时间窗。  
+- **范围**：默认规则；可开 LLM；看图诊断等可传 **`confirmed_scope`** 覆盖范围为 `human_confirmed`。  
+- **呈现**：基座只返回 `sql`/`rows`；客服收紧分析、综合分析报告合成均在**调用方**完成。
+
+---
+
+#### 实现视角（代码级流程图）
+
+对齐 **当前仓库** 基座闭环。框内优先 **Python 路径**、**类 / 函数**，并附 **`说明:`**。客服 / 综合分析在入口处分岔后，均进入同一 `NL2SQLService.query`。
+
+```text
+         【入口 A】POST /nl2sql/query
+         【入口 B】客服 nl2sql_answer / Hybrid 查数臂
+         【入口 C】分析 acquire_data → 多次 query
+         【入口 D】看图诊断 NL 臂（可带 confirmed_scope）
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【HTTP 直连入口】（仅入口 A）                                   │
+│ file: app/api/nl2sql.py                                         │
+│ fn:   nl2sql_query                                              │
+│ 说明: 鉴权后转发；502 封装执行错误                               │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【服务编排】                                                    │
+│ file:  app/services/nl2sql_service.py                           │
+│ class: NL2SQLService                                            │
+│ meth:  query                                                    │
+│ 说明: 可选写会话 → Chain 生成 → EXPLAIN?/execute → 执行失败 refine│
+│       指标 NL2SQL_QUERY_COUNT / ERROR；可选返回 parsed_intent   │
+│ req:  app/models/nl2sql.py · NL2SQLQueryRequest                 │
+│       （question / time_intent_text / confirmed_scope / …）     │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【Chain：意图优先】                                             │
+│ file:  app/nl2sql/chain.py                                      │
+│ class: NL2SQLChain                                              │
+│ meth:  generate_sql_with_validation_context                     │
+│ ① resolve_question_intent — 时间规则 + 范围 rule/LLM/HITL       │
+│    └─ file: app/nl2sql/question_intent.py                       │
+│       · time: time_intent_display.extract_time_window_*         │
+│       · scope: scope_parser_rule / scope_parser_llm             │
+│       · confirmed_scope → parse_mode=human_confirmed（仅范围）  │
+│ ② _ensure_schema_refreshed_once — DB 反射表列外键               │
+│    └─ file: app/nl2sql/schema_service.py                        │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【Chain：规划 → RAG → 缓存 / QA 回放】                          │
+│ ③ _plan（可选；真实库默认跳过 NL2SQL_DISABLE_PLANNER_…）        │
+│ ④ NL2SQLRAGService.retrieve — schema/biz/qa 三命名空间          │
+│    └─ file: app/nl2sql/rag_service.py                           │
+│ ⑤ 可选 QA 槽位严格回放（qa_feedback）                           │
+│ ⑥ 可选 L2 精确缓存 → L1 时间骨架缓存（sql_cache / sql_skeleton）│
+│ 说明: 意图解析在缓存查找之前；命中后仍走改写+校验               │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【Chain：生成 → 改写 → 校验】（缓存未命中或需重生）             │
+│ ⑦ PromptBuilder + scene=nl2sql（{{NL2SQL_SCHEMA_CATALOG}}）     │
+│    └─ prompt_builder.py + PromptTemplateRegistry                │
+│ ⑧ LLM（LangChain ChatOpenAI 或 VLLMHttpClient）→ normalize_sql │
+│ ⑨ _rewrite_tidb_compatible_sql + _rewrite_query_filters         │
+│    · 时间 @t_start/@t_end/@t_after + 字面量窗                   │
+│    · 锅炉 @unit_keyword；可选 scope 占位符（scope_sql_rewrite） │
+│ ⑩ SQLValidator + 白名单 + 列–表绑定 + entity_rules；失败可      │
+│    _refine_sql 后再改写再验                                     │
+│ 返回 (sql, NL2SQLValidationContext)                             │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【服务层执行闭环】NL2SQLService.query 续                        │
+│ file: app/nl2sql/executor.py · SQLExecutor                      │
+│  · NL2SQL_EXPLAIN_BEFORE_EXECUTE → explain                      │
+│  · execute(SELECT)                                              │
+│  · 失败且可 refine → chain.refine_sql_after_executor_error      │
+│    （次数 ≤ NL2SQL_MAX_EXEC_REFINES）                           │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 【响应】NL2SQLQueryResponse(sql, rows[, parsed_intent])         │
+│ 直连回客户端；客服/分析各自消费 rows 做呈现或报告合成           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**图注（调用约定）**：
+
+- 框内优先 **`file:` + 类/方法**，其后 **`说明:`** 为职责摘要。  
+- **所有接入形态**在 `NL2SQLService.query` 汇合；差异仅在请求字段（如 `time_intent_text`、`confirmed_scope`、`plan_item_id`）与是否 `record_conversation`。  
+- **`confirmed_scope` 只覆盖范围**，时间仍从 `scope_intent_text` / `time_intent_text` / `question` / `original_query` 做规则解析。
+
+**实现落点速查（文件 → 职责）**
+
+| 环节 | 文件 | 符号（简练） |
+|------|------|----------------|
+| HTTP 直连 | `app/api/nl2sql.py` | `nl2sql_query` |
+| 请求/响应模型 | `app/models/nl2sql.py` | `NL2SQLQueryRequest` / `Response` |
+| 服务 | `app/services/nl2sql_service.py` | `query` |
+| Chain | `app/nl2sql/chain.py` | `generate_sql_with_validation_context`、`_rewrite_query_filters`、`refine_sql_after_executor_error` |
+| 意图门面 | `app/nl2sql/question_intent.py` | `resolve_question_intent` |
+| 时间规则 | `app/nl2sql/time_intent_display.py` | `extract_time_window_from_question`、锚点 lookback |
+| 范围规则/LLM | `scope_parser_rule.py`、`scope_parser_llm.py` | `parse_scope_rule`、`resolve_scope_with_mode` |
+| 范围改写 | `scope_sql_rewrite.py` | `rewrite_scope_sql_placeholders` |
+| Schema / RAG | `schema_service.py`、`rag_service.py` | `refresh_from_db`、`retrieve` |
+| 缓存 / QA | `sql_cache.py`、`sql_skeleton.py`、`qa_feedback.py` | L2/L1、槽位回放 |
+| 校验 / 执行 | `validator.py`、`executor.py` | `validate`、`explain`、`execute` |
+| 客服包装 | `chatbot_nl2sql_answer.py` | `run_chatbot_nl2sql_query` |
+| 分析取数 | `analysis_graph_runner.py` 等 | `_execute_data_plan`；或 `analysis_agent/nl2sql_executor.py` |
+
+---
+
+### 4.1 智能客服内嵌（`data_query` / Hybrid 查数臂）
+
+#### 业务视角
+
+```text
+  意图判为「结构化查库」或 Hybrid 需要查数
+            │
+            ▼
+  调用同一 NL2SQL 基座得到 sql + rows
+            │
+            ▼
+  列过滤展示 →（可选）收紧分析成自然语言
+            │
+            ▼
+  流式/结束帧带回 used_nl2sql、nl2sql_analysis 等 meta
+```
+
+#### 实现视角
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│ file: chatbot_graph_runner.py · _node_nl2sql_answer             │
+│ 说明: data_query 分支；Hybrid 臂内亦可调同一查数入口            │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ file: chatbot_nl2sql_answer.py · run_chatbot_nl2sql_query       │
+│ 说明: 构造 NL2SQLQueryRequest（可带 sql_gen_extra_hint）        │
+│       → NL2SQLService.query(record_conversation=False)          │
+│       → summarize_nl2sql_with_llm / analysis_stream_plan        │
+│ 展示列过滤: chatbot_nl2sql_display.filter_chatbot_nl2sql_…    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+详述见 **`企业级智能客服 LangGraph 框架实现方案.md`** §4.6 / §4.7。
+
+---
+
+### 4.2 综合分析 V2（`POST /analysis/run-with-nl2sql*`）
+
+#### 业务视角
+
+```text
+  用户提交分析类型 + 自然语言 query
+            │
+            ▼
+  规划前检索与数据计划（多子任务问句）
+            │
+            ▼
+  按依赖分层取数：同层可并行多次「问句→SQL→结果」
+  （每次 = 基座闭环；时间意图优先用用户原句，防 plan 附录污染）
+            │
+            ▼
+  质量门 → 业务 RAG → 合成结构化报告（非客服口语化链路）
+```
+
+#### 实现视角
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│ file: app/api/analysis.py · run_analysis_nl2sql(_stream)        │
+│ → AnalysisService → AnalysisGraphRunner.run_with_nl2sql         │
+└───────────────────────────────┬─────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ acquire_data → _execute_data_plan                               │
+│ 说明: dependency 分层；默认同层 asyncio.gather 并行 query       │
+│ 每项: NL2SQLQueryRequest(question=task.question,                │
+│       time_intent_text=用户 query, plan_item_id, …)             │
+│       record_conversation=False；单任务最多 2 次尝试            │
+│ 开关: ANALYSIS_NL2SQL_ACQUIRE_* / max_nl2sql_calls              │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 5. 代码版逻辑流程图（Mermaid）
+### 4.3 综合分析看图诊断（`POST /analysis/run-img-diag*`）
 
-### 5.1 端到端数据流（服务 + 校验 + 执行闭环）
+#### 业务视角
+
+```text
+  上传图像 + 泄漏位置/问句等
+            │
+            ├──────────────┬──────────────────┐
+            ▼              ▼                  ▼
+       视觉识别臂     NL2SQL 取数臂      业务 RAG 臂
+            │              │                  │
+            │     （可先 HITL 确认范围）       │
+            │              │                  │
+            └──────────────┴──────────────────┘
+                            ▼
+                   汇合后合成报告（同步或流式）
+```
+
+#### 实现视角
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│ AnalysisImgDiagGraphRunner：并行 lane                           │
+│ NL 臂：plan_context_rag(scene=nl2sql) → acquire_data            │
+│        → _execute_data_plan（与 §4.2 同源）→ data_quality_gate  │
+│ HITL: confirmed_scope / scope_intent_text / original_query      │
+│       注入 NL2SQLQueryRequest → 基座 human_confirmed（仅范围）  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 4.4 问句意图与 SQL 改写（基座内关键子链）
+
+#### 业务视角
+
+```text
+  用户问句（或更干净的 time_intent / 确认范围）
+            │
+            ├─ 时间：近 N 天 / 昨天 / 本月 / 季度… → 生效时间窗
+            │        （无表达时默认「昨天」口径）
+            ├─ 范围：机组锅炉 / 设备 / 管排 / 排 / 管
+            │        （HITL 确认则跳过自动范围解析）
+            ▼
+  模型 SQL 中的 @t_*、@unit_keyword、@device_keyword… 被程序替换
+            ▼
+  再执行校验与查库
+```
+
+#### 实现视角
+
+```text
+resolve_question_intent
+  ├─ confirmed_scope? → QuestionScopeIntent 直接采用；时间仍 extract_* 规则
+  └─ else → resolve_scope_with_mode(NL2SQL_INTENT_PARSE_MODE)
+            + extract_time_window / extract_time_anchor
+            │
+            ▼
+_rewrite_query_filters（chain.py）
+  ├─ _resolve_time_window_for_rewrite（锚点向前 N 天 / plan 长窗仲裁）
+  ├─ _rewrite_time_placeholders / 字面量时间窗
+  └─ _rewrite_entity_scope_literals → rewrite_scope_sql_placeholders
+```
+
+| 能力 | 是否基座 | 覆盖方式 |
+|------|----------|----------|
+| 时间解析 | 是（规则） | `time_intent_text` 指定抽文本；**无** confirmed 时间窗 API |
+| 范围解析 | 是（默认 rule） | 配置改 LLM；或业务传 `confirmed_scope` 覆盖 |
+| 锅炉字段 | 规则始终覆盖 LLM | `finalize_llm_scope` |
+
+---
+
+## 5. 代码版补充图（Mermaid）
+
+> 与 §4 实现视角语义一致，便于编辑器预览；排障优先对照 §4.0 代码框。
+
+### 5.1 端到端（服务 + Chain + 执行）
 
 ```mermaid
 flowchart TB
     subgraph Client["调用方"]
         C1["BI / 脚本 / 前端"]
-        C2["智能客服 data_query"]
-        C3["综合分析 V2\nrun-with-nl2sql /\nrun-img-diag(NL臂)\n及对应流式路由"]
+        C2["智能客服 data_query / Hybrid"]
+        C3["综合分析 V2 / 看图诊断 NL 臂"]
     end
 
-    subgraph API["接入层"]
+    subgraph API["接入"]
         HTTP["POST /nl2sql/query"]
-        ANA["POST /analysis/run-with-nl2sql\n或 run-img-diag\n（及 *-stream）\nAnalysisGraphRunner /\nImgDiagRunner"]
+        ANA["AnalysisGraphRunner /\nImgDiagRunner\n_execute_data_plan"]
     end
 
-    subgraph Chain["NL2SQLChain（生成阶段）"]
+    subgraph Chain["NL2SQLChain"]
+        QI["resolve_question_intent\n时间规则 + 范围 rule/LLM/HITL"]
         R0["_ensure_schema_refreshed_once"]
-        R1{"LangChain 且需规划?"}
+        R1{"需规划?"}
         P["_plan"]
         RG["NL2SQLRAGService.retrieve"]
-        ER["load_entity_rules（可选）"]
-        PR["PromptBuilder + {{NL2SQL_SCHEMA_CATALOG}}"]
-        L["LLM 生成"]
-        N["normalize_sql"]
+        CACHE["QA回放 / L2 / L1 缓存?"]
+        PR["Prompt + SCHEMA_CATALOG"]
+        L["LLM → normalize"]
+        RW["_rewrite_query_filters\n时间 + 范围"]
         V{"多层校验"}
-        RF1["_refine_sql（生成期）"]
-        OUT["sql + NL2SQLValidationContext"]
+        RF1["_refine_sql"]
+        OUT["sql + ValidationContext"]
     end
 
-    subgraph Svc["NL2SQLService.query（执行阶段）"]
-        LOOP{"sql 非空?"}
-        X{"NL2SQL_EXPLAIN_BEFORE_EXECUTE?"}
-        EX["SQLExecutor.explain"]
-        E["SQLExecutor.execute"]
+    subgraph Svc["NL2SQLService.query"]
+        X{"EXPLAIN?"}
+        EX["explain"]
+        E["execute"]
         RF2["refine_sql_after_executor_error"]
-        RC{"失败且可 refine\n且尚有次数?"}
         RESP["NL2SQLQueryResponse"]
     end
 
     DB[("业务数据库")]
 
-    C1 --> HTTP
-    C2 --> CBQ["NL2SQLService.query\n(record_conversation=False)"]
-    C3 --> ANA
-    ANA --> PLN["_execute_data_plan\n分层并行 plan_tasks"]
-    PLN --> CBQ
-    HTTP --> R0
-    CBQ --> R0
-    R0 --> R1
-    R1 -->|是| P
+    C1 --> HTTP --> QI
+    C2 --> Svc
+    C3 --> ANA --> Svc
+    Svc --> QI
+    QI --> R0 --> R1
+    R1 -->|是| P --> RG
     R1 -->|否| RG
-    P --> RG
-    RG --> ER --> PR --> L --> N --> V
-    V -->|"safety+whitelist+\n列–表绑定+实体"| OUT
-    V -->|失败且有 LangChain| RF1 --> N --> V
-    V -->|失败且无修正| OUT
-    OUT --> LOOP
-    LOOP -->|否| RESP
-    LOOP -->|是| X
-    X -->|是| EX
+    RG --> CACHE
+    CACHE -->|未命中| PR --> L --> RW --> V
+    CACHE -->|命中| RW
+    V -->|失败可修正| RF1 --> RW
+    V -->|通过| OUT --> X
+    X -->|是| EX --> E
     X -->|否| E
-    EX -->|成功| E
-    EX -->|失败| RC
+    EX -->|失败| RF2
+    E -->|失败| RF2
+    RF2 --> X
     E -->|成功| RESP
-    E -->|失败| RC
-    RC -->|是| RF2 --> LOOP
-    RC -->|否| RESP
+    E --> DB
+    EX --> DB
     RESP --> C1
     RESP --> C2
     RESP --> C3
-    E --> DB
-    EX --> DB
 ```
 
-### 5.2 NL2SQLChain 内部细化（生成与校验）
+### 5.2 Schema 与 RAG
 
 ```mermaid
 flowchart TB
-    A[refresh_from_db] --> B{schema_from_db?}
-    B -->|是 默认| C[跳过 _plan]
-    B -->|否| D[_plan 可选]
-    C --> E[rag_query = question 或 规划+问题]
-    D --> E
-    E --> F[retrieve 三命名空间]
-    F --> G[whitelist 表列 + table_columns 映射]
-    G --> H[load_entity_rules_from_env]
-    H --> I[替换 NL2SQL_SCHEMA_CATALOG]
-    I --> J[build prompt]
-    J --> K[LLM]
-    K --> L[normalize_sql]
-    L --> M{safety + whitelist}
-    M -->|失败| N{LangChain?}
-    M -->|通过| O{schema_ok:\n列–表绑定}
-    O -->|失败| N
-    O -->|通过| P{实体规则}
-    P -->|命中拦截| N
-    P -->|未命中| Q[返回 sql + ValidationContext]
-    N -->|是| R[_refine_sql] --> L
-    N -->|否| S[返回 \"\" + ctx]
+    subgraph Authoritative["权威标识符"]
+        DB[(业务库)] --> REF["SchemaMetadataService.refresh_from_db"]
+        REF --> TS["TableSchema + foreign_keys"]
+    end
+    subgraph Semantic["语义补充"]
+        RAG["NL2SQLRAGService"]
+        RAG --> NS1["nl2sql_schema"]
+        RAG --> NS2["nl2sql_biz_knowledge"]
+        RAG --> NS3["nl2sql_qa_examples"]
+    end
+    TS --> CAT["Enriched catalog（含 FK:）"]
+    RAG --> SNIP["RAG 片段"]
+    CAT --> LLM["LLM 生成 SQL"]
+    SNIP --> LLM
 ```
 
-### 5.2b 执行期 refine（与生成期 refine 并列）
+### 5.3 执行期 refine
 
 ```mermaid
 flowchart LR
-    A["EXPLAIN 或 SELECT 失败"] --> B["refine_sql_after_executor_error\n(把 MySQL 错误写入校验失败原因)"]
-    B --> C["normalize + 同一套 _validate_sql\n(含绑定与实体规则)"]
-    C -->|通过| D["新 sql 再进入 EXPLAIN/execute 循环"]
+    A["EXPLAIN 或 SELECT 失败"] --> B["refine_sql_after_executor_error"]
+    B --> C["normalize + 同一套校验 + 时间/范围改写"]
+    C -->|通过| D["再进入 EXPLAIN/execute"]
     C -->|否| E["放弃本次修正"]
-```
-
-### 5.3 Schema 与 RAG 的关系
-
-```mermaid
-flowchart TB
-    subgraph Authoritative["权威标识符（优先）"]
-        DB[(业务库)]
-        REF["SchemaMetadataService.refresh_from_db"]
-        DB --> REF
-        REF --> TS["TableSchema + foreign_keys"]
-    end
-
-    subgraph Semantic["语义补充"]
-        RAG["NL2SQLRAGService"]
-        NS1["nl2sql_schema"]
-        NS2["nl2sql_biz_knowledge"]
-        NS3["nl2sql_qa_examples"]
-        RAG --> NS1
-        RAG --> NS2
-        RAG --> NS3
-    end
-
-    subgraph Prompt["Prompt 注入"]
-        CAT["Enriched catalog 行\n含 FK: col->ref.refcol"]
-        SNIP["RAG 文本片段"]
-    end
-
-    TS --> CAT
-    RAG --> SNIP
-    CAT --> LLM["LLM 生成 SQL"]
-    SNIP --> LLM
 ```
 
 ---
@@ -305,44 +497,46 @@ flowchart TB
 
 | 主题 | 说明 |
 |------|------|
-| **连接串与密码** | `DB_URL` 优先；由 `DB_USER`/`DB_PASSWORD` 等拼接时 **`urllib.parse.quote` 编码用户名密码**，避免密码中 `@` 被误认为 host 分隔符。 |
-| **外键与 JOIN** | 反射得到的 `foreign_keys` 写入 catalog，Prompt 要求多实体时 JOIN；无物理外键时依赖 RAG 文档与业务列名。 |
-| **列–表绑定** | 在 **DB 反射成功**（`schema_ok`）时，解析主查询 `FROM` 的别名映射，对 **`alias.column`** 校验列是否属于该别名对应物理表，减少「列名合法但挂错表」的漏检。复杂嵌套子查询场景可能跳过部分限定列（实现权衡）。 |
-| **实体规则** | 仅支持 **否定规则**（问题关键词 + SQL 正则 → 拦截）；用于「问题在谈锅炉 A，SQL 却把名称写进 `mill_name`」等可配置业务语义。非「必须通过」类正向规则。 |
-| **EXPLAIN 预检** | 可选在执行前跑 **`EXPLAIN`**，提前暴露语法/未知列等；增加一次往返延迟，适合对稳定性要求高的环境。 |
-| **执行失败闭环** | `EXPLAIN` 或 `SELECT` 失败时，可将错误文本传入 **`refine_sql_after_executor_error`**，与生成期 **`_refine_sql`** 一样走 LLM 修正，但 **再经完整校验**；受 **`NL2SQL_MAX_EXEC_REFINES`** 限制，避免无限重试与延迟膨胀。无 LangChain 时 refine 不生效。 |
-| **单行 SQL** | `normalize_sql` 在引号外折叠空白，接口返回紧凑单行，便于日志与下游复制。 |
-| **排障日志** | `app.api.nl2sql`、`nl2sql_service`、`chain`、`rag_service`、`executor`、`schema_service` 等 INFO/WARNING；用 `user_id`+`session_id`+时间关联。 |
-| **会话隔离** | 直连与 Chatbot 若共用 Redis，建议使用不同 `session_id` 前缀，避免消息混写（见 `系统会话管理实现方案.md`）。 |
-| **问句意图** | **`resolve_question_intent`**：时间 **始终程序规则**；范围默认 **`NL2SQL_INTENT_PARSE_MODE=rule`**，可选 vLLM（`configs/prompts.yaml` · `nl2sql_scope_parse`）。综合分析传 **`time_intent_text=req.query`** 防 plan 长问句污染。详设见 **`docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`**。 |
+| **连接串** | `DB_URL` 优先；`DB_*` 拼接时用户名密码 URL 编码。 |
+| **表白名单** | `ANALYSIS_NL2SQL_TABLE_SCOPE_*`、JOIN 白名单；新项目须按库裁剪。 |
+| **外键与 JOIN** | 反射 FK 写入 catalog；无物理 FK 则依赖 RAG/业务列名。 |
+| **列–表绑定** | `schema_ok` 时校验 `alias.column` 是否属于该物理表。 |
+| **实体规则** | 仅否定规则（问题关键词 + SQL 正则）。 |
+| **意图防污染** | 综合分析等传 `time_intent_text=用户原句`，避免 plan 尾部 RAG 附录污染时间/范围。 |
+| **HITL 范围** | `confirmed_scope` → `human_confirmed`；**不覆盖时间**。 |
+| **缓存** | `NL2SQL_CACHE_ENABLED`；意图解析在缓存查找前执行；命中后仍改写+校验。 |
+| **EXPLAIN / 执行 refine** | 见环境变量表；无 LangChain 时 refine 不生效。 |
+| **单行 SQL** | `normalize_sql` 引号外折叠空白。 |
+| **会话隔离** | 直连与客服建议不同 `session_id` 前缀。 |
 
 ---
 
 ## 7. 配置与环境变量（摘要）
 
-| 变量 | 作用 |
+| 变量 | 作用（与代码默认一致） |
 |------|------|
 | `DB_URL` / `DB_*` | 业务库连接 |
-| `NL2SQL_DISABLE_PLANNER_WHEN_DB_SCHEMA` | 默认 `true`，真实库反射成功时跳过 `_plan` |
-| `NL2SQL_PROMPT_DEFAULT_VERSION` | 如 `v2`，对应 `configs/prompts.yaml` |
-| `NL2SQL_SCHEMA_NAMESPACE_TOP_K` | Schema 命名空间检索条数下限策略 |
-| `NL2SQL_SCHEMA_CATALOG_MAX_TABLES` / `MAX_COLS` | 目录体积上限 |
-| `NL2SQL_EXPLAIN_BEFORE_EXECUTE` | 默认 `false`；`true` 时执行前先 **`EXPLAIN`** |
-| `NL2SQL_REFINE_ON_EXEC_ERROR` | 默认 `true`；`EXPLAIN`/`SELECT` 失败时是否尝试 **LLM 修正**（需 LangChain） |
-| `NL2SQL_MAX_EXEC_REFINES` | 默认 `1`；执行阶段 **最多修正轮数**（每轮成功产出新 SQL 会再跑预检/执行） |
-| `NL2SQL_ENTITY_RULES` | 可选；JSON 数组字符串，**否定实体规则**（`question_contains_any` + `sql_pattern`/`sql_regex` + `message`） |
-| `NL2SQL_ENTITY_RULES_FILE` | 可选；若配置了路径且文件存在则 **只从文件** 加载；若未配置文件或路径无效则 **不** 回退到内联（见 `app/nl2sql/entity_rules.py`）；未设 `FILE` 时才读 `NL2SQL_ENTITY_RULES` |
-| `RAG_SCENE_NL2SQL_*` | NL2SQL 场景检索 profile |
-| `NL2SQL_INTENT_PARSE_MODE` | 默认 `rule`；范围 LLM 解析：`llm` / `rule_with_llm_fallback` |
-| `NL2SQL_SCOPE_SQL_REWRITE_ENABLED` | 默认 `false`；设备/管排 SQL 占位符改写 |
-| `NL2SQL_SCOPE_PARSE_PROMPT_VERSION` | 范围 LLM 提示词版本（`prompts.yaml` · `nl2sql_scope_parse`） |
-| `NL2SQL_INJECT_PARSED_INTENT` / `NL2SQL_RESPONSE_INCLUDE_PARSED_INTENT` / `NL2SQL_TRACE_INCLUDE_QUESTION_INTENT` | 问句意图可观测（Prompt / API / 分析 trace） |
+| `NL2SQL_DISABLE_PLANNER_WHEN_DB_SCHEMA` | 默认 `true`：真实库反射成功则跳过 `_plan` |
+| `NL2SQL_PROMPT_DEFAULT_VERSION` | 如 `v2`（`configs/prompts.yaml` · `nl2sql`） |
+| `NL2SQL_CACHE_ENABLED` | 代码默认 `false`；`.env.example` 示例常开 |
+| `NL2SQL_EXPLAIN_BEFORE_EXECUTE` | 默认 `false` |
+| `NL2SQL_REFINE_ON_EXEC_ERROR` | 默认 `true` |
+| `NL2SQL_MAX_EXEC_REFINES` | 默认 `1` |
+| `NL2SQL_ENTITY_RULES` / `_FILE` | 可选否定实体规则 |
+| `NL2SQL_INTENT_PARSE_MODE` | 默认 **`rule`**；可选 `llm` / `rule_with_llm_fallback`（失败均回退 rule） |
+| `NL2SQL_SCOPE_SQL_REWRITE_ENABLED` | 代码默认 **`true`**（设备/管排等占位符改写） |
+| `NL2SQL_SCOPE_LEXICON_FILE` | 范围词典，默认 `configs/nl2sql_scope_device_aliases.json` |
+| `NL2SQL_SCOPE_PARSE_*` | 范围 LLM 超时/温度/提示词版本 |
+| `NL2SQL_INJECT_PARSED_INTENT` / `RESPONSE_INCLUDE_*` / `TRACE_INCLUDE_*` | 意图注入 Prompt / API / 分析 trace |
+| `NL2SQL_ANCHOR_FALLBACK_*` | plan「锚点向前 N 天」无锚点时的 NOW 回退（看图诊断等） |
+| `NL2SQL_REJECT_UNRESOLVED_TIME_PLACEHOLDERS` | 拒绝未解析的 `@t_*` |
+| `ANALYSIS_NL2SQL_TABLE_SCOPE_*` / `JOIN_WHITELIST*` | 表域与 JOIN 白名单 |
+| `ANALYSIS_NL2SQL_ACQUIRE_*` | 分析取数同层并行等 |
+| `RAG_SCENE_NL2SQL_*` | NL2SQL 检索 profile |
 
 完整列表见 `app/app-deploy/.env.example` 与 `framework-guide/NL2SQL整体实现技术说明.md` §4。
 
-**说明**：`.env.example` 中上述键多为注释示例，**不设变量时走代码默认值**（例如 EXPLAIN 默认关、执行失败 refine 默认开、实体规则默认无）；生产若需开启 EXPLAIN 或加载规则，请在实际 `.env` 中显式配置。
-
-**实体规则 JSON**：根为数组，每项支持字段 `question_contains_any`（或 `question_contains`）、`sql_pattern`（或 `sql_regex`）、`message`；语义为 **当问题包含任一关键词且 SQL 匹配正则时校验失败**（否定规则，非「必须通过」白名单）。
+**说明**：未设环境变量时走 **代码默认值**；`.env.example` 中的示例值可能与默认不同（如缓存示例为 `true`），以实际部署 `.env` 为准。
 
 ---
 
@@ -350,15 +544,15 @@ flowchart TB
 
 | 文档 | 内容 |
 |------|------|
-| `enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md` | 当前代码行为的端到端细节、校验与执行闭环、开关决策 |
-| `framework-guide/NL2SQL整体实现技术说明.md` | 模块映射、API、配置、日志 §8 |
-| `docs/大小模型应用技术架构与实现方案.md` | §1 基础能力、§4.6 NL2SQL |
+| `enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md` | 代码行为端到端细节 |
+| `framework-guide/NL2SQL整体实现技术说明.md` | 模块映射、API、配置、日志 |
 | `docs/NL2SQL系统概要设计.md` | 产品与模块概要 |
-| `docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md` | 问句时间/范围解析、SQL 改写与环境变量 |
-| `enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` | `data_query` 与 NL2SQL 节点 |
-| `enterprise-level_transformation_docs/企业级综合分析实现和使用说明.md` | **`run-with-nl2sql`** / **`run-with-nl2sql-stream`** / **`run-img-diag`** / **`run-img-diag-stream`** 编排、`acquire_data`、`_execute_data_plan` 与 NL2SQL 计划模板 |
-| `enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md` | **`img_diag`** 并行语义、占位符、`vision_findings` 与 **`parallel_lane_trace`** |
-| `docs/Agentic-Workflow-设计蓝图.md` | 多步 Workflow 蓝图 |
+| `docs/NL2SQL缓存实现方案.md` | L2/L1 与 QA 闭环 |
+| `docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md` | 时间/范围解析与改写 |
+| `docs/基于地降所项目改造/NL2SQL基座五阶段改造方案.md` | 演进改造（非现网默认） |
+| `enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` | 客服图与 `data_query`（流程图体例参考） |
+| `enterprise-level_transformation_docs/企业级综合分析实现和使用说明.md` | `run-with-nl2sql*` 编排 |
+| `enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md` | `img_diag` 并行臂与 HITL |
 
 ---
 
