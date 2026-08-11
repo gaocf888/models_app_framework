@@ -2,7 +2,7 @@
 智能客服：BERT 序列分类意图识别。
 
 与规则后端共用硬规则闸（多模态/空句/短句续问等），其余由**已微调** BERT 输出
-kb_qa / data_query / clarify。须使用 AutoModelForSequenceClassification 导出目录；
+kb_qa / data_query / hybrid_qa / clarify。须使用 AutoModelForSequenceClassification 导出目录；
 不支持魔塔/HF 通用预训练 BERT（如 bert-base-chinese）直接替代。模型加载失败时可回退规则层。
 """
 
@@ -24,7 +24,7 @@ from .chatbot_intent_rules import (
 
 logger = get_logger(__name__)
 
-_VALID_LABELS = frozenset({"kb_qa", "data_query", "clarify"})
+_VALID_LABELS = frozenset({"kb_qa", "data_query", "clarify", "hybrid_qa"})
 _DEFAULT_ID2LABEL = {0: "kb_qa", 1: "data_query", 2: "clarify"}
 
 

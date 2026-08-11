@@ -209,6 +209,8 @@ class ChatbotLangGraphRunner:
         graph.add_node("kb_build_messages", self._node_kb_build_messages)
         graph.add_node("clarify_build_response", self._node_clarify_build_response)
         graph.add_node("nl2sql_answer", self._node_nl2sql_answer)
+        graph.add_node("hybrid_acquire", self._node_hybrid_acquire)
+        graph.add_node("hybrid_synthesize", self._node_hybrid_synthesize)
         graph.add_node("finalize", self._node_finalize)
 
         # 入口固定为模板加载：
@@ -227,6 +229,7 @@ class ChatbotLangGraphRunner:
             {
                 "kb_qa": "select_rag_engine",
                 "data_query": "nl2sql_answer",
+                "hybrid_qa": "hybrid_acquire",
                 "clarify": "clarify_build_response",
                 "unsafe": "unsafe_guard",
                 "handoff_human": "handoff_human",
@@ -237,6 +240,8 @@ class ChatbotLangGraphRunner:
         graph.add_edge("handoff_human", "finalize")
         graph.add_edge("smalltalk_generate", "finalize")
         graph.add_edge("nl2sql_answer", "finalize")
+        graph.add_edge("hybrid_acquire", "hybrid_synthesize")
+        graph.add_edge("hybrid_synthesize", "finalize")
         graph.add_edge("select_rag_engine", "rag_scope_resolve")
         graph.add_edge("rag_scope_resolve", "kb_retrieve")
         graph.add_edge("kb_retrieve", "kb_quality_check")
@@ -532,6 +537,7 @@ class ChatbotLangGraphRunner:
             "nl2sql_error_code": None,
             "nl2sql_analysis": None,
             "nl2sql_analysis_stream_plan": None,
+            "hybrid_degraded": "",
             "suggested_questions": [],
             "error": None,
             "answer_parts": [],
@@ -681,6 +687,10 @@ class ChatbotLangGraphRunner:
             state = m(state, await self._node_nl2sql_answer(state))
             if state.get("pending_hitl"):
                 return state
+            return m(state, await self._node_finalize(state))
+        if route == "hybrid_qa":
+            state = m(state, await self._node_hybrid_acquire(state))
+            state = m(state, await self._node_hybrid_synthesize(state))
             return m(state, await self._node_finalize(state))
         if route in {"unsafe", "handoff_human", "smalltalk"}:
             node_map = {
@@ -833,6 +843,160 @@ class ChatbotLangGraphRunner:
             patch["nl2sql_error_code"] = outcome.nl2sql_error_code
             patch["terminate_reason"] = outcome.terminate_reason
         return patch
+
+    async def _node_hybrid_acquire(self, state: ChatbotGraphState) -> ChatbotGraphState:
+        """并行 NL2SQL + RAG 臂，为 Hybrid 综合准备证据；RAG 侧简化（不做 C-RAG 重试）。"""
+        q = str(state.get("query") or "")
+
+        async def _rag_arm() -> ChatbotGraphState:
+            m = self._merge_graph_state
+            s = m(state, await self._node_select_rag_engine(state))
+            s = m(s, await self._node_rag_scope_resolve(s))
+            s = m(s, await self._node_kb_retrieve(s))
+            return {
+                "used_rag": bool(s.get("used_rag")),
+                "context_snippets": list(s.get("context_snippets") or []),
+                "rag_citations": list(s.get("rag_citations") or []),
+                "retrieval_score": float(s.get("retrieval_score") or 0.0),
+                "retrieval_attempts": int(s.get("retrieval_attempts") or 0),
+                "rag_engine": s.get("rag_engine"),
+                "rag_namespace": s.get("rag_namespace"),
+                "rag_scope_reason": str(s.get("rag_scope_reason") or ""),
+                "rag_scope_fallback": bool(s.get("rag_scope_fallback")),
+                "rag_query_boost": s.get("rag_query_boost"),
+                "anaphora_type": s.get("anaphora_type"),
+                "anaphora_rule_type": s.get("anaphora_rule_type"),
+                "anaphora_confidence": s.get("anaphora_confidence"),
+                "anaphora_score_gap": s.get("anaphora_score_gap"),
+                "anaphora_source": s.get("anaphora_source"),
+                "anaphora_slot_bullets": list(s.get("anaphora_slot_bullets") or []),
+                "status": s.get("status"),
+            }
+
+        outcome, rag_patch = await asyncio.gather(
+            run_chatbot_nl2sql_query(
+                self._nl2sql,
+                self._llm,
+                user_id=state["user_id"],
+                session_id=state["session_id"],
+                question=q,
+                defer_analysis_stream=False,
+            ),
+            _rag_arm(),
+        )
+
+        snippets = list(rag_patch.get("context_snippets") or [])
+        rag_ok = len(snippets) > 0
+        enable_rag = bool(state.get("enable_rag", True))
+        nl2sql_fail = bool(outcome.gen_failed or outcome.nl2sql_failed)
+        nl2sql_ok = not nl2sql_fail
+
+        if nl2sql_ok and rag_ok:
+            hybrid_degraded = ""
+        elif nl2sql_fail and rag_ok:
+            hybrid_degraded = "nl2sql"
+        elif nl2sql_ok and enable_rag and not rag_ok:
+            hybrid_degraded = "rag"
+        else:
+            hybrid_degraded = "both"
+
+        patch: ChatbotGraphState = {
+            "used_nl2sql": True,
+            "nl2sql_sql": outcome.nl2sql_sql or "",
+            "nl2sql_analysis": outcome.nl2sql_analysis,
+            "nl2sql_analysis_stream_plan": None,
+            "hybrid_degraded": hybrid_degraded,
+            **rag_patch,
+        }
+        if outcome.gen_failed:
+            patch["nl2sql_failed"] = True
+            patch["terminate_reason"] = outcome.terminate_reason or "nl2sql_gen_failed"
+        elif outcome.nl2sql_failed:
+            patch["nl2sql_failed"] = True
+            patch["nl2sql_error_code"] = outcome.nl2sql_error_code
+            patch["terminate_reason"] = outcome.terminate_reason
+
+        if nl2sql_ok and not rag_ok:
+            patch["answer_text"] = outcome.answer_text
+        elif nl2sql_fail and rag_ok:
+            patch["answer_text"] = ""
+        elif nl2sql_ok and rag_ok:
+            patch["answer_text"] = outcome.answer_text
+        elif not nl2sql_ok and not rag_ok:
+            patch["answer_text"] = (
+                "抱歉，当前既未能完成数据查询，也未能从知识库检索到可用内容，请稍后再试或换一种问法。"
+            )
+            patch["terminate_reason"] = patch.get("terminate_reason") or "hybrid_both_failed"
+        return patch
+
+    async def _node_hybrid_synthesize(self, state: ChatbotGraphState) -> ChatbotGraphState:
+        snippets = list(state.get("context_snippets") or [])
+        rag_ok = len(snippets) > 0 and bool(state.get("used_rag"))
+        nl2sql_ok = bool(state.get("used_nl2sql")) and not bool(state.get("nl2sql_failed"))
+        answer_text = (state.get("answer_text") or "").strip()
+
+        if nl2sql_ok and not rag_ok:
+            return {"llm_messages": [], "used_rag": False, "answer_text": answer_text}
+
+        if rag_ok and not nl2sql_ok:
+            return await self._node_kb_build_messages(state)
+
+        if nl2sql_ok and rag_ok:
+            nl2sql_block = answer_text
+            if len(nl2sql_block) > 4000:
+                nl2sql_block = nl2sql_block[:3990] + "\n…(truncated)"
+            rag_block = format_rag_snippets_system_block(snippets)
+            synth_block = (
+                "【综合回答要求】请结合下方「查数结果」与「知识库摘录」作答："
+                "数值与列表以查数结果为准，机理/标准/处置以知识库为准，禁止臆造表中不存在的数据。\n"
+                f"【查数结果】\n{nl2sql_block}\n"
+                f"【知识库摘录】\n{rag_block}"
+            )
+            system_chunks: List[str] = []
+            sp = str(state.get("system_prompt") or "").strip()
+            if sp:
+                system_chunks.append(sp)
+            system_chunks.append(synth_block)
+            query = str(state.get("query") or "")
+            image_urls = [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()]
+            hist = list(state.get("history_messages") or []) if state.get("enable_context", True) else []
+
+            def build_messages(h: List[Dict[str, Any]], _snippets: List[str]) -> List[Dict[str, Any]]:
+                return assemble_chatbot_llm_messages(
+                    system_chunks=system_chunks,
+                    history=h,
+                    query=query,
+                    image_urls=image_urls,
+                )
+
+            build_result = trim_history_and_build_chatbot_messages(
+                hist,
+                build_messages=build_messages,
+                rag_snippets=[],
+                context_total_tokens=self._llm_context_total_tokens,
+                requested_max_tokens=self._main_llm_max_tokens,
+                slack_tokens=self._llm_completion_slack_tokens,
+                trim_enabled=self._history_trim_enabled and bool(hist),
+                min_keep=self._history_trim_min_keep,
+            )
+            return {
+                "llm_messages": build_result.messages,
+                "llm_max_tokens": build_result.max_tokens,
+                "history_trim_dropped": build_result.history_dropped,
+                "used_rag": True,
+                "used_nl2sql": True,
+                "answer_text": "",
+            }
+
+        if not (state.get("answer_text") or "").strip():
+            return {
+                "answer_text": (
+                    "抱歉，当前既未能完成数据查询，也未能从知识库检索到可用内容，请稍后再试或换一种问法。"
+                ),
+                "llm_messages": [],
+                "terminate_reason": state.get("terminate_reason") or "hybrid_both_failed",
+            }
+        return {"llm_messages": [], "used_rag": False}
 
     async def _emit_nl2sql_analysis_stream(
         self,
@@ -1318,6 +1482,8 @@ class ChatbotLangGraphRunner:
             route = "clarify"
         elif label == "data_query":
             route = "data_query"
+        elif label == "hybrid_qa":
+            route = "hybrid_qa"
         elif label == "unsafe":
             route = "unsafe"
         elif label == "handoff_human":
@@ -1679,8 +1845,10 @@ class ChatbotLangGraphRunner:
         if not self._suggested_questions_enabled:
             state["suggested_questions"] = []
             return
-        # 数据查询（NL2SQL）不在 meta 中下发关联问句，也不调用推荐问 LLM。
-        if state.get("used_nl2sql") or state.get("intent_label") == "data_query":
+        # 纯查数不推关联问；Hybrid（查数+知识）允许下发
+        if state.get("intent_label") == "data_query" or (
+            state.get("used_nl2sql") and state.get("intent_label") != "hybrid_qa"
+        ):
             state["suggested_questions"] = []
             return
         sq = await build_suggested_questions(
@@ -1698,7 +1866,13 @@ class ChatbotLangGraphRunner:
         # 1) SSE 最后一帧给前端；
         # 2) LangSmith outputs 聚合。
         # 字段名应尽量保持稳定，避免下游解析兼容性问题。
-        is_data_query = bool(state.get("used_nl2sql")) or state.get("intent_label") == "data_query"
+        # 纯查数不展示 citations / 关联问；Hybrid 双臂成功时保留 RAG 侧引用与关联问
+        is_hybrid = state.get("intent_label") == "hybrid_qa" or (
+            bool(state.get("used_nl2sql")) and bool(state.get("used_rag"))
+        )
+        is_data_query = (
+            bool(state.get("used_nl2sql")) or state.get("intent_label") == "data_query"
+        ) and not is_hybrid
         suggested = [] if is_data_query else list(state.get("suggested_questions") or [])
         citations = (
             []
@@ -1741,6 +1915,7 @@ class ChatbotLangGraphRunner:
             "nl2sql_analysis": (state.get("nl2sql_analysis") if used_nl2sql else None),
             "suggested_questions": suggested,
             "rag_citations": citations,
+            "hybrid_degraded": state.get("hybrid_degraded") or None,
             "processed_image_urls": [u for u in (state.get("image_urls") or []) if isinstance(u, str) and u.strip()],
             "original_image_urls": [u for u in (state.get("original_image_urls") or []) if isinstance(u, str) and u.strip()],
             "stream_id": stream_id,

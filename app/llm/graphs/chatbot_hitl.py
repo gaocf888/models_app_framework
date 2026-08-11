@@ -13,6 +13,7 @@ from app.llm.graphs.chatbot_hitl_display import (
     ACTION_PICK_DISAMBIGUATION_OPTION,
     ACTION_ROUTE_CLARIFY,
     ACTION_ROUTE_DATA_QUERY,
+    ACTION_ROUTE_HYBRID,
     ACTION_ROUTE_KB_QA,
     HITL_KIND_INTENT_DISAMBIGUATION,
     HITL_KIND_INTENT_ROUTE,
@@ -48,7 +49,11 @@ def nl2sql_hitl_enabled() -> bool:
 
 
 def should_trigger_intent_hitl(state: dict[str, Any]) -> bool:
-    """窄触发：边界意图才弹确认；已有 confirmed_route 或规则 clarify 不触发。"""
+    """窄触发：边界意图才弹确认；已有 confirmed_route 或规则 clarify 不触发。
+
+    清晰混合（label=hybrid_qa，规则 mixed_hybrid / 足够置信）直走 Hybrid，不弹意图 HITL。
+    HITL 留给真模糊（低置信、歧义、短句等）；首次确认按钮含「综合查数+知识」。
+    """
     if not intent_hitl_enabled():
         return False
     if state.get("confirmed_route"):
@@ -75,6 +80,18 @@ def should_trigger_intent_hitl(state: dict[str, Any]) -> bool:
     conf = float(state.get("intent_confidence") or 0.0)
     min_conf = float(_cfg().intent_hitl_min_confidence)
 
+    # 场景 B：清晰强混合 → Hybrid 直答，HITL 留给真模糊
+    if label == "hybrid_qa":
+        reason_l = reason.lower()
+        clear_hybrid = (
+            reason_l == "mixed_hybrid"
+            or reason_l.endswith("mixed_hybrid")
+            or "|mixed_hybrid" in reason_l
+            or conf >= max(min_conf, 0.70)
+        )
+        if clear_hybrid:
+            return False
+
     if conf >= 0.78 and reason == "structured_query_heuristic":
         return False
     if conf >= 0.80 and reason == "conceptual_qa_heuristic":
@@ -84,7 +101,8 @@ def should_trigger_intent_hitl(state: dict[str, Any]) -> bool:
 
     if conf < min_conf:
         return True
-    if "mixed_" in reason:
+    # mixed_hybrid 已在上方按 hybrid_qa 跳过；其它 mixed_*（历史/LLM）仍可弹 HITL
+    if "mixed_" in reason and "mixed_hybrid" not in reason:
         return True
     if "ambiguous_" in reason:
         return True
@@ -215,6 +233,11 @@ def apply_chatbot_hitl_action(
         out["intent_label"] = "kb_qa"
         if refined:
             out["query"] = refined
+    elif action == ACTION_ROUTE_HYBRID:
+        out["confirmed_route"] = "hybrid_qa"
+        out["intent_label"] = "hybrid_qa"
+        if refined:
+            out["query"] = refined
     elif action == ACTION_ROUTE_CLARIFY:
         if not refined:
             raise ChatbotHitlValidationError("refined_query is required for route_clarify")
@@ -231,7 +254,7 @@ def apply_chatbot_hitl_action(
         opt = options[disambiguation_index] if isinstance(options[disambiguation_index], dict) else {}
         opt_query = str(opt.get("query") or "").strip()
         route_hint = str(opt.get("route_hint") or "").strip().lower()
-        if not opt_query or route_hint not in {"data_query", "kb_qa"}:
+        if not opt_query or route_hint not in {"data_query", "kb_qa", "hybrid_qa"}:
             raise ChatbotHitlValidationError("disambiguation option missing query/route_hint")
         out["query"] = opt_query
         out["confirmed_route"] = route_hint

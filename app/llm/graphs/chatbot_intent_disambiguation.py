@@ -14,16 +14,18 @@ logger = get_logger(__name__)
 
 _FALLBACK_SYSTEM = """你是电厂锅炉领域的智能客服助手。用户问题一次问了多件事、边界不清。请只输出一个 JSON 对象，不要 Markdown。
 格式：
-{"analysis":"一两句对用户说的话","options":[{"title":"短标题","query":"完整可执行问句","route_hint":"data_query|kb_qa"}]}
+{"analysis":"一两句对用户说的话","options":[{"title":"短标题","query":"完整可执行问句","route_hint":"data_query|kb_qa|hybrid_qa"}]}
 硬性要求：
 1) analysis 必须像客服当面回复：用「您」，1～2 句；说明「问题里不止一块、怕答偏了、想先对齐」；
    禁止「用户询问」「明确意图」「系统」「结构化查数」等旁白/诊断腔；
+   不要在 analysis 里罗列选项，也不要写「请点击按钮」；
 2) options 必须恰好 3 条；
 3) 至少 1 条 route_hint=data_query（偏查实时/台账数据），至少 1 条 route_hint=kb_qa（偏知识库说明）；
-4) query 具体可执行，一条 ideally 只问一件事，不要简单复述用户原话；title 尽量短（不超过 16 字）；
-5) route_hint 只能是 data_query 或 kb_qa。"""
+   建议第 3 条为 route_hint=hybrid_qa（综合查数+知识，问句可保留原问题的综合诉求）；
+4) query 具体可执行；拆开路线 ideally 只问一件事，hybrid 可保留「查数+解释」；title 尽量短（不超过 16 字）；
+5) route_hint 只能是 data_query、kb_qa 或 hybrid_qa。"""
 
-_ROUTE_HINTS = frozenset({"data_query", "kb_qa"})
+_ROUTE_HINTS = frozenset({"data_query", "kb_qa", "hybrid_qa"})
 
 
 def intent_disambiguation_enabled() -> bool:
@@ -90,18 +92,20 @@ def _normalize_option(item: Any) -> dict[str, str] | None:
 
 
 def _options_cover_both_routes(options: list[dict[str, str]]) -> bool:
+    """至少覆盖拆开查数 + 拆开知识；综合 hybrid 为可选项（策略 D）。"""
     routes = {o["route_hint"] for o in options}
     return "data_query" in routes and "kb_qa" in routes
 
 
 def build_fallback_disambiguation(*, query: str) -> dict[str, Any]:
-    """规则兜底：查数版 / 知识版 / 混合偏知识。"""
+    """规则兜底：拆开查数 / 拆开知识 / 可选综合。"""
     q = (query or "").strip() or "用户问题"
     base = q.rstrip("？?。.!！")
     return {
         "analysis": (
             "您这个问题里，既像在查相关数据，也像在问原因或说明。"
-            "我怕一次答偏了，想先跟您对齐一下想先解决哪一块。"
+            "我怕一次答偏了，想先跟您对齐一下想先解决哪一块；"
+            "若您本来就想一起查数并结合知识说明，也可以选综合。"
         ),
         "options": [
             {
@@ -115,9 +119,9 @@ def build_fallback_disambiguation(*, query: str) -> dict[str, Any]:
                 "route_hint": "kb_qa",
             },
             {
-                "title": "查规范与处理建议",
-                "query": f"关于「{base}」，有哪些相关标准、规程或处理建议？",
-                "route_hint": "kb_qa",
+                "title": "综合查数+知识",
+                "query": f"{base}（请先查相关数据，再结合规程/知识说明原因或处置建议）",
+                "route_hint": "hybrid_qa",
             },
         ],
         "source": "fallback_rules",

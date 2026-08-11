@@ -4,6 +4,7 @@
 与 LangGraph `intent_classify` 节点配合使用：
 - `data_query`：倾向结构化台账/检修/缺陷等，走 NL2SQL；
 - `kb_qa`：概念、机理、标准解读、故障原因等，走向量 RAG；
+- `hybrid_qa`：同时需要查数与文档机理/处置的综合问答；
 - `clarify`：过短或指代不清。
 
 说明：规则可解释、低成本；后续可在此模块旁挂 LLM 分类器，保持 label 兼容即可。
@@ -49,6 +50,11 @@ _CONCEPTUAL_MARKERS = (
     "经验",
     "论文",
     "参考",
+    "规程",
+    "如何处置",
+    "如何处理",
+    "怎么处理",
+    "怎么处置",
 )
 
 # 偏「查数/列表/记录」→ NL2SQL（需业务库已接入）
@@ -325,7 +331,7 @@ def classify_chatbot_intent_by_rules(
     history_messages: List[Dict[str, Any]] | None = None,
 ) -> IntentRuleResult:
     """
-    intent_label ∈ {clarify, data_query, kb_qa}
+    intent_label ∈ {clarify, data_query, kb_qa, hybrid_qa}
 
     history_messages：最近若干轮会话（与 load_history 同源）；用于短句/指代消解与路由，
     不改变「查库 vs 文档」的主启发式，仅在边界场景结合摘要与前一轮任务类型。
@@ -354,10 +360,8 @@ def classify_chatbot_intent_by_rules(
     if conceptual and not data:
         return _out("kb_qa", "conceptual_qa_heuristic", 0.82)
     if data and conceptual:
-        # 同时命中时：更偏「解释/原因」的仍走文档
-        if any(x in q for x in ("为什么", "原因", "机理", "原理", "如何形成", "如何预防")):
-            return _out("kb_qa", "mixed_prefers_conceptual", 0.72)
-        return _out("data_query", "mixed_prefers_structured", 0.7)
+        # 同时命中查数 + 概念/机理：走 Hybrid 双臂综合（不再二选一）
+        return _out("hybrid_qa", "mixed_hybrid", 0.75)
 
     return _out("kb_qa", "default_kb_qa", 0.82)
 

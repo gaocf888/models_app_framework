@@ -51,6 +51,18 @@ def test_how_much_without_ops_context_stays_kb():
         assert r.intent_reason in {"default_kb_qa", "conceptual_qa_heuristic"}, (q, r.intent_reason)
 
 
+def test_mixed_hybrid():
+    """同时命中查数 + 概念/机理 → hybrid_qa，不再二选一。"""
+    r = classify_chatbot_intent_by_rules(
+        "查出超温点列表并结合规程说明如何处置",
+        enable_nl2sql_route=True,
+        image_urls=[],
+    )
+    assert r.intent_label == "hybrid_qa"
+    assert r.intent_reason == "mixed_hybrid"
+    assert r.intent_confidence >= 0.7
+
+
 def test_images_force_kb():
     r = classify_chatbot_intent_by_rules(
         "统计缺陷数量",

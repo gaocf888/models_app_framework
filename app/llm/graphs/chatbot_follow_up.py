@@ -115,7 +115,7 @@ async def build_suggested_questions(
             seen.add(x)
             uniq.append(x)
 
-    need_llm = intent_label in {"kb_qa", "data_query"} and len(uniq) < max_total
+    need_llm = intent_label in {"kb_qa", "data_query", "hybrid_qa"} and len(uniq) < max_total
     if need_llm:
         ans_excerpt = (answer or "").strip()[:1200]
         sys_msg = (

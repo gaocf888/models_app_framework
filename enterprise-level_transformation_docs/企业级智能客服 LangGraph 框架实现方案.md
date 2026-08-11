@@ -3,7 +3,7 @@
 ## 1. 目标与范围
 
 - 目标：将当前智能客服后端编排升级为 LangGraph，实现可扩展、可观测、可回滚的企业级工作流。
-- 范围：覆盖 `chatbot` 场景的流式主链路（SSE），兼容现有提示词模板策略、RAG 检索与会话管理；可选扩展 **相似事故案例**（限定 namespace RAG，见 **第 14 节**）。
+- 范围：覆盖 `chatbot` 场景的流式主链路（SSE），兼容现有提示词模板策略、RAG 检索与会话管理；主意图含 **`kb_qa` / `clarify` / `data_query` / `hybrid_qa`**；可选扩展 **相似事故案例**（限定 namespace RAG，见 **第 14 节**）；可选 **意图/NL2SQL HITL**（见 **第 17 节**）。
 - 保留：现有 `ConversationManager`（会话历史）与 `VLLMHttpClient`（模型调用）不替换，只调整编排层。
 - 不在本期：接口层统一鉴权绑定（后续在网关/接口层处理）。
 
@@ -11,7 +11,7 @@
 
 - 编排与执行分离：LangGraph 负责状态流转，LLM/RAG/会话仍用现有服务。
 - 兼容优先：请求/响应协议尽量不变，支持灰度发布与一键回退。
-- **结构先行**：先完整建图（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；意图后端支持 **`rules | llm | bert`**（默认 `rules`，`llm` 为模式 B 窄触发，见 `docs/智能客服意图识别轻量LLM接入说明.md`）。结束 `meta` 含 **`suggested_questions`**（`kb_qa`/`clarify` 路径；**`data_query` 流式不下发**，见 §4.3）、**`rag_citations`**（RAG 路径结构化引用，见 §4.5）等；关联问题生成规则为规则预设表 + 复用本轮 `context_snippets` 首行种子 + 可选 LLM JSON 补全，**不为关联问题单独做二次向量检索**。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**高分 FAQ 软直通**见 **§4.4**。**本厂专属知识库 RAG 范围（`rag_scope_resolve`）**见 **第 16 节**。**上下文指代消解（P0～P3）**见 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。**意图确认 / 二次消歧 / NL2SQL 生成失败人机协同（HITL）**见 **第 17 节** 与 `framework-guide/智能客服整体实现技术说明.md` **§12**。
+- **结构先行**：先完整建图（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL）**、**`hybrid_qa`（并行 NL2SQL + RAG 综合，见 §4.7）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；意图后端支持 **`rules | llm | bert`**（默认 `rules`，`llm` 为模式 B 窄触发，见 `docs/智能客服意图识别轻量LLM接入说明.md`）。结束 `meta` 含 **`suggested_questions`**（`kb_qa`/`clarify`/`hybrid_qa` 路径；**纯 `data_query` 流式不下发**，见 §4.3）、**`rag_citations`**（RAG / Hybrid 双臂成功路径，见 §4.5）、**`hybrid_degraded`**（Hybrid 单臂降级，见 §4.7）等；关联问题生成规则为规则预设表 + 复用本轮 `context_snippets` 首行种子 + 可选 LLM JSON 补全，**不为关联问题单独做二次向量检索**。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**高分 FAQ 软直通**见 **§4.4**。**本厂专属知识库 RAG 范围（`rag_scope_resolve`）**见 **第 16 节**。**上下文指代消解（P0～P3）**见 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。**意图确认 / 二次消歧 / NL2SQL 生成失败人机协同（HITL）**见 **第 17 节**（清晰混合直走 Hybrid，HITL 留给真模糊）与 `framework-guide/智能客服整体实现技术说明.md` **§12**；方案摘要见 `docs/智能客服Hybrid意图改造方案.md`。
 - 可观测优先：接入 LangSmith，节点级记录耗时、路由、重试与失败原因。
 
 ## 3. 总体架构
@@ -69,6 +69,7 @@
               │ 意图分流（短句/指代不清 → 澄清；     │
               │ 台账统计列表等 → 结构化查库；         │
               │ 机理/标准/原因等 → 文档知识问答；     │
+              │ 既要数又要机理/处置 → 综合 Hybrid； │
               │ 带图时默认走文档侧，避免误查库）     │
               └───────────────────┬───────────────┘
                                   ▼
@@ -81,56 +82,62 @@
                                   ▼
               ┌───────────────────────────────────┐
               │（可选 HITL，见第 17 节）             │
-              │ 意图边界不清 → 查数/知识库/补充问句； │
-              │ 补充后仍模糊 → 3 条候选问法点选直路由 │
+              │ 清晰 hybrid_qa → 跳过，直走 D；     │
+              │ 真模糊 → 查数/知识/综合/补充问句； │
+              │ 补充后仍模糊 → 拆开+可选综合点选   │
               └───────────────────┬───────────────┘
                                   ▼
-              ┌─────────┬─────────┬─────────┐
-              │    A    │    B    │    C    │
-              │  澄清   │结构化查库│文档知识 │
-              └────┬────┴────┬────┴────┬────┘
-                   │         │         │
-     ┌─────────────┘         │         └──────────────────────────┐
-     ▼                       ▼                                    ▼
-┌──────────┐        ┌──────────────┐              ┌────────────────────────┐
-│固定澄清话│        │NL2SQL 链+执行 │              │select_rag→rag_scope_   │
-│术        │        │→nl2sql_answer│              │resolve→kb_retrieve     │
-│          │        │总结自然语言  │              │→C-RAG→kb_build_messages│
-│          │        │（无主链路RAG）│              │（含 FAQ 软直通 §4.4）  │
-└────┬─────┘        └──────┬───────┘                          ▼
-     │                     │                   ┌────────────────────────┐
-     │              ┌──────┴───────┐           │VLLM 流式主答（Runner）  │
-     │              │（可选 HITL）  │           └───────────┬────────────┘
-     │              │SQL 生成失败 → │                       ▼
-     │              │重试查数/改知识│           ┌────────────────────────┐
-     │              └──────┬───────┘           │（条件）相似案例 delta   │
-     │                     │                   │intent=data_query 跳过   │
-     │                     │                   └───────────┬────────────┘
-     │                     │                               │
-     └─────────────────────┴───────────────────────────────┘
+              ┌─────────┬─────────┬─────────┬─────────┐
+              │    A    │    B    │    C    │    D    │
+              │  澄清   │结构化查库│文档知识 │综合Hybrid│
+              └────┬────┴────┬────┴────┬────┴────┬────┘
+                   │         │         │         │
+     ┌─────────────┘         │         │         └──────────────┐
+     ▼                       ▼         ▼                        ▼
+┌──────────┐        ┌──────────────┐ ┌────────────────┐ ┌──────────────────┐
+│固定澄清话│        │NL2SQL 链+执行 │ │select_rag→     │ │并行 NL2SQL + RAG │
+│术        │        │→nl2sql_answer│ │rag_scope→      │ │→hybrid_synthesize│
+│          │        │总结自然语言  │ │kb_retrieve→    │ │（双源综合 prompt）│
+│          │        │（无主链路RAG）│ │C-RAG→build     │ │单臂失败可降级    │
+└────┬─────┘        └──────┬───────┘ │（FAQ §4.4）    │ └────────┬─────────┘
+     │                     │         └───────┬────────┘          │
+     │              ┌──────┴───────┐         │                   │
+     │              │（可选 HITL）  │         ▼                   ▼
+     │              │SQL 生成失败 → │ ┌────────────────┐ ┌────────────────┐
+     │              │重试查数/改知识│ │VLLM 流式主答    │ │流式主答或降级   │
+     │              └──────┬───────┘ │（Runner）       │ │固定话术         │
+     │                     │         └───────┬────────┘ └────────┬───────┘
+     │                     │                 ▼                   │
+     │                     │         ┌────────────────┐          │
+     │                     │         │（条件）相似案例 │◄─────────┘
+     │                     │         │A/B 跳过；C/D可加│
+     │                     │         └───────┬────────┘
+     └─────────────────────┴─────────────────┘
                                   ▼
               ┌───────────────────────────────────┐
               │ 生成「关联推荐问」（规则表 + 本轮   │
               │ 已召回片段首行种子 + 可选 LLM；    │
-              │ **B 查库路径不下发**；细节见      │
-              │ framework-guide §7）              │
+              │ **纯 B 查库路径不下发**；C/D 可下发│
+              │ 细节见 framework-guide §7）        │
               └───────────────────┬───────────────┘
                                   ▼
               ┌───────────────────────────────────┐
               │【结束】落库用户与助手全文；         │
               │ SSE/JSON 结束帧 meta：意图、used_rag、│
-              │ used_nl2sql、rag_citations、推荐问等  │
+              │ used_nl2sql、hybrid_degraded、      │
+              │ rag_citations、推荐问等             │
               └───────────────────────────────────┘
 ```
 
 补充说明（业务口径）：
 
-- **Legacy（关图或图异常回退）**：`chatbot_service._stream_chat_legacy_events` 对齐同一套 **意图三分支 + 关联问题 + 默认提示词**；与 Graph 差异主要在是否走 `StateGraph` 与 C-RAG 图节点，产品行为应对齐验收（**流式** `data_query` 与 Graph 一致，**不下发** `suggested_questions`）。**HITL 以 Graph 顺序执行路径为准**，Legacy 不以本 HITL 中断语义对齐。
-- **人机协同（可选）**：`CHATBOT_HITL_ENABLED=true` 时，意图边界可确认/二次消歧，查库 SQL 生成失败可重试或改 RAG；中断后经 `/chat/resume-stream` 续跑（**第 17 节**）。
-- **安全拒答、转人工、闲聊**：图内占位，**默认意图不产出**，主流量为 **澄清 / 查库 / 文档问答**。
-- **相似案例**：仅 **C 路径**且非澄清、且门控命中时，在主答流式结束后追加；**B 查库路径不追加**（见 `chatbot_graph_runner._should_append_similar_cases`）。
-- **关联问题**：**不为关联问题单独再做向量检索**；**`data_query` 流式路径不生成、不下发**；详见 `framework-guide/智能客服整体实现技术说明.md` **§7**。
-- **RAG 引用**：`kb_qa` 路径在流式输出中可下发 `citation_ref` 事件，结束帧含 `rag_citations`（见 **§4.5**）。
+- **Legacy（关图或图异常回退）**：`chatbot_service._stream_chat_legacy_events` 对齐 **意图分支 + 关联问题 + 默认提示词**（含 Hybrid 时与 Graph 对齐验收）；与 Graph 差异主要在是否走 `StateGraph` 与 C-RAG 图节点（**流式**纯 `data_query` **不下发** `suggested_questions`）。**HITL 以 Graph 顺序执行路径为准**，Legacy 不以本 HITL 中断语义对齐。
+- **人机协同（可选）**：`CHATBOT_HITL_ENABLED=true` 时，**真模糊**可确认/二次消歧（含「综合查数+知识」），清晰混合直走 Hybrid；查库 SQL 生成失败可重试或改 RAG；中断后经 `/chat/resume-stream` 续跑（**第 17 节**）。
+- **安全拒答、转人工、闲聊**：图内占位，**默认意图不产出**，主流量为 **澄清 / 查库 / 文档问答 / 综合 Hybrid**。
+- **相似案例**：仅 **C / D** 且非澄清、且门控命中时，在主答流式结束后追加；**A/B 不追加**（见 `chatbot_graph_runner._should_append_similar_cases`）。
+- **关联问题**：**不为关联问题单独再做向量检索**；**纯 `data_query` 流式路径不生成、不下发**；**`hybrid_qa` 允许下发**；详见 `framework-guide/智能客服整体实现技术说明.md` **§7**。
+- **RAG 引用**：`kb_qa` / **`hybrid_qa`（双臂成功）** 路径在流式输出中可下发 `citation_ref` 事件，结束帧含 `rag_citations`（见 **§4.5**）。
+- **Hybrid 综合**：**D** 并行查数 + 文档召回后综合；单臂失败可降级，`meta.hybrid_degraded` 标明（见 **§4.7**）。
 
 ---
 
@@ -144,7 +151,7 @@ flowchart TB
     C[客户端] --> API["api/chatbot.py\n/chat/stream SSE"]
     API --> SVC["chatbot_service.py\nstream_chat_events"]
     SVC --> G0{CHATBOT_GRAPH_ENABLED}
-    G0 -->|false| LEG["chatbot_service.py\n_stream_chat_legacy_events\n意图三分支+NL2SQL+RAG+follow_up"]
+    G0 -->|false| LEG["chatbot_service.py\n_stream_chat_legacy_events\nA/B/C/D+NL2SQL+RAG+follow_up"]
     G0 -->|true| RUN["chatbot_graph_runner.py\nrun_stream_events"]
     RUN -->|异常且 FALLBACK_LEGACY| LEG
   end
@@ -153,17 +160,19 @@ flowchart TB
     RUN --> RG["_run_graph / _run_graph_sequential\n（HITL 开启时顺序可中断）"]
     RG --> N1["N: load_prompt_template\nregistry+CHATBOT_PROMPT_DEFAULT_VERSION"]
     N1 --> N2["N: load_history\nConversationManager"]
-    N2 --> N3["N: intent_classify\nclassify_chatbot_intent_async\n(rules|llm|bert)"]
+    N2 --> N3["N: intent_classify\nclassify_chatbot_intent_async\n(rules|llm|bert)\n→ clarify|data_query|kb_qa|hybrid_qa"]
     N3 --> FG["N: fault_case_gate\nchatbot_similar_cases.run_fault_case_gate_decision"]
-    FG --> IH{"意图 HITL?\nshould_trigger_intent_hitl\n§17"}
-    IH -->|yes| HP1["pending_hitl\nintent_route_confirm\n→ resume-stream"]
-    IH -->|no| R1{"_route_by_intent"}
-    HP1 -.->|route_clarify 后仍模糊| HP1b["intent_disambiguation_suggest\n候选问法 → confirmed_route"]
-    HP1 -.->|确认路由| R1
+    FG --> IH{"意图 HITL?\n清晰 hybrid 跳过\n真模糊才弹 §17"}
+    IH -->|yes| HP1["pending_hitl\nintent_route_confirm\n四钮含 route_hybrid_qa\n→ resume-stream"]
+    IH -->|no| R1{"_route_by_intent\nA/B/C/D"}
+    HP1 -.->|route_clarify 后仍模糊| HP1b["intent_disambiguation_suggest\n拆开+可选综合 → confirmed_route"]
+    HP1 -.->|确认 data/kb/hybrid| R1
     HP1b --> R1
-    R1 -->|clarify| NC["clarify_build_response"]
-    R1 -->|data_query| NSQ["nl2sql_answer\nNL2SQLService.query record_conversation=False\n+ chatbot_nl2sql_answer.summarize_nl2sql_with_llm"]
-    R1 -->|kb_qa| N4["select_rag_engine"]
+    R1 -->|clarify A| NC["clarify_build_response"]
+    R1 -->|data_query B| NSQ["nl2sql_answer\nNL2SQLService.query record_conversation=False\n+ chatbot_nl2sql_answer.summarize_nl2sql_with_llm"]
+    R1 -->|kb_qa C| N4["select_rag_engine"]
+    R1 -->|hybrid_qa D| HA["hybrid_acquire\n并行 NL2SQL + RAG\n（无 C-RAG 重试）"]
+    HA --> HS["hybrid_synthesize\n双源 llm_messages / 单臂降级"]
     N4 --> N4b["rag_scope_resolve\nchatbot_rag_scope.resolve_rag_namespace"]
     N4b --> N5["kb_retrieve\nAgentic/Hybrid + namespace + 指代P0/P3"]
     N5 --> N6["kb_quality_check"]
@@ -180,58 +189,60 @@ flowchart TB
     HP2 -.->|retry| NSQ
     HP2 -.->|fallback| N4
     N8 --> NF
+    HS --> NF
     NF --> ENDN([END])
   end
 
   subgraph Post["③ Runner run_stream_events 图后"]
-    ENDN --> R3{"有 llm_messages ?"}
-    R3 -->|否| OUT1["yield delta=answer_text\n+ _maybe_similar_cases_extra"]
+    ENDN --> R3{"有 llm_messages ?\n（C / D 双臂成功）"}
+    R3 -->|否| OUT1["yield delta=answer_text\n+ _maybe_similar_cases_extra\n（A 澄清 / B 查库 / D 降级）"]
     R3 -->|是| STM["VLLMHttpClient.stream_chat"]
     STM --> CIT["可选 citation_ref 事件\n§4.5"]
     CIT --> OUT2["yield 增量 delta"]
-    OUT2 --> SC["_maybe_similar_cases_extra\nHybridRAG.retrieve namespace"]
-    OUT1 --> FU["_fill_suggested_questions\nchatbot_follow_up.build_suggested_questions"]
+    OUT2 --> SC["_maybe_similar_cases_extra\nHybridRAG.retrieve namespace\nA/B 跳过；C/D 可加"]
+    OUT1 --> FU["_fill_suggested_questions\nchatbot_follow_up\n纯 data_query 跳过；hybrid 可下发"]
     SC --> FU
     FU --> PD["_persist_success\nConversationManager append"]
-    PD --> SSE["yield finished\n_build_finished_meta"]
+    PD --> SSE["yield finished\n_build_finished_meta\n含 hybrid_degraded"]
     LEG --> SSE
   end
 ```
 
-**图注**：`LEG → SSE` 为简写；Legacy 在 `chatbot_service._stream_chat_legacy_events` 内顺序完成分支逻辑、可选相似案例、`build_suggested_questions` 后，再 `yield finished`（`meta` 与 Graph 路径字段对齐）。
+**图注**：`LEG → SSE` 为简写；Legacy 在 `chatbot_service._stream_chat_legacy_events` 内顺序完成分支逻辑、可选相似案例、`build_suggested_questions` 后，再 `yield finished`（`meta` 与 Graph 路径字段对齐）。**D Hybrid** 与 **意图 HITL（清晰混合跳过）** 详见 **§4.7**、**§17** 与 `docs/智能客服Hybrid意图改造方案.md`。
 
 **实现落点速查（文件 → 职责）**
 
 | 环节 | 文件 | 符号/位置（简练） |
 |------|------|-------------------|
-| HTTP/SSE / 上传 | `app/api/chatbot.py` | `chat_stream`、`upload_chatbot_image_endpoint` |
+| HTTP/SSE / 上传 | `app/api/chatbot.py` | `chat_stream`、`upload_chatbot_image_endpoint`、`resume-stream` |
 | 开关与回退 | `app/services/chatbot_service.py` | `stream_chat_events`、`_stream_chat_legacy_events` |
 | 图编译与节点 | `app/llm/graphs/chatbot_graph_runner.py` | `_build_graph`、`_node_*`、`_route_by_intent`、`_route_after_quality_check` |
-| 顺序回退（无 LangGraph） | 同上 | `_run_graph` 内手动合并节点 |
+| Hybrid 综合 | 同上 | `_node_hybrid_acquire`、`_node_hybrid_synthesize` |
+| 顺序回退（无 LangGraph） | 同上 | `_run_graph` 内手动合并节点；HITL 时 `_run_graph_sequential` |
 | 意图分类 | `app/llm/graphs/chatbot_intent.py` | `classify_chatbot_intent_async`（`CHATBOT_INTENT_BACKEND=rules\|llm\|bert`） |
-| 意图规则 | `app/llm/graphs/chatbot_intent_rules.py` | `classify_chatbot_intent_by_rules` |
+| 意图规则 | `app/llm/graphs/chatbot_intent_rules.py` | `classify_chatbot_intent_by_rules`（含 `mixed_hybrid` → `hybrid_qa`） |
 | 意图轻量 LLM | `app/llm/graphs/chatbot_intent_llm.py` | 模式 B 窄触发（见 `docs/智能客服意图识别轻量LLM接入说明.md`） |
 | 意图 BERT | `app/llm/graphs/chatbot_intent_bert.py` | `classify_chatbot_intent_by_bert`（须已微调序列分类模型） |
-| HITL 策略/话术/会话 | `chatbot_hitl.py` / `chatbot_hitl_display.py` / `chatbot_hitl_session_store.py` | 意图确认、消歧、NL2SQL 失败（**第 17 节**） |
-| 意图二次消歧 | `app/llm/graphs/chatbot_intent_disambiguation.py` | LLM + 规则兜底 → `intent_disambiguation_suggest` |
+| HITL 策略/话术/会话 | `chatbot_hitl.py` / `chatbot_hitl_display.py` / `chatbot_hitl_session_store.py` | 意图确认（含 `route_hybrid_qa`）、消歧、NL2SQL 失败（**第 17 节**） |
+| 意图二次消歧 | `app/llm/graphs/chatbot_intent_disambiguation.py` | LLM + 规则兜底 → `data_query`/`kb_qa`/`hybrid_qa` |
 | FAQ 软直通 | `app/llm/graphs/chatbot_faq_soft_direct.py` | `evaluate_faq_soft_direct`（见 **§4.4**） |
 | RAG 引用 | `app/llm/graphs/chatbot_rag_citations.py` | `chunks_to_rag_context`、`filter_rag_citation_dicts` |
 | 引用流式解析 | `app/llm/graphs/chatbot_citation_stream.py` | `CitationStreamParser`、`citation_ref` 事件 |
-| 状态字段 | `app/llm/graphs/chatbot_graph_state.py` | `ChatbotGraphState` |
+| 状态字段 | `app/llm/graphs/chatbot_graph_state.py` | `ChatbotGraphState`（含 `hybrid_qa`、`hybrid_degraded`） |
 | 相似案例门控/检索 | `app/llm/graphs/chatbot_similar_cases.py` | `run_fault_case_gate_decision`、`retrieve_similar_case_snippets` |
 | NL2SQL 服务 | `app/services/nl2sql_service.py` | `query(..., record_conversation=)` |
-| SQL 结果成文 | `app/llm/graphs/chatbot_nl2sql_answer.py` | `summarize_nl2sql_with_llm` |
+| SQL 结果成文 | `app/llm/graphs/chatbot_nl2sql_answer.py` | `run_chatbot_nl2sql_query`、`summarize_nl2sql_with_llm` |
 | 关联问题 | `app/llm/graphs/chatbot_follow_up.py` | `build_suggested_questions` |
 | 指代消解（P0～P3） | `chatbot_retrieval_query.py`、`chatbot_anaphora_*.py`、`chatbot_dialogue_anchor.py` | 见 **第 15 节** |
-| 提示词 | `app/llm/prompt_registry.py` + `configs/prompts.yaml` | `get_template(..., default_version=)` |
+| 提示词 | `app/llm/prompt_registry.py` + `configs/prompts.yaml` | `get_template(..., default_version=)`；消歧 scene 含 `hybrid_qa` |
 
 说明（与代码一致）：
 
-- **`fault_case_gate`**：见 **第 14 节**；`intent=data_query` 时 Runner **不**追加相似案例（`_should_append_similar_cases`）。
-- **`_route_by_intent`**：`clarify` → 澄清；`data_query` → `nl2sql_answer`；`kb_qa` → RAG 链；**unsafe / handoff / smalltalk** 图内有边，**默认意图不产出**，虚线为预留。开启 HITL 时，路由前可中断意图确认/消歧；`nl2sql_answer` 生成失败可中断（**第 17 节**）。
-- **`enable_rag=false`**：`kb_retrieve` 空结果，质量路由通常直 **`build`**，C-RAG 不重试。
+- **`fault_case_gate`**：见 **第 14 节**；**A/B** 路径 Runner **不**追加相似案例（`_should_append_similar_cases`）；**C/D** 可追加。
+- **`_route_by_intent`**：**A** `clarify`；**B** `data_query` → `nl2sql_answer`；**C** `kb_qa` → RAG 链；**D** `hybrid_qa` → `hybrid_acquire` → `hybrid_synthesize`；**unsafe / handoff / smalltalk** 图内有边，**默认意图不产出**。开启 HITL 时，清晰 `hybrid_qa` **跳过**意图确认；真模糊可中断；`nl2sql_answer` 生成失败可中断（**第 17 节**）。
+- **`enable_rag=false`**：`kb_retrieve` 空结果，质量路由通常直 **`build`**，C-RAG 不重试；Hybrid RAG 臂亦可能空 → `hybrid_degraded=rag`。
 - **澄清**：`intent=clarify` 或检索用尽转澄清时，无流式主答或仅 `answer_text`；不追加相似案例。
-- **Legacy**：与 Graph 对齐 **data_query / clarify / kb_qa**、默认 `boiler_v1`；**流式** `data_query` **不下发** `suggested_questions`；`clarify`/`kb_qa` 仍走 `build_suggested_questions`；相似案例逻辑同 `chatbot_similar_cases`；**不以本 HITL 中断语义对齐**。
+- **Legacy**：与 Graph 对齐 **clarify / data_query / kb_qa / hybrid_qa**、默认 `boiler_v1`；**流式**纯 `data_query` **不下发** `suggested_questions`；`clarify`/`kb_qa`/`hybrid_qa` 仍可走 `build_suggested_questions`；**不以本 HITL 中断语义对齐**。
 
 ### 4.1 状态模型（GraphState）
 
@@ -240,11 +251,12 @@ flowchart TB
 - 请求域：`user_id`、`session_id`、`query`、`original_image_urls`、`image_urls`、`enable_rag`、`enable_context`、`enable_nl2sql_route`、`client_prompt_version`（映射请求体 `prompt_version`）、`enable_fault_vision`
 - 提示词域：`prompt_template_id`、`prompt_version`、`prompt_variant`、`system_prompt`
 - 会话域：`history_messages`、`history_limit`
-- 意图域：`intent_label`、`intent_confidence`、`intent_reason`、`intent_history_summary`、`intent_prev_task_type`（后两者仅供观测）
+- 意图域：`intent_label`（含 **`hybrid_qa`**）、`intent_confidence`、`intent_reason`、`intent_history_summary`、`intent_prev_task_type`（后两者仅供观测）
 - 检索域：`rag_namespace`、`rag_scope_reason`、`rag_query_boost`、`rag_scope_fallback`、`context_snippets`、`rag_citations`、`retrieval_score`、`retrieval_attempts`、`rag_engine`、`used_rag`
 - FAQ 软直通域：`faq_soft_direct`、`faq_soft_direct_reason`（`kb_build_messages` 写入，见 **§4.4**）
-- NL2SQL 域：`used_nl2sql`、`nl2sql_sql`、`nl2sql_failed`、`nl2sql_error_code`；HITL 重试：`nl2sql_retry_count`、`nl2sql_skip_cache`、`nl2sql_retry_hint`
-- HITL 域（可选）：`pending_hitl`、`hitl_kind`、`hitl_original_query`、`confirmed_route`、`hitl_resume_action`、`intent_hitl_round`、`disambiguation_analysis` / `disambiguation_options` / `disambiguation_source`（见 **第 17 节**）
+- NL2SQL 域：`used_nl2sql`、`nl2sql_sql`、`nl2sql_failed`、`nl2sql_error_code`、`nl2sql_analysis`、`nl2sql_analysis_stream_plan`；HITL 重试：`nl2sql_retry_count`、`nl2sql_skip_cache`、`nl2sql_retry_hint`
+- Hybrid 域（**D**）：**`hybrid_degraded`**（`""` | `"nl2sql"` | `"rag"` | `"both"`；单臂失败降级标记，见 **§4.7**）
+- HITL 域（可选）：`pending_hitl`、`hitl_kind`、`hitl_original_query`、`confirmed_route`（含 `hybrid_qa`）、`hitl_resume_action`、`intent_hitl_round`、`disambiguation_analysis` / `disambiguation_options` / `disambiguation_source`（见 **第 17 节**）
 - 相似案例域：`need_similar_cases`、`case_rag_query`、`fault_detect_sources`、`fault_detect_confidence`、`similar_cases_appended`
 - 关联问题域：`suggested_questions`（Runner 写入，进 `meta`；**`data_query` 流式恒为空**）
 - 指代域（`kb_qa` 检索链）：`anaphora_type`、`anaphora_rule_type`、`anaphora_confidence`、`anaphora_score_gap`、`anaphora_source`、`anaphora_slot_bullets`、`anaphora_anchor_block`（P1/P2 默认关，见 **§15**；观测项见 `CHATBOT_ANAPHORA_EXPOSE_META`）
@@ -262,40 +274,43 @@ flowchart TB
 
 1. `load_prompt_template`：`PromptTemplateRegistry`；未传 `prompt_version` 时用 `CHATBOT_PROMPT_DEFAULT_VERSION`（`chatbot_graph_runner._node_load_prompt_template`）。
 2. `load_history`：`ConversationManager` 只读（`enable_context`）。
-3. `intent_classify`：`classify_chatbot_intent_async` → `kb_qa` / `clarify` / `data_query`（`CHATBOT_INTENT_BACKEND=rules|llm|bert`；**llm** 为 rules 主判 + 进程内轻量模型窄触发；**bert** 须已微调三分类 HF 模型；可关 `CHATBOT_INTENT_ENABLED`）。
+3. `intent_classify`：`classify_chatbot_intent_async` → **`clarify` / `data_query` / `kb_qa` / `hybrid_qa`**（`CHATBOT_INTENT_BACKEND=rules|llm|bert`；**llm** 为 rules 主判 + 进程内轻量模型窄触发；**bert** 须已微调序列分类 HF 模型；可关 `CHATBOT_INTENT_ENABLED`）。
 4. `fault_case_gate`：`chatbot_similar_cases`；见 **第 14 节**。
-5. **条件路由** `_route_by_intent`（非独立节点）。
-6. `nl2sql_answer`：`NL2SQLService` + `summarize_nl2sql_with_llm`（`data_query`）。
-7. `select_rag_engine`：`agentic` / `hybrid`（`kb_qa`）。
-8. **`rag_scope_resolve`**：`chatbot_rag_scope.resolve_rag_namespace`；厂别指代命中时写入 `rag_namespace`（默认 `Power_plant_knowledge`）、`rag_scope_reason`、`rag_query_boost`；**仅首轮 kb_qa 进入**，C-RAG 重试不再经过本节点。
+5. **条件路由** `_route_by_intent`（非独立节点）→ **A/B/C/D**。
+6. `nl2sql_answer`：`NL2SQLService` + `summarize_nl2sql_with_llm`（**B** `data_query`）。
+7. `select_rag_engine`：`agentic` / `hybrid`（**C** `kb_qa`；**D** RAG 臂复用）。
+8. **`rag_scope_resolve`**：`chatbot_rag_scope.resolve_rag_namespace`；厂别指代命中时写入 `rag_namespace`（默认 `Power_plant_knowledge`）、`rag_scope_reason`、`rag_query_boost`；**仅首轮进入 RAG 链时**执行，C-RAG 重试不再经过本节点。
 9. `kb_retrieve`：`HybridRAGService` / `AgenticRAGService`，传入 **`namespace=state.rag_namespace`**（`None` 为全库）；**并入**指代规则检测、可选 Coref LLM（P3）、检索 query 与上轮摘要融合（P0）、读会话槽位（P2，开关开启时）。
-10. `kb_quality_check` + `kb_rewrite_query`：C-RAG。
+10. `kb_quality_check` + `kb_rewrite_query`：C-RAG（**C**；**D** RAG 臂**不做** C-RAG 重试）。
 11. `kb_build_messages`：组装 `llm_messages`（system：模板 → **可选对话锚块（P1，默认关）** → RAG 导语与编号片段）；**高分 FAQ 软直通**（§4.4）满足条件时不注入 `history_messages`；写入 `rag_citations` 供 SSE 与落库。
-12. `clarify_build_response`：固定或模板澄清话术。
-13. `unsafe_guard` / `handoff_human` / `smalltalk_generate`：占位，默认意图不命中。
-14. `finalize`：收敛状态。
+12. **`hybrid_acquire`** / **`hybrid_synthesize`**：**D** 并行 NL2SQL + RAG → 双源综合或单臂降级（见 **§4.7**）。
+13. `clarify_build_response`：固定或模板澄清话术。
+14. `unsafe_guard` / `handoff_human` / `smalltalk_generate`：占位，默认意图不命中。
+15. `finalize`：收敛状态。
 
 **Runner 层（图外，同一文件 `run_stream_events`）**
 
-14. `llm_stream_generate`：`VLLMHttpClient.stream_chat`（有 `llm_messages` 时）。
-15. 相似案例追加：`_maybe_similar_cases_extra`。
-16. 关联问题：`_fill_suggested_questions` → `build_suggested_questions`。
-17. `persist`：`_persist_success` / 断连 `_persist_disconnect`（成功落库 assistant 后可更新指代槽位 P2）。
+16. `llm_stream_generate`：`VLLMHttpClient.stream_chat`（有 `llm_messages` 时，含 **C** 与 **D** 双臂成功）。
+17. 相似案例追加：`_maybe_similar_cases_extra`（**C/D**；**A/B** 跳过）。
+18. 关联问题：`_fill_suggested_questions` → `build_suggested_questions`（纯 **B** 跳过；**D** 可下发）。
+19. `persist`：`_persist_success` / 断连 `_persist_disconnect`（成功落库 assistant 后可更新指代槽位 P2）。
 
 实现状态：
 
-- `CHATBOT_INTENT_OUTPUT_LABELS` 默认含 **`kb_qa,clarify,data_query`**；未放量标签降级 `kb_qa`，`intent_reason` 含 `label_not_enabled:*`。
+- `CHATBOT_INTENT_OUTPUT_LABELS` 默认含 **`kb_qa,clarify,data_query,hybrid_qa`**；未放量标签降级 `kb_qa`，`intent_reason` 含 `label_not_enabled:*`。
+- 规则层混合问：`mixed_hybrid` → **`hybrid_qa`**（已移除 `mixed_prefers_*` 二选一）。
 
 ### 4.3 路由策略
 
-**共性前缀**：`load_prompt_template` → `load_history` → `intent_classify` → **`fault_case_gate`** →（可选 **意图 HITL**，见 **§17**）→ **`_route_by_intent`**。
+**共性前缀**：`load_prompt_template` → `load_history` → `intent_classify` → **`fault_case_gate`** →（可选 **意图 HITL**：清晰 `hybrid_qa` 跳过，见 **§17**）→ **`_route_by_intent`**。
 
 本期生效路由：
 
-- `intent_label=clarify` → `clarify_build_response` → `finalize` → Runner 输出 `answer_text`；**不**追加相似案例；**仍**生成 `suggested_questions`（条数偏少，最多 3 条）。
-- `intent_label=data_query` → `nl2sql_answer` →（可选 **SQL 生成失败 HITL**）→ `finalize` → Runner 输出 `answer_text`；**不**追加相似案例；**不**生成、**不下发** `suggested_questions`（`meta.suggested_questions=[]`）；`rag_citations` 为空；失败时 `meta` 含 `nl2sql_failed`、`nl2sql_error_code`。
-- `intent_label=kb_qa` → `select_rag_engine` → **`rag_scope_resolve`** → `kb_retrieve` → `kb_quality_check` →（C-RAG 或）`kb_build_messages` → `finalize` → Runner `stream_chat`；可选相似案例二次 RAG；关联问题含片段种子；结束帧含 `rag_citations`（§4.5）。
-- 已 `confirmed_route`（用户 HITL 确认或消歧点选）时按确认路由直达上列分支，**不再**触发意图 HITL。
+- **A** `intent_label=clarify` → `clarify_build_response` → `finalize` → Runner 输出 `answer_text`；**不**追加相似案例；**仍**生成 `suggested_questions`（条数偏少，最多 3 条）。
+- **B** `intent_label=data_query` → `nl2sql_answer` →（可选 **SQL 生成失败 HITL**）→ `finalize` → Runner 输出 `answer_text`；**不**追加相似案例；**不**生成、**不下发** `suggested_questions`（`meta.suggested_questions=[]`）；`rag_citations` 为空；失败时 `meta` 含 `nl2sql_failed`、`nl2sql_error_code`。
+- **C** `intent_label=kb_qa` → `select_rag_engine` → **`rag_scope_resolve`** → `kb_retrieve` → `kb_quality_check` →（C-RAG 或）`kb_build_messages` → `finalize` → Runner `stream_chat`；可选相似案例二次 RAG；关联问题含片段种子；结束帧含 `rag_citations`（§4.5）。
+- **D** `intent_label=hybrid_qa` → `hybrid_acquire` → `hybrid_synthesize` → `finalize` → Runner 流式或固定 `answer_text`（单臂降级）；**可同时** `used_rag=true` 与 `used_nl2sql=true`；`meta.hybrid_degraded` 标明单臂失败；允许 `citation_ref` 与关联问；相似案例策略同 **C**（§4.7）。
+- 已 `confirmed_route`（用户 HITL 确认或消歧点选，含 `hybrid_qa`）时按确认路由直达上列分支，**不再**触发意图 HITL。
 
 预留（默认意图不产出）：
 
@@ -323,17 +338,46 @@ flowchart TB
 
 ### 4.5 RAG 结构化引用与 citation 流
 
-**目标**：`kb_qa` 路径将召回片段转为编号引用，供前端展示来源并与流式正文中的 `[n]` 对齐。
+**目标**：`kb_qa` / **`hybrid_qa`（双臂成功）** 路径将召回片段转为编号引用，供前端展示来源并与流式正文中的 `[n]` 对齐。
 
 **机制**：
 
-- `kb_retrieve` 经 `chunks_to_rag_context` 生成编号 LLM 片段 + `rag_citations` 列表（`ref_index`、`text_preview`、`original_content_url` 等）；
+- `kb_retrieve`（及 Hybrid RAG 臂）经 `chunks_to_rag_context` 生成编号 LLM 片段 + `rag_citations` 列表（`ref_index`、`text_preview`、`original_content_url` 等）；
 - 流式主答时，若存在引用，`CitationStreamParser` 将正文中的 `[n]` 映射为 SSE **`{"citation_ref": n, "finished": false}`** 事件（正文 `delta` 不再含该字面量）；
 - 结束帧 `meta.rag_citations` 与 `GET /chatbot/sessions/messages` 中 assistant 消息的 `rag_citations` **同形**；
-- `data_query` 路径：`rag_citations` 为空，无 `citation_ref` 事件；
+- 纯 `data_query` 路径：`rag_citations` 为空，无 `citation_ref` 事件；
 - NL2SQL 库表/QA namespace 片段在展示层过滤（见 `filter_rag_citation_dicts`）。
 
 **代码落点**：`chatbot_rag_citations.py`、`chatbot_citation_stream.py`；Runner `run_stream_events`；API 注释见 `app/api/chatbot.py` `chat_stream` 文档。
+
+### 4.7 Hybrid 综合意图（`hybrid_qa`）
+
+**对应图中**：**D** → `hybrid_acquire` → `hybrid_synthesize` → `finalize` → Runner 图后流式。
+
+**动机**：用户常见「查出超温列表 + 结合规程说明如何处置」类问句，互斥的 **B/C** 二选一无法同时给出表数据与文档机理；规则层对「台账/统计 + 原因/标准/怎么处理」共现产出 **`hybrid_qa`**（`intent_reason=mixed_hybrid` 等），**不再**使用 `mixed_prefers_*`。
+
+**与 HITL 共存（zajt）**：清晰强混合（`hybrid_qa` + `mixed_hybrid` / 足够置信）→ **跳过**意图 HITL，直走 **D**；真模糊仍可弹确认，第四钮 `route_hybrid_qa`；二次消歧选项含可选 `route_hint=hybrid_qa`（见 **§17**、`docs/智能客服Hybrid意图改造方案.md`）。
+
+**`hybrid_acquire`（并行双臂）**：
+
+1. **NL2SQL 臂**：`run_chatbot_nl2sql_query(..., defer_analysis_stream=False)` → 查数 Markdown / 分析结构写入 state；失败标记 `nl2sql_failed`。
+2. **RAG 臂**：复用 `select_rag_engine` → **`rag_scope_resolve`**（本厂锁库，见 **§16**）→ `kb_retrieve`（**无 C-RAG 重试**）→ `context_snippets` / `rag_citations`。
+3. 并行 `asyncio.gather`；按双臂成败写入 **`hybrid_degraded`**：`""`（双臂 OK）| `"nl2sql"` | `"rag"` | `"both"`。
+
+**`hybrid_synthesize`（综合 / 降级）**：
+
+- 仅 NL2SQL OK、RAG 空：退回查数成文（`answer_text`，无 `llm_messages`）。
+- 仅 RAG OK、NL2SQL 失败：退回 **`kb_build_messages`**（同 **C**）。
+- 双臂 OK：组装「查数结果 + 知识库摘录 + 综合约束」→ `llm_messages`，图后 **VLLM 流式**；数值以 SQL 为准，机理以 RAG 为准。
+- 双臂均失败：固定友好话术，`terminate_reason` 可为 `hybrid_both_failed`。
+
+**产品边界**：
+
+- `meta`：可同时 `used_rag=true` 与 `used_nl2sql=true`；保留 `rag_citations`、`nl2sql_sql` / `nl2sql_analysis`；**`hybrid_degraded`** 非空时表示单臂降级。
+- **关联问 / citation**：允许（与纯 **B** 不同）；**相似案例**：同 **C**。
+- 与 **`/analysis/*` 综合分析**分工：客服 Hybrid = 短答一问一综合；长报告/多槽仍走分析智能体。
+
+**代码落点**：`chatbot_graph_runner._node_hybrid_acquire`、`_node_hybrid_synthesize`；意图规则 `chatbot_intent_rules.py`（`mixed_hybrid`）；`finished.meta` 字段 `hybrid_degraded`。
 
 ## 5. C-RAG 实现策略（简要）
 
@@ -462,7 +506,7 @@ flowchart TB
 - `CHATBOT_GRAPH_ENABLED=true`
 - `CHATBOT_INTENT_ENABLED=true`
 - `CHATBOT_INTENT_BACKEND=rules|llm|bert`（默认 `rules`）
-- `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query`
+- `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query,hybrid_qa`
 - **轻量意图 LLM**（`backend=llm`）：`CHATBOT_INTENT_LLM_MODEL_PATH` / `CHATBOT_INTENT_LLM_MODEL_NAME` / `CHATBOT_INTENT_LLM_DEVICE` / `CHATBOT_INTENT_LLM_CONF_THRESHOLD` / `CHATBOT_INTENT_LLM_FALLBACK_TO_RULES`（见 `docs/智能客服意图识别轻量LLM接入说明.md`）
 - **BERT 意图**（`backend=bert`）：`CHATBOT_INTENT_BERT_MODEL_PATH` / `CHATBOT_INTENT_BERT_*`（见 `docs/智能客服意图识别BERT接入说明.md`）
 - `CHATBOT_NL2SQL_ROUTE_ENABLED=true`
@@ -542,7 +586,7 @@ flowchart TB
 
 ## 11. 本期实现边界（避免过度设计）
 
-- 本期主流量意图：**`kb_qa`**、**`clarify`**、**`data_query`**（由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制）；意图后端 **`rules | llm | bert`**。
+- 本期主流量意图：**`kb_qa`**、**`clarify`**、**`data_query`**、**`hybrid_qa`**（由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制）；意图后端 **`rules | llm | bert`**。
 - `unsafe` / `handoff_human` / `smalltalk` 节点占位，默认不命中。
 - 关联问题**不**单独二次向量检索（见 `framework-guide/智能客服整体实现技术说明.md` §7）；**流式 `data_query` 不下发** `suggested_questions`。
 - **FAQ 软直通**（§4.4）与 **RAG 引用流**（§4.5）为 `kb_qa` 路径增强，Legacy 流式与 Graph 对齐。
@@ -563,7 +607,7 @@ flowchart TB
 
 1. `enable_rag` / `enable_context` 四组合。
 2. 文本输入与多图输入（含空 URL 清洗）。
-3. `kb_qa`、`clarify`、`data_query` 三条路径（NL2SQL 依赖业务库配置）。
+3. `kb_qa`、`clarify`、`data_query`、**`hybrid_qa`** 四条路径（NL2SQL 依赖业务库配置）。
 4. C-RAG 触发与不触发（含超限转 clarify）。
 5. 流式正常结束、模型异常、客户端断开、**显式 stop**（`user_cancelled`）四类终止。
 6. 会话跨轮记忆（同 `user_id+session_id`）与隔离（不同 session）。
@@ -573,7 +617,8 @@ flowchart TB
 10. **FAQ 软直通**：高分 FAQ 命中时跳过 history；低分/指代续问时不触发（§4.4）。
 11. **RAG 引用**：`citation_ref` 与 `finished.meta.rag_citations` 的 `ref_index` 对齐；`data_query` 无引用（§4.5）。
 12. **`CHATBOT_INTENT_BACKEND=llm`**：窄触发与 rules 回退（可选）。
-13. **HITL（可选）**：意图确认三按钮；`route_clarify` 后二次消歧候选问法；NL2SQL 生成失败重试 / 改 RAG；`resume_token` 单次失效（第 17 节）。
+13. **HITL（可选）**：意图确认四按钮（含综合）；`route_clarify` 后二次消歧（拆开+可选综合）；清晰 `hybrid_qa` 不弹；NL2SQL 生成失败重试 / 改 RAG；`resume_token` 单次失效（第 17 节）。
+14. **Hybrid（§4.7）**：混合样例 → `hybrid_qa`；双臂成功 meta 同时 `used_rag`+`used_nl2sql`；单臂失败 `hybrid_degraded`。
 
 通过标准：
 
@@ -784,31 +829,32 @@ flowchart LR
 
 | 项 | 说明 |
 |----|------|
-| **目标** | 意图在「查数 vs 知识问答」边界不清时，由用户确认路由；补充问句后仍模糊时给出候选问法点选；内嵌 NL2SQL **SQL 生成失败**时，提供「重试查数 / 改走知识库」降级 |
+| **目标** | **真模糊**时由用户确认路由（查数 / 知识 / **综合 Hybrid** / 补充问句）；补充后仍模糊时给出「拆开 + 可选综合」候选点选；内嵌 NL2SQL **SQL 生成失败**时提供「重试查数 / 改走知识库」 |
+| **清晰混合** | 已判 `hybrid_qa`（如 `mixed_hybrid`）→ **不弹**意图 HITL，直走 **D**（场景 B；见 §4.7） |
 | **API** | 中断：`POST /chatbot/chat/stream` SSE `chatbot_hitl_required`；续跑：`POST /chatbot/chat/resume-stream` |
 | **总开关** | `CHATBOT_HITL_ENABLED`（默认 `false`）；子开关 `CHATBOT_INTENT_HITL_*`、`CHATBOT_INTENT_DISAMBIGUATION_*`、`CHATBOT_NL2SQL_HITL_*` |
 | **执行方式** | HITL 开启或续跑时走 Runner **顺序执行**（`_run_graph_sequential` / `_run_graph_resume`），可 `pending_hitl` 中断 |
 | **非本范围** | 看图诊断 scope HITL、综合分析章节 HITL；Legacy 非 HITL 对齐路径 |
 
-逐步实现与前端对接见 `framework-guide/智能客服整体实现技术说明.md` **§12**；深度改造说明见 `docs/零散/智能客服-意图识别失败时人机协同深度改造.md`；OpenAPI 说明见 `app/api/chatbot.py`。
+逐步实现与前端对接见 `framework-guide/智能客服整体实现技术说明.md` **§12**；深度改造说明见 `docs/零散/智能客服-意图识别失败时人机协同深度改造.md`；Hybrid 共存见 `docs/智能客服Hybrid意图改造方案.md`；测试问法见 `docs/零散/智能客服-意图识别HITL触发测试数据.md`；OpenAPI 说明见 `app/api/chatbot.py`。
 
 ### 17.2 策略摘要
 
 **意图路由确认（`intent_route_confirm`）**
 
 - 时机：意图分类 + 故障门控后、分支路由前。
-- 窄触发：低置信、混合/歧义 reason、查数与概念词互相交叉等（`should_trigger_intent_hitl`）；高置信启发式、已确认路由、澄清、带图等跳过。
-- 按钮：`route_data_query` / `route_kb_qa` / `route_clarify`（补充问句时 **必填** `payload.refined_query`）。
+- 窄触发：低置信、非清晰混合的歧义 reason、查数与概念词互相交叉等（`should_trigger_intent_hitl`）；**清晰 `hybrid_qa`、高置信启发式、已确认路由、澄清、带图等跳过**。
+- 按钮：`route_data_query` / `route_kb_qa` / **`route_hybrid_qa`（综合查数+知识）** / `route_clarify`（补充问句时 **必填** `payload.refined_query`）。
 
 **意图二次消歧（`intent_disambiguation_suggest`）**
 
 - 时机：首轮选择 `route_clarify` 并提交 `refined_query` 后，重分类仍满足意图 HITL，且 `CHATBOT_INTENT_DISAMBIGUATION_ENABLED`。
-- 行为：LLM（失败则规则兜底）生成引导话术 + **3** 条候选问句（≥1 条 `data_query`、≥1 条 `kb_qa`）；`ui_buttons[].label` 为完整问句，前端宜渲染为**链接**；`context.disambiguation_source` 为 `llm` / `fallback_rules` / `llm_partial_fallback`。
-- 点选：`pick_disambiguation_N`（或 `pick_disambiguation_option` + `option_index`）→ 写入 `query` + `confirmed_route`（`route_hint`），**直路由、不再意图分类**。轮次上限 `CHATBOT_INTENT_HITL_MAX_ROUNDS`（默认 2）。
+- 行为：LLM（失败则规则兜底）生成引导话术 + **3** 条候选问句（≥1 条 `data_query`、≥1 条 `kb_qa`，**建议** 1 条 `hybrid_qa`）；`ui_buttons[].label` 为完整问句，前端宜渲染为**链接**；`context.disambiguation_source` 为 `llm` / `fallback_rules` / `llm_partial_fallback`。
+- 点选：`pick_disambiguation_N`（或 `pick_disambiguation_option` + `option_index`）→ 写入 `query` + `confirmed_route`（`route_hint` ∈ `{data_query,kb_qa,hybrid_qa}`），**直路由、不再意图分类**。轮次上限 `CHATBOT_INTENT_HITL_MAX_ROUNDS`（默认 2）。
 
 **NL2SQL 生成失败（`nl2sql_gen_failed`）**
 
-- 时机：`nl2sql_answer` 判定 `gen_failed`，且重试次数未超 `CHATBOT_NL2SQL_HITL_MAX_RETRIES`。
+- 时机：`nl2sql_answer` 判定 `gen_failed`，且重试次数未超 `CHATBOT_NL2SQL_HITL_MAX_RETRIES`（**B** 路径；**D** Hybrid 臂失败走降级，不经本 HITL）。
 - 按钮：`nl2sql_retry`（跳过 SQL 缓存 + 注入失败原因 hint）/ `fallback_kb_qa`（改 RAG）。
 - 超限后返回固定失败话术，不再中断。
 
@@ -817,25 +863,30 @@ flowchart LR
 ```mermaid
 flowchart LR
     Stream["/chat/stream"] --> Intent["intent_classify"]
-    Intent --> IH{"intent HITL?"}
-    IH -->|yes| Pause1["chatbot_hitl_required\nintent_route_confirm"]
-    IH -->|no| Route["route by intent"]
+    Intent --> Gate["fault_case_gate"]
+    Gate --> IH{"intent HITL?\n清晰 hybrid 跳过"}
+    IH -->|yes 真模糊| Pause1["chatbot_hitl_required\nintent_route_confirm\n四钮含综合"]
+    IH -->|no| Route["route A/B/C/D"]
     Pause1 --> Resume["/chat/resume-stream"]
     Resume -->|route_clarify| ReIntent["re intent_classify"]
-    ReIntent -->|仍模糊| Disamb["intent_disambiguation_suggest"]
+    ReIntent -->|仍模糊| Disamb["intent_disambiguation_suggest\n拆开+可选综合"]
     Disamb --> Pick["pick option → confirmed_route"]
     Pick --> Route
-    ReIntent -->|清晰| Route
-    Resume -->|其它 action| Route
-    Route -->|data_query| SQL["nl2sql_answer"]
-    Route -->|kb_qa| RAG["RAG path"]
-    Route -->|clarify| CL["clarify"]
+    ReIntent -->|清晰含 hybrid| Route
+    Resume -->|data/kb/hybrid| Route
+    Route -->|A clarify| CL["clarify"]
+    Route -->|B data_query| SQL["nl2sql_answer"]
+    Route -->|C kb_qa| RAG["RAG path"]
+    Route -->|D hybrid_qa| HY["hybrid_acquire→synthesize"]
     SQL --> NH{"gen_failed HITL?"}
     NH -->|yes| Pause2["chatbot_hitl_required\nnl2sql_gen_failed"]
     NH -->|no| Done["answer / fail text"]
     Pause2 --> Resume2["/chat/resume-stream"]
     Resume2 -->|retry| SQL
     Resume2 -->|fallback| RAG
+    HY --> Done
+    RAG --> Done
+    CL --> Done
 ```
 
 ### 17.4 状态与代码落点
@@ -843,13 +894,13 @@ flowchart LR
 | 字段 / 模块 | 含义 |
 |-------------|------|
 | `pending_hitl` / `hitl_kind` / `hitl_original_query` | 中断态与场景 |
-| `confirmed_route` / `hitl_resume_action` | 用户确认后的路由与 action |
-| `intent_hitl_round` / `disambiguation_*` | 意图 HITL 轮次与消歧结果 |
+| `confirmed_route` / `hitl_resume_action` | 用户确认后的路由与 action（含 `hybrid_qa` / `route_hybrid_qa`） |
+| `intent_hitl_round` / `disambiguation_*` | 意图 HITL 轮次与消歧结果（`route_hint` 可含 `hybrid_qa`） |
 | `nl2sql_retry_count` / `nl2sql_skip_cache` / `nl2sql_retry_hint` | 生成失败重试参数 |
 | `resume_token` | 写入 HITL 会话存储，TTL 由 `CHATBOT_HITL_RESUME_TTL_SEC` 控制 |
-| `chatbot_hitl.py` | 触发判定、`apply_chatbot_hitl_action` |
-| `chatbot_hitl_display.py` | prompt、`ui_buttons`（消歧场景 label=完整问句） |
-| `chatbot_intent_disambiguation.py` | 消歧 LLM + 规则兜底 |
+| `chatbot_hitl.py` | 触发判定（清晰 hybrid 跳过）、`apply_chatbot_hitl_action` |
+| `chatbot_hitl_display.py` | prompt、`ui_buttons`（含综合钮；消歧 label=完整问句） |
+| `chatbot_intent_disambiguation.py` | 消歧 LLM + 规则兜底（第三项常为 hybrid） |
 | `chatbot_hitl_session_store.py` | memory/redis 快照 |
 | `ChatbotHitlResumeRequest` | `app/models/chatbot.py` |
 

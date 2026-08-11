@@ -91,6 +91,41 @@ def test_should_trigger_intent_hitl_mixed_reason():
         assert should_trigger_intent_hitl(state) is True
 
 
+def test_should_not_trigger_intent_hitl_clear_hybrid():
+    """清晰强混合（hybrid_qa + mixed_hybrid）直走 Hybrid，不弹意图 HITL。"""
+    state = {
+        "intent_label": "hybrid_qa",
+        "intent_confidence": 0.75,
+        "intent_reason": "mixed_hybrid",
+        "query": "查出超温列表并结合规程说明如何处置",
+    }
+    with _hitl_on():
+        assert should_trigger_intent_hitl(state) is False
+
+
+def test_should_trigger_intent_hitl_low_conf_hybrid():
+    """低置信 hybrid 仍可弹 HITL（留给真模糊），并提供第四钮综合。"""
+    state = {
+        "intent_label": "hybrid_qa",
+        "intent_confidence": 0.5,
+        "intent_reason": "llm_classifier",
+        "query": "超温相关",
+    }
+    with _hitl_on():
+        assert should_trigger_intent_hitl(state) is True
+
+
+def test_apply_route_hybrid_qa_sets_confirmed_route():
+    from app.llm.graphs.chatbot_hitl import ACTION_ROUTE_HYBRID
+
+    out = apply_chatbot_hitl_action(
+        {"query": "查出超温并说明处置", "intent_label": "kb_qa"},
+        action=ACTION_ROUTE_HYBRID,
+    )
+    assert out["confirmed_route"] == "hybrid_qa"
+    assert out["intent_label"] == "hybrid_qa"
+
+
 def test_apply_route_data_query_sets_confirmed_route():
     out = apply_chatbot_hitl_action(
         {"query": "查负荷", "intent_label": "kb_qa"},
@@ -278,6 +313,49 @@ def test_prepare_disambiguation_hitl_patch():
     assert patch_state["intent_hitl_round"] == 2
     assert len(patch_state["disambiguation_options"]) == 3
     assert patch_state["disambiguation_source"] == "fallback_rules"
+
+
+def test_build_hitl_payload_intent_route_includes_hybrid_button():
+    from app.llm.graphs.chatbot_hitl_display import ACTION_ROUTE_HYBRID, INTENT_ROUTE_BUTTONS
+
+    assert any(b["id"] == ACTION_ROUTE_HYBRID for b in INTENT_ROUTE_BUTTONS)
+    state = {
+        "hitl_kind": HITL_KIND_INTENT_ROUTE,
+        "query": "模糊问",
+        "intent_label": "kb_qa",
+        "intent_confidence": 0.5,
+    }
+    payload = build_hitl_interrupt_payload(state)
+    ids = [b["id"] for b in payload["ui_buttons"]]
+    assert "route_hybrid_qa" in ids
+    assert "route_data_query" in ids
+    assert "route_kb_qa" in ids
+    assert "route_clarify" in ids
+
+
+def test_fallback_disambiguation_includes_hybrid_option():
+    fb = build_fallback_disambiguation(query="查出超温并说明原因")
+    routes = [o["route_hint"] for o in fb["options"]]
+    assert "data_query" in routes
+    assert "kb_qa" in routes
+    assert "hybrid_qa" in routes
+
+
+def test_apply_pick_disambiguation_hybrid_route_hint():
+    fb = build_fallback_disambiguation(query="混合问")
+    hybrid_idx = next(i for i, o in enumerate(fb["options"]) if o["route_hint"] == "hybrid_qa")
+    out = apply_chatbot_hitl_action(
+        {
+            "query": "混合问",
+            "disambiguation_options": fb["options"],
+            "intent_label": "kb_qa",
+        },
+        action=ACTION_PICK_DISAMBIGUATION_OPTION,
+        payload={"option_index": hybrid_idx},
+    )
+    assert out["confirmed_route"] == "hybrid_qa"
+    assert out["intent_label"] == "hybrid_qa"
+    assert out["query"] == fb["options"][hybrid_idx]["query"]
 
 
 def test_build_hitl_payload_disambiguation_strips_user_inquiry_phrase():

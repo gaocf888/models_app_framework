@@ -425,7 +425,9 @@ class ChatbotConfig:
     intent_enabled: bool = True
     # 意图分类后端：rules（默认）| llm（规则+进程内轻量 LLM 窄触发）| bert（微调 BERT，需训练）
     intent_backend: str = "rules"
-    intent_output_labels: list[str] = field(default_factory=lambda: ["kb_qa", "clarify", "data_query"])
+    intent_output_labels: list[str] = field(
+        default_factory=lambda: ["kb_qa", "clarify", "data_query", "hybrid_qa"]
+    )
     # 模式 B：进程内轻量意图 LLM（CHATBOT_INTENT_BACKEND=llm），与嵌入模型相同的离线优先策略
     intent_llm_model_path: str | None = None
     intent_llm_model_name: str = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -1227,7 +1229,9 @@ def _load_from_env() -> AppConfig:
         graph_enabled=os.getenv("CHATBOT_GRAPH_ENABLED", "true").lower() == "true",
         intent_enabled=os.getenv("CHATBOT_INTENT_ENABLED", "true").lower() == "true",
         intent_backend=(os.getenv("CHATBOT_INTENT_BACKEND", "rules") or "rules").strip().lower(),
-        intent_output_labels=_split_csv_env("CHATBOT_INTENT_OUTPUT_LABELS", "kb_qa,clarify,data_query"),
+        intent_output_labels=_split_csv_env(
+            "CHATBOT_INTENT_OUTPUT_LABELS", "kb_qa,clarify,data_query,hybrid_qa"
+        ),
         intent_llm_model_path=(os.getenv("CHATBOT_INTENT_LLM_MODEL_PATH") or "").strip() or None,
         intent_llm_model_name=(
             os.getenv("CHATBOT_INTENT_LLM_MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct") or "Qwen/Qwen2.5-0.5B-Instruct"

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 
-IntentLabel = Literal["kb_qa", "clarify", "data_query", "unsafe", "handoff_human", "smalltalk"]
+IntentLabel = Literal["kb_qa", "clarify", "data_query", "hybrid_qa", "unsafe", "handoff_human", "smalltalk"]
 
 
 class ChatbotGraphState(TypedDict, total=False):
@@ -44,7 +44,7 @@ class ChatbotGraphState(TypedDict, total=False):
     intent_label: IntentLabel
     intent_confidence: float
     intent_reason: str
-    # 用户 HITL 确认后的路由（data_query / kb_qa / clarify）；优先于 intent_label 启发式
+    # 用户 HITL 确认后的路由（data_query / kb_qa / hybrid_qa / clarify）；优先于 intent_label 启发式
     confirmed_route: IntentLabel
     # 规则层从会话历史抽取（仅供观测/排障；不参与下游强制分支）
     intent_history_summary: str
@@ -120,6 +120,10 @@ class ChatbotGraphState(TypedDict, total=False):
     nl2sql_analysis: Optional[Dict[str, Any]]
     # 查数成功待流式分析：含 system/user_content/table_fallback/display_rows 等
     nl2sql_analysis_stream_plan: Optional[Dict[str, Any]]
+
+    # ===== Hybrid（RAG + NL2SQL）=====
+    # 空=双臂成功；nl2sql|rag|both=对应臂失败后的降级标记（写入 finished.meta）
+    hybrid_degraded: str
 
     # ===== 关联问题推荐 =====
     suggested_questions: List[str]

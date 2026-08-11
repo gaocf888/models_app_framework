@@ -344,15 +344,17 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
 
     - ``route_data_query``：确认为结构化查数，走 NL2SQL；
     - ``route_kb_qa``：确认为知识库问答，走 RAG；
+    - ``route_hybrid_qa``：综合查数 + 知识库双臂回答（Hybrid）；
     - ``route_clarify``：用户在问句框补充完整问题（``payload.refined_query`` **必填**），
       系统更新 ``query`` 后**重新意图分类**并按新意图路由；若仍模糊则进入消歧 HITL
-      （``intent_disambiguation_suggest``），不再重复三路由按钮。
+      （``intent_disambiguation_suggest``），不再重复首轮路由按钮。
 
     意图消歧（``hitl_kind=intent_disambiguation_suggest``）：
 
     - ``pick_disambiguation_0`` / ``pick_disambiguation_1`` / ``pick_disambiguation_2``：
       选择对应候选问句；或统一 ``pick_disambiguation_option`` + ``payload.option_index``；
-      系统用选项的 ``query`` + ``route_hint`` **直接路由**（不再跑意图分类）。
+      系统用选项的 ``query`` + ``route_hint``（``data_query`` / ``kb_qa`` / ``hybrid_qa``）
+      **直接路由**（不再跑意图分类）。
 
     NL2SQL 生成失败（``hitl_kind=nl2sql_gen_failed``）：
 
@@ -366,7 +368,7 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
        保存 ``resume_token``、``ui_buttons``、``prompt``、``hitl_kind``
        （``intent_route_confirm`` / ``intent_disambiguation_suggest`` / ``nl2sql_gen_failed``）。
 
-        （意图识别失败 返回的ui_buttons：[{"id": "route_data_query", "label": "查实时/台账数据"}, {"id": "route_kb_qa", "label": "基于知识库分析"}, {"id": "route_clarify", "label": "我先补充问题"}]）
+        （意图识别失败 返回的ui_buttons：[{"id": "route_data_query", "label": "查实时/台账数据"}, {"id": "route_kb_qa", "label": "基于知识库分析"}, {"id": "route_hybrid_qa", "label": "综合查数+知识"}, {"id": "route_clarify", "label": "我先补充问题"}]）
 		（意图消歧 返回动态 ui_buttons：id 为 pick_disambiguation_0/1/2，**label 为完整候选问句 query**；
 		 前端在 ``hitl_kind=intent_disambiguation_suggest`` 时应渲染为**链接**，其它 hitl_kind 仍渲染为按钮）
 		（数据查询失败 返回的ui_buttons: [{"id": "nl2sql_retry", "label": "重试查数"}, {"id": "fallback_kb_qa", "label": "基于知识库分析"}]）
@@ -406,7 +408,7 @@ async def chat_resume_stream(req: ChatbotHitlResumeRequest, request: Request):
            }
         **说明：**
         1）resume_token -- 上述保存得resume_token；action -- 上述保存的ui_buttons中的id
-		- （意图识别失败：route_data_query / route_kb_qa / route_clarify）
+		- （意图识别失败：route_data_query / route_kb_qa / route_hybrid_qa / route_clarify）
 		- （意图消歧：pick_disambiguation_0/1/2 或 pick_disambiguation_option）
 		- （查询数据失败：nl2sql_retry / fallback_kb_qa）
        2）``route_clarify`` 时 ``payload.refined_query`` **必填**；其它 action 可选 ``refined_query``。

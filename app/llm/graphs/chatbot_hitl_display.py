@@ -10,6 +10,7 @@ HITL_KIND_NL2SQL_GEN_FAILED = "nl2sql_gen_failed"
 
 ACTION_ROUTE_DATA_QUERY = "route_data_query"
 ACTION_ROUTE_KB_QA = "route_kb_qa"
+ACTION_ROUTE_HYBRID = "route_hybrid_qa"
 ACTION_ROUTE_CLARIFY = "route_clarify"
 ACTION_NL2SQL_RETRY = "nl2sql_retry"
 ACTION_FALLBACK_KB_QA = "fallback_kb_qa"
@@ -18,6 +19,7 @@ ACTION_PICK_DISAMBIGUATION_OPTION = "pick_disambiguation_option"
 INTENT_ROUTE_BUTTONS: list[dict[str, str]] = [
     {"id": ACTION_ROUTE_DATA_QUERY, "label": "查实时/台账数据"},
     {"id": ACTION_ROUTE_KB_QA, "label": "基于知识库分析"},
+    {"id": ACTION_ROUTE_HYBRID, "label": "综合查数+知识"},
     {"id": ACTION_ROUTE_CLARIFY, "label": "我先补充问题"},
 ]
 
@@ -38,6 +40,8 @@ def build_intent_hitl_prompt(*, query: str, intent_label: str) -> str:
         hint = "系统倾向于从业务数据库查询结构化数据。"
     elif intent_label == "kb_qa":
         hint = "系统倾向于从知识库检索说明类内容。"
+    elif intent_label == "hybrid_qa":
+        hint = "系统倾向于同时查数并结合知识库综合回答。"
     else:
         hint = "系统需要您确认希望的处理方式。"
     return (
@@ -141,6 +145,7 @@ def format_hitl_user_choice_message(*, action: str, label: str | None = None) ->
     mapping = {
         ACTION_ROUTE_DATA_QUERY: "查实时/台账数据",
         ACTION_ROUTE_KB_QA: "基于知识库分析",
+        ACTION_ROUTE_HYBRID: "综合查数+知识",
         ACTION_ROUTE_CLARIFY: "补充问题",
         ACTION_NL2SQL_RETRY: "重试查数",
         ACTION_FALLBACK_KB_QA: "基于知识库分析",
