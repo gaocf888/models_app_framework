@@ -645,7 +645,11 @@ class ChatbotService:
                 self._append_user_with_images(persist_req, original_image_urls=original_image_urls)
                 if self._chatbot_cfg.persist_partial_on_disconnect and partial:
                     self._conv.append_assistant_message(
-                        req.user_id, req.session_id, f"[partial] {partial}", rag_citations=rag_citations
+                        req.user_id,
+                        req.session_id,
+                        partial,
+                        rag_citations=rag_citations,
+                        is_partial=True,
                     )
                 yield {
                     "type": "finished",

@@ -134,6 +134,14 @@ class SessionMessageItem(BaseModel):
             "不含 disambiguation_options。"
         ),
     )
+    is_partial: bool = Field(
+        False,
+        description=(
+            "是否为中断/断连后的部分回复落库。"
+            "true 时 content 为已生成片段（不含 ``[partial]`` 前缀）；"
+            "遗留数据若 content 仍带 ``[partial]`` 前缀，接口会剥离前缀并将本字段置 true。"
+        ),
+    )
     ts: float | None = Field(None, description="写入时时间戳（秒，可能为空）")
 
 

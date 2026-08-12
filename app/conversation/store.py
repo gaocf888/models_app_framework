@@ -19,14 +19,26 @@ from app.core.logging import get_logger
 
 
 def _apply_message_extras(row: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
-    """将存储 JSON 中的 rag_citations / hitl 拷贝到历史行（对齐透传）。"""
+    """将存储 JSON 中的 rag_citations / hitl / is_partial 拷贝到历史行（对齐透传）。"""
     rc = src.get("rag_citations")
     if isinstance(rc, list):
         row["rag_citations"] = rc
     hitl = src.get("hitl")
     if isinstance(hitl, dict) and hitl:
         row["hitl"] = dict(hitl)
+    if src.get("is_partial") is True:
+        row["is_partial"] = True
     return row
+
+
+def strip_legacy_partial_prefix(content: str) -> tuple[str, bool]:
+    """去掉历史正文中的 ``[partial]`` 前缀；返回 (正文, 是否曾为 partial 标记)。"""
+    s = content or ""
+    if s.startswith("[partial] "):
+        return s[len("[partial] ") :], True
+    if s.startswith("[partial]"):
+        return s[len("[partial]") :].lstrip(), True
+    return s, False
 
 
 def _message_storage_body(
@@ -36,12 +48,15 @@ def _message_storage_body(
     ts: Any,
     rag_citations: List[Dict[str, Any]] | None = None,
     hitl: Dict[str, Any] | None = None,
+    is_partial: bool | None = None,
 ) -> Dict[str, Any]:
     body: Dict[str, Any] = {"role": role, "content": content, "ts": ts}
     if rag_citations is not None:
         body["rag_citations"] = rag_citations
     if hitl is not None:
         body["hitl"] = hitl
+    if is_partial is True:
+        body["is_partial"] = True
     return body
 
 
@@ -117,6 +132,7 @@ class ConversationStore:
         *,
         rag_citations: List[Dict[str, Any]] | None = None,
         hitl: Dict[str, Any] | None = None,
+        is_partial: bool | None = None,
     ) -> None:
         key = (user_id, session_id)
         messages = self._data.setdefault(key, [])
@@ -127,6 +143,7 @@ class ConversationStore:
             ts=now,
             rag_citations=rag_citations,
             hitl=hitl,
+            is_partial=is_partial,
         )
         messages.append(rec)
         self._last_updated[key] = now
@@ -134,6 +151,34 @@ class ConversationStore:
         if len(messages) > self._max_history:
             self._data[key] = messages[-self._max_history :]
         self._touch_memory_catalog(user_id, session_id, role, content, now)
+
+    def get_recent_history(self, user_id: str, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        key = (user_id, session_id)
+        # 会话过期检查
+        if self._ttl_seconds > 0:
+            last = self._last_updated.get(key)
+            if last is not None and (time.time() - last) > self._ttl_seconds:
+                # 会话已过期，清理并返回空历史
+                self.clear(user_id, session_id)
+                return []
+        messages = self._data.get(key, [])
+        # 返回拷贝，避免调用方改到内存真源；并剥离遗留 [partial] 前缀供模型/业务使用
+        out: List[Dict[str, Any]] = []
+        for m in messages[-limit:]:
+            if not isinstance(m, dict):
+                continue
+            content = str(m.get("content", ""))
+            clean, legacy_partial = strip_legacy_partial_prefix(content)
+            row: Dict[str, Any] = {
+                "role": str(m.get("role", "")),
+                "content": clean,
+                "ts": m.get("ts"),
+            }
+            _apply_message_extras(row, m)
+            if legacy_partial or m.get("is_partial") is True:
+                row["is_partial"] = True
+            out.append(row)
+        return out
 
     def resolve_hitl_by_resume_token(self, user_id: str, session_id: str, resume_token: str) -> bool:
         """将匹配 resume_token 的 assistant.hitl.status 置为 resolved。"""
@@ -156,18 +201,6 @@ class ConversationStore:
             self._last_updated[key] = time.time()
             return True
         return False
-
-    def get_recent_history(self, user_id: str, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
-        key = (user_id, session_id)
-        # 会话过期检查
-        if self._ttl_seconds > 0:
-            last = self._last_updated.get(key)
-            if last is not None and (time.time() - last) > self._ttl_seconds:
-                # 会话已过期，清理并返回空历史
-                self.clear(user_id, session_id)
-                return []
-        messages = self._data.get(key, [])
-        return messages[-limit:]
 
     def clear(self, user_id: str, session_id: str) -> None:
         key = (user_id, session_id)
@@ -348,10 +381,31 @@ class ConversationStore:
         """
         供会话管理接口读取历史（含导出）：最多返回 CONV_EXPORT_MAX_MESSAGES 条（默认 500），
         与对话上下文用的 CONV_MAX_HISTORY_MESSAGES 上限无关。
+
+        返回**原始存储**正文（含遗留 ``[partial]`` 前缀），以保证 message_id 稳定；
+        展示层再做前缀剥离。对话上下文请用 ``get_recent_history``。
         """
         cap = max(1, int(os.getenv("CONV_EXPORT_MAX_MESSAGES", "500")))
         n = cap if limit is None else min(max(1, limit), cap)
-        return self.get_recent_history(user_id, session_id, limit=n)
+        key = (user_id, session_id)
+        if self._ttl_seconds > 0:
+            last = self._last_updated.get(key)
+            if last is not None and (time.time() - last) > self._ttl_seconds:
+                self.clear(user_id, session_id)
+                return []
+        messages = self._data.get(key, [])
+        out: List[Dict[str, Any]] = []
+        for m in messages[-n:]:
+            if not isinstance(m, dict):
+                continue
+            row: Dict[str, Any] = {
+                "role": str(m.get("role", "")),
+                "content": str(m.get("content", "")),
+                "ts": m.get("ts"),
+            }
+            _apply_message_extras(row, m)
+            out.append(row)
+        return out
 
     def get_session_title_snapshot(self, user_id: str, session_id: str) -> Dict[str, str]:
         """
@@ -460,10 +514,17 @@ class RedisConversationStore(ConversationStore):
         *,
         rag_citations: List[Dict[str, Any]] | None = None,
         hitl: Dict[str, Any] | None = None,
+        is_partial: bool | None = None,
     ) -> None:
         if self._redis is None:
             return super().append_message(
-                user_id, session_id, role, content, rag_citations=rag_citations, hitl=hitl
+                user_id,
+                session_id,
+                role,
+                content,
+                rag_citations=rag_citations,
+                hitl=hitl,
+                is_partial=is_partial,
             )
         key = f"{self._key_prefix}{user_id}:{session_id}"
         now = time.time()
@@ -474,6 +535,7 @@ class RedisConversationStore(ConversationStore):
             ts=now,
             rag_citations=rag_citations,
             hitl=hitl,
+            is_partial=is_partial,
         )
         payload = json.dumps(entry, ensure_ascii=False)
         await self._redis.rpush(key, payload)
@@ -533,6 +595,7 @@ class RedisConversationStore(ConversationStore):
         *,
         rag_citations: List[Dict[str, Any]] | None = None,
         hitl: Dict[str, Any] | None = None,
+        is_partial: bool | None = None,
     ) -> None:
         """
         为了兼容当前同步接口，这里在有 Redis 时使用 fire-and-forget 的方式调度异步写入；
@@ -540,12 +603,24 @@ class RedisConversationStore(ConversationStore):
         """
         if self._redis is None or self._loop is None:
             return super().append_message(
-                user_id, session_id, role, content, rag_citations=rag_citations, hitl=hitl
+                user_id,
+                session_id,
+                role,
+                content,
+                rag_citations=rag_citations,
+                hitl=hitl,
+                is_partial=is_partial,
             )
         # 将异步写入调度到专用事件循环线程，fire-and-forget
         fut = asyncio.run_coroutine_threadsafe(
             self._append_message_async(
-                user_id, session_id, role, content, rag_citations=rag_citations, hitl=hitl
+                user_id,
+                session_id,
+                role,
+                content,
+                rag_citations=rag_citations,
+                hitl=hitl,
+                is_partial=is_partial,
             ),
             self._loop,
         )
@@ -584,12 +659,16 @@ class RedisConversationStore(ConversationStore):
             if isinstance(obj, dict) and obj.get("role") is not None:
                 c = obj.get("content", "")
                 if c is not None and str(c).strip():
+                    raw_c = c if isinstance(c, str) else str(c)
+                    clean, legacy_partial = strip_legacy_partial_prefix(raw_c)
                     row: Dict[str, Any] = {
                         "role": str(obj["role"]),
-                        "content": c if isinstance(c, str) else str(c),
+                        "content": clean,
                         "ts": obj.get("ts"),
                     }
                     _apply_message_extras(row, obj)
+                    if legacy_partial or obj.get("is_partial") is True:
+                        row["is_partial"] = True
                     out.append(row)
         return out
 
@@ -839,6 +918,7 @@ class RedisConversationStore(ConversationStore):
                 ts=obj.get("ts"),
                 rag_citations=obj.get("rag_citations") if isinstance(obj.get("rag_citations"), list) else None,
                 hitl=obj.get("hitl") if isinstance(obj.get("hitl"), dict) else None,
+                is_partial=True if obj.get("is_partial") is True else None,
             )
             payload = json.dumps(body, ensure_ascii=False)
             pipe.rpush(key, payload)

@@ -40,13 +40,26 @@ class ConversationManager:
         content: str,
         rag_citations: List[Dict[str, Any]] | None = None,
         hitl: Dict[str, Any] | None = None,
+        is_partial: bool | None = None,
     ) -> None:
         u, s = validate_pair(user_id, session_id)
         self._store.append_message(
-            u, s, role="assistant", content=content, rag_citations=rag_citations, hitl=hitl
+            u,
+            s,
+            role="assistant",
+            content=content,
+            rag_citations=rag_citations,
+            hitl=hitl,
+            is_partial=is_partial,
         )
         self._archive_message(
-            u, s, role="assistant", content=content, rag_citations=rag_citations, hitl=hitl
+            u,
+            s,
+            role="assistant",
+            content=content,
+            rag_citations=rag_citations,
+            hitl=hitl,
+            is_partial=is_partial,
         )
 
     def resolve_hitl_by_resume_token(self, user_id: str, session_id: str, resume_token: str) -> bool:
@@ -86,6 +99,8 @@ class ConversationManager:
             hitl = m.get("hitl")
             if isinstance(hitl, dict) and hitl:
                 row["hitl"] = hitl
+            if m.get("is_partial") is True:
+                row["is_partial"] = True
             merged.append(row)
         merged.sort(key=lambda x: float(x.get("ts") or 0.0))
         if limit is None:
@@ -197,19 +212,22 @@ class ConversationManager:
         content: str,
         rag_citations: List[Dict[str, Any]] | None = None,
         hitl: Dict[str, Any] | None = None,
+        is_partial: bool | None = None,
     ) -> None:
         arch = get_archive_store()
         if not arch.enabled:
             return
         try:
             snap = self._store.get_session_title_snapshot(user_id, session_id)
-            history = self._store.get_recent_history(user_id, session_id, limit=1)
+            history = self._store.get_messages(user_id, session_id, limit=1)
             ts = history[-1].get("ts") if history else None
             meta: Dict[str, Any] = {}
             if rag_citations is not None:
                 meta["rag_citations"] = rag_citations
             if hitl is not None:
                 meta["hitl"] = hitl
+            if is_partial is True:
+                meta["is_partial"] = True
             arch.archive_message(
                 user_id=user_id,
                 session_id=session_id,

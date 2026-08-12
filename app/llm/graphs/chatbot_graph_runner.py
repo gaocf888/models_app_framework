@@ -1557,7 +1557,7 @@ class ChatbotLangGraphRunner:
         terminate_reason: Optional[str],
     ) -> None:
         # 成功路径落库：固定先 user 再 assistant，保持会话顺序稳定。
-        # 注意：partial 也走 assistant 落库，但会加 [partial] 前缀。
+        # partial 也走 assistant 落库；以 is_partial=true 标记，content 为纯正文（不再写 [partial] 前缀）。
         self._conv.append_user_message(
             req.user_id,
             req.session_id,
@@ -1569,12 +1569,17 @@ class ChatbotLangGraphRunner:
             ),
         )
         if answer:
-            content = answer if not is_partial else f"[partial] {answer}"
             rc_list = state.get("rag_citations")
             rag_kw: list[dict[str, Any]] | None = (
                 [x for x in rc_list if isinstance(x, dict)] if isinstance(rc_list, list) else None
             )
-            self._conv.append_assistant_message(req.user_id, req.session_id, content, rag_citations=rag_kw)
+            self._conv.append_assistant_message(
+                req.user_id,
+                req.session_id,
+                answer,
+                rag_citations=rag_kw,
+                is_partial=True if is_partial else None,
+            )
             if (
                 not is_partial
                 and self._anaphora_slots_enabled
@@ -1592,7 +1597,7 @@ class ChatbotLangGraphRunner:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("anaphora slots update failed: %s", exc)
             if not is_partial and self._outline_store is not None and self._outline_store.enabled:
-                self._schedule_outline_index(req.user_id, req.session_id, content)
+                self._schedule_outline_index(req.user_id, req.session_id, answer)
         state["answer_text"] = answer
         state["is_partial"] = is_partial
         state["terminate_reason"] = terminate_reason
@@ -1886,7 +1891,11 @@ class ChatbotLangGraphRunner:
                 [x for x in rc_list if isinstance(x, dict)] if isinstance(rc_list, list) else None
             )
             self._conv.append_assistant_message(
-                req.user_id, req.session_id, f"[partial] {partial}", rag_citations=rag_kw
+                req.user_id,
+                req.session_id,
+                partial,
+                rag_citations=rag_kw,
+                is_partial=True,
             )
 
     async def _fill_suggested_questions(self, state: ChatbotGraphState, req: ChatRequest, answer_text: str) -> None:

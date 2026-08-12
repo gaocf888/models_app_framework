@@ -393,6 +393,8 @@ class ConversationArchiveStore:
                     hitl = meta.get("hitl")
                     if isinstance(hitl, dict) and hitl:
                         row["hitl"] = hitl
+                    if meta.get("is_partial") is True:
+                        row["is_partial"] = True
                 out.append(row)
             return out
         except Exception as exc:  # noqa: BLE001

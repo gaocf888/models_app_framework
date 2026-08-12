@@ -41,6 +41,7 @@ from app.core.config import get_app_config
 from app.conversation.manager import ConversationManager
 from app.conversation.message_id import build_conversation_message_id, is_valid_message_id_hex
 from app.conversation.session_catalog import session_list_limit_cap
+from app.conversation.store import strip_legacy_partial_prefix
 from app.models.inspection_extract import InspectionUploadResponse
 from app.models.chatbot import (
     ChatRequest,
@@ -561,6 +562,7 @@ async def get_session_messages(
         助手消息在 RAG 路径下可含 `rag_citations`（含 `ref_index` 与 `original_content_url` 等，与流式 `finished.meta.rag_citations` 同形）。
         HITL 中断的助手消息可含 `hitl`（`hitl_kind` / `ui_buttons` / `resume_token` / `status`），
         与流式 `chatbot_hitl_required` 按钮同形，供历史回放与切会话后续点选；不含 `disambiguation_options`。
+        中断/断连的部分回复以 `is_partial=true` 标记；`content` 为纯正文（遗留 ``[partial]`` 前缀会被剥离）。
         正文 `content` 中可能出现 `[n]` 内联引用，解析方式同 `/chat/stream` 文档「RAG 内联引用」一节。
 
     Raises:
@@ -573,7 +575,10 @@ async def get_session_messages(
         role = str(m.get("role", ""))
         raw_content = str(m.get("content", ""))
         msg_id = build_conversation_message_id(user_id, session_id, role, raw_content, m.get("ts"))
-        content_text, original_image_urls, processed_image_urls = split_message_content_and_images(raw_content)
+        display_content, legacy_partial = strip_legacy_partial_prefix(raw_content)
+        content_text, original_image_urls, processed_image_urls = split_message_content_and_images(
+            display_content
+        )
         # assistant/system 历史通常不携带图片块；保持输出干净。
         if role != "user":
             original_image_urls = []
@@ -589,6 +594,7 @@ async def get_session_messages(
                 processed_image_urls=processed_image_urls,
                 rag_citations=_session_message_rag_citations(m.get("rag_citations")),
                 hitl=_session_message_hitl(m.get("hitl")),
+                is_partial=bool(m.get("is_partial") is True or legacy_partial),
                 ts=m.get("ts"),
             )
         )
