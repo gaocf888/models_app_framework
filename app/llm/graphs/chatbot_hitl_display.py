@@ -24,8 +24,8 @@ INTENT_ROUTE_BUTTONS: list[dict[str, str]] = [
 ]
 
 NL2SQL_FAIL_BUTTONS: list[dict[str, str]] = [
-    {"id": ACTION_NL2SQL_RETRY, "label": "重试查数"},
-    {"id": ACTION_FALLBACK_KB_QA, "label": "基于知识库分析"},
+    {"id": ACTION_NL2SQL_RETRY, "label": "重试电厂内部实时数据查询"},
+    {"id": ACTION_FALLBACK_KB_QA, "label": "基于专业知识分析"},
 ]
 
 
@@ -43,10 +43,14 @@ def build_intent_hitl_prompt(*, query: str, intent_label: str) -> str:
 def build_nl2sql_hitl_prompt(*, query: str, fail_reason: str | None) -> str:
     q = (query or "").strip()
     reason = (fail_reason or "未能生成有效 SQL").strip()
+    # return (
+    #     f"未能完成数据查询：「{q}」\n\n"
+    #     f"原因：{reason}\n\n"
+    #     "您可以重试查数，或改为从知识库检索相关说明。"
+    # )
     return (
-        f"未能完成数据查询：「{q}」\n\n"
-        f"原因：{reason}\n\n"
-        "您可以重试查数，或改为从知识库检索相关说明。"
+        f"未能完成数据查询（未能生成有效 SQL）\n\n"
+        "您可以选择点击下方「重试电厂内部实时数据查询」，或「基于专业知识分析」。"
     )
 
 
