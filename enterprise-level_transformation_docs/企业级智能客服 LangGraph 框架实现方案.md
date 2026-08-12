@@ -30,7 +30,7 @@
   - Coref 缓存（P3）：灰区 LLM 分类结果短时缓存，落库后按会话失效
 - `ChatbotLangGraphRunner`（`chatbot_graph_runner.py`）：`StateGraph` 编译与执行、**HITL 顺序执行路径**、**图后**流式生成、相似案例追加、**关联问题** `_fill_suggested_questions`、落库。
 - LangGraph：状态机（模板、历史、意图、故障门控、**按意图分支**、RAG/C-RAG 或 NL2SQL、`finalize`）；HITL 开启时 Runner 侧可顺序打断。
-- `chatbot_hitl.py` / `chatbot_hitl_display.py` / `chatbot_hitl_session_store.py` / `chatbot_intent_disambiguation.py`：意图确认、二次消歧建议与 NL2SQL 失败 HITL（见 **第 17 节**）。
+- `chatbot_hitl.py` / `chatbot_hitl_display.py` / `chatbot_hitl_session_store.py` / `chatbot_intent_route_suggest.py` / `chatbot_intent_disambiguation.py`：意图确认（含 LLM 筛钮）、二次消歧建议与 NL2SQL 失败 HITL（见 **第 17 节**）。
 - `HybridRAGService` / `AgenticRAGService`：主链路检索；相似案例为 Runner 层**二次** `retrieve(namespace=…)`。
 - `NL2SQLService`（`nl2sql_service.py`）：`data_query` 分支生成 SQL 与执行；客服内嵌调用时 `record_conversation=False`。NL2SQL 与 RAG 同为基座基础能力；直连 HTTP 见 `POST /nl2sql/query`；**综合分析 V2** 在 **`POST /analysis/run-with-nl2sql`**（及流式 **`run-with-nl2sql-stream`**）与 **`POST /analysis/run-img-diag`**（及流式 **`run-img-diag-stream`**）（NL2SQL 并行臂 **`acquire_data`** → **`_execute_data_plan`**，**默认同 dependency 层并行多次 `query`**）阶段亦多次复用同一服务（`record_conversation=False`）。接入形态总览见 **`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`**。
 - `chatbot_intent.py` / `chatbot_intent_rules.py` / `chatbot_intent_llm.py` / `chatbot_intent_bert.py`：意图统一入口与三后端（`rules | llm | bert`）；生产路径须 `classify_chatbot_intent_async`。
@@ -132,7 +132,7 @@
 补充说明（业务口径）：
 
 - **Legacy（关图或图异常回退）**：`chatbot_service._stream_chat_legacy_events` 对齐 **意图分支 + 关联问题 + 默认提示词**（含 Hybrid 时与 Graph 对齐验收）；与 Graph 差异主要在是否走 `StateGraph` 与 C-RAG 图节点（**流式**纯 `data_query` **不下发** `suggested_questions`）。**HITL 以 Graph 顺序执行路径为准**，Legacy 不以本 HITL 中断语义对齐。
-- **人机协同（可选）**：`CHATBOT_HITL_ENABLED=true` 时，**真模糊**可确认/二次消歧（含「综合查数+知识」），清晰混合直走 Hybrid；查库 SQL 生成失败可重试或改 RAG；中断后经 `/chat/resume-stream` 续跑（**第 17 节**）。
+- **人机协同（可选）**：`CHATBOT_HITL_ENABLED=true` 时，**真模糊**可确认/二次消歧（含「综合查数+知识」，首轮按钮可由 LLM 筛子集(根据用户问题，LLM分析输出部分或全部意图选项：查电厂内部实时数据、基于专业知识分析、综合实时数据和专业知识分析、我先补充问题)），清晰混合直走 Hybrid；查库 SQL 生成失败可重试或改 RAG；中断后经 `/chat/resume-stream` 续跑（**第 17 节**）。
 - **安全拒答、转人工、闲聊**：图内占位，**默认意图不产出**，主流量为 **澄清 / 查库 / 文档问答 / 综合 Hybrid**。
 - **相似案例**：仅 **C / D** 且非澄清、且门控命中时，在主答流式结束后追加；**A/B 不追加**（见 `chatbot_graph_runner._should_append_similar_cases`）。
 - **关联问题**：**不为关联问题单独再做向量检索**；**纯 `data_query` 流式路径不生成、不下发**；**`hybrid_qa` 允许下发**；详见 `framework-guide/智能客服整体实现技术说明.md` **§7**。
@@ -163,7 +163,7 @@ flowchart TB
     N2 --> N3["N: intent_classify\nclassify_chatbot_intent_async\n(rules|llm|bert)\n→ clarify|data_query|kb_qa|hybrid_qa"]
     N3 --> FG["N: fault_case_gate\nchatbot_similar_cases.run_fault_case_gate_decision"]
     FG --> IH{"意图 HITL?\n清晰 hybrid 跳过\n真模糊才弹 §17"}
-    IH -->|yes| HP1["pending_hitl\nintent_route_confirm\n四钮含 route_hybrid_qa\n→ resume-stream"]
+    IH -->|yes| HP1["pending_hitl\nintent_route_confirm\n候选池四钮·LLM可筛子集\n→ resume-stream"]
     IH -->|no| R1{"_route_by_intent\nA/B/C/D"}
     HP1 -.->|route_clarify 后仍模糊| HP1b["intent_disambiguation_suggest\n拆开+可选综合 → confirmed_route"]
     HP1 -.->|确认 data/kb/hybrid| R1
@@ -223,8 +223,9 @@ flowchart TB
 | 意图规则 | `app/llm/graphs/chatbot_intent_rules.py` | `classify_chatbot_intent_by_rules`（含 `mixed_hybrid` → `hybrid_qa`） |
 | 意图轻量 LLM | `app/llm/graphs/chatbot_intent_llm.py` | 模式 B 窄触发（见 `docs/智能客服意图识别轻量LLM接入说明.md`） |
 | 意图 BERT | `app/llm/graphs/chatbot_intent_bert.py` | `classify_chatbot_intent_by_bert`（须已微调序列分类模型） |
-| HITL 策略/话术/会话 | `chatbot_hitl.py` / `chatbot_hitl_display.py` / `chatbot_hitl_session_store.py` | 意图确认（含 `route_hybrid_qa`）、消歧、NL2SQL 失败（**第 17 节**） |
-| 意图二次消歧 | `app/llm/graphs/chatbot_intent_disambiguation.py` | LLM + 规则兜底 → `data_query`/`kb_qa`/`hybrid_qa` |
+| HITL 策略/话术/会话 | `chatbot_hitl.py` / `chatbot_hitl_display.py` / `chatbot_hitl_session_store.py` | 意图确认（候选池含 `route_hybrid_qa`）、消歧、NL2SQL 失败（**第 17 节**） |
+| 首轮 HITL 路线筛钮 | `app/llm/graphs/chatbot_intent_route_suggest.py` | LLM 筛 `ui_buttons` 子集；失败回退四钮 |
+| 意图二次消歧 | `app/llm/graphs/chatbot_intent_disambiguation.py` | LLM + 规则兜底 → 候选问句（`data_query`/`kb_qa`/`hybrid_qa`） |
 | FAQ 软直通 | `app/llm/graphs/chatbot_faq_soft_direct.py` | `evaluate_faq_soft_direct`（见 **§4.4**） |
 | RAG 引用 | `app/llm/graphs/chatbot_rag_citations.py` | `chunks_to_rag_context`、`filter_rag_citation_dicts` |
 | 引用流式解析 | `app/llm/graphs/chatbot_citation_stream.py` | `CitationStreamParser`、`citation_ref` 事件 |
@@ -234,7 +235,7 @@ flowchart TB
 | SQL 结果成文 | `app/llm/graphs/chatbot_nl2sql_answer.py` | `run_chatbot_nl2sql_query`、`summarize_nl2sql_with_llm` |
 | 关联问题 | `app/llm/graphs/chatbot_follow_up.py` | `build_suggested_questions` |
 | 指代消解（P0～P3） | `chatbot_retrieval_query.py`、`chatbot_anaphora_*.py`、`chatbot_dialogue_anchor.py` | 见 **第 15 节** |
-| 提示词 | `app/llm/prompt_registry.py` + `configs/prompts.yaml` | `get_template(..., default_version=)`；消歧 scene 含 `hybrid_qa` |
+| 提示词 | `app/llm/prompt_registry.py` + `configs/prompts.yaml` | `get_template(..., default_version=)`；含 `chatbot_intent_route_suggest`、消歧 scene（可含 `hybrid_qa`） |
 
 说明（与代码一致）：
 
@@ -256,7 +257,7 @@ flowchart TB
 - FAQ 软直通域：`faq_soft_direct`、`faq_soft_direct_reason`（`kb_build_messages` 写入，见 **§4.4**）
 - NL2SQL 域：`used_nl2sql`、`nl2sql_sql`、`nl2sql_failed`、`nl2sql_error_code`、`nl2sql_analysis`、`nl2sql_analysis_stream_plan`；HITL 重试：`nl2sql_retry_count`、`nl2sql_skip_cache`、`nl2sql_retry_hint`
 - Hybrid 域（**D**）：**`hybrid_degraded`**（`""` | `"nl2sql"` | `"rag"` | `"both"`；单臂失败降级标记，见 **§4.7**）
-- HITL 域（可选）：`pending_hitl`、`hitl_kind`、`hitl_original_query`、`confirmed_route`（含 `hybrid_qa`）、`hitl_resume_action`、`intent_hitl_round`、`disambiguation_analysis` / `disambiguation_options` / `disambiguation_source`（见 **第 17 节**）
+- HITL 域（可选）：`pending_hitl`、`hitl_kind`、`hitl_original_query`、`confirmed_route`（含 `hybrid_qa`）、`hitl_resume_action`、`intent_hitl_round`、`intent_hitl_ui_buttons` / `intent_route_suggest_source`、`disambiguation_analysis` / `disambiguation_options` / `disambiguation_source`（见 **第 17 节**）
 - 相似案例域：`need_similar_cases`、`case_rag_query`、`fault_detect_sources`、`fault_detect_confidence`、`similar_cases_appended`
 - 关联问题域：`suggested_questions`（Runner 写入，进 `meta`；**`data_query` 流式恒为空**）
 - 指代域（`kb_qa` 检索链）：`anaphora_type`、`anaphora_rule_type`、`anaphora_confidence`、`anaphora_score_gap`、`anaphora_source`、`anaphora_slot_bullets`、`anaphora_anchor_block`（P1/P2 默认关，见 **§15**；观测项见 `CHATBOT_ANAPHORA_EXPOSE_META`）
@@ -356,7 +357,7 @@ flowchart TB
 
 **动机**：用户常见「查出超温列表 + 结合规程说明如何处置」类问句，互斥的 **B/C** 二选一无法同时给出表数据与文档机理；规则层对「台账/统计 + 原因/标准/怎么处理」共现产出 **`hybrid_qa`**（`intent_reason=mixed_hybrid` 等），**不再**使用 `mixed_prefers_*`。
 
-**与 HITL 共存（zajt）**：清晰强混合（`hybrid_qa` + `mixed_hybrid` / 足够置信）→ **跳过**意图 HITL，直走 **D**；真模糊仍可弹确认，第四钮 `route_hybrid_qa`；二次消歧选项含可选 `route_hint=hybrid_qa`（见 **§17**、`docs/智能客服Hybrid意图改造方案.md`）。
+**与 HITL 共存（zajt）**：清晰强混合（`hybrid_qa` + `mixed_hybrid` / 足够置信）→ **跳过**意图 HITL，直走 **D**；真模糊仍可弹确认（候选池含 `route_hybrid_qa`，可由 LLM 筛子集）；二次消歧选项含可选 `route_hint=hybrid_qa`（见 **§17**、`docs/智能客服Hybrid意图改造方案.md`）。
 
 **`hybrid_acquire`（并行双臂）**：
 
@@ -538,7 +539,7 @@ flowchart TB
 - `CHATBOT_IMAGE_PUBLIC_PATH=/chatbot/media`（`local` 时 StaticFiles 前缀）
 - `CHATBOT_IMAGE_MINIO_*`（endpoint / bucket / presign TTL 等，见 `app/core/config.py`）
 - `CHATBOT_OUTLINE_ENABLED` / `CHATBOT_OUTLINE_ASYNC_ENABLED` / `CHATBOT_REFERENCE_RESOLVE_ENABLED` / `CHATBOT_REFERENCE_LOOKBACK_TURNS`（结构化「第 N 点」旁路，默认 outline 关）
-- **人机协同 HITL**（见 **第 17 节**）：`CHATBOT_HITL_ENABLED`（总开关，默认 `false`）、`CHATBOT_INTENT_HITL_ENABLED` / `CHATBOT_INTENT_HITL_MIN_CONFIDENCE`、`CHATBOT_INTENT_DISAMBIGUATION_ENABLED` / `CHATBOT_INTENT_DISAMBIGUATION_TIMEOUT_SEC` / `CHATBOT_INTENT_HITL_MAX_ROUNDS`、`CHATBOT_NL2SQL_HITL_ENABLED` / `CHATBOT_NL2SQL_HITL_MAX_RETRIES`、`CHATBOT_HITL_RESUME_TTL_SEC`、`CHATBOT_HITL_SESSION_BACKEND`（`memory|redis`）/ `CHATBOT_HITL_SESSION_REDIS_URL` / `CHATBOT_HITL_SESSION_NAMESPACE`
+- **人机协同 HITL**（见 **第 17 节**）：`CHATBOT_HITL_ENABLED`（总开关，默认 `false`）、`CHATBOT_INTENT_HITL_ENABLED` / `CHATBOT_INTENT_HITL_MIN_CONFIDENCE`、`CHATBOT_INTENT_ROUTE_SUGGEST_ENABLED` / `CHATBOT_INTENT_ROUTE_SUGGEST_TIMEOUT_SEC`、`CHATBOT_INTENT_DISAMBIGUATION_ENABLED` / `CHATBOT_INTENT_DISAMBIGUATION_TIMEOUT_SEC` / `CHATBOT_INTENT_HITL_MAX_ROUNDS`、`CHATBOT_NL2SQL_HITL_ENABLED` / `CHATBOT_NL2SQL_HITL_MAX_RETRIES`、`CHATBOT_HITL_RESUME_TTL_SEC`、`CHATBOT_HITL_SESSION_BACKEND`（`memory|redis`）/ `CHATBOT_HITL_SESSION_REDIS_URL` / `CHATBOT_HITL_SESSION_NAMESPACE`
 - `CHATBOT_CHECKPOINT_BACKEND=none|memory|redis`
 - `CHATBOT_CHECKPOINT_REDIS_URL=...`（redis backend 时）
 - `CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph`
@@ -617,7 +618,7 @@ flowchart TB
 10. **FAQ 软直通**：高分 FAQ 命中时跳过 history；低分/指代续问时不触发（§4.4）。
 11. **RAG 引用**：`citation_ref` 与 `finished.meta.rag_citations` 的 `ref_index` 对齐；`data_query` 无引用（§4.5）。
 12. **`CHATBOT_INTENT_BACKEND=llm`**：窄触发与 rules 回退（可选）。
-13. **HITL（可选）**：意图确认四按钮（含综合）；`route_clarify` 后二次消歧（拆开+可选综合）；清晰 `hybrid_qa` 不弹；NL2SQL 生成失败重试 / 改 RAG；`resume_token` 单次失效（第 17 节）。
+13. **HITL（可选）**：意图确认候选池四按钮（含综合），可经 LLM 筛子集；`route_clarify` 后二次消歧（拆开+可选综合）；清晰 `hybrid_qa` 不弹；历史消息可带 `hitl` 回放/续点选；NL2SQL 生成失败重试 / 改 RAG；`resume_token` 单次失效（第 17 节）。
 14. **Hybrid（§4.7）**：混合样例 → `hybrid_qa`；双臂成功 meta 同时 `used_rag`+`used_nl2sql`；单臂失败 `hybrid_degraded`。
 
 通过标准：
@@ -829,10 +830,10 @@ flowchart LR
 
 | 项 | 说明 |
 |----|------|
-| **目标** | **真模糊**时由用户确认路由（查数 / 知识 / **综合 Hybrid** / 补充问句）；补充后仍模糊时给出「拆开 + 可选综合」候选点选；内嵌 NL2SQL **SQL 生成失败**时提供「重试查数 / 改走知识库」 |
+| **目标** | **真模糊**时由用户确认路由（查数 / 知识 / **综合 Hybrid** / 补充问句）；首轮按钮可按问题 **LLM 筛子集**；补充后仍模糊时给出「拆开 + 可选综合」候选点选；内嵌 NL2SQL **SQL 生成失败**时提供「重试查数 / 改走知识库」 |
 | **清晰混合** | 已判 `hybrid_qa`（如 `mixed_hybrid`）→ **不弹**意图 HITL，直走 **D**（场景 B；见 §4.7） |
-| **API** | 中断：`POST /chatbot/chat/stream` SSE `chatbot_hitl_required`；续跑：`POST /chatbot/chat/resume-stream` |
-| **总开关** | `CHATBOT_HITL_ENABLED`（默认 `false`）；子开关 `CHATBOT_INTENT_HITL_*`、`CHATBOT_INTENT_DISAMBIGUATION_*`、`CHATBOT_NL2SQL_HITL_*` |
+| **API** | 中断：`POST /chatbot/chat/stream` SSE `chatbot_hitl_required`；续跑：`POST /chatbot/chat/resume-stream`；历史：`GET /chatbot/sessions/messages` 助手消息可含 `hitl` |
+| **总开关** | `CHATBOT_HITL_ENABLED`（默认 `false`）；子开关 `CHATBOT_INTENT_HITL_*`、`CHATBOT_INTENT_ROUTE_SUGGEST_*`、`CHATBOT_INTENT_DISAMBIGUATION_*`、`CHATBOT_NL2SQL_HITL_*` |
 | **执行方式** | HITL 开启或续跑时走 Runner **顺序执行**（`_run_graph_sequential` / `_run_graph_resume`），可 `pending_hitl` 中断 |
 | **非本范围** | 看图诊断 scope HITL、综合分析章节 HITL；Legacy 非 HITL 对齐路径 |
 
@@ -844,7 +845,9 @@ flowchart LR
 
 - 时机：意图分类 + 故障门控后、分支路由前。
 - 窄触发：低置信、非清晰混合的歧义 reason、查数与概念词互相交叉等（`should_trigger_intent_hitl`）；**清晰 `hybrid_qa`、高置信启发式、已确认路由、澄清、带图等跳过**。
-- 按钮：`route_data_query` / `route_kb_qa` / **`route_hybrid_qa`（综合查数+知识）** / `route_clarify`（补充问句时 **必填** `payload.refined_query`）。
+- **候选按钮池**（action 不变）：`route_data_query` / `route_kb_qa` / **`route_hybrid_qa`（综合）** / `route_clarify`（补充问句时 **必填** `payload.refined_query`）。
+- **动态筛钮（默认开）**：`CHATBOT_INTENT_ROUTE_SUGGEST_ENABLED=true` 时，在下发 `chatbot_hitl_required` 前由 `chatbot_intent_route_suggest`（prompt scene 同名）按当前问句 + 意图标签/原因 + 历史摘要输出 `routes` 子集，再映射为 `ui_buttons`（`{id,label}`）；**始终保留** `route_clarify`；至少保留 1 个业务路线。失败/超时/非法 JSON → **回退全部四钮**。`context.intent_route_suggest_source` ∈ `{llm, fallback_full}`。
+- **与二次消歧区别**：首轮筛的是 **路线按钮**；二次生成的是 **候选问句链接**。SSE 顶层结构不变：`hitl_kind` / `prompt` / `ui_buttons` / `context`（+ `resume_token`）。
 
 **意图二次消歧（`intent_disambiguation_suggest`）**
 
@@ -858,6 +861,11 @@ flowchart LR
 - 按钮：`nl2sql_retry`（跳过 SQL 缓存 + 注入失败原因 hint）/ `fallback_kb_qa`（改 RAG）。
 - 超限后返回固定失败话术，不再中断。
 
+**会话历史中的 HITL 元数据**
+
+- 中断落库时，assistant 消息除 `content`（话术）外写入 `hitl`：`hitl_kind`、`ui_buttons`、`resume_token`、`status`（`pending`→续跑成功后 `resolved`）。**不**落 `disambiguation_options`。
+- `GET /chatbot/sessions/messages` 原样返回；前端历史/切会话可按 `ui_buttons` 回放；`pending` 且 token 未过期（`CHATBOT_HITL_RESUME_TTL_SEC`）时可继续点选，`resolved` 宜置灰。
+
 ### 17.3 流程图
 
 ```mermaid
@@ -865,7 +873,8 @@ flowchart LR
     Stream["/chat/stream"] --> Intent["intent_classify"]
     Intent --> Gate["fault_case_gate"]
     Gate --> IH{"intent HITL?\n清晰 hybrid 跳过"}
-    IH -->|yes 真模糊| Pause1["chatbot_hitl_required\nintent_route_confirm\n四钮含综合"]
+    IH -->|yes 真模糊| Suggest["route_suggest LLM\n筛 ui_buttons 子集\n失败→四钮"]
+    Suggest --> Pause1["chatbot_hitl_required\nintent_route_confirm"]
     IH -->|no| Route["route A/B/C/D"]
     Pause1 --> Resume["/chat/resume-stream"]
     Resume -->|route_clarify| ReIntent["re intent_classify"]
@@ -895,15 +904,18 @@ flowchart LR
 |-------------|------|
 | `pending_hitl` / `hitl_kind` / `hitl_original_query` | 中断态与场景 |
 | `confirmed_route` / `hitl_resume_action` | 用户确认后的路由与 action（含 `hybrid_qa` / `route_hybrid_qa`） |
-| `intent_hitl_round` / `disambiguation_*` | 意图 HITL 轮次与消歧结果（`route_hint` 可含 `hybrid_qa`） |
+| `intent_hitl_round` / `intent_hitl_ui_buttons` / `intent_route_suggest_source` | 意图 HITL 轮次；首轮筛后按钮与来源（`llm`/`fallback_full`） |
+| `disambiguation_*` | 二次消歧结果（`route_hint` 可含 `hybrid_qa`） |
 | `nl2sql_retry_count` / `nl2sql_skip_cache` / `nl2sql_retry_hint` | 生成失败重试参数 |
-| `resume_token` | 写入 HITL 会话存储，TTL 由 `CHATBOT_HITL_RESUME_TTL_SEC` 控制 |
+| `resume_token` | 写入 HITL 会话存储与历史 `hitl.resume_token`；TTL 由 `CHATBOT_HITL_RESUME_TTL_SEC` 控制 |
 | `chatbot_hitl.py` | 触发判定（清晰 hybrid 跳过）、`apply_chatbot_hitl_action` |
-| `chatbot_hitl_display.py` | prompt、`ui_buttons`（含综合钮；消歧 label=完整问句） |
+| `chatbot_hitl_display.py` | prompt、候选池 `INTENT_ROUTE_BUTTONS`、`ui_buttons` 组装；消歧 label=完整问句；历史 `build_persisted_hitl` |
+| `chatbot_intent_route_suggest.py` | 首轮路线筛钮 LLM + 回退四钮 |
 | `chatbot_intent_disambiguation.py` | 消歧 LLM + 规则兜底（第三项常为 hybrid） |
 | `chatbot_hitl_session_store.py` | memory/redis 快照 |
-| `ChatbotHitlResumeRequest` | `app/models/chatbot.py` |
+| `ConversationManager` / `GET .../sessions/messages` | assistant.`hitl` 落库与查询（对齐 `rag_citations`） |
+| `ChatbotHitlResumeRequest` / `SessionMessageItem.hitl` | `app/models/chatbot.py` |
 
 ### 17.5 配置速查
 
-见 `app/app-deploy/.env.example` 中「人机协同 HITL」段：`CHATBOT_HITL_ENABLED`、`CHATBOT_INTENT_HITL_*`、`CHATBOT_INTENT_DISAMBIGUATION_*`、`CHATBOT_INTENT_HITL_MAX_ROUNDS`、`CHATBOT_NL2SQL_HITL_*`、`CHATBOT_HITL_SESSION_*`。
+见 `app/app-deploy/.env.example` 中「人机协同 HITL」段：`CHATBOT_HITL_ENABLED`、`CHATBOT_INTENT_HITL_*`、`CHATBOT_INTENT_ROUTE_SUGGEST_ENABLED` / `CHATBOT_INTENT_ROUTE_SUGGEST_TIMEOUT_SEC`、`CHATBOT_INTENT_DISAMBIGUATION_*`、`CHATBOT_INTENT_HITL_MAX_ROUNDS`、`CHATBOT_NL2SQL_HITL_*`、`CHATBOT_HITL_SESSION_*`。

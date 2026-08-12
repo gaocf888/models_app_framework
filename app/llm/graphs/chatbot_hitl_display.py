@@ -214,7 +214,15 @@ def build_hitl_interrupt_payload(state: dict[str, Any]) -> dict[str, Any]:
     kind = str(state.get("hitl_kind") or "")
     options = list(state.get("disambiguation_options") or [])
     if kind == HITL_KIND_INTENT_ROUTE:
-        buttons = INTENT_ROUTE_BUTTONS
+        custom = state.get("intent_hitl_ui_buttons")
+        if isinstance(custom, list) and custom:
+            buttons = [
+                {"id": str(b.get("id") or ""), "label": str(b.get("label") or "")}
+                for b in custom
+                if isinstance(b, dict) and str(b.get("id") or "").strip()
+            ] or list(INTENT_ROUTE_BUTTONS)
+        else:
+            buttons = list(INTENT_ROUTE_BUTTONS)
         prompt = build_intent_hitl_prompt(
             query=str(state.get("hitl_original_query") or state.get("query") or ""),
             intent_label=str(state.get("intent_label") or ""),
@@ -245,6 +253,9 @@ def build_hitl_interrupt_payload(state: dict[str, Any]) -> dict[str, Any]:
             "disambiguation_options": options if kind == HITL_KIND_INTENT_DISAMBIGUATION else None,
             "disambiguation_source": (
                 state.get("disambiguation_source") if kind == HITL_KIND_INTENT_DISAMBIGUATION else None
+            ),
+            "intent_route_suggest_source": (
+                state.get("intent_route_suggest_source") if kind == HITL_KIND_INTENT_ROUTE else None
             ),
         },
     }

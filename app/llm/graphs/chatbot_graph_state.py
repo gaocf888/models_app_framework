@@ -57,6 +57,8 @@ class ChatbotGraphState(TypedDict, total=False):
     hitl_resume_action: str
     hitl_choice_label: str
     intent_hitl_round: int
+    intent_hitl_ui_buttons: List[Dict[str, Any]]
+    intent_route_suggest_source: str
     disambiguation_analysis: str
     disambiguation_options: List[Dict[str, Any]]
     disambiguation_source: str

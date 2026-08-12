@@ -17,7 +17,8 @@
 # 【现网生产清单】（对齐 app/app-deploy/.env + 产品范围；运维以本清单为准）
 # -----------------------------------------------------------------------------
 # 已上生产（本文件必须保留对应 scene）：
-#   ① 智能客服：chatbot / chatbot_intent_disambiguation / chatbot_nl2sql_analysis /
+#   ① 智能客服：chatbot / chatbot_intent_disambiguation / chatbot_intent_route_suggest /
+#      chatbot_nl2sql_analysis /
 #      chatbot_nl2sql_empty；共用 nl2sql、nl2sql_scope_parse
 #      （.env：CHATBOT_GRAPH_ENABLED、CHATBOT_INTENT_DISAMBIGUATION_ENABLED、
 #       CHATBOT_NL2SQL_*_ENABLED=true）
@@ -197,6 +198,30 @@ chatbot:
       若用户指向会话上文（含主题用语或「上述…」），请先按语义对齐对话历史中助手较近的相关表述；用户明确提到「第N…」时再对齐编号。知识片段用于补充依据，勿将检索片段顺序与会话内容混淆。
       带 [n] 编号片段时：与片段一一对应的表述句末必须标 [n]；宽泛问法仅按片段逐条说明，勿扩写未覆盖条目。
       当用户仅使用短句质疑或确认（如「确定吗」「你确定吗」「真的吗」「靠谱吗」「有依据吗」等），且对话历史中存在上一轮助手回答时，默认视为对该回答的确认/质疑：先概括上一轮结论 1～2 句，再说明依据来自检索片段还是推断；禁止在已有上一轮助手内容时，再说「没有具体上下文」类套话。
+
+
+# =============================================================================
+# ①.a1b 智能客服 · 首轮意图 HITL 路线按钮筛选（scene="chatbot_intent_route_suggest"）
+# =============================================================================
+# 【谁用】app/llm/graphs/chatbot_intent_route_suggest.generate_intent_route_buttons
+# 【时机】首轮 intent_route_confirm 弹窗前；筛选 ui_buttons 子集（clarify 由代码固定追加）
+# 【输出】仅 JSON：{"routes":["data_query"|"kb_qa"|"hybrid_qa", ...]}
+# 【开关】CHATBOT_INTENT_ROUTE_SUGGEST_ENABLED（失败回退四钮）
+
+chatbot_intent_route_suggest:
+  - version: v1
+    weight: 1.0
+    description: 首轮意图 HITL 按问题筛选路线按钮（子集或全量）
+    content: |
+      你是电厂锅炉领域的智能客服助手。用户意图边界不清，系统将弹出路线确认按钮。
+      请只输出一个 JSON 对象，不要 Markdown。
+      格式：
+      {"routes":["data_query","kb_qa","hybrid_qa"]}
+      硬性要求：
+      1) routes 只能从 data_query（查电厂内部实时/台账数据）、kb_qa（基于专业知识分析）、hybrid_qa（综合实时数据+专业知识）中多选；
+      2) 根据用户当前问题与历史，只保留相关路线：纯知识/处置/原理类勿带 data_query；纯查数/台账类勿硬塞无关知识路线；边界不清或混合诉求可返回多项或全部三路线；
+      3) routes 至少 1 条、最多 3 条；不要输出 clarify（「我先补充问题」由系统固定追加）；
+      4) 不要编造其它键名，不要输出按钮文案或 analysis。
 
 
 # =============================================================================

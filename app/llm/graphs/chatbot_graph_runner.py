@@ -35,6 +35,7 @@ from .chatbot_hitl import (
 from .chatbot_hitl_display import (
     ACTION_ROUTE_CLARIFY,
     HITL_KIND_INTENT_DISAMBIGUATION,
+    HITL_KIND_INTENT_ROUTE,
     build_hitl_interrupt_payload,
     build_persisted_hitl,
     format_hitl_assistant_message,
@@ -43,6 +44,10 @@ from .chatbot_hitl_display import (
 from .chatbot_intent_disambiguation import (
     generate_intent_disambiguation,
     intent_disambiguation_enabled,
+)
+from .chatbot_intent_route_suggest import (
+    generate_intent_route_buttons,
+    intent_route_suggest_enabled,
 )
 from .chatbot_hitl_session_store import (
     create_chatbot_hitl_resume_session,
@@ -556,6 +561,8 @@ class ChatbotLangGraphRunner:
             "hitl_resume_action": "",
             "hitl_choice_label": "",
             "intent_hitl_round": 0,
+            "intent_hitl_ui_buttons": [],
+            "intent_route_suggest_source": "",
             "disambiguation_analysis": "",
             "disambiguation_options": [],
             "disambiguation_source": "",
@@ -1670,6 +1677,20 @@ class ChatbotLangGraphRunner:
         start_ts: float,
         stream_id: str | None,
     ) -> AsyncIterator[Dict[str, Any]]:
+        # 首轮意图确认：可选 LLM 筛选 ui_buttons 子集（结构仍为 hitl_kind/prompt/ui_buttons/context）
+        if str(state.get("hitl_kind") or "") == HITL_KIND_INTENT_ROUTE and intent_route_suggest_enabled():
+            suggest = await generate_intent_route_buttons(
+                query=str(state.get("hitl_original_query") or state.get("query") or ""),
+                intent_label=str(state.get("intent_label") or ""),
+                intent_confidence=float(state.get("intent_confidence") or 0.0),
+                intent_reason=str(state.get("intent_reason") or ""),
+                history_summary=str(state.get("intent_history_summary") or ""),
+                llm_client=self._llm,
+                user_id=str(state.get("user_id") or req.user_id or "") or None,
+            )
+            state["intent_hitl_ui_buttons"] = list(suggest.get("ui_buttons") or [])
+            state["intent_route_suggest_source"] = str(suggest.get("source") or "")
+
         interrupt_payload = build_hitl_interrupt_payload(state)
         token = create_chatbot_hitl_resume_session(
             user_id=req.user_id,

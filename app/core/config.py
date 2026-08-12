@@ -463,6 +463,9 @@ class ChatbotConfig:
     intent_hitl_min_confidence: float = 0.75
     intent_disambiguation_enabled: bool = True
     intent_disambiguation_timeout_sec: float = 15.0
+    # 首轮意图 HITL：LLM 筛选路线按钮子集（失败回退四钮）
+    intent_route_suggest_enabled: bool = True
+    intent_route_suggest_timeout_sec: float = 12.0
     intent_hitl_max_rounds: int = 2
     nl2sql_hitl_enabled: bool = True
     nl2sql_hitl_max_retries: int = 1
@@ -1268,6 +1271,11 @@ def _load_from_env() -> AppConfig:
         == "true",
         intent_disambiguation_timeout_sec=max(
             3.0, float(os.getenv("CHATBOT_INTENT_DISAMBIGUATION_TIMEOUT_SEC", "15"))
+        ),
+        intent_route_suggest_enabled=os.getenv("CHATBOT_INTENT_ROUTE_SUGGEST_ENABLED", "true").lower()
+        == "true",
+        intent_route_suggest_timeout_sec=max(
+            3.0, float(os.getenv("CHATBOT_INTENT_ROUTE_SUGGEST_TIMEOUT_SEC", "12"))
         ),
         intent_hitl_max_rounds=max(1, int(os.getenv("CHATBOT_INTENT_HITL_MAX_ROUNDS", "2"))),
         nl2sql_hitl_enabled=os.getenv("CHATBOT_NL2SQL_HITL_ENABLED", "true").lower() == "true",
