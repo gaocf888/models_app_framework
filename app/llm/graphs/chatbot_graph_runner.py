@@ -36,6 +36,7 @@ from .chatbot_hitl_display import (
     ACTION_ROUTE_CLARIFY,
     HITL_KIND_INTENT_DISAMBIGUATION,
     build_hitl_interrupt_payload,
+    build_persisted_hitl,
     format_hitl_assistant_message,
     format_hitl_user_choice_message,
 )
@@ -1614,8 +1615,15 @@ class ChatbotLangGraphRunner:
         except Exception:
             pass
 
-    def _persist_hitl_turn(self, state: ChatbotGraphState, req: ChatRequest, assistant_text: str) -> None:
-        """首轮 HITL interrupt：落库 user 原问 + assistant 确认话术。"""
+    def _persist_hitl_turn(
+        self,
+        state: ChatbotGraphState,
+        req: ChatRequest,
+        assistant_text: str,
+        *,
+        hitl: dict[str, Any] | None = None,
+    ) -> None:
+        """首轮 HITL interrupt：落库 user 原问 + assistant 确认话术（含 hitl 元数据）。"""
         from app.services.chatbot_image_utils import build_user_message_with_images
 
         self._conv.append_user_message(
@@ -1633,7 +1641,12 @@ class ChatbotLangGraphRunner:
             ),
         )
         if assistant_text.strip():
-            self._conv.append_assistant_message(req.user_id, req.session_id, assistant_text.strip())
+            self._conv.append_assistant_message(
+                req.user_id,
+                req.session_id,
+                assistant_text.strip(),
+                hitl=hitl,
+            )
 
     def _persist_resume_user_choice(
         self,
@@ -1672,7 +1685,13 @@ class ChatbotLangGraphRunner:
             hitl_kind=str(state.get("hitl_kind") or ""),
             prompt=prompt,
         )
-        self._persist_hitl_turn(state, req, assistant_text)
+        persisted = build_persisted_hitl(
+            hitl_kind=str(hitl_ev.get("hitl_kind") or state.get("hitl_kind") or ""),
+            ui_buttons=hitl_ev.get("ui_buttons") if isinstance(hitl_ev.get("ui_buttons"), list) else [],
+            resume_token=token,
+            status="pending",
+        )
+        self._persist_hitl_turn(state, req, assistant_text, hitl=persisted)
         state["answer_text"] = assistant_text
         state["status"] = "awaiting_hitl"
         yield {"type": "delta", "delta": assistant_text}
@@ -1707,6 +1726,10 @@ class ChatbotLangGraphRunner:
             yield {"type": "finished", "meta": {"status": "failed", "error": str(exc)}}
             return
         delete_chatbot_hitl_resume_session(resume_token)
+        try:
+            self._conv.resolve_hitl_by_resume_token(user_id, session_id, resume_token)
+        except Exception:
+            pass
         self._persist_resume_user_choice(
             user_id,
             session_id,

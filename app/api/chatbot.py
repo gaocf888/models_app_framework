@@ -59,6 +59,7 @@ from app.models.chatbot import (
     SessionTitlePatchResponse,
 )
 from app.llm.graphs.chatbot_rag_citations import filter_rag_citation_dicts
+from app.llm.graphs.chatbot_hitl_display import normalize_persisted_hitl
 from app.services.chatbot_service import ChatbotService
 from app.services.chatbot_image_utils import split_message_content_and_images
 
@@ -78,6 +79,12 @@ def _session_message_rag_citations(raw: Any) -> list[dict[str, Any]]:
         if isinstance(it, dict):
             out.append(dict(it))
     return filter_rag_citation_dicts(out)
+
+
+def _session_message_hitl(raw: Any) -> dict[str, Any] | None:
+    return normalize_persisted_hitl(raw)
+
+
 def _delete_messages_by_ids(user_id: str, session_id: str, message_ids: list[str]) -> SessionMessageDeleteResponse:
     mids = [str(x or "").strip().lower() for x in (message_ids or []) if str(x or "").strip()]
     if not mids:
@@ -552,6 +559,8 @@ async def get_session_messages(
     Returns:
         SessionMessagesResponse: `title`/`title_source` 与 `GET /sessions` 列表同源；`messages` 按时间顺序；
         助手消息在 RAG 路径下可含 `rag_citations`（含 `ref_index` 与 `original_content_url` 等，与流式 `finished.meta.rag_citations` 同形）。
+        HITL 中断的助手消息可含 `hitl`（`hitl_kind` / `ui_buttons` / `resume_token` / `status`），
+        与流式 `chatbot_hitl_required` 按钮同形，供历史回放与切会话后续点选；不含 `disambiguation_options`。
         正文 `content` 中可能出现 `[n]` 内联引用，解析方式同 `/chat/stream` 文档「RAG 内联引用」一节。
 
     Raises:
@@ -579,6 +588,7 @@ async def get_session_messages(
                 original_image_urls=original_image_urls,
                 processed_image_urls=processed_image_urls,
                 rag_citations=_session_message_rag_citations(m.get("rag_citations")),
+                hitl=_session_message_hitl(m.get("hitl")),
                 ts=m.get("ts"),
             )
         )

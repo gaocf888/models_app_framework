@@ -125,6 +125,15 @@ class SessionMessageItem(BaseModel):
             "有 original_content_url 时可渲染外链。非 RAG/非 assistant 路径为空列表。"
         ),
     )
+    hitl: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "人机协同元数据（仅 HITL 中断的 assistant 消息有值）。"
+            "字段：hitl_kind、ui_buttons（与 SSE chatbot_hitl_required 同形）、"
+            "resume_token（切会话后可继续点选）、status（pending|resolved）。"
+            "不含 disambiguation_options。"
+        ),
+    )
     ts: float | None = Field(None, description="写入时时间戳（秒，可能为空）")
 
 

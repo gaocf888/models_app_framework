@@ -17,9 +17,9 @@ ACTION_FALLBACK_KB_QA = "fallback_kb_qa"
 ACTION_PICK_DISAMBIGUATION_OPTION = "pick_disambiguation_option"
 
 INTENT_ROUTE_BUTTONS: list[dict[str, str]] = [
-    {"id": ACTION_ROUTE_DATA_QUERY, "label": "查实时/台账数据"},
-    {"id": ACTION_ROUTE_KB_QA, "label": "基于知识库分析"},
-    {"id": ACTION_ROUTE_HYBRID, "label": "综合查数+知识"},
+    {"id": ACTION_ROUTE_DATA_QUERY, "label": "查电厂内部实时数据"},
+    {"id": ACTION_ROUTE_KB_QA, "label": "基于专业知识分析"},
+    {"id": ACTION_ROUTE_HYBRID, "label": "综合实时数据和专业知识分析"},
     {"id": ACTION_ROUTE_CLARIFY, "label": "我先补充问题"},
 ]
 
@@ -34,21 +34,10 @@ def disambiguation_button_id(index: int) -> str:
 
 
 def build_intent_hitl_prompt(*, query: str, intent_label: str) -> str:
-    q = (query or "").strip()
-    hint = ""
-    if intent_label == "data_query":
-        hint = "系统倾向于从业务数据库查询结构化数据。"
-    elif intent_label == "kb_qa":
-        hint = "系统倾向于从知识库检索说明类内容。"
-    elif intent_label == "hybrid_qa":
-        hint = "系统倾向于同时查数并结合知识库综合回答。"
-    else:
-        hint = "系统需要您确认希望的处理方式。"
-    return (
-        f"您的问题：「{q}」\n\n"
-        f"{hint}\n\n"
-        "请选择您希望我采用的方式："
-    )
+    """首轮意图确认话术；不问句回显、不暴露系统倾向。"""
+    _ = (query, intent_label)
+    return "这个问题我还不够确定该怎么处理。请选择您希望我采用的方式："
+
 
 
 def build_nl2sql_hitl_prompt(*, query: str, fail_reason: str | None) -> str:
@@ -62,7 +51,7 @@ def build_nl2sql_hitl_prompt(*, query: str, fail_reason: str | None) -> str:
 
 
 _DISAMBIGUATION_GUIDE = (
-    "下面有几句更具体的问法，您点最贴近您意思的那一句就行，我按您选的继续答。"
+    "下面提供几句更具体的问法，请点选，我将按您选的继续回答。"
 )
 
 _DISAMBIGUATION_FALLBACK_ANALYSIS = (
@@ -137,6 +126,62 @@ def build_disambiguation_ui_buttons(options: list[dict[str, Any]]) -> list[dict[
 
 def format_hitl_assistant_message(*, hitl_kind: str, prompt: str) -> str:
     return (prompt or "").strip()
+
+
+def build_persisted_hitl(
+    *,
+    hitl_kind: str,
+    ui_buttons: list[dict[str, Any]] | None,
+    resume_token: str,
+    status: str = "pending",
+) -> dict[str, Any]:
+    """会话历史落库用 HITL 元数据（不含 disambiguation_options）。"""
+    buttons: list[dict[str, str]] = []
+    for b in ui_buttons or []:
+        if not isinstance(b, dict):
+            continue
+        bid = str(b.get("id") or "").strip()
+        if not bid:
+            continue
+        buttons.append({"id": bid, "label": str(b.get("label") or "")})
+    st = str(status or "").strip().lower() or "pending"
+    if st not in ("pending", "resolved"):
+        st = "pending"
+    return {
+        "hitl_kind": str(hitl_kind or "").strip(),
+        "ui_buttons": buttons,
+        "resume_token": str(resume_token or "").strip(),
+        "status": st,
+    }
+
+
+def normalize_persisted_hitl(raw: Any) -> dict[str, Any] | None:
+    """将历史存储中的 hitl 规范为 API/前端同形（不含 disambiguation_options）。"""
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("hitl_kind") or "").strip()
+    token = str(raw.get("resume_token") or "").strip()
+    status = str(raw.get("status") or "").strip().lower() or "pending"
+    if status not in ("pending", "resolved"):
+        status = "pending"
+    buttons_out: list[dict[str, str]] = []
+    buttons = raw.get("ui_buttons")
+    if isinstance(buttons, list):
+        for b in buttons:
+            if not isinstance(b, dict):
+                continue
+            bid = str(b.get("id") or "").strip()
+            if not bid:
+                continue
+            buttons_out.append({"id": bid, "label": str(b.get("label") or "")})
+    if not kind and not buttons_out and not token:
+        return None
+    return {
+        "hitl_kind": kind,
+        "ui_buttons": buttons_out,
+        "resume_token": token,
+        "status": status,
+    }
 
 
 def format_hitl_user_choice_message(*, action: str, label: str | None = None) -> str:

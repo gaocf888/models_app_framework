@@ -17,6 +17,34 @@ from app.conversation.session_catalog import (
 )
 from app.core.logging import get_logger
 
+
+def _apply_message_extras(row: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
+    """将存储 JSON 中的 rag_citations / hitl 拷贝到历史行（对齐透传）。"""
+    rc = src.get("rag_citations")
+    if isinstance(rc, list):
+        row["rag_citations"] = rc
+    hitl = src.get("hitl")
+    if isinstance(hitl, dict) and hitl:
+        row["hitl"] = dict(hitl)
+    return row
+
+
+def _message_storage_body(
+    *,
+    role: str,
+    content: str,
+    ts: Any,
+    rag_citations: List[Dict[str, Any]] | None = None,
+    hitl: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {"role": role, "content": content, "ts": ts}
+    if rag_citations is not None:
+        body["rag_citations"] = rag_citations
+    if hitl is not None:
+        body["hitl"] = hitl
+    return body
+
+
 logger = get_logger(__name__)
 
 _store_lock = threading.Lock()
@@ -88,19 +116,46 @@ class ConversationStore:
         content: str,
         *,
         rag_citations: List[Dict[str, Any]] | None = None,
+        hitl: Dict[str, Any] | None = None,
     ) -> None:
         key = (user_id, session_id)
         messages = self._data.setdefault(key, [])
         now = time.time()
-        rec: Dict[str, Any] = {"role": role, "content": content, "ts": now}
-        if rag_citations is not None:
-            rec["rag_citations"] = rag_citations
+        rec = _message_storage_body(
+            role=role,
+            content=content,
+            ts=now,
+            rag_citations=rag_citations,
+            hitl=hitl,
+        )
         messages.append(rec)
         self._last_updated[key] = now
         # 历史裁剪：只保留最近 _max_history 条
         if len(messages) > self._max_history:
             self._data[key] = messages[-self._max_history :]
         self._touch_memory_catalog(user_id, session_id, role, content, now)
+
+    def resolve_hitl_by_resume_token(self, user_id: str, session_id: str, resume_token: str) -> bool:
+        """将匹配 resume_token 的 assistant.hitl.status 置为 resolved。"""
+        token = (resume_token or "").strip()
+        if not token:
+            return False
+        key = (user_id, session_id)
+        messages = self._data.get(key) or []
+        for rec in reversed(messages):
+            if not isinstance(rec, dict) or str(rec.get("role") or "") != "assistant":
+                continue
+            hitl = rec.get("hitl")
+            if not isinstance(hitl, dict):
+                continue
+            if str(hitl.get("resume_token") or "").strip() != token:
+                continue
+            updated = dict(hitl)
+            updated["status"] = "resolved"
+            rec["hitl"] = updated
+            self._last_updated[key] = time.time()
+            return True
+        return False
 
     def get_recent_history(self, user_id: str, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         key = (user_id, session_id)
@@ -404,15 +459,22 @@ class RedisConversationStore(ConversationStore):
         content: str,
         *,
         rag_citations: List[Dict[str, Any]] | None = None,
+        hitl: Dict[str, Any] | None = None,
     ) -> None:
         if self._redis is None:
-            return super().append_message(user_id, session_id, role, content, rag_citations=rag_citations)
+            return super().append_message(
+                user_id, session_id, role, content, rag_citations=rag_citations, hitl=hitl
+            )
         key = f"{self._key_prefix}{user_id}:{session_id}"
         now = time.time()
         now_ms = int(now * 1000)
-        entry: Dict[str, Any] = {"role": role, "content": content, "ts": now}
-        if rag_citations is not None:
-            entry["rag_citations"] = rag_citations
+        entry = _message_storage_body(
+            role=role,
+            content=content,
+            ts=now,
+            rag_citations=rag_citations,
+            hitl=hitl,
+        )
         payload = json.dumps(entry, ensure_ascii=False)
         await self._redis.rpush(key, payload)
         if self._ttl_seconds > 0:
@@ -470,16 +532,21 @@ class RedisConversationStore(ConversationStore):
         content: str,
         *,
         rag_citations: List[Dict[str, Any]] | None = None,
+        hitl: Dict[str, Any] | None = None,
     ) -> None:
         """
         为了兼容当前同步接口，这里在有 Redis 时使用 fire-and-forget 的方式调度异步写入；
         若没有 Redis 或导入失败，则退回到内存实现。
         """
         if self._redis is None or self._loop is None:
-            return super().append_message(user_id, session_id, role, content, rag_citations=rag_citations)
+            return super().append_message(
+                user_id, session_id, role, content, rag_citations=rag_citations, hitl=hitl
+            )
         # 将异步写入调度到专用事件循环线程，fire-and-forget
         fut = asyncio.run_coroutine_threadsafe(
-            self._append_message_async(user_id, session_id, role, content, rag_citations=rag_citations),
+            self._append_message_async(
+                user_id, session_id, role, content, rag_citations=rag_citations, hitl=hitl
+            ),
             self._loop,
         )
         wait_s = _redis_append_wait_seconds()
@@ -522,9 +589,7 @@ class RedisConversationStore(ConversationStore):
                         "content": c if isinstance(c, str) else str(c),
                         "ts": obj.get("ts"),
                     }
-                    rc = obj.get("rag_citations")
-                    if isinstance(rc, list):
-                        row["rag_citations"] = rc
+                    _apply_message_extras(row, obj)
                     out.append(row)
         return out
 
@@ -561,9 +626,7 @@ class RedisConversationStore(ConversationStore):
                         "content": c if isinstance(c, str) else str(c),
                         "ts": obj.get("ts"),
                     }
-                    rc = obj.get("rag_citations")
-                    if isinstance(rc, list):
-                        row["rag_citations"] = rc
+                    _apply_message_extras(row, obj)
                     out.append(row)
         return out
 
@@ -745,9 +808,7 @@ class RedisConversationStore(ConversationStore):
                         "content": c if isinstance(c, str) else str(c),
                         "ts": obj.get("ts"),
                     }
-                    rc = obj.get("rag_citations")
-                    if isinstance(rc, list):
-                        row["rag_citations"] = rc
+                    _apply_message_extras(row, obj)
                     items.append(row)
         new_items: List[Dict[str, Any]] = []
         found = False
@@ -772,10 +833,13 @@ class RedisConversationStore(ConversationStore):
         pipe = self._redis.pipeline(transaction=True)
         pipe.delete(key)
         for obj in new_items:
-            body: Dict[str, Any] = {"role": obj["role"], "content": obj["content"], "ts": obj["ts"]}
-            rc = obj.get("rag_citations")
-            if isinstance(rc, list):
-                body["rag_citations"] = rc
+            body = _message_storage_body(
+                role=str(obj["role"]),
+                content=str(obj["content"]),
+                ts=obj.get("ts"),
+                rag_citations=obj.get("rag_citations") if isinstance(obj.get("rag_citations"), list) else None,
+                hitl=obj.get("hitl") if isinstance(obj.get("hitl"), dict) else None,
+            )
             payload = json.dumps(body, ensure_ascii=False)
             pipe.rpush(key, payload)
         if self._ttl_seconds > 0:
@@ -799,6 +863,56 @@ class RedisConversationStore(ConversationStore):
             return bool(fut.result(timeout=10.0))
         except Exception as exc:  # noqa: BLE001
             logger.error("RedisConversationStore delete_message failed: %s", exc)
+            return False
+
+    async def _resolve_hitl_by_resume_token_async(
+        self, user_id: str, session_id: str, resume_token: str
+    ) -> bool:
+        token = (resume_token or "").strip()
+        if not token:
+            return False
+        if self._redis is None:
+            return super().resolve_hitl_by_resume_token(user_id, session_id, token)
+        key = f"{self._key_prefix}{user_id}:{session_id}"
+        raw = await self._redis.lrange(key, 0, -1)
+        for idx in range(len(raw or []) - 1, -1, -1):
+            item = raw[idx]
+            if not isinstance(item, str):
+                continue
+            try:
+                obj = json.loads(item)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict) or str(obj.get("role") or "") != "assistant":
+                continue
+            hitl = obj.get("hitl")
+            if not isinstance(hitl, dict):
+                continue
+            if str(hitl.get("resume_token") or "").strip() != token:
+                continue
+            updated_hitl = dict(hitl)
+            updated_hitl["status"] = "resolved"
+            obj = dict(obj)
+            obj["hitl"] = updated_hitl
+            await self._redis.lset(key, idx, json.dumps(obj, ensure_ascii=False))
+            if self._ttl_seconds > 0:
+                await self._redis.expire(key, self._ttl_seconds)
+            return True
+        return False
+
+    def resolve_hitl_by_resume_token(  # type: ignore[override]
+        self, user_id: str, session_id: str, resume_token: str
+    ) -> bool:
+        if self._redis is None or self._loop is None:
+            return super().resolve_hitl_by_resume_token(user_id, session_id, resume_token)
+        fut = asyncio.run_coroutine_threadsafe(
+            self._resolve_hitl_by_resume_token_async(user_id, session_id, resume_token),
+            self._loop,
+        )
+        try:
+            return bool(fut.result(timeout=10.0))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RedisConversationStore resolve_hitl_by_resume_token failed: %s", exc)
             return False
 
     async def _clear_async(self, user_id: str, session_id: str) -> None:

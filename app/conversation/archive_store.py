@@ -390,6 +390,9 @@ class ConversationArchiveStore:
                     rc = meta.get("rag_citations")
                     if isinstance(rc, list):
                         row["rag_citations"] = rc
+                    hitl = meta.get("hitl")
+                    if isinstance(hitl, dict) and hitl:
+                        row["hitl"] = hitl
                 out.append(row)
             return out
         except Exception as exc:  # noqa: BLE001

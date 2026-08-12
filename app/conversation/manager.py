@@ -39,10 +39,20 @@ class ConversationManager:
         session_id: str,
         content: str,
         rag_citations: List[Dict[str, Any]] | None = None,
+        hitl: Dict[str, Any] | None = None,
     ) -> None:
         u, s = validate_pair(user_id, session_id)
-        self._store.append_message(u, s, role="assistant", content=content, rag_citations=rag_citations)
-        self._archive_message(u, s, role="assistant", content=content, rag_citations=rag_citations)
+        self._store.append_message(
+            u, s, role="assistant", content=content, rag_citations=rag_citations, hitl=hitl
+        )
+        self._archive_message(
+            u, s, role="assistant", content=content, rag_citations=rag_citations, hitl=hitl
+        )
+
+    def resolve_hitl_by_resume_token(self, user_id: str, session_id: str, resume_token: str) -> bool:
+        """将历史中匹配 resume_token 的 HITL assistant 消息标为 resolved。"""
+        u, s = validate_pair(user_id, session_id)
+        return bool(self._store.resolve_hitl_by_resume_token(u, s, resume_token))
 
     def get_recent_history(self, user_id: str, session_id: str, limit: int = 20) -> List[dict]:
         u, s = validate_pair(user_id, session_id)
@@ -73,6 +83,9 @@ class ConversationManager:
             rc = m.get("rag_citations")
             if isinstance(rc, list):
                 row["rag_citations"] = rc
+            hitl = m.get("hitl")
+            if isinstance(hitl, dict) and hitl:
+                row["hitl"] = hitl
             merged.append(row)
         merged.sort(key=lambda x: float(x.get("ts") or 0.0))
         if limit is None:
@@ -183,6 +196,7 @@ class ConversationManager:
         role: str,
         content: str,
         rag_citations: List[Dict[str, Any]] | None = None,
+        hitl: Dict[str, Any] | None = None,
     ) -> None:
         arch = get_archive_store()
         if not arch.enabled:
@@ -194,6 +208,8 @@ class ConversationManager:
             meta: Dict[str, Any] = {}
             if rag_citations is not None:
                 meta["rag_citations"] = rag_citations
+            if hitl is not None:
+                meta["hitl"] = hitl
             arch.archive_message(
                 user_id=user_id,
                 session_id=session_id,

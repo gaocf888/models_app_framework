@@ -366,7 +366,7 @@ def test_build_hitl_payload_disambiguation_strips_user_inquiry_phrase():
     )
     assert "用户询问" not in prompt
     assert "明确意图" not in prompt
-    assert "点最贴近您意思的那一句" in prompt
+    assert "请点选" in prompt
 
 
 def test_build_hitl_payload_disambiguation_dynamic_buttons():
@@ -389,7 +389,7 @@ def test_build_hitl_payload_disambiguation_dynamic_buttons():
     assert "1. 【" not in payload["prompt"]
     assert "用户询问" not in payload["prompt"]
     assert "明确意图" not in payload["prompt"]
-    assert "点最贴近您意思的那一句" in payload["prompt"]
+    assert "请点选" in payload["prompt"]
     assert payload["context"]["disambiguation_source"] == "fallback_rules"
 
 
