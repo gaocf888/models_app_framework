@@ -232,20 +232,21 @@ presets:
 
   # ==================== 通义千问 3.6 系列 ====================
 
-  # Qwen3.6 27B FP8（官方细粒度 FP8，block size 128，精度接近 BF16；原生多模态 + Gated DeltaNet）
-  # 沐曦 N260 双卡 64GB：TP=2；FP8 权重约 27–32GiB，KV 预算小于 qwen2.5-vl-32b-awq，上下文/并发与其对齐
-  # 官方原生上下文 262144，双卡 64G + 视觉侧无法拉满；本预设按 VL-32B-AWQ 取 40K / 16 并发
-  # ⚠️ 沐曦 vllm_metax 文档称暂不支持 FP8 模型及 FP8 KV Cache；若加载失败请改用 Qwen3.6-27B（BF16）
-  qwen3.6-27b-fp8:
-    path: "./models/Qwen3.6-27B-FP8"
-    served_model_name: "qwen3.6-27b-fp8"
-    dtype: "auto"
-    max_model_len: 40960
+  # Qwen3.6 27B（BF16/FP16，原生多模态 + Gated DeltaNet）
+  # 沐曦 N260 双卡 64GB 推荐本预设。官方 FP8 权重能加载，但 MXN260 上 W8A8 Block FP8 Triton 内核编译失败
+  # （fp8_utils.w8a8_triton_block_scaled_mm → PassManager::run failed / llvm.intr.fmuladd i8）
+  # 参数对齐已验证的 qwen3-27b（Qwen3.5-27B）；hybrid 关闭 prefix caching，eager 降低 compile 风险
+  qwen3.6-27b:
+    path: "./models/Qwen3.6-27B"
+    served_model_name: "qwen3.6-27b"
+    dtype: "half"
+    max_model_len: 16384
+    enforce_eager: true
     tensor_parallel_size: 2
-    gpu_memory_utilization: 0.7
+    gpu_memory_utilization: 0.8
     max_num_seqs: 16
     max_num_batched_tokens: 12288
-    enable_prefix_caching: true
+    enable_prefix_caching: false
     attention-backend: flash_attn
     default-chat-template-kwargs:
       enable_thinking: false
@@ -256,7 +257,61 @@ presets:
       media_paths:
         - "./images"
         - "./videos"
-    description: "Qwen3.6 27B FP8 原生多模态，N260 双卡 64G 预设（对齐 VL-32B-AWQ 的 TP/上下文/并发）"
+    description: "Qwen3.6 27B 原生多模态，N260 双卡 64G 推荐预设（非 FP8）"
+
+  # Qwen3.6 27B AWQ（4-bit；原生多模态 + Gated DeltaNet）
+  # 沐曦 N260 双卡 64GB 量化推荐：vllm_metax 已注册 MacaAWQConfig，可替代不可用的官方 FP8
+  # AWQ 权重约 14–18GiB，KV 预算大于 BF16；hybrid 关闭 prefix caching，eager 降低 compile 风险
+  qwen3.6-27b-awq:
+    path: "./models/Qwen3.6-27B-AWQ"
+    served_model_name: "qwen3.6-27b-awq"
+    dtype: "half"
+    quantization: "awq"
+    max_model_len: 32768
+    enforce_eager: true
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.8
+    max_num_seqs: 16
+    max_num_batched_tokens: 12288
+    enable_prefix_caching: false
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.6 27B AWQ 原生多模态，N260 双卡 64G 量化推荐预设"
+
+  # Qwen3.6 27B FP8（官方细粒度 FP8 W8A8，block size 128；原生多模态 + Gated DeltaNet）
+  # ⚠️ 沐曦 N260 + vllm_metax 0.17：权重可加载（quantization=fp8），profile_run 时 Triton 编译 W8A8 Block FP8 失败
+  #    缺 MXN260 kernel config，且 metax compiler 不支持该 kernel（Expected f32 but got i8 / PassManager::run failed）
+  #    无法通过 YAML 绕过，N260 请改用 qwen3.6-27b 或 qwen3.6-27b-awq。本预设仅适用于 NVIDIA 等已有 FP8 GEMM 的平台
+  qwen3.6-27b-fp8:
+    path: "./models/Qwen3.6-27B-FP8"
+    served_model_name: "qwen3.6-27b-fp8"
+    dtype: "auto"
+    max_model_len: 16384
+    enforce_eager: true
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.7
+    max_num_seqs: 16
+    max_num_batched_tokens: 12288
+    enable_prefix_caching: false
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.6 27B FP8 原生多模态（沐曦 N260 不可用，请用 qwen3.6-27b 或 qwen3.6-27b-awq）"
 
   # Qwen3.5 35B-A3B MoE 多模态模型（256 专家 / 每 token 约 3B 激活）
   # 沐曦 N260 双卡 64GB：TP=2 + Expert Parallel；FP16 权重约 70GB，双卡可支撑 32K 上下文与高并发
