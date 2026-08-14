@@ -230,6 +230,34 @@ presets:
         - "./videos"
     description: "Qwen3.5 27B 原生多模态模型，支持图像理解与多轮对话"
 
+  # ==================== 通义千问 3.6 系列 ====================
+
+  # Qwen3.6 27B FP8（官方细粒度 FP8，block size 128，精度接近 BF16；原生多模态 + Gated DeltaNet）
+  # 沐曦 N260 双卡 64GB：TP=2；FP8 权重约 27–32GiB，KV 预算小于 qwen2.5-vl-32b-awq，上下文/并发与其对齐
+  # 官方原生上下文 262144，双卡 64G + 视觉侧无法拉满；本预设按 VL-32B-AWQ 取 40K / 16 并发
+  # ⚠️ 沐曦 vllm_metax 文档称暂不支持 FP8 模型及 FP8 KV Cache；若加载失败请改用 Qwen3.6-27B（BF16）
+  qwen3.6-27b-fp8:
+    path: "./models/Qwen3.6-27B-FP8"
+    served_model_name: "qwen3.6-27b-fp8"
+    dtype: "auto"
+    max_model_len: 40960
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.7
+    max_num_seqs: 16
+    max_num_batched_tokens: 12288
+    enable_prefix_caching: true
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.6 27B FP8 原生多模态，N260 双卡 64G 预设（对齐 VL-32B-AWQ 的 TP/上下文/并发）"
+
   # Qwen3.5 35B-A3B MoE 多模态模型（256 专家 / 每 token 约 3B 激活）
   # 沐曦 N260 双卡 64GB：TP=2 + Expert Parallel；FP16 权重约 70GB，双卡可支撑 32K 上下文与高并发
   qwen3.5-35b-a3b:
