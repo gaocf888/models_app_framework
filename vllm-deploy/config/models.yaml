@@ -188,18 +188,36 @@ presets:
   qwen3-8b:
     path: "./models/Qwen3-8B"
     served_model_name: "qwen3-8b"
-    dtype: "bfloat16"
+    dtype: "float16"
+    block_size: 128
     max_model_len: 8192
     tensor_parallel_size: 1
     gpu_memory_utilization: 0.80
     max_num_seqs: 16
     max_num_batched_tokens: 8192
     enable_prefix_caching: true
-    attention-backend: flash_attn
-    default-chat-template-kwargs:
-      enable_thinking: false
+#    attention-backend: flash_attn
+#    default-chat-template-kwargs:
+#      enable_thinking: false
     multimodal: false
     description: "Qwen3-8B 文本对话（原生 32K；单卡 24G BF16 默认 8K 上下文）"
+
+# qwen3-8b备份
+#  qwen3-8b:
+#    path: "./models/Qwen3-8B"
+#    served_model_name: "qwen3-8b"
+#    dtype: "bfloat16"
+#    max_model_len: 8192
+#    tensor_parallel_size: 1
+#    gpu_memory_utilization: 0.80
+#    max_num_seqs: 16
+#    max_num_batched_tokens: 8192
+#    enable_prefix_caching: true
+#    attention-backend: flash_attn
+#    default-chat-template-kwargs:
+#      enable_thinking: false
+#    multimodal: false
+#    description: "Qwen3-8B 文本对话（原生 32K；单卡 24G BF16 默认 8K 上下文）"
 
   # Qwen3 8B AWQ（单卡 RTX 3090 24GB 推荐；权重约 6GiB，较 BF16 更易留出 KV 或与 GPU embed/rerank 同机）
   qwen3-8b-awq:
@@ -242,6 +260,59 @@ presets:
         - "./images"
         - "./videos"
     description: "Qwen3-VL 32B 多模态模型，最新的视觉语言能力"
+
+  # ==================== 通义千问 3.6 多模态（Atlas 300I Duo 现场）====================
+  # 硬件约定（README-DEPLOY-ASCEND / 四卡切分）：vLLM 独占物理卡0+卡1 → ASCEND_RT_VISIBLE_DEVICES=0,1,2,3（4 逻辑 NPU / ~192GB）
+  # 本预设 tensor_parallel_size=4，用满上述 4 个设备；.env 中 TENSOR_PARALLEL_SIZE 勿小于 4（否则会盖过预设）
+  # 310P：勿用 bfloat16；开 prefix caching 时 block_size=128；勿配 attention-backend / 启动期 default-chat-template-kwargs（vllm-ascend CLI 不认）
+  # 官方模型：Qwen/Qwen3.6-27B 、Qwen/Qwen3.6-27B-FP8（用户口中的 FB8 = FP8）
+  # ⚠️ 官方 recipe 要求较新 vLLM；当前仓库默认底座 vllm-ascend:v0.10.0rc1-310p 可能尚不支持 Qwen3.6，升级镜像后再切本预设
+
+  # Qwen3.6-27B 原生多模态（FP16；权重体量大，双 Duo / 四芯 TP=4）
+  qwen3.6-27b:
+    path: "./models/Qwen3.6-27B"
+    served_model_name: "qwen3.6-27b"
+    dtype: "float16"
+    enforce_eager: true
+    block_size: 128
+    max_model_len: 8192
+    tensor_parallel_size: 4
+    gpu_memory_utilization: 0.88
+    max_num_seqs: 4
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: true
+    # 关闭思考请在 API extra_body.chat_template_kwargs.enable_thinking=false
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.6-27B 多模态；Atlas 300I Duo×2（设备 0–3）TP=4 / FP16 / 8K；面向昇腾 310P"
+
+  # Qwen3.6-27B-FP8（细粒度 FP8；亦称 FB8）多模态，同卡切分下显存更宽裕，可略提高上下文
+  qwen3.6-27b-fp8:
+    path: "./models/Qwen3.6-27B-FP8"
+    served_model_name: "qwen3.6-27b-fp8"
+    dtype: "auto"
+    quantization: "fp8"
+    enforce_eager: true
+    block_size: 128
+    max_model_len: 16384
+    tensor_parallel_size: 4
+    gpu_memory_utilization: 0.88
+    max_num_seqs: 8
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: true
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.6-27B-FP8 多模态；Atlas 300I Duo×2（设备 0–3）TP=4 / FP8 / 16K；310P 上须确认 vllm-ascend 支持 FP8"
 
   # Qwen3.5 27B 原生多模态模型
 #  qwen3-27b:

@@ -24,6 +24,9 @@ services:
     privileged: true
     environment:
       - ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3}
+      # 覆盖基座 compose 里偏 conda/系统的 PATH：须优先厂商 Python（含 torch_npu 与 extras 的 pyyaml）
+      # 310p 底座常见路径；若现场 python 小版本不同，按容器内 ls /usr/local/python3.11.* 调整
+      - PATH=/usr/local/python3.11.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       # Runtime 通常会自动注入设备；下列挂载为兼容旧环境 / 兜底（路径以现场驱动安装为准）
       - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro

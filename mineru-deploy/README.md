@@ -85,7 +85,7 @@ TRANSFORMERS_OFFLINE=1
 - 运行时不再联网拉取模型
 - 需要你提前把模型文件放入 `${MINERU_MODELS_HOST_PATH}`（容器内 `/models`）
   > 下载方法：
-  - 在魔塔社区中搜索 OpenDataLab/PDF-Extract-Kit-1.0
+  - 在魔塔社区中搜索 OpenDataLab/PDF-Extract-Kit-1.0(下载后路径名可能为PDF-Extract-Kit-1___0，需要修改重命名为PDF-Extract-Kit-1.0)
   - 使用git lfs下载到 ${MINERU_MODELS_HOST_PATH} 路径下
   > 为保证下载后路径一致，建议先在有网环境部署，然后使用docker cp从容器中复制下载后的模型到本地，然后拷贝到离线服务器的${MINERU_MODELS_HOST_PATH}路径中
     （docker cp mineru-api:/root/.cache/modelscope/hub/models/OpenDataLab /aidata/mineru/models/OpenDataLab）

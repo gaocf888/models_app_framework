@@ -12,6 +12,9 @@
 # - 本 Dockerfile 面向官方 vllm-ascend 镜像（多为 Ubuntu 系），容器内优先 apt。
 # - 沐曦栈请使用 docker-compose.mthreads.yml → Dockerfile-mx（Metax 底座多为
 #   Kylin/RHEL 系，容器内 yum/dnf），不要在本文件里“改用 Dockerfile-mx”。
+# - 厂商 Python 多在 /usr/local/python3.11.*/bin；extras 必须装到该解释器，
+#   且运行时 PATH 须优先该目录（见 docker-compose.ascend.yml），否则会出现
+#   ModuleNotFoundError: yaml（装到了 apt 的 /usr/bin/python3）。
 # =============================================================================
 
 ARG BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
@@ -23,21 +26,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     WORKSPACE=/workspace
 
-# 按容器内实际包管理器安装少量工具；官方 310p 底座通常走 apt
+# 仅补 curl 等；不要 apt 再装一套 python3 抢 PATH（底座已有厂商 Python）
 RUN set -eux; \
     if command -v apt-get >/dev/null 2>&1; then \
       apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-venv curl ca-certificates \
+        curl ca-certificates \
         && rm -rf /var/lib/apt/lists/*; \
     elif command -v yum >/dev/null 2>&1; then \
-      yum install -y python3 python3-pip curl && yum clean all; \
+      yum install -y curl && yum clean all; \
     elif command -v dnf >/dev/null 2>&1; then \
-      dnf install -y python3 python3-pip curl && dnf clean all; \
+      dnf install -y curl && dnf clean all; \
     else \
-      echo "WARN: no apt/yum/dnf; assume BASE_IMAGE already has python3/pip"; \
-    fi; \
-    if [ -x /usr/bin/python3 ] && [ ! -e /usr/bin/python ]; then \
-      ln -sf /usr/bin/python3 /usr/bin/python; \
+      echo "WARN: no apt/yum/dnf; assume BASE_IMAGE already has curl"; \
     fi
 
 WORKDIR ${WORKSPACE}
@@ -46,8 +46,7 @@ RUN mkdir -p ${WORKSPACE}/{config,scripts,logs,models,media}
 
 COPY requirements.txt requirements-extras.txt ${WORKSPACE}/
 
-# extras：禁止安装 PyPI vllm/torch，以免覆盖镜像内昇腾栈
-# 构建机通常无 NPU 驱动/libascend_hal.so；校验 import 时须关闭 torch_npu 自动加载
+# extras：装到「带 torch 的」厂商 Python；构建机无 NPU 时关闭 torch_npu 自动加载
 RUN set -eux; \
     if [ "${VLLM_REQUIREMENTS_PROFILE}" = "extras" ]; then \
       REQ="${WORKSPACE}/requirements-extras.txt"; \
@@ -55,10 +54,34 @@ RUN set -eux; \
       echo "ERROR: Ascend 栈请使用 VLLM_REQUIREMENTS_PROFILE=extras（勿用 full 覆盖厂商 vLLM）"; \
       exit 1; \
     fi; \
-    python3 -m pip install --no-cache-dir -r "${REQ}" \
+    PY=""; \
+    for c in /usr/local/python3.11.*/bin/python3 /usr/local/bin/python3 python3; do \
+      for hit in $c; do \
+        if [ -x "$hit" ]; then \
+          if TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$hit" -c "import torch" >/dev/null 2>&1; then \
+            PY="$hit"; \
+            break 2; \
+          fi; \
+        fi; \
+      done; \
+    done; \
+    if [ -z "$PY" ]; then \
+      echo "ERROR: no Ascend python with torch found"; \
+      ls -la /usr/local/python3.11.*/bin/ 2>/dev/null || true; \
+      exit 1; \
+    fi; \
+    echo "Using PYTHON=$PY"; \
+    "$PY" -m pip install --no-cache-dir -r "${REQ}" \
       -i https://mirrors.aliyun.com/pypi/simple/ \
       --trusted-host mirrors.aliyun.com \
       --default-timeout=600 --retries=20; \
-    TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 -c "import torch; print('torch', torch.__version__)"
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -c "import torch, yaml, requests, psutil; print('ok', torch.__version__, yaml.__version__)"; \
+    PY_BIN="$(dirname "$PY")"; \
+    echo "export PATH=${PY_BIN}:\$PATH" > /etc/profile.d/ascend-python.sh; \
+    ln -sfn "$PY" /usr/local/bin/python3; \
+    ln -sfn "$PY" /usr/local/bin/python
+
+# 默认 PATH 把厂商 Python 放最前（仍可被 compose environment 覆盖；ascend overlay 已对齐）
+ENV PATH=/usr/local/python3.11.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 EXPOSE 8000
