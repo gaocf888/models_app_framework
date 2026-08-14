@@ -1,5 +1,6 @@
-# 大模型性能测试通用脚本说明
-# 针对vLLM部署的大模型，进行吞吐和延迟测试(首字延迟和字间延迟)
+# 大模型性能测试说明
+
+针对 vLLM 部署的大模型，进行吞吐和延迟测试（首字延迟和字间延迟）。日常 serving 压测以 `bench_vllm_stream_serving.py` 为主；同目录下其余脚本见文末简要说明。
 
 # README - vLLM 通用流式 Serving 压测
 
@@ -165,6 +166,9 @@ python3 benchmarks/bench_vllm_stream_serving.py \
 
 ## 7) 与相关脚本的分工
 
+本目录其余脚本仅作补充，日常压测优先使用上文主脚本。
+
 - **`bench_vllm_stream_serving.py`（本脚本）**：流式 + 并发矩阵 + TTFT/ITL/TPOT + 导出，通用 serving 压测
-- **`bench_vllm_qwen25vl32b_n260.py`**：非流式并发压测，历史 N260 交付场景
-- **`bench_vllm_chat_completions.py`**：串行、轻量，适合快速看 TTFT 趋势
+- **`bench_vllm_qwen25vl32b_n260.py`**：非流式并发压测，覆盖 `max_tokens` 与并发维度，面向历史 N260 交付场景（Qwen2.5-VL-32B）；不统计 TTFT/ITL
+- **`bench_vllm_chat_completions.py`**：串行、轻量，按 `max_tokens` 对比总耗时；加 `--stream` 可看 TTFT 趋势，适合快速 smoke
+- **`bench_llm_infer.py` / `bench_chatbot.py` / `bench_nl2sql.py`**：业务接口压测骨架（分别打 `/llm/infer`、`/chatbot/chat`、`/nl2sql/query`），打印粗略 QPS 与 P95/P99，非正式 serving 基准
