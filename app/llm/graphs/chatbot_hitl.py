@@ -24,7 +24,21 @@ from app.llm.graphs.chatbot_hitl_display import (
 from app.llm.graphs.chatbot_intent_rules import _has_conceptual, _has_data
 
 _DATA_HINT_WORDS = ("多少", "列表", "查询", "当前", "台账", "统计", "记录", "查一下", "查下")
-_CONCEPT_HINT_WORDS = ("为什么", "原因", "机理", "原理", "如何形成", "如何预防", "标准", "规定")
+_CONCEPT_HINT_WORDS = (
+    "为什么",
+    "原因",
+    "机理",
+    "原理",
+    "如何形成",
+    "如何预防",
+    "标准",
+    "规定",
+    # 与意图规则 conceptual 对齐的通用方案/建议类提示（边界 HITL）
+    "出具",
+    "方案",
+    "制定计划",
+    "给出建议",
+)
 _PICK_DISAMBIGUATION_RE = re.compile(r"^pick_disambiguation_(\d+)$")
 
 

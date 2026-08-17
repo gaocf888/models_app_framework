@@ -888,7 +888,10 @@ class ChatbotLangGraphRunner:
                 user_id=state["user_id"],
                 session_id=state["session_id"],
                 question=q,
-                defer_analysis_stream=False,
+                # 与纯 data_query 一致：查数成功后不阻塞收紧分析 LLM，避免 Hybrid 静默等待后「整段一次性」输出。
+                # 双臂成功时用 Markdown 表作综合证据，外层流式推综合回答；
+                # 仅查数成功时挂上 stream_plan，由 run_stream_events 流式推 NL2SQL 分析。
+                defer_analysis_stream=True,
             ),
             _rag_arm(),
         )
@@ -898,6 +901,10 @@ class ChatbotLangGraphRunner:
         enable_rag = bool(state.get("enable_rag", True))
         nl2sql_fail = bool(outcome.gen_failed or outcome.nl2sql_failed)
         nl2sql_ok = not nl2sql_fail
+        stream_plan = outcome.analysis_stream_plan
+        nl2sql_evidence = (outcome.answer_text or "").strip()
+        if not nl2sql_evidence and stream_plan is not None:
+            nl2sql_evidence = (stream_plan.table_fallback or "").strip()
 
         if nl2sql_ok and rag_ok:
             hybrid_degraded = ""
@@ -925,11 +932,17 @@ class ChatbotLangGraphRunner:
             patch["terminate_reason"] = outcome.terminate_reason
 
         if nl2sql_ok and not rag_ok:
-            patch["answer_text"] = outcome.answer_text
+            # 降级纯查数：优先走与 data_query 相同的流式分析；无 plan 时回退整段文案
+            if stream_plan is not None:
+                patch["answer_text"] = ""
+                patch["nl2sql_analysis_stream_plan"] = stream_plan.to_state_dict()
+            else:
+                patch["answer_text"] = nl2sql_evidence or (outcome.answer_text or "")
         elif nl2sql_fail and rag_ok:
             patch["answer_text"] = ""
         elif nl2sql_ok and rag_ok:
-            patch["answer_text"] = outcome.answer_text
+            # 综合：表/已有文案作查数证据，综合 LLM 由外层 stream_chat 推 delta
+            patch["answer_text"] = nl2sql_evidence
         elif not nl2sql_ok and not rag_ok:
             patch["answer_text"] = (
                 "抱歉，当前既未能完成数据查询，也未能从知识库检索到可用内容，请稍后再试或换一种问法。"
