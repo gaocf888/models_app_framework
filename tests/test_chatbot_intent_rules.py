@@ -27,6 +27,28 @@ def test_mixed_hybrid():
     assert "hybrid" in r.intent_reason
 
 
+def test_mixed_hybrid_query_plus_plan_deliverable():
+    """查数 + 出具/方案类通用诉求 → hybrid_qa（如「查询…并出具一份…计划」）。"""
+    r = classify_chatbot_intent_by_rules(
+        "请查询超温数据，并帮我出具一份检修计划",
+        enable_nl2sql_route=True,
+        image_urls=[],
+    )
+    assert r.intent_label == "hybrid_qa"
+    assert r.intent_reason == "mixed_hybrid"
+
+
+def test_plan_deliverable_alone_stays_kb():
+    """仅方案/出具类、无查数标记时仍走知识问答。"""
+    r = classify_chatbot_intent_by_rules(
+        "帮我出具一份处置方案",
+        enable_nl2sql_route=True,
+        image_urls=[],
+    )
+    assert r.intent_label == "kb_qa"
+    assert r.intent_reason == "conceptual_qa_heuristic"
+
+
 def test_data_query_ledger():
     r = classify_chatbot_intent_by_rules(
         "查询台账里1号炉最近一次检修记录",
