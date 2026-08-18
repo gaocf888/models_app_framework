@@ -1,7 +1,6 @@
 # 项目部署手册 - 昇腾（Atlas 300I Duo · 地面沉降）
 
 > **适用**：`dev_djs` 分支 · 华为 **Atlas 300I Duo_96G ×4** · 银河麒麟 **Kylin V10 SP3（ARM `aarch64`）**  
-> **当前软件线**：底座 `quay.io/ascend/vllm-ascend:v0.23.0-310p`（镜像内 **CANN 9.1.0** / Python 3.12）+ 宿主机 **HDK 26.1.1**（驱动 `310p` 26.1.1 + 固件 `9.0.0.9.220`）+ **Ascend Docker Runtime 26.1.0**。  
 > **角色**：**独立一站式部署手册**（版本矩阵、下载入口、宿主机安装、应用上线、验收）  
 > 本文已包含现场固化包名与下载路径；无需再依赖其它文档即可完成部署。  
 > 可选扩展：工作勾选见 [`docs/基础环境及部署/工作清单-华为Atlas300IDuo.md`](docs/基础环境及部署/工作清单-华为Atlas300IDuo.md)；更细排障见 [`docs/基础环境及部署/华为Atlas300IDuo基础环境及应用部署方案.md`](docs/基础环境及部署/华为Atlas300IDuo基础环境及应用部署方案.md)。
@@ -27,20 +26,18 @@
 ```text
 确认 ARM + storcli 核对 VD0
   → 新建 VD1（RAID1+热备）并只对 VD1 分区
-  → 按 §2 下载制品（CANN 9.1.0 配套 HDK）→ NPU 驱动/固件 → Docker/Compose → Ascend Docker Runtime
-  → 拉底座 v0.23.0-310p → 落盘模型（VD1）→ EasySearch → vLLM → MinerU → app
+  → 按 §2 下载制品 → NPU 驱动/固件 → Docker/Compose → Ascend Docker Runtime
+  → 拉底座镜像 → 落盘模型（VD1）→ EasySearch → vLLM → MinerU → app
   → 冒烟验收
 ```
 
 ### 1.3 硬性规则（先读）
 
 1. **架构一律 `aarch64` / `linux/arm64`**，禁止 amd64 驱动或镜像。  
-2. **驱动 + 固件 + Runtime + 镜像整线配套**，勿单独追「最新」、勿只升驱动不升固件。  
-3. **宿主机不装 CANN**；CANN 只在官方 AI 镜像内。当前推荐线为 **CANN 9.1.0**（`v0.23.0-310p`）。  
-4. **底座镜像（当前推荐）**：`quay.io/ascend/vllm-ascend:v0.23.0-310p`。须在 `vllm-deploy/.env` 写 `BASE_IMAGE=...`（与旧默认 `v0.10.0rc1-310p` 不同）。  
-5. **芯片包名必须是 `310p`**（Atlas 300I Duo）。**禁止**下载 `310b` 驱动/固件。  
-6. 容器互访用 **服务名**，禁止 `127.0.0.1:<宿主机端口>`。  
-7. **`driver.run --full` 只装驱动**，不含固件；固件是独立的 `npu-firmware_*.run`。
+2. **驱动 + 固件 + Runtime + 镜像整线配套**，勿单独追「最新」。  
+3. **宿主机不装 CANN**；CANN **8.2.RC1** 只在官方 AI 镜像内。  
+4. **底座镜像统一**：`quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`（一般不必在 `.env` 写 `BASE_IMAGE`）。  
+5. 容器互访用 **服务名**，禁止 `127.0.0.1:<宿主机端口>`。
 
 确认架构：
 
@@ -58,100 +55,60 @@ cat /etc/os-release
 
 ### 2.1 环境与版本矩阵
 
-> **当前推荐线（Qwen3.6 / Qwen3.5 必需；Qwen3-8B 亦可）**：镜像内 CANN **9.1.0**，宿主机 HDK **26.1.1**。  
-> 旧线（`v0.10.0rc1-310p` + 驱动 25.2.0 + 固件 7.7.0.6.236 + CANN 8.2.RC1）仅作回退：可跑 `qwen3-8b`，**不能**跑 Qwen3.6（权重 `model_type=qwen3_5`）。
-
-| 类别 | 固化值（当前推荐） |
+| 类别 | 固化值 |
 |------|--------|
 | 卡 | Atlas 300I Duo_96G **×4**（约 **8** 逻辑 NPU / ~384GB） |
 | CPU | 双路 ×32 核，≥2.0GHz，**ARM `aarch64`** |
 | OS | Kylin V10 SP3（ARM 安装介质） |
-| NPU 驱动 | `Ascend-hdk-310p-npu-driver_26.1.1_linux-aarch64.run` |
-| NPU 固件 | `Ascend-hdk-310p-npu-firmware_9.0.0.9.220.run` |
-| Ascend Docker Runtime | `Ascend-docker-runtime_26.1.0_linux-aarch64.run`（与 HDK 26.1.x / CANN 9.1.0 同代；**勿继续用已 EOL 的 7.1.RC1**） |
-| CANN | **9.1.0**（仅镜像内，宿主机不装；路径 `/usr/local/Ascend/cann-9.1.0`） |
-| 镜像内 Python | **3.12**（常见 `/usr/local/python3.12.13/bin`；旧 0.10 线为 3.11.13） |
-| AI 底座镜像 | `quay.io/ascend/vllm-ascend:v0.23.0-310p` |
+| NPU 驱动 | `Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run` |
+| NPU 固件 | `Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run` |
+| Ascend Docker Runtime | `Ascend-docker-runtime_7.1.RC1_linux-aarch64.run` |
+| CANN | **8.2.RC1**（仅镜像内，宿主机不装） |
+| AI 底座镜像 | `quay.io/ascend/vllm-ascend:v0.10.0rc1-310p` |
 | Docker Engine（离线） | `docker-20.10.24.tgz`（**aarch64**） |
 | Docker Compose（离线） | `docker-compose-linux-aarch64`（Compose V2 二进制） |
 | 存储（现场实测） | MegaRAID 9560-8i：VD0≈894G RAID1（系统**不重切**）；VD1≈1.75T RAID1+1 热备（业务数据） |
 
 ```text
-宿主机：Driver 26.1.1 + Firmware 9.0.0.9.220 + Runtime 26.1.0
-容器内：vllm-ascend:v0.23.0-310p → CANN 9.1.0 + Python 3.12 + torch_npu
-模型：qwen3-8b（兼容）或 qwen3.6-27b / qwen3.6-27b-fp8（需本线）
-```
-
-**旧线（仅回退，勿与推荐线混用）：**
-
-```text
 宿主机：Driver 25.2.0 + Firmware 7.7.0.6.236 + Runtime 7.1.RC1
-容器内：vllm-ascend:v0.10.0rc1-310p → CANN 8.2.RC1 + Python 3.11
+容器内：vllm-ascend:v0.10.0rc1-310p → CANN 8.2.RC1 + torch_npu
 ```
 
 ### 2.2 制品下载路径（包名 + URL）
 
 | 制品 | 文件名 / Tag | 下载入口 |
 |------|----------------|----------|
-| NPU 驱动 | `Ascend-hdk-310p-npu-driver_26.1.1_linux-aarch64.run` | 社区 OBS（见下方 wget）；或 [昇腾社区固件与驱动](https://www.hiascend.com/hardware/firmware-drivers)（硬件 `d500` / CANN **9.1.0** / HDK **26.1.1** / AArch64 / 离线 Runfile） |
-| NPU 固件 | `Ascend-hdk-310p-npu-firmware_9.0.0.9.220.run` | 同上 OBS（**文件名是固件号 9.0.0.9.220，不是 26.1.1**） |
-| HDK 目录（企业站，需商用权限） | 同上两个 `.run` | [华为支持 · Ascend HDK](https://support.huawei.com/enterprise/zh/ascend-computing/ascend-hdk-pid-252764743/software)（带锁时改用社区 OBS 或找渠道授权） |
-| Ascend Docker Runtime | `Ascend-docker-runtime_26.1.0_linux-aarch64.run` | [gitcode Ascend/mind-cluster Releases · v26.1.0](https://gitcode.com/Ascend/mind-cluster/releases/v26.1.0)（资产名含 `linux-aarch64`；不要下 x86_64） |
-| Runtime 安装说明（官方） | — | [Ascend Docker Runtime 手动安装（MindCluster 文档，按 26.1 / 7.3 对应页）](https://www.hiascend.com/document/detail/zh/mindcluster/730/clustersched/schedulingug/dlug_installation_017.html) |
-| AI 底座镜像 | `quay.io/ascend/vllm-ascend:v0.23.0-310p` | 官方 tags：[quay.io/ascend/vllm-ascend](https://quay.io/repository/ascend/vllm-ascend?tab=tags) |
+| NPU 驱动 | `Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run` | [昇腾社区 Firmware-Drivers（CANN 8.2.RC1 / HDK 25.2.0 / 300I Duo）](https://www.hiascend.com/hardware/firmware-drivers/community?product=2&model=17&cann=8.2.RC1&driver=Ascend+HDK+25.2.0) |
+| NPU 固件 | `Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run` | 同上页，选对应 firmware 包 |
+| Ascend Docker Runtime | `Ascend-docker-runtime_7.1.RC1_linux-aarch64.run` | [gitcode Ascend/mind-cluster Releases · v7.1.RC1](https://gitcode.com/Ascend/mind-cluster/releases/v7.1.RC1) |
+| Runtime 安装说明（官方） | — | [Ascend Docker Runtime 手动安装（MindCluster 7.1.RC1）](https://www.hiascend.com/document/detail/zh/mindcluster/71RC1/clustersched/dlug/dlug_installation_017.html) |
+| AI 底座镜像 | `quay.io/ascend/vllm-ascend:v0.10.0rc1-310p` | 官方 tags：[quay.io/ascend/vllm-ascend](https://quay.io/repository/ascend/vllm-ascend?tab=tags) |
 | Docker Engine 离线包 | `docker-20.10.24.tgz` | `https://download.docker.com/linux/static/stable/aarch64/docker-20.10.24.tgz`（可用华为云/阿里云等 `docker-ce/linux/static/stable/aarch64/` 镜像） |
 | Docker Compose 离线包 | `docker-compose-linux-aarch64` | [GitHub docker/compose Releases](https://github.com/docker/compose/releases)（选交付约定的 V2 版本，下载资产名含 `linux-aarch64`） |
 | Docker 在线安装脚本（可选） | — | `https://xuanyuan.cloud/docker.sh` |
-
-**社区「旧版固件与驱动」页没有 CANN 9.1.0**（截止日之前的包）。9.1.0 / HDK 26.1.1 只在**新**固件与驱动页或企业 HDK 列表。新页向导常**只生成驱动 wget、漏固件**；`--full` **不是**驱动+固件合一。固件须单独下 `npu-firmware_9.0.0.9.220.run`。
-
-**禁止**：`Ascend-hdk-310b-npu-driver_*` / `Ascend-hdk-310b-npu-firmware_*`（另一类芯片）。Atlas 300I Duo 只认 **`310p`**。
-
-**驱动 / 固件 wget（有网机；OBS 需 Referer。现场已验证固件此 URL 可下）：**
-
-```bash
-REF='--header=Referer: https://www.hiascend.com/'
-BASE='https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/Ascend%20HDK/Ascend%20HDK%2026.1.1'
-
-wget $REF "$BASE/Ascend-hdk-310p-npu-driver_26.1.1_linux-aarch64.run"
-wget $REF "$BASE/Ascend-hdk-310p-npu-firmware_9.0.0.9.220.run"
-```
-
-> 固件包约数百 KB～1MB，驱动约 150MB。若拼成 `npu-firmware_26.1.1.run` 会 **403**（OBS 对不存在对象常回 403）。run 与 rpm/deb **不要混装**。
-
-**核对镜像内 CANN（有网构建机，底座已 pull）：**
-
-```bash
-IMG=quay.io/ascend/vllm-ascend:v0.23.0-310p
-docker run --rm --entrypoint bash "$IMG" -lc 'echo "$ASCEND_HOME_PATH"; env | grep ASCEND_TOOLKIT'
-# 期望：/usr/local/Ascend/cann-9.1.0
-# 本镜像可能无 version.cfg，以环境变量与目录名为准
-```
 
 **镜像拉取命令（有网目标机或中转机）：**
 
 ```bash
 # 官方
-docker pull quay.io/ascend/vllm-ascend:v0.23.0-310p
+docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
 
 # 国内加速（DaoCloud 代理 quay）
-docker pull m.daocloud.io/quay.io/ascend/vllm-ascend:v0.23.0-310p
-docker tag m.daocloud.io/quay.io/ascend/vllm-ascend:v0.23.0-310p \
-  quay.io/ascend/vllm-ascend:v0.23.0-310p
+docker pull m.daocloud.io/quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+docker tag m.daocloud.io/quay.io/ascend/vllm-ascend:v0.10.0rc1-310p \
+  quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
 ```
 
 **离线传镜像（专网）：**
 
 ```bash
-# 有网机：先 pull 底座，再在 vllm-deploy 构建业务镜像后 save（推荐 save 构建产物）
-docker pull quay.io/ascend/vllm-ascend:v0.23.0-310p
-docker save -o vllm-ascend-v0.23.0-310p.tar quay.io/ascend/vllm-ascend:v0.23.0-310p
+# 有网机
+docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+docker save -o vllm-ascend-v0.10.0rc1-310p.tar quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
 
 # 目标机
-docker load -i vllm-ascend-v0.23.0-310p.tar
+docker load -i vllm-ascend-v0.10.0rc1-310p.tar
 ```
-
-专网交付业务镜像时，在有网机构建 `vllm-service`（`BASE_IMAGE=v0.23.0-310p`）后 `docker save` 该 tag，离线机 `docker load`。勿在构建机无 NPU 时用错误 Python 路径；`Dockerfile-ascend` 已兼容 3.11/3.12。
 
 ### 2.3 建议离线目录结构
 
@@ -160,26 +117,25 @@ docker load -i vllm-ascend-v0.23.0-310p.tar
 ```text
 /opt/deploy/offline/
 ├── npu/
-│   ├── Ascend-hdk-310p-npu-driver_26.1.1_linux-aarch64.run
-│   └── Ascend-hdk-310p-npu-firmware_9.0.0.9.220.run
+│   ├── Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run
+│   └── Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run
 ├── docker/
 │   ├── docker-20.10.24.tgz
 │   └── docker-compose-linux-aarch64
 ├── runtime/
-│   └── Ascend-docker-runtime_26.1.0_linux-aarch64.run
+│   └── Ascend-docker-runtime_7.1.RC1_linux-aarch64.run
 └── images/                          # 可选：专网用
-    ├── vllm-ascend-v0.23.0-310p.tar     # 底座（可选）
-    └── vllm-service-latest.tar          # 推荐：有网机构建后的业务镜像
+    └── vllm-ascend-v0.10.0rc1-310p.tar
 ```
 
 下载核对清单：
 
-- [ ] 驱动 `.run`（**310p** / aarch64 / **26.1.1**，不是 310b、不是 26.1.0）
-- [ ] 固件 `.run`（**310p** / **9.0.0.9.220**，不是 `firmware_26.1.1`）
-- [ ] Runtime `.run`（**26.1.0** / aarch64，与 HDK 26.1.1 同代）
+- [ ] 驱动 `.run`（aarch64 / 25.2.0）
+- [ ] 固件 `.run`（7.7.0.6.236）
+- [ ] Runtime `.run`（7.1.RC1 / aarch64）
 - [ ] `docker-20.10.24.tgz`（确认是 **aarch64**，不是 x86_64）
 - [ ] `docker-compose-linux-aarch64`
-- [ ] 底座 `v0.23.0-310p` 已 pull，或已有 `docker save` 的 tar / 已构建的 `vllm-service`
+- [ ] 底座镜像已 pull，或已有 `docker save` 的 tar
 
 ---
 
@@ -193,7 +149,7 @@ docker load -i vllm-ascend-v0.23.0-310p.tar
 
 | 服务 | `ASCEND_RT_VISIBLE_DEVICES` | 说明 |
 |------|-----------------------------|------|
-| vLLM | `0,1,2,3` | `qwen3-8b` 可用 `TENSOR_PARALLEL_SIZE=2`；`qwen3.6-27b` 预设 TP=4，**.env 勿小于 4** |
+| vLLM | `0,1,2,3` | 默认 `TENSOR_PARALLEL_SIZE=2`（更大模型可试 4） |
 | models-app | `4,5` | 容器内 `EMBEDDING_DEVICE=npu:0`、`RAG_RERANKER_DEVICE=npu:1` |
 | MinerU | `6` | `MINERU_DEVICE_MODE=npu` |
 
@@ -537,13 +493,7 @@ sudo mount /dev/sdb6 /opt/deploy
 
 ### 4.2 NPU 驱动与固件
 
-制品与下载见 **§2.2**（社区 OBS + Referer；企业站需商用权限）。  
-`--full` 表示**安装当前 `.run` 包内全部文件**：驱动包只装驱动，固件包只装固件。
-
-| 场景 | 顺序 |
-|------|------|
-| 首次安装（无旧驱动） | **先驱动，后固件** |
-| 覆盖安装 / 从 25.2.0 升到 26.1.1 | **先固件，后驱动**，再按提示复位或重启 |
+制品与下载见 **§2.2**（昇腾社区 Firmware-Drivers 页）。首次安装常见顺序（以官方 HDK 手册为准）：**先驱动，后固件**。
 
 **前置（必须）**：驱动安装会检查 `HwHiAiUser`；若不存在会报 `ERR_NO:0x0091; HwHiAiUser not exists`。
 
@@ -700,27 +650,14 @@ ls /lib/modules/$(uname -r)/build/Makefile   # 必须存在
 
 若报缺依赖（如 `perl`、`libstdc++` 等），在有网机从同一 base Packages 补下对应 aarch64 rpm，再上传后同样用 `--disablerepo='*'` 安装。
 
-安装驱动与固件（包名以 §2.1 推荐线为准；在 **NPU 宿主机**执行，不要装进容器）：
+安装驱动与固件：
 
 ```bash
 cd /opt/deploy/offline/npu   # 或你的实际存放目录
-chmod +x Ascend-hdk-310p-npu-driver_26.1.1_linux-aarch64.run \
-         Ascend-hdk-310p-npu-firmware_9.0.0.9.220.run
-```
-
-**已有旧驱动（本现场从 25.2.0 升级）——先固件，后驱动：**
-
-```bash
-sudo ./Ascend-hdk-310p-npu-firmware_9.0.0.9.220.run --full
-sudo ./Ascend-hdk-310p-npu-driver_26.1.1_linux-aarch64.run --full --install-for-all
-sudo reboot
-```
-
-**全新安装（从未装过驱动）——先驱动，后固件：**
-
-```bash
-sudo ./Ascend-hdk-310p-npu-driver_26.1.1_linux-aarch64.run --full --install-for-all
-sudo ./Ascend-hdk-310p-npu-firmware_9.0.0.9.220.run --full
+chmod +x Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run \
+         Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run
+sudo ./Ascend-hdk-310p-npu-driver_25.2.0_linux-aarch64.run --full --install-for-all
+sudo ./Ascend-hdk-310p-npu-firmware_7.7.0.6.236.run --full
 sudo reboot
 ```
 
@@ -728,8 +665,6 @@ sudo reboot
 
 ```bash
 npu-smi info          # 期望约 4 卡 / 8 设备
-npu-smi info -t board -i 0
-# Software Version ≈ 26.1.1；Firmware Version ≈ 9.0.0.9.220
 ls -l /dev/davinci*
 # 若仍有设备权限问题：确认已在 HwHiAiUser 组并重新登录
 # id; groups
@@ -825,59 +760,38 @@ docker info 2>/dev/null | grep -i "Docker Root Dir"
 # 期望：Docker Root Dir: /var/lib/docker
 ```
 
-### 4.4 Ascend Docker Runtime 26.1.0
-
-> Runtime 是**宿主机 Docker 插件**（把 `/dev/davinci*`、驱动库注入容器），**不是**镜像里的 CANN。  
-> 升到 HDK 26.1.1 / CANN 9.1.0 后，应换成与 MindCluster **26.1.x** 同代的 Runtime。旧包 **7.1.RC1 已 EOL**，可能暂时还能 `--runtime=ascend`，但驱动 so 路径变化后容易出现容器内无 NPU。
+### 4.4 Ascend Docker Runtime 7.1.RC1
 
 | 项 | 值 |
 |----|-----|
-| 包名 | `Ascend-docker-runtime_26.1.0_linux-aarch64.run` |
-| 下载 | https://gitcode.com/Ascend/mind-cluster/releases/v26.1.0 |
-| 官方安装说明 | https://www.hiascend.com/document/detail/zh/mindcluster/730/clustersched/schedulingug/dlug_installation_017.html |
-
-**已装 7.1.RC1 时：先卸旧再装新**（安装路径以现场为准，默认 `/usr/local/Ascend`）：
+| 包名 | `Ascend-docker-runtime_7.1.RC1_linux-aarch64.run` |
+| 下载 | https://gitcode.com/Ascend/mind-cluster/releases/v7.1.RC1 |
+| 官方安装说明 | https://www.hiascend.com/document/detail/zh/mindcluster/71RC1/clustersched/dlug/dlug_installation_017.html |
 
 ```bash
 cd /opt/deploy/offline/runtime
-
-# 卸旧（包仍在则用原 run；或走安装目录 uninstall.sh）
-sudo ./Ascend-docker-runtime_7.1.RC1_linux-aarch64.run --uninstall 2>/dev/null || true
-# 若提示找不到包：sudo bash /usr/local/Ascend/Ascend-Docker-Runtime/script/uninstall.sh
-
-chmod u+x Ascend-docker-runtime_26.1.0_linux-aarch64.run
-sudo ./Ascend-docker-runtime_26.1.0_linux-aarch64.run --check
-sudo ./Ascend-docker-runtime_26.1.0_linux-aarch64.run --install
+chmod u+x Ascend-docker-runtime_7.1.RC1_linux-aarch64.run
+sudo ./Ascend-docker-runtime_7.1.RC1_linux-aarch64.run --install
 sudo systemctl daemon-reload && sudo systemctl restart docker
 ```
-
-全新安装直接 `--install` 即可。
 
 验收：
 
 ```bash
 docker info | grep -iE 'Runtimes|Default Runtime'
 # 期望含：Default Runtime: ascend
-
-# 驱动/固件已升且 Runtime 已换后：
-docker run --rm --runtime=ascend \
-  quay.io/ascend/vllm-ascend:v0.23.0-310p npu-smi info
 ```
 
 ### 4.5 拉取 / 载入底座镜像（不装宿主机 CANN）
 
-镜像 tag 与下载见 **§2.2**。有网直接 pull；专网用 `docker load`。须先完成 §4.2（驱动/固件已到 26.1.1 / 9.0.0.9.220），再跑带 `--runtime=ascend` 的探测。
+镜像 tag 与下载见 **§2.2**。有网直接 pull；专网用 `docker load`。
 
 ```bash
-docker pull quay.io/ascend/vllm-ascend:v0.23.0-310p
-# 或：docker load -i /opt/deploy/offline/images/vllm-ascend-v0.23.0-310p.tar
-
-docker run --rm --entrypoint bash quay.io/ascend/vllm-ascend:v0.23.0-310p -lc \
-  'echo "$ASCEND_HOME_PATH"'
-# 期望：/usr/local/Ascend/cann-9.1.0
+docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+# 或：docker load -i /opt/deploy/offline/images/vllm-ascend-v0.10.0rc1-310p.tar
 
 docker run --rm --runtime=ascend \
-  quay.io/ascend/vllm-ascend:v0.23.0-310p npu-smi info
+  quay.io/ascend/vllm-ascend:v0.10.0rc1-310p npu-smi info
 ```
 
 ### 4.6 EasySearch 内核参数
@@ -954,19 +868,13 @@ cp .env.example .env
 ```env
 VLLM_PLATFORM=ascend
 VLLM_REQUIREMENTS_PROFILE=extras
-BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
-# qwen3-8b 可用 2；qwen3.6-27b 须 4（否则会盖过 models.yaml 预设）
 TENSOR_PARALLEL_SIZE=2
-MODEL_PRESET=qwen3-8b
-# MODEL_PRESET=qwen3.6-27b
+MODEL_PRESET=<与 config/models.yaml 一致>
 MODEL_PATH=/aidata/models/llm
 ```
 
-> **必须写 `BASE_IMAGE`**：当前推荐线为 `v0.23.0-310p`（CANN 9.1.0 / Python 3.12）。Dockerfile 默认仍可能是旧 tag。  
-> **Qwen3.6**：权重 `model_type` 为 `qwen3_5`，旧镜像 `v0.10.0` 会报 Transformers 不识别；310P 用 `float16` + `enforce_eager`，勿配 `attention-backend`。  
-> **Qwen3-8B**：新镜像向下兼容；预设见 `vllm-deploy/config/models.yaml`。  
-> 有网机构建：`docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.ascend.yml build`（在 `vllm-deploy/docker/`）。若报 `no Ascend python with torch found`，确认已使用会探测 `python3.12` 的 `Dockerfile-ascend`。
+> 底座默认在 `docker/Dockerfile-ascend`，一般不必写 `BASE_IMAGE`。
 
 启动（`docker compose` overlay，**不用** `deploy.sh`）：
 
@@ -1156,7 +1064,7 @@ docker compose --env-file .env --profile gpu-ascend up -d
 
 | # | 检查 | 期望 |
 |---|------|------|
-| 1 | `npu-smi info` / `npu-smi info -t board -i 0` | ~4 卡 / 8 设备；驱动 **26.1.1**、固件 **9.0.0.9.220** |
+| 1 | `npu-smi info` | ~4 卡 / 8 设备；驱动 25.2.0、固件 7.7.0.6.236 |
 | 2 | `docker info` | `Default Runtime: ascend` |
 | 3 | EasySearch `_cluster/health` | yellow/green |
 | 4 | vLLM `/v1/models` | 返回目标模型 |
@@ -1185,7 +1093,7 @@ cd app/app-deploy && docker compose -f docker-ascend/docker-compose-ascend.yml l
 **建议停栈顺序**：app → MinerU → vLLM → EasySearch。  
 数据卷（`/aidata/...`）默认保留；只删容器不删盘。
 
-回滚要点：保留各目录 `.env`、模型目录、镜像 tag；升级须 **驱动 + 固件 + Runtime + 镜像** 整线更换（仍以 §2 矩阵为准）。从旧线回退时同时改回 `BASE_IMAGE=v0.10.0rc1-310p` 与 HDK 25.2.0 / 固件 7.7.0.6.236，禁止新旧混用。
+回滚要点：保留各目录 `.env`、模型目录、镜像 tag；升级须 **驱动 + 固件 + Runtime + 镜像** 整线更换（仍以 §2 矩阵为准）。
 
 ---
 
@@ -1210,16 +1118,12 @@ cd app/app-deploy && docker compose -f docker-ascend/docker-compose-ascend.yml l
 | 现象 | 处理 |
 |------|------|
 | `exec format error` | 镜像/驱动不是 aarch64；核对 §2 下载的是否为 ARM 包 |
-| 容器内无 NPU / `npu-smi` 失败 | 查 Runtime 是否仍为 7.1.RC1、`ASCEND_RT_VISIBLE_DEVICES`、用户组、驱动卷；升 HDK 后应换 Runtime 26.1.0 |
+| 容器内无 NPU | 查 Runtime、`ASCEND_RT_VISIBLE_DEVICES`、用户组、驱动卷 |
 | pip 后 `torch_npu` 丢失 | 禁止用 CUDA `torch` 覆盖；Ascend Dockerfile 已校验 |
 | app 连不上 vLLM | 查外部网络名、服务名，勿用 `127.0.0.1` |
 | MinerU NPU 不稳 | 先 `docker-compose.cpu.yml` 保功能，再迭代 NPU |
 | 只升驱动或只升镜像 | **禁止**；按 §2 矩阵整线升级 |
-| 找不到下载包 / 企业站带锁 | 驱动/固件用 §2.2 社区 OBS + Referer；不要用 `firmware_26.1.1.run` |
-| 社区新页只有驱动 wget | 正常；固件另下 `npu-firmware_9.0.0.9.220.run`。`driver --full` **不含**固件 |
-| 误下 310b 包 | 删除，改下 **310p**（Atlas 300I Duo） |
-| `qwen3_5` / Transformers 不识别 | 旧镜像 0.10 不支持 Qwen3.6；换 `v0.23.0-310p` 且宿主机已升 HDK |
-| 构建 `no Ascend python with torch found` | 新底座为 Python 3.12；需已更新的 `Dockerfile-ascend`（探测 `python3.*`） |
+| 找不到下载包 | 回 §2.2：驱动/固件走昇腾社区页，Runtime 走 gitcode Releases，Docker 走 download.docker.com / GitHub compose |
 | reboot 后 `df` 无 sdb/aidata，但 `lsblk` 仍有 `sdb*` | **fstab 未写业务盘**；按 §4.1.9 排障补 UUID 后 `mount -a`，再 reboot 验证 |
 | `parted print free` 报无法辨识磁盘卷标 | 新 VD 尚无 GPT；先 `mklabel gpt`（§4.1.6） |
 | `mkfs.xfs` 报 `extra arguments` | 一次只格式化一块设备（§4.1.7） |
