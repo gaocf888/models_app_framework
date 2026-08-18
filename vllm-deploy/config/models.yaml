@@ -185,10 +185,12 @@ presets:
   # ==================== 通义千问 3 语言模型 =======================
 
   # Qwen3 8B 指令模型（BF16 权重约 16GiB；单卡 24G 宜控制上下文，更大显存或双卡可上调 max_model_len）
+  # 昇腾 310P：须 enforce_eager，否则 ACL Graph capture 常失败（driver/firmware 与 ACL Graph 不匹配时尤甚）
   qwen3-8b:
     path: "./models/Qwen3-8B"
     served_model_name: "qwen3-8b"
     dtype: "float16"
+    enforce_eager: true
     block_size: 128
     max_model_len: 8192
     tensor_parallel_size: 1
@@ -200,7 +202,7 @@ presets:
 #    default-chat-template-kwargs:
 #      enable_thinking: false
     multimodal: false
-    description: "Qwen3-8B 文本对话（原生 32K；单卡 24G BF16 默认 8K 上下文）"
+    description: "Qwen3-8B 文本对话（昇腾 310P：float16 + enforce_eager + block_size=128）"
 
 # qwen3-8b备份
 #  qwen3-8b:
