@@ -7,6 +7,7 @@
 #
 # 前置：宿主机已装 NPU 驱动/固件 + Ascend Docker Runtime 7.1.RC1（见 docs/基础环境及部署）
 # 默认底座：quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+# Qwen3.5/3.6 请改 BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p（或更新 *-310p）
 # 四卡切分（Atlas 300I Duo ×4）：本栈默认设备 0,1,2,3（物理卡0+卡1）
 # =============================================================================
 
@@ -25,8 +26,8 @@ services:
     environment:
       - ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3}
       # 覆盖基座 compose 里偏 conda/系统的 PATH：须优先厂商 Python（含 torch_npu 与 extras 的 pyyaml）
-      # 310p 底座常见路径；若现场 python 小版本不同，按容器内 ls /usr/local/python3.11.* 调整
-      - PATH=/usr/local/python3.11.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # v0.10.*-310p → python3.11.13；v0.23.*-310p → python3.12.13（两者都写上，存在的目录生效）
+      - PATH=/usr/local/python3.12.13/bin:/usr/local/python3.11.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       # Runtime 通常会自动注入设备；下列挂载为兼容旧环境 / 兜底（路径以现场驱动安装为准）
       - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro

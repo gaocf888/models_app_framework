@@ -12,9 +12,9 @@
 # - 本 Dockerfile 面向官方 vllm-ascend 镜像（多为 Ubuntu 系），容器内优先 apt。
 # - 沐曦栈请使用 docker-compose.mthreads.yml → Dockerfile-mx（Metax 底座多为
 #   Kylin/RHEL 系，容器内 yum/dnf），不要在本文件里“改用 Dockerfile-mx”。
-# - 厂商 Python 多在 /usr/local/python3.11.*/bin；extras 必须装到该解释器，
-#   且运行时 PATH 须优先该目录（见 docker-compose.ascend.yml），否则会出现
-#   ModuleNotFoundError: yaml（装到了 apt 的 /usr/bin/python3）。
+# - 厂商 Python 在 /usr/local/python3.*/bin（旧 310p 多为 3.11.13；v0.23+ 多为 3.12.13）；
+#   extras 必须装到「带 torch」的解释器，且运行时 PATH 须优先该目录
+#   （见 docker-compose.ascend.yml），否则会出现 ModuleNotFoundError: yaml。
 # =============================================================================
 
 ARG BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
@@ -47,6 +47,7 @@ RUN mkdir -p ${WORKSPACE}/{config,scripts,logs,models,media}
 COPY requirements.txt requirements-extras.txt ${WORKSPACE}/
 
 # extras：装到「带 torch 的」厂商 Python；构建机无 NPU 时关闭 torch_npu 自动加载
+# 探测兼容 python3.11.* / python3.12.*；勿用 [ -x python3 ]（不查 PATH）
 RUN set -eux; \
     if [ "${VLLM_REQUIREMENTS_PROFILE}" = "extras" ]; then \
       REQ="${WORKSPACE}/requirements-extras.txt"; \
@@ -55,19 +56,26 @@ RUN set -eux; \
       exit 1; \
     fi; \
     PY=""; \
-    for c in /usr/local/python3.11.*/bin/python3 /usr/local/bin/python3 python3; do \
-      for hit in $c; do \
-        if [ -x "$hit" ]; then \
-          if TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$hit" -c "import torch" >/dev/null 2>&1; then \
-            PY="$hit"; \
-            break 2; \
-          fi; \
-        fi; \
-      done; \
+    if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then \
+      # shellcheck disable=SC1091 \
+      . /usr/local/Ascend/ascend-toolkit/set_env.sh; \
+    fi; \
+    shopt -s nullglob; \
+    CANDIDATES=(/usr/local/python3.*/bin/python3 /usr/local/bin/python3); \
+    if command -v python3 >/dev/null 2>&1; then \
+      CANDIDATES+=("$(command -v python3)"); \
+    fi; \
+    for hit in "${CANDIDATES[@]}"; do \
+      if [ -x "$hit" ] && TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$hit" -c "import torch" >/dev/null 2>&1; then \
+        PY="$hit"; \
+        break; \
+      fi; \
     done; \
     if [ -z "$PY" ]; then \
       echo "ERROR: no Ascend python with torch found"; \
-      ls -la /usr/local/python3.11.*/bin/ 2>/dev/null || true; \
+      echo "PATH=$PATH"; \
+      ls -la /usr/local/python3.*/bin/ 2>/dev/null || true; \
+      command -v python3 || true; \
       exit 1; \
     fi; \
     echo "Using PYTHON=$PY"; \
@@ -78,10 +86,12 @@ RUN set -eux; \
     TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -c "import torch, yaml, requests, psutil; print('ok', torch.__version__, yaml.__version__)"; \
     PY_BIN="$(dirname "$PY")"; \
     echo "export PATH=${PY_BIN}:\$PATH" > /etc/profile.d/ascend-python.sh; \
+    printf '%s\n' "$PY_BIN" > /etc/ascend-python-bindir; \
     ln -sfn "$PY" /usr/local/bin/python3; \
-    ln -sfn "$PY" /usr/local/bin/python
+    ln -sfn "$PY" /usr/local/bin/python; \
+    if [ -x "${PY_BIN}/vllm" ]; then ln -sfn "${PY_BIN}/vllm" /usr/local/bin/vllm; fi
 
-# 默认 PATH 把厂商 Python 放最前（仍可被 compose environment 覆盖；ascend overlay 已对齐）
-ENV PATH=/usr/local/python3.11.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# 兼容旧 3.11.13 与 v0.23+ 3.12.13；实际生效顺序由 compose 的 PATH 与 /etc/profile.d 兜底
+ENV PATH=/usr/local/python3.12.13/bin:/usr/local/python3.11.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 EXPOSE 8000
