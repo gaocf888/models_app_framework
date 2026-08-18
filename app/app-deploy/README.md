@@ -69,7 +69,7 @@ RAG **嵌入**与**重排**模型当前默认为 **Qwen3-Embedding-0.6B** + **Qw
 | **CPU（默认）** | `docker-compose.yml` + `Dockerfile` | **CPU**（镜像无 CUDA/NPU PyTorch；`.env` 中 `cuda:N` / `npu:N` 不生效） | 开发联调、无加速卡、或 Qwen3 0.6B 可接受 CPU 延迟 |
 | **英伟达 GPU** | **`docker-nvidia/docker-compose-nvidia.yml`** + **`Dockerfile-nvidia`** | **GPU**（cu121 + `cuda:0` / `cuda:1`） | 英伟达服务器；与 vLLM 分卡跑嵌入/重排 |
 | **沐曦 GPU** | **`docker-mx/docker-compose-mx.yml`** + **`Dockerfile-mx`** | **GPU**（Metax 基础镜像 + conda；常用 `cuda:N` 串） | 沐曦/麒麟等 Metax 栈 |
-| **昇腾 Ascend** | **`docker-ascend/docker-compose-ascend.yml`** + **`Dockerfile-ascend`** | **NPU**（`vllm-ascend:v0.10.0rc1-310p` + `npu:0` / `npu:1`） | Atlas 300I Duo；与 vLLM/MinerU 同底座 |
+| **昇腾 Ascend** | **`docker-ascend/docker-compose-ascend.yml`** + **`Dockerfile-ascend`** | **NPU**（`vllm-ascend:v0.23.0-310p` + `npu:0` / `npu:1`） | Atlas 300I Duo；与 vLLM/MinerU 同底座 |
 | **小模型 GPU profile** | 英伟达/沐曦 compose + `--profile small-model-gpu` | 同上 + YOLO/通道等小模型 | 需 `/small-model/*`、视频通道等（昇腾默认不含） |
 
 **`.env` 共用**：各主栈均读取 **`app/app-deploy/.env`**（`docker-nvidia` / `docker-ascend` 用 `../.env`；`docker-mx` 常需复制到子目录）。显卡相关注释见 `.env.example`。
@@ -85,7 +85,7 @@ RAG **嵌入**与**重排**模型当前默认为 **Qwen3-Embedding-0.6B** + **Qw
 EMBEDDING_DEVICE=npu:0
 RAG_RERANKER_DEVICE=npu:1
 ASCEND_RT_VISIBLE_DEVICES=4,5
-# 底座镜像默认见 docker-ascend/Dockerfile-ascend，一般不必配 BASE_IMAGE
+BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 ```
 
 > `models-app-gpu` 的重排容器路径为 **`/models/rerank/Qwen3-Reranker-0.6B`**（与 `models-app` 的 `/workspace/models/rerank/...` 不同），compose 已写死挂载，`.env` 中 `RAG_RERANKER_MODEL_PATH` 会被 compose `environment` 覆盖为对应值。
@@ -696,7 +696,7 @@ docker compose --profile small-model-gpu down
 | **`docker-nvidia/README.md`** | 英伟达 GPU 栈快速说明 |
 | **`docker-mx/Dockerfile-mx`** | **沐曦 GPU** 主镜像：Metax 基础镜像 + conda |
 | **`docker-mx/docker-compose-mx.yml`** | **沐曦 GPU** 栈 |
-| **`docker-ascend/Dockerfile-ascend`** | **昇腾 Ascend** 主镜像：`vllm-ascend:v0.10.0rc1-310p` + 业务依赖 |
+| **`docker-ascend/Dockerfile-ascend`** | **昇腾 Ascend** 主镜像：`vllm-ascend:v0.23.0-310p` + 业务依赖 |
 | **`docker-ascend/docker-compose-ascend.yml`** | **昇腾 Ascend** 栈 |
 | **`docker-ascend/README.md`** | 昇腾栈快速说明 |
 | `.env.example` | 环境变量模板（含英伟达/沐曦/昇腾显卡注释、Qwen3 嵌入/重排、索引版本） |

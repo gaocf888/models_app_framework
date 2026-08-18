@@ -18,13 +18,14 @@
 #     ASCEND_RT_VISIBLE_DEVICES=4,5
 #     EMBEDDING_DEVICE=npu:0
 #     RAG_RERANKER_DEVICE=npu:1
-#   底座镜像默认写在 Dockerfile-ascend，一般不必在 .env 配 BASE_IMAGE
+#   底座镜像默认：quay.io/ascend/vllm-ascend:v0.23.0-310p（与 vLLM / MinerU 同底座，CANN 9.1.0）
+#   建议在 .env 写 BASE_IMAGE=... 以免旧 .env 无此键时误用过期默认
 #
 # 【启动】（在 app/app-deploy 目录）
 #   docker compose -f docker-ascend/docker-compose-ascend.yml up -d --build
 #
 # 【前置】
-#   宿主机：NPU 驱动/固件 + Ascend Docker Runtime 7.1.RC1
+#   宿主机：NPU 驱动 26.1.1 + 固件 9.0.0.9.220 + Ascend Docker Runtime 26.1.0
 #
 # =============================================================================
 
@@ -66,7 +67,7 @@ services:
       context: ../../..
       dockerfile: app/app-deploy/docker-ascend/Dockerfile-ascend
       args:
-        BASE_IMAGE: ${BASE_IMAGE:-quay.io/ascend/vllm-ascend:v0.10.0rc1-310p}
+        BASE_IMAGE: ${BASE_IMAGE:-quay.io/ascend/vllm-ascend:v0.23.0-310p}
     image: ${MODELS_APP_IMAGE:-models-app:ascend}
     container_name: models-app
     restart: unless-stopped
@@ -113,6 +114,8 @@ services:
     environment:
       ASCEND_RT_VISIBLE_DEVICES: ${ASCEND_RT_VISIBLE_DEVICES:-4,5}
       RAG_RERANKER_MODEL_PATH: /workspace/models/rerank/Qwen3-Reranker-0.6B
+      # 厂商 Python（v0.23+ 为 3.12.13；旧 0.10 为 3.11.13）
+      PATH: /usr/local/python3.12.13/bin:/usr/local/python3.11.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 networks:
   app-internal:

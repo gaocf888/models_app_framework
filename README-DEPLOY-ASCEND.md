@@ -37,7 +37,7 @@
 1. **架构一律 `aarch64` / `linux/arm64`**，禁止 amd64 驱动或镜像。  
 2. **驱动 + 固件 + Runtime + 镜像整线配套**，勿单独追「最新」、勿只升驱动不升固件。  
 3. **宿主机不装 CANN**；CANN 只在官方 AI 镜像内。当前推荐线为 **CANN 9.1.0**（`v0.23.0-310p`）。  
-4. **底座镜像（当前推荐）**：`quay.io/ascend/vllm-ascend:v0.23.0-310p`。须在 `vllm-deploy/.env` 写 `BASE_IMAGE=...`（与旧默认 `v0.10.0rc1-310p` 不同）。  
+4. **底座镜像（当前推荐）**：`quay.io/ascend/vllm-ascend:v0.23.0-310p`。**vLLM / MinerU / app 三套昇腾镜像共用此底座**（CANN 须与宿主机 HDK 配套）。各栈 `.env` 写 `BASE_IMAGE` 或 `MINERU_BASE_IMAGE`。  
 5. **芯片包名必须是 `310p`**（Atlas 300I Duo）。**禁止**下载 `310b` 驱动/固件。  
 6. 容器互访用 **服务名**，禁止 `127.0.0.1:<宿主机端口>`。  
 7. **`driver.run --full` 只装驱动**，不含固件；固件是独立的 `npu-firmware_*.run`。
@@ -169,7 +169,9 @@ docker load -i vllm-ascend-v0.23.0-310p.tar
 │   └── Ascend-docker-runtime_26.1.0_linux-aarch64.run
 └── images/                          # 可选：专网用
     ├── vllm-ascend-v0.23.0-310p.tar     # 底座（可选）
-    └── vllm-service-latest.tar          # 推荐：有网机构建后的业务镜像
+    ├── vllm-service-latest.tar          # 推荐：有网机构建后的业务镜像
+    ├── mineru-gpu-ascend-310p.tar       # MinerU 昇腾业务镜像
+    └── models-app-ascend.tar            # app 昇腾业务镜像
 ```
 
 下载核对清单：
@@ -179,7 +181,7 @@ docker load -i vllm-ascend-v0.23.0-310p.tar
 - [ ] Runtime `.run`（**26.1.0** / aarch64，与 HDK 26.1.1 同代）
 - [ ] `docker-20.10.24.tgz`（确认是 **aarch64**，不是 x86_64）
 - [ ] `docker-compose-linux-aarch64`
-- [ ] 底座 `v0.23.0-310p` 已 pull，或已有 `docker save` 的 tar / 已构建的 `vllm-service`
+- [ ] 底座 `v0.23.0-310p` 已 pull，或已有 `docker save` 的 tar / 已构建的 `vllm-service`、`mineru-gpu:ascend-310p`、`models-app:ascend`
 
 ---
 
@@ -963,7 +965,7 @@ MODEL_PRESET=qwen3-8b
 MODEL_PATH=/aidata/models/llm
 ```
 
-> **必须写 `BASE_IMAGE`**：当前推荐线为 `v0.23.0-310p`（CANN 9.1.0 / Python 3.12）。Dockerfile 默认仍可能是旧 tag。  
+> **必须写 `BASE_IMAGE`**：当前推荐线为 `v0.23.0-310p`（CANN 9.1.0 / Python 3.12），与 MinerU / app 昇腾栈相同。  
 > **Qwen3.6**：权重 `model_type` 为 `qwen3_5`，旧镜像 `v0.10.0` 会报 Transformers 不识别；310P 用 `float16` + `enforce_eager`，勿配 `attention-backend`。  
 > **Qwen3-8B**：新镜像向下兼容；预设见 `vllm-deploy/config/models.yaml`。  
 > 有网机构建：`docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.ascend.yml build`（在 `vllm-deploy/docker/`）。若报 `no Ascend python with torch found`，确认已使用会探测 `python3.12` 的 `Dockerfile-ascend`。
@@ -1003,6 +1005,7 @@ cp .env.example .env
 MINERU_DEVICE_MODE=npu
 ASCEND_RT_VISIBLE_DEVICES=6
 INSTALL_CUDA_TORCH=0
+MINERU_BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 MINERU_MODELS_HOST_PATH=/aidata/mineru/models
 MINERU_IO_HOST_PATH=/aidata/mineru/io
 # 模型来源（勿与 IO 缓存混为一谈；细节见 mineru-deploy/README.md §4）
@@ -1056,6 +1059,7 @@ RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
 EMBEDDING_DEVICE=npu:0
 RAG_RERANKER_DEVICE=npu:1
 ASCEND_RT_VISIBLE_DEVICES=4,5
+BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 
 # MinerU
 MINERU_ENABLED=true

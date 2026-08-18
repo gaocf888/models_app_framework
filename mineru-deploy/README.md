@@ -14,7 +14,7 @@
 
 - `Dockerfile.cpu`：CPU 镜像构建
 - `Dockerfile.gpu`：英伟达 GPU 镜像构建（CUDA 基础镜像）
-- `Dockerfile.gpu.ascend`：昇腾 GPU 镜像（底座 `vllm-ascend:v0.10.0rc1-310p`）
+- `Dockerfile.gpu.ascend`：昇腾 GPU 镜像（底座 `vllm-ascend:v0.23.0-310p`）
 - `docker-compose.cpu.yml`：CPU 编排（推荐入口）
 - `docker-compose.gpu.yml`：英伟达 GPU 编排
 - `docker-compose.gpu.ascend.yml`：昇腾 GPU 编排
@@ -27,7 +27,7 @@
 - Docker / Docker Compose 可用
 - 在线构建时可访问 PyPI（或配置 `PIP_INDEX_URL`）
 - **英伟达 GPU** 模式需：NVIDIA 驱动 + `nvidia-container-toolkit`；`nvidia-smi` 正常
-- **昇腾 GPU** 模式需：NPU 驱动/固件 + Ascend Docker Runtime 7.1.RC1；`npu-smi` 正常
+- **昇腾 GPU** 模式需：NPU 驱动 26.1.1 + 固件 9.0.0.9.220 + Ascend Docker Runtime 26.1.0；`npu-smi` 正常
 
 > 下方3、4、5、6、7是完整的部署流程
 
@@ -127,7 +127,7 @@ curl -l http://127.0.0.1:8009/health
 - `docker-compose.gpu.yml`(英伟达)/`docker-compose.gpu.ascend.yml`(晟腾) 为独立编排，不依赖 CPU compose
 - GPU 镜像使用 `Dockerfile.gpu`(英伟达)/`Dockerfile.gpu.ascend`(晟腾) 构建
 - 英伟达版基础镜像默认 **`nvidia/cuda:12.3.0-runtime-ubuntu22.04`**（与 `vllm-deploy` 英伟达栈一致）；PyTorch 仍从 `cu121` wheel 安装
-- 晟腾版基础镜像默认 **`quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`（与 `app-deploy`/`vllm-deploy`晟腾栈一致）**
+- 晟腾版基础镜像默认 **`quay.io/ascend/vllm-ascend:v0.23.0-310p`（与 `app-deploy`/`vllm-deploy` 昇腾栈一致，CANN 9.1.0）**
 - 英伟达版默认安装 CUDA 版 PyTorch，晟腾版不安装（通过 `.env` INSTALL_CUDA_TORCH开关控制）
 
 ### 6.2 关键 `.env` 配置
@@ -143,6 +143,7 @@ TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
 MINERU_DEVICE_MODE=npu
 ASCEND_RT_VISIBLE_DEVICES=6
 INSTALL_CUDA_TORCH=0
+MINERU_BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 ```
 
 ### 6.3 构建并启动

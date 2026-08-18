@@ -268,7 +268,7 @@ presets:
   # 本预设 tensor_parallel_size=4，用满上述 4 个设备；.env 中 TENSOR_PARALLEL_SIZE 勿小于 4（否则会盖过预设）
   # 310P：勿用 bfloat16；开 prefix caching 时 block_size=128；勿配 attention-backend / 启动期 default-chat-template-kwargs（vllm-ascend CLI 不认）
   # 官方模型：Qwen/Qwen3.6-27B 、Qwen/Qwen3.6-27B-FP8（用户口中的 FB8 = FP8）
-  # ⚠️ 官方 recipe 要求较新 vLLM；当前仓库默认底座 vllm-ascend:v0.10.0rc1-310p 可能尚不支持 Qwen3.6，升级镜像后再切本预设
+  # 官方 recipe 要求较新 vLLM；本仓库昇腾默认底座 vllm-ascend:v0.23.0-310p（CANN 9.1.0）
 
   # Qwen3.6-27B 原生多模态（FP16；权重体量大，双 Duo / 四芯 TP=4）
   qwen3.6-27b:

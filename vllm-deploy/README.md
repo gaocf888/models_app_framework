@@ -40,7 +40,7 @@ cp .env.example .env
 - `docker/docker-compose.nvidia.yml`：英伟达（`Dockerfile-nvidia`、`CUDA_VISIBLE_DEVICES`、GPU reservation）。
 - `docker/docker-compose.cambricon.yml`：寒武纪（`Dockerfile-mx`、`privileged`、`MLU_VISIBLE_DEVICES`、`/dev` 透传）。
 - `docker/docker-compose.mthreads.yml`：沐曦（`Dockerfile-mx`、Metax 默认 `BASE_IMAGE`、`privileged`、`MX_VISIBLE_DEVICES`、`/dev` 透传）。
-- `docker/docker-compose.ascend.yml`：昇腾（`Dockerfile-ascend`、默认 `quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`、`runtime: ascend`、`ASCEND_RT_VISIBLE_DEVICES`、驱动卷）。
+- `docker/docker-compose.ascend.yml`：昇腾（`Dockerfile-ascend`、默认 `quay.io/ascend/vllm-ascend:v0.23.0-310p`、`runtime: ascend`、`ASCEND_RT_VISIBLE_DEVICES`、驱动卷）。
 
 平台选择方式：
 

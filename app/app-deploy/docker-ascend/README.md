@@ -4,9 +4,9 @@
 
 ## 适用场景
 
-- 宿主机为 **Atlas 300I Duo**，已安装 **NPU 驱动/固件** 与 **Ascend Docker Runtime 7.1.RC1**
+- 宿主机为 **Atlas 300I Duo**，已安装 **NPU 驱动 26.1.1 / 固件 9.0.0.9.220** 与 **Ascend Docker Runtime 26.1.0**
 - 希望 **Qwen3 嵌入/重排** 跑在 NPU（`EMBEDDING_DEVICE` / `RAG_RERANKER_DEVICE`）
-- 底座镜像默认：`quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`（写在 `Dockerfile-ascend`，一般不必在 `.env` 配 `BASE_IMAGE`）
+- 底座镜像默认：`quay.io/ascend/vllm-ascend:v0.23.0-310p`（与 vLLM / MinerU 同底座；建议 `.env` 写 `BASE_IMAGE`）
 
 ## 文件说明
 

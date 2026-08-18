@@ -256,7 +256,7 @@ RAG_RERANKER_TRUST_REMOTE_CODE=true
 EMBEDDING_DEVICE=npu:0
 RAG_RERANKER_DEVICE=npu:1
 ASCEND_RT_VISIBLE_DEVICES=4,5
-# 底座镜像默认见 docker-ascend/Dockerfile-ascend，一般不必配 BASE_IMAGE
+BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 ```
 
 **从 BGE 升级**：向量维度 512→1024，须递增 `RAG_ES_INDEX_VERSION` 并 **全量 re-ingest**；FAQ 软直通阈值 `CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE` 可能需重调（Qwen rerank 为 logit 分）。
@@ -465,15 +465,15 @@ cp .env.example .env
 docker compose docker-mx/docker-compose-mx.yml up -d --build
 ```
 
-**昇腾部署** — 基于 Atlas 300I Duo / Ascend NPU（底座默认见 `Dockerfile-ascend`）
-> 使用 `docker-ascend/`；宿主机须已装 NPU 驱动/固件 + Ascend Docker Runtime 7.1.RC1  
+**昇腾部署** — 基于 Atlas 300I Duo / Ascend NPU（底座 `v0.23.0-310p`，与 vLLM / MinerU 一致）
+> 使用 `docker-ascend/`；宿主机须已装 NPU 驱动 26.1.1 + 固件 9.0.0.9.220 + Ascend Docker Runtime 26.1.0  
 > 四卡切分：app 默认 `ASCEND_RT_VISIBLE_DEVICES=4,5`，嵌入/重排 `npu:0` / `npu:1`
 ```bash
 cd app/app-deploy
 cp .env.example .env
 # 确认 .env：EMBEDDING_DEVICE=npu:0  RAG_RERANKER_DEVICE=npu:1
 #           ASCEND_RT_VISIBLE_DEVICES=4,5
-# （底座镜像一般不必在 .env 配 BASE_IMAGE，默认在 Dockerfile-ascend）
+#           BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 docker compose -f docker-ascend/docker-compose-ascend.yml up -d --build
 ```
 

@@ -5,7 +5,7 @@
 #   docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
 #
 # 四卡切分 §5：本栈默认 ASCEND_RT_VISIBLE_DEVICES=6（物理卡3）；勿与 vLLM/app 重叠
-# 底座：quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+# 底座：quay.io/ascend/vllm-ascend:v0.23.0-310p（与 vLLM / app 同底座，CANN 9.1.0）
 # =============================================================================
 
 version: '3.8'
@@ -16,7 +16,7 @@ services:
       context: .
       dockerfile: Dockerfile.gpu.ascend
       args:
-        BASE_IMAGE: ${MINERU_BASE_IMAGE:-quay.io/ascend/vllm-ascend:v0.10.0rc1-310p}
+        BASE_IMAGE: ${MINERU_BASE_IMAGE:-quay.io/ascend/vllm-ascend:v0.23.0-310p}
         MINERU_PIP_SPEC: ${MINERU_GPU_PIP_SPEC:-mineru[core]}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
     image: ${MINERU_ASCEND_IMAGE:-mineru-gpu:ascend-310p}
@@ -41,6 +41,7 @@ services:
       - NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-8}
       - TORCH_NUM_THREADS=${TORCH_NUM_THREADS:-8}
       - TORCH_NUM_INTEROP_THREADS=${TORCH_NUM_INTEROP_THREADS:-2}
+      - PATH=/usr/local/python3.12.13/bin:/usr/local/python3.11.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       - ${MINERU_MODELS_HOST_PATH}:/models:ro
       - ${MINERU_IO_HOST_PATH}:/io

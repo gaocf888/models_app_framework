@@ -4,11 +4,13 @@
 # 构建上下文：仓库根目录 models_app_framework
 #   docker compose -f app/app-deploy/docker-ascend/docker-compose-ascend.yml build
 #
-# 底座：quay.io/ascend/vllm-ascend:v0.10.0rc1-310p（内含 CANN 8.2.RC1 + torch_npu）
-# 策略：用镜像内 python3 装业务依赖；禁止 pip 安装 CUDA torch / 覆盖 torch_npu
+# 底座与 vLLM / MinerU 统一：
+#   quay.io/ascend/vllm-ascend:v0.23.0-310p（CANN 9.1.0 + Python 3.12 + torch_npu）
+# 旧线回退：v0.10.0rc1-310p（CANN 8.2.RC1 + Python 3.11）须整线 HDK 配套
+# 策略：extras/业务依赖装到「带 torch」的厂商 Python；禁止 pip 覆盖 torch_npu
 # =============================================================================
 
-ARG BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+ARG BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 FROM ${BASE_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -16,10 +18,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/workspace \
     PIP_DEFAULT_TIMEOUT=300 \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    PATH=/usr/local/python3.12.13/bin:/usr/local/python3.11.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 WORKDIR /workspace
 
+# 仅补系统库；不要 apt 再装 python3-pip（会抢厂商 Python）
 RUN set -eux; \
     if command -v apt-get >/dev/null 2>&1; then \
       apt-get update && apt-get install -y --no-install-recommends \
@@ -36,16 +40,44 @@ ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
 COPY requirements-大模型应用.txt /workspace/requirements-app.txt
 COPY requirements-人脸识别-CPU.txt /workspace/requirements-face-cpu.txt
 
-# 安装业务依赖后必须仍能 import torch；优先保留镜像自带 torch_npu
+# 探测 python3.11.* / python3.12.*；构建机无 NPU 时关闭 torch_npu 自动加载
 RUN set -eux; \
-    python3 -m pip install --upgrade pip setuptools wheel; \
-    python3 -c "import torch; print('torch before', torch.__version__)"; \
-    python3 -m pip install --no-cache-dir --timeout=300 --retries=15 \
+    if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then \
+      . /usr/local/Ascend/ascend-toolkit/set_env.sh; \
+    fi; \
+    PY=""; \
+    shopt -s nullglob; \
+    CANDIDATES=(/usr/local/python3.*/bin/python3 /usr/local/bin/python3); \
+    if command -v python3 >/dev/null 2>&1; then \
+      CANDIDATES+=("$(command -v python3)"); \
+    fi; \
+    for hit in "${CANDIDATES[@]}"; do \
+      if [ -x "$hit" ] && TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$hit" -c "import torch" >/dev/null 2>&1; then \
+        PY="$hit"; \
+        break; \
+      fi; \
+    done; \
+    if [ -z "$PY" ]; then \
+      echo "ERROR: no Ascend python with torch found"; \
+      echo "PATH=$PATH"; \
+      ls -la /usr/local/python3.*/bin/ 2>/dev/null || true; \
+      command -v python3 || true; \
+      exit 1; \
+    fi; \
+    echo "Using PYTHON=$PY"; \
+    PY_BIN="$(dirname "$PY")"; \
+    echo "export PATH=${PY_BIN}:\$PATH" > /etc/profile.d/ascend-python.sh; \
+    printf '%s\n' "$PY_BIN" > /etc/ascend-python-bindir; \
+    ln -sfn "$PY" /usr/local/bin/python3; \
+    ln -sfn "$PY" /usr/local/bin/python; \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -c "import torch; print('torch before', torch.__version__)"; \
+    "$PY" -m pip install --upgrade pip setuptools wheel; \
+    "$PY" -m pip install --no-cache-dir --timeout=300 --retries=15 \
         ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
         ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
         -r /workspace/requirements-app.txt -r /workspace/requirements-face-cpu.txt; \
-    python3 -c "import torch; print('torch after', torch.__version__)"; \
-    python3 -c "import importlib.util as u; \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -c "import torch; print('torch after', torch.__version__)"; \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -c "import importlib.util as u; \
 s=u.find_spec('torch_npu'); \
 print('torch_npu', 'OK' if s else 'MISSING — 若被 pip 覆盖为 CUDA/CPU torch，请钉住依赖或改用 --no-deps 装冲突包'); \
 assert s is not None, 'torch_npu missing after pip install'"

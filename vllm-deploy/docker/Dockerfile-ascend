@@ -5,7 +5,8 @@
 # 构建上下文：vllm-deploy/（与 docker-compose 中 context: .. 一致）
 #
 # 默认底座（与文档固化一致）：
-#   quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+#   quay.io/ascend/vllm-ascend:v0.23.0-310p（CANN 9.1.0 / Python 3.12）
+# 旧线回退：v0.10.0rc1-310p（CANN 8.2.RC1 / Python 3.11）须整线 HDK 配套
 #
 # 说明（勿与沐曦 Dockerfile-mx 混淆）：
 # - 宿主机：昇腾 / 沐曦现场均可为麒麟 V10；宿主机 OS ≠ 容器底座 OS。
@@ -17,7 +18,7 @@
 #   （见 docker-compose.ascend.yml），否则会出现 ModuleNotFoundError: yaml。
 # =============================================================================
 
-ARG BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+ARG BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 FROM ${BASE_IMAGE}
 
 ARG VLLM_REQUIREMENTS_PROFILE=extras
