@@ -348,6 +348,97 @@ presets:
         - "./videos"
     description: "Qwen3.6-27B Ascend W8A8；Duo×2 TP=4 / float16 / ascend 量化 / 16K / enforce_eager"
 
+  # ---------- Qwen3-30B-A3B（文本 MoE；激活约 3B，310P 吞吐优于稠密 27B）----------
+  # 官方：https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/Qwen3-30B-A3B.html
+  # 权重：Qwen/Qwen3-30B-A3B；310P 须 float16 + enforce_eager；MoE 开 EP；现场四芯 TP=4
+  # max_model_len：310P 无压缩 mask 时 mask≈O(L²)，64K 易 OOM；32K 为长上下文务实上限，成功后再试 48K
+  # 长上下文请压低 max_num_seqs；启动日志看 Available KV / concurrency，满长度并发≥2 再考虑加长
+  qwen3-30b-a3b:
+    path: "./models/Qwen3-30B-A3B"
+    served_model_name: "qwen3-30b-a3b"
+    dtype: "float16"
+    enforce_eager: true
+    block_size: 128
+    max_model_len: 32768
+    tensor_parallel_size: 4
+    gpu_memory_utilization: 0.88
+    max_num_seqs: 8
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: true
+    enable_expert_parallel: true
+    multimodal: false
+    description: "Qwen3-30B-A3B 文本 MoE；310P float16 / TP=4+EP / 32K / enforce_eager"
+
+  # Qwen3-30B-A3B Ascend W8A8（310P 推荐量化；QuaRot）
+  # 权重：Eco-Tech/Qwen3-30B-A3B-w8a8-QuaRot-310（以 ModelScope 实际仓库名为准）
+  # W8A8 权重更小 → KV 更宽裕；仍受 310P mask 限制，默认 32K，稳后再试 49152
+  qwen3-30b-a3b-w8a8:
+    path: "./models/Qwen3-30B-A3B-w8a8-QuaRot-310"
+    served_model_name: "qwen3-30b-a3b-w8a8"
+    dtype: "float16"
+    quantization: "ascend"
+    enforce_eager: true
+    block_size: 128
+    max_model_len: 32768
+    tensor_parallel_size: 4
+    gpu_memory_utilization: 0.88
+    max_num_seqs: 8
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: false
+    enable_expert_parallel: true
+    multimodal: false
+    description: "Qwen3-30B-A3B W8A8 QuaRot-310；TP=4+EP / 32K / enforce_eager；310P 吞吐+长上下文优选"
+
+  # ---------- Qwen3.6-35B-A3B（多模态 MoE；激活约 3B）----------
+  # 官方：https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/Qwen3.6-35B-A3B.html
+  # 权重：Qwen/Qwen3.6-35B-A3B；现场四芯 TP=4；ViT+MoE 比纯文本更吃显存，上下文不宜比 W8A8 更激进
+  qwen3.6-35b-a3b:
+    path: "./models/Qwen3.6-35B-A3B"
+    served_model_name: "qwen3.6-35b-a3b"
+    dtype: "float16"
+    enforce_eager: true
+    block_size: 128
+    max_model_len: 32768
+    tensor_parallel_size: 4
+    gpu_memory_utilization: 0.88
+    max_num_seqs: 8
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: true
+    enable_expert_parallel: true
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.6-35B-A3B 多模态 MoE；310P float16 / TP=4+EP / 32K / enforce_eager"
+
+  # Qwen3.6-35B-A3B Ascend W8A8（310P 官方示例路径）
+  # 权重：Eco-Tech/Qwen3.6-35B-A3B-w8a8；官方 300I DUO 示例曾用 TP=2+20K，四芯 TP=4 可将上下文提到 32K
+  # 无压缩 mask 时勿直接上 64K（mask 峰值可达十余 GB）；先 32K，日志确认后再试 49152
+  qwen3.6-35b-a3b-w8a8:
+    path: "./models/Qwen3.6-35B-A3B-w8a8"
+    served_model_name: "qwen3.6-35b-a3b-w8a8"
+    dtype: "float16"
+    quantization: "ascend"
+    enforce_eager: true
+    block_size: 128
+    max_model_len: 32768
+    tensor_parallel_size: 4
+    gpu_memory_utilization: 0.88
+    max_num_seqs: 8
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: false
+    enable_expert_parallel: true
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.6-35B-A3B Ascend W8A8；TP=4+EP / 32K / enforce_eager；310P 多模态长上下文优选"
 
   # Qwen3.5 27B 原生多模态模型
 #  qwen3-27b:
