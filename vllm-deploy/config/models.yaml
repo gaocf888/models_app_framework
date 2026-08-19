@@ -267,8 +267,8 @@ presets:
   # 硬件约定（README-DEPLOY-ASCEND / 四卡切分）：vLLM 独占物理卡0+卡1 → ASCEND_RT_VISIBLE_DEVICES=0,1,2,3（4 逻辑 NPU / ~192GB）
   # 本预设 tensor_parallel_size=4，用满上述 4 个设备；.env 中 TENSOR_PARALLEL_SIZE 勿小于 4（否则会盖过预设）
   # 310P：勿用 bfloat16；开 prefix caching 时 block_size=128；勿配 attention-backend / 启动期 default-chat-template-kwargs（vllm-ascend CLI 不认）
-  # 官方模型：Qwen/Qwen3.6-27B 、Qwen/Qwen3.6-27B-FP8（用户口中的 FB8 = FP8）
-  # 官方 recipe 要求较新 vLLM；本仓库昇腾默认底座 vllm-ascend:v0.23.0-310p（CANN 9.1.0）
+  # 官方 FP16：Qwen/Qwen3.6-27B；310P 量化用 Eco-Tech/Qwen3.6-27B-w8a8（勿用 HF FP8，见下方）
+  # 底座：vllm-ascend:v0.23.0-310p（CANN 9.1.0）
 
   # Qwen3.6-27B 原生多模态（FP16；权重体量大，双 Duo / 四芯 TP=4）
   qwen3.6-27b:
@@ -277,12 +277,14 @@ presets:
     dtype: "float16"
     enforce_eager: true
     block_size: 128
-    max_model_len: 8192
+    max_model_len: 32768
     tensor_parallel_size: 4
-    gpu_memory_utilization: 0.88
-    max_num_seqs: 4
+    gpu_memory_utilization: 0.90
+    max_num_seqs: 8
     max_num_batched_tokens: 8192
     enable_prefix_caching: true
+    # MTP配置(草稿模型，提高推理效率)
+    # speculative-config: '{"method":"qwen3_5_mtp","num_speculative_tokens":1}'
     # 关闭思考请在 API extra_body.chat_template_kwargs.enable_thinking=false
     multimodal:
       enabled: true
@@ -293,17 +295,47 @@ presets:
         - "./videos"
     description: "Qwen3.6-27B 多模态；Atlas 300I Duo×2（设备 0–3）TP=4 / FP16 / 8K；面向昇腾 310P"
 
-  # Qwen3.6-27B-FP8（细粒度 FP8；亦称 FB8）多模态，同卡切分下显存更宽裕，可略提高上下文
-  qwen3.6-27b-fp8:
-    path: "./models/Qwen3.6-27B-FP8"
-    served_model_name: "qwen3.6-27b-fp8"
-    dtype: "auto"
-    quantization: "fp8"
+  # ---------- Qwen3.6-27B-FP8（已禁用，仅保留作对照）----------
+  # 说明：HuggingFace 细粒度 FP8（亦称 FB8）+ quantization: fp8 在当前 Ascend 310P / vllm-ascend:v0.23.0-310p 上不可用。
+  # 实测失败：create_weights → init_fp8_linear_kernel → choose_scaled_mm_linear_kernel
+  #            KeyError: <PlatformEnum.OOT: 6>
+  # 原因：Ascend 为 OOT 平台，vLLM 通用 FP8 scaled_mm 内核表无该平台条目；改 dtype/max_model_len 无法绕过。
+  # 310P 量化请改用下方 qwen3.6-27b-w8a8（Eco-Tech W8A8 + quantization: ascend）；日常优先 qwen3.6-27b（FP16）。
+  # qwen3.6-27b-fp8:
+  #   path: "./models/Qwen3.6-27B-FP8"
+  #   served_model_name: "qwen3.6-27b-fp8"
+  #   dtype: "float16"
+  #   quantization: "fp8"
+  #   enforce_eager: true
+  #   block_size: 128
+  #   max_model_len: 16384
+  #   tensor_parallel_size: 4
+  #   gpu_memory_utilization: 0.90
+  #   max_num_seqs: 8
+  #   max_num_batched_tokens: 8192
+  #   enable_prefix_caching: true
+  #   multimodal:
+  #     enabled: true
+  #     limit_images: 4
+  #     limit_videos: 1
+  #     media_paths:
+  #       - "./images"
+  #       - "./videos"
+  #   description: "（禁用）HF FP8；310P/vllm-ascend 报 PlatformEnum.OOT，请用 qwen3.6-27b 或 qwen3.6-27b-w8a8"
+
+  # Qwen3.6-27B Ascend W8A8（官方量化路径；替代不可用的 HF FP8）
+  # 权重：Eco-Tech/Qwen3.6-27B-w8a8 → https://www.modelscope.cn/models/Eco-Tech/Qwen3.6-27B-w8a8
+  # 下载到 ./models/Qwen3.6-27B-w8a8；须 quantization: ascend（勿用 fp8）
+  qwen3.6-27b-w8a8:
+    path: "./models/Qwen3.6-27B-w8a8"
+    served_model_name: "qwen3.6-27b-w8a8"
+    dtype: "float16"
+    quantization: "ascend"
     enforce_eager: true
     block_size: 128
-    max_model_len: 16384
+    max_model_len: 32768
     tensor_parallel_size: 4
-    gpu_memory_utilization: 0.88
+    gpu_memory_utilization: 0.90
     max_num_seqs: 8
     max_num_batched_tokens: 8192
     enable_prefix_caching: true
@@ -314,7 +346,8 @@ presets:
       media_paths:
         - "./images"
         - "./videos"
-    description: "Qwen3.6-27B-FP8 多模态；Atlas 300I Duo×2（设备 0–3）TP=4 / FP8 / 16K；310P 上须确认 vllm-ascend 支持 FP8"
+    description: "Qwen3.6-27B Ascend W8A8；Duo×2 TP=4 / float16 / ascend 量化 / 16K / enforce_eager"
+
 
   # Qwen3.5 27B 原生多模态模型
 #  qwen3-27b:
