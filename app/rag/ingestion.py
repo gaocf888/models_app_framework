@@ -213,11 +213,21 @@ class RAGIngestionService:
 
         doc_repo = DocumentRepository()
         docs = doc_repo.list_in_namespace(namespace)
+        from app.rag.asset_storage import RagAssetStorage
+        from app.rag.original_docs import original_ref_from_record
+
+        storage = RagAssetStorage()
         for doc in docs:
             doc_name = str(doc.get("doc_name") or "")
             if not doc_name:
                 continue
             doc_version = doc.get("doc_version")
+            ref = original_ref_from_record(doc)
+            if ref:
+                try:
+                    storage.delete_original(ref)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("delete original object failed during purge doc_name=%s: %s", doc_name, e)
             if get_app_config().rag.ingestion.figure_enabled:
                 try:
                     from app.rag.asset_storage import RagAssetStorage

@@ -30,6 +30,9 @@ class RagAssetStorage:
         self._prefix = (self._ingest.figure_object_key_prefix or "rag-assets/").strip()
         if self._prefix and not self._prefix.endswith("/"):
             self._prefix += "/"
+        self._original_prefix = (getattr(self._ingest, "original_object_key_prefix", None) or "rag-docs/").strip()
+        if self._original_prefix and not self._original_prefix.endswith("/"):
+            self._original_prefix += "/"
         self._presign_ttl = max(60, int(self._ingest.figure_presign_ttl_seconds))
         self._minio = None
         self._local_dir = self._resolve_local_dir(self._chatbot.image_store_dir)
@@ -188,3 +191,122 @@ class RagAssetStorage:
         if parsed.scheme in {"http", "https"}:
             return {"image_url": raw, "image_object_key": raw}
         raise FileNotFoundError(f"cannot resolve image content: {raw[:200]}")
+
+    @staticmethod
+    def _safe_segment(value: str, max_len: int = 80) -> str:
+        raw = (value or "").strip() or "unnamed"
+        return "".join(c if c.isalnum() or c in "-_." else "_" for c in raw)[:max_len]
+
+    def original_object_key(
+        self,
+        *,
+        namespace: str,
+        doc_name: str,
+        doc_version: str,
+        filename: str,
+    ) -> str:
+        suffix = Path(filename or "").suffix.lower() or ".bin"
+        if len(suffix) > 12:
+            suffix = ".bin"
+        return (
+            f"{self._original_prefix}{self._safe_segment(namespace)}/"
+            f"{self._safe_segment(doc_name, 120)}/{self._safe_segment(doc_version, 32)}/original{suffix}"
+        )
+
+    def build_original_uri(self, object_key: str, *, local_path: str | None = None) -> str:
+        if self._backend == "minio" and self._minio is not None:
+            return f"minio://{self._bucket}/{object_key.lstrip('/')}"
+        path = local_path or object_key
+        return f"local:{path}"
+
+    def upload_original(
+        self,
+        *,
+        data: bytes,
+        namespace: str,
+        doc_name: str,
+        doc_version: str = "v1",
+        filename: str = "file.bin",
+        content_type: str = "application/octet-stream",
+    ) -> dict[str, Any]:
+        if not data:
+            raise ValueError("empty original file")
+        object_key = self.original_object_key(
+            namespace=namespace, doc_name=doc_name, doc_version=doc_version, filename=filename
+        )
+        if self._backend == "minio" and self._minio is not None:
+            self._minio.put_object(
+                bucket_name=self._bucket,
+                object_name=object_key,
+                data=io.BytesIO(data),
+                length=len(data),
+                content_type=content_type or "application/octet-stream",
+            )
+            uri = self.build_original_uri(object_key)
+            return {"object_key": uri, "storage_key": object_key, "source_uri": uri, "bytes": len(data)}
+
+        ns_dir = self._local_dir / "docs" / self._safe_segment(namespace) / self._safe_segment(doc_name, 120)
+        ns_dir.mkdir(parents=True, exist_ok=True)
+        suffix = Path(filename or "").suffix.lower() or ".bin"
+        out = ns_dir / f"{self._safe_segment(doc_version, 32)}_original{suffix}"
+        out.write_bytes(data)
+        abs_path = str(out.resolve())
+        uri = self.build_original_uri(object_key, local_path=abs_path)
+        return {"object_key": uri, "storage_key": abs_path, "source_uri": uri, "bytes": len(data)}
+
+    def get_original_bytes(self, ref: str) -> tuple[bytes, str | None]:
+        from app.rag.original_docs import OriginalObjectError, parse_object_ref
+
+        kind, bucket, key_or_path = parse_object_ref(ref)
+        if kind == "local":
+            p = Path(key_or_path)
+            if not p.is_file():
+                raise OriginalObjectError(f"local original not found: {key_or_path}")
+            return p.read_bytes(), None
+        if kind == "key":
+            bucket = self._bucket
+        use_bucket = bucket or self._bucket
+        if self._minio is not None:
+            try:
+                resp = self._minio.get_object(use_bucket, key_or_path)
+                try:
+                    data = resp.read()
+                finally:
+                    resp.close()
+                    resp.release_conn()
+                return data, None
+            except Exception as exc:  # noqa: BLE001
+                raise OriginalObjectError(f"minio get original failed: {exc}") from exc
+        p = Path(key_or_path)
+        if p.is_file():
+            return p.read_bytes(), None
+        raise OriginalObjectError(f"cannot read original object: {ref[:200]}")
+
+    def delete_original(self, ref: str | None) -> bool:
+        from app.rag.original_docs import looks_like_object_ref, parse_object_ref
+
+        if not looks_like_object_ref(ref):
+            return False
+        try:
+            kind, bucket, key_or_path = parse_object_ref(str(ref))
+        except Exception:  # noqa: BLE001
+            return False
+        if kind == "local":
+            p = Path(key_or_path)
+            if p.is_file():
+                p.unlink(missing_ok=True)
+                return True
+            return False
+        use_bucket = bucket or self._bucket
+        if self._minio is not None:
+            try:
+                self._minio.remove_object(use_bucket, key_or_path)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("delete original minio object failed ref=%s err=%s", ref, exc)
+                return False
+        p = Path(key_or_path)
+        if p.is_file():
+            p.unlink(missing_ok=True)
+            return True
+        return False

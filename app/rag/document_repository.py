@@ -20,6 +20,15 @@ from app.rag.namespace_kb import (
 logger = get_logger(__name__)
 
 
+def _escape_es_wildcard(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
+
+
+def _doc_name_contains_match(doc_name: Any, needle: str) -> bool:
+    hay = str(doc_name or "")
+    return needle.lower() in hay.lower()
+
+
 def make_document_storage_key(
     doc_name: str,
     *,
@@ -147,7 +156,9 @@ class DocumentRepository:
         dataset_id: str | None = None,
         doc_name: str | None = None,
         doc_version: str | None = None,
+        doc_name_contains: str | None = None,
     ) -> list[Dict[str, Any]]:
+        needle = (doc_name_contains or "").strip() or None
         if self._use_es and self._client is not None:
             filters: list[Dict[str, Any]] = []
             if namespace is not None:
@@ -160,6 +171,8 @@ class DocumentRepository:
                 filters.append({"term": {"doc_name": doc_name}})
             if doc_version is not None:
                 filters.append({"term": {"doc_version": doc_version}})
+            if needle:
+                filters.append({"wildcard": {"doc_name": f"*{_escape_es_wildcard(needle)}*"}})
             query: Dict[str, Any] = {"match_all": {}} if not filters else {"bool": {"filter": filters}}
             body = {
                 "from": max(offset, 0),
@@ -181,6 +194,8 @@ class DocumentRepository:
             values = [v for v in values if v.get("doc_name") == doc_name]
         if doc_version is not None:
             values = [v for v in values if str(v.get("doc_version") or "v1") == str(doc_version)]
+        if needle:
+            values = [v for v in values if _doc_name_contains_match(v.get("doc_name"), needle)]
         values.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
         start = max(offset, 0)
         end = start + max(limit, 1)
@@ -441,10 +456,12 @@ class DocumentRepository:
         namespace: str | None = None,
         tenant_id: str | None = None,
         dataset_id: str | None = None,
+        doc_name_contains: str | None = None,
     ) -> Dict[str, Any]:
         """
         返回知识库总览统计，便于管理面做“当前知识库整体情况”展示。
         """
+        needle = (doc_name_contains or "").strip() or None
         if self._use_es and self._client is not None:
             filters: list[Dict[str, Any]] = []
             if namespace is not None:
@@ -453,6 +470,8 @@ class DocumentRepository:
                 filters.append({"term": {"tenant_id": tenant_id}})
             if dataset_id is not None:
                 filters.append({"term": {"dataset_id": dataset_id}})
+            if needle:
+                filters.append({"wildcard": {"doc_name": f"*{_escape_es_wildcard(needle)}*"}})
             query: Dict[str, Any] = {"match_all": {}} if not filters else {"bool": {"filter": filters}}
             body = {
                 "size": 0,
@@ -483,7 +502,14 @@ class DocumentRepository:
                 ],
             }
 
-        values = self.list(limit=1000000, offset=0, namespace=namespace, tenant_id=tenant_id, dataset_id=dataset_id)
+        values = self.list(
+            limit=1000000,
+            offset=0,
+            namespace=namespace,
+            tenant_id=tenant_id,
+            dataset_id=dataset_id,
+            doc_name_contains=needle,
+        )
         by_namespace: Dict[str, int] = {}
         by_tenant: Dict[str, int] = {}
         by_status: Dict[str, int] = {}

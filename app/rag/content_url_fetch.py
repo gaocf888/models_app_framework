@@ -266,9 +266,19 @@ def materialize_document_content_from_url(doc: DocumentSource) -> tuple[Document
 
     返回 (新 DocumentSource, 临时文件路径或 None)。调用方须在 `finally` 中 `unlink` 临时文件。
     """
+    from app.rag.original_docs import (
+        looks_like_object_ref,
+        materialize_document_content_from_object_ref,
+        merge_existing_original_metadata,
+    )
+
+    doc = merge_existing_original_metadata(doc)
     doc = normalize_document_source_type(doc)
-    cfg = get_app_config().rag.content_fetch
     raw = (doc.content or "").strip()
+    if looks_like_object_ref(raw) or looks_like_object_ref(doc.source_uri):
+        return materialize_document_content_from_object_ref(doc)
+
+    cfg = get_app_config().rag.content_fetch
     if not cfg.enabled or not looks_like_http_url(raw):
         return doc, None
 

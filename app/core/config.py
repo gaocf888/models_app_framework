@@ -269,6 +269,8 @@ class RAGIngestionConfig:
     figure_neighbor_text_before_ratio: float = 0.7
     figure_expand_max_per_text: int = 2
     figure_expand_max_total: int = 6
+    original_object_key_prefix: str = "rag-docs/"
+    default_dataset_id: str = "default"
 
 
 @dataclass
@@ -336,6 +338,8 @@ class RAGConfig:
     # namespace 知识库启用/优先级（召回加权）
     namespace_kb_priority_boost: float = 0.05
     namespace_kb_priority_tiered: bool = False
+    # 管理面摄入 / upsert / move 目标是否禁止空 namespace（上传接口始终要求非空）
+    require_namespace: bool = False
 
 
 @dataclass
@@ -1135,6 +1139,8 @@ def _load_from_env() -> AppConfig:
         ),
         figure_expand_max_per_text=max(0, int(os.getenv("RAG_FIGURE_EXPAND_MAX_PER_TEXT", "2"))),
         figure_expand_max_total=max(0, int(os.getenv("RAG_FIGURE_EXPAND_MAX_TOTAL", "6"))),
+        original_object_key_prefix=(os.getenv("RAG_ORIGINAL_OBJECT_KEY_PREFIX") or "rag-docs/").strip() or "rag-docs/",
+        default_dataset_id=(os.getenv("RAG_DEFAULT_DATASET_ID") or "default").strip() or "default",
     )
     agentic_cfg = RAGAgenticConfig(
         enabled=os.getenv("RAG_AGENTIC_ENABLED", "true").lower() == "true",
@@ -1185,6 +1191,7 @@ def _load_from_env() -> AppConfig:
         query_vision=query_vision_cfg,
         namespace_kb_priority_boost=float(os.getenv("RAG_NAMESPACE_PRIORITY_BOOST", "0.05")),
         namespace_kb_priority_tiered=os.getenv("RAG_NAMESPACE_PRIORITY_TIERED", "false").lower() == "true",
+        require_namespace=os.getenv("RAG_REQUIRE_NAMESPACE", "false").lower() == "true",
     )
 
     mineru_cfg = MinerUConfig(

@@ -29,7 +29,7 @@ RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
 from functools import lru_cache
 from typing import Annotated, Any, List
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Path, Query
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Path, Query, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import get_app_config
@@ -46,7 +46,15 @@ from app.rag.namespace_kb import (
     DEFAULT_NAMESPACE_PATH,
     build_chunk_metadatas,
     namespace_from_path_param,
-    resolve_namespace_kb_fields,
+)
+from app.rag.original_docs import (
+    DOC_STATUS_UPLOADED,
+    META_FILE_SIZE,
+    META_OBJECT_KEY,
+    META_ORIGINAL_FILENAME,
+    guess_source_type,
+    original_ref_from_record,
+    resolve_namespace_kb_for_ingest,
 )
 from app.rag.graph_namespace_resync import run_graph_resync_after_namespace_move
 from app.core.logging import get_logger
@@ -73,6 +81,49 @@ def _get_job_repo() -> JobRepository:
 @lru_cache(maxsize=1)
 def _get_doc_repo() -> DocumentRepository:
     return DocumentRepository()
+
+
+def _ensure_ingest_namespace(namespace: str | None, *, always: bool = False) -> str | None:
+    from app.rag.original_docs import normalize_required_namespace, require_namespace_enabled
+
+    if always or require_namespace_enabled():
+        return normalize_required_namespace(namespace, always=True)
+    ns = (namespace or "").strip()
+    return ns or None
+
+
+def _delete_original_objects(payloads: list[dict[str, Any]]) -> None:
+    from app.rag.asset_storage import RagAssetStorage
+
+    storage = RagAssetStorage()
+    for payload in payloads:
+        ref = original_ref_from_record(payload if isinstance(payload, dict) else None)
+        if ref:
+            storage.delete_original(ref)
+
+
+def _mark_documents_job_pending(docs: list[DocumentSource], job_id: str) -> None:
+    from app.rag.document_repository import make_document_storage_key
+    from app.rag.models import utcnow_iso
+
+    repo = _get_doc_repo()
+    fallback = get_app_config().rag.ingestion.tenant_id_default or "default"
+    for doc in docs:
+        key = make_document_storage_key(
+            doc.doc_name,
+            namespace=doc.namespace,
+            tenant_id=doc.tenant_id,
+            doc_version=doc.doc_version,
+            tenant_id_fallback=fallback,
+        )
+        payload = repo.get(key)
+        if not payload:
+            continue
+        payload["last_job_id"] = job_id
+        payload["last_job_type"] = "upsert"
+        payload["last_job_status"] = "PENDING"
+        payload["updated_at"] = utcnow_iso()
+        repo.upsert(key, payload)
 
 
 def warmup_rag_admin_components() -> None:
@@ -293,8 +344,9 @@ class IngestionJobDocumentRequest(BaseModel):
         description=(
             "必填。语义由 `source_type` 决定："
             "① `text`/`markdown`/`html`：内联正文，或（在 `RAG_CONTENT_FETCH_ENABLED=true` 时）`http(s)://` 文件 URL，服务端拉取为文本；"
-            "② `pdf`/`docx`/`xlsx`/`xlsm`：内联已抽取文本，或本地绝对路径/`file://...`，或（同上开关开启时）`http(s)://` 下载到临时文件再解析。"
-            "URL 拉取受 `RAG_CONTENT_FETCH_ALLOW_HOSTS`、私网解析拦截等约束（防 SSRF）；`source_uri` 仍不用于下载。"
+            "② `pdf`/`docx`/`xlsx`/`xlsm`：内联已抽取文本，或本地绝对路径/`file://...`，或（同上开关开启时）`http(s)://` 下载到临时文件再解析；"
+            "③ 管理台上传后的稳定对象引用：`minio://bucket/key` 或 `local:` 路径（内部 get，不走预签名 URL / content-fetch）。"
+            "URL 拉取受 `RAG_CONTENT_FETCH_ALLOW_HOSTS`、私网解析拦截等约束（防 SSRF）；`source_uri` 仍不用于 HTTP 下载。"
         ),
     )
     doc_version: str = Field(
@@ -559,19 +611,19 @@ async def submit_ingestion_job(req: IngestionJobRequest) -> IngestionJobSubmitRe
     """
     异步提交知识摄入任务（推荐生产入口）。无 Path/Query；字段以 Request body Schema 与各 `Field(description=…)` 为准。
 
-    **要点**：`content` 可为内联正文、本地/`file://` 路径，或在 `RAG_CONTENT_FETCH_ENABLED=true` 时的 http(s) 文件 URL；`source_uri` 仅溯源、不拉取正文。
+    **要点**：`content` 可为内联正文、本地/`file://` 路径、管理台上传后的 ``minio://`` / ``local:`` 对象引用，或在 `RAG_CONTENT_FETCH_ENABLED=true` 时的 http(s) 文件 URL；`source_uri` 仅作 HTTP 溯源、不用于下载（对象引用可与 content 相同以便重灌）。
 
     **各字段释义与必填以 OpenAPI Schema 为准**，以下为速查。
 
     **路径/Query**：无。
 
     **`documents[]` 每篇文档（模型 `IngestionJobDocumentRequest`）**
-    - `content`：**必填**。内联正文、本地/`file://` 路径；若开启 `RAG_CONTENT_FETCH_ENABLED`，可为 `http(s)://` 文件 URL（按类型下载为文本或临时文件）。不会用 `source_uri` 下载正文。
+    - `content`：**必填**。内联正文、本地/`file://` 路径、``minio://bucket/key`` / ``local:`` 对象引用；若开启 `RAG_CONTENT_FETCH_ENABLED`，可为 `http(s)://` 文件 URL。不会用 `source_uri` 做 HTTP 下载。
     - `dataset_id`：必填，数据集划分与过滤。[可作为知识库一级分区]
     - `doc_name`：必填，文档逻辑名（更新主键之一）。
     - `doc_version`：可选默认 v1，版本治理与按版本删除。
     - `tenant_id`：可选，多租户 ID，写入元数据供隔离/过滤。
-    - `namespace`：可选，逻辑分区，与检索 namespace 一致。[可作为知识库二级分区]
+    - `namespace`：逻辑分区；`RAG_REQUIRE_NAMESPACE=true` 时必填非空。[可作为知识库二级分区]
     - `source_type`：可选默认 text，决定如何解析 `content`。
     - `source_uri`：可选，**仅元数据**（链接/URI 字符串），溯源展示；**不用于抓取正文**。
     - `description`：可选，人读摘要。
@@ -595,14 +647,17 @@ async def submit_ingestion_job(req: IngestionJobRequest) -> IngestionJobSubmitRe
     try:
         docs = []
         for d in req.documents:
-            enabled, priority = resolve_namespace_kb_fields(d.namespace_kb_enabled, d.namespace_kb_priority)
+            ns = _ensure_ingest_namespace(d.namespace)
+            enabled, priority = resolve_namespace_kb_for_ingest(
+                ns, d.namespace_kb_enabled, d.namespace_kb_priority
+            )
             docs.append(
                 DocumentSource(
                     dataset_id=d.dataset_id,
                     doc_name=d.doc_name,
                     doc_version=d.doc_version,
                     tenant_id=d.tenant_id,
-                    namespace=d.namespace,
+                    namespace=ns,
                     content=d.content,
                     source_type=d.source_type,
                     source_uri=d.source_uri,
@@ -624,7 +679,13 @@ async def submit_ingestion_job(req: IngestionJobRequest) -> IngestionJobSubmitRe
             chunk_cfg=chunk_cfg,
             idempotency_key=req.idempotency_key,
         )
+        _mark_documents_job_pending(docs, job_id)
         return IngestionJobSubmitResponse(ok=True, job_id=job_id)
+    except ValueError as e:
+        if "namespace is required" in str(e):
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        logger.exception("rag submit_ingestion_job failed")
+        raise HTTPException(status_code=400, detail=f"RAG submit_ingestion_job failed: {e}") from e
     except Exception as e:  # noqa: BLE001
         logger.exception("rag submit_ingestion_job failed")
         raise HTTPException(status_code=500, detail=f"RAG submit_ingestion_job failed: {e}") from e
@@ -927,11 +988,14 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
             min_chunk_size=req.min_chunk_size,
         )
         pipeline = DocumentPipeline(cfg)
-        enabled, priority = resolve_namespace_kb_fields(req.namespace_kb_enabled, req.namespace_kb_priority)
+        ns = _ensure_ingest_namespace(req.namespace)
+        enabled, priority = resolve_namespace_kb_for_ingest(
+            ns, req.namespace_kb_enabled, req.namespace_kb_priority
+        )
         doc = DocumentSource(
             dataset_id=req.dataset_id,
             doc_name=req.doc_name,
-            namespace=req.namespace,
+            namespace=ns,
             content=req.content,
             source_type=req.source_type,
             source_uri=req.source_uri,
@@ -958,7 +1022,7 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
             dataset_id=req.dataset_id,
             texts=[c.text for c in chunks],
             description=req.description,
-            namespace=req.namespace,
+            namespace=ns,
             doc_name=req.doc_name,
             replace_if_exists=True,
             metadatas=chunk_metadatas,
@@ -971,6 +1035,11 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
         return UpsertDocumentResponse(
             ok=True, doc_name=req.doc_name, chunk_count=len(chunks), stats=stats
         )
+    except ValueError as e:
+        if "namespace is required" in str(e):
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        logger.exception("rag upsert_document failed: doc_name=%s", req.doc_name)
+        raise HTTPException(status_code=400, detail=f"RAG upsert_document failed: {e}") from e
     except Exception as e:  # noqa: BLE001
         logger.exception("rag upsert_document failed: doc_name=%s", req.doc_name)
         raise HTTPException(status_code=500, detail=f"RAG upsert_document failed: {e}") from e
@@ -1023,6 +1092,14 @@ async def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
     失败时 HTTP 5xx，`detail` 为错误信息。
     """
     try:
+        rows = _get_doc_repo().list(
+            limit=100_000,
+            offset=0,
+            namespace=req.namespace,
+            doc_name=req.doc_name,
+            doc_version=req.doc_version,
+        )
+        _delete_original_objects(rows)
         deleted = _get_service().delete_by_doc_name(
             doc_name=req.doc_name, namespace=req.namespace, doc_version=req.doc_version
         )
@@ -1555,6 +1632,143 @@ def _document_meta_item_from_payload(d: dict[str, Any]) -> DocumentMetaItem:
     )
 
 
+class UploadDocumentResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    document: DocumentMetaItem = Field(..., description="上传后的文档登记（status=UPLOADED，未切块）")
+    object_key: str = Field(..., description="稳定对象引用，摄入时作为 jobs/ingest 的 content")
+    source_uri: str = Field(..., description="与 object_key 相同的稳定 URI")
+    file_size: int = Field(..., description="原文件字节数")
+
+
+@router.post(
+    "/documents/upload",
+    summary="上传知识原文（不摄入）",
+    response_model=UploadDocumentResponse,
+    response_description="写入对象存储并登记 docs（UPLOADED）；请再 POST /rag/jobs/ingest，content 用返回的 object_key。",
+)
+async def upload_document(
+    file: Annotated[UploadFile, File(description="原文件")],
+    namespace: Annotated[str, Form(description="必填。知识分类 / namespace，不允许为空")],
+    dataset_id: Annotated[str | None, Form(description="数据集 ID；省略则用 RAG_DEFAULT_DATASET_ID")] = None,
+    doc_name: Annotated[str | None, Form(description="文档逻辑名；省略则用文件名（去扩展名）")] = None,
+    description: Annotated[str | None, Form(description="人读说明")] = None,
+    doc_version: Annotated[str, Form(description="文档版本，默认 v1")] = "v1",
+    tenant_id: Annotated[str | None, Form(description="租户 ID")] = None,
+) -> UploadDocumentResponse:
+    """
+    仅上传原文到对象存储并写入 docs 登记（``status=UPLOADED``），**不**提交摄入任务。
+
+    随后调用 ``POST /rag/jobs/ingest``，将 ``content`` / ``source_uri`` 设为响应中的 ``object_key``。
+    """
+    from pathlib import Path as _Path
+
+    from app.rag.asset_storage import RagAssetStorage
+    from app.rag.document_repository import make_document_storage_key
+    from app.rag.models import utcnow_iso
+    from app.rag.namespace_kb import merge_doc_metadata_for_record
+
+    try:
+        ns = _ensure_ingest_namespace(namespace, always=True)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    filename = _Path(file.filename or "upload.bin").name
+    logical_name = (doc_name or "").strip() or _Path(filename).stem or "upload"
+    cfg = get_app_config().rag
+    ingest_cfg = cfg.ingestion
+    ds = (dataset_id or "").strip() or ingest_cfg.default_dataset_id or "default"
+    ver = (doc_version or "v1").strip() or "v1"
+    td = (tenant_id or "").strip() or None
+    max_bytes = int(cfg.content_fetch.max_bytes or 50 * 1024 * 1024)
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty file upload")
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"file larger than {max_bytes} bytes")
+
+    repo = _get_doc_repo()
+    doc_key = make_document_storage_key(
+        logical_name,
+        namespace=ns,
+        tenant_id=td,
+        doc_version=ver,
+        tenant_id_fallback=ingest_cfg.tenant_id_default or "default",
+    )
+    existing = repo.get(doc_key) or {}
+    last_job_status = str(existing.get("last_job_status") or "")
+    if last_job_status in {"PENDING", "RUNNING"}:
+        raise HTTPException(status_code=409, detail="document has an in-progress ingestion job")
+
+    source_type = guess_source_type(filename, file.content_type)
+    try:
+        stored = RagAssetStorage().upload_original(
+            data=data,
+            namespace=ns,
+            doc_name=logical_name,
+            doc_version=ver,
+            filename=filename,
+            content_type=(file.content_type or "application/octet-stream"),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("rag upload_document storage failed")
+        raise HTTPException(status_code=500, detail=f"RAG upload failed: {e}") from e
+
+    uri = str(stored.get("source_uri") or stored.get("object_key") or "")
+    enabled, priority = resolve_namespace_kb_for_ingest(ns, None, None)
+    meta = dict(existing.get("metadata") or {})
+    meta.update(
+        {
+            META_OBJECT_KEY: uri,
+            META_FILE_SIZE: int(stored.get("bytes") or len(data)),
+            META_ORIGINAL_FILENAME: filename,
+        }
+    )
+    doc = DocumentSource(
+        dataset_id=ds,
+        doc_name=logical_name,
+        namespace=ns,
+        content=uri,
+        doc_version=ver,
+        tenant_id=td,
+        source_type=source_type,
+        source_uri=uri,
+        description=description if description is not None else existing.get("description"),
+        metadata=meta,
+        namespace_kb_enabled=enabled,
+        namespace_kb_priority=priority,
+    )
+    created_at = existing.get("created_at") or utcnow_iso()
+    payload = {
+        "doc_name": logical_name,
+        "doc_version": ver,
+        "tenant_id": td,
+        "dataset_id": ds,
+        "namespace": ns,
+        "source_type": source_type,
+        "source_uri": uri,
+        "description": doc.description,
+        "chunk_count": int(existing.get("chunk_count") or 0),
+        "pipeline_version": ingest_cfg.pipeline_version,
+        "status": DOC_STATUS_UPLOADED,
+        "created_at": created_at,
+        "updated_at": utcnow_iso(),
+        "last_job_id": existing.get("last_job_id"),
+        "last_job_type": "upload",
+        "last_job_status": DOC_STATUS_UPLOADED,
+        "metadata": merge_doc_metadata_for_record(doc),
+        "error": None,
+    }
+    repo.upsert(doc_key, payload)
+    return UploadDocumentResponse(
+        ok=True,
+        document=_document_meta_item_from_payload(payload),
+        object_key=uri,
+        source_uri=uri,
+        file_size=int(stored.get("bytes") or len(data)),
+    )
+
+
 class MoveDocumentNamespaceRequest(BaseModel):
     """将单篇文档从当前 namespace 迁到目标 namespace（同步更新向量 chunk + docs 索引）。"""
 
@@ -1645,6 +1859,13 @@ async def move_document_namespace(
     """
     from_ns = _rag_ns_bucket(req.from_namespace)
     to_ns = _rag_ns_bucket(req.to_namespace)
+    try:
+        if to_ns is None:
+            _ensure_ingest_namespace(to_ns)
+        else:
+            to_ns = _ensure_ingest_namespace(to_ns) or to_ns
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if from_ns == to_ns:
         raise HTTPException(
             status_code=400,
@@ -1892,7 +2113,8 @@ async def list_document_meta(
     namespace: Annotated[str | None, Query(description="按命名空间过滤")] = None,
     tenant_id: Annotated[str | None, Query(description="按租户过滤")] = None,
     dataset_id: Annotated[str | None, Query(description="按数据集过滤")] = None,
-    doc_name: Annotated[str | None, Query(description="按文档名模糊或精确过滤（依仓库实现）")] = None,
+    doc_name: Annotated[str | None, Query(description="按文档名精确过滤")] = None,
+    doc_name_contains: Annotated[str | None, Query(description="按文档名包含匹配（管理台顶栏模糊搜索）")] = None,
 ) -> DocumentMetaListResponse:
     """
     分页查询文档元数据（管理面清单；数据来自文档索引，非 chunk 正文）。
@@ -1918,6 +2140,7 @@ async def list_document_meta(
                 tenant_id=tenant_id,
                 dataset_id=dataset_id,
                 doc_name=doc_name,
+                doc_name_contains=doc_name_contains,
             )
         except TypeError:
             # 兼容旧测试桩/旧实现签名：list(limit, offset, namespace)
@@ -1999,7 +2222,8 @@ async def get_documents_overview(
     namespace: Annotated[str | None, Query(description="过滤命名空间")] = None,
     tenant_id: Annotated[str | None, Query(description="过滤租户")] = None,
     dataset_id: Annotated[str | None, Query(description="过滤数据集")] = None,
-    doc_name: Annotated[str | None, Query(description="过滤文档名")] = None,
+    doc_name: Annotated[str | None, Query(description="过滤文档名（精确）")] = None,
+    doc_name_contains: Annotated[str | None, Query(description="按文档名包含匹配（管理台顶栏模糊搜索）")] = None,
 ) -> KnowledgeOverviewResponse:
     """
     知识库总览：当前过滤条件下的聚合统计 + 文档明细分页。
@@ -2019,7 +2243,12 @@ async def get_documents_overview(
     try:
         repo = _get_doc_repo()
         try:
-            stats = repo.overview(namespace=namespace, tenant_id=tenant_id, dataset_id=dataset_id)
+            stats = repo.overview(
+                namespace=namespace,
+                tenant_id=tenant_id,
+                dataset_id=dataset_id,
+                doc_name_contains=doc_name_contains,
+            )
         except TypeError:
             stats = repo.overview(namespace=namespace)
         try:
@@ -2030,6 +2259,7 @@ async def get_documents_overview(
                 tenant_id=tenant_id,
                 dataset_id=dataset_id,
                 doc_name=doc_name,
+                doc_name_contains=doc_name_contains,
             )
         except TypeError:
             docs = repo.list(limit=limit, offset=offset, namespace=namespace)
