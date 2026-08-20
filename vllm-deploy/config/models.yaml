@@ -267,7 +267,7 @@ presets:
   # 硬件约定（README-DEPLOY-ASCEND / 四卡切分）：vLLM 独占物理卡0+卡1 → ASCEND_RT_VISIBLE_DEVICES=0,1,2,3（4 逻辑 NPU / ~192GB）
   # 本预设 tensor_parallel_size=4，用满上述 4 个设备；.env 中 TENSOR_PARALLEL_SIZE 勿小于 4（否则会盖过预设）
   # 310P：勿用 bfloat16；开 prefix caching 时 block_size=128；勿配 attention-backend / 启动期 default-chat-template-kwargs（vllm-ascend CLI 不认）
-  # 官方 FP16：Qwen/Qwen3.6-27B；310P 量化用 Eco-Tech/Qwen3.6-27B-w8a8（勿用 HF FP8，见下方）
+  # 官方 FP16：Qwen/Qwen3.6-27B；310P 量化用 Eco-Tech/Qwen3.6-27B-W8A8-310P（勿用 HF FP8 / 勿用非-310P 的 w8a8）
   # 底座：vllm-ascend:v0.23.0-310p（CANN 9.1.0）
 
   # Qwen3.6-27B 原生多模态（FP16；权重体量大，双 Duo / 四芯 TP=4）
@@ -323,11 +323,15 @@ presets:
   #       - "./videos"
   #   description: "（禁用）HF FP8；310P/vllm-ascend 报 PlatformEnum.OOT，请用 qwen3.6-27b 或 qwen3.6-27b-w8a8"
 
-  # Qwen3.6-27B Ascend W8A8（官方量化路径；替代不可用的 HF FP8）
-  # 权重：Eco-Tech/Qwen3.6-27B-w8a8 → https://www.modelscope.cn/models/Eco-Tech/Qwen3.6-27B-w8a8
-  # 下载到 ./models/Qwen3.6-27B-w8a8；须 quantization: ascend（勿用 fp8）
+  # Qwen3.6-27B Ascend W8A8（310P 专用；替代不可用的 HF FP8）
+  # 重要：勿用 Eco-Tech/Qwen3.6-27B-w8a8（ViT 也被 W8A8_DYNAMIC，310P profile 会报
+  #   Bias dtype should be INT32, actual dtype is DT_FLOAT16 / npu_quant_matmul 161002）
+  # 须用 310P 权重：Eco-Tech/Qwen3.6-27B-W8A8-310P（visual 保持 FLOAT）
+  #   https://www.modelscope.cn/models/Eco-Tech/Qwen3.6-27B-W8A8-310P
+  # 下载到 ./models/Qwen3.6-27B-W8A8-310P；须 quantization: ascend（勿用 fp8）
+  # 参考：https://github.com/vllm-project/vllm-ascend/issues/14152
   qwen3.6-27b-w8a8:
-    path: "./models/Qwen3.6-27B-w8a8"
+    path: "./models/Qwen3.6-27B-W8A8-310P"
     served_model_name: "qwen3.6-27b-w8a8"
     dtype: "float16"
     quantization: "ascend"
@@ -346,7 +350,7 @@ presets:
       media_paths:
         - "./images"
         - "./videos"
-    description: "Qwen3.6-27B Ascend W8A8；Duo×2 TP=4 / float16 / ascend 量化 / 16K / enforce_eager"
+    description: "Qwen3.6-27B W8A8-310P；Duo×2 TP=4 / float16 / ascend / 32K / enforce_eager（勿用非-310P 的 w8a8 权重）"
 
   # ---------- Qwen3-30B-A3B（文本 MoE；激活约 3B，310P 吞吐优于稠密 27B）----------
   # 官方：https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/Qwen3-30B-A3B.html
