@@ -43,6 +43,12 @@ class VLLMService:
         "attention-backend": ("hardware", "attention_backend"),
         "default_chat_template_kwargs": ("model", "default_chat_template_kwargs"),
         "default-chat-template-kwargs": ("model", "default_chat_template_kwargs"),
+        "compilation_config": ("model", "compilation_config"),
+        "compilation-config": ("model", "compilation_config"),
+        "additional_config": ("model", "additional_config"),
+        "additional-config": ("model", "additional_config"),
+        "load_format": ("model", "load_format"),
+        "load-format": ("model", "load_format"),
     }
 
     # attention backend 兼容别名映射（统一为 vLLM 可识别值）
@@ -277,6 +283,13 @@ class VLLMService:
         # vLLM 接收枚举名，支持大小写不敏感输入（统一到小写下划线形式）
         return value.lower().replace("-", "_")
 
+    @staticmethod
+    def _to_cli_json(value) -> str:
+        """将 dict/list/标量序列化为 vLLM CLI 可接受的 JSON 字符串。"""
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+
     def build_command(self) -> list:
         """构建 vLLM 启动命令"""
         cmd = ["vllm", "serve"]
@@ -308,6 +321,12 @@ class VLLMService:
             cmd.extend(["--quantization", str(model["quantization"])])
         if model.get("max_model_len"):
             cmd.extend(["--max-model-len", str(model["max_model_len"])])
+        if model.get("load_format"):
+            cmd.extend(["--load-format", str(model["load_format"])])
+        if model.get("compilation_config") is not None:
+            cmd.extend(["--compilation-config", self._to_cli_json(model["compilation_config"])])
+        if model.get("additional_config") is not None:
+            cmd.extend(["--additional-config", self._to_cli_json(model["additional_config"])])
 
         # 硬件配置
         hardware = self.vllm_config.get("hardware", {})
@@ -325,13 +344,10 @@ class VLLMService:
             cmd.extend(["--attention-backend", attention_backend])
         default_kwargs = model.get("default_chat_template_kwargs")
         if default_kwargs is not None:
-            if isinstance(default_kwargs, str):
-                cmd.extend(["--default-chat-template-kwargs", default_kwargs])
-            else:
-                cmd.extend([
-                    "--default-chat-template-kwargs",
-                    json.dumps(default_kwargs, separators=(",", ":"))
-                ])
+            cmd.extend([
+                "--default-chat-template-kwargs",
+                self._to_cli_json(default_kwargs),
+            ])
 
         # 性能配置
         perf = self.vllm_config.get("performance", {})
