@@ -186,23 +186,34 @@ presets:
 
   # Qwen3 8B 指令模型（BF16 权重约 16GiB；单卡 24G 宜控制上下文，更大显存或双卡可上调 max_model_len）
   # 昇腾 310P：须 enforce_eager，否则 ACL Graph capture 常失败（driver/firmware 与 ACL Graph 不匹配时尤甚）
+  # Qwen3-8B 指令模型（310P 单芯 TP=1；比 14B 更轻，图加速同款配置）
+  # 昇腾 310P：float16 + block_size=128；单流延迟优先 TP=1
+  # 性能：关 enforce_eager + FULL_DECODE_ONLY 图加速；关 thinking；util=0.90
+  # 若 ACL Graph 启动失败，改回 enforce_eager: true 并去掉 compilation_config
+  # max_model_len=32K：无压缩 mask 时 mask≈O(L²)，若 OOM 先降 max_num_seqs / util，再降到 16K
+  # 权重：Qwen/Qwen3-8B → ./models/Qwen3-8B
   qwen3-8b:
     path: "./models/Qwen3-8B"
     served_model_name: "qwen3-8b"
     dtype: "float16"
-    enforce_eager: true
+    enforce_eager: false
     block_size: 128
-    max_model_len: 8192
+    max_model_len: 32768
     tensor_parallel_size: 1
-    gpu_memory_utilization: 0.80
-    max_num_seqs: 16
+    gpu_memory_utilization: 0.90
+    max_num_seqs: 8
     max_num_batched_tokens: 8192
     enable_prefix_caching: true
-#    attention-backend: flash_attn
-#    default-chat-template-kwargs:
-#      enable_thinking: false
+    compilation_config:
+      cudagraph_mode: "FULL_DECODE_ONLY"
+      cudagraph_capture_sizes: [1, 2, 4, 8, 16]
+    additional_config:
+      ascend_compilation_config:
+        fuse_norm_quant: false
+    default-chat-template-kwargs:
+      enable_thinking: false
     multimodal: false
-    description: "Qwen3-8B 文本对话（昇腾 310P：float16 + enforce_eager + block_size=128）"
+    description: "Qwen3-8B 文本对话（310P：float16 / TP=1 / 32K / decode 图加速 / 默认关 thinking）"
 
 # qwen3-8b备份
 #  qwen3-8b:
@@ -407,6 +418,9 @@ presets:
   #   https://www.modelscope.cn/models/Eco-Tech/Qwen3.6-27B-W8A8-310P
   # 下载到 ./models/Qwen3.6-27B-W8A8-310P；须 quantization: ascend（勿用 fp8）
   # 参考：https://github.com/vllm-project/vllm-ascend/issues/14152
+  # 310P：本模型（GDN/Mamba 混合 + TP=4）开 FULL_DECODE_ONLY 会在 Capturing CUDA graphs
+  #   阶段失败（AclmdlRICaptureEnd 507903 / event resources insufficient）；须 enforce_eager
+  # 仍保留：关 thinking、util=0.92（图加速不可用）
   qwen3.6-27b-w8a8:
     path: "./models/Qwen3.6-27B-W8A8-310P"
     served_model_name: "qwen3.6-27b-w8a8"
@@ -416,10 +430,12 @@ presets:
     block_size: 128
     max_model_len: 32768
     tensor_parallel_size: 4
-    gpu_memory_utilization: 0.90
+    gpu_memory_utilization: 0.92
     max_num_seqs: 8
     max_num_batched_tokens: 8192
     enable_prefix_caching: true
+    default-chat-template-kwargs:
+      enable_thinking: false
     multimodal:
       enabled: true
       limit_images: 4
@@ -427,7 +443,7 @@ presets:
       media_paths:
         - "./images"
         - "./videos"
-    description: "Qwen3.6-27B W8A8-310P；Duo×2 TP=4 / float16 / ascend / 32K / enforce_eager（勿用非-310P 的 w8a8 权重）"
+    description: "Qwen3.6-27B W8A8-310P；Duo×2 TP=4 / ascend / 32K / enforce_eager（310P 不支持本模型图加速）/ 默认关 thinking"
 
   # ---------- Qwen3-30B-A3B（文本 MoE；激活约 3B，310P 吞吐优于稠密 27B）----------
   # 官方：https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/Qwen3-30B-A3B.html
