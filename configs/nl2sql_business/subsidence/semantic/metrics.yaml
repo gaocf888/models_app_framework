@@ -1,0 +1,91 @@
+version: "2026.08.24"
+metrics:
+  - id: period_subsidence_mm
+    name: 周期沉降量
+    synonyms: [沉降量, 下沉量, 累计沉降, 地面沉降, 沉降了多少, 下沉多少, 沉降, 下沉, 监测点沉降]
+    unit: mm
+    grain: station_period
+    formula_note: "窗口内 total_settle 终值减初值；负值表示下沉"
+    forbidden_confusions: [groundwater_depth, gnss_displacement_3d, pore_pressure]
+    preferred_tables: [t_data_wash_fcb, t_data_wash_jyb]
+    preferred_columns: [total_settle]
+    time_column: data_time
+
+  - id: period_rebound_mm
+    name: 周期回弹量
+    synonyms: [回弹量, 回弹, 上升量]
+    unit: mm
+    grain: station_period
+    formula_note: "窗口内 total_settle 差值，语义为上升"
+    forbidden_confusions: [groundwater_depth, gnss_displacement_3d]
+    preferred_tables: [t_data_wash_fcb, t_data_wash_jyb]
+    preferred_columns: [total_settle]
+    time_column: data_time
+
+  - id: point_subsidence_mm
+    name: 测点累计沉降
+    synonyms: [当前沉降, 最新沉降, 累计值]
+    unit: mm
+    grain: station_point
+    preferred_tables: [t_data_wash_fcb, t_data_wash_jyb]
+    preferred_columns: [total_settle]
+    time_column: data_time
+
+  - id: gnss_displacement_2d
+    name: GNSS水平位移
+    synonyms: [水平位移, 二维位移]
+    unit: mm
+    preferred_tables: [t_data_wash_gnss]
+    preferred_columns: [displacement_2d]
+    time_column: data_time
+    forbidden_confusions: [period_subsidence_mm]
+
+  - id: gnss_displacement_3d
+    name: GNSS三维位移
+    synonyms: [三维位移, 空间位移, GNSS位移, 位移]
+    unit: mm
+    preferred_tables: [t_data_wash_gnss]
+    preferred_columns: [displacement_3d, displacement_2d]
+    time_column: data_time
+    forbidden_confusions: [period_subsidence_mm]
+
+  - id: groundwater_depth
+    name: 地下水埋深
+    synonyms: [水位, 埋深, 降深, 地下水, 水位埋深]
+    unit: m
+    preferred_tables: [t_data_wash_dxswj]
+    preferred_columns: [deep, elevation]
+    time_column: data_time
+    forbidden_confusions: [period_subsidence_mm]
+
+  - id: pore_pressure
+    name: 孔隙水压力
+    synonyms: [孔隙水, 孔压, 孔隙水压]
+    unit: kPa
+    preferred_tables: [t_data_wash_kxsylj]
+    preferred_columns: [pressure]
+    time_column: data_time
+
+  - id: meteo_temp
+    name: 气温
+    synonyms: [温度, 气温]
+    unit: "℃"
+    preferred_tables: [t_data_wash_qxz]
+    preferred_columns: [temp]
+    time_column: data_time
+
+  - id: meteo_rain
+    name: 降水
+    synonyms: [降雨, 降水量, 雨量]
+    unit: mm
+    preferred_tables: [t_data_wash_qxz]
+    preferred_columns: [real_time_rain]
+    time_column: data_time
+
+  - id: fiber_settle
+    name: 光纤沉降
+    synonyms: [光纤沉降量]
+    unit: mm
+    preferred_tables: [t_data_wash_gq]
+    preferred_columns: [total_settle]
+    time_column: data_time

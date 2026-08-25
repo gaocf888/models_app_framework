@@ -1,0 +1,20 @@
+version: "2026.08.24"
+# 北京市行政区标准名；与 scope_lexicon.json districts 对齐
+# 运行时可从 t_station.area DISTINCT 导出校验
+entries:
+  - name: 东城区
+  - name: 西城区
+  - name: 朝阳区
+  - name: 丰台区
+  - name: 石景山区
+  - name: 海淀区
+  - name: 门头沟区
+  - name: 房山区
+  - name: 通州区
+  - name: 顺义区
+  - name: 昌平区
+  - name: 大兴区
+  - name: 怀柔区
+  - name: 平谷区
+  - name: 密云区
+  - name: 延庆区

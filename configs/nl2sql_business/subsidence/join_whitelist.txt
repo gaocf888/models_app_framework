@@ -1,0 +1,8 @@
+# join_whitelist.txt — table.col=table.col
+t_data_wash_fcb.project_name=t_station.name
+t_data_wash_jyb.project_name=t_station.name
+t_data_wash_gnss.project_name=t_station.name
+t_data_wash_dxswj.project_name=t_station.name
+t_data_wash_kxsylj.project_name=t_station.name
+t_data_wash_gq.project_name=t_station.name
+t_data_wash_qxz.project_name=t_station.name

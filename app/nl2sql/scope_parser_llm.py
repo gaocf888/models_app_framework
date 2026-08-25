@@ -295,6 +295,14 @@ def resolve_scope_with_mode(
     - llm / rule_with_llm_fallback：优先 LLM，失败回退 rule。
     """
     mode_norm = (mode or "rule").strip().lower()
+
+    from app.nl2sql.nl2sql_business_profile import get_business_domain
+
+    if get_business_domain() == "subsidence":
+        from app.nl2sql.scope_parser_subsidence import parse_scope_subsidence
+
+        return parse_scope_subsidence(scope_question), "rule"
+
     rule_scope = parse_scope_rule(scope_question, lexicon=lexicon)
 
     if mode_norm not in ("llm", "rule_with_llm_fallback"):

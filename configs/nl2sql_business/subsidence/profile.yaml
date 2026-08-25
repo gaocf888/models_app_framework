@@ -1,0 +1,45 @@
+business_domain: subsidence
+display_name: 北京市地面沉降监测
+
+# 业务库连接默认（密码禁止写入本文件；部署设 DB_PASSWORD 或完整 DB_URL）
+# 显式环境变量 DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_URL 优先于此处
+db:
+  dialect: postgres
+  host: 192.169.237.197
+  port: 5432
+  name: dmcj
+  user: postgres
+  async_driver: postgresql+asyncpg
+
+nl2sql:
+  semantic_link_enabled: true
+  semantic_dict_path: configs/nl2sql_business/subsidence/semantic
+  intent_parse_mode: rule
+  scope_sql_rewrite_enabled: true
+  scope_lexicon_file: configs/nl2sql_business/subsidence/scope_lexicon.json
+  entity_rules_file: configs/nl2sql_business/subsidence/entity_rules.json
+  prompt_default_version: v2_subsidence
+  schema_link_catalog_mode: linked_only
+  on_link_failure: refuse
+  inject_parsed_intent: true
+  reject_unresolved_time_placeholders: true
+  anchor_fallback_now_enabled: false
+  anchor_fallback_analysis_types: ""
+
+tables:
+  allowlist_file: configs/nl2sql_business/subsidence/table_scope.txt
+  join_whitelist_file: configs/nl2sql_business/subsidence/join_whitelist.txt
+
+rag:
+  namespaces:
+    schema: nl2sql_schema
+    biz: nl2sql_biz_knowledge
+    qa: nl2sql_qa_examples
+
+analysis:
+  report_types:
+    - subsidence_daily
+    - subsidence_weekly
+    - subsidence_monthly
+    - subsidence_quarterly
+    - subsidence_yearly

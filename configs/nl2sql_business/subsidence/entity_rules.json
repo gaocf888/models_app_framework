@@ -1,0 +1,17 @@
+[
+  {
+    "question_contains_any": ["沉降", "下沉", "回弹"],
+    "sql_pattern": "(?i)t_data_wash_dxswj",
+    "message": "问沉降主指标时不应直接查地下水表；优先 fcb/jyb 的 total_settle"
+  },
+  {
+    "question_contains_any": ["水位", "埋深", "降深", "地下水"],
+    "sql_pattern": "(?i)t_data_wash_fcb(?!.*gnss)",
+    "message": "地下水指标应查 t_data_wash_dxswj，勿用分层标 total_settle"
+  },
+  {
+    "question_contains_any": ["GNSS", "位移", "三维位移", "水平位移"],
+    "sql_pattern": "(?i)t_data_wash_fcb(?!.*gnss)",
+    "message": "GNSS 位移应查 t_data_wash_gnss 的 displacement_3d/2d"
+  }
+]

@@ -14,6 +14,7 @@
 #   - 本文件使用 python:3.11-slim + pip cu121 torch，适配 NVIDIA + Container Toolkit。
 #
 # 前置：宿主机 NVIDIA 驱动 + NVIDIA Container Toolkit；compose 注入 NVIDIA_VISIBLE_DEVICES。
+# pip / torch 须在「有网」构建机完成。app/configs 运行时由宿主机 bind mount 覆盖（见 compose）。
 # 若驱动与 cu121 不兼容：可改用 cu118/cu124 的 PyTorch 索引 URL，并在此文件统一修改。
 # =============================================================================
 
@@ -51,6 +52,7 @@ RUN pip install --no-cache-dir --timeout=300 --retries=15 \
 
 COPY app /workspace/app
 COPY configs /workspace/configs
+# 运行时 compose bind mount 覆盖宿主机 /opt/deploy/models_app_framework/{app,configs}。
 
 EXPOSE 8083
 

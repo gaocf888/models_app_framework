@@ -1,0 +1,3 @@
+version: "2026.08.24"
+# 站点维表条目；部署前建议从 t_station 导出补全
+entries: []

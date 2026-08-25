@@ -30,9 +30,27 @@ def _is_retryable_db_error(exc: BaseException | None) -> bool:
     return False
 
 
+def _is_postgres_url(url: str, dialect: str | None = None) -> bool:
+    d = (dialect or "").strip().lower()
+    if d in {"postgres", "postgresql", "pg"}:
+        return True
+    u = (url or "").lower()
+    return u.startswith("postgresql+") or u.startswith("postgres+")
+
+
+def _create_business_engine(db_cfg: Any) -> AsyncEngine:
+    """按业务库方言创建异步引擎（MySQL/TiDB 与 PostgreSQL 连接参数不同）。"""
+    url = getattr(db_cfg, "url", "") or ""
+    dialect = getattr(db_cfg, "dialect", None)
+    kwargs: dict[str, Any] = {"pool_pre_ping": True}
+    if not _is_postgres_url(url, dialect):
+        kwargs["connect_args"] = {"charset": "utf8mb4"}
+    return create_async_engine(url, **kwargs)
+
+
 class SQLExecutor:
     """
-    SQL 执行器（MySQL 版，基于 SQLAlchemy Async）。
+    SQL 执行器（SQLAlchemy Async；支持 TiDB/MySQL 与 PostgreSQL）。
 
     - 使用 `app.core.config.DatabaseConfig` 中的配置创建异步引擎；
     - 当前实现仅支持只读查询（SELECT），与 SQLValidator 保持一致。
@@ -43,11 +61,7 @@ class SQLExecutor:
             self._engine = engine
         else:
             db_cfg = getattr(get_app_config(), "db")
-            self._engine = create_async_engine(
-                db_cfg.url,
-                pool_pre_ping=True,
-                connect_args={"charset": "utf8mb4"},
-            )
+            self._engine = _create_business_engine(db_cfg)
 
     @staticmethod
     def _execute_max_retries() -> int:
@@ -96,9 +110,8 @@ class SQLExecutor:
         """
         执行前 EXPLAIN，用于提前暴露语法错误、未知列等（与 SELECT 同连接语义）。
 
-        TiDB/MySQL：对无效列名、未知表等，EXPLAIN 通常会像执行 SELECT 一样在解析/优化阶段报错，
-        因此可作为「执行前探针」；若方言仅在实际读取数据时才报错，则 EXPLAIN 可能无法覆盖，
-        仍以执行错误分支与 refine 为准。
+        TiDB/MySQL：对无效列名、未知表等，EXPLAIN 通常会像执行 SELECT 一样在解析/优化阶段报错。
+        PostgreSQL：同样支持 EXPLAIN，语义略有差异，仍可作为执行前探针。
         """
         s = (sql or "").strip()
         preview = s

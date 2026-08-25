@@ -46,6 +46,14 @@ class NL2SQLQueryRequest(BaseModel):
         default=None,
         description="可选：用户原始问句，confirmed_scope 模式下时间解析兜底来源。",
     )
+    on_link_failure: str | None = Field(
+        default=None,
+        description="链接失败策略：refuse | best_effort；默认取部署配置 NL2SQL_ON_LINK_FAILURE。",
+    )
+    structured_filters: dict[str, Any] | None = Field(
+        default=None,
+        description="可选：已确认结构化过滤条件（站点/行政区等），合并入 scope SQL 改写。",
+    )
     sql_gen_extra_hint: str | None = Field(
         default=None,
         description="可选：追加到 NL2SQL 生成 prompt 的场景说明（如智能客服 SELECT 可读性约束）。",
@@ -65,6 +73,10 @@ class NL2SQLQueryRequest(BaseModel):
 class NL2SQLQueryResponse(BaseModel):
     sql: str = Field(..., description="生成的 SQL 语句")
     rows: List[dict[str, Any]] = Field(default_factory=list, description="查询结果行列表")
+    gen_fail_reason: str | None = Field(
+        default=None,
+        description="生成失败机读原因（如 link_failed:...）；与 parsed_intent.gen_fail_reason 一致。",
+    )
     parsed_intent: dict[str, Any] | None = Field(
         default=None,
         description=(

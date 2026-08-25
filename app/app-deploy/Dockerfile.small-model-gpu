@@ -6,9 +6,9 @@
 # 前置：宿主机 NVIDIA 驱动 + NVIDIA Container Toolkit；compose 中 gpus: all
 #
 # 策略：
-#   1) 先安装 PyTorch cu121 官方轮子，再 pip install 业务 requirements，
-#      降低 sentence-transformers 等把 torch 换成 CPU 版本的概率。
+#   1) 先安装 PyTorch cu121 官方轮子，再 pip install 业务 requirements（有网构建机）
 #   2) 系统库：OpenCV/视频解码常用依赖 + ffmpeg（通道解码场景）。
+#   app/configs 运行时由宿主机 bind mount 覆盖（见 compose）。
 #
 # 若驱动与 cu121 不兼容：可改用 cu118/cu124 的 PyTorch 索引 URL，并在此 Dockerfile 中统一修改。
 # =============================================================================
@@ -50,6 +50,7 @@ RUN pip install --no-cache-dir --timeout=300 --retries=15 \
 
 COPY app /workspace/app
 COPY configs /workspace/configs
+# 运行时 compose bind mount 覆盖（models-app-gpu 与 models-app 共用 .env 路径变量）。
 
 EXPOSE 8083
 

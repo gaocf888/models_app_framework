@@ -30,6 +30,7 @@
 #   SMALL_MODEL_GPU_DEVICE_COUNT        → models-app-gpu 的 compose deploy GPU 预留（默认 all）
 #   SMALL_MODEL_WEIGHTS_HOST_PATH       → 小模型权重宿主机目录；未设置时用占位卷
 #   其余 APP_PORT / *_HOST_PATH / *_DOCKER_NETWORK 与 app-deploy/.env.example 一致。
+#   APP_SOURCE_HOST_PATH / CONFIGS_HOST_PATH → 默认 /opt/deploy/models_app_framework/{app,configs}
 #
 # 【启动示例】（在 app/app-deploy 目录）
 #   # 仅 RAG + 大模型 API（嵌入/重排 GPU）
@@ -119,6 +120,8 @@ services:
       # graph-external: {}
     volumes:
       - huggingface-cache:/root/.cache/huggingface
+      - ${APP_SOURCE_HOST_PATH:-/opt/deploy/models_app_framework/app}:/workspace/app
+      - ${CONFIGS_HOST_PATH:-/opt/deploy/models_app_framework/configs}:/workspace/configs
       # 与 docker-mx/docker-compose-mx.yml 中 ../logs 一致：宿主机均为 app-deploy/logs
       - ../logs:/workspace/logs
       # 会话归档对象存储 local 后端（CONV_ARCHIVE_OBJECT_LOCAL_DIR）
@@ -139,7 +142,7 @@ services:
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
       # 人脸识别（CPU）：/face/* API + 人脸库持久化（主镜像 models-app 已含 InsightFace CPU 依赖）
       - face-galleries-data:/workspace/data/face_galleries
-      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-/opt/deploy/models_app_framework/app/small_models/pretrained/insightface}:/workspace/app/small_models/pretrained/insightface
     environment:
       NVIDIA_VISIBLE_DEVICES: ${MODELS_APP_NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
@@ -204,6 +207,8 @@ services:
               capabilities: [gpu]
     volumes:
       - huggingface-cache:/root/.cache/huggingface
+      - ${APP_SOURCE_HOST_PATH:-/opt/deploy/models_app_framework/app}:/workspace/app
+      - ${CONFIGS_HOST_PATH:-/opt/deploy/models_app_framework/configs}:/workspace/configs
       - ../logs:/workspace/logs
       - ${SESSION_STORAGE_HOST_PATH:-/aidata/data/session_storage}:/workspace/data/conversation_archive
       - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
@@ -214,8 +219,7 @@ services:
       - small-model-data:/workspace/data/small_model_evidence
       # 人脸库（录入 embedding + 图片）；与 face_gallery_dir 默认路径一致
       - face-galleries-data:/workspace/data/face_galleries
-      # InsightFace 模型（buffalo_l 等）；可选宿主机预下载目录覆盖
-      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-/opt/deploy/models_app_framework/app/small_models/pretrained/insightface}:/workspace/app/small_models/pretrained/insightface
       # 权重：宿主机目录 -> 容器内 /workspace/models/small（只读）
       # 未设置 SMALL_MODEL_WEIGHTS_HOST_PATH 时使用命名卷占位，见文件末尾 volumes
       - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro

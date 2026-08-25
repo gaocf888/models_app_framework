@@ -1,0 +1,30 @@
+version: "2026.08.24"
+entries:
+  - id: fcb
+    name: 分层标
+    synonyms: [分层标, 分层]
+    table: t_data_wash_fcb
+  - id: jyb
+    name: 基岩标
+    synonyms: [基岩标]
+    table: t_data_wash_jyb
+  - id: gnss
+    name: GNSS
+    synonyms: [GNSS, gnss]
+    table: t_data_wash_gnss
+  - id: dxswj
+    name: 地下水
+    synonyms: [地下水, 水位井, 地下水井]
+    table: t_data_wash_dxswj
+  - id: kxsylj
+    name: 孔隙水
+    synonyms: [孔隙水, 孔压, 孔隙水压力]
+    table: t_data_wash_kxsylj
+  - id: gq
+    name: 光纤
+    synonyms: [光纤]
+    table: t_data_wash_gq
+  - id: qxz
+    name: 气象
+    synonyms: [气象, 气象站]
+    table: t_data_wash_qxz

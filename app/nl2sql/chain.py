@@ -210,6 +210,8 @@ class NL2SQLChain:
         original_query: str | None = None,
         *,
         sql_gen_extra_hint: str | None = None,
+        on_link_failure: str | None = None,
+        structured_filters: dict | None = None,
     ) -> tuple[str, NL2SQLValidationContext]:
         if confirmed_scope:
             time_src = (
@@ -225,7 +227,13 @@ class NL2SQLChain:
         from app.nl2sql.question_intent_display import (
             format_parsed_intent_prompt_block,
             inject_parsed_intent_enabled,
+            merge_parsed_intent_extensions,
             question_intent_to_dict,
+        )
+        from app.nl2sql.intent_config import (
+            on_link_failure_default,
+            schema_link_catalog_mode,
+            semantic_link_enabled,
         )
 
         question_intent = resolve_question_intent(
@@ -236,7 +244,26 @@ class NL2SQLChain:
             original_query=original_query,
         )
         scope_literals = scope_literals_from_intent(question_intent)
+        if structured_filters:
+            for k, v in structured_filters.items():
+                if v is not None:
+                    scope_literals[k] = v
         parsed_intent_dict = question_intent_to_dict(question_intent)
+
+        semantic_binding_dict: dict[str, Any] | None = None
+        linked_schema_dict: dict[str, Any] | None = None
+        link_failure_mode = (on_link_failure or on_link_failure_default()).strip().lower()
+
+        if semantic_link_enabled():
+            from app.nl2sql.semantic_layer import align_semantics
+
+            binding = align_semantics(question, question_intent)
+            if binding is not None:
+                semantic_binding_dict = binding.to_dict()
+                parsed_intent_dict = merge_parsed_intent_extensions(
+                    parsed_intent_dict,
+                    semantic=semantic_binding_dict,
+                )
         logger.info(
             "NL2SQLChain parsed_intent parse_mode=%s boiler=%s device=%s time_tag=%s",
             question_intent.parse_mode,
@@ -332,6 +359,108 @@ class NL2SQLChain:
                 if scope_cols:
                     allowed_columns &= scope_cols
         join_whitelist = self._build_join_whitelist(table_columns_map, analysis_type=analysis_type)
+        catalog_mode = schema_link_catalog_mode()
+
+        if semantic_link_enabled() and semantic_binding_dict is not None:
+            from app.nl2sql.semantic_layer import SemanticBinding, MetricBinding, load_semantic_assets
+            from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
+            from app.nl2sql.schema_linker import (
+                link_schema,
+                narrow_validation_sets,
+            )
+
+            profile = get_nl2sql_business_profile()
+            assets = None
+            if profile:
+                from pathlib import Path
+
+                root = Path(__file__).resolve().parents[2] / profile.semantic_dict_path
+                if root.is_dir():
+                    assets = load_semantic_assets(str(root.resolve()))
+
+            metrics = []
+            for m in semantic_binding_dict.get("metrics") or []:
+                if not isinstance(m, dict):
+                    continue
+                metrics.append(
+                    MetricBinding(
+                        id=str(m.get("id") or ""),
+                        name=str(m.get("name") or ""),
+                        unit=str(m.get("unit") or ""),
+                        grain=str(m.get("grain") or ""),
+                        definition_ref=str(m.get("definition_ref") or ""),
+                        confidence=float(m.get("confidence") or 0.0),
+                        preferred_tables=tuple(m.get("preferred_tables") or []),
+                        preferred_columns=tuple(m.get("preferred_columns") or []),
+                        time_column=str(m.get("time_column") or "data_time"),
+                    )
+                )
+            dims = semantic_binding_dict.get("dimensions") or {}
+            binding_obj = SemanticBinding(
+                semantic_version=str(semantic_binding_dict.get("version") or ""),
+                metrics=metrics,
+                device_types=list(dims.get("device_types") or []),
+                device_type_tables=list(dims.get("device_type_tables") or []),
+                district_codes=list(dims.get("district_codes") or []),
+                station_ids=list(dims.get("station_ids") or []),
+                station_names=list(dims.get("station_names") or []),
+                warnings=list(semantic_binding_dict.get("warnings") or []),
+                default_table=semantic_binding_dict.get("default_table"),
+            )
+            linked = link_schema(
+                question,
+                question_intent,
+                binding_obj,
+                table_columns_map,
+                allowlist=set(table_columns_map.keys()),
+                join_whitelist=join_whitelist,
+                assets=assets,
+            )
+            linked_schema_dict = linked.to_dict()
+            parsed_intent_dict = merge_parsed_intent_extensions(
+                parsed_intent_dict,
+                linked_schema=linked_schema_dict,
+            )
+
+            if linked.status == "failed" and link_failure_mode == "refuse":
+                parsed_intent_dict = merge_parsed_intent_extensions(
+                    parsed_intent_dict,
+                    gen_fail_reason=f"link_failed:{linked.fail_reason or 'unknown'}",
+                )
+                validation_ctx = NL2SQLValidationContext(
+                    frozenset(allowed_tables),
+                    frozenset(allowed_columns),
+                    schema_ok,
+                    {k: frozenset(v) for k, v in table_columns_map.items()},
+                    frozenset(join_whitelist),
+                    parsed_intent=parsed_intent_dict,
+                    analysis_type=analysis_type,
+                )
+                logger.warning(
+                    "NL2SQLChain schema link refused fail_reason=%s",
+                    linked.fail_reason,
+                )
+                return "", validation_ctx
+
+            elif linked.status == "failed" and link_failure_mode == "best_effort":
+                catalog_mode = "linked_prefer"
+                parsed_intent_dict = merge_parsed_intent_extensions(
+                    parsed_intent_dict,
+                    gen_fail_reason=f"link_weak:{linked.fail_reason or 'unknown'}",
+                )
+
+            if linked.status != "failed" and catalog_mode != "legacy_wide":
+                allowed_tables, allowed_columns, table_columns_map = narrow_validation_sets(
+                    linked,
+                    allowed_tables,
+                    allowed_columns,
+                    table_columns_map,
+                    mode=catalog_mode,
+                )
+                if catalog_mode == "linked_only":
+                    scoped_tables = allowed_tables
+                join_whitelist = self._build_join_whitelist(table_columns_map, analysis_type=analysis_type)
+
         validation_ctx = NL2SQLValidationContext(
             frozenset(allowed_tables),
             frozenset(allowed_columns),
@@ -519,10 +648,33 @@ class NL2SQLChain:
         catalog_tables = self._schema.list_tables()
         if scoped_tables:
             catalog_tables = [t for t in catalog_tables if t.name and t.name.lower() in scoped_tables]
+
+        if semantic_link_enabled() and linked_schema_dict and catalog_mode == "linked_only":
+            from app.nl2sql.schema_linker import LinkedSchema, LinkedTable, filter_catalog_tables_by_linked_schema
+
+            lt = [
+                LinkedTable(name=str(x.get("name")), reason=str(x.get("reason") or ""), score=float(x.get("score") or 0))
+                for x in (linked_schema_dict.get("tables") or [])
+                if isinstance(x, dict) and x.get("name")
+            ]
+            linked_obj = LinkedSchema(tables=lt, status=str(linked_schema_dict.get("status") or "ok"))
+            catalog_tables = filter_catalog_tables_by_linked_schema(
+                catalog_tables,
+                linked_obj,
+                mode=catalog_mode,
+                full_table_names=scoped_tables or set(table_columns_map.keys()),
+            )
+
         full_catalog = self._format_enriched_schema_catalog(catalog_tables, rag_hints)
 
-        # NL2SQL Prompt 前缀：analysis_agent 与独立 NL2SQL 共用 scene=nl2sql（传真实 analysis_type）
-        prompt_default_version = os.getenv("NL2SQL_PROMPT_DEFAULT_VERSION", "v2")
+        from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
+
+        biz_profile = get_nl2sql_business_profile()
+        prompt_default_version = (
+            biz_profile.prompt_default_version
+            if biz_profile
+            else os.getenv("NL2SQL_PROMPT_DEFAULT_VERSION", "v2")
+        )
         tpl = self._prompts.get_template(
             scene="nl2sql",
             user_id=user_id,
@@ -568,7 +720,13 @@ class NL2SQLChain:
             schema_catalog=prompt_catalog,
         )
         if inject_parsed_intent_enabled():
-            prompt = f"{prompt}\n\n{format_parsed_intent_prompt_block(question_intent)}"
+            prompt = (
+                f"{prompt}\n\n{format_parsed_intent_prompt_block(
+                    question_intent,
+                    semantic=semantic_binding_dict,
+                    linked_schema=linked_schema_dict,
+                )}"
+            )
         extra_hint = (sql_gen_extra_hint or "").strip()
         if extra_hint:
             prompt = f"{prompt}\n\n{extra_hint}"
@@ -1260,10 +1418,14 @@ class NL2SQLChain:
         return out
 
     def _rewrite_tidb_compatible_sql(self, sql: str) -> tuple[str, list[str]]:
-        """对 LLM SQL 进行 TiDB 兼容重写（高风险 alias + PostgreSQL interval + 可选窗口降级）。"""
+        """对 LLM SQL 进行方言兼容改写（TiDB 高风险 alias / PG interval 等）。"""
+        from app.nl2sql.sql_dialect import is_postgres_dialect
+
         s = self._validator.normalize_sql(sql)
         notes: list[str] = []
         if not s:
+            return s, notes
+        if is_postgres_dialect():
             return s, notes
         s, alias_notes = self._rewrite_high_risk_aliases(s)
         notes.extend(alias_notes)
@@ -1356,6 +1518,9 @@ class NL2SQLChain:
         )
         if time_window is not None:
             start_expr, end_expr, tag = time_window
+            from app.nl2sql.sql_dialect import adapt_time_window
+
+            start_expr, end_expr = adapt_time_window(start_expr, end_expr)
             if self._sql_has_time_placeholders(rewritten):
                 rewritten, ph_notes = self._rewrite_time_placeholders(
                     rewritten,
@@ -2446,7 +2611,13 @@ class NL2SQLChain:
         analysis_type: str | None,
         table_columns: dict[str, set[str]],
     ) -> set[str]:
-        scoped = self._parse_csv_env_set("ANALYSIS_NL2SQL_TABLE_SCOPE_DEFAULT")
+        from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
+
+        profile = get_nl2sql_business_profile()
+        if profile and profile.table_allowlist:
+            scoped = {t.lower() for t in profile.table_allowlist}
+        else:
+            scoped = self._parse_csv_env_set("ANALYSIS_NL2SQL_TABLE_SCOPE_DEFAULT")
         if not scoped:
             return set()
         existing = set(table_columns.keys())
@@ -2467,6 +2638,17 @@ class NL2SQLChain:
 
     def _parse_manual_join_whitelist(self, analysis_type: str | None) -> set[str]:
         keys: set[str] = set()
+        from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
+
+        profile = get_nl2sql_business_profile()
+        if profile and profile.join_whitelist:
+            pat = re.compile(
+                r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*$"
+            )
+            for seg in profile.join_whitelist:
+                m = pat.match(seg.strip())
+                if m:
+                    keys.add(self._join_pair_key(m.group(1), m.group(2), m.group(3), m.group(4)))
         raw = (os.getenv("ANALYSIS_NL2SQL_JOIN_WHITELIST") or "").strip()
         at = (analysis_type or "").strip().lower()
         scoped_raw = (os.getenv(f"ANALYSIS_NL2SQL_JOIN_WHITELIST_{at.upper()}") or "").strip() if at else ""

@@ -16,6 +16,18 @@ ParseMode = Literal["rule", "llm", "llm_fallback_rule", "human_confirmed"]
 ScopeLiterals = dict[str, str | int | None]
 
 
+def _adapt_time_window_tuple(
+    win: tuple[str, str, str] | None,
+) -> tuple[str, str, str] | None:
+    if win is None:
+        return None
+    from app.nl2sql.sql_dialect import adapt_time_window
+
+    start, end, tag = win
+    start, end = adapt_time_window(start, end)
+    return start, end, tag
+
+
 def _scope_from_confirmed_dict(confirmed: dict[str, Any]) -> QuestionScopeIntent:
     data = dict(confirmed or {})
     if not data.get("check_location_name") and data.get("piperow_name"):
@@ -28,6 +40,10 @@ def _scope_from_confirmed_dict(confirmed: dict[str, Any]) -> QuestionScopeIntent
         check_location_name=data.get("check_location_name") or None,
         row_no=int(row) if isinstance(row, int) and row > 0 else None,
         tube_no=int(tube) if isinstance(tube, int) and tube > 0 else None,
+        station_id=str(data.get("station_id") or "") or None,
+        station_name=str(data.get("station_name") or "") or None,
+        district=str(data.get("district") or data.get("area") or "") or None,
+        device_type=str(data.get("device_type") or "") or None,
     )
 
 
@@ -53,10 +69,12 @@ def resolve_question_intent(
     if confirmed_scope:
         scope_q = (scope_intent_text or time_intent_source or raw).strip()
         scope = _scope_from_confirmed_dict(confirmed_scope)
-        time_window = extract_time_window_from_question(scope_q)
+        time_window = _adapt_time_window_tuple(extract_time_window_from_question(scope_q))
         time_anchor = extract_time_anchor_from_question(scope_q)
         if not time_window and original_query:
-            time_window = extract_time_window_from_question(original_query.strip())
+            time_window = _adapt_time_window_tuple(
+                extract_time_window_from_question(original_query.strip())
+            )
         if not time_anchor and original_query:
             time_anchor = extract_time_anchor_from_question(original_query.strip())
         return QuestionIntent(
@@ -73,7 +91,7 @@ def resolve_question_intent(
         time_intent_source=time_intent_source,
     )
     scope, effective_mode = resolve_scope_with_mode(scope_q, mode=mode_raw)
-    time_window = extract_time_window_from_question(scope_q)
+    time_window = _adapt_time_window_tuple(extract_time_window_from_question(scope_q))
     time_anchor = extract_time_anchor_from_question(scope_q)
 
     parse_mode_out: ParseMode = "rule"
@@ -96,15 +114,21 @@ def scope_literals_from_intent(intent: QuestionIntent) -> ScopeLiterals:
     """从已解析 QuestionIntent 提取 scope 字面量（避免 SQL 改写路径重复解析）。"""
     s = intent.scope
     unit_kw = s.boiler
-    return {
+    out: ScopeLiterals = {
         "unit_keyword": unit_kw,
         "boiler": unit_kw,
         "device_name": s.device_name,
-        "check_location_name": s.check_location_name,
+        "check_location_name": s.check_location_name or s.piperow_name,
         "piperow_name": s.piperow_name,
         "row_no": s.row_no,
         "tube_no": s.tube_no,
+        "station_id": s.station_id,
+        "station_name": s.station_name,
+        "district": s.district,
+        "area": s.district,
+        "device_type": s.device_type,
     }
+    return out
 
 
 def scope_literals_from_parsed_intent(
@@ -126,6 +150,11 @@ def scope_literals_from_parsed_intent(
         "piperow_name": scope.get("piperow_name"),
         "row_no": scope.get("row_no"),
         "tube_no": scope.get("tube_no"),
+        "station_id": scope.get("station_id"),
+        "station_name": scope.get("station_name"),
+        "district": scope.get("district") or scope.get("area"),
+        "area": scope.get("district") or scope.get("area"),
+        "device_type": scope.get("device_type"),
     }
 
 

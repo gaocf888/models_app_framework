@@ -17,6 +17,13 @@
 
 `.env` 使用 **`app/app-deploy/.env`**，compose 通过 `env_file: ../.env` 引用。
 
+## 业务源码 mount（离线迭代）
+
+- 默认宿主机：`/opt/deploy/models_app_framework/app` → 容器 `/workspace/app`
+- 默认宿主机：`/opt/deploy/models_app_framework/configs` → 容器 `/workspace/configs`
+- **有网机 build 镜像**（含 pip 与 COPY）；**离线机** sync 源码后 `docker compose restart models-app`
+- 首次：在宿主机准备 `/opt/deploy/models_app_framework/{app,configs}` 并同步代码/配置后 `docker compose up -d`
+
 ## 四卡切分（与方案 §5 一致）
 
 | 栈 | `ASCEND_RT_VISIBLE_DEVICES` |

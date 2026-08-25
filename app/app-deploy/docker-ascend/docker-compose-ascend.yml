@@ -27,6 +27,10 @@
 # 【前置】
 #   宿主机：NPU 驱动 26.1.1 + 固件 9.0.0.9.220 + Ascend Docker Runtime 26.1.0
 #
+# 【业务源码 mount】
+#   APP_SOURCE_HOST_PATH / CONFIGS_HOST_PATH（默认 /opt/deploy/models_app_framework/{app,configs}）
+#   离线机：有网 build 镜像；代码/配置在宿主机 sync 后 docker compose restart models-app
+#
 # =============================================================================
 
 services:
@@ -97,6 +101,8 @@ services:
       face-milvus-external: {}
     volumes:
       - huggingface-cache:/root/.cache/huggingface
+      - ${APP_SOURCE_HOST_PATH:-/opt/deploy/models_app_framework/app}:/workspace/app
+      - ${CONFIGS_HOST_PATH:-/opt/deploy/models_app_framework/configs}:/workspace/configs
       - ../logs:/workspace/logs
       - ${SESSION_STORAGE_HOST_PATH:-/aidata/data/session_storage}:/workspace/data/conversation_archive
       - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
@@ -107,7 +113,7 @@ services:
       - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
       - face-galleries-data:/workspace/data/face_galleries
-      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-/opt/deploy/models_app_framework/app/small_models/pretrained/insightface}:/workspace/app/small_models/pretrained/insightface
       - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
       - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
       - /dev:/dev
@@ -131,10 +137,10 @@ networks:
     external: true
   paddle-layout-external:
     name: ${PADDLE_LAYOUT_DOCKER_NETWORK:-paddle-layout-stack}
-    external: true
+#    external: true
   face-milvus-external:
     name: ${FACE_MILVUS_NETWORK:-face-milvus-stack}
-    external: true
+#    external: true
 
 volumes:
   huggingface-cache: {}

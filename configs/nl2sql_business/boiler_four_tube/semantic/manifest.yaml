@@ -1,0 +1,2 @@
+version: "2026.08.24"
+description: 锅炉四管语义资产占位（NL2SQL_SEMANTIC_LINK_ENABLED=false 时不加载；启用前补齐 metrics/dimensions）

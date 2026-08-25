@@ -40,6 +40,9 @@
 #                         → Redis、MinIO 数据目录宿主机路径（bind）；默认见 .env.example
 #   SESSION_STORAGE_HOST_PATH / INSPECT_EXTRACT_JOBS_HOST_PATH / RAG_FAISS_DATA_HOST_PATH
 #                         → 会话对象存储备份、检修异步任务、FAISS 宿主机路径；与 .env 内容器路径一致
+#   APP_SOURCE_HOST_PATH / CONFIGS_HOST_PATH
+#                         → 业务 Python 源码与 YAML 配置 bind mount（默认 /opt/deploy/models_app_framework/{app,configs}）
+#                         → 离线服务器：在有网机构建镜像；代码/配置迭代在宿主机 sync 后 restart，无需 rebuild
 #
 # 【配置策略】
 #   - 业务相关变量（LLM/RAG/DB/REDIS 等）在 .env 中配置，经 env_file 注入容器，由 app/core/config.py 读取。
@@ -122,6 +125,9 @@ services:
       # graph-external: {}
     volumes:
       - huggingface-cache:/root/.cache/huggingface
+      # 业务源码与配置（宿主机；镜像 COPY 为 fallback，运行时以 mount 为准）
+      - ${APP_SOURCE_HOST_PATH:-/opt/deploy/models_app_framework/app}:/workspace/app
+      - ${CONFIGS_HOST_PATH:-/opt/deploy/models_app_framework/configs}:/workspace/configs
       # 与 docker-mx/docker-compose-mx.yml 中 ../logs 一致：宿主机均为 app-deploy/logs
       - ./logs:/workspace/logs
       # 会话归档对象存储 local 后端（CONV_ARCHIVE_OBJECT_LOCAL_DIR）
@@ -140,9 +146,9 @@ services:
       - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
       # MinerU 与 models-app 共享 IO（须与 mineru-deploy 中 MINERU_IO_HOST_PATH 指向同一宿主目录）
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
-      # 人脸识别（CPU）：/face/* API + 人脸库持久化（主镜像 models-app 已含 InsightFace CPU 依赖）
+      # 人脸识别（CPU）：InsightFace 权重可单独挂载，覆盖 app 内同路径子目录
       - face-galleries-data:/workspace/data/face_galleries
-      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-/opt/deploy/models_app_framework/app/small_models/pretrained/insightface}:/workspace/app/small_models/pretrained/insightface
     environment:
       - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
 
@@ -192,6 +198,8 @@ services:
       RAG_RERANKER_MODEL_PATH: /models/rerank/Qwen3-Reranker-0.6B
     volumes:
       - huggingface-cache:/root/.cache/huggingface
+      - ${APP_SOURCE_HOST_PATH:-/opt/deploy/models_app_framework/app}:/workspace/app
+      - ${CONFIGS_HOST_PATH:-/opt/deploy/models_app_framework/configs}:/workspace/configs
       - ./logs:/workspace/logs
       - ${SESSION_STORAGE_HOST_PATH:-/aidata/data/session_storage}:/workspace/data/conversation_archive
       - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
@@ -202,8 +210,7 @@ services:
       - small-model-data:/workspace/data/small_model_evidence
       # 人脸库（录入 embedding + 图片）；与 face_gallery_dir 默认路径一致
       - face-galleries-data:/workspace/data/face_galleries
-      # InsightFace 模型（buffalo_l 等）；可选宿主机预下载目录覆盖
-      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-/opt/deploy/models_app_framework/app/small_models/pretrained/insightface}:/workspace/app/small_models/pretrained/insightface
       # 权重：宿主机目录 -> 容器内 /workspace/models/small（只读）
       # 未设置 SMALL_MODEL_WEIGHTS_HOST_PATH 时使用命名卷占位，见文件末尾 volumes
       - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro

@@ -3351,6 +3351,15 @@ class AnalysisGraphRunner:
             return ["time", "zone", "thickness", "temperature"]
         if analysis_type == "img_diag_leakage_burst":
             return ["time", "zone", "thickness", "temperature"]
+        if analysis_type in (
+            "subsidence_daily",
+            "subsidence_weekly",
+            "subsidence_monthly",
+            "subsidence_quarterly",
+            "subsidence_yearly",
+        ):
+            # 地降：时间锚点 + 行政区/站点（zone 映射 area/station_name）
+            return ["time", "zone"]
         return ["time"]
 
     @staticmethod

@@ -6,8 +6,9 @@
 #
 # 包含：
 #   - requirements-大模型应用.txt（FastAPI、RAG、ES 客户端、sentence-transformers 等）
-#   - app/ 源码
-#   - configs/（prompt_registry、small_model 等 YAML 运行时相对工作目录 /workspace）
+#     ※ pip 安装须在「有网」构建机完成；离线服务器不执行 pip
+#   - app/ 源码、configs/ YAML（COPY 为 fallback；运行时 bind mount 覆盖）
+#     ※ 运行时默认 bind mount 宿主机 /opt/deploy/models_app_framework/{app,configs}（见 compose）
 #
 # 不包含：小模型 GPU 推理依赖（YOLO/Ultralytics）→ profile small-model-gpu
 # 包含：CPU 人脸识别（/face/*）→ requirements-人脸识别-CPU.txt
@@ -47,6 +48,7 @@ RUN pip install --upgrade pip setuptools wheel \
 
 COPY app /workspace/app
 COPY configs /workspace/configs
+# 运行时 compose 将宿主机目录 mount 到 /workspace/app、/workspace/configs，覆盖上述 COPY。
 
 EXPOSE 8083
 

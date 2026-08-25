@@ -42,14 +42,41 @@ def question_intent_to_dict(intent: QuestionIntent) -> dict[str, Any]:
         "scope": {
             "boiler": scope.boiler,
             "device_name": scope.device_name,
+            "check_location_name": scope.check_location_name,
             "piperow_name": scope.piperow_name,
             "row_no": scope.row_no,
             "tube_no": scope.tube_no,
+            "station_id": scope.station_id,
+            "station_name": scope.station_name,
+            "district": scope.district,
+            "device_type": scope.device_type,
         },
     }
 
 
-def format_parsed_intent_prompt_block(intent: QuestionIntent) -> str:
+def merge_parsed_intent_extensions(
+    base: dict[str, Any],
+    *,
+    semantic: dict[str, Any] | None = None,
+    linked_schema: dict[str, Any] | None = None,
+    gen_fail_reason: str | None = None,
+) -> dict[str, Any]:
+    out = dict(base)
+    if semantic is not None:
+        out["semantic"] = semantic
+    if linked_schema is not None:
+        out["linked_schema"] = linked_schema
+    if gen_fail_reason:
+        out["gen_fail_reason"] = gen_fail_reason
+    return out
+
+
+def format_parsed_intent_prompt_block(
+    intent: QuestionIntent,
+    *,
+    semantic: dict[str, Any] | None = None,
+    linked_schema: dict[str, Any] | None = None,
+) -> str:
     """供 NL2SQL SQL 生成 Prompt 追加的「已识别问句意图」块。"""
     lines = ["【已识别问句意图】"]
 
@@ -64,14 +91,65 @@ def format_parsed_intent_prompt_block(intent: QuestionIntent) -> str:
         lines.append("- 事故锚点：未识别")
 
     scope = intent.scope
-    lines.append(f"- 锅炉：{scope.boiler or '全厂/未指定'}")
-    if scope.device_name:
-        lines.append(f"- 受热面：{scope.device_name}")
-    if scope.piperow_name:
-        lines.append(f"- 管排：{scope.piperow_name}")
-    if scope.row_no is not None:
-        lines.append(f"- 排数：{scope.row_no}")
-    if scope.tube_no is not None:
-        lines.append(f"- 管数：{scope.tube_no}")
+    from app.nl2sql.intent_config import business_domain
+
+    if business_domain() == "subsidence":
+        lines.append(f"- 行政区：{scope.district or '未指定'}")
+        if scope.station_name:
+            lines.append(f"- 监测站点：{scope.station_name}")
+        if scope.station_id:
+            lines.append(f"- 站点ID：{scope.station_id}")
+        if scope.device_type:
+            lines.append(f"- 监测类型：{scope.device_type}")
+    else:
+        lines.append(f"- 锅炉：{scope.boiler or '全厂/未指定'}")
+        if scope.device_name:
+            lines.append(f"- 受热面：{scope.device_name}")
+        if scope.piperow_name:
+            lines.append(f"- 管排：{scope.piperow_name}")
+        if scope.row_no is not None:
+            lines.append(f"- 排数：{scope.row_no}")
+        if scope.tube_no is not None:
+            lines.append(f"- 管数：{scope.tube_no}")
+
+    if semantic:
+        sem_ver = semantic.get("version") or "unknown"
+        lines.append(f"- 语义版本：{sem_ver}")
+        metrics = semantic.get("metrics") or []
+        if metrics:
+            metric_bits = []
+            for m in metrics[:5]:
+                if not isinstance(m, dict):
+                    continue
+                mid = m.get("id") or ""
+                name = m.get("name") or mid
+                unit = m.get("unit") or ""
+                cols = m.get("preferred_columns") or []
+                tbls = m.get("preferred_tables") or []
+                col_hint = ",".join(cols[:2]) if cols else ""
+                tbl_hint = ",".join(tbls[:2]) if tbls else ""
+                metric_bits.append(f"{name}({mid},{unit}→{tbl_hint}.{col_hint})")
+            if metric_bits:
+                lines.append(f"- 命中指标：{'；'.join(metric_bits)}")
+        warnings = semantic.get("warnings") or []
+        if warnings:
+            lines.append(f"- 语义告警：{'；'.join(str(w) for w in warnings[:3])}")
+
+    if linked_schema:
+        status = linked_schema.get("status") or "ok"
+        tables = linked_schema.get("tables") or []
+        if tables:
+            tbl_names = []
+            for t in tables[:4]:
+                if isinstance(t, dict):
+                    tbl_names.append(str(t.get("name") or ""))
+                else:
+                    tbl_names.append(str(getattr(t, "name", t)))
+            tbl_names = [n for n in tbl_names if n]
+            if tbl_names:
+                lines.append(f"- 链接主表（{status}）：{', '.join(tbl_names)}")
+        fail_reason = linked_schema.get("fail_reason")
+        if fail_reason and status == "failed":
+            lines.append(f"- 链接失败原因：{fail_reason}")
 
     return "\n".join(lines)

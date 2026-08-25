@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from time import perf_counter
+from typing import Any
 
 from app.conversation.manager import ConversationManager
 from app.core.logging import get_logger
@@ -13,6 +14,16 @@ from app.nl2sql.executor import SQLExecutor
 from app.nl2sql.intent_config import response_include_parsed_intent
 
 logger = get_logger(__name__)
+
+
+def _gen_fail_reason_from_parsed_intent(parsed_intent: dict[str, Any] | None) -> str | None:
+    if not parsed_intent:
+        return None
+    raw = parsed_intent.get("gen_fail_reason")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    return text or None
 
 
 class NL2SQLService:
@@ -70,6 +81,8 @@ class NL2SQLService:
             scope_intent_text=req.scope_intent_text,
             original_query=req.original_query,
             sql_gen_extra_hint=req.sql_gen_extra_hint,
+            on_link_failure=req.on_link_failure,
+            structured_filters=req.structured_filters,
         )
         rows: list = []
         execute_succeeded = False
@@ -226,6 +239,7 @@ class NL2SQLService:
             else response_include_parsed_intent()
         )
         parsed_intent = vctx.parsed_intent if expose_intent else None
+        gen_fail_reason = _gen_fail_reason_from_parsed_intent(vctx.parsed_intent)
         if vctx.parsed_intent:
             logger.info(
                 "NL2SQLService.query parsed_intent plan_item_id=%s parse_mode=%s boiler=%s",
@@ -234,7 +248,12 @@ class NL2SQLService:
                 ((vctx.parsed_intent or {}).get("scope") or {}).get("boiler"),
             )
 
-        resp = NL2SQLQueryResponse(sql=sql, rows=rows, parsed_intent=parsed_intent)
+        resp = NL2SQLQueryResponse(
+            sql=sql,
+            rows=rows,
+            parsed_intent=parsed_intent,
+            gen_fail_reason=gen_fail_reason,
+        )
         try:
             self._emit_nl2sql_trace(
                 req,

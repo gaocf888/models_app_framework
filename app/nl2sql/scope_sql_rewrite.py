@@ -21,6 +21,13 @@ _INT_PLACEHOLDERS: tuple[tuple[str, str], ...] = (
     ("tube_no", "tube_no"),
 )
 
+_SUBSIDENCE_STRING_PLACEHOLDERS: tuple[tuple[str, str], ...] = (
+    ("station_id", "station_id"),
+    ("station_keyword", "station_name"),
+    ("district", "district"),
+    ("area", "district"),
+)
+
 _LIKE_CONCAT_PIPEROW_RE = re.compile(
     r"(?i)(\b[a-zA-Z_][a-zA-Z0-9_\.]*)\s+LIKE\s+CONCAT\s*\(\s*'%'\s*,\s*'([^']+)'\s*,\s*'%'\s*\)"
 )
@@ -163,5 +170,17 @@ def rewrite_scope_sql_placeholders(
             scopes=scopes,
         )
         notes.extend(part_notes)
+
+    from app.nl2sql.intent_config import business_domain
+
+    if business_domain() == "subsidence":
+        for placeholder, scope_key in _SUBSIDENCE_STRING_PLACEHOLDERS:
+            rewritten, part_notes = _rewrite_string_placeholder(
+                rewritten,
+                placeholder=placeholder,
+                scope_key=scope_key,
+                scopes=scopes,
+            )
+            notes.extend(part_notes)
 
     return rewritten, notes

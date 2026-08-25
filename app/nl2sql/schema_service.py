@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
+from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy import MetaData
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -87,7 +87,9 @@ class SchemaMetadataService:
         """
         db_cfg = getattr(get_app_config(), "db")
         if not self._engine:
-            self._engine = create_async_engine(db_cfg.url, pool_pre_ping=True)
+            from app.nl2sql.executor import _create_business_engine
+
+            self._engine = _create_business_engine(db_cfg)
 
         logger.info(
             "SchemaMetadataService.refresh_from_db starting database=%s",

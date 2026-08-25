@@ -19,6 +19,8 @@
 
 `.env` 使用 **`app/app-deploy/.env`**（与 `.env.example` 同目录），compose 通过 `env_file: ../.env` 引用。
 
+业务源码默认 bind mount：`/opt/deploy/models_app_framework/{app,configs}` → 容器 `/workspace/{app,configs}`。离线迭代见上级 `README.md`「卷与持久化策略」。
+
 ## 前置条件
 
 1. 外挂服务已启动：EasySearch、vLLM（见 `README-simple-deploy.md` §3.1）

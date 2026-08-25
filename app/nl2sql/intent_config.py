@@ -65,3 +65,35 @@ def anchor_fallback_analysis_types() -> frozenset[str]:
 
 def reject_unresolved_time_placeholders() -> bool:
     return nl2sql_intent_config().reject_unresolved_time_placeholders
+
+
+def semantic_link_enabled() -> bool:
+    return nl2sql_intent_config().semantic_link_enabled
+
+
+def schema_link_catalog_mode() -> str:
+    return nl2sql_intent_config().schema_link_catalog_mode
+
+
+def on_link_failure_default() -> str:
+    return nl2sql_intent_config().on_link_failure
+
+
+def sql_dialect() -> str:
+    return nl2sql_intent_config().sql_dialect
+
+
+def business_domain() -> str | None:
+    return nl2sql_intent_config().business_domain
+
+
+def semantic_dict_path() -> str | None:
+    return nl2sql_intent_config().semantic_dict_path
+
+
+def entity_rules_file() -> str | None:
+    return nl2sql_intent_config().entity_rules_file
+
+
+def table_allowlist_fingerprint() -> str:
+    return nl2sql_intent_config().table_allowlist_fingerprint or ""

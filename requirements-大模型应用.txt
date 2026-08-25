@@ -19,7 +19,8 @@ minio>=7.2.0              # 图片预处理后上传 MinIO，返回预签名 URL
 
 # === 数据库与 NL2SQL 相关 ===
 sqlalchemy>=2.0.0         # ORM/SQL 构建与执行，NL2SQL 的 SQLExecutor 使用
-aiomysql>=0.2.0           # 异步 MySQL 驱动，用于 NL2SQL Demo 数据库访问（可按实际数据库替换）
+aiomysql>=0.2.0           # 异步 MySQL/TiDB 驱动（锅炉四管等业务库）
+asyncpg>=0.29.0           # 异步 PostgreSQL 驱动（地面沉降 subsidence 业务库，profile 默认 postgresql+asyncpg）
 
 # === RAG / GraphRAG / 嵌入模型 ===
 # 5.x 在 import 阶段会拉取 torchcodec（音视频多模态）；沐曦/国产 CUDA 等定制 PyTorch 常与官方 torchcodec

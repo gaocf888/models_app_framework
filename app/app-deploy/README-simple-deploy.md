@@ -433,6 +433,13 @@ docker compose -f docker-compose.neo4j.yml --env-file .env up -d
 
 ### 3.2 启动应用栈
 
+> **业务源码 mount（离线机）**  
+> 各 compose 已将宿主机 **`/opt/deploy/models_app_framework/app`**、**`configs`** bind 到容器（可在 `.env` 改 `APP_SOURCE_HOST_PATH` / `CONFIGS_HOST_PATH`）。  
+> - **有网机**：`docker compose ... build`（pip 与依赖在镜像内装好）→ 导出镜像到离线机。  
+> - **离线机首次**：在宿主机创建 `/opt/deploy/models_app_framework/{app,configs}` 并 rsync/scp 同步 `app/`、`configs/`。  
+> - **日常改代码/配置**：更新宿主机目录 → `docker compose restart models-app`（**无需 rebuild**）。  
+> - **仍须 rebuild**：`requirements-*.txt`、Dockerfile、底座镜像变更。
+
 目前主应用部署按服务器算力类型分为：**基础（CPU）**、**英伟达**、**沐曦**、**昇腾 Ascend**（详见 `README.md`「部署形态选择」与 `.env.example` 显卡注释）：
 
 **基础部署** — 基于cpu运行 嵌入/重排 模型(`.env` 中 `cuda:N` / `npu:N` 不生效)

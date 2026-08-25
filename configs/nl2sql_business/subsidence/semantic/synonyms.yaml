@@ -1,0 +1,28 @@
+version: "2026.08.24"
+forbidden_pairs:
+  - [period_subsidence_mm, groundwater_depth]
+  - [period_subsidence_mm, gnss_displacement_3d]
+  - [period_subsidence_mm, pore_pressure]
+  - [groundwater_depth, period_subsidence_mm]
+
+device_type_aliases:
+  分层标: fcb
+  分层: fcb
+  基岩标: jyb
+  GNSS: gnss
+  地下水: dxswj
+  水位井: dxswj
+  孔隙水: kxsylj
+  光纤: gq
+  气象: qxz
+
+device_type_tables:
+  fcb: t_data_wash_fcb
+  jyb: t_data_wash_jyb
+  gnss: t_data_wash_gnss
+  dxswj: t_data_wash_dxswj
+  kxsylj: t_data_wash_kxsylj
+  gq: t_data_wash_gq
+  qxz: t_data_wash_qxz
+
+default_subsidence_table: t_data_wash_fcb

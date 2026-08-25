@@ -1,0 +1,5 @@
+version: "2026.08.24"
+layered_fcb:
+  status: placeholder
+  future_tables: []
+  note: "问句含第N层时暂 warning，或回退 fcb 主表"

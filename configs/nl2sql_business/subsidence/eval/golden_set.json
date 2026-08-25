@@ -1,0 +1,211 @@
+[
+  {
+    "id": "g01",
+    "question": "朝阳区最近一周分层标沉降最大的5个站点",
+    "expect_tables": ["t_data_wash_fcb", "t_station"],
+    "expect_columns": ["total_settle", "data_time", "area"],
+    "expect_metric": "period_subsidence_mm",
+    "notes": "行政区 JOIN + 周期沉降"
+  },
+  {
+    "id": "g02",
+    "question": "通州区GNSS三维位移",
+    "expect_tables": ["t_data_wash_gnss"],
+    "expect_columns": ["displacement_3d"],
+    "expect_metric": "gnss_displacement_3d",
+    "notes": "勿链到 fcb.total_settle"
+  },
+  {
+    "id": "g03",
+    "question": "监测点沉降",
+    "expect_tables": ["t_data_wash_fcb"],
+    "expect_columns": ["total_settle"],
+    "expect_metric": "period_subsidence_mm",
+    "notes": "泛化沉降默认分层标"
+  },
+  {
+    "id": "g04",
+    "question": "本季度大兴区地下水埋深变化",
+    "expect_tables": ["t_data_wash_dxswj", "t_station"],
+    "expect_columns": ["deep", "elevation"],
+    "expect_metric": "groundwater_depth",
+    "notes": "勿用 fcb.total_settle 表示水位"
+  },
+  {
+    "id": "g05",
+    "question": "F8站点昨日 total_settle",
+    "expect_tables": ["t_data_wash_fcb"],
+    "expect_scope": {"station_id": "F8"},
+    "expect_columns": ["total_settle", "data_time"],
+    "notes": "站点 id/别名解析"
+  },
+  {
+    "id": "g06",
+    "question": "周村分层标最新沉降",
+    "expect_tables": ["t_data_wash_fcb"],
+    "expect_scope": {"station_name": "F8(周村)"},
+    "notes": "括号别名"
+  },
+  {
+    "id": "g07",
+    "question": "本月海淀区基岩标周期沉降",
+    "expect_tables": ["t_data_wash_jyb", "t_station"],
+    "expect_columns": ["total_settle"],
+    "notes": "基岩标表"
+  },
+  {
+    "id": "g08",
+    "question": "上季度通州区沉降并带上地下水辅助数据",
+    "expect_tables": ["t_data_wash_fcb", "t_data_wash_dxswj", "t_station"],
+    "notes": "季报类多表；同 project_name"
+  },
+  {
+    "id": "g09",
+    "question": "平谷区孔隙水压力",
+    "expect_tables": ["t_data_wash_kxsylj"],
+    "expect_columns": ["pressure"],
+    "expect_metric": "pore_pressure"
+  },
+  {
+    "id": "g10",
+    "question": "朝阳区气象站降水量",
+    "expect_tables": ["t_data_wash_qxz", "t_station"],
+    "expect_columns": ["real_time_rain"],
+    "expect_metric": "meteo_rain"
+  },
+  {
+    "id": "g11",
+    "question": "光纤沉降量",
+    "expect_tables": ["t_data_wash_gq"],
+    "expect_columns": ["total_settle"],
+    "expect_metric": "fiber_settle"
+  },
+  {
+    "id": "g12",
+    "question": "大兴机场北最近三天沉降",
+    "expect_tables": ["t_data_wash_fcb"],
+    "expect_scope": {"station_id": "JCBZ"},
+    "notes": "中文站名"
+  },
+  {
+    "id": "g13",
+    "question": "各行政区本周平均沉降量排名",
+    "expect_tables": ["t_data_wash_fcb", "t_station"],
+    "expect_columns": ["area", "total_settle"],
+    "notes": "聚合 + JOIN"
+  },
+  {
+    "id": "g14",
+    "question": "顺义区 GNSS 水平位移",
+    "expect_tables": ["t_data_wash_gnss", "t_station"],
+    "expect_columns": ["displacement_2d"],
+    "expect_metric": "gnss_displacement_2d"
+  },
+  {
+    "id": "g15",
+    "question": "昨天全市分层标站点沉降快照",
+    "expect_tables": ["t_data_wash_fcb"],
+    "expect_columns": ["total_settle", "data_time"],
+    "notes": "日报类；时间规则"
+  },
+  {
+    "id": "g16",
+    "question": "昌平区光纤沉降量",
+    "expect_tables": ["t_data_wash_gq", "t_station"],
+    "expect_columns": ["total_settle"],
+    "expect_metric": "fiber_settle",
+    "notes": "光纤主表"
+  },
+  {
+    "id": "g17",
+    "question": "房山区基岩标本季度回弹量",
+    "expect_tables": ["t_data_wash_jyb", "t_station"],
+    "expect_columns": ["total_settle"],
+    "expect_metric": "period_rebound_mm",
+    "notes": "回弹语义"
+  },
+  {
+    "id": "g18",
+    "question": "密云区地下水水位埋深",
+    "expect_tables": ["t_data_wash_dxswj", "t_station"],
+    "expect_columns": ["deep"],
+    "expect_metric": "groundwater_depth"
+  },
+  {
+    "id": "g19",
+    "question": "延庆区昨天平均气温",
+    "expect_tables": ["t_data_wash_qxz", "t_station"],
+    "expect_columns": ["temp"],
+    "expect_metric": "meteo_temp"
+  },
+  {
+    "id": "g20",
+    "question": "HSL01站点GNSS位移",
+    "expect_tables": ["t_data_wash_gnss"],
+    "expect_scope": {"station_id": "HSL01"},
+    "expect_metric": "gnss_displacement_3d"
+  },
+  {
+    "id": "g21",
+    "question": "近一年通州区地面沉降变化",
+    "expect_tables": ["t_data_wash_fcb", "t_station"],
+    "expect_metric": "period_subsidence_mm",
+    "notes": "长周期时间窗"
+  },
+  {
+    "id": "g22",
+    "question": "上季度朝阳区沉降量最大的站点",
+    "expect_tables": ["t_data_wash_fcb", "t_station"],
+    "expect_metric": "period_subsidence_mm"
+  },
+  {
+    "id": "g23",
+    "question": "门头沟区分层标沉降与降水关系",
+    "expect_tables": ["t_data_wash_fcb", "t_data_wash_qxz", "t_station"],
+    "notes": "多表 JOIN 季报类"
+  },
+  {
+    "id": "g24",
+    "question": "石景山区孔压监测数据",
+    "expect_tables": ["t_data_wash_kxsylj", "t_station"],
+    "expect_columns": ["pressure"],
+    "expect_metric": "pore_pressure"
+  },
+  {
+    "id": "g25",
+    "question": "怀柔区监测点最新累计值",
+    "expect_tables": ["t_data_wash_fcb", "t_station"],
+    "expect_metric": "point_subsidence_mm"
+  },
+  {
+    "id": "g26",
+    "question": "丰台区GNSS三维位移最大值",
+    "expect_tables": ["t_data_wash_gnss", "t_station"],
+    "expect_metric": "gnss_displacement_3d"
+  },
+  {
+    "id": "g27",
+    "question": "大兴区分层标各站点最新沉降",
+    "expect_tables": ["t_data_wash_fcb", "t_station"],
+    "expect_metric": "point_subsidence_mm"
+  },
+  {
+    "id": "g28",
+    "question": "东城区沉降与地下水埋深对比",
+    "expect_tables": ["t_data_wash_fcb", "t_data_wash_dxswj", "t_station"],
+    "notes": "双事实表 JOIN"
+  },
+  {
+    "id": "g29",
+    "question": "西城区本周回弹量",
+    "expect_tables": ["t_data_wash_fcb", "t_station"],
+    "expect_metric": "period_rebound_mm"
+  },
+  {
+    "id": "g30",
+    "question": "昌平区第2层分层标沉降",
+    "expect_tables": ["t_data_wash_fcb", "t_station"],
+    "expect_metric": "period_subsidence_mm",
+    "notes": "分层占位 warning；主表仍 fcb"
+  }
+]

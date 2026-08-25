@@ -11,7 +11,9 @@ from tests.test_nl2sql_chain_tidb import _build_chain_for_unit
 
 
 @pytest.fixture(autouse=True)
-def _clear_nl2sql_intent_config_cache() -> None:
+def _clear_nl2sql_intent_config_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NL2SQL_BUSINESS_DOMAIN", raising=False)
+    monkeypatch.setenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", "false")
     get_app_config.cache_clear()
     yield  # type: ignore[misc]
     get_app_config.cache_clear()
@@ -167,7 +169,7 @@ def test_location_keyword_single(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_rewrite_query_filters_scope_disabled_no_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", raising=False)
+    monkeypatch.setenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", "false")
     chain = _build_chain_for_unit()
     question = "1号锅炉低温过热器第一层第一排第一根"
     rewritten, notes = chain._rewrite_query_filters(
@@ -201,3 +203,50 @@ def test_chain_extract_scope_literals_still_backward_compatible() -> None:
     scopes = chain._extract_scope_literals_from_question("请分析1号锅炉前天的超温")
     assert scopes["unit_keyword"] == "1号锅炉"
     assert scopes["device_name"] is None
+
+
+def test_subsidence_district_placeholder_single(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", "true")
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    sql = (
+        "SELECT d.total_settle FROM t_data_wash_fcb d "
+        "JOIN t_station s ON d.project_name = s.name "
+        "WHERE (@district IS NULL OR @district = '' OR s.area = @district)"
+    )
+    rewritten, notes = rewrite_scope_sql_placeholders(sql, {"district": "朝阳区"})
+    assert "@district" not in rewritten
+    assert "'朝阳区'" in rewritten
+    assert "district_placeholder_single" in notes
+
+
+def test_subsidence_station_id_placeholder_single(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", "true")
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    sql = "SELECT * FROM t_data_wash_fcb WHERE station_id = @station_id"
+    rewritten, notes = rewrite_scope_sql_placeholders(sql, {"station_id": "F8"})
+    assert "@station_id" not in rewritten
+    assert "station_id = 'F8'" in rewritten or "= 'F8'" in rewritten
+    assert "station_id_placeholder_single" in notes
+
+
+def test_subsidence_station_keyword_like(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", "true")
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    sql = (
+        "WHERE (@station_keyword IS NULL OR @station_keyword = '' "
+        "OR station_name LIKE CONCAT('%', @station_keyword, '%'))"
+    )
+    rewritten, notes = rewrite_scope_sql_placeholders(sql, {"station_name": "周村"})
+    assert "@station_keyword" not in rewritten
+    assert "'周村'" in rewritten
+    assert "station_keyword_placeholder_single" in notes
+
+
+def test_subsidence_district_empty_skip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED", "true")
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    sql = "WHERE (@area IS NULL OR @area = '' OR s.area = @area)"
+    rewritten, notes = rewrite_scope_sql_placeholders(sql, {"district": None})
+    assert "@area" not in rewritten
+    assert "area_placeholder_empty" in notes
+

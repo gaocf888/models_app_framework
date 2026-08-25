@@ -387,7 +387,11 @@ async def run_chatbot_nl2sql_query(
     try:
         resp = await nl2sql.query(req, record_conversation=False)
         if not (resp.sql or "").strip():
-            fail_reason = getattr(resp, "gen_fail_reason", None) or "empty_sql"
+            fail_reason = (
+                resp.gen_fail_reason
+                or (resp.parsed_intent or {}).get("gen_fail_reason")
+                or "empty_sql"
+            )
             logger.info(
                 "智能客服 NL2SQL：未生成有效 SQL（仅日志）。用户问题摘要=%s reason=%s",
                 (question or "")[:400],

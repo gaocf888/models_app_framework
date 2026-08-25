@@ -86,12 +86,49 @@ def compute_nl2sql_policy_fp(*, analysis_type: str | None) -> str:
     if at:
         join_scoped = (os.getenv(f"ANALYSIS_NL2SQL_JOIN_WHITELIST_{at.upper()}") or "").strip()
     parts = [
-        os.getenv("NL2SQL_PROMPT_DEFAULT_VERSION", "v2"),
+        os.getenv("NL2SQL_PROMPT_DEFAULT_VERSION", "") or "",
         (os.getenv("ANALYSIS_NL2SQL_TABLE_SCOPE_DEFAULT") or "").strip(),
         (os.getenv("ANALYSIS_NL2SQL_JOIN_WHITELIST") or "").strip(),
         join_scoped,
         (os.getenv("NL2SQL_ENTITY_RULES", "") or "")[:4000],
     ]
+    try:
+        from app.nl2sql.intent_config import (
+            business_domain,
+            schema_link_catalog_mode,
+            semantic_link_enabled,
+            table_allowlist_fingerprint,
+        )
+        from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
+
+        profile = get_nl2sql_business_profile()
+        prompt_ver = (os.getenv("NL2SQL_PROMPT_DEFAULT_VERSION") or "").strip()
+        if not prompt_ver and profile:
+            prompt_ver = profile.prompt_default_version or "v2"
+        if not prompt_ver:
+            prompt_ver = "v2"
+        parts[0] = prompt_ver
+
+        semantic_version = ""
+        if semantic_link_enabled() and profile:
+            try:
+                from app.nl2sql.semantic_layer import semantic_version_fingerprint
+
+                semantic_version = semantic_version_fingerprint()
+            except Exception:  # noqa: BLE001
+                semantic_version = ""
+
+        parts.extend(
+            [
+                business_domain() or "",
+                str(semantic_link_enabled()),
+                schema_link_catalog_mode(),
+                table_allowlist_fingerprint(),
+                semantic_version,
+            ]
+        )
+    except Exception:  # noqa: BLE001
+        pass
     raw = "\n".join(parts)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 

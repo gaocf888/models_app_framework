@@ -47,16 +47,25 @@ def _parse_rule(obj: Any) -> EntityRule | None:
 
 def load_entity_rules_from_env() -> list[EntityRule]:
     """
-    从环境变量加载业务实体规则（可选）。
+    从环境变量或业务配置包加载业务实体规则（可选）。
 
     - NL2SQL_ENTITY_RULES：JSON 数组字符串；
-    - 或 NL2SQL_ENTITY_RULES_FILE：指向 JSON 文件（数组）。
+    - NL2SQL_ENTITY_RULES_FILE：指向 JSON 文件（数组）；
+    - 业务 profile 的 entity_rules_file（未显式设置 env 时）。
     """
     raw_path = os.getenv("NL2SQL_ENTITY_RULES_FILE", "").strip()
+    if not raw_path:
+        from app.nl2sql.intent_config import entity_rules_file as profile_entity_file
+
+        pf = profile_entity_file()
+        if pf:
+            raw_path = pf
     raw_inline = os.getenv("NL2SQL_ENTITY_RULES", "").strip()
     text = ""
     if raw_path:
         p = Path(raw_path)
+        if not p.is_file():
+            p = Path(__file__).resolve().parents[2] / raw_path
         if p.is_file():
             text = p.read_text(encoding="utf-8")
         else:

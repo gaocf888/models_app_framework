@@ -60,6 +60,11 @@ AnalysisType = Literal[
     "custom",
     "img_diag_defect_ident",
     "img_diag_leakage_burst",
+    "subsidence_daily",
+    "subsidence_weekly",
+    "subsidence_monthly",
+    "subsidence_quarterly",
+    "subsidence_yearly",
 ]
 ImgDiagSubtype = Literal["defect_ident", "leakage_burst"]
 DataMode = Literal["payload", "nl2sql", "img_diag_defect_ident", "img_diag_leakage_burst"]

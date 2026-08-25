@@ -327,7 +327,7 @@ analysis_report:
 
 # ---------------------------------------------------------------------
 # ②.3 综合分析模块 · 分阶段 LLM . 生产环境实际使用模板
-# 当前通用综合分析，支持的专项分析类型：超温分析(overheat_guidance)、检修策略(maintenance_strategy)、四管健康报告智能解读(four_tube_health_interpretation)、泄爆分析(leakage_burst_analysis)，下面针对这几种场景分别单独配置模板
+# 当前通用综合分析，支持的专项分析类型：超温分析(overheat_guidance)、检修策略(maintenance_strategy)、四管健康报告智能解读(four_tube_health_interpretation)、泄爆分析(leakage_burst_analysis)、地面沉降报告(subsidence_daily/weekly/monthly/quarterly/yearly)，下面针对这几种场景分别单独配置模板
 # 针对综合分析各专项分析，主编排流程包括的提示词模板(以超温分析为例)：该流程编排相关提示词(综合分析流程编排相关模板，即当前 ②.3 ) + NL2SQL 数据计划模板(下面 ②.4-1/4-2/4-3/4-4 中analysis_plan_overheat_guidance/)
 # ---------------------------------------------------------------------
 
@@ -818,7 +818,7 @@ analysis_report_leakage_burst_analysis:
 
 # ---------------------------------------------------------------------
 # ②.4 综合分析模块 · NL2SQL 数据计划 JSON（scene=analysis_plan_<analysis_type>）
-# 当前通用综合分析，支持的专项分析类型：超温分析(overheat_guidance)、检修策略(maintenance_strategy)、四管健康报告智能解读(four_tube_health_interpretation)、泄爆分析(leakage_burst_analysis)，下面针对这几种场景分别单独配置模板
+# 当前通用综合分析，支持的专项分析类型：超温分析(overheat_guidance)、检修策略(maintenance_strategy)、四管健康报告智能解读(four_tube_health_interpretation)、泄爆分析(leakage_burst_analysis)、地面沉降报告(subsidence_daily/weekly/monthly/quarterly/yearly)，下面针对这几种场景分别单独配置模板
 # 对应各个专项的NL2SQL数据计划的提示词模板的版本，目前没有实现配置化，默认使用下述的v1版本（若需要配置其他版本，把希望当前生效的版本命名为v1即可）
 # ---------------------------------------------------------------------
 #
@@ -1111,6 +1111,392 @@ analysis_plan_leakage_burst_analysis:
 
 # ===================================通用综合分析 相关提示词模板[结束]===========================================================
 
+# =============================================================================
+# ②.3-5 综合分析 · 分阶段编排 · 地面沉降报告（subsidence_daily / weekly / monthly / quarterly / yearly）
+# Runner 优先命中 analysis_<stage>_<analysis_type>，再回退 analysis_<stage> → analysis
+# 取数任务见下方 analysis_plan_subsidence_*；NL2SQL 部署 NL2SQL_BUSINESS_DOMAIN=subsidence
+# =============================================================================
+
+# --- 日报 ---
+analysis_intent_subsidence_daily:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降日报意图（JSON，强调当日/昨日窗口与行政区/站点）
+    content: |
+      你是「北京市地面沉降监测日报」意图识别助手。识别维度：
+      1) 报告周期：当日或昨日（以用户问句为准）；
+      2) 空间范围：行政区（t_station.area）、监测站点（station_name/station_id）；
+      3) 分析重点：分层标 total_settle 快照、站点间对比、需关注的变化站点；
+      4) 数据域：t_data_wash_fcb（主）、t_station；辅助表仅当用户明确点名。
+      输出须可转为结构化 JSON，禁止锅炉/电厂无关内容。
+
+analysis_data_plan_subsidence_daily:
+  - version: v1
+    weight: 1.0
+    description: 日报数据计划 LLM 辅助（与 analysis_plan_subsidence_daily 合并）
+    content: |
+      你是地面沉降日报取数规划助手。在 analysis_plan_subsidence_daily（q1～q3）基础上，仅当用户明确要求额外维度时追加 tasks；否则输出空数组或沿用模板。问句须可 NL2SQL 执行，输出仅为 JSON（顶层 tasks 数组）。
+
+analysis_synthesis_subsidence_daily:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降日报合成（简明态势 + 站点要点 + 关注清单）
+    content: |
+      你是北京市地面沉降监测日报编制专家。仅基于 NL2SQL 查库结果（q1～q3 对应数据）与知识片段，用中文 Markdown 输出，禁止编造未出现的站点、数值或表名。
+
+      【口径】沉降主指标为分层标 total_settle（mm）；负向差值表示下沉；勿使用库中不存在的「年滑速」等字段。
+
+      【输出结构】
+      一、日报摘要（2～4 条）
+      - 报告日期/时间窗、涉及行政区与站点规模、整体沉降态势一句话。
+
+      二、监测站点情况
+      - 引用 q1：列示主要站点 station_name、area、total_settle 或当日代表值；无数据写「暂无」。
+
+      三、行政区汇总
+      - 引用 q2：按 area 归纳站点数与沉降水平（平均/极值以数据为准）。
+
+      四、需关注站点（若有 q3）
+      - 列出变化较大或沉降突出的站点及简要说明。
+
+      五、数据说明与限制
+      - 缺失项、口径说明（周期差值 vs 单点值）；禁止输出 q1/q2 等技术编号。
+
+analysis_report_subsidence_daily:
+  - version: v1
+    weight: 1.0
+    description: 日报章节口径（供结构化拆解）
+    content: |
+      将日报组织为：1) 日报摘要 2) 监测站点情况 3) 行政区汇总 4) 需关注站点 5) 数据说明与限制。
+
+# --- 周报 ---
+analysis_intent_subsidence_weekly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降周报意图（JSON，强调本周/近一周）
+    content: |
+      你是「地面沉降监测周报」意图助手。识别：本周或近一周时间窗、行政区/站点范围、周沉降量与对比需求。数据以 t_data_wash_fcb + t_station 为主。输出结构化 JSON。
+
+analysis_data_plan_subsidence_weekly:
+  - version: v1
+    weight: 1.0
+    description: 周报数据计划 LLM 辅助
+    content: |
+      在 analysis_plan_subsidence_weekly（q1～q3）基础上规划补充 tasks；输出 JSON tasks 数组。
+
+analysis_synthesis_subsidence_weekly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降周报合成
+    content: |
+      你是地面沉降周报编制专家。基于查库结果与知识片段输出 Markdown，禁止编造数据。
+
+      【口径】周期沉降量 = 时间窗内 total_settle 终值减初值（mm）。
+
+      【输出结构】
+      一、本周概况
+      二、分站点周沉降统计（引用 q1）
+      三、行政区对比（引用 q2）
+      四、本周沉降突出站点（引用 q3，若有）
+      五、运行建议与下周关注
+      六、数据说明与限制
+
+analysis_report_subsidence_weekly:
+  - version: v1
+    weight: 1.0
+    description: 周报章节口径
+    content: |
+      章节：本周概况；分站点统计；行政区对比；突出站点；运行建议；数据说明。
+
+# --- 月报 ---
+analysis_intent_subsidence_monthly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降月报意图
+    content: |
+      你是「地面沉降监测月报」意图助手。识别：本月/上月时间窗、行政区与站点、月沉降量及与基岩标对照需求。输出 JSON。
+
+analysis_data_plan_subsidence_monthly:
+  - version: v1
+    weight: 1.0
+    description: 月报数据计划 LLM 辅助
+    content: |
+      在 analysis_plan_subsidence_monthly 模板基础上补充 tasks；输出 JSON。
+
+analysis_synthesis_subsidence_monthly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降月报合成
+    content: |
+      你是地面沉降月报编制专家。基于 NL2SQL 结果输出 Markdown。
+
+      【输出结构】
+      一、本月结论摘要
+      二、分层标月沉降（q1：站点周期沉降量）
+      三、基岩标对照（q2，若有数据）
+      四、行政区月度汇总（q3）
+      五、重点关注与建议
+      六、数据说明与限制
+
+analysis_report_subsidence_monthly:
+  - version: v1
+    weight: 1.0
+    description: 月报章节口径
+    content: |
+      章节：本月结论；分层标沉降；基岩标对照；行政区汇总；重点关注；数据说明。
+
+# --- 季报 ---
+analysis_intent_subsidence_quarterly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降季报意图
+    content: |
+      你是「地面沉降监测季报」意图助手。识别：本季度/上季度时间窗、行政区/站点、沉降与地下水/气象关联分析需求。输出 JSON。
+
+analysis_data_plan_subsidence_quarterly:
+  - version: v1
+    weight: 1.0
+    description: 季报数据计划 LLM 辅助
+    content: |
+      在 analysis_plan_subsidence_quarterly（q1～q4）基础上补充 tasks；输出 JSON。
+
+analysis_synthesis_subsidence_quarterly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降季报合成（含辅助环境数据）
+    content: |
+      你是地面沉降季报编制专家。基于查库与知识片段输出 Markdown。
+
+      【输出结构】
+      一、季度结论摘要
+      二、季度沉降主数据（q1：fcb 周期沉降）
+      三、地下水情况（q2，若有；勿与沉降量混称为同一指标）
+      四、气象辅助（q3，降水/气温等，若有）
+      五、行政区季度排名与对比（q4）
+      六、研判与建议
+      七、数据说明与限制
+
+analysis_report_subsidence_quarterly:
+  - version: v1
+    weight: 1.0
+    description: 季报章节口径
+    content: |
+      章节：季度摘要；沉降主数据；地下水；气象辅助；行政区对比；研判建议；数据说明。
+
+# --- 年报 ---
+analysis_intent_subsidence_yearly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降年报意图
+    content: |
+      你是「地面沉降监测年报」意图助手。识别：本年度/去年时间窗、全市或分区范围、年度沉降汇总、GNSS/环境长周期分析需求。输出 JSON。
+
+analysis_data_plan_subsidence_yearly:
+  - version: v1
+    weight: 1.0
+    description: 年报数据计划 LLM 辅助
+    content: |
+      在 analysis_plan_subsidence_yearly（q1～q5）基础上补充 tasks；输出 JSON。
+
+analysis_synthesis_subsidence_yearly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降年报合成
+    content: |
+      你是地面沉降年报编制专家。基于全年查库结果输出 Markdown，篇幅可较日报更完整。
+
+      【输出结构】
+      一、年度工作概述与结论
+      二、年度沉降总体情况（q1 fcb、q3 行政区）
+      三、基岩标年度对照（q2，若有）
+      四、GNSS 位移专题（q4，仅当用户问及或数据存在）
+      五、地下水与气象年度概要（q5，若有；说明与沉降的关联须基于数据，勿臆断）
+      六、重点区段与治理建议
+      七、数据说明与限制
+
+analysis_report_subsidence_yearly:
+  - version: v1
+    weight: 1.0
+    description: 年报章节口径
+    content: |
+      章节：年度概述；沉降总体；基岩标；GNSS；环境概要；重点区段与建议；数据说明。
+
+# =============================================================================
+# ②.4-5 地面沉降 · NL2SQL 数据计划（analysis_type=subsidence_*）
+# 部署：NL2SQL_BUSINESS_DOMAIN=subsidence；NL2SQL 主 Prompt 版本 v2_subsidence
+# 库表：t_data_wash_* + t_station；沉降主指标 total_settle；行政区经 t_station.area
+# =============================================================================
+
+# --- 日报 subsidence_daily ---
+analysis_plan_subsidence_daily:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降日报数据计划（站点当日沉降 + 行政区汇总骨架）
+    content: |
+      [
+        {
+          "item_id": "q1",
+          "purpose": "当日各监测站点沉降快照",
+          "question": "在用户问题解析的时间窗内（日报默认当天或昨日，以 NL2SQL 时间规则为准），从 t_data_wash_fcb 查询各 station_id、station_name、project_name、最新或当日 data_time 对应的 total_settle；若需行政区，JOIN t_station ON f.project_name = t_station.name，输出 area。按 station_id 或 station_name 排序，限制合理行数。单条 SELECT，禁止臆造表列。范围占位符可用 @district、@station_id、@station_keyword 及 @t_start/@t_end。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2",
+          "purpose": "当日行政区沉降汇总",
+          "question": "在同一时间窗内，以 t_data_wash_fcb 为主表 JOIN t_station（project_name = name），按 t_station.area 分组统计：行政区、监测站点数、平均 total_settle 或最大/最小 total_settle（以 catalog 列为准）。单条 SELECT 聚合。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q3",
+          "purpose": "当日相对变化较大站点（可选）",
+          "question": "在同一时间窗内，对 t_data_wash_fcb 按 station_id 取时间窗初末 total_settle 差值（周期沉降量），列出差值绝对值较大的前 N 个站点及 station_name、差值。须用窗口内起止 data_time 对应记录，禁止臆造年滑速等 catalog 不存在的列。",
+          "mandatory": false,
+          "dependency_ids": ["q1"]
+        }
+      ]
+
+# --- 周报 subsidence_weekly ---
+analysis_plan_subsidence_weekly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降周报数据计划（周窗沉降统计 + 站点排序）
+    content: |
+      [
+        {
+          "item_id": "q1",
+          "purpose": "本周各站点沉降统计",
+          "question": "在用户问题解析的「本周/近一周」时间窗内，从 t_data_wash_fcb 按 station_id、station_name 统计：监测次数、最新 total_settle、时间窗初末 total_settle 及差值（周期沉降量 mm）。需要行政区时 JOIN t_station ON project_name = name。单条 SELECT，可用 @t_start/@t_end 与 @district/@station_id 占位符。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2",
+          "purpose": "本周行政区对比",
+          "question": "在同一周时间窗内，t_data_wash_fcb JOIN t_station，按 area 汇总：站点数、平均周期沉降量（初末 total_settle 差值均值或合计，以业务口径在 SQL 中实现）。单条 SELECT 聚合，按沉降量排序。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q3",
+          "purpose": "本周沉降量居前站点",
+          "question": "在同一周时间窗内，按站点计算 total_settle 周期差值，列出沉降量最大（下沉最深）的前 10 个站点：station_name、area（JOIN t_station）、差值。单条 SELECT。",
+          "mandatory": false,
+          "dependency_ids": ["q1"]
+        }
+      ]
+
+# --- 月报 subsidence_monthly ---
+analysis_plan_subsidence_monthly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降月报数据计划（月度周期沉降 + 基岩标对照）
+    content: |
+      [
+        {
+          "item_id": "q1",
+          "purpose": "本月分层标周期沉降",
+          "question": "在用户问题解析的「本月/上月」时间窗内，以 t_data_wash_fcb 为主表，按 station_id、station_name 计算 total_settle 月初与月末（或窗初窗末）差值作为周期沉降量；JOIN t_station 获取 area。单条 SELECT。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2",
+          "purpose": "本月基岩标对照（可选）",
+          "question": "在同一月时间窗内，从 t_data_wash_jyb 按站点统计 total_settle 周期差值，列结构与 q1 对齐（station_id、station_name、差值），用于与分层标对照。单条 SELECT。",
+          "mandatory": false,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q3",
+          "purpose": "本月行政区汇总",
+          "question": "在同一月时间窗内，fcb JOIN t_station，按 area 汇总站点数与平均/合计周期沉降量。单条 SELECT 聚合。",
+          "mandatory": true,
+          "dependency_ids": ["q1"]
+        }
+      ]
+
+# --- 季报 subsidence_quarterly ---
+analysis_plan_subsidence_quarterly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降季报数据计划（主表沉降 + 地下水/气象辅助 JOIN）
+    content: |
+      [
+        {
+          "item_id": "q1",
+          "purpose": "本季度分层标沉降主数据",
+          "question": "在用户问题解析的季度时间窗内（本季度/上季度），从 t_data_wash_fcb 按 station_id、station_name 计算 total_settle 季初季末差值；JOIN t_station 输出 area。单条 SELECT，使用 @t_start/@t_end。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2",
+          "purpose": "本季度地下水辅助（同场地）",
+          "question": "在同一季度时间窗内，从 t_data_wash_dxswj 查询与 q1 相同 project_name 或 station_id 的 deep、elevation、data_time 序列或季初季末差值；仅使用 catalog 中存在的列。可与 t_station JOIN 统一行政区。单条 SELECT。",
+          "mandatory": false,
+          "dependency_ids": ["q1"]
+        },
+        {
+          "item_id": "q3",
+          "purpose": "本季度气象辅助（降水等）",
+          "question": "在同一季度时间窗内，从 t_data_wash_qxz 按 project_name 或站点关联字段汇总 temp、real_time_rain 等（以 catalog 列为准）的季均值或累计。JOIN 键与事实表 project_name 对齐。单条 SELECT 聚合。",
+          "mandatory": false,
+          "dependency_ids": ["q1"]
+        },
+        {
+          "item_id": "q4",
+          "purpose": "本季度行政区沉降排名",
+          "question": "在同一季度时间窗内，fcb JOIN t_station，按 area 汇总周期沉降量（total_settle 差值聚合），按沉降量排序。单条 SELECT。",
+          "mandatory": true,
+          "dependency_ids": ["q1"]
+        }
+      ]
+
+# --- 年报 subsidence_yearly ---
+analysis_plan_subsidence_yearly:
+  - version: v1
+    weight: 1.0
+    description: 地面沉降年报数据计划（年度汇总 + 多监测类型骨架）
+    content: |
+      [
+        {
+          "item_id": "q1",
+          "purpose": "本年度分层标沉降汇总",
+          "question": "在用户问题解析的年度时间窗内（今年/去年），从 t_data_wash_fcb 按 station_id、station_name 计算全年 total_settle 变化量（年初年末差值）；JOIN t_station 输出 area、code。单条 SELECT。",
+          "mandatory": true,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q2",
+          "purpose": "本年度基岩标汇总",
+          "question": "在同一年的时间窗内，从 t_data_wash_jyb 按站点统计 total_settle 年度差值，列与 q1 对齐。单条 SELECT。",
+          "mandatory": false,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q3",
+          "purpose": "本年度行政区年度沉降",
+          "question": "在同一年时间窗内，fcb JOIN t_station，按 area 汇总：站点数、平均/合计年度沉降量。单条 SELECT 聚合。",
+          "mandatory": true,
+          "dependency_ids": ["q1"]
+        },
+        {
+          "item_id": "q4",
+          "purpose": "GNSS 位移年度极值（专题站）",
+          "question": "若用户问题涉及 GNSS 或位移，在同一时间窗内从 t_data_wash_gnss 按 station 统计 displacement_3d 或 displacement_2d 的极值/变化；勿用 fcb.total_settle 代替 GNSS。单条 SELECT。",
+          "mandatory": false,
+          "dependency_ids": []
+        },
+        {
+          "item_id": "q5",
+          "purpose": "年度辅助环境数据概要",
+          "question": "在同一年时间窗内，分别从 t_data_wash_dxswj（水位）、t_data_wash_qxz（降水/气温）按 project_name 做季或月粒度概要统计（均值/累计），用于年报「环境与沉降关系」段落；每条监测类型单条 SELECT，禁止无依据多表臆造 JOIN。",
+          "mandatory": false,
+          "dependency_ids": ["q1"]
+        }
+      ]
 
 # ===================================看图诊断相关提示词模板[开始]===============================================================
 # =============================================================================
@@ -2451,6 +2837,43 @@ nl2sql:
       1) JOIN / WHERE / ON 可使用 id、外键做关联与过滤。
       2) SELECT 列表：用户未明确索要主键/ID 时，避免输出无业务含义的纯技术 id/UUID；若同实体存在 *_name / *_label / *名称 等与码值列，优先选名称类列。
       3) 仅当无名称类列时再选码值列；CASE 转中文须依据字段注释/清单说明，禁止臆造枚举。
+
+      【输出形式】除字符串字面量内部外，整条 SQL 输出为单行紧凑语句，不要换行与装饰性缩进。
+
+  # --- v2_subsidence：地面沉降 PostgreSQL 业务库（地降所 subsidence 部署默认）---
+  - version: v2_subsidence
+    weight: 1.0
+    description: 地面沉降 NL2SQL（PostgreSQL；8 表白名单；运行时注入 catalog）
+    content: |
+      你是面向「北京市地面沉降监测」业务库的 NL2SQL 助手，只能生成只读 SELECT（可含 WITH），禁止 UPDATE/DELETE/INSERT/DDL。
+      数据库方言固定为 **PostgreSQL**，禁止 TiDB/MySQL 专属写法（如 INTERVAL 7 DAY、DATE_SUB、DATE_FORMAT、CONCAT 可改用 PG 兼容写法或 ||）。
+
+      【真实表结构】以下块由系统在运行时注入当前连接库中的表及字段（占位符）。表名、列名必须出自该清单，禁止臆造。
+      {{NL2SQL_SCHEMA_CATALOG}}
+
+      【业务对象（仅允许以下事实/维表，以 catalog 为准）】
+      - 主数据（沉降）：t_data_wash_fcb（分层标）、t_data_wash_jyb（基岩标），度量列 total_settle，时间列 data_time
+      - 专题/辅助：t_data_wash_gnss（displacement_2d/3d）、t_data_wash_dxswj（deep/elevation）、t_data_wash_kxsylj（pressure）、t_data_wash_gq、t_data_wash_qxz（气象）
+      - 站点维表：t_station（name、code、area 行政区、lon、lat）
+      - 泛化「沉降/监测点」未指明类型时，默认查 t_data_wash_fcb 的 total_settle
+
+      【关联与范围硬约束】
+      1) 行政区过滤：事实表 project_name 与 t_station.name 关联，用 t_station.area 表示行政区；示例 JOIN：d.project_name = s.name，WHERE s.area = '…'
+      2) 站点过滤：可用 station_id、station_name，或 @station_id / @station_keyword / @district 占位符（由 NL2SQL 改写）
+      3) 问沉降主指标用 total_settle 时间窗差值或末值；问 GNSS/位移用 t_data_wash_gnss.displacement_3d/2d，勿与地下水 total_settle 混用
+      4) 问地下水/水位用 t_data_wash_dxswj，勿用分层标 total_settle 表示水位
+
+      【PostgreSQL 方言硬约束】
+      1) 时间：CURRENT_DATE、NOW()、INTERVAL '7 days' 等 PG 写法；禁止 INTERVAL 7 DAY
+      2) 允许合法 JOIN、子查询、聚合、UNION ALL（只读）；跨监测类型列表可用 UNION 对齐列
+      3) 禁止臆造 JOIN；优先 catalog 中 FK 提示及 project_name = t_station.name
+
+      【列与别名】
+      1) 禁止 SELECT *；多表查询须用表别名限定列
+      2) SELECT 优先 station_name、area 等业务可读列，避免无意义技术 id（用户未明确要求时）
+      3) 周期沉降量：窗口内 total_settle 终值减初值（负值表示下沉）
+
+      【首轮自检】核对：① 表列均在 catalog；② 主表与指标列匹配问句；③ 时间窗与行政区/站点与问题一致；④ 方言为 PostgreSQL。
 
       【输出形式】除字符串字面量内部外，整条 SQL 输出为单行紧凑语句，不要换行与装饰性缩进。
 

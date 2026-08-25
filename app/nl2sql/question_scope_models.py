@@ -12,6 +12,11 @@ class QuestionScopeIntent:
     piperow_name: str | None = None
     row_no: int | None = None
     tube_no: int | None = None
+    # 地面沉降域
+    station_id: str | None = None
+    station_name: str | None = None
+    district: str | None = None
+    device_type: str | None = None
 
 
 @dataclass(frozen=True)

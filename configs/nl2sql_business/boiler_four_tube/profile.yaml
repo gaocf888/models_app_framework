@@ -1,0 +1,37 @@
+business_domain: boiler_four_tube
+display_name: 锅炉四管
+
+# 业务库连接默认（密码禁止写入本文件；部署设 DB_PASSWORD 或完整 DB_URL）
+# 显式环境变量 DB_* / DB_URL 优先于此处
+db:
+  dialect: tidb
+  host: 192.168.90.62
+  port: 4000
+  name: fmfb
+  user: aimodel
+  async_driver: mysql+aiomysql
+
+nl2sql:
+  semantic_link_enabled: false
+  semantic_dict_path: configs/nl2sql_business/boiler_four_tube/semantic
+  intent_parse_mode: rule
+  scope_sql_rewrite_enabled: true
+  scope_lexicon_file: configs/nl2sql_scope_device_aliases.json
+  entity_rules_file: ""
+  prompt_default_version: v2
+  schema_link_catalog_mode: legacy_wide
+  on_link_failure: refuse
+  inject_parsed_intent: false
+  reject_unresolved_time_placeholders: true
+  anchor_fallback_now_enabled: true
+  anchor_fallback_analysis_types: "img_diag_leakage_burst,img_diag_defect_ident"
+
+tables:
+  allowlist_file: configs/nl2sql_business/boiler_four_tube/table_scope.txt
+  join_whitelist_file: configs/nl2sql_business/boiler_four_tube/join_whitelist.txt
+
+rag:
+  namespaces:
+    schema: nl2sql_schema
+    biz: nl2sql_biz_knowledge
+    qa: nl2sql_qa_examples

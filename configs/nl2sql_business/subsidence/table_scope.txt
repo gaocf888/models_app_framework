@@ -1,0 +1,8 @@
+t_data_wash_fcb
+t_data_wash_jyb
+t_data_wash_gnss
+t_data_wash_dxswj
+t_data_wash_kxsylj
+t_data_wash_gq
+t_data_wash_qxz
+t_station

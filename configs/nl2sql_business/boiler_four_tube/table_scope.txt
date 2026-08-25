@@ -1,0 +1,35 @@
+# 锅炉四管表白名单（与 app-deploy/.env.example ANALYSIS_NL2SQL_TABLE_SCOPE_DEFAULT 对齐）
+# 部署可用环境变量覆盖；NL2SQL_BUSINESS_DOMAIN=boiler_four_tube 时由 profile 注入。
+account_boiler
+account_static_device
+account_device_piperow
+account_device_pipebox
+account_device_weld
+base_archives
+base_dev_pi_b
+base_temp_device
+base_temp_point
+monitor_hotarea_temp
+overhaul_boiler
+overhaul_new_checklocation
+overhaul_record
+overhaul_record_tubes
+overhaul_thickness_rate
+monitor_boiler_start_stop
+base_soot_blower
+base_soot_blower_attr
+monitor_soot_blower_run_record
+base_coal_mill
+base_coal_mill_attr
+monitor_coal_mill_run_record
+account_group
+account_group_member
+sen_expansion
+sen_expansion_alarm
+sen_expansion_record
+sen_gateway
+overhual_leakage
+km_catalog
+km_file
+sis_pi_data
+overhaul_legacy_problem

@@ -314,7 +314,7 @@ SMALL_MODEL_WEIGHTS_HOST_PATH=/opt/small-model-weights
 ### 步骤 D：将算法配置改为使用 GPU（仓库内 YAML）
 
 编辑 **`configs/small_model_algorithms.yaml`**（或你实际使用的算法条目），将 `device` 从 `"cpu"` 改为 **`"0"`** 或 **`"cuda:0"`**（与 Ultralytics 习惯一致）。  
-修改后需**重新构建镜像**（`COPY configs` 在镜像内）或改为挂载覆盖 `configs`（当前 compose 未默认挂载，以镜像内为准）。
+修改后 **`docker compose restart models-app`**（或 `models-app-gpu`）即可；`configs` 已通过宿主机 bind mount 挂载（默认 `/opt/deploy/models_app_framework/configs`）。
 
 ### 步骤 E：构建并启动 profile
 
@@ -373,6 +373,20 @@ docker compose --profile small-model-gpu up -d --build
 ---
 
 ## 卷与持久化策略
+
+### 业务源码与配置（bind mount · 离线迭代）
+
+| 宿主机路径（默认） | 容器路径 | 用途 |
+|--------------------|----------|------|
+| `${APP_SOURCE_HOST_PATH:-/opt/deploy/models_app_framework/app}` | `/workspace/app` | Python 业务代码（NL2SQL、RAG、Chatbot 等） |
+| `${CONFIGS_HOST_PATH:-/opt/deploy/models_app_framework/configs}` | `/workspace/configs` | `prompts.yaml`、`nl2sql_business/**` 等 |
+
+- **镜像构建（有网机）**：`pip install`、`COPY app/configs` 写入镜像，作为 mount 未就绪时的兜底。
+- **运行时（离线机）**：以 **bind mount 为准**；更新代码/配置后 **`docker compose restart models-app`**，**无需 rebuild**。
+- **仍须 rebuild 镜像**：`requirements-*.txt` 变更、Dockerfile/底座升级、新增系统库等需联网安装的内容。
+- 首次部署：在宿主机准备 `/opt/deploy/models_app_framework/{app,configs}` 并同步代码/配置（rsync/scp/tar），再 `docker compose up -d`。
+
+### 数据、模型与其它挂载
 
 | 卷名 / 挂载源 | 挂载到 | 用途 |
 |---------------|--------|------|
@@ -688,7 +702,7 @@ docker compose --profile small-model-gpu down
 
 | 文件 | 说明 |
 |------|------|
-| `Dockerfile` | 默认 **CPU** 镜像：`requirements-大模型应用.txt` + `app` + `configs` |
+| `Dockerfile` | 默认 **CPU** 镜像：`requirements`（有网 build）+ `app`/`configs`（COPY fallback，运行时 mount 覆盖） |
 | `Dockerfile.small-model-gpu` | GPU 小模型镜像：cu121 PyTorch + 大小模型 requirements + `ultralytics` |
 | `docker-compose.yml` | **CPU** 栈：`redis`、`minio`、`models-app`；可选 **`models-app-gpu`**（`profiles: small-model-gpu`） |
 | **`docker-nvidia/Dockerfile-nvidia`** | **英伟达 GPU** 主镜像：cu121 PyTorch + 大模型应用依赖（嵌入/重排 GPU） |
@@ -699,7 +713,7 @@ docker compose --profile small-model-gpu down
 | **`docker-ascend/Dockerfile-ascend`** | **昇腾 Ascend** 主镜像：`vllm-ascend:v0.23.0-310p` + 业务依赖 |
 | **`docker-ascend/docker-compose-ascend.yml`** | **昇腾 Ascend** 栈 |
 | **`docker-ascend/README.md`** | 昇腾栈快速说明 |
-| `.env.example` | 环境变量模板（含英伟达/沐曦/昇腾显卡注释、Qwen3 嵌入/重排、索引版本） |
+| `.env.example` | 环境变量模板（含 **APP_SOURCE_HOST_PATH**、英伟达/沐曦/昇腾注释、Qwen3 嵌入/重排） |
 | `README.md` | 本文档 |
 | `README-simple-deploy.md` | 简明上线流程 |
 | `README-external-services-lan-deploy.md` | 局域网/离线外挂服务 |

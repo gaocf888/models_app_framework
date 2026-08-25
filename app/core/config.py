@@ -712,6 +712,15 @@ class NL2SQLIntentConfig:
     anchor_fallback_analysis_types: str = "img_diag_leakage_burst,img_diag_defect_ident"
     # SQL 执行前拒绝仍含 @t_start/@t_end/@t_after 的语句（通常表示时间窗未解析且未改写）
     reject_unresolved_time_placeholders: bool = True
+    # 业务域配置包（NL2SQL_BUSINESS_DOMAIN）
+    business_domain: str | None = None
+    semantic_link_enabled: bool = False
+    semantic_dict_path: str | None = None
+    schema_link_catalog_mode: str = "linked_only"
+    on_link_failure: str = "refuse"
+    sql_dialect: str = "tidb"
+    entity_rules_file: str | None = None
+    table_allowlist_fingerprint: str = ""
 
 
 @dataclass
@@ -895,11 +904,11 @@ class AppConfig:
 @dataclass
 class DatabaseConfig:
     """
-    数据库连接配置。
+    数据库连接配置（NL2SQL 业务库）。
 
-    说明：
-    - 为了便于开发，这里提供了一个默认的 MySQL 连接信息；
-    - 在生产环境中，强烈建议通过环境变量覆盖这些默认值。
+    优先级：显式 ``DB_URL`` / ``DB_*`` 环境变量 ＞ ``NL2SQL_BUSINESS_DOMAIN`` 对应
+    ``profile.yaml`` 的 ``db.*`` ＞ 代码默认（锅炉 MySQL 兼容）。
+    密码仅允许环境变量 ``DB_PASSWORD``（或写入 ``DB_URL``），禁止进配置包。
     """
 
     url: str
@@ -908,6 +917,7 @@ class DatabaseConfig:
     host: str
     port: int
     database: str
+    dialect: str = "tidb"  # tidb|mysql|postgres
 
 
 def _load_from_env() -> AppConfig:
@@ -945,20 +955,53 @@ def _load_from_env() -> AppConfig:
         file_compress=os.getenv("LOG_FILE_COMPRESS", "true").lower() == "true",
     )
 
-    # 数据库配置：支持环境变量覆盖，默认使用用户提供的 MySQL 连接信息。
-    db_user = os.getenv("DB_USER", "root")
-    db_password = os.getenv("DB_PASSWORD", "1qaz@4321")
-    db_host = os.getenv("DB_HOST", "124.222.37.179")
-    db_name = os.getenv("DB_NAME", "boiler")
-    db_port = int(os.getenv("DB_PORT", "3306"))
-    # userinfo 中的 @ : # 等必须百分号编码，否则第一个 @ 会被当成「凭据结束」，例如密码 1qaz@4321 会把 host 错解析成 4321@124...
-    db_url = os.getenv(
-        "DB_URL",
-        "mysql+aiomysql://"
-        f"{quote(db_user, safe='')}:{quote(db_password, safe='')}@{db_host}:{db_port}/{db_name}"
-        "?charset=utf8mb4",
+    # 数据库配置：显式 DB_* / DB_URL ＞ 业务 profile.db.* ＞ 代码默认（锅炉）
+    from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
+
+    biz_profile_early = get_nl2sql_business_profile()
+    sql_dialect_for_db = (
+        biz_profile_early.sql_dialect
+        if biz_profile_early and os.getenv("NL2SQL_SQL_DIALECT") is None
+        else (os.getenv("NL2SQL_SQL_DIALECT", "tidb") or "tidb").strip().lower()
     )
-    if "charset=" not in db_url.lower():
+    is_pg = sql_dialect_for_db in {"postgres", "postgresql", "pg"}
+
+    db_user = (os.getenv("DB_USER") or "").strip() or (
+        (biz_profile_early.db_user if biz_profile_early else None) or "root"
+    )
+    db_password = os.getenv("DB_PASSWORD", "1qaz@4321")
+    db_host = (os.getenv("DB_HOST") or "").strip() or (
+        (biz_profile_early.db_host if biz_profile_early else None) or "124.222.37.179"
+    )
+    db_name = (os.getenv("DB_NAME") or "").strip() or (
+        (biz_profile_early.db_name if biz_profile_early else None) or "boiler"
+    )
+    if os.getenv("DB_PORT"):
+        db_port = int(os.getenv("DB_PORT", "3306"))
+    elif biz_profile_early and biz_profile_early.db_port:
+        db_port = int(biz_profile_early.db_port)
+    else:
+        db_port = 5432 if is_pg else 3306
+
+    async_driver = (
+        biz_profile_early.resolved_async_driver()
+        if biz_profile_early
+        else ("postgresql+asyncpg" if is_pg else "mysql+aiomysql")
+    )
+    if is_pg:
+        default_db_url = (
+            f"{async_driver}://"
+            f"{quote(db_user, safe='')}:{quote(db_password, safe='')}@{db_host}:{db_port}/{db_name}"
+        )
+    else:
+        default_db_url = (
+            f"{async_driver}://"
+            f"{quote(db_user, safe='')}:{quote(db_password, safe='')}@{db_host}:{db_port}/{db_name}"
+            "?charset=utf8mb4"
+        )
+    # userinfo 中的 @ : # 等必须百分号编码
+    db_url = (os.getenv("DB_URL") or "").strip() or default_db_url
+    if not is_pg and "charset=" not in db_url.lower():
         sep = "&" if "?" in db_url else "?"
         db_url = f"{db_url}{sep}charset=utf8mb4"
 
@@ -969,6 +1012,7 @@ def _load_from_env() -> AppConfig:
         host=db_host,
         port=db_port,
         database=db_name,
+        dialect=sql_dialect_for_db,
     )
 
     def _split_csv_env(name: str, default_csv: str) -> list[str]:
@@ -1697,7 +1741,56 @@ def _load_from_env() -> AppConfig:
             "NL2SQL_REJECT_UNRESOLVED_TIME_PLACEHOLDERS", "true"
         ).lower()
         == "true",
+        business_domain=(os.getenv("NL2SQL_BUSINESS_DOMAIN") or "").strip() or None,
+        semantic_link_enabled=os.getenv("NL2SQL_SEMANTIC_LINK_ENABLED", "false").lower() == "true",
+        semantic_dict_path=(os.getenv("NL2SQL_SEMANTIC_DICT_PATH") or "").strip() or None,
+        schema_link_catalog_mode=(
+            os.getenv("NL2SQL_SCHEMA_LINK_CATALOG_MODE", "linked_only") or "linked_only"
+        ).strip().lower(),
+        on_link_failure=(os.getenv("NL2SQL_ON_LINK_FAILURE", "refuse") or "refuse").strip().lower(),
+        sql_dialect=(os.getenv("NL2SQL_SQL_DIALECT", "tidb") or "tidb").strip().lower(),
+        entity_rules_file=(os.getenv("NL2SQL_ENTITY_RULES_FILE") or "").strip() or None,
+        table_allowlist_fingerprint="",
     )
+
+    from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
+
+    biz_profile = get_nl2sql_business_profile()
+    if biz_profile is not None:
+        if os.getenv("NL2SQL_SEMANTIC_LINK_ENABLED") is None:
+            nl2sql_intent_cfg.semantic_link_enabled = biz_profile.semantic_link_enabled
+        if not nl2sql_intent_cfg.semantic_dict_path:
+            nl2sql_intent_cfg.semantic_dict_path = biz_profile.semantic_dict_path
+        if os.getenv("NL2SQL_SCHEMA_LINK_CATALOG_MODE") is None:
+            nl2sql_intent_cfg.schema_link_catalog_mode = biz_profile.schema_link_catalog_mode
+        if os.getenv("NL2SQL_ON_LINK_FAILURE") is None:
+            nl2sql_intent_cfg.on_link_failure = biz_profile.on_link_failure
+        if os.getenv("NL2SQL_SQL_DIALECT") is None:
+            nl2sql_intent_cfg.sql_dialect = biz_profile.sql_dialect
+        if os.getenv("NL2SQL_INTENT_PARSE_MODE") is None:
+            nl2sql_intent_cfg.intent_parse_mode = biz_profile.intent_parse_mode
+        if os.getenv("NL2SQL_SCOPE_SQL_REWRITE_ENABLED") is None:
+            nl2sql_intent_cfg.scope_sql_rewrite_enabled = biz_profile.scope_sql_rewrite_enabled
+        if os.getenv("NL2SQL_INJECT_PARSED_INTENT") is None:
+            nl2sql_intent_cfg.inject_parsed_intent = biz_profile.inject_parsed_intent
+        if os.getenv("NL2SQL_REJECT_UNRESOLVED_TIME_PLACEHOLDERS") is None:
+            nl2sql_intent_cfg.reject_unresolved_time_placeholders = (
+                biz_profile.reject_unresolved_time_placeholders
+            )
+        if os.getenv("NL2SQL_ANCHOR_FALLBACK_NOW_ENABLED") is None:
+            nl2sql_intent_cfg.anchor_fallback_now_enabled = biz_profile.anchor_fallback_now_enabled
+        if os.getenv("NL2SQL_ANCHOR_FALLBACK_ANALYSIS_TYPES") is None:
+            nl2sql_intent_cfg.anchor_fallback_analysis_types = biz_profile.anchor_fallback_analysis_types
+        if not nl2sql_intent_cfg.scope_lexicon_file and biz_profile.scope_lexicon_file:
+            nl2sql_intent_cfg.scope_lexicon_file = biz_profile.scope_lexicon_file
+        if not nl2sql_intent_cfg.entity_rules_file and biz_profile.entity_rules_file:
+            nl2sql_intent_cfg.entity_rules_file = biz_profile.entity_rules_file
+        nl2sql_intent_cfg.business_domain = biz_profile.business_domain
+        nl2sql_intent_cfg.table_allowlist_fingerprint = biz_profile.allowlist_version_fp()
+        if os.getenv("NL2SQL_SEMANTIC_LINK_ENABLED") is not None:
+            nl2sql_intent_cfg.semantic_link_enabled = (
+                os.getenv("NL2SQL_SEMANTIC_LINK_ENABLED", "false").lower() == "true"
+            )
 
     face_vector_cfg = FaceVectorConfig(
         backend=(os.getenv("FACE_VECTOR_BACKEND", "local") or "local").strip().lower(),

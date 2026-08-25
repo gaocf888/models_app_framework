@@ -8,6 +8,7 @@
 #   quay.io/ascend/vllm-ascend:v0.23.0-310p（CANN 9.1.0 + Python 3.12 + torch_npu）
 # 旧线回退：v0.10.0rc1-310p（CANN 8.2.RC1 + Python 3.11）须整线 HDK 配套
 # 策略：extras/业务依赖装到「带 torch」的厂商 Python；禁止 pip 覆盖 torch_npu
+# pip 须在「有网」构建机完成。app/configs 运行时由宿主机 bind mount 覆盖（见 compose）。
 # =============================================================================
 
 ARG BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
@@ -84,6 +85,7 @@ assert s is not None, 'torch_npu missing after pip install'"
 
 COPY app /workspace/app
 COPY configs /workspace/configs
+# 运行时 compose bind mount 覆盖宿主机 /opt/deploy/models_app_framework/{app,configs}。
 
 EXPOSE 8083
 
