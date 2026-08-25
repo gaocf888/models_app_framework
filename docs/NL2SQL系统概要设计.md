@@ -5,7 +5,8 @@
 系统首期聚焦于：
 - **查询类只读 SQL**（SELECT），面向典型业务分析场景；
 - 支持 **中文自然语言问题**，生成 MySQL / PostgreSQL 等主流数据库方言的 SQL；
-- 支持单库多表的分析查询，并为后续多轮对话、复杂报表和领域微调预留扩展空间。
+- 支持单库多表的分析查询，并为后续多轮对话、复杂报表和领域微调预留扩展空间；
+- **多业务域配置包**（一套进程一个 domain）：锅炉四管 / 地面沉降等共用同一编排，差异在 `NL2SQL_BUSINESS_DOMAIN` + `configs/nl2sql_business/<domain>/`（表白名单、方言、语义资产、Prompt）。
 
 ---
 
@@ -15,7 +16,10 @@
 
 从数据流看，典型链路为：
 
-> 自然语言问题 → Schema 语义检索（RAG） → Prompt 编排 → LLM 生成候选 SQL → **多层校验与自我修正** → **可选 EXPLAIN 预检** → 数据库执行 → **失败时可执行期 refine（有界重试）** → 结果展示与解释
+> 自然语言问题 → **问句意图（时间/范围）** → **（可选）语义对齐 → Schema 链接** → Schema 反射 / RAG → Prompt 编排 → LLM 生成候选 SQL → **时间·范围改写（含方言适配）** → **多层校验与自我修正** → **可选 EXPLAIN** → 数据库执行 → **失败时可执行期 refine** → 结果（可含 `parsed_intent` / `gen_fail_reason`）
+
+**多业务域（部署级）**  
+`boiler_four_tube`（TiDB/MySQL，语义链接默认关）与 `subsidence`（PostgreSQL，语义链接默认开、`linked_only` catalog）共用 `NL2SQLService`；不设请求级双管线。设计见 `docs/基于地降所项目改造/NL2SQL基座改造.md`。
 
 **可选：生成阶段分层缓存（降低重复/近似问法的 LLM 调用）**  
 部署侧启用 **`NL2SQL_CACHE_ENABLED`**（及可选 **`NL2SQL_L1_CACHE_ENABLED`**，均由环境变量配置）后，单次 `generate_sql` 内顺序为：**先 NL2SQL 专用 RAG（schema/biz/qa 片段与白名单上下文）**，再在 **`NL2SQL_CACHE_ENABLED`** 打开时按 **L2（完整问题文本键）→ L1（时间意图折叠键）** 查找已入库的可执行 SQL／时间骨架；其中 **L1** 将 **相对日、ISO 周（本周/上周）、月（本月/上月）、近 N 天** 等中文时间口径折叠进意图键，并对 SQL 中 **`DATE_SUB` / 日期字面量** 做占位与按当前问句重渲染。命中后 **跳过 Prompt 与 LLM**，仍执行 TiDB/过滤器改写与 **`SQLValidator`**。分层模型、键维度与运维说明见 **`docs/NL2SQL缓存实现方案.md`**（含文首「当前实现摘要」）。
@@ -28,18 +32,20 @@
 1. **接入层（API & UI 层，基于 FastAPI 实现）**
    - 使用 `FastAPI` 作为统一接入框架，提供 HTTP/REST 或 WebSocket 接口，对接 Web 前端、BI 工具或内部系统。
    - 负责用户认证、请求路由、会话管理以及结果展示，可按路由划分查询、Schema 管理、运维监控等接口分组。
-   - **在本基座中的落地**：NL2SQL 与 RAG 同属 **AI 应用基础能力**；NL2SQL **既** 可通过 **`POST /nl2sql/query`** 被 BI、脚本等 **直接调用**，**又** 可被智能客服等场景 **内嵌复用**（结构化问数意图），详见 `docs/大小模型应用技术架构与实现方案.md` §1、§4.6 与 `enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`。
+   - **在本基座中的落地**：NL2SQL 与 RAG 同属 **AI 应用基础能力**；既可通过 **`POST /nl2sql/query`** 直连，又可被智能客服 / 综合分析 / 看图诊断内嵌复用。详见 `docs/大小模型应用技术架构与实现方案.md` §1、§4.6 与 `enterprise-level_transformation_docs/企业级NL2SQL基座实现方案.md`。
 
 2. **NL2SQL 智能层（核心逻辑，Python 实现）**
-   - **Schema 管理与向量检索子系统（RAG）**：维护数据库模式的语义索引，并在查询时检索最相关的表与字段。
-   - **Prompt 编排器**：根据用户问题、检索到的 Schema 信息和对话上下文动态构造 Prompt。
-   - **LLM 调用器**：统一封装对 Qwen3 / GPT / DeepSeek 等大模型的调用逻辑。
-   - **SQL 校验与自我修正模块**：对生成 SQL 做安全与白名单校验，**反射成功时增加列–表绑定与可配置实体规则**；生成期与执行期均可基于校验/数据库错误驱动模型自我修正（有界重试）。
+   - **Schema 管理与向量检索子系统（RAG）**：维护模式语义索引并检索相关表字段。
+   - **业务配置包 / 意图配置**：按 domain 加载表白名单、方言、词表、Prompt、语义开关。
+   - **（可选）语义对齐与 Schema 链接**：问句 → 业务指标绑定 → LinkedSchema 收窄 catalog；失败可 refuse 或 best_effort。
+   - **Prompt 编排器**：按问题、catalog、RAG 片段与可选意图块构造 Prompt（如 `v2` / `v2_subsidence`）。
+   - **LLM 调用器**：统一封装对 Qwen / GPT / DeepSeek 等调用。
+   - **SQL 校验与自我修正**：安全与白名单、列–表绑定、实体规则；生成期与执行期有界 refine。
 
 3. **数据访问层**
-   - **数据库 Schema 管理模块**：从业务数据库自动拉取表、字段、注释等信息并保持同步。
-   - **多数据源适配器**：屏蔽 MySQL / PostgreSQL 等不同数据库的差异。
-   - **SQL 执行与安全控制模块**：负责实际执行 SQL，并对敏感操作、超长查询等进行防护。
+   - **数据库 Schema 管理模块**：反射表/列/外键（MySQL/TiDB 或 PostgreSQL）。
+   - **多数据源适配器**：连接串与方言适配（含时间表达式 MySQL→PG）。
+   - **SQL 执行与安全控制模块**：只读执行、可选 EXPLAIN、敏感操作防护。
 
 ---
 
@@ -264,7 +270,9 @@
 
 ## 附：与当前代码实现的对照文档
 
-- 企业级流程与图示：`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`
+- 企业级流程与图示：`enterprise-level_transformation_docs/企业级NL2SQL基座实现方案.md`（旧名 `企业级NL2SQL实现方案.md` 为重定向页）
+- 地降/多业务域改造：`docs/基于地降所项目改造/NL2SQL基座改造.md`
 - 代码行为级完整说明：`enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md`
 - 工程实现细节：`framework-guide/NL2SQL整体实现技术说明.md`
+- 缓存与 QA 闭环：`docs/NL2SQL缓存实现方案.md`
 

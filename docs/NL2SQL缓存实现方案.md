@@ -10,7 +10,8 @@
    - **L2**：完整问句键（`normalize_nl2sql_question`），适用于「同一 `question` 字节级一致」的重复问询。  
    - **L1**：在时间语义上与 **天（相对日）/ ISO 周（本周·上周）/ 月（本月·上月）/ 近 N 天** 等说法对齐：查找键通过 **`normalize_nl2sql_question_intent`** 折叠上述口径；存储值为 **`extract_time_skeleton_from_sql`** 抽出占位后的 SQL 骨架，命中后按当前问句 **`resolve_time_intent`** 再渲染字面量或 `DATE_SUB`。  
    - **开关**：总开关 **`NL2SQL_CACHE_ENABLED`**；L1 开关 **`NL2SQL_L1_CACHE_ENABLED`**（依赖总开关）；TTL/容量见 **`NL2SQL_CACHE_TTL_SECONDS`**、**`NL2SQL_CACHE_MAX_ENTRIES`**（见 §七 bis、§10.1、`app/app-deploy/.env.example`）。  
-   - **查找顺序（单次 `generate_sql` 内）**：先完成 **NL2SQL 专用 RAG**（schema/biz/qa 片段与白名单上下文），再 **L2 → L1**；命中则 **跳过 Prompt 构建与 LLM**，仍走 TiDB/过滤器改写与 **`SQLValidator`**（见 §七）。
+   - **键敏感**：`nl2sql_policy_fp` 含 domain / semantic_link / catalog mode / allowlist 指纹 / **semantic_version**，换业务域或语义资产版本后旧缓存自然 miss。  
+   - **查找顺序（单次 `generate_sql` 内）**：先完成 **NL2SQL 专用 RAG**（schema/biz/qa 片段与白名单上下文），再 **L2 → L1**；命中则 **跳过 Prompt 构建与 LLM**，仍走方言/过滤器改写与 **`SQLValidator`**（见 §七）。
 
 2. **校验通过的 SQL + 问题写入 `nl2sql_qa_examples`（与 L2/L1 并列、独立）**  
    - 开启 **`NL2SQL_QA_FEEDBACK_ENABLED`** 后，在 **本轮经 LLM 生成且校验通过**（默认 **`NL2SQL_QA_FEEDBACK_ONLY_FRESH_SQL=true`** 时不包含纯 L2/L1 缓存返回路径）时，将压缩后的问句 + SQL 等 **幂等 upsert** 至向量库命名空间 **`nl2sql_qa_examples`**（元数据含数据源/schema/policy 指纹，检索侧可过滤）。  
@@ -41,7 +42,7 @@
 1. **分层存储**：**结构化骨架**（优）与 **可执行 SQL 文本**（次）并存；优先命中骨架以减少「整条 SQL 过时」风险。
 2. **命中判定可规则化**：默认使用 **规范化问题文本 + 业务键 + schema 指纹** 的确定性哈希；**不必**为「是否命中」调用对话 LLM。
 3. **修补递进**：**规则替换字面量 / 时间窗** → 失败再 **可选** 走短链路补丁 LLM（配置开关）。
-4. **版本敏感**：缓存键绑定 **catalog/schema 策略版本**，配置或 DDL 变更自动失效。
+4. **版本敏感**：缓存键绑定 **catalog/schema 策略版本** 与 **domain / semantic_version / catalog mode**，配置或 DDL 变更自动失效。
 5. **失败即降级**：校验或执行失败 → **剔除或降级该条目**，回退现有全量 NL2SQL；禁止持久化「坏 SQL」。
 
 ---
@@ -110,7 +111,7 @@
 | **L2** | `plan_item_id` | 综合分析子任务 id：`q1`～`q4`（直连 NL2SQL 可为空） |
 | **L2** | 问题文本 | **`normalize_nl2sql_question(question)`**（空白折叠）后的完整 `question`，参与哈希 |
 | **L2** | `schema_fp` | 反射表名集合摘要 |
-| **L2** | `nl2sql_policy_fp` | Prompt 版本、table_scope、JOIN 白名单、实体规则等环境摘要 |
+| **L2** | `nl2sql_policy_fp` | Prompt 版本、table_scope、JOIN 白名单、实体规则，以及 **business_domain**、**semantic_link_enabled**、**schema_link_catalog_mode**、表白名单指纹、**semantic_version**（见 `compute_nl2sql_policy_fp`） |
 | **L1** | 同上 | **`data_source_fp`、`analysis_type`、`plan_item_id`、`schema_fp`、`nl2sql_policy_fp` 与 L2 一致** |
 | **L1** | 意图文本 | **`normalize_nl2sql_question_intent(question)`**（§4.2 意图折叠），与 L2 **不同** |
 
@@ -332,3 +333,4 @@ flowchart LR
 | 2026-05-06 | v0.4 | §七 ter：QA 向量闭环（`NL2SQL_QA_*`、`qa_feedback.py`、RAG 检索过滤、`/rag/nl2sql-auto-qa`）；§10.1 增补 `NL2SQL_QA_FEEDBACK_ENABLED` |
 | 2026-05-09 | v0.5 | 文首「当前实现摘要」：时间口径（天/周/月/近 N 天）与 L1/L2、环境变量；`nl2sql_qa_examples` 写入与 **`GET`/`PATCH` 管理端**；§七 修正链内顺序（先 NL2SQL RAG，再 L2→L1）；§1.1 澄清命中后仍跑 RAG、仅跳过 LLM |
 | 2026-05-19 | v0.7 | 新增 **`POST /rag/nl2sql-auto-qa`** 半自动灌库（`mode=replace|skip_if_exists`，可选 SQLValidator） |
+| 2026-08-25 | v0.8 | `nl2sql_policy_fp` 对齐多业务域：含 domain、semantic_link、catalog mode、allowlist 指纹、**semantic_version** |

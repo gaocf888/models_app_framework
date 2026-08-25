@@ -8,7 +8,7 @@
 > **决策依据**：相对现网「RAG + 反射 + 强后处理」，对 NL→SQL 准确率增益最大的是 **语义建模** 与 **显式 Schema 链接**；查询类型五阶段、基座内多轮澄清、图表引擎等 **一期不做**。  
 > **域差异原则**：**不设** `NL2SQL_DOMAIN_PROFILE` 运行时双管线分流；锅炉/地降共用同一套「语义→链接→现网后半段」，差异仅在 `configs/nl2sql_business/<domain>/` 配置包。  
 > **关联文档**：  
-> - 现网基线：`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`  
+> - 现网基线：`enterprise-level_transformation_docs/企业级NL2SQL基座实现方案.md`  
 > - 五阶段背景：`NL2SQL基座五阶段改造方案.md`（或废弃提炼稿）  
 > - 时间/范围改写：`docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`  
 > - 库结构：`docs/地降所需求及数据相关/数据库结构及逻辑/数据库说明.md`、`226大模型数据库.docx`  
@@ -1071,7 +1071,7 @@ rows: []
 | 文档/代码 | 用途 |
 |-----------|------|
 | **本文** | NL2SQL 基座 **唯一**改造总方案 |
-| `enterprise-level_transformation_docs/企业级NL2SQL实现方案.md` | 现网基座全链路 |
+| `enterprise-level_transformation_docs/企业级NL2SQL基座实现方案.md` | 现网基座全链路 |
 | `NL2SQL基座五阶段改造方案.md` | 五阶段背景 |
 | `docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md` | 时间/范围改写 |
 | `数据库说明.md` / `226大模型数据库.docx` | 地降库结构真源 |
