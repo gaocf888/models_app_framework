@@ -137,10 +137,10 @@ networks:
     external: true
   paddle-layout-external:
     name: ${PADDLE_LAYOUT_DOCKER_NETWORK:-paddle-layout-stack}
-#    external: true
+    external: true
   face-milvus-external:
     name: ${FACE_MILVUS_NETWORK:-face-milvus-stack}
-#    external: true
+    external: true
 
 volumes:
   huggingface-cache: {}
