@@ -1,0 +1,78 @@
+{
+  "schema_version": 2,
+  "title": "北京市地面沉降监测年报（占位）",
+  "description": "P1 占位骨架；完整版式待对齐年报模板。部署需 NL2SQL_BUSINESS_DOMAIN=subsidence",
+  "plan": {
+    "items": [
+      {
+        "item_id": "q1",
+        "purpose": "本年度分层标沉降汇总",
+        "question": "在用户问题解析的年度时间窗内（今年/去年），从 t_data_wash_fcb 按 station_id、station_name 计算全年 total_settle 变化量；JOIN t_station 输出 area、code。单条 SELECT。",
+        "mandatory": true,
+        "dependency_ids": []
+      },
+      {
+        "item_id": "q2",
+        "purpose": "本年度行政区年度沉降",
+        "question": "在同一年时间窗内，fcb JOIN t_station，按 area 汇总：站点数、平均/合计年度沉降量。单条 SELECT 聚合。",
+        "mandatory": true,
+        "dependency_ids": ["q1"]
+      },
+      {
+        "item_id": "q3",
+        "purpose": "年度辅助环境数据概要",
+        "question": "在同一年时间窗内，从 t_data_wash_dxswj 或 t_data_wash_qxz 按 project_name 做概要统计（均值/累计），用于年报环境与沉降关系段落。单条 SELECT。",
+        "mandatory": false,
+        "dependency_ids": ["q1"]
+      }
+    ]
+  },
+  "chapters": [
+    {
+      "id": "ss_hdr",
+      "kind": "static_markdown",
+      "static_body": "# 北京市地面沉降监测年报\n\n"
+    },
+    {
+      "id": "ch_overview",
+      "kind": "llm_section",
+      "title": "一、年度概况",
+      "source_item_ids": ["q1", "q2"],
+      "outline": ["年度监测覆盖与沉降总体形势"],
+      "constraints": ["禁止编造", "禁止 q 编号", "禁止 # 标题行"],
+      "narrative_instruction": "简述本年度沉降监测概况；无数据写待补充。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    },
+    {
+      "id": "ch_detail",
+      "kind": "llm_section",
+      "title": "二、分区对比与环境辅助",
+      "source_item_ids": ["q2", "q3"],
+      "outline": ["行政区年度对比", "可选环境辅助要点"],
+      "constraints": ["禁止编造", "禁止 q 编号"],
+      "narrative_instruction": "解读年度分区对比与可选环境辅助；结合已渲染表图。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    }
+  ],
+  "tables": [
+    {
+      "id": "t_yearly_area",
+      "title": "年度行政区沉降汇总表",
+      "source_item_ids": ["q2"],
+      "attach_to_chapter": "ch_detail",
+      "max_rows": 40
+    }
+  ],
+  "charts": [
+    {
+      "id": "c_yearly_area_bar",
+      "title": "年度行政区沉降对比图",
+      "chart_type": "bar",
+      "source_item_ids": ["q2"],
+      "attach_to_chapter": "ch_detail",
+      "max_points": 40
+    }
+  ]
+}

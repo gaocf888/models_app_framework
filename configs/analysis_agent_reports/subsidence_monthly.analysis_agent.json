@@ -1,0 +1,78 @@
+{
+  "schema_version": 2,
+  "title": "北京市地面沉降监测月报（占位）",
+  "description": "P1 占位骨架；完整版式待对齐月报模板。部署需 NL2SQL_BUSINESS_DOMAIN=subsidence",
+  "plan": {
+    "items": [
+      {
+        "item_id": "q1",
+        "purpose": "本月分层标沉降主数据",
+        "question": "在用户问题解析的月时间窗内（本月/上月），从 t_data_wash_fcb 按 station_id、station_name 计算 total_settle 月初月末差值；JOIN t_station 输出 area。单条 SELECT，使用 @t_start/@t_end。",
+        "mandatory": true,
+        "dependency_ids": []
+      },
+      {
+        "item_id": "q2",
+        "purpose": "本月行政区沉降汇总",
+        "question": "在同一月时间窗内，fcb JOIN t_station，按 area 汇总站点数与周期沉降量并排序。单条 SELECT。",
+        "mandatory": true,
+        "dependency_ids": ["q1"]
+      },
+      {
+        "item_id": "q3",
+        "purpose": "本月重点站点",
+        "question": "在同一月时间窗内，选取沉降量绝对值靠前的站点，输出 station_name、area、周期沉降量。单条 SELECT。",
+        "mandatory": false,
+        "dependency_ids": ["q1"]
+      }
+    ]
+  },
+  "chapters": [
+    {
+      "id": "ss_hdr",
+      "kind": "static_markdown",
+      "static_body": "# 北京市地面沉降监测月报\n\n"
+    },
+    {
+      "id": "ch_overview",
+      "kind": "llm_section",
+      "title": "一、本月概况",
+      "source_item_ids": ["q1", "q2"],
+      "outline": ["本月监测覆盖与沉降总体形势"],
+      "constraints": ["禁止编造", "禁止 q 编号", "禁止 # 标题行"],
+      "narrative_instruction": "简述本月沉降监测概况；无数据写待补充。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    },
+    {
+      "id": "ch_detail",
+      "kind": "llm_section",
+      "title": "二、分区与重点站点",
+      "source_item_ids": ["q2", "q3"],
+      "outline": ["行政区对比", "重点站点"],
+      "constraints": ["禁止编造", "禁止 q 编号"],
+      "narrative_instruction": "解读本月分区与重点站点；结合已渲染表图。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    }
+  ],
+  "tables": [
+    {
+      "id": "t_monthly_area",
+      "title": "本月行政区沉降汇总表",
+      "source_item_ids": ["q2"],
+      "attach_to_chapter": "ch_detail",
+      "max_rows": 40
+    }
+  ],
+  "charts": [
+    {
+      "id": "c_monthly_area_bar",
+      "title": "本月行政区沉降对比图",
+      "chart_type": "bar",
+      "source_item_ids": ["q2"],
+      "attach_to_chapter": "ch_detail",
+      "max_points": 40
+    }
+  ]
+}

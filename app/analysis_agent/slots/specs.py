@@ -6,11 +6,20 @@ REPORT_FALLBACK_SUFFIX = "analysis_agent"
 DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK = "analysis_agent_v1"
 _LEGACY_VERSION_ALIASES = frozenset({"v1", "v2"})
 
+_SUBSIDENCE_TYPES = (
+    "subsidence_daily",
+    "subsidence_weekly",
+    "subsidence_monthly",
+    "subsidence_quarterly",
+    "subsidence_yearly",
+)
+
 PLAN_VERSION_BY_TYPE: dict[str, str] = {
     "overheat_guidance": DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK,
     "maintenance_strategy": DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK,
     "four_tube_health_interpretation": DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK,
     "leakage_burst_analysis": DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK,
+    **{t: DEFAULT_PLAN_TEMPLATE_VERSION_FALLBACK for t in _SUBSIDENCE_TYPES},
 }
 
 NARRATIVE_SCENE_BY_TYPE: dict[str, str] = {
@@ -18,6 +27,8 @@ NARRATIVE_SCENE_BY_TYPE: dict[str, str] = {
     "maintenance_strategy": "analysis_agent_synthesis_maintenance_strategy",
     "four_tube_health_interpretation": "analysis_agent_synthesis_four_tube_health_interpretation",
     "leakage_burst_analysis": "analysis_agent_synthesis_leakage_burst_analysis",
+    # 地降五类共用短 system；章节细节在 report JSON
+    **{t: "analysis_agent_synthesis_subsidence" for t in _SUBSIDENCE_TYPES},
 }
 
 SUPPORTED_ANALYSIS_TYPES: tuple[str, ...] = tuple(PLAN_VERSION_BY_TYPE.keys())
@@ -61,3 +72,7 @@ def normalize_template_version(version: str | None) -> str:
     if not v or v in _LEGACY_VERSION_ALIASES:
         return get_default_agent_template_version()
     return v
+
+
+def is_subsidence_type(analysis_type: str) -> bool:
+    return (analysis_type or "").strip() in _SUBSIDENCE_TYPES

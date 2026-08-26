@@ -51,6 +51,8 @@ class ReportSpecFileModel(BaseModel):
     plan_items: list[dict[str, Any]] | None = None
     chapters: list[dict[str, Any]] | None = None
     slots: list[dict[str, Any]] | None = None
+    tables: list[dict[str, Any]] | None = None
+    charts: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,8 @@ class ReportSpec:
     plan_items: tuple[dict[str, Any], ...]
     chapters: tuple[AnalysisAgentSlot, ...]
     description: str = ""
+    tables: tuple[dict[str, Any], ...] = ()
+    charts: tuple[dict[str, Any], ...] = ()
 
     @property
     def plan_tasks(self) -> list[dict[str, Any]]:
@@ -97,6 +101,14 @@ def load_report_spec(
         return None
     spec_dict = {"slots": chapters_raw}
     chapters = tuple(slots_from_spec_dict(spec_dict))
+    tables: list[dict[str, Any]] = []
+    for item in raw.get("tables") or []:
+        if isinstance(item, dict) and item.get("id") and item.get("attach_to_chapter"):
+            tables.append(dict(item))
+    charts: list[dict[str, Any]] = []
+    for item in raw.get("charts") or []:
+        if isinstance(item, dict) and item.get("id") and item.get("attach_to_chapter"):
+            charts.append(dict(item))
     return ReportSpec(
         analysis_type=analysis_type,
         version=ver,
@@ -104,6 +116,8 @@ def load_report_spec(
         plan_items=tuple(plan_items),
         chapters=chapters,
         description=str(raw.get("description") or ""),
+        tables=tuple(tables),
+        charts=tuple(charts),
     )
 
 

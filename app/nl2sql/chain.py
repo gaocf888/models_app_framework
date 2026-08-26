@@ -212,6 +212,7 @@ class NL2SQLChain:
         sql_gen_extra_hint: str | None = None,
         on_link_failure: str | None = None,
         structured_filters: dict | None = None,
+        disable_qa_slot_replay: bool | None = None,
     ) -> tuple[str, NL2SQLValidationContext]:
         if confirmed_scope:
             time_src = (
@@ -506,6 +507,7 @@ class NL2SQLChain:
 
         if (
             nl2sql_qa_ctx is not None
+            and not disable_qa_slot_replay
             and nl2sql_qa_slot_strict_replay_enabled(analysis_type)
             and nl2sql_qa_slot_lookup_eligible(nl2sql_qa_ctx)
         ):
@@ -525,6 +527,13 @@ class NL2SQLChain:
                     _text_preview(replay_sql, 0),
                 )
                 return replay_sql, validation_ctx
+        elif disable_qa_slot_replay and nl2sql_qa_ctx is not None:
+            logger.info(
+                "NL2SQLChain qa_replay=strict_skipped reason=disable_qa_slot_replay "
+                "analysis_type=%s plan_item_id=%s",
+                analysis_type or "-",
+                plan_item_id or "-",
+            )
 
         if cfg_analysis.nl2sql_cache_enabled and db_cfg is not None:
             cache_key_for_store = build_nl2sql_sql_cache_key(

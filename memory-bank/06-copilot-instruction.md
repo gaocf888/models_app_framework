@@ -549,3 +549,23 @@ NL2SQL 基座（dev_djs 适配）
 	5）
 其他需要需要确认项，请按照当前已知信息、上述建议或分析的最佳策略
 ```
+
+
+##  2026-08-25 综合分析智能体改造方案
+```text
+请结合上述分析，针对下面当前 综合分析智能体 的改造思路(主要基于与综合分析的对比)，帮我在 docs/基于地降所项目改造/ 路径下实现 综合分析智能体改造.md 的方案,并实现
+1）slot_quality、slot_human中 HITL去掉（mandatory 空/失败 → 重试 策略，重试耗尽后需明确策略：strict=true 失败终止 / 默认「标注待补充继续写」）
+2）目前 章节内 绑定的 q* 并行调 NL2SQLService。需要把 章节串行 也改成并行
+3）分析 针对当前 按章节进行 绑定的 q* 并行调 NL2SQLService 的实现方式，如果各章节 绑定的q*存在重叠时，是否会存在 重复NL2SQLService调用的情况。针对这种情况，是否最好考虑 把数据计划中所有 q统一先执行 并保存结果(也就是批量取数acquire_data，比如在当前主图的intent_rag和slot_nl2sql之间增加)，然后各章节 绑定的q* 直接使用结果。（该点与上述2调整为统一修改方案：「全量先并行取数 + 章节合成有限并行/串行推送」）
+4）当前 综合分析智能体 的数据计划的实现，目前是否全靠 prompt.yaml中的提示词，是否需要考虑把 综合分析 中的 “规划前 NL2SQL 三库 RAG”增加进来（该条按照上述分析，暂不增加 “规划前 NL2SQL 三库 RAG”；其中数据计划优先使用 report json中的plan.items,为空再使用  prompts.yaml 里的 analysis_agent_plan_{type}（这个要在  系统整体逻辑、配置说明-简版.md 中 综合分析智能体 板块极简说明））
+5）上述 slot_quality 应该像 综合分析 的质量门一样，增加相关质量策略
+6）当前 综合分析智能体，应该增加 地降 subsidence_* （日报、周报、月报、季报、年报） -- 当前主要实现 季报，其他可占位实现（季报模板 请依据 docs/地降所需求及数据相关/报告示例/北京市地面沉降监测季度报告4.24.docx，其中相关图表，需要在configs/analysis_agent_reports/{type}.analysis_agent.json中配置）
+7）当前 综合分析智能体，应该参考 综合分析 增加 stop
+8）运维Trace 部分请参考 综合分析的实现，引入 Redis/ES、列表/统计/趋势
+9）当前 综合分析智能体 的 【ReAct ainvoke 等整章结束再 _chunk_text，首 token 延迟按章累加】，能否优化（按照上述分析的策略落地方案）
+10）NL2SQL 基座开关实现真正打穿（例如：config 里nl2sql_executor传递、QA 五元组、time_intent_text启用）
+11）当前 综合分析智能体 不读取历史会话(即没有enable_context)，能否实现（若实现需要考虑 以当前会话为主，历史会话仅作辅助。因为综合分析智能体 主要针对一次性分析和报告生成）（按照上述分析：默认 enable_context=false；开启时只把近 N 轮摘要拼进 intent_rag / 首章 user，不改写主 query 作为取数意图源）
+12）需要分析当前 按照章节进行查数、RAG召回、分析的策略中，是否包含 各种图表的生成，若没有的话，需要增加（生成各种常见的柱状图、折线图、表格等的源码，并支持可配置化）（按照上述分析）
+13）改造后梳理整体的LangGraph主图和对应的逻辑说明（简要清晰），方便相关人员了解 综合分析智能体 的实现流程和逻辑（包括：enterprise-level_transformation_docs/综合分析智能体(analysis_agent)实现逻辑说明.md完善修改(参考 企业级智能客服 LangGraph 框架实现方案.md)，以及 enterprise-level_transformation_docs/系统整体逻辑、配置、运维说明/系统整体逻辑、配置说明-简版.md （要按照该文档风格，极简生成） ）
+
+```

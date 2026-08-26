@@ -72,14 +72,37 @@ def load_plan_tasks(
     version: str | None = None,
     prompts: PromptTemplateRegistry | None = None,
 ) -> list[dict[str, Any]]:
-    """加载 NL2SQL 数据计划：优先 report_spec.plan.items，否则 analysis_agent_plan_*。"""
+    """
+    加载 NL2SQL 数据计划：
+    1) report_spec.plan.items
+    2) analysis_agent_plan_{type}
+    3) 兼容回退 analysis_plan_{type}（现网 / 地降 prompts 模板）
+    """
     ver = normalize_template_version(version or default_plan_version(analysis_type))
     spec = load_report_spec(analysis_type, version=ver)
     if spec is not None and spec.plan_tasks:
         return spec.plan_tasks
-    _scene, _ver, content = resolve_plan_template(
-        analysis_type, version=version, prompts=prompts
-    )
+    reg = prompts or PromptTemplateRegistry()
+    try:
+        _scene, _ver, content = resolve_plan_template(
+            analysis_type, version=version, prompts=reg
+        )
+    except ValueError:
+        # 回退现网 analysis_plan_*（如 analysis_plan_subsidence_quarterly）
+        content = ""
+        legacy_scene = f"analysis_plan_{analysis_type}"
+        default_ver = get_default_agent_template_version()
+        tried: list[str] = []
+        for v in (ver, default_ver, "v1"):
+            if not v or v in tried:
+                continue
+            tried.append(v)
+            tpl = reg.get_template(scene=legacy_scene, version=v)
+            if tpl and (tpl.content or "").strip():
+                content = tpl.content
+                break
+        if not content:
+            raise ValueError(f"missing_plan_template:analysis_agent_plan_{analysis_type}:{ver}")
     raw = json.loads(content)
     if not isinstance(raw, list):
         raise ValueError(f"invalid_plan_template:{analysis_type}:expected_list")

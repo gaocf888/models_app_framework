@@ -729,26 +729,37 @@ class AnalysisAgentConfig:
 
     enabled: bool = True
     use_langgraph: bool = True
-    use_react_agent: bool = True
+    use_react_agent: bool = False
+    narrative_streaming: bool = True
     checkpoint_backend: str = "memory"  # none | memory | redis（生产见 APP_ENV=production 默认 redis）
     checkpoint_redis_url: str | None = None
     checkpoint_namespace: str = "analysis_agent"
     session_store_backend: str = "memory"  # memory | redis（多 worker / HITL resume 须 redis）
     session_store_redis_url: str | None = None
     session_ttl_seconds: int = 3600
+    # 全量 acquire_data：mandatory 失败时的全局重试次数（兼容旧名 SLOT_NL2SQL_MAX_RETRIES）
     slot_nl2sql_max_retries: int = 2
+    acquire_max_retries: int = 2
+    acquire_max_parallel: int = 8
     slot_synth_max_retries: int = 1
     react_max_iterations: int = 8
     stream_chunk_chars: int = 256
-    enable_human_in_the_loop: bool = True
+    # T1：主路径去掉缺数 HITL；resume API 保留兼容
+    enable_human_in_the_loop: bool = False
     rag_top_k: int = 8
     gathered_json_max_chars: int = 12000
     narrative_max_tokens: int = 4096
     nl2sql_disable_qa_slot_replay: bool = True
+    quality_profile: str = "light"  # light | strict_like
     enable_structured_sse_events: bool = True
+    # 章合成并行度（1=串行；emit 仍按章保序；上限 3）
+    chapter_synth_max_parallel: int = 1
+    # memory | redis | elasticsearch/easysearch（生产默认见 APP_ENV→redis）
     trace_backend: str = "memory"
     trace_ttl_minutes: int = 1440
     trace_max_items: int = 5000
+    trace_es_hosts: str = ""
+    trace_es_index: str = "analysis_agent_trace_archive"
     plan_template_version: str = "analysis_agent_v1"
 
 
@@ -1584,7 +1595,8 @@ def _load_from_env() -> AppConfig:
     analysis_agent_cfg = AnalysisAgentConfig(
         enabled=os.getenv("ANALYSIS_AGENT_ENABLED", "true").lower() != "false",
         use_langgraph=os.getenv("ANALYSIS_AGENT_USE_LANGGRAPH", "true").lower() != "false",
-        use_react_agent=os.getenv("ANALYSIS_AGENT_USE_REACT_AGENT", "true").lower() != "false",
+        use_react_agent=os.getenv("ANALYSIS_AGENT_USE_REACT_AGENT", "false").lower() == "true",
+        narrative_streaming=os.getenv("ANALYSIS_AGENT_NARRATIVE_STREAMING", "true").lower() != "false",
         checkpoint_backend=(
             os.getenv("ANALYSIS_AGENT_CHECKPOINT_BACKEND", _aa_persist_default) or _aa_persist_default
         ).strip().lower(),
@@ -1600,19 +1612,49 @@ def _load_from_env() -> AppConfig:
         or None,
         session_ttl_seconds=max(60, int(os.getenv("ANALYSIS_AGENT_SESSION_TTL_SECONDS", "3600"))),
         slot_nl2sql_max_retries=max(0, int(os.getenv("ANALYSIS_AGENT_SLOT_NL2SQL_MAX_RETRIES", "2"))),
+        acquire_max_retries=max(
+            0,
+            int(
+                os.getenv(
+                    "ANALYSIS_AGENT_ACQUIRE_MAX_RETRIES",
+                    os.getenv("ANALYSIS_AGENT_SLOT_NL2SQL_MAX_RETRIES", "2"),
+                )
+            ),
+        ),
+        acquire_max_parallel=max(1, int(os.getenv("ANALYSIS_AGENT_ACQUIRE_MAX_PARALLEL", "8"))),
         slot_synth_max_retries=max(0, int(os.getenv("ANALYSIS_AGENT_SLOT_SYNTH_MAX_RETRIES", "1"))),
         react_max_iterations=max(1, int(os.getenv("ANALYSIS_AGENT_REACT_MAX_ITERATIONS", "8"))),
         stream_chunk_chars=max(1, int(os.getenv("ANALYSIS_AGENT_STREAM_CHUNK_CHARS", "256"))),
-        enable_human_in_the_loop=os.getenv("ANALYSIS_AGENT_ENABLE_HUMAN_IN_THE_LOOP", "true").lower() != "false",
+        enable_human_in_the_loop=os.getenv("ANALYSIS_AGENT_ENABLE_HUMAN_IN_THE_LOOP", "false").lower()
+        == "true",
         rag_top_k=max(1, int(os.getenv("ANALYSIS_AGENT_RAG_TOP_K", "8"))),
         gathered_json_max_chars=max(1000, int(os.getenv("ANALYSIS_AGENT_GATHERED_JSON_MAX_CHARS", "12000"))),
         narrative_max_tokens=max(256, int(os.getenv("ANALYSIS_AGENT_NARRATIVE_MAX_TOKENS", "4096"))),
         nl2sql_disable_qa_slot_replay=os.getenv("ANALYSIS_AGENT_NL2SQL_DISABLE_QA_SLOT_REPLAY", "true").lower()
         != "false",
+        quality_profile=(
+            os.getenv("ANALYSIS_AGENT_QUALITY_PROFILE", "light") or "light"
+        ).strip().lower(),
         enable_structured_sse_events=os.getenv("ANALYSIS_AGENT_ENABLE_STRUCTURED_SSE", "true").lower() != "false",
-        trace_backend=(os.getenv("ANALYSIS_AGENT_TRACE_BACKEND", "memory") or "memory").strip().lower(),
+        chapter_synth_max_parallel=max(
+            1,
+            min(3, int(os.getenv("ANALYSIS_AGENT_CHAPTER_SYNTH_MAX_PARALLEL", "1"))),
+        ),
+        trace_backend=(
+            os.getenv("ANALYSIS_AGENT_TRACE_BACKEND", _aa_persist_default) or _aa_persist_default
+        ).strip().lower(),
         trace_ttl_minutes=max(10, int(os.getenv("ANALYSIS_AGENT_TRACE_TTL_MINUTES", "1440"))),
         trace_max_items=max(100, int(os.getenv("ANALYSIS_AGENT_TRACE_MAX_ITEMS", "5000"))),
+        trace_es_hosts=(
+            os.getenv("ANALYSIS_AGENT_TRACE_ES_HOSTS")
+            or os.getenv("ANALYSIS_TRACE_ES_HOSTS")
+            or os.getenv("RAG_ES_HOSTS")
+            or ""
+        ).strip(),
+        trace_es_index=(
+            os.getenv("ANALYSIS_AGENT_TRACE_ES_INDEX", "analysis_agent_trace_archive")
+            or "analysis_agent_trace_archive"
+        ).strip(),
         plan_template_version=(
             os.getenv("ANALYSIS_AGENT_PLAN_TEMPLATE_VERSION", "analysis_agent_v1") or "analysis_agent_v1"
         ).strip(),

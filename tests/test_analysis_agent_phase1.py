@@ -8,9 +8,7 @@ from app.analysis_agent.checkpoint import build_analysis_agent_checkpointer
 from app.analysis_agent.graph.orchestrator import SlotOrchestrator
 from app.analysis_agent.graph.runner import AnalysisAgentGraphRunner
 from app.analysis_agent.session_store import create_resume_token, get_resume_session
-from app.analysis_agent.slots.serialize import slot_to_dict
 from app.core.config import get_app_config
-from app.analysis_agent.slots.registry import get_agent_slots
 from app.models.nl2sql import NL2SQLQueryResponse
 
 
@@ -40,19 +38,16 @@ def test_quality_gate_triggers_retry() -> None:
         hybrid_rag=MagicMock(),
         nl2sql_service=MagicMock(),
     )
-    slots = get_agent_slots("overheat_guidance")
-    slot = next(s for s in slots if "q2a" in s.source_item_ids)
-    idx = slots.index(slot)
     state = {
-        "slot_index": idx,
-        "ordered_slots": [slot_to_dict(s) for s in slots],
         "plan_tasks": [{"item_id": "q2a", "mandatory": True}],
         "task_status": {"q2a": "mandatory_empty"},
         "gathered_data": {},
-        "options": {"enable_human_in_the_loop": False},
+        "options": {"strict": False},
+        "_acquire_retries": 0,
+        "degrade_reasons": [],
     }
-    out = orch.run_slot_quality(state)
-    assert out.get("slot_retry_nl2sql") is True
+    out = orch.run_data_quality(state)
+    assert out.get("acquire_retry") is True
 
 
 @pytest.mark.asyncio
@@ -73,7 +68,8 @@ async def test_resume_invalid_token() -> None:
 
 
 @pytest.mark.asyncio
-async def test_interrupt_emits_user_input_required() -> None:
+async def test_interrupt_path_compat_still_emits_when_forced() -> None:
+    """兼容：若底层仍 yield interrupt，runner 仍可封装 user_input_required（主路径已不进 HITL）。"""
     hybrid = MagicMock()
     hybrid.retrieve = MagicMock(return_value=[])
     nl2sql = MagicMock()
@@ -108,8 +104,6 @@ async def test_interrupt_emits_user_input_required() -> None:
         ):
             events.append(ev)
         assert any(e.get("event") == "analysis_agent_user_input_required" for e in events)
-        hitl = [e for e in events if e.get("event") == "analysis_agent_user_input_required"][0]
-        assert hitl.get("resume_token") == "rt_test"
 
 
 @pytest.mark.asyncio

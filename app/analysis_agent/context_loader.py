@@ -18,6 +18,8 @@ class AnalysisRunContext:
     slots: list[AnalysisAgentSlot]
     report_title: str = ""
     from_report_spec: bool = False
+    report_tables: list[dict[str, Any]] | None = None
+    report_charts: list[dict[str, Any]] | None = None
 
 
 def load_analysis_run_context(
@@ -55,6 +57,8 @@ def load_analysis_run_context(
         slots=slots,
         report_title=spec.title,
         from_report_spec=True,
+        report_tables=[dict(x) for x in spec.tables],
+        report_charts=[dict(x) for x in spec.charts],
     )
 
 

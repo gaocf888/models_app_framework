@@ -1,0 +1,230 @@
+{
+  "schema_version": 2,
+  "title": "北京市地面沉降监测季度报告",
+  "description": "对齐季报 docx 目录：前言/全市平原/分区/分层标/重点区域/小结/附录；plan 内嵌；部署需 NL2SQL_BUSINESS_DOMAIN=subsidence",
+  "plan": {
+    "items": [
+      {
+        "item_id": "q1",
+        "purpose": "本季度分层标沉降主数据与站点规模",
+        "question": "在用户问题解析的季度时间窗内（本季度/上季度），从 t_data_wash_fcb 按 station_id、station_name 计算 total_settle 季初季末差值；JOIN t_station 输出 area、code。单条 SELECT，使用 @t_start/@t_end。",
+        "mandatory": true,
+        "dependency_ids": []
+      },
+      {
+        "item_id": "q2",
+        "purpose": "全市平原各行政区沉降汇总排名",
+        "question": "在同一季度时间窗内，fcb JOIN t_station，按 area 汇总：站点数、周期沉降量（total_settle 差值聚合，负值为下沉）、升降极值；按沉降量排序。单条 SELECT。",
+        "mandatory": true,
+        "dependency_ids": ["q1"]
+      },
+      {
+        "item_id": "q3",
+        "purpose": "分区沉降站点统计",
+        "question": "在同一季度时间窗内，按行政区 area 列出主要监测站点 station_id/station_name 的周期沉降量与站点数；可按 area 分组。单条 SELECT。",
+        "mandatory": true,
+        "dependency_ids": ["q1"]
+      },
+      {
+        "item_id": "q4",
+        "purpose": "分层标含水层沉降特征",
+        "question": "在同一季度时间窗内，从分层标相关表或 fcb 含层位字段的数据，按含水层/层位（layer 或同类列，以 catalog 为准）汇总周期沉降量或时序差值；输出层位名、站点数、沉降量。单条 SELECT。",
+        "mandatory": false,
+        "dependency_ids": ["q1"]
+      },
+      {
+        "item_id": "q5",
+        "purpose": "重点区域站点沉降表",
+        "question": "在同一季度时间窗内，选取沉降量绝对值靠前或用户问题提及的重点区/站点，输出 station_name、area、周期沉降量、相关极值。单条 SELECT，行数适中。",
+        "mandatory": false,
+        "dependency_ids": ["q1", "q2"]
+      },
+      {
+        "item_id": "q6",
+        "purpose": "附录全市站点清单",
+        "question": "从 t_station（可 LEFT JOIN 本季 fcb 有观测的站点）输出全市分层标/相关监测站点清单：station_id、station_name、area、code 等（以 catalog 为准）。单条 SELECT。",
+        "mandatory": false,
+        "dependency_ids": []
+      },
+      {
+        "item_id": "q7",
+        "purpose": "本季度地下水辅助",
+        "question": "在同一季度时间窗内，从 t_data_wash_dxswj 查询与 q1 相同 project_name 或 station_id 的 deep、elevation、data_time 序列或季初季末差值；可与 t_station JOIN。单条 SELECT。",
+        "mandatory": false,
+        "dependency_ids": ["q1"]
+      },
+      {
+        "item_id": "q8",
+        "purpose": "本季度气象辅助",
+        "question": "在同一季度时间窗内，从 t_data_wash_qxz 按 project_name 或站点关联字段汇总 temp、real_time_rain 等（以 catalog 列为准）的季均值或累计。单条 SELECT 聚合。",
+        "mandatory": false,
+        "dependency_ids": ["q1"]
+      }
+    ]
+  },
+  "chapters": [
+    {
+      "id": "ss_hdr",
+      "kind": "static_markdown",
+      "static_body": "# 北京市地面沉降监测季度报告\n\n"
+    },
+    {
+      "id": "ch_preface",
+      "kind": "llm_section",
+      "title": "一、前言",
+      "source_item_ids": ["q1", "q2"],
+      "outline": [
+        "监测任务与报告依据（简述）",
+        "本季监测站点规模与覆盖行政区",
+        "本季沉降极值与整体形势摘要"
+      ],
+      "constraints": [
+        "禁止编造数值；无数据写待补充",
+        "禁止 Markdown # 标题行",
+        "禁止出现 q1 等内部编号",
+        "沉降负值表示下沉，表述与数据符号一致"
+      ],
+      "narrative_instruction": "撰写前言：说明本季监测概况、站点规模与本季沉降总体特征；数值仅来自已取数结果。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    },
+    {
+      "id": "ch_city_overview",
+      "kind": "llm_section",
+      "title": "二、（一）全市平原沉降成果",
+      "source_item_ids": ["q2"],
+      "outline": [
+        "各行政区周期沉降量对比",
+        "沉降/回弹显著区域",
+        "结合已渲染统计图做简要解读"
+      ],
+      "constraints": ["禁止编造", "禁止 q 编号", "禁止 # 标题行"],
+      "narrative_instruction": "撰写全市平原沉降成果：按行政区解读沉降格局；关键柱状图已由程序渲染，勿重复制图。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    },
+    {
+      "id": "ch_district",
+      "kind": "llm_section",
+      "title": "二、（二）分区沉降成果",
+      "source_item_ids": ["q3"],
+      "outline": [
+        "分行政区叙述主要站点沉降特征",
+        "区内差异与需关注测点"
+      ],
+      "constraints": ["禁止编造", "禁止 q 编号"],
+      "narrative_instruction": "撰写分区沉降成果：按区概述站点统计结论，突出差异与关注点。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    },
+    {
+      "id": "ch_layer",
+      "kind": "llm_section",
+      "title": "二、（三）分层标（含水层）沉降特征",
+      "source_item_ids": ["q4"],
+      "outline": [
+        "各含水层/层位沉降特征",
+        "结合已渲染图/表做解读；无数据写待补充"
+      ],
+      "constraints": ["禁止编造", "禁止 q 编号"],
+      "narrative_instruction": "撰写分层标成果：概括各层沉降特征；图/表若已程序渲染则只做文字解读。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    },
+    {
+      "id": "ch_key_area",
+      "kind": "llm_section",
+      "title": "二、（四）重点区域",
+      "source_item_ids": ["q5"],
+      "outline": [
+        "重点区域/站点沉降表解读",
+        "风险与持续关注建议（须有数据依据）"
+      ],
+      "constraints": ["禁止编造", "禁止 q 编号"],
+      "narrative_instruction": "撰写重点区域：解读重点站表结论；无表数据则写待补充。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    },
+    {
+      "id": "ch_summary",
+      "kind": "llm_section",
+      "title": "二、（五）小结",
+      "source_item_ids": ["q1", "q2", "q3", "q4", "q5"],
+      "outline": [
+        "本季沉降总体结论",
+        "重点关注区域与后续监测建议"
+      ],
+      "constraints": ["禁止编造", "禁止 q 编号", "建议须可执行"],
+      "narrative_instruction": "撰写小结：归纳本季全市与重点区域结论，给出简要监测建议。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false,
+      "stream_live": true
+    },
+    {
+      "id": "ch_appendix",
+      "kind": "llm_section",
+      "title": "附录",
+      "source_item_ids": ["q6", "q7", "q8"],
+      "outline": [
+        "说明附录站点清单用途",
+        "可选简述地下水/气象辅助数据要点"
+      ],
+      "constraints": ["禁止编造", "禁止 q 编号", "勿逐行抄写全表"],
+      "narrative_instruction": "撰写附录说明：站点清单已由程序表渲染；可补充环境辅助数据要点。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    }
+  ],
+  "tables": [
+    {
+      "id": "t_city_area_rank",
+      "title": "全市平原各行政区沉降统计表",
+      "source_item_ids": ["q2"],
+      "columns": [],
+      "table_kind": "classification",
+      "attach_to_chapter": "ch_city_overview",
+      "max_rows": 40
+    },
+    {
+      "id": "t_key_area_stations",
+      "title": "重点区域站点沉降表",
+      "source_item_ids": ["q5"],
+      "columns": [],
+      "table_kind": "raw",
+      "attach_to_chapter": "ch_key_area",
+      "max_rows": 50
+    },
+    {
+      "id": "t_station_catalog",
+      "title": "全市监测站点清单",
+      "source_item_ids": ["q6"],
+      "columns": [],
+      "table_kind": "raw",
+      "attach_to_chapter": "ch_appendix",
+      "max_rows": 80
+    }
+  ],
+  "charts": [
+    {
+      "id": "c_city_area_bar",
+      "title": "全市平原各行政区沉降统计图",
+      "chart_type": "bar",
+      "source_item_ids": ["q2"],
+      "x_field": "",
+      "y_field": "",
+      "attach_to_chapter": "ch_city_overview",
+      "max_points": 40
+    },
+    {
+      "id": "c_layer_line",
+      "title": "分层标含水层沉降特征图",
+      "chart_type": "line",
+      "source_item_ids": ["q4"],
+      "x_field": "",
+      "y_field": "",
+      "series_field": "",
+      "attach_to_chapter": "ch_layer",
+      "max_points": 60
+    }
+  ]
+}

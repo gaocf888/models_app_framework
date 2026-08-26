@@ -104,31 +104,49 @@ def _tool_emit_markdown_table(payload: str) -> str:
 def _tool_emit_chart(payload: str) -> str:
     """
     登记本章图表。入参 JSON：
-    {"chart_type":"bar|pie", "title":"...", "columns":[...], "rows":[...]}
+    {"chart_type":"bar|pie|line", "title":"...", "columns":[...], "rows":[...],
+     可选 x_field/y_field/series_field}
     或 {"chart_type":"bar", "table": {已有 emit_markdown_table 结构}}
     """
+    from app.analysis_agent.renderers.charts_extra import chart_from_config
+
     data = _parse_json_arg(payload)
     chart_type = str(data.get("chart_type") or "bar").lower()
+    if chart_type not in ("pie", "bar", "line"):
+        chart_type = "bar"
     title = str(data.get("title") or "")
     table = data.get("table")
-    if not isinstance(table, dict):
+    rows: list = []
+    if isinstance(table, dict):
+        rows = list(table.get("rows") or [])
+    else:
         columns = data.get("columns") or []
-        rows = data.get("rows") or []
+        raw_rows = data.get("rows")
+        rows = raw_rows if isinstance(raw_rows, list) else []
         _, table = emit_table_from_rows(
             columns=[str(c) for c in columns] if isinstance(columns, list) else [],
-            rows=rows if isinstance(rows, list) else [],
+            rows=rows,
             title=title,
             table_id=str(data.get("table_id") or "chart_src"),
         )
-    table_kind = "proportion" if chart_type == "pie" else "classification"
-    if chart_type not in ("pie", "bar"):
-        chart_type = "bar"
-    ch = chart_from_table(
-        table_id=str(table.get("id") or "chart"),
-        table_kind=table_kind,
-        table=table,
+        rows = list(table.get("rows") or [])
+    ch = chart_from_config(
+        chart_id=str(data.get("id") or table.get("id") or "chart"),
+        chart_type=chart_type,
         title=title or str(table.get("title") or ""),
+        rows=rows if isinstance(rows, list) else [],
+        x_field=str(data.get("x_field") or "").strip(),
+        y_field=str(data.get("y_field") or "").strip(),
+        series_field=str(data.get("series_field") or "").strip(),
     )
+    if ch is None and chart_type != "line":
+        table_kind = "proportion" if chart_type == "pie" else "classification"
+        ch = chart_from_table(
+            table_id=str(table.get("id") or "chart"),
+            table_kind=table_kind,
+            table=table,
+            title=title or str(table.get("title") or ""),
+        )
     if ch is None:
         return "（无法生成图表：数据不足或列类型不匹配）"
     art = _artifacts()

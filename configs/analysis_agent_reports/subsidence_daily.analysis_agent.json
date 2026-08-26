@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "title": "北京市地面沉降监测日报（占位）",
+  "description": "P1 占位骨架；完整版式待对齐日报模板。部署需 NL2SQL_BUSINESS_DOMAIN=subsidence",
+  "plan": {
+    "items": [
+      {
+        "item_id": "q1",
+        "purpose": "当日分层标沉降主数据",
+        "question": "在用户问题解析的日时间窗内（今天/昨天），从 t_data_wash_fcb 按 station_id、station_name 取 total_settle 相关日值或日差；JOIN t_station 输出 area。单条 SELECT，使用 @t_start/@t_end。",
+        "mandatory": true,
+        "dependency_ids": []
+      },
+      {
+        "item_id": "q2",
+        "purpose": "当日行政区沉降概要",
+        "question": "在同一日时间窗内，fcb JOIN t_station，按 area 汇总站点数与沉降量。单条 SELECT。",
+        "mandatory": true,
+        "dependency_ids": ["q1"]
+      }
+    ]
+  },
+  "chapters": [
+    {
+      "id": "ss_hdr",
+      "kind": "static_markdown",
+      "static_body": "# 北京市地面沉降监测日报\n\n"
+    },
+    {
+      "id": "ch_overview",
+      "kind": "llm_section",
+      "title": "一、当日概况",
+      "source_item_ids": ["q1", "q2"],
+      "outline": ["监测覆盖与当日沉降总体形势"],
+      "constraints": ["禁止编造", "禁止 q 编号", "禁止 # 标题行"],
+      "narrative_instruction": "简述当日沉降监测概况与总体形势；无数据写待补充。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    },
+    {
+      "id": "ch_detail",
+      "kind": "llm_section",
+      "title": "二、分区与站点要点",
+      "source_item_ids": ["q2"],
+      "outline": ["行政区对比", "需关注站点"],
+      "constraints": ["禁止编造", "禁止 q 编号"],
+      "narrative_instruction": "按行政区概述当日要点；结合已渲染表图解读。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    }
+  ],
+  "tables": [
+    {
+      "id": "t_daily_area",
+      "title": "当日行政区沉降概要表",
+      "source_item_ids": ["q2"],
+      "attach_to_chapter": "ch_detail",
+      "max_rows": 40
+    }
+  ],
+  "charts": [
+    {
+      "id": "c_daily_area_bar",
+      "title": "当日行政区沉降对比图",
+      "chart_type": "bar",
+      "source_item_ids": ["q2"],
+      "attach_to_chapter": "ch_detail",
+      "max_points": 40
+    }
+  ]
+}

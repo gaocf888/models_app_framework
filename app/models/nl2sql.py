@@ -58,6 +58,13 @@ class NL2SQLQueryRequest(BaseModel):
         default=None,
         description="可选：追加到 NL2SQL 生成 prompt 的场景说明（如智能客服 SELECT 可读性约束）。",
     )
+    disable_qa_slot_replay: bool | None = Field(
+        default=None,
+        description=(
+            "可选：为 true 时跳过 QA 槽位 strict SQL 回放（仍可走 RAG 召回示例）。"
+            "综合分析智能体默认由 ANALYSIS_AGENT_NL2SQL_DISABLE_QA_SLOT_REPLAY 注入。"
+        ),
+    )
 
     @field_validator("user_id")
     @classmethod

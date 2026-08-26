@@ -48,7 +48,8 @@ def slot_from_dict(raw: dict[str, Any]) -> AnalysisAgentSlot:
     tk = raw.get("table_kind")
     table_kind: TableKind | None = tk if tk in ("raw", "classification", "proportion") else None
     allowed = _as_tuple_str(raw.get("allowed_outputs"))
-    use_emit = bool(raw.get("use_emit_tools", kind == "llm_section" or bool(allowed)))
+    # 默认 false：仅显式 use_emit_tools=true 的工具章走 ReAct/emit
+    use_emit = bool(raw.get("use_emit_tools", False))
 
     return AnalysisAgentSlot(
         id=str(raw["id"]),

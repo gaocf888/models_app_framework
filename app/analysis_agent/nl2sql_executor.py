@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.models.nl2sql import NL2SQLQueryRequest
 from app.nl2sql.errors import NL2SQLExecutionError
@@ -30,10 +31,15 @@ async def run_nl2sql_for_plan_item(
     plan_template_version: str,
     analysis_request_id: str,
     query: str,
+    disable_qa_slot_replay: bool | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """经 NL2SQL 公共基座取数：五元组对齐 QA 沉淀与 RAG 召回。"""
     t0 = time.perf_counter()
     include_intent = trace_include_question_intent()
+    if disable_qa_slot_replay is None:
+        disable_qa_slot_replay = bool(
+            get_app_config().analysis_agent.nl2sql_disable_qa_slot_replay
+        )
     try:
         resp = await nl2sql.query(
             NL2SQLQueryRequest(
@@ -45,6 +51,7 @@ async def run_nl2sql_for_plan_item(
                 plan_item_id=item_id,
                 plan_template_version=plan_template_version,
                 time_intent_text=(query or "").strip(),
+                disable_qa_slot_replay=disable_qa_slot_replay,
             ),
             record_conversation=False,
             include_parsed_intent=include_intent,
@@ -72,6 +79,8 @@ async def run_nl2sql_for_plan_item(
         "plan_template_version": plan_template_version,
         "cache_hit": False,
         "question_intent": resp.parsed_intent,
+        "disable_qa_slot_replay": bool(disable_qa_slot_replay),
+        "time_intent_text": (query or "").strip()[:200],
     }
     return rows, call_rec
 

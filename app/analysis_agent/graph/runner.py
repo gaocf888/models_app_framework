@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator
 
 from app.analysis_agent.checkpoint import graph_configurable
+from app.analysis_agent.context_loader import load_analysis_run_context
 from app.analysis_agent.graph.builder import build_analysis_agent_graph
 from app.analysis_agent.graph.orchestrator import SlotOrchestrator
 from app.analysis_agent.graph.state import AnalysisAgentState
-from app.analysis_agent.context_loader import load_analysis_run_context
 from app.analysis_agent.plans.loader import effective_plan_version
 from app.analysis_agent.session_store import create_resume_token, delete_resume_session, get_resume_session
 from app.analysis_agent.slots.registry import registry_available
@@ -22,14 +23,24 @@ from app.core.metrics import ANALYSIS_AGENT_REQUEST_COUNT
 from app.llm.client import VLLMHttpClient
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
+from app.services.analysis_agent_stream_control import AnalysisAgentStreamControl
 from app.services.nl2sql_service import NL2SQLService
 
 logger = get_logger(__name__)
+
+CancelChecker = Callable[[], Awaitable[bool]]
 
 
 def _new_request_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     return f"aa_{ts}_{uuid.uuid4().hex[:8]}"
+
+
+def _result_status_label(result: dict[str, Any]) -> str:
+    status = str((result.get("trace") or {}).get("status") or "success")
+    if status in {"aborted", "failed"}:
+        return status
+    return "success"
 
 
 class AnalysisAgentGraphRunner:
@@ -46,6 +57,7 @@ class AnalysisAgentGraphRunner:
         prompt_registry: PromptTemplateRegistry | None = None,
         hybrid_rag: HybridRAGService | None = None,
         nl2sql_service: NL2SQLService | None = None,
+        stream_control: AnalysisAgentStreamControl | None = None,
     ) -> None:
         self._orch = SlotOrchestrator(
             conv_manager=conv_manager,
@@ -55,10 +67,22 @@ class AnalysisAgentGraphRunner:
             nl2sql_service=nl2sql_service,
         )
         self._cfg = get_app_config().analysis_agent
+        self._stream_ctrl = stream_control or AnalysisAgentStreamControl()
         self._graph = None
         self._checkpointer = None
         if self._cfg.use_langgraph:
             self._graph, self._checkpointer = build_analysis_agent_graph(self._orch)
+
+    def _build_stream_cancel_checker(
+        self, user_id: str, session_id: str, stream_id: str | None
+    ) -> CancelChecker | None:
+        if not stream_id:
+            return None
+
+        async def _check() -> bool:
+            return await self._stream_ctrl.is_cancelled(user_id, session_id, stream_id)
+
+        return _check
 
     def _build_initial_state(
         self,
@@ -69,9 +93,11 @@ class AnalysisAgentGraphRunner:
         analysis_type: str,
         query: str,
         options: dict[str, Any],
+        stream_id: str | None = None,
+        cancel_checker: CancelChecker | None = None,
     ) -> AnalysisAgentState:
         thread_id = request_id
-        return {
+        state: AnalysisAgentState = {
             "request_id": request_id,
             "user_id": user_id,
             "session_id": session_id,
@@ -81,6 +107,11 @@ class AnalysisAgentGraphRunner:
             "_checkpoint_thread_id": thread_id,
             "pending_events": [],
         }
+        if stream_id:
+            state["_stream_id"] = stream_id
+        if cancel_checker is not None:
+            state["_cancel_checker"] = cancel_checker
+        return state
 
     def _drain_pending(self, update: dict[str, Any]) -> list[dict[str, Any]]:
         events = list(update.get("pending_events") or [])
@@ -94,9 +125,26 @@ class AnalysisAgentGraphRunner:
         config: dict[str, Any],
     ) -> AsyncIterator[dict[str, Any]]:
         assert self._graph is not None
-        async for chunk in self._graph.astream(input_state, config, stream_mode="updates"):
-            if not isinstance(chunk, dict):
+        # updates：节点结束 pending_events；custom：synthesize 中 get_stream_writer 真流式
+        try:
+            stream = self._graph.astream(
+                input_state, config, stream_mode=["updates", "custom"]
+            )
+        except TypeError:
+            stream = self._graph.astream(input_state, config, stream_mode="updates")
+
+        async for item in stream:
+            mode = "updates"
+            chunk: Any = item
+            if isinstance(item, tuple) and len(item) == 2:
+                mode, chunk = item
+            if mode == "custom":
+                if isinstance(chunk, dict) and chunk.get("event"):
+                    yield chunk
                 continue
+            if mode != "updates" or not isinstance(chunk, dict):
+                continue
+
             if "__interrupt__" in chunk:
                 for intr in chunk["__interrupt__"]:
                     payload = intr.value if hasattr(intr, "value") else intr
@@ -146,9 +194,16 @@ class AnalysisAgentGraphRunner:
         opts = dict(options or {})
         opts["plan_template_version"] = effective_plan_version(analysis_type, opts)
         rid = request_id or _new_request_id()
+        stream_id = self._stream_ctrl.begin_stream(user_id, session_id)
+        cancel_checker = self._build_stream_cancel_checker(user_id, session_id, stream_id)
         ANALYSIS_AGENT_REQUEST_COUNT.labels(
             analysis_type=analysis_type, status="started"
         ).inc()
+        yield {
+            "event": "started",
+            "stream_id": stream_id,
+            "request_id": rid,
+        }
         initial = self._build_initial_state(
             request_id=rid,
             user_id=user_id,
@@ -156,18 +211,20 @@ class AnalysisAgentGraphRunner:
             analysis_type=analysis_type,
             query=query,
             options=opts,
+            stream_id=stream_id,
+            cancel_checker=cancel_checker,
         )
 
-        if self._graph is None or self._checkpointer is None:
-            async for ev in self._iter_sequential_fallback(
-                initial=initial,
-                on_complete=on_complete,
-            ):
-                yield ev
-            return
-
-        config = graph_configurable(rid)
         try:
+            if self._graph is None or self._checkpointer is None:
+                async for ev in self._iter_sequential_fallback(
+                    initial=initial,
+                    on_complete=on_complete,
+                ):
+                    yield ev
+                return
+
+            config = graph_configurable(rid)
             async for ev in self._yield_graph_updates(input_state=initial, config=config):
                 if "_interrupt_payload" in ev:
                     payload = ev["_interrupt_payload"]
@@ -191,8 +248,9 @@ class AnalysisAgentGraphRunner:
                 yield ev
                 if ev.get("event") == "analysis_agent_finished":
                     result = ev.get("result") or {}
+                    status_label = _result_status_label(result)
                     ANALYSIS_AGENT_REQUEST_COUNT.labels(
-                        analysis_type=analysis_type, status="success"
+                        analysis_type=analysis_type, status=status_label
                     ).inc()
                     if on_complete:
                         maybe = on_complete(result)
@@ -205,6 +263,8 @@ class AnalysisAgentGraphRunner:
                 analysis_type=analysis_type, status="failed"
             ).inc()
             yield {"event": "analysis_agent_error", "message": str(exc)}
+        finally:
+            await self._stream_ctrl.clear_stream(user_id, session_id, stream_id)
 
     async def iter_resume_stream_events(
         self,
@@ -332,6 +392,9 @@ class AnalysisAgentGraphRunner:
         if ctx.report_title:
             state["report_title"] = ctx.report_title
         state["slot_index"] = 0
+        state["slots_total"] = len(slots)
+        state["report_tables"] = list(ctx.report_tables or [])
+        state["report_charts"] = list(ctx.report_charts or [])
         state.setdefault("gathered_data", {})
         state.setdefault("task_status", {})
         state.setdefault("nl2sql_calls", [])
@@ -359,29 +422,121 @@ class AnalysisAgentGraphRunner:
         }
 
         t0 = time.perf_counter()
-        for idx in range(len(slots)):
-            state["slot_index"] = idx
-            nl_events = await self._orch._acquire_slot_data(
-                state, self._orch.current_slot(state), plan_tasks
-            )
-            for ev in nl_events:
+        # T1：全量取数 → 质量门（可重试）→ 按章合成（读缓存）
+        state.setdefault("degrade_reasons", [])
+        state.setdefault("_acquire_retries", 0)
+        while True:
+            if await self._orch._is_cancelled(state):
+                state["abort_requested"] = True
+                state["error"] = "user_cancelled"
+                break
+            await self._orch.run_acquire_data(state)
+            for ev in list(state.pop("pending_events", []) or []):
                 yield ev
-            out, chunks = await self._orch._synthesize_slot(state, self._orch.current_slot(state))
-            for ev in self._orch._emit_slot_output(state, self._orch.current_slot(state), out, chunks, idx):
+            if state.get("abort_requested") and state.get("error") == "user_cancelled":
+                break
+            self._orch.run_data_quality(state)
+            if state.get("abort_requested"):
+                break
+            if state.get("acquire_retry"):
+                continue
+            break
+
+        if state.get("abort_requested"):
+            result = self._orch.build_final_result(state)
+            result["trace"]["total_ms"] = int((time.perf_counter() - t0) * 1000)
+            result["trace"]["orchestrator"] = "sequential_fallback"
+            state["_final_result"] = result
+            if state.get("error") == "user_cancelled":
+                yield {
+                    "event": "analysis_agent_cancelled",
+                    "request_id": state["request_id"],
+                    "terminate_reason": "user_cancelled",
+                    "stream_id": state.get("_stream_id"),
+                }
+                status_label = "aborted"
+            else:
+                yield {
+                    "event": "analysis_agent_error",
+                    "request_id": state["request_id"],
+                    "message": state.get("error"),
+                }
+                status_label = "failed"
+            yield {
+                "event": "analysis_agent_report_complete",
+                "request_id": state["request_id"],
+                "summary_length": len(result.get("summary") or ""),
+                "structured_report": result.get("structured_report"),
+                "degrade_reasons": result.get("degrade_reasons") or [],
+            }
+            yield {
+                "event": "analysis_agent_finished",
+                "request_id": state["request_id"],
+                "result": result,
+            }
+            ANALYSIS_AGENT_REQUEST_COUNT.labels(
+                analysis_type=analysis_type, status=status_label
+            ).inc()
+            if on_complete:
+                maybe = on_complete(result)
+                if asyncio.iscoroutine(maybe):
+                    await maybe
+            return
+
+        parallel = self._orch._resolve_chapter_synth_parallel(opts)
+        if parallel > 1:
+            await self._orch.run_chapter_pipeline(state)
+            for ev in list(state.pop("pending_events", []) or []):
                 yield ev
+        else:
+            for idx in range(len(slots)):
+                if await self._orch._is_cancelled(state):
+                    state["abort_requested"] = True
+                    state["error"] = "user_cancelled"
+                    break
+                state["slot_index"] = idx
+                self._orch.run_chapter_prepare(state)
+                for ev in list(state.pop("pending_events", []) or []):
+                    yield ev
+                await self._orch.run_chapter_synthesize(state)
+                for ev in list(state.pop("pending_events", []) or []):
+                    yield ev
+                if state.get("abort_requested"):
+                    break
+                self._orch.run_chapter_emit(state)
+                for ev in list(state.pop("pending_events", []) or []):
+                    yield ev
+                if await self._orch._is_cancelled(state):
+                    state["abort_requested"] = True
+                    state["error"] = "user_cancelled"
+                    break
 
         result = self._orch.build_final_result(state)
         result["trace"]["total_ms"] = int((time.perf_counter() - t0) * 1000)
         result["trace"]["orchestrator"] = "sequential_fallback"
+        state["_final_result"] = result
+        if state.get("error") == "user_cancelled":
+            yield {
+                "event": "analysis_agent_cancelled",
+                "request_id": state["request_id"],
+                "terminate_reason": "user_cancelled",
+                "stream_id": state.get("_stream_id"),
+            }
+            status_label = "aborted"
+        elif state.get("abort_requested") and state.get("error"):
+            status_label = "failed"
+        else:
+            status_label = "success"
         yield {
             "event": "analysis_agent_report_complete",
             "request_id": state["request_id"],
             "summary_length": len(result.get("summary") or ""),
             "structured_report": result.get("structured_report"),
+            "degrade_reasons": result.get("degrade_reasons") or [],
         }
         yield {"event": "analysis_agent_finished", "request_id": state["request_id"], "result": result}
         ANALYSIS_AGENT_REQUEST_COUNT.labels(
-            analysis_type=analysis_type, status="success"
+            analysis_type=analysis_type, status=status_label
         ).inc()
         if on_complete:
             maybe = on_complete(result)

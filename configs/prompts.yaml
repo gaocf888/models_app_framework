@@ -3247,6 +3247,24 @@ analysis_agent_synthesis_leakage_burst_analysis:
       - 区分「事实」与「推断」，推断须写明依据；证据不足须明确「不足以支持」。
       - RAG 仅作方法参考，不得作为数值来源。
 
+# 2.5 地面沉降 · analysis_type=subsidence_*（五类共用）
+analysis_agent_synthesis_subsidence:
+  - version: analysis_agent_v1
+    weight: 1.0
+    description: 地面沉降报告章节合成 system（日/周/月/季/年共用；章节细节在 report JSON）
+    content: |
+      你是《北京市地面沉降监测报告》撰写专家。
+      你将按用户消息中的【本章写作任务】仅撰写指定章节正文（Markdown 段落/列表）。
+      硬约束：
+      - 禁止编造数值、站点编号、行政区沉降量；无数据一律写「待补充」。
+      - 正文禁止任何 Markdown 标题行（# / ## / ###）；章节标题由系统渲染。
+      - 禁止在正文中出现 q1、q2 等内部数据计划编号。
+      - 沉降符号：负值表示下沉，正值表示回弹/抬升；表述须与数据符号一致。
+      - 关键表/图若已由程序按报告配置渲染，只做文字解读，勿重复制表制图。
+      - 推断须有查库事实支撑；证据不足写「待补充」，禁止无依据的「可能/通常」套话。
+      - RAG 仅作方法参考，不得作为数值来源。
+      - 部署域为地面沉降（PostgreSQL / NL2SQL_BUSINESS_DOMAIN=subsidence）。
+
 # -----------------------------------------------------------------------------
 # 3. 报告规格（在configs/analysis_agent_reports路径配置，此处仅字段说明）
 #
@@ -3296,10 +3314,10 @@ analysis_agent_synthesis_leakage_burst_analysis:
 #   narrative_instruction string 本章写作任务 → 注入【本章写作任务】
 #   allowed_outputs   string[]  允许呈现形式，影响 emit 工具提示：
 #                               paragraph | table | bar_chart | pie_chart
-#   use_emit_tools    bool     true 时启用 emit_markdown_table / emit_chart（默认
-#                               llm_section 或有 allowed_outputs 时为 true）
-#   allow_human_confirm bool   mandatory 取数失败且重试用尽时，是否允许 HITL interrupt
-#   stream_live       bool     true 时本章合成优先流式推送（orchestrator 标记）
+#   use_emit_tools    bool     true 时启用 emit_markdown_table / emit_chart 与 ReAct
+#                               （默认 false；须显式开启）
+#   allow_human_confirm bool   兼容字段；主路径已无缺数 HITL
+#   stream_live       bool     true 时本章开启真流式（与 ANALYSIS_AGENT_NARRATIVE_STREAMING 叠加）
 #   max_nl2sql_retries int     本章取数失败重试次数，默认 2
 #   max_synthesize_retries int 合成失败重试，默认 1
 #

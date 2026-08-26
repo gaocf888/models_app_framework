@@ -268,7 +268,7 @@
     <p class="sub">
       SSE 事件前缀 <code>analysis_agent_*</code>：按章节推送
       <code>slot_start</code> → <code>nl2sql_done</code> → <code>summary_delta</code> →
-      <code>table_payload</code> / <code>chart_payload</code> → <code>slot_complete</code>，末帧
+      <code>table_payload</code> / <code>chart_payload</code> → <code>chapter_complete</code>，末帧
       <code>report_complete</code> + <code>finished</code>。
       需 CORS 与 <code>Authorization: Bearer &lt;SERVICE_API_KEY&gt;</code>。
     </p>
@@ -298,6 +298,11 @@
           <option value="maintenance_strategy">maintenance_strategy（检修策略）</option>
           <option value="four_tube_health_interpretation">four_tube_health_interpretation（四管健康）</option>
           <option value="leakage_burst_analysis">leakage_burst_analysis（泄爆分析）</option>
+          <option value="subsidence_quarterly">subsidence_quarterly（地降季报）</option>
+          <option value="subsidence_daily">subsidence_daily（地降日报·占位）</option>
+          <option value="subsidence_weekly">subsidence_weekly（地降周报·占位）</option>
+          <option value="subsidence_monthly">subsidence_monthly（地降月报·占位）</option>
+          <option value="subsidence_yearly">subsidence_yearly（地降年报·占位）</option>
         </select>
         <div id="typeDesc" class="type-desc"></div>
         <div class="type-pills" id="typePills"></div>
@@ -394,6 +399,31 @@
       label: "泄爆分析",
       desc: "结论摘要 → 履历 → 依据原因 → 处置建议；plan q1～q6。",
       demo: "分析 2 号炉水冷壁近一年泄爆与泄漏事件原因，归纳高发区域，并给出运行防控与扩检建议。",
+    },
+    subsidence_quarterly: {
+      label: "地降季报",
+      desc: "季报实装：前言/全市平原/分区/分层标/重点/小结/附录；内嵌 plan q1～q8 + 配置化表图。需 NL2SQL_BUSINESS_DOMAIN=subsidence。",
+      demo: "请生成北京市地面沉降监测季度报告：覆盖2024年第三季度全市平原各区沉降成果、分区与分层标特征，并列出重点区域关注点。",
+    },
+    subsidence_daily: {
+      label: "地降日报",
+      desc: "P1 占位骨架（概况+分区）；需 NL2SQL_BUSINESS_DOMAIN=subsidence。",
+      demo: "请生成昨日北京市地面沉降监测日报概要。",
+    },
+    subsidence_weekly: {
+      label: "地降周报",
+      desc: "P1 占位骨架；需 NL2SQL_BUSINESS_DOMAIN=subsidence。",
+      demo: "请生成本周北京市地面沉降监测周报概要。",
+    },
+    subsidence_monthly: {
+      label: "地降月报",
+      desc: "P1 占位骨架；需 NL2SQL_BUSINESS_DOMAIN=subsidence。",
+      demo: "请生成上月北京市地面沉降监测月报概要。",
+    },
+    subsidence_yearly: {
+      label: "地降年报",
+      desc: "P1 占位骨架；需 NL2SQL_BUSINESS_DOMAIN=subsidence。",
+      demo: "请生成去年北京市地面沉降监测年报概要。",
     },
   };
 
@@ -856,7 +886,7 @@
       renderEchartsChart(ev.chart);
       return;
     }
-    if (kind === "analysis_agent_slot_complete") {
+    if (kind === "analysis_agent_chapter_complete" || kind === "analysis_agent_slot_complete") {
       setSlotLoading(false);
       appendStatus("章节完成: " + (ev.slot_id || ""));
       return;

@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "title": "北京市地面沉降监测周报（占位）",
+  "description": "P1 占位骨架；完整版式待对齐周报模板。部署需 NL2SQL_BUSINESS_DOMAIN=subsidence",
+  "plan": {
+    "items": [
+      {
+        "item_id": "q1",
+        "purpose": "本周分层标沉降主数据",
+        "question": "在用户问题解析的周时间窗内（本周/上周），从 t_data_wash_fcb 按 station_id、station_name 计算 total_settle 周初周末差值；JOIN t_station 输出 area。单条 SELECT，使用 @t_start/@t_end。",
+        "mandatory": true,
+        "dependency_ids": []
+      },
+      {
+        "item_id": "q2",
+        "purpose": "本周行政区沉降汇总",
+        "question": "在同一周时间窗内，fcb JOIN t_station，按 area 汇总站点数与周期沉降量并排序。单条 SELECT。",
+        "mandatory": true,
+        "dependency_ids": ["q1"]
+      }
+    ]
+  },
+  "chapters": [
+    {
+      "id": "ss_hdr",
+      "kind": "static_markdown",
+      "static_body": "# 北京市地面沉降监测周报\n\n"
+    },
+    {
+      "id": "ch_overview",
+      "kind": "llm_section",
+      "title": "一、本周概况",
+      "source_item_ids": ["q1", "q2"],
+      "outline": ["本周监测覆盖与沉降总体形势"],
+      "constraints": ["禁止编造", "禁止 q 编号", "禁止 # 标题行"],
+      "narrative_instruction": "简述本周沉降监测概况；无数据写待补充。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    },
+    {
+      "id": "ch_detail",
+      "kind": "llm_section",
+      "title": "二、分区对比与关注点",
+      "source_item_ids": ["q2"],
+      "outline": ["行政区对比", "需关注区域"],
+      "constraints": ["禁止编造", "禁止 q 编号"],
+      "narrative_instruction": "解读本周分区对比；结合已渲染表图。",
+      "allowed_outputs": ["paragraph"],
+      "use_emit_tools": false
+    }
+  ],
+  "tables": [
+    {
+      "id": "t_weekly_area",
+      "title": "本周行政区沉降汇总表",
+      "source_item_ids": ["q2"],
+      "attach_to_chapter": "ch_detail",
+      "max_rows": 40
+    }
+  ],
+  "charts": [
+    {
+      "id": "c_weekly_area_bar",
+      "title": "本周行政区沉降对比图",
+      "chart_type": "bar",
+      "source_item_ids": ["q2"],
+      "attach_to_chapter": "ch_detail",
+      "max_points": 40
+    }
+  ]
+}

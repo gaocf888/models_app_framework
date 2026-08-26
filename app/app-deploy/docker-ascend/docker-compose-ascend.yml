@@ -50,7 +50,7 @@ services:
       retries: 5
 
   minio:
-    image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/minio/minio:latest
+    image: minio/minio:latest
     container_name: models-app-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -87,7 +87,11 @@ services:
     command:
       - sh
       - -c
-      - exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
+      - |
+        if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then . /usr/local/Ascend/ascend-toolkit/set_env.sh; fi
+        if [ -f /usr/local/Ascend/cann/set_env.sh ]; then . /usr/local/Ascend/cann/set_env.sh; fi
+        export PYTHONPATH=/workspace$${PYTHONPATH:+:$$PYTHONPATH}
+        exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
     ports:
       - "${APP_PORT:-8083}:8083"
     extra_hosts:

@@ -23,7 +23,7 @@ def test_slot_from_dict_llm_section() -> None:
         }
     )
     assert slot.kind == "llm_section"
-    assert slot.use_emit_tools is True
+    assert slot.use_emit_tools is False
     assert slot.outline == ("要点1",)
 
 

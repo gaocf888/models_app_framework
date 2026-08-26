@@ -140,5 +140,39 @@
       "allowed_outputs": ["paragraph", "table", "bar_chart"],
       "use_emit_tools": true
     }
+  ],
+  "tables": [
+    {
+      "id": "t_ch3_region_stats",
+      "title": "超温区域汇总统计表",
+      "source_item_ids": ["q3a"],
+      "columns": [],
+      "table_kind": "classification",
+      "attach_to_chapter": "ch3_stats",
+      "max_rows": 40
+    }
+  ],
+  "charts": [
+    {
+      "id": "c_ch3_region_bar",
+      "title": "超温区域对比图",
+      "chart_type": "bar",
+      "source_item_ids": ["q3a"],
+      "x_field": "",
+      "y_field": "",
+      "attach_to_chapter": "ch3_stats",
+      "max_points": 40
+    },
+    {
+      "id": "c_ch4_wall_temp_line",
+      "title": "壁温时序折线图",
+      "chart_type": "line",
+      "source_item_ids": ["q4a"],
+      "x_field": "",
+      "y_field": "",
+      "series_field": "",
+      "attach_to_chapter": "ch4_correlation",
+      "max_points": 60
+    }
   ]
 }

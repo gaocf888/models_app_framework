@@ -83,6 +83,7 @@ class NL2SQLService:
             sql_gen_extra_hint=req.sql_gen_extra_hint,
             on_link_failure=req.on_link_failure,
             structured_filters=req.structured_filters,
+            disable_qa_slot_replay=req.disable_qa_slot_replay,
         )
         rows: list = []
         execute_succeeded = False
