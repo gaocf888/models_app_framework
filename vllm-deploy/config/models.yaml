@@ -330,6 +330,41 @@ presets:
 
   # ==================== 通义千问 3 视觉语言模型 ====================
 
+  # Qwen3-VL-8B 多模态（310P；vllm-ascend 官方推荐 float16 + max_model_len=16384）
+  # 权重：Qwen/Qwen3-VL-8B-Instruct → ./models/Qwen3-VL-8B-Instruct
+  # 勿省略 max_model_len（模型原生 256K，自动探测易超 KV / mask O(L²) OOM）；16384 为 310P 稳妥默认
+  # 图加速失败时改 enforce_eager: true 并去掉 compilation_config
+  # 参考：https://docs.vllm.ai/projects/ascend/en/v0.23.0rc1/tutorials/models/Qwen-VL-Dense.html
+  qwen3-vl-8b:
+    path: "./models/Qwen3-VL-8B-Instruct"
+    served_model_name: "qwen3-vl-8b-instruct"
+    dtype: "float16"
+    enforce_eager: false
+    block_size: 128
+    max_model_len: 16384
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.90
+    max_num_seqs: 8
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: true
+    compilation_config:
+      cudagraph_mode: "FULL_DECODE_ONLY"
+      cudagraph_capture_sizes: [1, 2, 4, 8, 16, 32]
+    additional_config:
+      ascend_compilation_config:
+        fuse_norm_quant: false
+        enable_npugraph_ex: false
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3-VL-8B 多模态（310P：float16 / TP=1 / 16K / decode 图加速 / 默认关 thinking）"
+
   # Qwen3-VL 32B 多模态模型
   qwen3-vl-32b:
     path: "./models/Qwen3-VL-32B-Instruct"
