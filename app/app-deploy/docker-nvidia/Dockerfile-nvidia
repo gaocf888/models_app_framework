@@ -1,0 +1,64 @@
+# =============================================================================
+# 英伟达 GPU 在线应用镜像：大模型应用依赖 + CUDA PyTorch（供 RAG 重排 / 嵌入加速）
+# =============================================================================
+# 构建上下文（context）：必须是仓库根目录 models_app_framework
+#   推荐：在 app/app-deploy/docker-nvidia 下
+#     docker compose --env-file .env -f docker-compose-nvidia.yml build
+#
+# 包含：
+#   - CUDA 版 torch / torchvision（cu121），避免 sentence-transformers 把 torch 换成 CPU 版
+#   - requirements-大模型应用.txt（FastAPI、RAG、ES 客户端、sentence-transformers 等）
+#   - requirements-人脸识别-CPU.txt
+#   - app/ 源码、configs/
+#
+# 不包含：小模型 GPU 推理依赖（YOLO/Ultralytics）→ 使用上级 Dockerfile.small-model-gpu
+# 与 docker-mx/Dockerfile-mx（沐曦）对比：本文件用官方 CUDA 轮子，不依赖 Metax 镜像。
+# =============================================================================
+
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/workspace \
+    PIP_DEFAULT_TIMEOUT=300 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+WORKDIR /workspace
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libglib2.0-0 libsm6 libxext6 libgl1 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 构建阶段若出现 json.decoder.JSONDecodeError（解析 PyPI 索引 JSON 失败），多为响应被截断/超时。
+# 可覆盖镜像源，例如：
+#   docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+#     --build-arg PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+# 先装 CUDA 版 PyTorch，降低后续业务依赖把 torch 换成 CPU 的概率。
+# 若宿主机驱动与 cu121 不兼容，可改为 cu118 / cu124 的官方 index-url。
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir --timeout=300 --retries=15 \
+        torch torchvision \
+        --index-url https://download.pytorch.org/whl/cu121
+
+COPY requirements-大模型应用.txt /workspace/requirements-app.txt
+COPY requirements-人脸识别-CPU.txt /workspace/requirements-face-cpu.txt
+RUN pip install --no-cache-dir --timeout=300 --retries=15 \
+        ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
+        ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
+        -r /workspace/requirements-app.txt -r /workspace/requirements-face-cpu.txt \
+    && pip install --no-cache-dir --timeout=300 --retries=15 \
+        torch torchvision \
+        --index-url https://download.pytorch.org/whl/cu121
+
+COPY app /workspace/app
+COPY configs /workspace/configs
+
+EXPOSE 8083
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8083"]

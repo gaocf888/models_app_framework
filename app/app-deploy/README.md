@@ -610,6 +610,8 @@ docker compose --profile small-model-gpu down
 |------|------|
 | `Dockerfile` | 默认镜像：`requirements-大模型应用.txt` + `app` + `configs` |
 | `Dockerfile.small-model-gpu` | GPU 小模型镜像：cu121 PyTorch + 大小模型 requirements + `ultralytics` |
-| `docker-compose.yml` | `redis`、`models-app`；可选 **`models-app-gpu`**（`profiles: small-model-gpu`） |
+| `docker-compose.yml` | CPU 栈：`redis`、`models-app`；可选 **`models-app-gpu`**（`profiles: small-model-gpu`） |
+| `docker-nvidia/` | 英伟达 GPU 栈：`Dockerfile-nvidia` + `docker-compose-nvidia.yml`（RAG 重排走 CUDA） |
+| `docker-mx/` | 沐曦 GPU 栈：`Dockerfile-mx` + `docker-compose-mx.yml` |
 | `.env.example` | 环境变量模板与分块注释（复制为 `.env`） |
 | `README.md` | 本文档 |

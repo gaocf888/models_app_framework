@@ -236,11 +236,35 @@ presets:
   # 沐曦 N260 双卡 64GB 推荐本预设。官方 FP8 权重能加载，但 MXN260 上 W8A8 Block FP8 Triton 内核编译失败
   # （fp8_utils.w8a8_triton_block_scaled_mm → PassManager::run failed / llvm.intr.fmuladd i8）
   # 参数对齐已验证的 qwen3-27b（Qwen3.5-27B）；hybrid 关闭 prefix caching，eager 降低 compile 风险
+  # 下面是 qwen3.6-27b 部署在 RTX 4090的配置备份
+#  qwen3.6-27b:
+#    path: "./models/Qwen3.6-27B"
+#    served_model_name: "qwen3.6-27b"
+#    dtype: "half"
+#    max_model_len: 40960
+#    enforce_eager: false
+#    tensor_parallel_size: 2
+#    gpu_memory_utilization: 0.8
+#    max_num_seqs: 16
+#    max_num_batched_tokens: 12288
+#    enable_prefix_caching: false
+#    attention-backend: flash_attn
+#    default-chat-template-kwargs:
+#      enable_thinking: false
+#    multimodal:
+#      enabled: true
+#      limit_images: 4
+#      limit_videos: 1
+#      media_paths:
+#        - "./images"
+#        - "./videos"
+#    description: "Qwen3.6 27B 原生多模态，N260 双卡 64G 推荐预设（非 FP8）"
+  # 下面是 qwen3.6-27b 部署在 沐曦N260的配置
   qwen3.6-27b:
     path: "./models/Qwen3.6-27B"
     served_model_name: "qwen3.6-27b"
     dtype: "half"
-    max_model_len: 16384
+    max_model_len: 40960
     enforce_eager: true
     tensor_parallel_size: 2
     gpu_memory_utilization: 0.8

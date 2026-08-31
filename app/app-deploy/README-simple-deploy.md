@@ -407,14 +407,21 @@ cd app/app-deploy
 cp .env.example .env          # 首次，之后直接编辑 .env
 docker compose up -d --build
 
-# 上面是通用启动方式，若启动app-deploy/时想使用沐曦AI框架镜像(为了reranker效率)，使用下面的启动配置文件
+# 英伟达 GPU：RAG 重排/嵌入走 CUDA（详见 docker-nvidia/README.md）
+cd app/app-deploy
+cp .env.example .env          # 首次，之后直接编辑 .env
+cp .env docker-nvidia/.env
+cd docker-nvidia
+docker compose --env-file .env -f docker-compose-nvidia.yml up -d --build
+
+# 沐曦 GPU：使用沐曦 AI 框架镜像（为了 reranker 效率）
 cd app/app-deploy
 cp .env.example .env          # 首次，之后直接编辑 .env
 cp .env docker-mx
 cd docker-mx
 docker compose --env-file .env -f docker-compose-mx.yml up -d --build
 ```
-> 启动之前关键修改确认项：LLM_DEFAULT_MODEL  （需要与vllm-deploy/实际部署的大模型名称一致）
+> 启动之前关键修改确认项：`LLM_DEFAULT_MODEL` 须与 vLLM `--served-model-name` 一致。英伟达栈还需核对 `RAG_RERANKER_DEVICE` / `APP_NVIDIA_VISIBLE_DEVICES`（与 vLLM 分卡）。
 
 默认会启动：
 
@@ -425,7 +432,11 @@ docker compose --env-file .env -f docker-compose-mx.yml up -d --build
 如需小模型 GPU 能力（`/small-model/*`），再执行：
 
 ```bash
+# CPU 栈目录下
 docker compose --profile small-model-gpu up -d --build
+
+# 英伟达栈（当前目录为 docker-nvidia/ 时）
+docker compose --env-file .env -f docker-compose-nvidia.yml --profile small-model-gpu up -d --build
 ```
 
 > GPU profile 的详细说明见 `README.md`，简化版只需知道：不加 `--profile small-model-gpu` 时不会占用 GPU。

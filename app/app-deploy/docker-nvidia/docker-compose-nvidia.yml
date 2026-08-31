@@ -1,0 +1,215 @@
+# =============================================================================
+# 英伟达 GPU 应用栈：Redis + MinIO + FastAPI（models-app [+ 可选 models-app-gpu]）
+# =============================================================================
+#
+# 与 app/app-deploy/docker-compose.yml（CPU）及 docker-mx/（沐曦 GPU）并列。
+# 本栈 models-app 使用 Dockerfile-nvidia（CUDA PyTorch），供 RAG 重排 / 嵌入走 GPU。
+#
+# 【外部依赖 · 须先于本文件启动】
+#   1) EasySearch：rag_db-deploy/docker-compose.easysearch.yml
+#      - 默认容器名：rag-easysearch；默认外部网络：ai-stack
+#   2) vLLM：vllm-deploy（英伟达用 docker/docker-compose.nvidia.yml）
+#      - 默认容器名：vllm-service；外部网络多为 docker_vllm-network
+#   3) MinerU：mineru-deploy（独立栈）
+#      - 默认容器名：mineru-api；网络 mineru-stack
+#   4) Paddle 版面侧车（检修 V0，可选）：paddleocr-layout-deploy
+#
+# 【宿主机前置】
+#   - NVIDIA 驱动可用：nvidia-smi
+#   - 已安装 NVIDIA Container Toolkit
+#   - 若 compose 不识别下方 deploy.devices，将 Docker 默认 runtime 设为 nvidia
+#
+# 【启动（在 app/app-deploy 目录）】
+#   cp .env.example .env          # 首次
+#   cp .env docker-nvidia/.env
+#   cd docker-nvidia
+#   docker compose --env-file .env -f docker-compose-nvidia.yml up -d --build
+#
+#   小模型 GPU profile：
+#   docker compose --env-file .env -f docker-compose-nvidia.yml --profile small-model-gpu up -d --build
+#
+# 【配置策略】
+#   业务变量在 app/app-deploy/.env，复制到本目录后再启动（与 docker-mx 相同）。
+# =============================================================================
+
+x-nvidia-gpu: &nvidia-gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: models-app-redis
+    restart: unless-stopped
+    networks:
+      - app-internal
+    volumes:
+      - ${REDIS_DATA_HOST_PATH:-/aidata/data/redis_data}:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/minio/minio:latest
+    container_name: models-app-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - ${MINIO_DATA_HOST_PATH:-/aidata/data/minio_data}:/data
+    networks:
+      app-internal: {}
+      vllm-external: {}
+
+  # ---------------------------------------------------------------------------
+  # models-app：英伟达 CUDA PyTorch（RAG 重排 / 嵌入 / 轻量意图 LLM）
+  # ---------------------------------------------------------------------------
+  models-app:
+    <<: *nvidia-gpu
+    build:
+      context: ../../..
+      dockerfile: app/app-deploy/docker-nvidia/Dockerfile-nvidia
+    container_name: models-app
+    restart: unless-stopped
+    shm_size: "2gb"
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    env_file:
+      - .env
+    command:
+      - sh
+      - -c
+      - exec uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
+    ports:
+      - "${APP_PORT:-8083}:8083"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      app-internal: {}
+      vllm-external: {}
+      rag-external: {}
+      mineru-external: {}
+#      paddle-layout-external: {}
+#      face-milvus-external: {}
+      # graph-external: {}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+      - ../logs:/workspace/logs
+      - ${SESSION_STORAGE_HOST_PATH:-/aidata/data/session_storage}:/workspace/data/conversation_archive
+      - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
+      - ${RAG_FAISS_DATA_HOST_PATH:-/aidata/data/faiss_data}:/workspace/data/faiss
+      - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-base:/workspace/models/rerank/bge-reranker-base:ro
+      - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
+      - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
+      - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
+      - face-galleries-data:/workspace/data/face_galleries
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${APP_NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      RAG_RERANKER_MODEL_PATH: /workspace/models/rerank/bge-reranker-base
+
+  # ---------------------------------------------------------------------------
+  # models-app-gpu：YOLO / 小模型；docker compose --profile small-model-gpu
+  # ---------------------------------------------------------------------------
+  models-app-gpu:
+    <<: *nvidia-gpu
+    profiles: ["small-model-gpu"]
+    build:
+      context: ../../..
+      dockerfile: app/app-deploy/Dockerfile.small-model-gpu
+    container_name: models-app-gpu
+    restart: unless-stopped
+    shm_size: "2gb"
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    env_file:
+      - .env
+    command:
+      - sh
+      - -c
+      - exec uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
+    ports:
+      - "${APP_PORT_GPU:-8081}:8083"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      app-internal: {}
+      vllm-external: {}
+      rag-external: {}
+      mineru-external: {}
+#      paddle-layout-external: {}
+#      face-milvus-external: {}
+      # graph-external: {}
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${SMALL_MODEL_NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      RAG_RERANKER_MODEL_PATH: /workspace/models/rerank/bge-reranker-base
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+      - ../logs:/workspace/logs
+      - ${SESSION_STORAGE_HOST_PATH:-/aidata/data/session_storage}:/workspace/data/conversation_archive
+      - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
+      - ${RAG_FAISS_DATA_HOST_PATH:-/aidata/data/faiss_data}:/workspace/data/faiss
+      - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+      - small-model-data:/workspace/data/small_model_evidence
+      - face-galleries-data:/workspace/data/face_galleries
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
+      - ${SMALL_MODEL_WEIGHTS_HOST_PATH:-small-model-weights-dummy}:/workspace/models/small:ro
+      - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
+      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-base:/workspace/models/rerank/bge-reranker-base:ro
+      - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
+      - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
+
+networks:
+  app-internal:
+    driver: bridge
+  vllm-external:
+    name: ${VLLM_DOCKER_NETWORK:-docker_vllm-network}
+    external: true
+  rag-external:
+    name: ${RAG_DOCKER_NETWORK:-ai-stack}
+    external: true
+  mineru-external:
+    name: ${MINERU_DOCKER_NETWORK:-mineru-stack}
+    external: true
+#  paddle-layout-external:
+#    name: ${PADDLE_LAYOUT_DOCKER_NETWORK:-paddle-layout-stack}
+#    external: true
+#  face-milvus-external:
+#    name: ${FACE_MILVUS_NETWORK:-face-milvus-stack}
+#    external: true
+#  graph-external:
+#    name: ${GRAPH_DOCKER_NETWORK:-graph-stack}
+#    external: true
+
+volumes:
+  huggingface-cache: {}
+  small-model-data: {}
+  face-galleries-data: {}
+  insightface-models-dummy:
+    driver: local
+  small-model-weights-dummy:
+    driver: local
+  mineru-io-dummy:
+    driver: local
