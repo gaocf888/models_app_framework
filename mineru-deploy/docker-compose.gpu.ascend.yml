@@ -31,6 +31,7 @@ services:
       - MINERU_DEVICE_MODE=${MINERU_DEVICE_MODE:-npu}
       - ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-6}
       - MINERU_MODEL_SOURCE=${MINERU_MODEL_SOURCE:-modelscope}
+      - MINERU_TOOLS_CONFIG_JSON=${MINERU_TOOLS_CONFIG_JSON:-/config/mineru.json}
       - MINERU_API_OUTPUT_ROOT=/io/mineru-output
       - HF_HOME=/io/.hf_cache
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
@@ -45,6 +46,7 @@ services:
     volumes:
       - ${MINERU_MODELS_HOST_PATH}:/models:ro
       - ${MINERU_IO_HOST_PATH}:/io
+      - ${MINERU_CONFIG_HOST_PATH:-./config/mineru.json}:/config/mineru.json:ro
       - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
       - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
       - /dev:/dev

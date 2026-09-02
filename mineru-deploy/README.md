@@ -19,6 +19,7 @@
 - `docker-compose.gpu.yml`：英伟达 GPU 编排
 - `docker-compose.gpu.ascend.yml`：昇腾 GPU 编排
 - `docker-compose.yml`：CPU 兼容入口（与 `docker-compose.cpu.yml` 等效）
+- `config/mineru.json`：离线 `local` 模式模型路径映射（挂载到容器 `/config/mineru.json`）
 - `docker/entrypoint.sh`：容器入口（初始化 `/io/.hf_cache` 和 `/io/mineru-output`）
 - `.env.example`：统一环境变量模板（含英伟达 / 昇腾注释）
 
@@ -84,14 +85,25 @@ TRANSFORMERS_OFFLINE=1
 说明：
 - 运行时不再联网拉取模型
 - 需要你提前把模型文件放入 `${MINERU_MODELS_HOST_PATH}`（容器内 `/models`）
+- **`MINERU_MODEL_SOURCE=local` 时必须配置 `config/mineru.json`**（compose 已挂载为 `/config/mineru.json`，环境变量 `MINERU_TOOLS_CONFIG_JSON`）。其中 `models-dir.pipeline` 须指向容器内 pipeline 权重根目录，否则解析会报 `'NoneType' object has no attribute 'get'`。
   > 下载方法：
-  - 在魔塔社区中搜索 OpenDataLab/PDF-Extract-Kit-1.0(下载后路径名可能为PDF-Extract-Kit-1___0，需要修改重命名为PDF-Extract-Kit-1.0)
+  - 在魔塔社区中搜索 OpenDataLab/PDF-Extract-Kit-1.0(下载后路径名可能为PDF-Extract-Kit-1___0，需要修改重命名为PDF-Extract-Kit-1.0) -- https://www.modelscope.cn/models/OpenDataLab/PDF-Extract-Kit-1.0/files
   - 使用git lfs下载到 ${MINERU_MODELS_HOST_PATH} 路径下
   > 为保证下载后路径一致，建议先在有网环境部署，然后使用docker cp从容器中复制下载后的模型到本地，然后拷贝到离线服务器的${MINERU_MODELS_HOST_PATH}路径中
     （docker cp mineru-api:/root/.cache/modelscope/hub/models/OpenDataLab /aidata/mineru/models/OpenDataLab）
        下载后路径要确保下面的路径：
          宿主：${MINERU_MODELS_HOST_PATH}/OpenDataLab/PDF-Extract-Kit-1.0/...
          容器：/models/OpenDataLab/PDF-Extract-Kit-1.0/...
+  > 若 VLM 权重目录不同，复制 `config/mineru.json.example` 为 `config/mineru.json` 后修改 `models-dir.vlm`。
+  >
+  > **与当前 `mineru[core]` 版本对齐（扫描 PDF / OCR 必查）**：新版 MinerU 中文 OCR 依赖 **PP-OCRv6** safetensors。离线目录至少应存在：
+  > ```text
+  > ${MINERU_MODELS_HOST_PATH}/OpenDataLab/PDF-Extract-Kit-1.0/models/OCR/paddleocr_torch/
+  >   ch_PP-OCRv6_small_det_infer.safetensors
+  >   ch_PP-OCRv6_small_rec_infer.safetensors
+  > ```
+  > 若只有旧版 `ch_PP-OCRv4_*.pth` / `ch_PP-OCRv5_*.pth` 而缺少上述 v6 文件，会报 `... is not existed`（`mineru.json` 已正确时的下一类错误）。
+  > 推荐在**有网环境**用与线上一致的 MinerU 版本执行 `mineru-models-download`（或首次 `MINERU_MODEL_SOURCE=modelscope` 跑通一次），再 `docker cp` 整包到离线机，避免手工漏文件。
 - 适合离线/内网环境
 
 ## 5. CPU 模式（独立实现）
@@ -949,9 +961,9 @@ TRANSFORMERS_OFFLINE=1
 
 ## 二、关键设计说明
 
-1. **不再依赖 `config/mineru-tools.json`**
-   - `docker-compose.yml` 已移除 `MINERU_TOOLS_CONFIG_JSON` 与 config 文件挂载
-   - 启动脚本不再检查该文件
+1. **离线 local 模式依赖 `config/mineru.json`**
+   - compose 挂载 `${MINERU_CONFIG_HOST_PATH:-./config/mineru.json}` → 容器 `/config/mineru.json`
+   - 环境变量 `MINERU_TOOLS_CONFIG_JSON=/config/mineru.json`（`MINERU_MODEL_SOURCE=local` 时必填 `models-dir`）
 
 2. **模型不进镜像，全部卷挂载**
    - `${MINERU_MODELS_HOST_PATH}:/models:ro`

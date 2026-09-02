@@ -1,0 +1,6 @@
+{
+  "models-dir": {
+    "pipeline": "/models/OpenDataLab/PDF-Extract-Kit-1.0",
+    "vlm": "/models/OpenDataLab/PDF-Extract-Kit-1.0"
+  }
+}
