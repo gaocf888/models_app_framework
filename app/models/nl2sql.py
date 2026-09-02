@@ -65,6 +65,14 @@ class NL2SQLQueryRequest(BaseModel):
             "综合分析智能体默认由 ANALYSIS_AGENT_NL2SQL_DISABLE_QA_SLOT_REPLAY 注入。"
         ),
     )
+    forced_tables: list[str] | None = Field(
+        default=None,
+        description=(
+            "可选锁表：非空时本请求 catalog 仅保留这些表（外加 t_station，且须在表白名单内）。"
+            "省略或空列表 = 现网行为（全量白名单 + 按问句语义链接）。"
+            "数据查询智能体在库锁定后传入，例如 [\"t_data_wash_fcb\"]。"
+        ),
+    )
 
     @field_validator("user_id")
     @classmethod

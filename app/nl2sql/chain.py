@@ -213,6 +213,7 @@ class NL2SQLChain:
         on_link_failure: str | None = None,
         structured_filters: dict | None = None,
         disable_qa_slot_replay: bool | None = None,
+        forced_tables: list[str] | None = None,
     ) -> tuple[str, NL2SQLValidationContext]:
         if confirmed_scope:
             time_src = (
@@ -258,7 +259,7 @@ class NL2SQLChain:
         if semantic_link_enabled():
             from app.nl2sql.semantic_layer import align_semantics
 
-            binding = align_semantics(question, question_intent)
+            binding = align_semantics(question, question_intent, forced_tables=forced_tables)
             if binding is not None:
                 semantic_binding_dict = binding.to_dict()
                 parsed_intent_dict = merge_parsed_intent_extensions(
@@ -351,7 +352,31 @@ class NL2SQLChain:
         rag_hints = parse_nl2sql_schema_snippets(schema_snippets)
         allowed_tables, allowed_columns, schema_ok = self._whitelist_from_schema_and_snippets(schema_snippets)
         table_columns_map = self._table_columns_map() if schema_ok else {}
-        scoped_tables = self._resolve_table_scope(analysis_type=analysis_type, table_columns=table_columns_map)
+        scoped_tables = self._resolve_table_scope(
+            analysis_type=analysis_type,
+            table_columns=table_columns_map,
+            forced_tables=forced_tables,
+        )
+        forced_active = bool([str(t).strip() for t in (forced_tables or []) if str(t).strip()])
+        if forced_active and not scoped_tables:
+            parsed_intent_dict = merge_parsed_intent_extensions(
+                parsed_intent_dict,
+                gen_fail_reason="link_failed:forced_table_not_in_allowlist",
+            )
+            validation_ctx = NL2SQLValidationContext(
+                frozenset(allowed_tables),
+                frozenset(allowed_columns),
+                schema_ok,
+                {k: frozenset(v) for k, v in table_columns_map.items()},
+                frozenset(),
+                parsed_intent=parsed_intent_dict,
+                analysis_type=analysis_type,
+            )
+            logger.warning(
+                "NL2SQLChain forced_tables empty after allowlist forced=%s",
+                forced_tables,
+            )
+            return "", validation_ctx
         if scoped_tables:
             allowed_tables &= scoped_tables
             table_columns_map = {k: v for k, v in table_columns_map.items() if k in scoped_tables}
@@ -416,6 +441,7 @@ class NL2SQLChain:
                 allowlist=set(table_columns_map.keys()),
                 join_whitelist=join_whitelist,
                 assets=assets,
+                forced_tables=forced_tables,
             )
             linked_schema_dict = linked.to_dict()
             parsed_intent_dict = merge_parsed_intent_extensions(
@@ -2619,6 +2645,7 @@ class NL2SQLChain:
         *,
         analysis_type: str | None,
         table_columns: dict[str, set[str]],
+        forced_tables: list[str] | None = None,
     ) -> set[str]:
         from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
 
@@ -2627,17 +2654,28 @@ class NL2SQLChain:
             scoped = {t.lower() for t in profile.table_allowlist}
         else:
             scoped = self._parse_csv_env_set("ANALYSIS_NL2SQL_TABLE_SCOPE_DEFAULT")
-        if not scoped:
-            return set()
         existing = set(table_columns.keys())
-        hit = {t for t in scoped if t in existing}
+        hit = {t for t in scoped if t in existing} if scoped else set()
         logger.info(
             "NL2SQLChain table_scope analysis_type=%s configured=%d matched=%d",
             (analysis_type or "-"),
             len(scoped),
             len(hit),
         )
-        return hit
+        forced = {str(t).strip().lower() for t in (forced_tables or []) if str(t).strip()}
+        if not forced:
+            return hit
+        allow_base = hit if hit else existing
+        selected = {t for t in forced if t in allow_base}
+        station = "t_station"
+        if station in allow_base:
+            selected.add(station)
+        logger.info(
+            "NL2SQLChain table_scope forced=%s selected=%s",
+            sorted(forced),
+            sorted(selected),
+        )
+        return selected
 
     @staticmethod
     def _join_pair_key(left_tbl: str, left_col: str, right_tbl: str, right_col: str) -> str:

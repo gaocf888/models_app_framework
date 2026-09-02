@@ -194,11 +194,24 @@ def _metric_def(assets: SemanticAssets, metric_id: str) -> dict[str, Any] | None
     return None
 
 
+def _normalize_forced_tables(forced_tables: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in forced_tables or []:
+        t = str(raw or "").strip().lower()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
 def align_semantics(
     question: str,
     intent: QuestionIntent,
     *,
     assets: SemanticAssets | None = None,
+    forced_tables: list[str] | None = None,
 ) -> SemanticBinding | None:
     root = _resolve_semantic_root()
     if root is None:
@@ -240,21 +253,43 @@ def align_semantics(
                 if (a, b) in assets.forbidden_pairs:
                     binding.warnings.append(f"metric_forbidden_mix:{a}+{b}")
 
-    # device type
-    device_alias_map = {str(k).lower(): str(v) for k, v in assets.device_type_aliases.items()}
-    for phrase, dtype in sorted(device_alias_map.items(), key=lambda x: len(x[0]), reverse=True):
-        if phrase in q_lower:
+    # device type：仅 forced_tables 非空时用 intent.device_type / 锁表覆盖问句别名与「沉降→fcb」
+    forced = _normalize_forced_tables(forced_tables)
+    if forced:
+        dtype = str(intent.scope.device_type or "").strip()
+        table_by_type = {str(v).lower(): str(k) for k, v in assets.device_type_tables.items()}
+        if dtype:
             binding.device_types.append(dtype)
             tbl = assets.device_type_tables.get(dtype)
             if tbl:
                 binding.device_type_tables.append(tbl)
-            break
+        for tbl in forced:
+            if tbl == "t_station":
+                continue
+            if tbl not in {str(x).lower() for x in binding.device_type_tables}:
+                binding.device_type_tables.append(tbl)
+            mapped = table_by_type.get(tbl)
+            if mapped and mapped not in binding.device_types:
+                binding.device_types.append(mapped)
+        pinned = next((t for t in forced if t != "t_station"), None)
+        if pinned:
+            binding.default_table = pinned
+        binding.warnings.append("forced_tables_pin")
+    else:
+        device_alias_map = {str(k).lower(): str(v) for k, v in assets.device_type_aliases.items()}
+        for phrase, dtype in sorted(device_alias_map.items(), key=lambda x: len(x[0]), reverse=True):
+            if phrase in q_lower:
+                binding.device_types.append(dtype)
+                tbl = assets.device_type_tables.get(dtype)
+                if tbl:
+                    binding.device_type_tables.append(tbl)
+                break
 
-    if not binding.device_types and any(
-        w in q_lower for w in ("沉降", "下沉", "回弹", "监测点")
-    ):
-        binding.device_types.append("fcb")
-        binding.device_type_tables.append(assets.default_subsidence_table)
+        if not binding.device_types and any(
+            w in q_lower for w in ("沉降", "下沉", "回弹", "监测点")
+        ):
+            binding.device_types.append("fcb")
+            binding.device_type_tables.append(assets.default_subsidence_table)
 
     # districts
     for dist in sorted(assets.districts, key=len, reverse=True):

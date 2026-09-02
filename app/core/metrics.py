@@ -168,6 +168,19 @@ ANALYSIS_AGENT_DEGRADE_COUNT = Counter(
     ["reason"],
 )
 
+# 数据查询智能体（`/data-query-agent/*`）：独立于综合分析报告链路。
+DATA_QUERY_AGENT_RUNS_TOTAL = Counter(
+    "data_query_agent_runs_total",
+    "Total data_query_agent runs",
+    ["status", "hitl"],
+)
+
+DATA_QUERY_AGENT_LIBRARY_HITL_TOTAL = Counter(
+    "data_query_agent_library_hitl_total",
+    "Total data_query_agent library HITL interrupts",
+    ["reason"],
+)
+
 # Inspection Extract 指标：请求量、解析与 LLM 耗时、输出记录数、校验失败数。
 INSPECT_EXTRACT_REQUEST_COUNT = Counter(
     "inspect_extract_requests_total",

@@ -85,6 +85,15 @@ def _fp(parts: list[str]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _normalize_forced_tables(forced_tables: list[str] | None) -> set[str]:
+    out: set[str] = set()
+    for raw in forced_tables or []:
+        t = str(raw or "").strip().lower()
+        if t:
+            out.add(t)
+    return out
+
+
 def _pick_candidate_tables(
     semantic: SemanticBinding,
     allowlist: set[str],
@@ -123,6 +132,7 @@ def link_schema(
     allowlist: set[str] | None = None,
     join_whitelist: set[str] | None = None,
     assets: SemanticAssets | None = None,
+    forced_tables: list[str] | None = None,
 ) -> LinkedSchema:
     profile = get_nl2sql_business_profile()
     allow = allowlist or set(table_columns.keys())
@@ -144,7 +154,21 @@ def link_schema(
     )
 
     ranked = _pick_candidate_tables(semantic, allow, assets)
-    if not ranked:
+    forced = _normalize_forced_tables(forced_tables)
+    if forced:
+        ranked = [r for r in ranked if r[0] in forced]
+        if not ranked:
+            for tbl in sorted(forced):
+                if tbl == _STATION_TABLE:
+                    continue
+                if tbl in allow:
+                    ranked.append((tbl, "forced_table", 1.0))
+        if not ranked:
+            linked.status = "failed"
+            linked.fail_reason = "forced_table_not_in_allowlist"
+            linked.confidence = 0.0
+            return linked
+    elif not ranked:
         linked.status = "failed"
         linked.fail_reason = "no_candidate_table_in_allowlist"
         linked.confidence = 0.0
@@ -211,13 +235,14 @@ def link_schema(
                 {"table": primary, "column": "station_name", "op": "like", "value": sn, "source": "semantic"}
             )
 
-    # auxiliary tables for multi-metric questions
+    # auxiliary tables for multi-metric questions（锁表时禁止拉入其它 t_data_wash_*）
     aux_tables: set[str] = set()
-    for m in semantic.metrics[1:]:
-        for tbl in m.preferred_tables:
-            tl = tbl.lower()
-            if tl != primary and tl in allow:
-                aux_tables.add(tl)
+    if not forced:
+        for m in semantic.metrics[1:]:
+            for tbl in m.preferred_tables:
+                tl = tbl.lower()
+                if tl != primary and tl in allow:
+                    aux_tables.add(tl)
     for aux in aux_tables:
         linked.tables.append(LinkedTable(name=aux, reason="auxiliary_metric", score=0.6))
         for col in table_columns.get(aux, set()):

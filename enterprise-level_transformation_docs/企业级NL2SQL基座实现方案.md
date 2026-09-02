@@ -63,6 +63,7 @@
   | 2 | 智能客服 | 图节点 `nl2sql_answer` | `record_conversation=False`；可读顶层 `gen_fail_reason`（如 `link_failed:…`） |
   | 3 | 综合分析 V2 | `POST /analysis/run-with-nl2sql*` | `acquire_data` 按 plan **多次** `query`；地降五类 `subsidence_*` |
   | 4 | 看图诊断 | `POST /analysis/run-img-diag*` | NL 并行臂同源；可传 `confirmed_scope`（HITL） |
+  | 5 | **数据查询智能体** | `POST /data-query-agent/run-stream` | 库锁定后传可选 **`forced_tables`**（一张 `t_data_wash_*`）；**省略该字段 = 现网全量白名单行为** |
 
 ---
 

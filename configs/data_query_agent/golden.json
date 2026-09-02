@@ -1,0 +1,65 @@
+[
+  {
+    "id": "dq01",
+    "query": "朝阳区年沉降比较大的监测点",
+    "library_id": "fcb",
+    "expect_library": "fcb",
+    "expect_table": "t_data_wash_fcb",
+    "expect_grain": "station",
+    "expect_district": "朝阳区",
+    "notes": "路径1 树选库 + 区"
+  },
+  {
+    "id": "dq02",
+    "query": "大兴区有哪些分层监测点？",
+    "library_id": null,
+    "expect_library": "fcb",
+    "expect_table": "t_data_wash_fcb",
+    "expect_grain": "station",
+    "expect_district": "大兴区",
+    "notes": "路径2 解析分层标"
+  },
+  {
+    "id": "dq03",
+    "query": "朝阳区沉降大的点",
+    "library_id": "jyb",
+    "expect_library": "jyb",
+    "expect_table": "t_data_wash_jyb",
+    "expect_grain": "station",
+    "notes": "树选基岩标，问句含沉降仍锁 jyb"
+  },
+  {
+    "id": "dq04",
+    "query": "查一下位移比较大的点",
+    "library_id": null,
+    "expect_library": "gnss",
+    "expect_table": "t_data_wash_gnss",
+    "expect_grain": "station",
+    "notes": "禁止落到 fcb"
+  },
+  {
+    "id": "dq05",
+    "query": "各区平均沉降",
+    "library_id": "fcb",
+    "expect_library": "fcb",
+    "expect_table": "t_data_wash_fcb",
+    "expect_grain": "district",
+    "notes": "区 HUD 聚合"
+  },
+  {
+    "id": "dq06",
+    "query": "全市平均沉降",
+    "library_id": "fcb",
+    "expect_library": "fcb",
+    "expect_table": "t_data_wash_fcb",
+    "expect_grain": "city",
+    "notes": "全市实体 beijing"
+  },
+  {
+    "id": "dq07",
+    "query": "查数据",
+    "library_id": null,
+    "expect_hitl": "library_unresolved",
+    "notes": "未锁库 HITL"
+  }
+]

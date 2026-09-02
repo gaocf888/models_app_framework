@@ -55,6 +55,8 @@ NL2SQLQueryResponse（sql, rows, parsed_intent…）
 
 **冻结不重写**：`SQLExecutor` 内核、L1 时间骨架算法主体、客服/分析编排图（仅约定如何传参）。
 
+**可选锁表（查询台）：** `NL2SQLQueryRequest.forced_tables` 非空时，本请求 catalog 收为这些表 ∪ `{t_station}`（须 ⊆ 表白名单）。**省略或空列表 = 现网行为**，客服 / 综合分析 / 直连 `/nl2sql/query` 不传该字段则不受影响。数据查询智能体在意图 1 锁定 `library_id` 后传入对应 `t_data_wash_*`。
+
 **主代码挂载点**：`NL2SQLChain.generate_sql_with_validation_context`（`app/nl2sql/chain.py`），位于 `resolve_question_intent` 成功之后、组装 `full_catalog` / 调用 LLM 之前。
 
 ### 0.3 改造边界（做 / 不做）

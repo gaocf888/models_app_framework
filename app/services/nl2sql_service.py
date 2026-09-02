@@ -84,6 +84,7 @@ class NL2SQLService:
             on_link_failure=req.on_link_failure,
             structured_filters=req.structured_filters,
             disable_qa_slot_replay=req.disable_qa_slot_replay,
+            forced_tables=req.forced_tables,
         )
         rows: list = []
         execute_succeeded = False

@@ -1,0 +1,160 @@
+# 查询台库注册表：library_id 与 Java 树、device_type.yaml 同源；一库一张 t_data_wash_*。
+version: "2026.08.27"
+default_library_id: fcb
+hitl_prompt: "未能确定监测库，请选择要查询的数据类型。"
+generic_settle_words: [沉降, 下沉, 回弹, 监测点]
+groups:
+  - id: geotech
+    title: 岩土本底层压实
+    libraries: [jyb, fcb]
+  - id: fluid
+    title: 流体赋存及应力
+    libraries: [dxswj, kxsylj]
+  - id: network
+    title: 星地综合观测
+    libraries: [gnss, qxz, gq]
+libraries:
+  - id: fcb
+    display_name: 分层标
+    table: t_data_wash_fcb
+    device_type: fcb
+    hud_supported: true
+    core_metric: total_settle
+    series_column: total_settle
+    series_unit: mm
+    synonyms: [分层标, 分层, 层位监测, 分层监测点]
+    annual_metric: {key: annual_settle_mm, source: total_settle}
+    columns:
+      - {key: station_id, title: 测位 ID, aliases: [station_id]}
+      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: area, title: 行政区, aliases: [area]}
+      - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}
+      - {key: total_settle_mm, title: 历史累计沉降(mm), aliases: [total_settle_mm, total_settle]}
+      - {key: data_time, title: 数据时间, aliases: [data_time]}
+    core_metrics:
+      - {id: total_settle_mm, name: 历史累计沉降, unit: mm, source: total_settle}
+      - {id: annual_settle_mm, name: 年沉降量, unit: mm, source: annual_settle_mm}
+  - id: jyb
+    display_name: 基岩标
+    table: t_data_wash_jyb
+    device_type: jyb
+    hud_supported: true
+    core_metric: total_settle
+    series_column: total_settle
+    series_unit: mm
+    synonyms: [基岩标, 基岩]
+    annual_metric: {key: annual_settle_mm, source: total_settle}
+    columns:
+      - {key: station_id, title: 测位 ID, aliases: [station_id]}
+      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: area, title: 行政区, aliases: [area]}
+      - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}
+      - {key: total_settle_mm, title: 历史累计沉降(mm), aliases: [total_settle_mm, total_settle]}
+      - {key: data_time, title: 数据时间, aliases: [data_time]}
+    core_metrics:
+      - {id: total_settle_mm, name: 历史累计沉降, unit: mm, source: total_settle}
+      - {id: annual_settle_mm, name: 年沉降量, unit: mm, source: annual_settle_mm}
+  - id: dxswj
+    display_name: 地下水
+    table: t_data_wash_dxswj
+    device_type: dxswj
+    hud_supported: true
+    core_metric: deep
+    series_column: deep
+    series_unit: m
+    synonyms: [地下水, 水位井, 地下水井, 水位]
+    annual_metric: {key: annual_deep, source: deep}
+    columns:
+      - {key: station_id, title: 测位 ID, aliases: [station_id]}
+      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: area, title: 行政区, aliases: [area]}
+      - {key: deep, title: 埋深(m), aliases: [deep]}
+      - {key: annual_deep, title: 年度埋深变化(m), aliases: [annual_deep]}
+      - {key: elevation, title: 水位标高, aliases: [elevation]}
+      - {key: data_time, title: 数据时间, aliases: [data_time]}
+    core_metrics:
+      - {id: deep, name: 最新埋深, unit: m, source: deep}
+      - {id: annual_deep, name: 年度埋深变化, unit: m, source: annual_deep}
+  - id: kxsylj
+    display_name: 孔隙水压力
+    table: t_data_wash_kxsylj
+    device_type: kxsylj
+    hud_supported: true
+    core_metric: pressure
+    series_column: pressure
+    series_unit: kPa
+    synonyms: [孔隙水, 孔压, 孔隙水压力]
+    annual_metric: {key: annual_pressure, source: pressure}
+    columns:
+      - {key: station_id, title: 测位 ID, aliases: [station_id]}
+      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: area, title: 行政区, aliases: [area]}
+      - {key: pressure, title: 孔压, aliases: [pressure]}
+      - {key: annual_pressure, title: 年度孔压变化, aliases: [annual_pressure]}
+      - {key: data_time, title: 数据时间, aliases: [data_time]}
+    core_metrics:
+      - {id: pressure, name: 最新孔压, unit: kPa, source: pressure}
+      - {id: annual_pressure, name: 年度孔压变化, unit: kPa, source: annual_pressure}
+  - id: gnss
+    display_name: GNSS
+    table: t_data_wash_gnss
+    device_type: gnss
+    hud_supported: true
+    core_metric: displacement_3d
+    series_column: displacement_3d
+    series_unit: mm
+    synonyms: [GNSS, gnss, 位移, 三维位移]
+    annual_metric: {key: annual_displacement_3d, source: displacement_3d}
+    columns:
+      - {key: station_id, title: 测位 ID, aliases: [station_id]}
+      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: area, title: 行政区, aliases: [area]}
+      - {key: displacement_3d, title: 三维位移, aliases: [displacement_3d]}
+      - {key: annual_displacement_3d, title: 年度位移变化, aliases: [annual_displacement_3d]}
+      - {key: displacement_2d, title: 二维位移, aliases: [displacement_2d]}
+      - {key: data_time, title: 数据时间, aliases: [data_time]}
+    core_metrics:
+      - {id: displacement_3d, name: 最新三维位移, unit: mm, source: displacement_3d}
+      - {id: annual_displacement_3d, name: 年度位移变化, unit: mm, source: annual_displacement_3d}
+  - id: qxz
+    display_name: 气象站
+    table: t_data_wash_qxz
+    device_type: qxz
+    hud_supported: true
+    core_metric: temp
+    series_column: temp
+    series_unit: ℃
+    synonyms: [气象, 气象站]
+    columns:
+      - {key: station_id, title: 测位 ID, aliases: [station_id]}
+      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: area, title: 行政区, aliases: [area]}
+      - {key: temp, title: 气温, aliases: [temp]}
+      - {key: real_time_rain, title: 降水, aliases: [real_time_rain]}
+      - {key: data_time, title: 数据时间, aliases: [data_time]}
+    core_metrics:
+      - {id: temp, name: 气温, unit: ℃, source: temp}
+      - {id: real_time_rain, name: 降水, unit: mm, source: real_time_rain}
+    series_columns:
+      - {id: temp, name: 气温, unit: ℃}
+      - {id: real_time_rain, name: 降水, unit: mm}
+  - id: gq
+    display_name: 光纤
+    table: t_data_wash_gq
+    device_type: gq
+    hud_supported: true
+    core_metric: total_settle
+    series_column: total_settle
+    series_unit: mm
+    synonyms: [光纤]
+    annual_metric: {key: annual_settle_mm, source: total_settle}
+    columns:
+      - {key: station_id, title: 测位 ID, aliases: [station_id]}
+      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: area, title: 行政区, aliases: [area]}
+      - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}
+      - {key: total_settle_mm, title: 历史累计沉降(mm), aliases: [total_settle_mm, total_settle]}
+      - {key: data_time, title: 数据时间, aliases: [data_time]}
+    core_metrics:
+      - {id: total_settle_mm, name: 历史累计沉降, unit: mm, source: total_settle}
+      - {id: annual_settle_mm, name: 年沉降量, unit: mm, source: annual_settle_mm}

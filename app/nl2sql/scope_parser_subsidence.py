@@ -59,9 +59,11 @@ def _station_match_candidates(ent: dict) -> list[tuple[str, str]]:
     return sorted(out, key=lambda x: len(x[0]), reverse=True)
 
 
-def parse_scope_subsidence(question: str) -> QuestionScopeIntent:
+def parse_scope_subsidence(question: str, *, lexicon_file: str | None = None) -> QuestionScopeIntent:
     q = (question or "").strip()
-    path = _lexicon_path()
+    path = Path(lexicon_file) if lexicon_file else _lexicon_path()
+    if path is not None and not path.is_file():
+        path = None
     data: dict = {}
     if path:
         data = _load_subsidence_lexicon(str(path))

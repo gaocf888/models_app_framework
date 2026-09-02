@@ -763,6 +763,35 @@ class AnalysisAgentConfig:
     plan_template_version: str = "analysis_agent_v1"
 
 
+@dataclass
+class DataQueryAgentConfig:
+    """数据查询智能体独立配置（不复用 ANALYSIS_* 开关）。"""
+
+    enabled: bool = True  # false 时路由 503，避免误判 404
+    checkpoint_backend: str = "redis"  # HITL 快照：none | memory | redis
+    checkpoint_redis_url: str | None = None
+    checkpoint_namespace: str = "data_query_agent"
+    session_store_backend: str = "redis"  # resume_token；无 Redis 时运行时回落 memory
+    session_store_redis_url: str | None = None
+    session_ttl_seconds: int = 3600
+    acquire_max_parallel: int = 2  # q_list 与 q_hud_series 并行上限
+    hud_max_stations: int = 50
+    hud_max_districts: int = 16  # 北京 16 区
+    hud_max_points_per_station: int = 200  # 站/区/市序列降采样
+    hud_city_enabled: bool = True  # 全市行是否给 HUD
+    library_llm_enabled: bool = True  # 规则未命中时 LLM 补召回；结果须 ∈ 注册表
+    library_llm_timeout_seconds: float = 8.0
+    hud_layer_enabled: bool = False  # 无层位表则永不点亮
+    strategy_block_enabled: bool = False  # P1-12 默认关
+    default_max_rows: int = 500
+    hitl_max_retries: int = 5
+    libraries_file: str = "configs/data_query_agent/libraries.yaml"
+    plan_file: str = "configs/data_query_agent/plan.yaml"
+    trace_backend: str = "redis"
+    trace_ttl_minutes: int = 1440
+    trace_max_items: int = 5000
+
+
 def _default_inspection_v2_shading_fills() -> list[str]:
     """常见「超标」底纹 RGB（无 #，大写），可通过环境变量覆盖。"""
     return [
@@ -908,6 +937,7 @@ class AppConfig:
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     nl2sql_intent: NL2SQLIntentConfig = field(default_factory=NL2SQLIntentConfig)
     analysis_agent: AnalysisAgentConfig = field(default_factory=AnalysisAgentConfig)
+    data_query_agent: DataQueryAgentConfig = field(default_factory=DataQueryAgentConfig)
     inspection_extract: InspectionExtractConfig = field(default_factory=InspectionExtractConfig)
     inspection_extract_v0: InspectionExtractV0Config = field(default_factory=InspectionExtractV0Config)
 
@@ -1659,6 +1689,55 @@ def _load_from_env() -> AppConfig:
             os.getenv("ANALYSIS_AGENT_PLAN_TEMPLATE_VERSION", "analysis_agent_v1") or "analysis_agent_v1"
         ).strip(),
     )
+    data_query_agent_cfg = DataQueryAgentConfig(
+        enabled=os.getenv("DATA_QUERY_AGENT_ENABLED", "true").lower() != "false",
+        checkpoint_backend=(
+            os.getenv("DATA_QUERY_AGENT_CHECKPOINT_BACKEND", "redis") or "redis"
+        ).strip().lower(),
+        checkpoint_redis_url=(
+            os.getenv("DATA_QUERY_AGENT_CHECKPOINT_REDIS_URL") or os.getenv("REDIS_URL") or ""
+        ).strip()
+        or None,
+        checkpoint_namespace=(
+            os.getenv("DATA_QUERY_AGENT_CHECKPOINT_NAMESPACE", "data_query_agent") or "data_query_agent"
+        ).strip(),
+        session_store_backend=(
+            os.getenv("DATA_QUERY_AGENT_SESSION_STORE_BACKEND", "redis") or "redis"
+        ).strip().lower(),
+        session_store_redis_url=(
+            os.getenv("DATA_QUERY_AGENT_SESSION_STORE_REDIS_URL") or os.getenv("REDIS_URL") or ""
+        ).strip()
+        or None,
+        session_ttl_seconds=max(60, int(os.getenv("DATA_QUERY_AGENT_SESSION_TTL_SECONDS", "3600"))),
+        acquire_max_parallel=max(1, int(os.getenv("DATA_QUERY_AGENT_ACQUIRE_MAX_PARALLEL", "2"))),
+        hud_max_stations=max(1, int(os.getenv("DATA_QUERY_AGENT_HUD_MAX_STATIONS", "50"))),
+        hud_max_districts=max(1, int(os.getenv("DATA_QUERY_AGENT_HUD_MAX_DISTRICTS", "16"))),
+        hud_max_points_per_station=max(
+            1, int(os.getenv("DATA_QUERY_AGENT_HUD_MAX_POINTS_PER_STATION", "200"))
+        ),
+        hud_city_enabled=os.getenv("DATA_QUERY_AGENT_HUD_CITY_ENABLED", "true").lower() != "false",
+        library_llm_enabled=os.getenv("DATA_QUERY_AGENT_LIBRARY_LLM_ENABLED", "true").lower()
+        != "false",
+        library_llm_timeout_seconds=max(
+            1.0, float(os.getenv("DATA_QUERY_AGENT_LIBRARY_LLM_TIMEOUT_SECONDS", "8"))
+        ),
+        hud_layer_enabled=os.getenv("DATA_QUERY_AGENT_HUD_LAYER_ENABLED", "false").lower() == "true",
+        strategy_block_enabled=os.getenv("DATA_QUERY_AGENT_STRATEGY_BLOCK_ENABLED", "false").lower()
+        == "true",
+        default_max_rows=max(1, int(os.getenv("DATA_QUERY_AGENT_DEFAULT_MAX_ROWS", "500"))),
+        hitl_max_retries=max(1, int(os.getenv("DATA_QUERY_AGENT_HITL_MAX_RETRIES", "5"))),
+        libraries_file=(
+            os.getenv("DATA_QUERY_AGENT_LIBRARIES_FILE", "configs/data_query_agent/libraries.yaml")
+            or "configs/data_query_agent/libraries.yaml"
+        ).strip(),
+        plan_file=(
+            os.getenv("DATA_QUERY_AGENT_PLAN_FILE", "configs/data_query_agent/plan.yaml")
+            or "configs/data_query_agent/plan.yaml"
+        ).strip(),
+        trace_backend=(os.getenv("DATA_QUERY_AGENT_TRACE_BACKEND", "redis") or "redis").strip().lower(),
+        trace_ttl_minutes=max(10, int(os.getenv("DATA_QUERY_AGENT_TRACE_TTL_MINUTES", "1440"))),
+        trace_max_items=max(100, int(os.getenv("DATA_QUERY_AGENT_TRACE_MAX_ITEMS", "5000"))),
+    )
     _v2_fills_env = os.getenv("INSPECT_EXTRACT_V2_SHADING_CANDIDATE_FILLS", "").strip()
     if _v2_fills_env:
         _v2_fills_list = [
@@ -1855,6 +1934,7 @@ def _load_from_env() -> AppConfig:
         analysis=analysis_cfg,
         nl2sql_intent=nl2sql_intent_cfg,
         analysis_agent=analysis_agent_cfg,
+        data_query_agent=data_query_agent_cfg,
         inspection_extract=inspection_extract_cfg,
         inspection_extract_v0=inspection_extract_v0_cfg,
     )

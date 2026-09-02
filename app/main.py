@@ -91,6 +91,14 @@ def create_app() -> FastAPI:
             ),
         },
         {
+            "name": "data-query-agent",
+            "description": (
+                "数据查询智能体（data_query_agent）：库意图 + HITL + NL2SQL 列表/HUD。"
+                "须携带 `Authorization: Bearer <SERVICE_API_KEY>`；开关 `DATA_QUERY_AGENT_ENABLED`。"
+                "路由始终存在；未开启时请求返回 **503**（非 404）。"
+            ),
+        },
+        {
             "name": "inspection-extract-v0",
             "description": (
                 "检修报告结构化提取 V0：LangGraph 编排 + 版面 OCR 侧车（paddleocr-layout-api），"
@@ -136,7 +144,7 @@ def create_app() -> FastAPI:
     async def health_api_prefix() -> dict:
         return {"status": "ok"}
 
-    from app.api import analysis, analysis_agent, chatbot, graph_admin, inspection_extract, inspection_extract_v0, llm_inference, nl2sql, ops_traces, rag_admin, train_llm_admin
+    from app.api import analysis, analysis_agent, chatbot, data_query_agent, graph_admin, inspection_extract, inspection_extract_v0, llm_inference, nl2sql, ops_traces, rag_admin, train_llm_admin
     from app.api.small_models import face_gallery, small_model
 
     _auth = [Depends(require_service_api_key)]
@@ -170,6 +178,13 @@ def create_app() -> FastAPI:
         analysis_agent.router,
         prefix="/analysis-agent",
         tags=["analysis-agent"],
+        dependencies=_auth,
+    )
+    # 数据查询智能体：解析 SQL（库意图 + HITL + 列表/HUD），与综合分析报告链路分离。
+    app.include_router(
+        data_query_agent.router,
+        prefix="/data-query-agent",
+        tags=["data-query-agent"],
         dependencies=_auth,
     )
     app.include_router(
