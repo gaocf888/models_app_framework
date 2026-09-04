@@ -252,10 +252,15 @@ RAG_RERANKER_TRUST_REMOTE_CODE=true
 # EMBEDDING_DEVICE=cuda:0
 # RAG_RERANKER_DEVICE=cuda:1
 
-# --- 昇腾 Ascend（Atlas 300I Duo · §5：ASCEND_RT_VISIBLE_DEVICES=4,5 → 容器内相对 npu:0 / npu:1）---
-EMBEDDING_DEVICE=npu:0
-RAG_RERANKER_DEVICE=npu:1
-ASCEND_RT_VISIBLE_DEVICES=4,5
+# --- 昇腾 Ascend（默认 MIS-TEI；local 回退才需 npu DEVICE）---
+# EMBEDDING_BACKEND=mis_tei
+# RAG_RERANKER_BACKEND=mis_tei
+# MIS_TEI_EMBED_BASE_URL=http://mis-tei-embed:8080
+# MIS_TEI_RERANK_BASE_URL=http://mis-tei-rerank:8080
+# local 回退：EMBEDDING_DEVICE=npu:0  RAG_RERANKER_DEVICE=npu:1  ASCEND_RT_VISIBLE_DEVICES=4,5
+EMBEDDING_DEVICE=cpu
+RAG_RERANKER_DEVICE=cpu
+ASCEND_RT_VISIBLE_DEVICES=
 BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 ```
 
@@ -472,15 +477,15 @@ cp .env.example .env
 docker compose docker-mx/docker-compose-mx.yml up -d --build
 ```
 
-**昇腾部署** — 基于 Atlas 300I Duo / Ascend NPU（底座 `v0.23.0-310p`，与 vLLM / MinerU 一致）
-> 使用 `docker-ascend/`；宿主机须已装 NPU 驱动 26.1.1 + 固件 9.0.0.9.220 + Ascend Docker Runtime 26.1.0  
-> 四卡切分：app 默认 `ASCEND_RT_VISIBLE_DEVICES=4,5`，嵌入/重排 `npu:0` / `npu:1`
+**昇腾部署** — Atlas 300I Duo；**默认 MIS-TEI 独立嵌入/重排**（底座 `v0.23.0-310p`）
+> 先起 `mis-tei-deploy/`（NPU 4/5），再起 `docker-ascend/`；`EMBEDDING_BACKEND=mis_tei`  
+> 回退进程内：`EMBEDDING_BACKEND=local` + `DEVICE=npu:0/1`（一般不推荐，见 `README-DEPLOY-ASCEND.md`）
 ```bash
-cd app/app-deploy
+cd mis-tei-deploy && cp .env.example .env && docker compose --env-file .env up -d
+cd ../app/app-deploy
 cp .env.example .env
-# 确认 .env：EMBEDDING_DEVICE=npu:0  RAG_RERANKER_DEVICE=npu:1
-#           ASCEND_RT_VISIBLE_DEVICES=4,5
-#           BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
+# 确认：EMBEDDING_BACKEND=mis_tei  RAG_RERANKER_BACKEND=mis_tei
+#       MIS_TEI_*_BASE_URL、BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 docker compose -f docker-ascend/docker-compose-ascend.yml up -d --build
 ```
 
