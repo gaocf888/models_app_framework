@@ -138,9 +138,11 @@ services:
       - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
       - ${RAG_FAISS_DATA_HOST_PATH:-/aidata/data/faiss_data}:/workspace/data/faiss
       # 嵌入模型离线挂载
-      - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/Qwen3-Embedding-0.6B:/workspace/models/embeddings/Qwen3-Embedding-0.6B:ro
+#      - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/Qwen3-Embedding-0.6B:/workspace/models/embeddings/Qwen3-Embedding-0.6B:ro
+      - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-large-zh-v1.5:/workspace/models/embeddings/bge-large-zh-v1.5:ro
       # 重排模型离线挂载
-      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/Qwen3-Reranker-0.6B:/workspace/models/rerank/Qwen3-Reranker-0.6B:ro
+#      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/Qwen3-Reranker-0.6B:/workspace/models/rerank/Qwen3-Reranker-0.6B:ro
+      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/workspace/models/rerank/bge-reranker-large:ro
       # BERT 意图：须为已微调三分类 HF 目录；CHATBOT_INTENT_BACKEND=bert 时使用
       - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
       # 意图轻量 LLM（HF 目录直挂）；CHATBOT_INTENT_BACKEND=llm 时使用
