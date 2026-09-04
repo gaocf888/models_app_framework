@@ -399,7 +399,7 @@ sequenceDiagram
 | 模块 | 路径 | 职责 |
 |------|------|------|
 | 配置 | `app/core/config.py` | `RAGConfig`（top_k、向量库类型、FAISS 目录、嵌入模型）；`RAGConfig.graph`（`GraphRAGConfig`：Neo4j、混合策略等）。 |
-| 嵌入 | `app/rag/embedding_service.py` | sentence-transformers；离线路径优先，否则在线模型名；失败抛异常。 |
+| 嵌入 | `app/rag/embedding_service.py` | 双后端：`mis_tei`（默认，HTTP→MIS-TEI）/ `local`（sentence-transformers，离线优先）。 |
 | 向量库 | `app/rag/vector_store.py` | `VectorStore` 抽象；`FaissVectorStore`、`ElasticsearchVectorStore`（兼容 EasySearch）、`InMemoryVectorStore`；`VectorStoreProvider` 按 `RAG_VECTOR_STORE_TYPE` 选择。 |
 | 向量检索 | `app/rag/rag_service.py` | `index_texts` / `retrieve_context`；指标 `RAG_QUERY_COUNT`。 |
 | 摄入 | `app/rag/ingestion.py` | `RAGIngestionService`；数据集元数据内存登记；可选 Graph 摄入；删文档联动 MinIO figure 前缀。 |
@@ -420,11 +420,13 @@ sequenceDiagram
 
 ### 3.1 嵌入服务（EmbeddingService）
 
-- **模型**：默认 **`Qwen/Qwen3-Embedding-0.6B`**（1024 维），可通过 `EMBEDDING_MODEL_NAME` 覆盖。
-- **Qwen3 编码约定**：检索 query（`embed_text`）在配置 `EMBEDDING_QUERY_PROMPT_NAME=query` 时使用 `prompt_name="query"`；知识摄入 chunk（`embed_texts`）不带 prompt。
-- **加载顺序**：若 `EMBEDDING_MODEL_PATH` 指向有效目录则本地加载；否则按模型名在线加载；均失败则 `RuntimeError`。Qwen3 须 `EMBEDDING_TRUST_REMOTE_CODE=true`。
-- **设备**：`EMBEDDING_DEVICE`（cpu / cuda / cuda:N）；默认 CPU 部署栈下实际为 CPU。
-- **向量**：`normalize_embeddings=True`，与 FAISS `IndexFlatIP` 组合时等价于余弦相似度检索。换嵌入模型后须递增 `RAG_ES_INDEX_VERSION` 并 re-ingest。
+- **后端**：`EMBEDDING_BACKEND`（默认 **`mis_tei`**）→ HTTP 调 MIS-TEI（`app/rag/mis_tei_client.py`，部署见 `mis-tei-deploy/`）；**`local`** → 进程内 sentence-transformers。
+- **重排后端**：`RAG_RERANKER_BACKEND`（默认 **`mis_tei`**）；`local` 为 CrossEncoder / Qwen3Reranker。
+- **模型（local）**：如 **`BAAI/bge-large-zh-v1.5`** / **`Qwen/Qwen3-Embedding-0.6B`**，可通过 `EMBEDDING_MODEL_NAME` / `PATH` 覆盖。
+- **Qwen3 编码约定（local）**：检索 query（`embed_text`）在配置 `EMBEDDING_QUERY_PROMPT_NAME=query` 时使用 `prompt_name="query"`；知识摄入 chunk（`embed_texts`）不带 prompt。
+- **加载顺序（local）**：若 `EMBEDDING_MODEL_PATH` 有效则本地加载；否则按模型名在线加载；均失败则 `RuntimeError`。
+- **设备**：`EMBEDDING_DEVICE` 仅 `local` 生效；`mis_tei` 时由独立 TEI 服务推理。
+- **向量**：默认 L2 normalize；换嵌入模型后须递增 `RAG_ES_INDEX_VERSION` 并 re-ingest。
 
 ### 3.2 向量库（VectorStoreProvider）
 
@@ -557,16 +559,20 @@ sequenceDiagram
 | `RAG_RERANKER_MODEL_NAME` | CrossEncoder 重排模型 | `Qwen/Qwen3-Reranker-0.6B` |
 | `RAG_RERANKER_MODEL_PATH` | 本地重排模型目录（离线优先） | 空 |
 | `RAG_RERANKER_TRUST_REMOTE_CODE` | Qwen3 等自定义架构 | `true` |
-| `RAG_RERANKER_DEVICE` | 重排设备 | `cpu`（GPU 栈可设 `cuda:1`） |
+| `RAG_RERANKER_DEVICE` | 重排设备（仅 `RAG_RERANKER_BACKEND=local`） | `cpu`（GPU/NPU 栈可设） |
+| `RAG_RERANKER_BACKEND` | 重排后端 | `mis_tei`（默认）/ `local` |
+| `EMBEDDING_BACKEND` | 嵌入后端 | `mis_tei`（默认）/ `local` |
+| `MIS_TEI_EMBED_BASE_URL` | MIS-TEI 嵌入服务 | `http://mis-tei-embed:8080` |
+| `MIS_TEI_RERANK_BASE_URL` | MIS-TEI 重排服务 | `http://mis-tei-rerank:8080` |
+| `EMBEDDING_MODEL_PATH` | 本地嵌入模型目录（`local`） | 空 |
+| `EMBEDDING_MODEL_NAME` | HuggingFace 模型名（`local`） | `BAAI/bge-large-zh-v1.5` 等 |
+| `EMBEDDING_QUERY_PROMPT_NAME` | Qwen3 检索 query prompt（`local`） | 空或 `query` |
+| `EMBEDDING_TRUST_REMOTE_CODE` | Qwen3 加载（`local`） | `false`/`true` |
+| `EMBEDDING_DEVICE` | 嵌入设备（仅 `local`） | `cpu`（GPU/NPU 栈可设） |
 | `RAG_SCENE_LLM_*` | 通用推理场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
 | `RAG_SCENE_CHATBOT_*` | 智能客服场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
 | `RAG_SCENE_ANALYSIS_*` | 综合分析场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
 | `RAG_SCENE_NL2SQL_*` | NL2SQL 场景检索参数（TOP-K/召回/重排） | 见配置默认值 |
-| `EMBEDDING_MODEL_PATH` | 本地嵌入模型目录 | 空 |
-| `EMBEDDING_MODEL_NAME` | HuggingFace 模型名 | `Qwen/Qwen3-Embedding-0.6B` |
-| `EMBEDDING_QUERY_PROMPT_NAME` | Qwen3 检索 query prompt | `query` |
-| `EMBEDDING_TRUST_REMOTE_CODE` | Qwen3 加载 | `true` |
-| `EMBEDDING_DEVICE` | 嵌入设备 | `cpu`（GPU 栈可设 `cuda:0`） |
 
 #### 知识摄入平台（与设计稿 §4 对齐）
 

@@ -71,11 +71,12 @@
 | ID | 工作项 | 状态 | 验收要点 |
 |----|--------|------|----------|
 | D1 | 部署 **EasySearch**（`rag_db-deploy`） | ☐ | `9200` 健康；admin 密码已设；应用侧账号一致 |
-| D2 | 准备 LLM / 嵌入 / 重排 / MinerU 模型权重到约定宿主机路径 | ☐ | 路径与 compose 挂载一致 |
-| D3 | 部署 **vLLM**（`VLLM_PLATFORM=ascend`；底座 `v0.10.0rc1-310p`） | ☐ | `/health`、`/v1/models`；占用设备 `0,1,2,3` |
-| D4 | 部署 **MinerU**（Ascend；底座同上 + NPU 业务层） | ☐ | `/health`；与 app 同网、同 IO 卷；设备 `6`，与 vLLM/app **不重叠** |
-| D5 | 部署 **app 栈**（昇腾 compose：Redis + MinIO + models-app；底座同上） | ☐ | 对外端口可达；嵌入/重排走 NPU（设备 `4,5`） |
-| D6 | 联通外部 Docker 网络（vllm / rag / mineru） | ☐ | 容器内用服务名互访成功 |
+| D2 | 准备 LLM / 嵌入 / 重排 / MinerU 模型权重到约定宿主机路径 | ☐ | 路径与 compose / `mis-tei-deploy` 挂载一致（BGE 或现场选用模型） |
+| D3 | 部署 **vLLM**（`VLLM_PLATFORM=ascend`；底座以现场文档为准） | ☐ | `/health`、`/v1/models`；占用设备 `0,1,2,3` |
+| D3b | 部署 **MIS-TEI**（`mis-tei-deploy/`：embed + rerank） | ☐ | `/health`、`/embed`、`/rerank`；占设备 `4` / `5`；网络 `mis-tei-stack` |
+| D4 | 部署 **MinerU**（Ascend；底座同上 + NPU 业务层） | ☐ | `/health`；与 app 同网、同 IO 卷；设备 `6`，与 vLLM/mis-tei **不重叠** |
+| D5 | 部署 **app 栈**（昇腾 compose：Redis + MinIO + models-app） | ☐ | 对外端口可达；默认 `EMBEDDING_BACKEND=mis_tei` 调 MIS-TEI |
+| D6 | 联通外部 Docker 网络（vllm / rag / mineru / **mis-tei**） | ☐ | 容器内用服务名互访成功 |
 | D7 | 配置 `SERVICE_API_KEYS`、`LLM_*`、`RAG_ES_*`、`MINERU_*`、设备号 | ☐ | 业务接口鉴权与推理可用 |
 | D8 | 端到端冒烟：健康检查 → 简单 chat → RAG 摄入/问答 →（可选）扫描 PDF | ☐ | 记录结果与耗时 |
 

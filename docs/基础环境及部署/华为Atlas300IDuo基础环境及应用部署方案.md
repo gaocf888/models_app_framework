@@ -14,7 +14,7 @@
 在单台（或同构）**配备 4 张 Atlas 300I Duo_96G** 的推理服务器上，完成：
 
 1. **宿主机基础环境**：RAID/分区、NPU 驱动/固件、Docker/Compose、容器 NPU 注入、目录与内核参数；  
-2. **默认必部应用栈**：EasySearch → vLLM（昇腾）→ MinerU（昇腾）→ models-app（昇腾嵌入/重排）+ Redis + MinIO；  
+2. **默认必部应用栈**：EasySearch → vLLM（昇腾）→ **MIS-TEI**（嵌入/重排 HTTP）→ MinerU（昇腾）→ models-app + Redis + MinIO；  
 3. **可验收、可回滚** 的配置约定与资源切分。
 
 ### 1.2 现场约束（已确认）
@@ -64,7 +64,8 @@ lscpu | sed -n '1,40p'
 | EasySearch | `rag_db-deploy/` | **是** | 否 |
 | vLLM | `vllm-deploy/` | **是** | **是** |
 | MinerU | `mineru-deploy/` | **是**（RAG 扫描 PDF / 知识摄入） | **是** |
-| 应用 API + Redis + MinIO | `app/app-deploy/` | **是** | **是**（嵌入/重排走 NPU） |
+| MIS-TEI 嵌入/重排 | `mis-tei-deploy/` | **是**（昇腾默认） | **是**（独立 `mis-tei` 镜像，占卡 4/5） |
+| 应用 API + Redis + MinIO | `app/app-deploy/` | **是** | **是**（默认 `EMBEDDING_BACKEND=mis_tei`，经 HTTP 调 MIS-TEI；`local` 时可进程内 NPU） |
 | Paddle 版面 OCR | `paddleocr-layout-deploy/` | **否** | — |
 | Neo4j / GraphRAG | `graphrag_db-deploy/` | **否** | 否 |
 | 小模型 GPU profile | `models-app-gpu` | **否** | — |
@@ -102,11 +103,15 @@ lscpu | sed -n '1,40p'
   [2] vllm-service            （底座镜像直接用；设备 0,1,2,3＝卡0+卡1）
          │
          ▼
-  [3] mineru-api              （同底座 + MinerU NPU 层；设备 6＝卡3）
+  [3] mis-tei-embed / mis-tei-rerank
+      （独立 mis-tei 镜像；设备 4 / 5＝卡2 嵌入与重排 HTTP）
          │
          ▼
-  [4] models-app + redis + minio
-      （同底座 + 业务依赖；设备 4,5＝卡2 嵌入/重排）
+  [4] mineru-api              （同底座 + MinerU NPU 层；设备 6＝卡3）
+         │
+         ▼
+  [5] models-app + redis + minio
+      （同底座 + 业务依赖；默认 HTTP→MIS-TEI，勿与 mis-tei 争用 4/5）
 ```
 
 **推荐顺序（必须）**：
@@ -118,7 +123,7 @@ storcli 核对 VD0（系统 RAID1，不重切）
   → 安装 Docker/Compose（§4.4 在线或离线；本现场 Docker 与系统共位于 `/`）
   → 安装 Ascend Docker Runtime 7.1.RC1（§4.5）
   → 拉取统一镜像 vllm-ascend:v0.10.0rc1-310p
-  → EasySearch → 模型落盘（/aidata/models 在 VD1）→ vLLM → MinerU → app
+  → EasySearch → 模型落盘（/aidata/models 在 VD1）→ vLLM → MIS-TEI → MinerU → app
   → 端到端冒烟
 ```
 
@@ -128,6 +133,7 @@ storcli 核对 VD0（系统 RAID1，不重切）
 |------|-------------------|
 | vLLM | `http://vllm-service:8000/v1` |
 | EasySearch | `https://rag-easysearch:9200` |
+| MIS-TEI Embed / Rerank | `http://mis-tei-embed:8080` / `http://mis-tei-rerank:8080` |
 | MinerU | `http://mineru-api:8000` |
 | Redis | `redis://models-app-redis:6379/0`（以 compose 服务名为准） |
 
@@ -753,22 +759,24 @@ NPU 承担大模型与（目标态）嵌入/重排/MinerU 算力后，CPU 仍承
 | 设备号 | 下文默认按连续编号 **`0..7`**（卡0→`0,1`，卡1→`2,3`，卡2→`4,5`，卡3→`6,7`） |
 
 ```text
-物理卡0 (≈96GB)     物理卡1 (≈96GB)     物理卡2 (≈96GB)     物理卡3 (≈96GB)
-  dev 0,1              dev 2,3              dev 4,5              dev 6,7
-        └──── vLLM ────┘                    └ models-app ┘      └ MinerU ┘
+物理卡0 (≈96GB)     物理卡1 (≈96GB)     物理卡2 (≈96GB)          物理卡3 (≈96GB)
+  dev 0,1              dev 2,3              dev 4,5                 dev 6,7
+        └──── vLLM ────┘              mis-tei-embed(4)/rerank(5)   └ MinerU ┘
 ```
 
-> 若现场 `npu-smi` 按「NPU ID / Chip ID」展示且与上表不一致，**以现场编号改写本节所有 `ASCEND_RT_VISIBLE_DEVICES`**，切分原则不变：三栈 **按物理卡隔离**，禁止设备号重叠。
+> 若现场 `npu-smi` 按「NPU ID / Chip ID」展示且与上表不一致，**以现场编号改写本节所有 `ASCEND_RT_VISIBLE_DEVICES`**，切分原则不变：各栈 **按物理卡隔离**，禁止设备号重叠。  
+> **当前推荐**：嵌入/重排由 **`mis-tei-deploy/`** 独立服务占用卡2（详见 `mis-tei-deploy/README.md`、`README-DEPLOY-ASCEND.md`）；`models-app` 默认 `EMBEDDING_BACKEND=mis_tei`。
 
 ### 5.2 切分表（必须执行）
 
 | 服务 | 物理卡 | `ASCEND_RT_VISIBLE_DEVICES` | `TENSOR_PARALLEL_SIZE` / 设备 | 说明 |
 |------|--------|-----------------------------|-------------------------------|------|
 | **vLLM** | 卡0 + 卡1 | `0,1,2,3` | 默认 `2`；更大模型且镜像支持时可设 `4` | 大模型主算力；约 192GB 级显存池 |
-| **models-app** | 卡2 | `4,5` | 嵌入 `npu:0`、重排 `npu:1`（相对容器可见集） | Qwen3 嵌入/重排常驻，与推理隔离 |
+| **mis-tei-embed / rerank** | 卡2 | `4` / `5` | TEI 容器内 `TEI_NPU_DEVICE=0` | 默认嵌入/重排 HTTP；镜像 `mis-tei:26.0.0-310p-...` |
+| **models-app** | —（mis_tei 默认可留空） | （留空） | `EMBEDDING_BACKEND=mis_tei` | 勿与 mis-tei 争用 4/5；仅 `local` 回退时再挂 NPU |
 | **MinerU** | 卡3 | `6` | — | 知识摄入；设备 `7` 预留，默认不占用 |
 
-同机同时跑上述三栈时，必须按上表配置；**禁止**三栈都写 `0,1` 或互相重叠。
+同机同时跑上述栈时，必须按上表配置；**禁止**设备号互相重叠。
 
 ### 5.3 `.env` 配置（与上表一致）
 
@@ -778,17 +786,23 @@ ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
 TENSOR_PARALLEL_SIZE=2
 # 更大模型且镜像支持时：TENSOR_PARALLEL_SIZE=4
 
-# app/app-deploy/.env（昇腾栈）
-ASCEND_RT_VISIBLE_DEVICES=4,5
-EMBEDDING_DEVICE=npu:0
-RAG_RERANKER_DEVICE=npu:1
+# mis-tei-deploy/.env（嵌入/重排独立服务）
+MIS_TEI_EMBED_ASCEND_DEVICES=4
+MIS_TEI_RERANK_ASCEND_DEVICES=5
+
+# app/app-deploy/.env（昇腾栈 · 默认 MIS-TEI）
+EMBEDDING_BACKEND=mis_tei
+RAG_RERANKER_BACKEND=mis_tei
+MIS_TEI_EMBED_BASE_URL=http://mis-tei-embed:8080
+MIS_TEI_RERANK_BASE_URL=http://mis-tei-rerank:8080
+ASCEND_RT_VISIBLE_DEVICES=
+# local 回退：EMBEDDING_BACKEND=local + DEVICE=npu:0/1（见 .env.example）
 
 # mineru-deploy/.env
 ASCEND_RT_VISIBLE_DEVICES=6
 ```
 
-> 容器内 `npu:0` / `npu:1` 是 **可见设备集合内的相对编号**，不是宿主机全局号。app 仅暴露 `4,5` 时，容器内第一张仍是 `npu:0`。
-
+> `mis_tei` 模式下 models-app 不占卡2；`local` 回退时容器内 `npu:0` 仍是**可见集合内相对编号**。
 联调时可临时让 vLLM 只用 `0,1` 验证通路，确认后再恢复为上表的 `0,1,2,3`。
 
 ### 5.4 与沐曦/英伟达变量对照
@@ -970,14 +984,14 @@ docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
 | CPU | `docker-compose.yml` + `Dockerfile` |
 | 英伟达 | `docker-nvidia/` |
 | 沐曦 | `docker-mx/` |
-| **昇腾** | **无（需新增 `docker-ascend/`）** |
+| **昇腾** | 已有 **`docker-ascend/`**（见 `README-DEPLOY-ASCEND.md`） |
+| **MIS-TEI** | 仓库根 **`mis-tei-deploy/`**（默认嵌入/重排 HTTP，先于 app 启动） |
 
-沐曦参考实现要点（昇腾应对齐）：
+昇腾应用栈要点：
 
-- **底座**：`FROM quay.io/ascend/vllm-ascend:v0.10.0rc1-310p`（内含 CANN 8.2.RC1 + `torch_npu`）；
-- 业务层用 **pip + python3** 装 `requirements-大模型应用.txt` 等，**保护 `torch_npu`**，禁止换成 CUDA `torch`；Ubuntu 底座用 **apt**，勿硬套 `Dockerfile-mx` 的 yum；
-- compose：`privileged` / 设备可见性 / 外部网络 `vllm-external`、`rag-external`、`mineru-external`；
-- 嵌入/重排：`EMBEDDING_DEVICE`、`RAG_RERANKER_DEVICE`；
+- **底座**：`FROM quay.io/ascend/vllm-ascend:…-310p`（含 `torch_npu`；版本以现场 `.env` / `README-DEPLOY-ASCEND.md` 为准）；
+- compose：`privileged` / 外部网络含 `vllm-external`、`rag-external`、`mineru-external`、**`mis-tei-external`**；
+- **嵌入/重排（默认）**：`EMBEDDING_BACKEND=mis_tei` / `RAG_RERANKER_BACKEND=mis_tei` → HTTP 调 MIS-TEI；`local` 时再用 `EMBEDDING_DEVICE` / `RAG_RERANKER_DEVICE`；
 - Redis、MinIO 同栈启动。
 
 拉取底座：
@@ -1011,11 +1025,14 @@ RAG_ES_HOSTS=https://rag-easysearch:9200
 RAG_ES_USERNAME=admin
 RAG_ES_PASSWORD=<与 EasySearch 一致>
 
-EMBEDDING_MODEL_PATH=/workspace/models/embeddings/Qwen3-Embedding-0.6B
-RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
-# 设备：相对 ASCEND_RT_VISIBLE_DEVICES 可见集（§5：宿主机 4,5 → 容器内 npu:0 / npu:1）
-EMBEDDING_DEVICE=npu:0
-RAG_RERANKER_DEVICE=npu:1
+# 默认 MIS-TEI（须先启动 mis-tei-deploy）
+EMBEDDING_BACKEND=mis_tei
+RAG_RERANKER_BACKEND=mis_tei
+MIS_TEI_EMBED_BASE_URL=http://mis-tei-embed:8080
+MIS_TEI_RERANK_BASE_URL=http://mis-tei-rerank:8080
+# local 回退时再配路径与 DEVICE（见 app/app-deploy/.env.example）
+EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-large-zh-v1.5
+RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-large
 
 MINERU_ENABLED=true
 MINERU_BASE_URL=http://mineru-api:8000

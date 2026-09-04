@@ -177,7 +177,7 @@
     - 多命名空间管理（schema/biz_knowledge/qa_examples 等）。
 
 - **`EmbeddingService`**
-  - 职责：统一封装嵌入模型调用（sentence-transformers）。加载策略为配置化的「离线优先、在线回退」：`EMBEDDING_MODEL_PATH` 指定本地目录时优先加载，否则按 `EMBEDDING_MODEL_NAME` 从 HuggingFace 下载；在线失败时记录日志并抛出异常。依赖见项目 `requirements-大模型应用.txt`。
+  - 职责：统一封装嵌入调用。默认 **`mis_tei`**（HTTP→独立 MIS-TEI）；**`local`** 为 sentence-transformers，「离线优先、在线回退」（`EMBEDDING_MODEL_PATH` / `EMBEDDING_MODEL_NAME`）。依赖见 `requirements-大模型应用.txt`；部署见 `mis-tei-deploy/README.md`。
 
 - **`RAGService`**
   - 职责：

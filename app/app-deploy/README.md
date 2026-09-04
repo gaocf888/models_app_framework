@@ -39,7 +39,7 @@
 | 完整部署与参数说明（本文件） | `README.md` |
 | **英伟达 GPU 嵌入/重排（Qwen3）** | **`docker-nvidia/README.md`** + **`docker-nvidia/docker-compose-nvidia.yml`** + 本文「部署形态选择」 |
 | **沐曦 GPU 嵌入/重排** | **`docker-mx/docker-compose-mx.yml`** + 本文「部署形态选择」 |
-| **昇腾 Ascend 嵌入/重排** | **`docker-ascend/README.md`** + **`docker-ascend/docker-compose-ascend.yml`** + 本文「部署形态选择」 |
+| **昇腾 Ascend 嵌入/重排** | **默认 MIS-TEI**：`mis-tei-deploy/` + **`docker-ascend/`**（`EMBEDDING_BACKEND=mis_tei`）；见 `docker-ascend/README.md`、`README-DEPLOY-ASCEND.md` |
 | 局域网/离线外挂服务（vLLM/EasySearch/MinerU/**Paddle 版面侧车**） | `README-external-services-lan-deploy.md` |
 | 值班排障（当前先覆盖智能客服） | `deploy-docs/online-services-oncall-runbook.md` |
 
@@ -50,6 +50,7 @@
 | 能力 | 部署位置 | 说明 |
 |------|----------|------|
 | 大模型推理（vLLM） | `vllm-deploy/` | OpenAI 兼容 HTTP；应用通过 `LLM_DEFAULT_ENDPOINT` 访问 |
+| 嵌入 / 重排（昇腾默认） | `mis-tei-deploy/` | MIS-TEI HTTP；`EMBEDDING_BACKEND` / `RAG_RERANKER_BACKEND=mis_tei` |
 | 向量 + 全文检索 | `rag_db-deploy/`（EasySearch） | 应用通过 `RAG_ES_*` 连接 |
 | 扫描 PDF 解析（可选） | `mineru-deploy/` | 提供 `mineru-api`，用于扫描件 PDF 转 Markdown |
 | 检修结构化 V0 · 版面 OCR（可选） | **`paddleocr-layout-deploy/`** | 独立 **`paddleocr-layout-api`**；主应用 **`INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT`**；与 **`models-app`** 同 Docker 网络（`PADDLE_LAYOUT_DOCKER_NETWORK` / `paddle-layout-stack`） |
@@ -62,30 +63,37 @@
 
 ## 部署形态选择（CPU / 英伟达 GPU / 沐曦 GPU / 昇腾 Ascend）
 
-RAG **嵌入**与**重排**模型当前默认为 **Qwen3-Embedding-0.6B** + **Qwen3-Reranker-0.6B**（见 `.env.example`）。按宿主机算力与显卡类型选择 compose 栈：
+RAG **嵌入**与**重排**按宿主机算力选择 compose。昇腾现场 **默认独立 MIS-TEI**（`EMBEDDING_BACKEND=mis_tei`）；进程内 ST/CrossEncoder 为 `local` 回退（见 `.env.example`）。
 
 | 形态 | Compose / Dockerfile | 嵌入/重排设备 | 适用场景 |
 |------|----------------------|---------------|----------|
 | **CPU（默认）** | `docker-compose.yml` + `Dockerfile` | **CPU**（镜像无 CUDA/NPU PyTorch；`.env` 中 `cuda:N` / `npu:N` 不生效） | 开发联调、无加速卡、或 Qwen3 0.6B 可接受 CPU 延迟 |
-| **英伟达 GPU** | **`docker-nvidia/docker-compose-nvidia.yml`** + **`Dockerfile-nvidia`** | **GPU**（cu121 + `cuda:0` / `cuda:1`） | 英伟达服务器；与 vLLM 分卡跑嵌入/重排 |
+| **英伟达 GPU** | **`docker-nvidia/docker-compose-nvidia.yml`** + **`Dockerfile-nvidia`** | **GPU**（cu121 + `cuda:0` / `cuda:1`，`local`） | 英伟达服务器；与 vLLM 分卡跑嵌入/重排 |
 | **沐曦 GPU** | **`docker-mx/docker-compose-mx.yml`** + **`Dockerfile-mx`** | **GPU**（Metax 基础镜像 + conda；常用 `cuda:N` 串） | 沐曦/麒麟等 Metax 栈 |
-| **昇腾 Ascend** | **`docker-ascend/docker-compose-ascend.yml`** + **`Dockerfile-ascend`** | **NPU**（`vllm-ascend:v0.23.0-310p` + `npu:0` / `npu:1`） | Atlas 300I Duo；与 vLLM/MinerU 同底座 |
+| **昇腾 Ascend** | **`docker-ascend/`** + 仓库根 **`mis-tei-deploy/`** | **默认 MIS-TEI HTTP**（NPU 4/5）；`local` 时 `npu:0`/`npu:1` | Atlas 300I Duo；与 vLLM/MinerU 同底座 |
 | **小模型 GPU profile** | 英伟达/沐曦 compose + `--profile small-model-gpu` | 同上 + YOLO/通道等小模型 | 需 `/small-model/*`、视频通道等（昇腾默认不含） |
 
 **`.env` 共用**：各主栈均读取 **`app/app-deploy/.env`**（`docker-nvidia` / `docker-ascend` 用 `../.env`；`docker-mx` 常需复制到子目录）。显卡相关注释见 `.env.example`。
 
-**Qwen3 嵌入/重排推荐 `.env` 片段**：
+**昇腾默认（MIS-TEI）`.env` 片段**：
 
 ```env
+EMBEDDING_BACKEND=mis_tei
+RAG_RERANKER_BACKEND=mis_tei
+MIS_TEI_EMBED_BASE_URL=http://mis-tei-embed:8080
+MIS_TEI_RERANK_BASE_URL=http://mis-tei-rerank:8080
+BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
+```
+
+**进程内 `local` 嵌入/重排 `.env` 片段**（英伟达 / 沐曦 / 昇腾回退）：
+
+```env
+EMBEDDING_BACKEND=local
+RAG_RERANKER_BACKEND=local
 # 英伟达 / 沐曦
 # EMBEDDING_DEVICE=cuda:0
 # RAG_RERANKER_DEVICE=cuda:1
-
-# 昇腾 Ascend（§5：ASCEND_RT_VISIBLE_DEVICES=4,5 → 容器内相对 npu:0 / npu:1）
-EMBEDDING_DEVICE=npu:0
-RAG_RERANKER_DEVICE=npu:1
-ASCEND_RT_VISIBLE_DEVICES=4,5
-BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
+# 昇腾 local：EMBEDDING_DEVICE=npu:0  RAG_RERANKER_DEVICE=npu:1  ASCEND_RT_VISIBLE_DEVICES=4,5
 ```
 
 > `models-app-gpu` 的重排容器路径为 **`/models/rerank/Qwen3-Reranker-0.6B`**（与 `models-app` 的 `/workspace/models/rerank/...` 不同），compose 已写死挂载，`.env` 中 `RAG_RERANKER_MODEL_PATH` 会被 compose `environment` 覆盖为对应值。

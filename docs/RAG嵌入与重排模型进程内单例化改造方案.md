@@ -4,6 +4,8 @@
 > **适用范围**：`app/rag/`、`app/nl2sql/`、依赖 RAG 的 `services/` / `api/` / `llm/graphs/` / `llm/chains/`。  
 > **关联现状**：单卡 3090 与 vLLM 同机部署时多次出现 `EmbeddingService` CUDA OOM；根因分析表明 **vLLM 占显存 + 进程内 7 份 embed 重复加载** 叠加导致。
 
+> **关联**：昇腾生产默认亦可走独立 **MIS-TEI**（`EMBEDDING_BACKEND=mis_tei`），此时进程内不加载 ST 权重，单例化问题主要适用于 **`local`** 后端。部署见 `mis-tei-deploy/README.md`。
+
 ---
 
 ## 1. 背景与问题
