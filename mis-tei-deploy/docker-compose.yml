@@ -1,0 +1,88 @@
+# =============================================================================
+# MIS-TEI · 昇腾 Embedding / Reranker 独立服务
+# =============================================================================
+# 镜像：swr.cn-south-1.myhuaweicloud.com/ascendhub/mis-tei:26.0.0-310p-ubuntu22.04-py3.11
+# 启动（在 mis-tei-deploy 目录）：
+#   cp .env.example .env && 编辑路径
+#   docker compose --env-file .env up -d
+#
+# 四卡切分建议：embed=物理卡4，rerank=物理卡5（与 vLLM 0-3、MinerU 6 错开）
+# models-app 通过 Docker 网络 mis-tei-stack 访问：
+#   http://mis-tei-embed:8080  /embed
+#   http://mis-tei-rerank:8080 /rerank
+# =============================================================================
+
+version: "3.8"
+
+x-mis-tei-common: &mis-tei-common
+  image: ${MIS_TEI_IMAGE:-swr.cn-south-1.myhuaweicloud.com/ascendhub/mis-tei:26.0.0-310p-ubuntu22.04-py3.11}
+  restart: unless-stopped
+  runtime: ${ASCEND_DOCKER_RUNTIME:-ascend}
+  privileged: true
+  user: root
+  ipc: host
+  networks:
+    - mis-tei-net
+  volumes:
+    - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+    - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
+    - /usr/local/sbin:/usr/local/sbin:ro
+    - /dev:/dev
+  healthcheck:
+    test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 10
+    start_period: 120s
+
+services:
+  mis-tei-embed:
+    <<: *mis-tei-common
+    container_name: ${MIS_TEI_EMBED_CONTAINER_NAME:-mis-tei-embed}
+    ports:
+      - "${MIS_TEI_EMBED_HOST_PORT:-8091}:8080"
+    environment:
+      - ASCEND_RT_VISIBLE_DEVICES=${MIS_TEI_EMBED_ASCEND_DEVICES:-4}
+      - TEI_NPU_DEVICE=${MIS_TEI_EMBED_TEI_NPU_DEVICE:-0}
+      - ENABLE_BOOST=${MIS_TEI_ENABLE_BOOST:-True}
+      - HOME=/home/HwHiAiUser
+    volumes:
+      - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
+      - /usr/local/sbin:/usr/local/sbin:ro
+      - /dev:/dev
+      # 宿主机目录下须有子目录 bge-large-zh-v1.5（与 MIS_TEI_EMBED_MODEL_ID 末段一致）
+      - ${MIS_TEI_EMBED_MODELS_HOST_PATH:-/aidata/models/embeddings}:/home/HwHiAiUser/model:ro
+    # 镜像入口：MODEL_ID LISTEN_IP LISTEN_PORT
+    command:
+      - ${MIS_TEI_EMBED_MODEL_ID:-BAAI/bge-large-zh-v1.5}
+      - "0.0.0.0"
+      - "8080"
+    mem_limit: ${MIS_TEI_EMBED_MEM_LIMIT:-16g}
+
+  mis-tei-rerank:
+    <<: *mis-tei-common
+    container_name: ${MIS_TEI_RERANK_CONTAINER_NAME:-mis-tei-rerank}
+    ports:
+      - "${MIS_TEI_RERANK_HOST_PORT:-8092}:8080"
+    environment:
+      - ASCEND_RT_VISIBLE_DEVICES=${MIS_TEI_RERANK_ASCEND_DEVICES:-5}
+      - TEI_NPU_DEVICE=${MIS_TEI_RERANK_TEI_NPU_DEVICE:-0}
+      - ENABLE_BOOST=${MIS_TEI_ENABLE_BOOST:-True}
+      - HOME=/home/HwHiAiUser
+    volumes:
+      - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
+      - /usr/local/sbin:/usr/local/sbin:ro
+      - /dev:/dev
+      - ${MIS_TEI_RERANK_MODELS_HOST_PATH:-/aidata/models/reranker}:/home/HwHiAiUser/model:ro
+    command:
+      - ${MIS_TEI_RERANK_MODEL_ID:-BAAI/bge-reranker-large}
+      - "0.0.0.0"
+      - "8080"
+    mem_limit: ${MIS_TEI_RERANK_MEM_LIMIT:-16g}
+
+networks:
+  mis-tei-net:
+    name: ${MIS_TEI_NETWORK_NAME:-mis-tei-stack}
+    driver: bridge

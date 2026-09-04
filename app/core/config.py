@@ -196,6 +196,8 @@ class HybridRetrievalConfig:
     # 可选：显式指定 CrossEncoder 设备，例如 cpu / cuda / cuda:1。
     # 为空时使用 sentence-transformers 默认设备选择。
     reranker_device: str | None = None
+    # 重排后端：mis_tei（默认，HTTP）| local（进程内 CrossEncoder / Qwen3Reranker）
+    reranker_backend: str = "mis_tei"
 
 
 @dataclass
@@ -327,6 +329,8 @@ class RAGConfig:
     # 可选：显式指定 SentenceTransformer 设备，例如 cpu / cuda / cuda:0。
     # 为空时使用 sentence-transformers 默认设备选择。
     embedding_device: str | None = None
+    # 嵌入后端：mis_tei（默认，HTTP→MIS-TEI）| local（进程内 SentenceTransformer）
+    embedding_backend: str = "mis_tei"
 
     # GraphRAG（Neo4j + LangChain Graph），默认关闭，与向量 RAG 并行可选
     graph: GraphRAGConfig = field(default_factory=GraphRAGConfig)
@@ -386,6 +390,25 @@ class PromptConfig:
     chatbot: PromptABConfig = field(default_factory=PromptABConfig)
     analysis: PromptABConfig = field(default_factory=PromptABConfig)
     nl2sql: PromptABConfig = field(default_factory=PromptABConfig)
+
+
+@dataclass
+class MisTeiConfig:
+    """
+    昇腾 MIS-TEI 独立服务（Embedding / Reranker HTTP）。
+
+    与 mis-tei-deploy 中 mis-tei-embed / mis-tei-rerank 对接；
+    由 RAGConfig.embedding_backend / HybridRetrievalConfig.reranker_backend 选择是否启用。
+    """
+
+    embed_base_url: str = "http://mis-tei-embed:8080"
+    rerank_base_url: str = "http://mis-tei-rerank:8080"
+    timeout_s: float = 120.0
+    embed_batch_size: int = 32
+    rerank_batch_size: int = 16
+    # remote 模式下向量维度（与 bge-large-zh-v1.5 等一致；亦可启动时探测覆盖）
+    embedding_dim: int = 1024
+    normalize_embeddings: bool = True
 
 
 @dataclass
@@ -933,6 +956,7 @@ class AppConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     prompt: PromptConfig = field(default_factory=PromptConfig)
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
+    mis_tei: MisTeiConfig = field(default_factory=MisTeiConfig)
     chatbot: ChatbotConfig = field(default_factory=ChatbotConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     nl2sql_intent: NL2SQLIntentConfig = field(default_factory=NL2SQLIntentConfig)
@@ -1124,6 +1148,7 @@ def _load_from_env() -> AppConfig:
         reranker_model_path=os.getenv("RAG_RERANKER_MODEL_PATH") or None,
         reranker_model_name=os.getenv("RAG_RERANKER_MODEL_NAME", "BAAI/bge-reranker-large"),
         reranker_device=os.getenv("RAG_RERANKER_DEVICE") or None,
+        reranker_backend=(os.getenv("RAG_RERANKER_BACKEND") or "mis_tei").strip().lower() or "mis_tei",
     )
     scene_profiles_cfg = RAGSceneProfilesConfig(
         llm_inference=RAGSceneProfile(
@@ -1269,6 +1294,7 @@ def _load_from_env() -> AppConfig:
         embedding_query_prompt_name=(os.getenv("EMBEDDING_QUERY_PROMPT_NAME") or "").strip() or None,
         embedding_trust_remote_code=os.getenv("EMBEDDING_TRUST_REMOTE_CODE", "false").lower() == "true",
         embedding_device=(os.getenv("EMBEDDING_DEVICE") or "").strip() or None,
+        embedding_backend=(os.getenv("EMBEDDING_BACKEND") or "mis_tei").strip().lower() or "mis_tei",
         graph=graph_cfg,
         ingestion=ingestion_cfg,
         content_fetch=content_fetch_cfg,
@@ -1296,6 +1322,16 @@ def _load_from_env() -> AppConfig:
         redis_semaphore_key_prefix=os.getenv("MINERU_REDIS_SEM_KEY_PREFIX", "mineru:ingest"),
         file_parse_path=os.getenv("MINERU_FILE_PARSE_PATH", "/file_parse"),
         disk_fallback_subdir=os.getenv("MINERU_DISK_FALLBACK_SUBDIR", "mineru-output"),
+    )
+
+    mis_tei_cfg = MisTeiConfig(
+        embed_base_url=(os.getenv("MIS_TEI_EMBED_BASE_URL") or "http://mis-tei-embed:8080").rstrip("/"),
+        rerank_base_url=(os.getenv("MIS_TEI_RERANK_BASE_URL") or "http://mis-tei-rerank:8080").rstrip("/"),
+        timeout_s=float(os.getenv("MIS_TEI_TIMEOUT_S", "120")),
+        embed_batch_size=max(1, int(os.getenv("MIS_TEI_EMBED_BATCH_SIZE", "32"))),
+        rerank_batch_size=max(1, int(os.getenv("MIS_TEI_RERANK_BATCH_SIZE", "16"))),
+        embedding_dim=max(1, int(os.getenv("MIS_TEI_EMBEDDING_DIM") or os.getenv("EMBEDDING_DIM") or "1024")),
+        normalize_embeddings=os.getenv("MIS_TEI_NORMALIZE_EMBEDDINGS", "true").lower() == "true",
     )
 
     chatbot_cfg = ChatbotConfig(
@@ -1930,6 +1966,7 @@ def _load_from_env() -> AppConfig:
         rag=rag_cfg,
         face_vector=face_vector_cfg,
         mineru=mineru_cfg,
+        mis_tei=mis_tei_cfg,
         chatbot=chatbot_cfg,
         analysis=analysis_cfg,
         nl2sql_intent=nl2sql_intent_cfg,

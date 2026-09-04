@@ -188,18 +188,19 @@ docker load -i vllm-ascend-v0.23.0-310p.tar
 ## 3. 架构与四卡切分
 
 ```text
-物理卡0 (dev 0,1)     物理卡1 (dev 2,3)     物理卡2 (dev 4,5)     物理卡3 (dev 6,7)
-        └──────── vLLM ────────┘              └ models-app ┘      └ MinerU ┘
-                                              (嵌入/重排)         (设备 6；7 预留)
+物理卡0 (dev 0,1)     物理卡1 (dev 2,3)     物理卡2 (dev 4,5)           物理卡3 (dev 6,7)
+        └──────── vLLM ────────┘         mis-tei-embed(4) / rerank(5)    └ MinerU ┘
+                                         （默认嵌入/重排 HTTP）            (设备 6；7 预留)
 ```
 
 | 服务 | `ASCEND_RT_VISIBLE_DEVICES` | 说明 |
 |------|-----------------------------|------|
 | vLLM | `0,1,2,3` | `qwen3-8b` 可用 `TENSOR_PARALLEL_SIZE=2`；`qwen3.6-27b` 预设 TP=4，**.env 勿小于 4** |
-| models-app | `4,5` | 容器内 `EMBEDDING_DEVICE=npu:0`、`RAG_RERANKER_DEVICE=npu:1` |
+| mis-tei-embed / mis-tei-rerank | `4` / `5` | 见仓库根 `mis-tei-deploy/`；镜像 `mis-tei:26.0.0-310p-...` |
+| models-app | （mis_tei 默认可留空） | `EMBEDDING_BACKEND=mis_tei` 时不占 4/5；仅 `local` 回退时再挂 NPU |
 | MinerU | `6` | `MINERU_DEVICE_MODE=npu` |
 
-> `npu:0` 是**容器可见集合内的相对编号**。app 只暴露 `4,5` 时，容器内第一张仍是 `npu:0`。
+> `npu:0` 是**容器可见集合内的相对编号**。mis-tei 单卡可见时容器内即 `TEI_NPU_DEVICE=0`。
 
 容器内推荐地址：
 
@@ -207,8 +208,29 @@ docker load -i vllm-ascend-v0.23.0-310p.tar
 |------|------|
 | vLLM | `http://vllm-service:8000/v1` |
 | EasySearch | `https://rag-easysearch:9200` |
+| MIS-TEI Embed | `http://mis-tei-embed:8080` |
+| MIS-TEI Rerank | `http://mis-tei-rerank:8080` |
 | MinerU | `http://mineru-api:8000` |
 | Redis | `redis://redis:6379/0`（以 compose 服务名为准） |
+
+独立部署 MIS-TEI：
+
+```bash
+cd mis-tei-deploy && cp .env.example .env   # 核对模型路径与 NPU 4/5
+docker compose --env-file .env up -d
+```
+
+应用侧默认（`app/app-deploy/.env`）：
+
+```env
+EMBEDDING_BACKEND=mis_tei
+RAG_RERANKER_BACKEND=mis_tei
+MIS_TEI_EMBED_BASE_URL=http://mis-tei-embed:8080
+MIS_TEI_RERANK_BASE_URL=http://mis-tei-rerank:8080
+MIS_TEI_NETWORK_NAME=mis-tei-stack
+```
+
+回退进程内：`EMBEDDING_BACKEND=local` + `RAG_RERANKER_BACKEND=local`（并配置 DEVICE / 模型路径）。
 
 ---
 
@@ -1053,12 +1075,21 @@ RAG_ES_USERNAME=admin
 RAG_ES_PASSWORD=<与 EasySearch 一致>
 RAG_ES_VERIFY_CERTS=false
 
-# 嵌入 / 重排 + 四卡切分（与「设备与可见卡」小节成对）
-EMBEDDING_MODEL_PATH=/workspace/models/embeddings/Qwen3-Embedding-0.6B
-RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
-EMBEDDING_DEVICE=npu:0
-RAG_RERANKER_DEVICE=npu:1
-ASCEND_RT_VISIBLE_DEVICES=4,5
+# 嵌入 / 重排（默认 MIS-TEI；须先启动 mis-tei-deploy）
+EMBEDDING_BACKEND=mis_tei
+RAG_RERANKER_BACKEND=mis_tei
+MIS_TEI_EMBED_BASE_URL=http://mis-tei-embed:8080
+MIS_TEI_RERANK_BASE_URL=http://mis-tei-rerank:8080
+MIS_TEI_NETWORK_NAME=mis-tei-stack
+MIS_TEI_EMBEDDING_DIM=1024
+# local 回退时再设路径与 DEVICE；勿与 mis-tei 争用卡 4/5
+# EMBEDDING_BACKEND=local
+# RAG_RERANKER_BACKEND=local
+EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-large-zh-v1.5
+RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-large
+EMBEDDING_DEVICE=cpu
+RAG_RERANKER_DEVICE=cpu
+ASCEND_RT_VISIBLE_DEVICES=
 BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 
 # MinerU
@@ -1089,6 +1120,8 @@ PYTHONPATH=. python -c "from app.auth.keygen import generate_service_api_key; pr
 # 占位网络（未部署侧车/人脸库时仍需存在，否则 compose 因 external 失败）
 docker network create paddle-layout-stack 2>/dev/null || true
 docker network create face-milvus-stack 2>/dev/null || true
+# MIS-TEI 须先 up（或至少已创建同名网络）；默认后端依赖 mis-tei-stack
+# cd ../../../mis-tei-deploy && docker compose --env-file .env up -d
 
 # 启动  加速卡docker-compose配置文件与上方关键配置项对应
 docker compose --env-file .env -f docker-ascend/docker-compose-ascend.yml up -d --build

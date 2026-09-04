@@ -105,6 +105,31 @@ class RAGService:
         with self._reranker_lock:
             if self._reranker is not None:
                 return self._reranker
+            backend = (getattr(self._cfg.hybrid, "reranker_backend", None) or "mis_tei").strip().lower()
+            if backend == "mis_tei":
+                try:
+                    from app.rag.mis_tei_client import MisTeiReranker
+
+                    tei = get_app_config().mis_tei
+                    self._reranker = MisTeiReranker(
+                        base_url=tei.rerank_base_url,
+                        timeout_s=tei.timeout_s,
+                        batch_size=tei.rerank_batch_size,
+                    )
+                    logger.info(
+                        "RAGService loaded MisTeiReranker base_url=%s batch_size=%s",
+                        tei.rerank_base_url,
+                        tei.rerank_batch_size,
+                    )
+                    return self._reranker
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "RAGService failed to init MisTeiReranker; skip rerank. err=%s",
+                        e,
+                    )
+                    self._reranker = None
+                    return None
+
             hub_name = (self._cfg.hybrid.reranker_model_name or "BAAI/bge-reranker-large").strip()
             raw_path = (self._cfg.hybrid.reranker_model_path or "").strip()
             configured_device = (self._cfg.hybrid.reranker_device or "").strip() or None
