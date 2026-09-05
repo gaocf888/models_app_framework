@@ -2,6 +2,7 @@
 # MIS-TEI · 昇腾 Embedding / Reranker 独立服务
 # =============================================================================
 # 镜像：swr.cn-south-1.myhuaweicloud.com/ascendhub/mis-tei:26.0.0-310p-ubuntu22.04-py3.11
+# 入口（26.0.0）：start.sh --model-id <path|id> --hostname 0.0.0.0 --port 8080 ...
 # 启动（在 mis-tei-deploy 目录）：
 #   cp .env.example .env && 编辑路径
 #   docker compose --env-file .env up -d
@@ -33,7 +34,7 @@ x-mis-tei-common: &mis-tei-common
     interval: 30s
     timeout: 10s
     retries: 10
-    start_period: 120s
+    start_period: 180s
 
 services:
   mis-tei-embed:
@@ -51,13 +52,19 @@ services:
       - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
       - /usr/local/sbin:/usr/local/sbin:ro
       - /dev:/dev
-      # 宿主机目录下须有子目录 bge-large-zh-v1.5（与 MIS_TEI_EMBED_MODEL_ID 末段一致）
-      - ${MIS_TEI_EMBED_MODELS_HOST_PATH:-/aidata/models/embeddings}:/home/HwHiAiUser/model:ro
-    # 镜像入口：MODEL_ID LISTEN_IP LISTEN_PORT
+      # 宿主机 .../embeddings/bge-large-zh-v1.5 → 容器 /home/HwHiAiUser/model/bge-large-zh-v1.5
+      # 须可写：仅有 pytorch_model.bin 时 TEI 会就地生成 model.safetensors（只读挂载会报 ReadOnlyFilesystem）
+      - ${MIS_TEI_EMBED_MODELS_HOST_PATH:-/aidata/models/embeddings}:/home/HwHiAiUser/model:rw
+    # 26.0.0 要求命名参数（非旧版位置参数 MODEL_ID IP PORT）
     command:
-      - ${MIS_TEI_EMBED_MODEL_ID:-BAAI/bge-large-zh-v1.5}
+      - --model-id
+      - ${MIS_TEI_EMBED_MODEL_ID:-/home/HwHiAiUser/model/bge-large-zh-v1.5}
+      - --hostname
       - "0.0.0.0"
+      - --port
       - "8080"
+      - --served-model-name
+      - ${MIS_TEI_EMBED_SERVED_NAME:-bge-large-zh-v1.5}
     mem_limit: ${MIS_TEI_EMBED_MEM_LIMIT:-16g}
 
   mis-tei-rerank:
@@ -75,12 +82,18 @@ services:
       - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
       - /usr/local/sbin:/usr/local/sbin:ro
       - /dev:/dev
-      - ${MIS_TEI_RERANK_MODELS_HOST_PATH:-/aidata/models/reranker}:/home/HwHiAiUser/model:ro
+      # 须可写：同上，缺 model.safetensors 时 TEI 会转换写入
+      - ${MIS_TEI_RERANK_MODELS_HOST_PATH:-/aidata/models/reranker}:/home/HwHiAiUser/model:rw
     command:
-      - ${MIS_TEI_RERANK_MODEL_ID:-BAAI/bge-reranker-large}
+      - --model-id
+      - ${MIS_TEI_RERANK_MODEL_ID:-/home/HwHiAiUser/model/bge-reranker-large}
+      - --hostname
       - "0.0.0.0"
+      - --port
       - "8080"
-    mem_limit: ${MIS_TEI_RERANK_MEM_LIMIT:-16g}
+      - --served-model-name
+      - ${MIS_TEI_RERANK_SERVED_NAME:-bge-reranker-large}
+    mem_limit: ${MIS_TEI_RERANK_MEM_LIMIT:-32g}
 
 networks:
   mis-tei-net:

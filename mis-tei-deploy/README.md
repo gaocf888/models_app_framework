@@ -15,12 +15,17 @@ cp .env.example .env
 mkdir -p /aidata/models/embeddings /aidata/models/reranker
 ```
 
-离线权重布局（目录名须与模型 ID 末段一致）：
+离线权重布局（挂载到容器 `/home/HwHiAiUser/model`）：
 
 ```text
-/aidata/models/embeddings/bge-large-zh-v1.5/     # ← MIS_TEI_EMBED_MODEL_ID=BAAI/bge-large-zh-v1.5
-/aidata/models/reranker/bge-reranker-large/      # ← MIS_TEI_RERANK_MODEL_ID=BAAI/bge-reranker-large
+/aidata/models/embeddings/bge-large-zh-v1.5/   → --model-id /home/HwHiAiUser/model/bge-large-zh-v1.5
+/aidata/models/reranker/bge-reranker-large/    → --model-id /home/HwHiAiUser/model/bge-reranker-large
 ```
+
+> **26.0.0 镜像**入口为命名参数：`--model-id` / `--hostname` / `--port`（不再支持旧版位置参数 `MODEL_ID IP PORT`）。
+> `.env` 中 `MIS_TEI_*_MODEL_ID` 填容器内路径或 Hub id。
+>
+> 模型目录挂载为 **rw**：若权重只有 `pytorch_model.bin`，首次启动会生成 `model.safetensors`。也可在宿主机预先转换后改回只读。
 
 ## 2. 启动
 
@@ -90,3 +95,5 @@ RAG_RERANKER_DEVICE=cpu
 - 镜像详情见 [昇腾镜像仓库 MIS-TEI](https://www.hiascend.com/developer/ascendhub/detail/07a016975cc341f3a5ae131f2b52399d)。
 - `ENABLE_BOOST=True` 适用于 BERT 类向量加速；若启动失败可改为 `False` 排查。
 - 本 compose **不构建镜像**，仅拉取/加载已有 `mis-tei` 镜像。
+- **`Could not find a Sentence Transformers config`**：CrossEncoder 重排模型常见 WARN，一般可忽略。
+- **日志反复 `Killed`**：多为容器/宿主机 OOM。先查 `docker inspect mis-tei-rerank --format '{{.State.OOMKilled}}'` 与 `dmesg | grep -i oom`；将 `.env` 中 `MIS_TEI_RERANK_MEM_LIMIT` 提到 `32g`/`48g`，或暂时去掉 compose 里该服务的 `mem_limit` 后 `--force-recreate`。
