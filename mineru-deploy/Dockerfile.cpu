@@ -1,4 +1,7 @@
-FROM python:3.11-slim
+# 国内镜像站拉 docker.io 失败时，可在 compose 传入 BASE_IMAGE，例如：
+#   docker.m.daocloud.io/library/python:3.11-slim
+ARG BASE_IMAGE=python:3.11-slim
+FROM ${BASE_IMAGE}
 
 ARG MINERU_PIP_SPEC=mineru[core]
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple

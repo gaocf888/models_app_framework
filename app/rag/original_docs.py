@@ -20,6 +20,34 @@ DOC_STATUS_UPLOADED = "UPLOADED"
 MINIO_URI_PREFIX = "minio://"
 LOCAL_URI_PREFIX = "local:"
 
+# Swagger UI / OpenAPI Try-it-out 常把可选 Form 字段预填为类型名；勿当作真实业务值
+_SWAGGER_FORM_PLACEHOLDERS = frozenset(
+    {
+        "string",
+        "str",
+        "null",
+        "none",
+        "undefined",
+        "object",
+        "integer",
+        "number",
+        "boolean",
+        "array",
+    }
+)
+
+
+def sanitize_optional_form_str(value: str | None) -> str | None:
+    """
+    清洗可选 multipart Form 字符串：空串与 Swagger 占位符视为未传。
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s.lower() in _SWAGGER_FORM_PLACEHOLDERS:
+        return None
+    return s
+
 
 class OriginalObjectError(ValueError):
     """对象存储原文读写失败。"""

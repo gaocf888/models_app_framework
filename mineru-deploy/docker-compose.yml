@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile.cpu
       args:
+        BASE_IMAGE: ${MINERU_CPU_BASE_IMAGE:-python:3.11-slim}
         MINERU_PIP_SPEC: ${MINERU_CPU_PIP_SPEC:-mineru[core]}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
     image: ${MINERU_CPU_IMAGE:-mineru-cpu:py311}

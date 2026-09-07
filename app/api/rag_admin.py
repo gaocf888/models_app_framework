@@ -55,6 +55,7 @@ from app.rag.original_docs import (
     guess_source_type,
     original_ref_from_record,
     resolve_namespace_kb_for_ingest,
+    sanitize_optional_form_str,
 )
 from app.rag.graph_namespace_resync import run_graph_resync_after_namespace_move
 from app.core.logging import get_logger
@@ -1650,16 +1651,29 @@ class UploadDocumentResponse(BaseModel):
 async def upload_document(
     file: Annotated[UploadFile, File(description="原文件")],
     namespace: Annotated[str, Form(description="必填。知识分类 / namespace，不允许为空")],
-    dataset_id: Annotated[str | None, Form(description="数据集 ID；省略则用 RAG_DEFAULT_DATASET_ID")] = None,
-    doc_name: Annotated[str | None, Form(description="文档逻辑名；省略则用文件名（去扩展名）")] = None,
+    dataset_id: Annotated[
+        str | None,
+        Form(description="数据集 ID；省略则用 RAG_DEFAULT_DATASET_ID（勿填 Swagger 占位 string）"),
+    ] = None,
+    doc_name: Annotated[
+        str | None,
+        Form(
+            description="文档逻辑名；省略或 Swagger 占位 string/null 时用上传文件名（去扩展名）"
+        ),
+    ] = None,
     description: Annotated[str | None, Form(description="人读说明")] = None,
-    doc_version: Annotated[str, Form(description="文档版本，默认 v1")] = "v1",
+    doc_version: Annotated[
+        str,
+        Form(description="文档版本，默认 v1（勿填 Swagger 占位 string）"),
+    ] = "v1",
     tenant_id: Annotated[str | None, Form(description="租户 ID")] = None,
 ) -> UploadDocumentResponse:
     """
     仅上传原文到对象存储并写入 docs 登记（``status=UPLOADED``），**不**提交摄入任务。
 
     随后调用 ``POST /rag/jobs/ingest``，将 ``content`` / ``source_uri`` 设为响应中的 ``object_key``。
+
+    **注意**：Swagger Try it out 勿保留 Form 预填的 ``string``；``doc_name`` 等占位值会被忽略并回退到文件名。
     """
     from pathlib import Path as _Path
 
@@ -1669,17 +1683,29 @@ async def upload_document(
     from app.rag.namespace_kb import merge_doc_metadata_for_record
 
     try:
-        ns = _ensure_ingest_namespace(namespace, always=True)
+        ns_raw = sanitize_optional_form_str(namespace)
+        if not ns_raw:
+            raise ValueError(
+                "namespace is required (do not use Swagger placeholder values like 'string')"
+            )
+        ns = _ensure_ingest_namespace(ns_raw, always=True)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     filename = _Path(file.filename or "upload.bin").name
-    logical_name = (doc_name or "").strip() or _Path(filename).stem or "upload"
+    logical_name = (
+        sanitize_optional_form_str(doc_name) or _Path(filename).stem or "upload"
+    )
     cfg = get_app_config().rag
     ingest_cfg = cfg.ingestion
-    ds = (dataset_id or "").strip() or ingest_cfg.default_dataset_id or "default"
-    ver = (doc_version or "v1").strip() or "v1"
-    td = (tenant_id or "").strip() or None
+    ds = (
+        sanitize_optional_form_str(dataset_id)
+        or (ingest_cfg.default_dataset_id or "").strip()
+        or "default"
+    )
+    ver = sanitize_optional_form_str(doc_version) or "v1"
+    td = sanitize_optional_form_str(tenant_id)
+    description_clean = sanitize_optional_form_str(description)
     max_bytes = int(cfg.content_fetch.max_bytes or 50 * 1024 * 1024)
 
     data = await file.read()
@@ -1734,7 +1760,7 @@ async def upload_document(
         tenant_id=td,
         source_type=source_type,
         source_uri=uri,
-        description=description if description is not None else existing.get("description"),
+        description=description_clean if description_clean is not None else existing.get("description"),
         metadata=meta,
         namespace_kb_enabled=enabled,
         namespace_kb_priority=priority,
