@@ -1093,7 +1093,8 @@ async def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
     """
     try:
         rows = _get_doc_repo().list(
-            limit=100_000,
+            # 按 doc_name 过滤后通常极少；不可用 100000（超过 ES max_result_window=10000）
+            limit=1000,
             offset=0,
             namespace=req.namespace,
             doc_name=req.doc_name,

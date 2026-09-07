@@ -19,6 +19,9 @@ from app.rag.namespace_kb import (
 
 logger = get_logger(__name__)
 
+# Elasticsearch 默认 index.max_result_window；from+size 超限会 400
+_ES_MAX_RESULT_WINDOW = 10_000
+
 
 def _escape_es_wildcard(value: str) -> str:
     return value.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
@@ -174,9 +177,28 @@ class DocumentRepository:
             if needle:
                 filters.append({"wildcard": {"doc_name": f"*{_escape_es_wildcard(needle)}*"}})
             query: Dict[str, Any] = {"match_all": {}} if not filters else {"bool": {"filter": filters}}
+            from_ = max(int(offset), 0)
+            size = max(int(limit), 1)
+            if from_ >= _ES_MAX_RESULT_WINDOW:
+                logger.warning(
+                    "DocumentRepository.list: offset=%s exceeds ES max_result_window=%s; return empty",
+                    from_,
+                    _ES_MAX_RESULT_WINDOW,
+                )
+                return []
+            if from_ + size > _ES_MAX_RESULT_WINDOW:
+                capped = _ES_MAX_RESULT_WINDOW - from_
+                logger.warning(
+                    "DocumentRepository.list: from+size=%s exceeds ES max_result_window=%s; clamp size %s→%s",
+                    from_ + size,
+                    _ES_MAX_RESULT_WINDOW,
+                    size,
+                    capped,
+                )
+                size = capped
             body = {
-                "from": max(offset, 0),
-                "size": max(limit, 1),
+                "from": from_,
+                "size": size,
                 "sort": [{"updated_at": {"order": "desc"}}],
                 "query": query,
             }
@@ -503,7 +525,7 @@ class DocumentRepository:
             }
 
         values = self.list(
-            limit=1000000,
+            limit=_ES_MAX_RESULT_WINDOW,
             offset=0,
             namespace=namespace,
             tenant_id=tenant_id,
