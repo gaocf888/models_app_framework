@@ -21,7 +21,7 @@ class VisionCaptionService:
         llm_client: VLLMHttpClient | None = None,
         prompt_registry: PromptTemplateRegistry | None = None,
     ) -> None:
-        self._llm = llm_client or VLLMHttpClient(timeout=120.0)
+        self._llm = llm_client or VLLMHttpClient(timeout=180.0)
         self._prompts = prompt_registry or PromptTemplateRegistry()
         self._cfg = get_app_config().rag.ingestion
 
@@ -54,7 +54,7 @@ class VisionCaptionService:
                     messages=messages,
                     max_tokens=self._cfg.figure_caption_max_tokens,
                     temperature=self._cfg.figure_caption_temperature,
-                    timeout=120.0,
+                    timeout=180.0,
                 )
             ).strip()
         except Exception as exc:  # noqa: BLE001
