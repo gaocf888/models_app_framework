@@ -256,7 +256,8 @@ class RAGIngestionConfig:
     clean_fix_encoding_noise: bool = True
     clean_strip_html: bool = True
     clean_min_repeated_line_pages: int = 2
-    tenant_id_default: str | None = None
+    # 上传/摄入/upsert 省略 tenant_id 时写入 docs 主键的默认租户（环境变量 RAG_TENANT_ID_DEFAULT）
+    tenant_id_default: str = "default"
     # RUNNING 任务超过该秒数未更新，判定为卡死并自动转 FAILED。
     running_stuck_timeout_seconds: int = 1800
     # RAG 知识库图块（figure）：VLM 描述 + MinIO 存储 + 图—文关联召回
@@ -272,6 +273,8 @@ class RAGIngestionConfig:
     figure_expand_max_per_text: int = 2
     figure_expand_max_total: int = 6
     original_object_key_prefix: str = "rag-docs/"
+    # 省略 dataset_id 时的项目级数据集标签（RAG_DEFAULT_DATASET_ID）。
+    # 用于 docs 元数据/管理过滤/Graph；非主键、非默认检索硬分区；单项目建议固定 default。
     default_dataset_id: str = "default"
 
 
@@ -1230,7 +1233,7 @@ def _load_from_env() -> AppConfig:
         clean_fix_encoding_noise=os.getenv("RAG_CLEAN_FIX_ENCODING_NOISE", "true").lower() == "true",
         clean_strip_html=os.getenv("RAG_CLEAN_STRIP_HTML", "true").lower() == "true",
         clean_min_repeated_line_pages=int(os.getenv("RAG_CLEAN_MIN_REPEATED_LINE_PAGES", "2")),
-        tenant_id_default=os.getenv("RAG_TENANT_ID_DEFAULT") or None,
+        tenant_id_default=os.getenv("RAG_TENANT_ID_DEFAULT") or "default",
         running_stuck_timeout_seconds=max(60, int(os.getenv("RAG_RUNNING_STUCK_TIMEOUT_SECONDS", "1800"))),
         figure_enabled=os.getenv("RAG_FIGURE_ENABLED", "false").lower() == "true",
         figure_minio_bucket=(os.getenv("RAG_FIGURE_MINIO_BUCKET") or "rag-assets").strip(),

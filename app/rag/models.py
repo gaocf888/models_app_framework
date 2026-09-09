@@ -49,6 +49,7 @@ class RetrievedChunk:
 
 @dataclass
 class DocumentSource:
+    # 项目/业务数据集标签（管理/Graph）；非 docs 主键、非默认检索硬分区（检索分区用 namespace）
     dataset_id: str
     doc_name: str
     namespace: Optional[str]

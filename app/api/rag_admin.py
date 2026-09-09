@@ -9,6 +9,13 @@ RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
 - 摄入支持 doc_name + replace_if_exists，实现同名文档更新（先删后灌）；
 - 摄入支持 namespace 级 ``namespace_kb_enabled`` / ``namespace_kb_priority``（写入 doc/chunk 元数据，召回时生效）；
 - 同时支持“原始文档内容”摄入（自动执行清洗与切块）；
+- 文档主键为 ``tenant_id::namespace::doc_name::doc_version``：
+  - 写入类接口（``/documents/upload``、``/jobs/ingest``、``/documents/upsert``）``doc_version`` **必填**；
+  - ``tenant_id`` **可选**，省略时使用 ``RAG_TENANT_ID_DEFAULT``（默认 ``default``）；
+  - ``dataset_id`` **可选**：项目/业务侧**数据集标签**（写入 docs 元数据、管理面过滤、Graph 归类）；
+    **不参与** docs 主键，**也不是**默认向量检索硬分区（检索分区优先用 ``namespace``）；
+    省略时使用 ``RAG_DEFAULT_DATASET_ID``（默认 ``default``）。单项目可全程用默认值、前端不展示；
+  - 上传后再摄入时，身份字段须与上传响应一致，否则 ``/documents/overview`` 会出现两条记录；
 - 异常路径统一记录错误日志并返回明确 HTTP 错误信息。
 
 服务配置前置条件（运维/开发必读）：
@@ -24,6 +31,9 @@ RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
    - 可通过 RAG_CHUNK_SIZE/RAG_CHUNK_OVERLAP/RAG_MIN_CHUNK_SIZE 与 RAG_CLEANING_PROFILE 调整。
 5) namespace 召回优先级（可选）
    - RAG_NAMESPACE_PRIORITY_BOOST、RAG_NAMESPACE_PRIORITY_TIERED（见 .env.example）。
+6) 默认租户 / 默认数据集（可选）
+   - RAG_TENANT_ID_DEFAULT：上传/摄入/upsert 省略 tenant_id 时写入 docs 主键的租户段（默认 default）。
+   - RAG_DEFAULT_DATASET_ID：省略 dataset_id 时的项目级数据集标签（默认 default；单项目建议固定此值、前端可不暴露）。
 """
 
 from functools import lru_cache
@@ -52,9 +62,13 @@ from app.rag.original_docs import (
     META_FILE_SIZE,
     META_OBJECT_KEY,
     META_ORIGINAL_FILENAME,
+    default_tenant_id,
     guess_source_type,
     original_ref_from_record,
+    require_doc_version,
+    resolve_dataset_id,
     resolve_namespace_kb_for_ingest,
+    resolve_tenant_id,
     sanitize_optional_form_str,
 )
 from app.rag.graph_namespace_resync import run_graph_resync_after_namespace_move
@@ -108,7 +122,7 @@ def _mark_documents_job_pending(docs: list[DocumentSource], job_id: str) -> None
     from app.rag.models import utcnow_iso
 
     repo = _get_doc_repo()
-    fallback = get_app_config().rag.ingestion.tenant_id_default or "default"
+    fallback = default_tenant_id()
     for doc in docs:
         key = make_document_storage_key(
             doc.doc_name,
@@ -331,9 +345,15 @@ async def ingest_raw_documents(req: IngestRawDocumentsRequest) -> dict:
 class IngestionJobDocumentRequest(BaseModel):
     """异步任务中单篇文档（`documents[]` 元素）。`content` 可为内联正文或 pdf/docx/xlsx 等服务端本地路径，见 `content` 字段说明。"""
 
-    dataset_id: str = Field(
-        ...,
-        description="必填。数据集 ID：知识/业务域划分，写入索引并用于检索、管理台按数据集过滤。",
+    dataset_id: str | None = Field(
+        None,
+        description=(
+            "可选。项目/业务侧数据集标签：写入 docs 元数据，供管理面按数据集过滤、展示及 Graph 归类；"
+            "不参与 docs 主键（`tenant::namespace::doc_name::doc_version`），"
+            "也不是默认向量检索硬分区（检索/逻辑分区优先使用 `namespace`）。"
+            "省略时使用 `RAG_DEFAULT_DATASET_ID`（默认 `default`）；"
+            "单项目可全程固定默认值，前端可不展示、不让用户填写。"
+        ),
     )
     doc_name: str = Field(
         ...,
@@ -351,12 +371,19 @@ class IngestionJobDocumentRequest(BaseModel):
         ),
     )
     doc_version: str = Field(
-        "v1",
-        description="可选，默认 v1。文档版本号，用于版本治理与按版本删除；与 `doc_name` 等一起区分不同版内容。",
+        ...,
+        min_length=1,
+        description=(
+            "必填。文档版本号，用于版本治理与按版本删除；与 `namespace`/`doc_name`/`tenant_id` "
+            "共同构成 docs 主键。上传后再摄入时须与上传时一致，否则 overview 会出现两条记录。"
+        ),
     )
     tenant_id: str | None = Field(
         None,
-        description="可选。租户 ID：多租户隔离与过滤用，会写入 chunk/文档元数据；单租户场景可省略。",
+        description=(
+            "可选。租户 ID：多租户隔离与过滤；省略时使用配置 `RAG_TENANT_ID_DEFAULT`（未配置则为 `default`）。"
+            "上传与摄入须使用同一落库值，否则会裂成两条 docs。"
+        ),
     )
     namespace: str | None = Field(
         None,
@@ -507,10 +534,22 @@ class IngestionJobListResponse(BaseModel):
 class JobDocumentItem(BaseModel):
     """任务关联的单个文档摘要（来自任务记录中的 documents 快照）。"""
 
-    dataset_id: str = Field(..., description="数据集 ID")
+    dataset_id: str = Field(
+        ...,
+        description=(
+            "数据集标签（任务快照）。写入时可省略，已解析为 RAG_DEFAULT_DATASET_ID；"
+            "项目级归类用，非 docs 主键、非默认检索硬分区。"
+        ),
+    )
     doc_name: str = Field(..., description="文档名（更新主键之一）")
-    doc_version: str = Field("v1", description="文档版本")
-    tenant_id: str | None = Field(None, description="租户 ID")
+    doc_version: str = Field(
+        "v1",
+        description="文档版本（任务快照；写入时必填，历史任务可能缺省故响应侧默认 v1）",
+    )
+    tenant_id: str | None = Field(
+        None,
+        description="租户 ID（任务快照；写入时省略则已解析为 RAG_TENANT_ID_DEFAULT）",
+    )
     namespace: str | None = Field(None, description="命名空间")
     source_type: str = Field("text", description="源类型：text/markdown/html/pdf/docx/xlsx/xlsm 等")
     source_uri: str | None = Field(None, description="原始来源 URI")
@@ -620,16 +659,16 @@ async def submit_ingestion_job(req: IngestionJobRequest) -> IngestionJobSubmitRe
 
     **`documents[]` 每篇文档（模型 `IngestionJobDocumentRequest`）**
     - `content`：**必填**。内联正文、本地/`file://` 路径、``minio://bucket/key`` / ``local:`` 对象引用；若开启 `RAG_CONTENT_FETCH_ENABLED`，可为 `http(s)://` 文件 URL。不会用 `source_uri` 做 HTTP 下载。
-    - `dataset_id`：必填，数据集划分与过滤。[可作为知识库一级分区]
+    - `dataset_id`：可选；项目级数据集标签（管理过滤/展示/Graph）；**非** docs 主键、**非**默认检索硬分区（检索分区用 `namespace`）；省略用 `RAG_DEFAULT_DATASET_ID`（默认 `default`，单项目可前端隐藏）。[可扩展作为知识库一级分区]
     - `doc_name`：必填，文档逻辑名（更新主键之一）。
-    - `doc_version`：可选默认 v1，版本治理与按版本删除。
-    - `tenant_id`：可选，多租户 ID，写入元数据供隔离/过滤。
-    - `namespace`：逻辑分区；`RAG_REQUIRE_NAMESPACE=true` 时必填非空。[可作为知识库二级分区]
+    - `doc_version`：必填，版本治理与按版本删除；与上传接口须保持一致。（更新主键之一）
+    - `tenant_id`：可选；省略时使用 `RAG_TENANT_ID_DEFAULT`（默认 `default`）；与上传须一致。（更新主键之一）
+    - `namespace`：逻辑分区与检索过滤主维度；`RAG_REQUIRE_NAMESPACE=true` 时必填非空。[知识分区优先用此字段] [可扩展作为知识库二级分区]（更新主键之一）
     - `source_type`：可选默认 text，决定如何解析 `content`。
     - `source_uri`：可选，**仅元数据**（链接/URI 字符串），溯源展示；**不用于抓取正文**。
     - `description`：可选，人读摘要。
     - `replace_if_exists`：可选默认 true，同名先删后灌。
-    - `metadata`：可选，自定义扩展字段写入索引。[可作为知识库三级级及以下分区]
+    - `metadata`：可选，自定义扩展字段写入索引。[可扩展作为知识库三级及以下分区]
     - `namespace_kb_enabled`：可选，namespace 级是否启用；默认 true。写入 doc/chunk 元数据；
       召回时 ``namespace_kb_enabled=false`` 的 chunk 会被过滤。同 namespace 建议传一致值。
     - `namespace_kb_priority`：可选，namespace 级召回优先级，**数值越小越优先**；默认 1，须 >= 1。
@@ -652,12 +691,16 @@ async def submit_ingestion_job(req: IngestionJobRequest) -> IngestionJobSubmitRe
             enabled, priority = resolve_namespace_kb_for_ingest(
                 ns, d.namespace_kb_enabled, d.namespace_kb_priority
             )
+            try:
+                ver = require_doc_version(d.doc_version)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
             docs.append(
                 DocumentSource(
-                    dataset_id=d.dataset_id,
+                    dataset_id=resolve_dataset_id(d.dataset_id),
                     doc_name=d.doc_name,
-                    doc_version=d.doc_version,
-                    tenant_id=d.tenant_id,
+                    doc_version=ver,
+                    tenant_id=resolve_tenant_id(d.tenant_id),
                     namespace=ns,
                     content=d.content,
                     source_type=d.source_type,
@@ -897,6 +940,7 @@ class UpsertDocumentRequest(BaseModel):
             "example": {
                 "dataset_id": "company_kb",
                 "doc_name": "readme",
+                "doc_version": "v1",
                 "namespace": "docs",
                 "content": "正文……",
                 "source_type": "text",
@@ -912,8 +956,26 @@ class UpsertDocumentRequest(BaseModel):
         }
     )
 
-    dataset_id: str = Field(..., description="必填。数据集 ID，写入索引并用于检索过滤（同异步任务）。")
+    dataset_id: str | None = Field(
+        None,
+        description=(
+            "可选。项目/业务侧数据集标签（语义同异步摄入）：管理过滤/展示/Graph 归类；"
+            "非 docs 主键、非默认向量检索硬分区（检索分区用 `namespace`）。"
+            "省略时使用 `RAG_DEFAULT_DATASET_ID`（默认 `default`）；单项目可前端隐藏。"
+        ),
+    )
     doc_name: str = Field(..., description="必填。文档逻辑名；同步接口固定 `replace_if_exists=true`（先删后灌）。")
+    doc_version: str = Field(
+        ...,
+        min_length=1,
+        description="必填。文档版本号（同异步摄入）；参与 docs 主键。",
+    )
+    tenant_id: str | None = Field(
+        None,
+        description=(
+            "可选。租户 ID；省略时使用 `RAG_TENANT_ID_DEFAULT`（默认 `default`）。"
+        ),
+    )
     namespace: str | None = Field(
         None,
         description="可选。命名空间，与检索 namespace 过滤一致；用于逻辑分区。",
@@ -963,14 +1025,17 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
     """
     同步 upsert 单文档。无 Path/Query；`content` 可内联、本地路径，或（开启 `RAG_CONTENT_FETCH_ENABLED`）http(s) URL，详见 Schema。
 
-    **无** `tenant_id` / `doc_version` / `idempotency_key` / `replace_if_exists`（同步路径固定覆盖同名）。
+    **无** `idempotency_key` / `replace_if_exists`（同步路径固定覆盖同名）。`doc_version` 必填；
+    `dataset_id` / `tenant_id` 可选（默认见 `RAG_DEFAULT_DATASET_ID` / `RAG_TENANT_ID_DEFAULT`）。
+    `dataset_id` 为项目级数据集标签，非检索硬分区。
 
     **路径/Query**：无。
 
     **请求体 `UpsertDocumentRequest`**
-    - `dataset_id`、`doc_name`：必填。
+    - `doc_name`、`doc_version`：必填。
+    - `dataset_id`、`tenant_id`：可选；省略时使用对应默认配置（`dataset_id` 单项目可固定 default、前端不填）。
     - `content`：必填。内联、路径/`file://`，或开启 URL 拉取时的 `http(s)://`（与 jobs/ingest 一致）。
-    - `namespace`、`source_type`、`source_uri`、`description`、`metadata`：可选；`source_uri` 仅元数据，不拉文件。
+    - `namespace`、`source_type`、`source_uri`、`description`、`metadata`：可选；`source_uri` 仅元数据，不拉文件；**检索分区优先 `namespace`**。
     - `namespace_kb_enabled`：可选，namespace 级是否启用；默认 true（语义同 ``POST /rag/jobs/ingest``）。
     - `namespace_kb_priority`：可选，namespace 级召回优先级，数值越小越优先；默认 1，须 >= 1。
     - `chunk_size`、`chunk_overlap`、`min_chunk_size`：可选切块参数。
@@ -993,11 +1058,19 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
         enabled, priority = resolve_namespace_kb_for_ingest(
             ns, req.namespace_kb_enabled, req.namespace_kb_priority
         )
+        try:
+            ver = require_doc_version(req.doc_version)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        td = resolve_tenant_id(req.tenant_id)
+        ds = resolve_dataset_id(req.dataset_id)
         doc = DocumentSource(
-            dataset_id=req.dataset_id,
+            dataset_id=ds,
             doc_name=req.doc_name,
             namespace=ns,
             content=req.content,
+            doc_version=ver,
+            tenant_id=td,
             source_type=req.source_type,
             source_uri=req.source_uri,
             description=req.description,
@@ -1020,11 +1093,13 @@ async def upsert_document(req: UpsertDocumentRequest) -> UpsertDocumentResponse:
             raise ValueError("no chunks generated after processing")
         chunk_metadatas = build_chunk_metadatas(doc, chunks)
         _get_service().ingest_texts(
-            dataset_id=req.dataset_id,
+            dataset_id=ds,
             texts=[c.text for c in chunks],
             description=req.description,
             namespace=ns,
             doc_name=req.doc_name,
+            doc_version=ver,
+            tenant_id=td,
             replace_if_exists=True,
             metadatas=chunk_metadatas,
         )
@@ -1534,9 +1609,12 @@ async def patch_nl2sql_auto_qa(req: Nl2sqlAutoQaUpdateRequest) -> Nl2sqlAutoQaPa
 
 
 class DatasetMetaResponse(BaseModel):
-    """进程内数据集登记项（非 ES 权威视图）。"""
+    """进程内数据集登记项（按 dataset_id 标签分组；非 ES 权威视图、非检索硬分区）。"""
 
-    dataset_id: str = Field(..., description="数据集 ID")
+    dataset_id: str = Field(
+        ...,
+        description="数据集标签（项目级归类键；非 docs 主键、非默认检索硬分区）",
+    )
     description: str | None = Field(None, description="描述")
     num_items: int = Field(..., description="最近一次登记时的 chunk 条数")
     namespace: str | None = Field(None, description="命名空间")
@@ -1581,9 +1659,21 @@ class DocumentMetaItem(BaseModel):
     """单篇文档在文档索引中的元数据一行。"""
 
     doc_name: str = Field(..., description="文档名")
-    doc_version: str = Field("v1", description="文档版本")
-    tenant_id: str | None = Field(None, description="租户 ID")
-    dataset_id: str = Field(..., description="所属数据集 ID")
+    doc_version: str = Field(
+        "v1",
+        description="文档版本（docs 主键之一；写入接口必填）",
+    )
+    tenant_id: str | None = Field(
+        None,
+        description="租户 ID（docs 主键之一；写入省略时为 RAG_TENANT_ID_DEFAULT）",
+    )
+    dataset_id: str = Field(
+        ...,
+        description=(
+            "所属数据集标签（docs 元数据）。写入时可省略并落为 RAG_DEFAULT_DATASET_ID；"
+            "用于管理过滤/展示/Graph；非 docs 主键，也非默认向量检索硬分区（检索分区用 namespace）。"
+        ),
+    )
     namespace: str | None = Field(None, description="命名空间")
     source_type: str = Field("text", description="源类型")
     source_uri: str | None = Field(None, description="来源 URI")
@@ -1651,9 +1741,23 @@ class UploadDocumentResponse(BaseModel):
 async def upload_document(
     file: Annotated[UploadFile, File(description="原文件")],
     namespace: Annotated[str, Form(description="必填。知识分类 / namespace，不允许为空")],
+    doc_version: Annotated[
+        str,
+        Form(
+            description=(
+                "必填。文档版本号（勿填 Swagger 占位 string）；与后续 jobs/ingest 的 doc_version 必须一致。"
+            )
+        ),
+    ],
     dataset_id: Annotated[
         str | None,
-        Form(description="数据集 ID；省略则用 RAG_DEFAULT_DATASET_ID（勿填 Swagger 占位 string）"),
+        Form(
+            description=(
+                "可选。项目级数据集标签；省略或 Swagger 占位 string 时用 RAG_DEFAULT_DATASET_ID（默认 default）。"
+                "写入 docs 元数据供管理过滤/展示/Graph；不参与 docs 主键，不是默认检索硬分区（检索用 namespace）。"
+                "单项目可固定默认值，前端可不展示。"
+            )
+        ),
     ] = None,
     doc_name: Annotated[
         str | None,
@@ -1662,18 +1766,31 @@ async def upload_document(
         ),
     ] = None,
     description: Annotated[str | None, Form(description="人读说明")] = None,
-    doc_version: Annotated[
-        str,
-        Form(description="文档版本，默认 v1（勿填 Swagger 占位 string）"),
-    ] = "v1",
-    tenant_id: Annotated[str | None, Form(description="租户 ID")] = None,
+    tenant_id: Annotated[
+        str | None,
+        Form(
+            description=(
+                "可选。租户 ID；省略时使用 RAG_TENANT_ID_DEFAULT（默认 default）；"
+                "与后续摄入须一致。"
+            )
+        ),
+    ] = None,
 ) -> UploadDocumentResponse:
     """
     仅上传原文到对象存储并写入 docs 登记（``status=UPLOADED``），**不**提交摄入任务。
 
     随后调用 ``POST /rag/jobs/ingest``，将 ``content`` / ``source_uri`` 设为响应中的 ``object_key``。
 
-    **注意**：Swagger Try it out 勿保留 Form 预填的 ``string``；``doc_name`` 等占位值会被忽略并回退到文件名。
+    **身份字段（与摄入须一致，否则 overview 会出现两条文档）**
+    - ``namespace``：**必填**。
+    - ``doc_version``：**必填**（勿填 Swagger 占位 ``string``）。
+    - ``doc_name``：可选；省略时用上传文件名（去扩展名）；摄入时应回传上传响应中的值。
+    - ``tenant_id``：可选；省略时写入 ``RAG_TENANT_ID_DEFAULT``（默认 ``default``）。
+    - ``dataset_id``：可选；项目级数据集标签（管理/Graph）；非主键、非默认检索硬分区；
+      省略写入 ``RAG_DEFAULT_DATASET_ID``（默认 ``default``）；单项目前端可不填。
+
+    **注意**：Swagger Try it out 勿保留 Form 预填的 ``string``；``doc_name`` 等占位值会被忽略并回退到文件名；
+    ``doc_version`` 占位会被视为未传并返回 400。
     """
     from pathlib import Path as _Path
 
@@ -1697,14 +1814,12 @@ async def upload_document(
         sanitize_optional_form_str(doc_name) or _Path(filename).stem or "upload"
     )
     cfg = get_app_config().rag
-    ingest_cfg = cfg.ingestion
-    ds = (
-        sanitize_optional_form_str(dataset_id)
-        or (ingest_cfg.default_dataset_id or "").strip()
-        or "default"
-    )
-    ver = sanitize_optional_form_str(doc_version) or "v1"
-    td = sanitize_optional_form_str(tenant_id)
+    ds = resolve_dataset_id(sanitize_optional_form_str(dataset_id))
+    try:
+        ver = require_doc_version(doc_version)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    td = resolve_tenant_id(sanitize_optional_form_str(tenant_id))
     description_clean = sanitize_optional_form_str(description)
     max_bytes = int(cfg.content_fetch.max_bytes or 50 * 1024 * 1024)
 
@@ -1720,7 +1835,7 @@ async def upload_document(
         namespace=ns,
         tenant_id=td,
         doc_version=ver,
-        tenant_id_fallback=ingest_cfg.tenant_id_default or "default",
+        tenant_id_fallback=default_tenant_id(),
     )
     existing = repo.get(doc_key) or {}
     last_job_status = str(existing.get("last_job_status") or "")
@@ -1776,7 +1891,7 @@ async def upload_document(
         "source_uri": uri,
         "description": doc.description,
         "chunk_count": int(existing.get("chunk_count") or 0),
-        "pipeline_version": ingest_cfg.pipeline_version,
+        "pipeline_version": cfg.ingestion.pipeline_version,
         "status": DOC_STATUS_UPLOADED,
         "created_at": created_at,
         "updated_at": utcnow_iso(),
@@ -1824,7 +1939,12 @@ class MoveDocumentNamespaceRequest(BaseModel):
     )
     tenant_id: str | None = Field(None, description="可选。缩小匹配到指定租户。")
     doc_version: str | None = Field(None, description="可选。文档版本。")
-    dataset_id: str | None = Field(None, description="可选。数据集 ID。")
+    dataset_id: str | None = Field(
+        None,
+        description=(
+            "可选。按数据集标签缩小匹配（docs 元数据上的项目级标签，非检索硬分区）。"
+        ),
+    )
     repair_graph_async: bool = Field(
         True,
         description=(
@@ -2139,7 +2259,10 @@ async def list_document_meta(
     offset: Annotated[int, Query(description="分页偏移", ge=0)] = 0,
     namespace: Annotated[str | None, Query(description="按命名空间过滤")] = None,
     tenant_id: Annotated[str | None, Query(description="按租户过滤")] = None,
-    dataset_id: Annotated[str | None, Query(description="按数据集过滤")] = None,
+    dataset_id: Annotated[
+        str | None,
+        Query(description="按数据集标签过滤（docs 元数据；非默认检索硬分区）"),
+    ] = None,
     doc_name: Annotated[str | None, Query(description="按文档名精确过滤")] = None,
     doc_name_contains: Annotated[str | None, Query(description="按文档名包含匹配（管理台顶栏模糊搜索）")] = None,
 ) -> DocumentMetaListResponse:
@@ -2214,7 +2337,9 @@ class KnowledgeOverviewResponse(BaseModel):
     ok: bool = Field(True, description="请求是否成功解析")
     namespace: str | None = Field(None, description="查询过滤：命名空间")
     tenant_id: str | None = Field(None, description="查询过滤：租户")
-    dataset_id: str | None = Field(None, description="查询过滤：数据集")
+    dataset_id: str | None = Field(
+        None, description="查询过滤：数据集标签（docs 元数据，非检索硬分区）"
+    )
     total_documents: int = Field(0, description="文档记录总数（当前过滤条件下）")
     total_doc_names: int = Field(0, description="唯一 doc_name 数（若统计可用）")
     by_namespace: List[OverviewBucketItem] = Field(default_factory=list, description="按 namespace 分桶")
@@ -2248,7 +2373,10 @@ async def get_documents_overview(
     offset: Annotated[int, Query(description="明细分页偏移", ge=0)] = 0,
     namespace: Annotated[str | None, Query(description="过滤命名空间")] = None,
     tenant_id: Annotated[str | None, Query(description="过滤租户")] = None,
-    dataset_id: Annotated[str | None, Query(description="过滤数据集")] = None,
+    dataset_id: Annotated[
+        str | None,
+        Query(description="过滤数据集标签（docs 元数据；非默认检索硬分区）"),
+    ] = None,
     doc_name: Annotated[str | None, Query(description="过滤文档名（精确）")] = None,
     doc_name_contains: Annotated[str | None, Query(description="按文档名包含匹配（管理台顶栏模糊搜索）")] = None,
 ) -> KnowledgeOverviewResponse:

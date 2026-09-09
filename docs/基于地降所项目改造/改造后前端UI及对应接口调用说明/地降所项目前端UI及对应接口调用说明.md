@@ -432,7 +432,7 @@ GET /data-query-agent/hud?library_id=fcb&entity_type=station&entity_id=JZGZ
 
 #### 右侧表格
 
-主列表只用 overview，不必再调 `GET /rag/documents/meta`。分页：`limit` / `offset` / `total_documents`。
+主列表只用 overview(/rag/documents/overview?limit=20&offset=0接口)，不必再调 `GET /rag/documents/meta`。分页：`limit` / `offset` / `total_documents`。
 
 | 列 | 字段 |
 |----|------|

@@ -448,7 +448,7 @@ sequenceDiagram
 ### 3.4 RAGIngestionService（摄入）
 
 - 流程：对 `texts` 批量嵌入 → `VectorStore.add_texts(..., namespace=...)`。
-- **数据集元数据**：进程内 `RAGDatasetMeta` 字典（`dataset_id`、条数、`namespace` 等），重启不持久化；生产可扩展为 DB/配置中心。
+- **数据集元数据**：进程内 `RAGDatasetMeta` 字典（按 `dataset_id` 项目标签分组的条数/`namespace` 等），重启不持久化；**不是**向量检索硬分区（检索分区用 `namespace`）；生产可扩展为 DB/配置中心。
 - **GraphRAG**：当 `RAGConfig.graph.enabled == true`（`GRAPH_RAG_ENABLED=true`）时，构造 `GraphIngestionService`；摄入后通过 `post_index_hook` 调用 `ingest_from_chunks`。图写入失败仅打日志，**不中断**向量摄入。
 - **版本与删除一致性**：图侧 chunk 节点携带 `doc_name/doc_version/doc_key`，同名同版本重灌会先清理旧图节点；`/documents/delete` 会同步触发图侧清理。
 
@@ -589,7 +589,8 @@ sequenceDiagram
 | `RAG_CLEAN_MERGE_DUPLICATE_PARAGRAPHS` | 是否合并重复段落 | `true` |
 | `RAG_CLEAN_FIX_ENCODING_NOISE` | 是否修复常见编码噪音/乱码碎片 | `true` |
 | `RAG_CLEAN_MIN_REPEATED_LINE_PAGES` | 判定重复页眉页脚所需最小页数 | `2` |
-| `RAG_TENANT_ID_DEFAULT` | 可选默认租户（幂等键扩展） | 空 |
+| `RAG_TENANT_ID_DEFAULT` | 可选默认租户（上传/摄入省略 `tenant_id` 时写入 docs 主键） | `default` |
+| `RAG_DEFAULT_DATASET_ID` | 项目级默认数据集标签（上传/摄入/upsert 省略 `dataset_id` 时写入 docs 元数据；管理过滤/Graph 用；**非**主键、**非**默认检索硬分区；单项目可固定 `default` 且前端不暴露） | `default` |
 | `RAG_FIGURE_ENABLED` | 图块摄入/召回总开关 | `false` |
 | `RAG_FIGURE_MINIO_BUCKET` | figure 图片 MinIO bucket | `rag-assets` |
 | `RAG_FIGURE_*` | VLM 描述、邻近正文、召回扩展等（见 `.env.example`） | 见文档 |
@@ -694,8 +695,10 @@ sequenceDiagram
   行为：批量原始文档摄入（服务端自动清洗与切块）。
 
 - **`POST /rag/jobs/ingest`**
-  Body：`documents[]`（原始文档）+ `operator` + 切块参数；每文档可选 **`namespace_kb_enabled`**、**`namespace_kb_priority`**（`≥1`，默认 `true`/`1`）；`source_type` 支持 **`image`**（需 `RAG_FIGURE_ENABLED`）。  
-  行为：提交异步摄入任务，后台按 8 步执行（`image` 文档在 `vision_caption` 后直接进入 index）；`namespace_kb_*` 写入 doc/chunk 元数据；返回 `job_id`。
+  Body：`documents[]`（原始文档）+ `operator` + 切块参数；每文档 **`doc_version` 必填**；**`dataset_id`/`tenant_id` 可选**（省略分别用 `RAG_DEFAULT_DATASET_ID` / `RAG_TENANT_ID_DEFAULT`，默认均为 `default`）；可选 **`namespace_kb_enabled`**、**`namespace_kb_priority`**（`≥1`，默认 `true`/`1`）；`source_type` 支持 **`image`**（需 `RAG_FIGURE_ENABLED`）。  
+  行为：提交异步摄入任务，后台按 8 步执行（`image` 文档在 `vision_caption` 后直接进入 index）；`namespace_kb_*` 写入 doc/chunk 元数据；返回 `job_id`。  
+  注意：若先走 `/documents/upload`，摄入时 `namespace`/`doc_name`/`doc_version`/`tenant_id` 须与上传一致，否则 overview 会裂成两条。  
+  `dataset_id` 是项目级数据集标签（管理/Graph），不是 docs 主键，也不是默认向量检索硬分区（检索分区用 `namespace`）；单项目可全程 `default`、前端不填。
 
 - **`GET /rag/assets/presign`**
   Query：`key`（MinIO object key）。  
@@ -718,8 +721,12 @@ sequenceDiagram
   行为：查询任务关联文档列表（用于任务审计与问题定位）。
 
 - **`POST /rag/documents/upsert`**
-  Body：单篇原始文档 + 切块参数；可选 **`namespace_kb_enabled`**、**`namespace_kb_priority`**。  
+  Body：单篇原始文档 + 切块参数；**`doc_version` 必填**；**`dataset_id`/`tenant_id` 可选**（默认同 ingest；`dataset_id` 为项目标签非检索硬分区）；可选 **`namespace_kb_enabled`**、**`namespace_kb_priority`**。  
   行为：同步小文档快速通道，自动清洗切块后立即入库（适合管理端快速修订）；`namespace_kb_*` 写入 doc/chunk 元数据。
+
+- **`POST /rag/documents/upload`**
+  Form：`file` + **`namespace`/`doc_version` 必填**；`dataset_id`/`tenant_id`/`doc_name` 可选（省略分别用 `RAG_DEFAULT_DATASET_ID` / `RAG_TENANT_ID_DEFAULT` / 文件名 stem；`dataset_id` 单项目可隐藏）。  
+  行为：仅上传原文并登记 docs（`UPLOADED`），不切块；再调 `/jobs/ingest` 时 `content` 用返回的 `object_key`，身份字段须一致。
 
 - **`POST /rag/documents/delete`**
   Body：`doc_name`（**单篇**，非批量）、可选 `namespace`、可选 `doc_version`。  

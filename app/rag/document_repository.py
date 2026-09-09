@@ -43,6 +43,9 @@ def make_document_storage_key(
     """
     与 IngestionOrchestrator._save_doc_record 中 doc_key 规则一致：
     {tenant}::{namespace or __default__}::{doc_name}::{doc_version or v1}
+
+    写入 API 层应已保证 doc_version 非空、tenant_id 已 resolve；此处 fallback
+    仅兼容内部旧调用与历史数据读取。
     """
     td = tenant_id if tenant_id is not None else tenant_id_fallback
     ns = namespace if namespace is not None else "__default__"
@@ -400,7 +403,7 @@ class DocumentRepository:
         调用方需已同步更新向量库 chunk 的 namespace。
         """
         cfg = get_app_config().rag.ingestion
-        tenant_fb = cfg.tenant_id_default or "__tenant__"
+        tenant_fb = (cfg.tenant_id_default or "").strip() or "default"
 
         if self._use_es and self._client is not None:
             filters = self._move_meta_filters_es(
@@ -696,12 +699,13 @@ class DocumentRepository:
             raise TypeError("doc must be DocumentSource")
 
         cfg = get_app_config().rag
-        td_fallback = tenant_id_fallback or cfg.ingestion.tenant_id_default or "default"
+        td_fallback = tenant_id_fallback or (cfg.ingestion.tenant_id_default or "").strip() or "default"
         pv = pipeline_version or cfg.ingestion.pipeline_version
+        resolved_tenant = (doc.tenant_id or "").strip() or td_fallback
         doc_key = make_document_storage_key(
             doc.doc_name,
             namespace=doc.namespace,
-            tenant_id=doc.tenant_id,
+            tenant_id=resolved_tenant,
             doc_version=doc.doc_version,
             tenant_id_fallback=td_fallback,
         )
@@ -710,7 +714,7 @@ class DocumentRepository:
         payload = {
             "doc_name": doc.doc_name,
             "doc_version": doc.doc_version,
-            "tenant_id": doc.tenant_id,
+            "tenant_id": resolved_tenant,
             "dataset_id": doc.dataset_id,
             "namespace": doc.namespace,
             "source_type": doc.source_type,

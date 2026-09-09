@@ -43,7 +43,7 @@ class IngestionOrchestrator:
             min_chunk_size=ingest_cfg.min_chunk_size,
         )
         self._pipeline_version = ingest_cfg.pipeline_version
-        self._tenant_id_default = ingest_cfg.tenant_id_default or "__tenant__"
+        self._tenant_id_default = (ingest_cfg.tenant_id_default or "").strip() or "default"
         self._max_workers = max(1, ingest_cfg.max_concurrency)
         self._lock = threading.RLock()
         self._jobs: Dict[str, IngestionJob] = {}
@@ -745,8 +745,11 @@ class IngestionOrchestrator:
     def _validate_document(doc: DocumentSource) -> None:
         if not doc.doc_name:
             raise ValueError("E_DOC_INVALID: empty doc_name")
-        if not doc.dataset_id:
+        # dataset_id 为项目标签，由 API resolve；内部直调仍要求非空
+        if not (doc.dataset_id or "").strip():
             raise ValueError("E_DOC_INVALID: empty dataset_id")
+        if not (doc.doc_version or "").strip():
+            raise ValueError("E_DOC_INVALID: empty doc_version")
         if not (doc.content or "").strip():
             raise ValueError(f"E_DOC_EMPTY: empty content for doc={doc.doc_name}")
 
@@ -779,7 +782,7 @@ class IngestionOrchestrator:
         doc_key = make_document_storage_key(
             doc.doc_name,
             namespace=doc.namespace,
-            tenant_id=doc.tenant_id,
+            tenant_id=doc.tenant_id or self._tenant_id_default,
             doc_version=doc.doc_version,
             tenant_id_fallback=self._tenant_id_default,
         )
@@ -788,7 +791,7 @@ class IngestionOrchestrator:
         payload = {
             "doc_name": doc.doc_name,
             "doc_version": doc.doc_version,
-            "tenant_id": doc.tenant_id,
+            "tenant_id": doc.tenant_id or self._tenant_id_default,
             "dataset_id": doc.dataset_id,
             "namespace": doc.namespace,
             "source_type": doc.source_type,

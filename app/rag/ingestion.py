@@ -29,6 +29,8 @@ logger = get_logger(__name__)
 
 @dataclass
 class RAGDatasetMeta:
+    """进程内数据集登记（按 dataset_id 分组的标签视图；非向量检索硬分区）。"""
+
     dataset_id: str
     description: str | None = None
     num_items: int = 0
@@ -93,6 +95,9 @@ class RAGIngestionService:
         """
         store = self._store_provider.get_default_store()
         effective_doc_name = doc_name or dataset_id
+        from app.rag.original_docs import resolve_tenant_id
+
+        effective_tenant_id = resolve_tenant_id(tenant_id)
 
         if replace_if_exists:
             deleted = store.delete_by_doc_name(doc_name=effective_doc_name, namespace=namespace)
@@ -112,11 +117,12 @@ class RAGIngestionService:
             for i in range(len(texts)):
                 row = dict(metadatas[i] or {})
                 row["doc_version"] = doc_version
-                if tenant_id is not None:
-                    row["tenant_id"] = tenant_id
+                row["tenant_id"] = effective_tenant_id
                 metas.append(row)
         else:
-            metas = [{"doc_version": doc_version, "tenant_id": tenant_id} for _ in texts]
+            metas = [
+                {"doc_version": doc_version, "tenant_id": effective_tenant_id} for _ in texts
+            ]
         chunk_ids: list[str] | None = None
         if metas:
             candidates = [str(m.get("chunk_id") or "") for m in metas]

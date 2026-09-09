@@ -49,6 +49,43 @@ def sanitize_optional_form_str(value: str | None) -> str | None:
     return s
 
 
+def default_tenant_id() -> str:
+    """上传/摄入等写入路径共用的租户默认值（与 docs 主键 tenant 段一致）。"""
+    return (get_app_config().rag.ingestion.tenant_id_default or "").strip() or "default"
+
+
+def resolve_tenant_id(tenant_id: str | None) -> str:
+    """未传或空串时回落到 ``default_tenant_id()``。"""
+    if tenant_id is None:
+        return default_tenant_id()
+    s = str(tenant_id).strip()
+    return s or default_tenant_id()
+
+
+def require_doc_version(value: str | None) -> str:
+    """写入路径要求显式 doc_version；空串/Swagger 占位符视为未传。"""
+    cleaned = sanitize_optional_form_str(value if value is None else str(value))
+    if not cleaned:
+        raise ValueError("doc_version is required")
+    return cleaned
+
+
+def default_dataset_id() -> str:
+    """
+    写入路径共用的 dataset_id 默认值（``RAG_DEFAULT_DATASET_ID``）。
+
+    dataset_id 是项目/业务侧数据集标签（docs 元数据、管理过滤、Graph），
+    不是 docs 主键，也不是默认向量检索硬分区；单项目通常固定为 default。
+    """
+    return (get_app_config().rag.ingestion.default_dataset_id or "").strip() or "default"
+
+
+def resolve_dataset_id(dataset_id: str | None) -> str:
+    """未传、空串或 Swagger 占位时回落到 ``default_dataset_id()``。"""
+    cleaned = sanitize_optional_form_str(dataset_id if dataset_id is None else str(dataset_id))
+    return cleaned or default_dataset_id()
+
+
 class OriginalObjectError(ValueError):
     """对象存储原文读写失败。"""
 
@@ -175,7 +212,7 @@ def merge_existing_original_metadata(doc: DocumentSource) -> DocumentSource:
             from app.rag.document_repository import DocumentRepository, make_document_storage_key
 
             cfg = get_app_config().rag
-            fallback = cfg.ingestion.tenant_id_default or "default"
+            fallback = default_tenant_id()
             key = make_document_storage_key(
                 doc.doc_name,
                 namespace=doc.namespace,

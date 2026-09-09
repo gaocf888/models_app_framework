@@ -144,6 +144,7 @@ class TestJobsIngestNamespaceFlag(unittest.TestCase):
                 rag_admin.IngestionJobDocumentRequest(
                     dataset_id="ds",
                     doc_name="a",
+                    doc_version="v1",
                     content="hello",
                     namespace=None,
                 )
