@@ -10,12 +10,12 @@ RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
 - 摄入支持 namespace 级 ``namespace_kb_enabled`` / ``namespace_kb_priority``（写入 doc/chunk 元数据，召回时生效）；
 - 同时支持“原始文档内容”摄入（自动执行清洗与切块）；
 - 文档主键为 ``tenant_id::namespace::doc_name::doc_version``：
-  - 写入类接口（``/documents/upload``、``/jobs/ingest``、``/documents/upsert``）``doc_version`` **必填**；
+  - 写入类接口（``/documents/upload``、``/jobs/ingest``、``/documents/upsert``）``doc_name``、``doc_version`` **必填**；
   - ``tenant_id`` **可选**，省略时使用 ``RAG_TENANT_ID_DEFAULT``（默认 ``default``）；
   - ``dataset_id`` **可选**：项目/业务侧**数据集标签**（写入 docs 元数据、管理面过滤、Graph 归类）；
     **不参与** docs 主键，**也不是**默认向量检索硬分区（检索分区优先用 ``namespace``）；
     省略时使用 ``RAG_DEFAULT_DATASET_ID``（默认 ``default``）。单项目可全程用默认值、前端不展示；
-  - 上传后再摄入时，身份字段须与上传响应一致，否则 ``/documents/overview`` 会出现两条记录；
+  - 上传后再摄入时，身份字段（含 ``doc_name``）须与上传响应一致，否则 ``/documents/overview`` 会出现两条记录；
 - 异常路径统一记录错误日志并返回明确 HTTP 错误信息。
 
 服务配置前置条件（运维/开发必读）：
@@ -65,6 +65,7 @@ from app.rag.original_docs import (
     default_tenant_id,
     guess_source_type,
     original_ref_from_record,
+    require_doc_name,
     require_doc_version,
     resolve_dataset_id,
     resolve_namespace_kb_for_ingest,
@@ -1741,6 +1742,15 @@ class UploadDocumentResponse(BaseModel):
 async def upload_document(
     file: Annotated[UploadFile, File(description="原文件")],
     namespace: Annotated[str, Form(description="必填。知识分类 / namespace，不允许为空")],
+    doc_name: Annotated[
+        str,
+        Form(
+            description=(
+                "必填。文档逻辑名（docs 主键之一；勿填 Swagger 占位 string）；"
+                "与后续 jobs/ingest 的 doc_name 必须一致。"
+            )
+        ),
+    ],
     doc_version: Annotated[
         str,
         Form(
@@ -1757,12 +1767,6 @@ async def upload_document(
                 "写入 docs 元数据供管理过滤/展示/Graph；不参与 docs 主键，不是默认检索硬分区（检索用 namespace）。"
                 "单项目可固定默认值，前端可不展示。"
             )
-        ),
-    ] = None,
-    doc_name: Annotated[
-        str | None,
-        Form(
-            description="文档逻辑名；省略或 Swagger 占位 string/null 时用上传文件名（去扩展名）"
         ),
     ] = None,
     description: Annotated[str | None, Form(description="人读说明")] = None,
@@ -1782,15 +1786,13 @@ async def upload_document(
     随后调用 ``POST /rag/jobs/ingest``，将 ``content`` / ``source_uri`` 设为响应中的 ``object_key``。
 
     **身份字段（与摄入须一致，否则 overview 会出现两条文档）**
-    - ``namespace``：**必填**。
-    - ``doc_version``：**必填**（勿填 Swagger 占位 ``string``）。
-    - ``doc_name``：可选；省略时用上传文件名（去扩展名）；摄入时应回传上传响应中的值。
+    - ``namespace`` / ``doc_name`` / ``doc_version``：**必填**（勿填 Swagger 占位 ``string``）。
     - ``tenant_id``：可选；省略时写入 ``RAG_TENANT_ID_DEFAULT``（默认 ``default``）。
     - ``dataset_id``：可选；项目级数据集标签（管理/Graph）；非主键、非默认检索硬分区；
       省略写入 ``RAG_DEFAULT_DATASET_ID``（默认 ``default``）；单项目前端可不填。
 
-    **注意**：Swagger Try it out 勿保留 Form 预填的 ``string``；``doc_name`` 等占位值会被忽略并回退到文件名；
-    ``doc_version`` 占位会被视为未传并返回 400。
+    **注意**：Swagger Try it out 勿保留 Form 预填的 ``string``；
+    ``doc_name`` / ``doc_version`` / ``namespace`` 占位会被视为未传并返回 400。
     """
     from pathlib import Path as _Path
 
@@ -1810,9 +1812,10 @@ async def upload_document(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     filename = _Path(file.filename or "upload.bin").name
-    logical_name = (
-        sanitize_optional_form_str(doc_name) or _Path(filename).stem or "upload"
-    )
+    try:
+        logical_name = require_doc_name(doc_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     cfg = get_app_config().rag
     ds = resolve_dataset_id(sanitize_optional_form_str(dataset_id))
     try:

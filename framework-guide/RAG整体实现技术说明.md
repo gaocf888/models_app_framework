@@ -725,8 +725,8 @@ sequenceDiagram
   行为：同步小文档快速通道，自动清洗切块后立即入库（适合管理端快速修订）；`namespace_kb_*` 写入 doc/chunk 元数据。
 
 - **`POST /rag/documents/upload`**
-  Form：`file` + **`namespace`/`doc_version` 必填**；`dataset_id`/`tenant_id`/`doc_name` 可选（省略分别用 `RAG_DEFAULT_DATASET_ID` / `RAG_TENANT_ID_DEFAULT` / 文件名 stem；`dataset_id` 单项目可隐藏）。  
-  行为：仅上传原文并登记 docs（`UPLOADED`），不切块；再调 `/jobs/ingest` 时 `content` 用返回的 `object_key`，身份字段须一致。
+  Form：`file` + **`namespace`/`doc_name`/`doc_version` 必填**；`dataset_id`/`tenant_id` 可选（省略分别用 `RAG_DEFAULT_DATASET_ID` / `RAG_TENANT_ID_DEFAULT`；`dataset_id` 单项目可隐藏）。  
+  行为：仅上传原文并登记 docs（`UPLOADED`），不切块；再调 `/jobs/ingest` 时 `content` 用返回的 `object_key`，身份字段（含 `doc_name`）须一致。
 
 - **`POST /rag/documents/delete`**
   Body：`doc_name`（**单篇**，非批量）、可选 `namespace`、可选 `doc_version`。  

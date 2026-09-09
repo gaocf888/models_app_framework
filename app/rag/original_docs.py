@@ -70,6 +70,14 @@ def require_doc_version(value: str | None) -> str:
     return cleaned
 
 
+def require_doc_name(value: str | None) -> str:
+    """写入路径要求显式 doc_name；空串/Swagger 占位符视为未传。"""
+    cleaned = sanitize_optional_form_str(value if value is None else str(value))
+    if not cleaned:
+        raise ValueError("doc_name is required")
+    return cleaned
+
+
 def default_dataset_id() -> str:
     """
     写入路径共用的 dataset_id 默认值（``RAG_DEFAULT_DATASET_ID``）。
