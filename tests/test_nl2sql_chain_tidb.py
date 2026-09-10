@@ -79,6 +79,65 @@ def test_tidb_validate_forbidden_postgres_interval() -> None:
     assert "postgres interval" in reason.lower()
 
 
+def test_validate_sql_dialect_subsidence_allows_pg_interval(monkeypatch) -> None:
+    """NL2SQL_BUSINESS_DOMAIN=subsidence → postgres 方言：允许 INTERVAL '1 day'。"""
+    from app.nl2sql.nl2sql_business_profile import clear_nl2sql_business_profile_cache
+
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    monkeypatch.delenv("NL2SQL_SQL_DIALECT", raising=False)
+    clear_nl2sql_business_profile_cache()
+    try:
+        chain = _build_chain_for_unit()
+        sql = (
+            "SELECT f.station_id, f.data_time, f.total_settle "
+            "FROM t_data_wash_fcb AS f "
+            "WHERE f.data_time >= CURRENT_DATE "
+            "AND f.data_time < (CURRENT_DATE + INTERVAL '1 day')"
+        )
+        ok, reason = chain._validate_sql_dialect(sql)
+        assert ok, reason
+        assert reason is None
+    finally:
+        clear_nl2sql_business_profile_cache()
+
+
+def test_validate_sql_dialect_subsidence_rejects_mysql_time(monkeypatch) -> None:
+    from app.nl2sql.nl2sql_business_profile import clear_nl2sql_business_profile_cache
+
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    monkeypatch.delenv("NL2SQL_SQL_DIALECT", raising=False)
+    clear_nl2sql_business_profile_cache()
+    try:
+        chain = _build_chain_for_unit()
+        ok, reason = chain._validate_sql_dialect(
+            "SELECT * FROM t_data_wash_fcb WHERE data_time >= CURDATE() "
+            "AND data_time < CURDATE() + INTERVAL 1 DAY"
+        )
+        assert not ok
+        assert reason is not None
+        assert "CURDATE" in reason or "INTERVAL" in reason
+    finally:
+        clear_nl2sql_business_profile_cache()
+
+
+def test_validate_sql_dialect_boiler_rejects_pg_interval(monkeypatch) -> None:
+    from app.nl2sql.nl2sql_business_profile import clear_nl2sql_business_profile_cache
+
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "boiler_four_tube")
+    monkeypatch.delenv("NL2SQL_SQL_DIALECT", raising=False)
+    clear_nl2sql_business_profile_cache()
+    try:
+        chain = _build_chain_for_unit()
+        ok, reason = chain._validate_sql_dialect(
+            "SELECT * FROM monitor_hotarea_temp WHERE ts >= NOW() - INTERVAL '7 days'"
+        )
+        assert not ok
+        assert reason is not None
+        assert "postgres interval" in reason.lower()
+    finally:
+        clear_nl2sql_business_profile_cache()
+
+
 def test_tidb_forbidden_aliases_env_extend(monkeypatch) -> None:
     monkeypatch.setenv("NL2SQL_TIDB_FORBIDDEN_ALIASES", "foo_alias,bar_alias")
     chain = _build_chain_for_unit()

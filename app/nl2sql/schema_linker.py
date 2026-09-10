@@ -309,6 +309,12 @@ def narrow_validation_sets(
     *,
     mode: str,
 ) -> tuple[set[str], set[str], dict[str, set[str]]]:
+    """
+    按 Schema Link 结果收窄表白名单与列白名单。
+
+    列白名单统一为**裸列名**（与 ``SQLValidator.validate_identifiers`` 一致），
+    避免 ``table.column`` 与 SQL 中 ``alias.column`` 抽取的裸名无法匹配。
+    """
     if mode == "legacy_wide" or linked.status == "failed":
         return allowed_tables, allowed_columns, table_columns
     lt = linked.table_names()
@@ -316,16 +322,43 @@ def narrow_validation_sets(
         return allowed_tables, allowed_columns, table_columns
     new_tables = {t for t in allowed_tables if t in lt}
     new_tc = {k: v for k, v in table_columns.items() if k in new_tables}
-    new_cols: set[str] = set()
-    for c in linked.columns:
-        key = f"{c.table.lower()}.{c.column.lower()}"
-        if c.table.lower() in new_tables:
-            new_cols.add(key)
-    if new_cols:
-        scoped_cols = {c for c in allowed_columns if c.split(".")[0] in new_tables}
-        if scoped_cols:
-            new_cols &= scoped_cols
-    else:
-        new_cols = {c for c in allowed_columns if c.split(".")[0] in new_tables}
-    return new_tables, new_cols, new_tc
+    known_bare = {c for cols in new_tc.values() for c in cols}
 
+    def _to_bare(col: str) -> str:
+        c = col.strip().lower()
+        return c.split(".", 1)[-1] if "." in c else c
+
+    linked_bare: set[str] = set()
+    for c in linked.columns:
+        t = c.table.lower()
+        col = c.column.lower()
+        if t not in new_tables:
+            continue
+        if new_tc.get(t) and col not in new_tc[t]:
+            continue
+        linked_bare.add(col)
+
+    if linked_bare:
+        new_cols = linked_bare
+        if known_bare:
+            new_cols &= known_bare
+        prior_bare = {_to_bare(c) for c in allowed_columns if c}
+        # 仅保留属于收窄表集合的先验列：qualified 按表过滤，bare 与 known 求交
+        scoped_prior: set[str] = set()
+        for c in allowed_columns:
+            raw = (c or "").strip().lower()
+            if not raw:
+                continue
+            if "." in raw:
+                t, col = raw.split(".", 1)
+                if t in new_tables:
+                    scoped_prior.add(col)
+            elif not known_bare or raw in known_bare:
+                scoped_prior.add(raw)
+        if scoped_prior:
+            new_cols &= scoped_prior
+        elif prior_bare and known_bare:
+            new_cols &= prior_bare & known_bare
+    else:
+        new_cols = set(known_bare) if known_bare else {_to_bare(c) for c in allowed_columns if c}
+    return new_tables, new_cols, new_tc

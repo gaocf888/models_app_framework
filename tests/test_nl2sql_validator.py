@@ -50,6 +50,29 @@ def test_normalize_sql_preserves_doubled_single_quote_in_string() -> None:
     assert "\n" not in norm
 
 
+def test_validate_identifiers_accepts_qualified_allowed_columns() -> None:
+    """白名单可为 table.column；与 SQL 裸列名比对时仍应通过。"""
+    v = SQLValidator()
+    sql = (
+        "SELECT f.station_id, f.total_settle, s.area "
+        "FROM t_data_wash_fcb AS f "
+        "JOIN t_station AS s ON f.project_name = s.name"
+    )
+    ok, reason = v.validate_identifiers(
+        sql,
+        allowed_tables={"t_data_wash_fcb", "t_station"},
+        allowed_columns={
+            "t_data_wash_fcb.station_id",
+            "t_data_wash_fcb.total_settle",
+            "t_data_wash_fcb.project_name",
+            "t_station.area",
+            "t_station.name",
+        },
+    )
+    assert ok, reason
+    assert reason is None
+
+
 def test_validate_identifiers_reject_unknown_table() -> None:
     validator = SQLValidator()
     sql = "SELECT * FROM temperature_record t JOIN account_boiler b ON t.boiler_id = b.boiler_id"

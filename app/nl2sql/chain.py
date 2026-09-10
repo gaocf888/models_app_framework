@@ -809,7 +809,11 @@ class NL2SQLChain:
         self._apply_rewrite_meta_to_parsed_intent(parsed_intent_dict, rewrite_meta)
         rewrite_notes.extend(filter_notes)
         if rewrite_notes:
-            logger.info("NL2SQLChain TiDB rewrite applied: %s", "; ".join(rewrite_notes))
+            logger.info(
+                "NL2SQLChain SQL rewrite applied dialect=%s: %s",
+                self._sql_dialect_label(),
+                "; ".join(rewrite_notes),
+            )
         logger.info(
             "NL2SQLChain LLM sql raw_len=%d normalized_len=%d preview=%r llm_backend=%s",
             raw_out_len,
@@ -817,17 +821,22 @@ class NL2SQLChain:
             _text_preview(sql, 0),
             "langchain" if self._lc_chat_model is not None else "vllm_http",
         )
-        dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
+        dialect_ok, dialect_reason = self._validate_sql_dialect(sql)
         if not dialect_ok:
             logger.warning(
-                "NL2SQLChain TiDB dialect check failed preview_question=%r sql_preview=%r reason=%s",
+                "NL2SQLChain dialect check failed dialect=%s preview_question=%r sql_preview=%r reason=%s",
+                self._sql_dialect_label(),
                 _text_preview(question, 80),
                 _text_preview(sql, 0),
                 dialect_reason,
             )
             if self._lc_chat_model is not None:
                 try:
-                    logger.info("NL2SQLChain TiDB dialect refine start reason=%s", dialect_reason)
+                    logger.info(
+                        "NL2SQLChain dialect refine start dialect=%s reason=%s",
+                        self._sql_dialect_label(),
+                        dialect_reason,
+                    )
                     sql = await self._refine_sql(
                         question=question,
                         original_sql=sql,
@@ -850,22 +859,30 @@ class NL2SQLChain:
                     refine_notes.extend(filter_notes)
                     if refine_notes:
                         logger.info(
-                            "NL2SQLChain TiDB rewrite applied after refine: %s",
+                            "NL2SQLChain SQL rewrite applied after refine dialect=%s: %s",
+                            self._sql_dialect_label(),
                             "; ".join(refine_notes),
                         )
-                    dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
+                    dialect_ok, dialect_reason = self._validate_sql_dialect(sql)
                     if not dialect_ok:
                         logger.warning(
-                            "NL2SQLChain TiDB dialect refine still invalid sql_preview=%r reason=%s",
+                            "NL2SQLChain dialect refine still invalid dialect=%s sql_preview=%r reason=%s",
+                            self._sql_dialect_label(),
                             _text_preview(sql, 0),
                             dialect_reason,
                         )
                         return "", validation_ctx
                 except Exception:
-                    logger.exception("NL2SQLChain: TiDB dialect refine failed, return empty SQL.")
+                    logger.exception(
+                        "NL2SQLChain: dialect refine failed dialect=%s, return empty SQL.",
+                        self._sql_dialect_label(),
+                    )
                     return "", validation_ctx
             else:
-                logger.warning("NL2SQLChain TiDB dialect failed and no LangChain; return empty SQL")
+                logger.warning(
+                    "NL2SQLChain dialect check failed and no LangChain dialect=%s; return empty SQL",
+                    self._sql_dialect_label(),
+                )
                 return "", validation_ctx
 
         ph_ok, ph_reason = self._validate_unresolved_time_placeholders(sql)
@@ -954,13 +971,15 @@ class NL2SQLChain:
                     refine_notes.extend(filter_notes)
                     if refine_notes:
                         logger.info(
-                            "NL2SQLChain TiDB rewrite applied in refine_sql: %s",
+                            "NL2SQLChain SQL rewrite applied in refine_sql dialect=%s: %s",
+                            self._sql_dialect_label(),
                             "; ".join(refine_notes),
                         )
-                    dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
+                    dialect_ok, dialect_reason = self._validate_sql_dialect(sql)
                     if not dialect_ok:
                         logger.warning(
-                            "NL2SQLChain refine_sql TiDB dialect invalid sql_preview=%r reason=%s",
+                            "NL2SQLChain refine_sql dialect invalid dialect=%s sql_preview=%r reason=%s",
+                            self._sql_dialect_label(),
                             _text_preview(sql, 0),
                             dialect_reason,
                         )
@@ -1147,7 +1166,7 @@ class NL2SQLChain:
         log_label: str,
         plan_item_id: str | None = None,
     ) -> tuple[str, bool, str | None]:
-        """normalize → TiDB 改写 → 时间/区域 filter → 方言与 whitelist 校验（L2/L1/QA replay 共用）。"""
+        """normalize → 方言兼容改写 → 时间/区域 filter → 方言与 whitelist 校验（L2/L1/QA replay 共用）。"""
         from app.nl2sql.question_intent import scope_literals_from_parsed_intent
 
         scope_literals = scope_literals_from_parsed_intent(validation_ctx.parsed_intent)
@@ -1168,14 +1187,15 @@ class NL2SQLChain:
         rewrite_notes.extend(filter_notes)
         if rewrite_notes:
             logger.info(
-                "NL2SQLChain %s TiDB/filter rewrite applied: %s",
+                "NL2SQLChain %s SQL rewrite applied dialect=%s: %s",
                 log_label,
+                self._sql_dialect_label(),
                 "; ".join(rewrite_notes),
             )
         ph_ok, ph_reason = self._validate_unresolved_time_placeholders(sql)
         if not ph_ok:
             return sql, False, ph_reason
-        dialect_ok, dialect_reason = self._validate_tidb_dialect(sql)
+        dialect_ok, dialect_reason = self._validate_sql_dialect(sql)
         if not dialect_ok:
             return sql, False, dialect_reason
         table_columns_map = (
@@ -1328,13 +1348,15 @@ class NL2SQLChain:
                 return ""
             if rewrite_notes:
                 logger.info(
-                    "NL2SQLChain TiDB rewrite applied in refine_sql_after_executor_error: %s",
+                    "NL2SQLChain SQL rewrite applied in refine_sql_after_executor_error dialect=%s: %s",
+                    self._sql_dialect_label(),
                     "; ".join(rewrite_notes),
                 )
-            dialect_ok, dialect_reason = self._validate_tidb_dialect(refined)
+            dialect_ok, dialect_reason = self._validate_sql_dialect(refined)
             if not dialect_ok:
                 logger.warning(
-                    "NL2SQLChain refine_sql_after_executor_error TiDB dialect invalid preview=%r reason=%s",
+                    "NL2SQLChain refine_sql_after_executor_error dialect invalid dialect=%s preview=%r reason=%s",
+                    self._sql_dialect_label(),
                     _text_preview(refined, 0),
                     dialect_reason,
                 )
@@ -1403,6 +1425,7 @@ class NL2SQLChain:
         - strict_schema_reminder=False：方言/执行错误等首轮修正，措辞略简。
         """
         from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore[import-not-found]
+        from app.nl2sql.sql_dialect import is_postgres_dialect
 
         system = (
             "你是一个 NL2SQL SQL 修正助手。"
@@ -1412,11 +1435,21 @@ class NL2SQLChain:
             " 若问题涉及锅炉/设备名称与明细记录等多实体，应通过 JOIN 关联台账表与事实表，禁止用 boiler_id='1' 等臆造数字代替「一号锅炉」类名称条件。"
             " 禁止使用 SELECT *、tbl.* 或别名.*；SELECT 列表中的列须为真实业务列名（不得用星号代替）。"
             " 多表 JOIN 时：每个表别名或表名后的限定列必须属于该表对应业务含义下的列，禁止张冠李戴。"
-            " 当前数据库方言为 TiDB/MySQL："
-            "1) 禁止使用 PostgreSQL 语法（例如 INTERVAL '7 days'）；"
-            "2) 禁止使用高风险别名（如 load、row_number）；"
-            "3) 默认禁止窗口函数与 OVER()/LAG()/LEAD()/ROW_NUMBER()，请改写为普通聚合或直接去除窗口依赖。"
         )
+        if is_postgres_dialect():
+            system += (
+                " 当前数据库方言为 PostgreSQL（由 NL2SQL_BUSINESS_DOMAIN 业务包决定）："
+                "1) 时间窗使用 CURRENT_DATE / NOW() 与 INTERVAL '1 day' 等 PostgreSQL 字面量；"
+                "2) 禁止改写成 CURDATE()、DATE_SUB(...) 或 INTERVAL 1 DAY 等 MySQL/TiDB 写法；"
+                "3) 窗口函数在 PostgreSQL 中可用，但若校验错误未要求则保持简单 SELECT/聚合即可。"
+            )
+        else:
+            system += (
+                " 当前数据库方言为 TiDB/MySQL（由 NL2SQL_BUSINESS_DOMAIN 业务包决定）："
+                "1) 禁止使用 PostgreSQL 语法（例如 INTERVAL '7 days'）；"
+                "2) 禁止使用高风险别名（如 load、row_number）；"
+                "3) 默认禁止窗口函数与 OVER()/LAG()/LEAD()/ROW_NUMBER()，请改写为普通聚合或直接去除窗口依赖。"
+            )
         if strict_schema_reminder:
             system += (
                 " 【校验修正·强制】你必须严格消除「校验失败原因」中列出的违规项："
@@ -2427,6 +2460,44 @@ class NL2SQLChain:
 
         rewritten = col_pat.sub(_repl, rewritten)
         return rewritten, notes
+
+    def _sql_dialect_label(self) -> str:
+        """日志用方言标签：优先读 NL2SQL_BUSINESS_DOMAIN 配置包中的 dialect。"""
+        from app.nl2sql.sql_dialect import get_sql_dialect
+
+        return get_sql_dialect() or "tidb"
+
+    def _validate_sql_dialect(self, sql: str) -> tuple[bool, str | None]:
+        """
+        按当前业务域方言做 SQL 方言校验。
+
+        方言来源：``NL2SQL_BUSINESS_DOMAIN`` → ``configs/nl2sql_business/<domain>/profile.yaml``
+        的 ``db.dialect``（经 ``get_sql_dialect`` / ``is_postgres_dialect``）；
+        未设 domain 时回退 ``NL2SQL_SQL_DIALECT``（默认 tidb）。
+        """
+        from app.nl2sql.sql_dialect import is_postgres_dialect
+
+        if is_postgres_dialect():
+            return self._validate_postgres_dialect(sql)
+        return self._validate_tidb_dialect(sql)
+
+    def _validate_postgres_dialect(self, sql: str) -> tuple[bool, str | None]:
+        """PostgreSQL 方言校验：允许 INTERVAL 'n unit'；拒绝常见 MySQL/TiDB 时间写法。"""
+        s = self._validator.normalize_sql(sql)
+        if not s:
+            return False, "empty sql"
+        if re.search(r"\bCURDATE\s*\(", s, re.IGNORECASE):
+            return False, "CURDATE() is forbidden in PostgreSQL; use CURRENT_DATE"
+        if re.search(r"\bDATE_SUB\s*\(", s, re.IGNORECASE):
+            return False, "DATE_SUB() is forbidden in PostgreSQL; use CURRENT_DATE - INTERVAL '…'"
+        # MySQL: INTERVAL 1 DAY（无引号）在 PG 非法；PG 应为 INTERVAL '1 day'
+        if re.search(
+            r"\bINTERVAL\s+\d+\s+(DAY|HOUR|MINUTE|SECOND|WEEK|MONTH|YEAR)\b",
+            s,
+            re.IGNORECASE,
+        ):
+            return False, "MySQL-style INTERVAL n UNIT is forbidden in PostgreSQL; use INTERVAL 'n unit'"
+        return True, None
 
     def _validate_tidb_dialect(self, sql: str) -> tuple[bool, str | None]:
         s = self._validator.normalize_sql(sql)

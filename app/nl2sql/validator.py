@@ -545,6 +545,12 @@ class SQLValidator:
                 return False, f"unknown tables: {', '.join(unknown_tables)}"
 
         if allowed_columns:
+            # 白名单统一按裸列名比对（兼容历史 ``table.column`` 形态）
+            allowed_columns_bare = {
+                (c.split(".", 1)[-1] if "." in c else c).lower()
+                for c in allowed_columns
+                if c
+            }
             alias_map = self.parse_table_aliases_from_sql(s)
             pat = re.compile(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b")
             cols_to_check: set[str] = set()
@@ -557,7 +563,7 @@ class SQLValidator:
                 if left in alias_map or (allowed_tables_lower and left in allowed_tables_lower):
                     cols_to_check.add(right)
             if cols_to_check:
-                unknown_cols = sorted(c for c in cols_to_check if c not in allowed_columns)
+                unknown_cols = sorted(c for c in cols_to_check if c not in allowed_columns_bare)
                 if unknown_cols:
                     return False, f"unknown columns: {', '.join(unknown_cols)}"
 
