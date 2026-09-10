@@ -2,10 +2,14 @@
 智能客服：规则层意图分类（查库 vs 文档问答）。
 
 与 LangGraph `intent_classify` 节点配合使用：
-- `data_query`：倾向结构化台账/检修/缺陷等，走 NL2SQL；
-- `kb_qa`：概念、机理、标准解读、故障原因等，走向量 RAG；
+- `data_query`：结构化查数（地降：行政区/站点/沉降量等；锅炉：台账/检修/缺陷等）→ NL2SQL；
+- `kb_qa`：概念、机理、标准解读等 → 向量 RAG；
 - `hybrid_qa`：同时需要查数与文档机理/处置的综合问；
 - `clarify`：过短或指代不清。
+
+词表按 CHATBOT_DOMAIN 从 configs/chatbot_business/<domain>/intent_markers.yaml 加载；
+内置 `_BUILTIN_*` 仅包缺失时回退锅炉。data_markers 只放查询动词/统计指标，
+勿加「分层标/行政区」等实体词，否则概念问会误判为 hybrid_qa。
 
 说明：规则可解释、低成本；后续可在此模块旁挂 LLM 分类器，保持 label 兼容即可。
 """
@@ -20,12 +24,12 @@ from app.services.chatbot_image_utils import (
     PROCESSED_IMAGE_BLOCK_MARKER,
     strip_image_block_from_history,
 )
+from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
 
 _LEGACY_IMAGE_MARKER = "\n\n[image_urls]\n"
 
-# 偏「知识/机理/规范/方案建议」类提问 → 文档 RAG；与查数标记同时命中则 hybrid_qa
-# 「出具/方案/制定计划」等为跨行业通用表述，避免绑定具体业务词（如「检修计划」）
-_CONCEPTUAL_MARKERS = (
+# 内置锅炉兜底（配置包缺失时使用；正常由 configs/chatbot_business/<domain>/intent_markers.yaml 覆盖）
+_BUILTIN_CONCEPTUAL_MARKERS = (
     "为什么",
     "什么原因",
     "常见原因",
@@ -56,7 +60,6 @@ _CONCEPTUAL_MARKERS = (
     "经验",
     "论文",
     "参考",
-    # 方案/建议类（通用）：与「查询/列出」等同时出现时走混合链路
     "出具",
     "出一份",
     "方案",
@@ -72,8 +75,7 @@ _CONCEPTUAL_MARKERS = (
     "优化建议",
 )
 
-# 偏「查数/列表/记录」→ NL2SQL（需业务库已接入）
-_DATA_MARKERS = (
+_BUILTIN_DATA_MARKERS = (
     "统计",
     "查询",
     "查出",
@@ -108,20 +110,81 @@ _DATA_MARKERS = (
     "按电厂",
 )
 
-_UNCLEAR_PATTERNS = (
+_BUILTIN_STRONG_DATA_RE = re.compile(
+    r"(统计|查询|查出|列出|有多少|多少条|几条|台账|检修记录|缺陷记录|设备清单|工单号|编号为)",
+    re.I,
+)
+
+_BUILTIN_UNCLEAR_PATTERNS = (
     r"^怎么弄[啊呀吗呢]?$",
     r"^怎么办[啊呀吗呢]?$",
     r"^啥意思[啊呀吗呢]?$",
     r"^(这个|那个|它).{0,3}(怎么|怎么办|啥意思)",
 )
 
-_STRONG_DATA_RE = re.compile(
-    r"(统计|查询|查出|列出|有多少|多少条|几条|台账|检修记录|缺陷记录|设备清单|工单号|编号为)",
-    re.I,
+# 助手上一轮若为「请补充信息」类固定话术，用于推断任务延续
+_BUILTIN_CLARIFY_REPLY_SNIPPET = "请补充更具体的信息"
+
+_BUILTIN_HISTORY_CONTINUATION_MARKERS = (
+    "缺陷",
+    "图片",
+    "照片",
+    "上图",
+    "这张",
+    "识别",
+    "损伤",
+    "裂纹",
+    "泄漏",
+    "检修",
+    "设备",
+    "炉",
+    "管",
 )
 
-# 助手上一轮若为「请补充信息」类固定话术，用于推断任务延续
-_CLARIFY_REPLY_SNIPPET = "请补充更具体的信息"
+# 兼容旧引用名
+_UNCLEAR_PATTERNS = _BUILTIN_UNCLEAR_PATTERNS
+_CLARIFY_REPLY_SNIPPET = _BUILTIN_CLARIFY_REPLY_SNIPPET
+
+
+def _active_conceptual_markers() -> tuple[str, ...]:
+    markers = get_chatbot_business_profile().conceptual_markers
+    return markers or _BUILTIN_CONCEPTUAL_MARKERS
+
+
+def _active_data_markers() -> tuple[str, ...]:
+    markers = get_chatbot_business_profile().data_markers
+    return markers or _BUILTIN_DATA_MARKERS
+
+
+def _active_strong_data_re() -> re.Pattern[str]:
+    raw = (get_chatbot_business_profile().strong_data_regex or "").strip()
+    if raw:
+        try:
+            return re.compile(raw, re.I)
+        except re.error:
+            pass
+    return _BUILTIN_STRONG_DATA_RE
+
+
+def _active_unclear_patterns() -> tuple[str, ...]:
+    patterns = get_chatbot_business_profile().unclear_patterns
+    return patterns or _BUILTIN_UNCLEAR_PATTERNS
+
+
+def _active_clarify_reply_snippet() -> str:
+    snippet = (get_chatbot_business_profile().clarify_reply_snippet or "").strip()
+    return snippet or _BUILTIN_CLARIFY_REPLY_SNIPPET
+
+
+def _active_history_continuation_markers() -> tuple[str, ...]:
+    markers = get_chatbot_business_profile().history_continuation_markers
+    return markers or _BUILTIN_HISTORY_CONTINUATION_MARKERS
+
+
+# 兼容旧引用名
+_CONCEPTUAL_MARKERS = _BUILTIN_CONCEPTUAL_MARKERS
+_DATA_MARKERS = _BUILTIN_DATA_MARKERS
+_STRONG_DATA_RE = _BUILTIN_STRONG_DATA_RE
 
 
 def _raw_has_image_blocks(content: str) -> bool:
@@ -182,7 +245,7 @@ def _infer_prev_task_type_from_tail(tail: List[Dict[str, Any]]) -> str:
         if str(m.get("role", "")).lower() == "assistant":
             last_assistant = str(m.get("content", "") or "")
             break
-    if last_assistant and _CLARIFY_REPLY_SNIPPET in last_assistant:
+    if last_assistant and _active_clarify_reply_snippet() in last_assistant:
         return "after_clarify"
 
     last_user_raw = ""
@@ -206,21 +269,7 @@ def _history_supports_kb_continuation(history_summary: str, prev_task_type: str)
         return True
     if prev_task_type == "data_query_thread":
         return False
-    markers = (
-        "缺陷",
-        "图片",
-        "照片",
-        "上图",
-        "这张",
-        "识别",
-        "损伤",
-        "裂纹",
-        "泄漏",
-        "检修",
-        "设备",
-        "炉",
-        "管",
-    )
+    markers = _active_history_continuation_markers()
     return bool(history_summary) and any(x in history_summary for x in markers)
 
 
@@ -236,14 +285,15 @@ class IntentRuleResult(NamedTuple):
 
 def _has_conceptual(q: str) -> bool:
     qn = q.replace(" ", "")
-    return any(m in qn for m in _CONCEPTUAL_MARKERS)
+    return any(m in qn for m in _active_conceptual_markers())
 
 
 def _has_data(q: str) -> bool:
+    """是否命中查数标记（来自 domain intent_markers.yaml 的 data_markers / strong_data_regex）。"""
     qn = q.replace(" ", "")
-    if any(m.lower() in qn.lower() for m in _DATA_MARKERS):
+    if any(m.lower() in qn.lower() for m in _active_data_markers()):
         return True
-    return _STRONG_DATA_RE.search(qn) is not None
+    return _active_strong_data_re().search(qn) is not None
 
 
 def apply_intent_hard_gates(
@@ -282,7 +332,7 @@ def apply_intent_hard_gates(
             return _out("kb_qa", f"short_followup_continues_thread|ctx_task={prev_task}", 0.76)
         return _out("clarify", f"query_too_short|ctx_task={prev_task}", 0.92)
 
-    for p in _UNCLEAR_PATTERNS:
+    for p in _active_unclear_patterns():
         if re.search(p, q):
             if _history_supports_kb_continuation(h_sum, prev_task):
                 return _out("kb_qa", f"ambiguous_pattern_resolved_by_ctx|ctx_task={prev_task}", 0.83)

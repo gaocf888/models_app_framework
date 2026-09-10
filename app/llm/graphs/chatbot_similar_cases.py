@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from app.core.logging import get_logger
+from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
 
 logger = get_logger(__name__)
 
-# 规则路径关键词（可按业务扩展）
-FAULT_KEYWORDS = (
+# 规则路径关键词（锅炉内置兜底；优先读 CHATBOT_DOMAIN 配置包 similar_case.gate_markers）
+_BUILTIN_FAULT_KEYWORDS = (
     "锅炉",
     "管材",
     "管道",
@@ -38,13 +39,22 @@ FAULT_KEYWORDS = (
     "承压",
     "焊口",
 )
+FAULT_KEYWORDS = _BUILTIN_FAULT_KEYWORDS
+
+
+def _active_fault_keywords() -> tuple[str, ...]:
+    markers = get_chatbot_business_profile().similar_case.gate_markers
+    # 显式空列表 = 关闭规则门控（如地降域）；None/缺失则用锅炉内置
+    if markers is not None and len(markers) == 0:
+        return ()
+    return markers or _BUILTIN_FAULT_KEYWORDS
 
 
 def fault_keyword_match(query: str) -> bool:
     q = (query or "").strip()
     if not q:
         return False
-    return any(k in q for k in FAULT_KEYWORDS)
+    return any(k in q for k in _active_fault_keywords())
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:

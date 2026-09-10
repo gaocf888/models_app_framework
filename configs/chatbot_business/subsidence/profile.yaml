@@ -1,0 +1,32 @@
+# 业务包总览（CHATBOT_DOMAIN=subsidence；与 NL2SQL_BUSINESS_DOMAIN 独立 env）
+
+# 展示名：日志/运维识别用
+display_name: 地面沉降分析专家（地降所）
+
+# 地域锁库（原 plant_kb）：问句含本市/本地区等时锁定专属 namespace
+locale_kb:
+  # 地降默认关；markers 预留本市语义，不含「本厂」
+  enabled: false
+  # 触发锁库的问句关键词
+  markers:
+    - 本市
+    - 本地区
+    - 本地
+    - 北京地区
+    - 本市区
+    - 我们这边
+    - 本区
+  # 锁定的 RAG namespace
+  namespace: Beijing_subsidence_knowledge
+  # 检索 query 附加 boost 词
+  query_boost: 北京市
+  # 首轮 0 命中时是否回退全库检索
+  fallback_on_empty: false
+  # 是否根据近几轮历史延续锁库
+  history_continuation: false
+
+# 相似案例块：地降默认关；gate_markers 为空表示不做锅炉式故障门控
+similar_case:
+  enabled_default: false
+  namespace: 沉降案例
+  gate_markers: []

@@ -492,7 +492,8 @@ class ChatbotConfig:
     checkpoint_backend: str = "none"
     checkpoint_redis_url: str | None = None
     checkpoint_namespace: str = "chatbot_graph"
-    # 锅炉/管材故障域 + 限定 namespace 相似案例（见 enterprise 文档 §14）
+    # 相似案例：默认关。namespace 目前只读 env（默认「事故案例」），不读 domain 包 similar_case.namespace；
+    # 地降保持关闭且 gate_markers 为空，勿复用锅炉爆管词（见 chatbot_business_profile）。
     similar_case_enabled: bool = False
     similar_case_namespace: str = "事故案例"
     similar_case_top_k: int = 5
@@ -519,8 +520,12 @@ class ChatbotConfig:
     # 主问答流式 LLM 的 sampling temperature（环境变量 CHATBOT_MAIN_LLM_TEMPERATURE）。
     # None 表示不在请求中覆盖，沿用 LLMModelConfig.temperature；仅作用于主答 stream_chat，不影响指代/相似案例等硬编码子调用。
     main_llm_temperature: float | None = None
-    # 未传 prompt_version 时使用的客服模板版本（与 configs/prompts_bak_new.yaml 中 chatbot.version 对齐）
-    default_prompt_version: str = "boiler_v1"
+    # 未传 prompt_version 时使用的客服模板版本（与 configs/prompts.yaml 中 chatbot.version 对齐）
+    # 地降所主部署默认；锅炉部署设 CHATBOT_PROMPT_DEFAULT_VERSION=boiler_v1
+    default_prompt_version: str = "subsidence_v1"
+    # 业务域配置包：configs/chatbot_business/<domain>/（与 NL2SQL_BUSINESS_DOMAIN 同名约定、独立 env）
+    # 地降所主部署默认；锅炉部署设 CHATBOT_DOMAIN=boiler
+    business_domain: str = "subsidence"
     # 回答结束后关联问题推荐（规则 + 片段 + LLM）
     suggested_questions_enabled: bool = True
     suggested_questions_max: int = 5
@@ -565,12 +570,13 @@ class ChatbotConfig:
     anaphora_llm_timeout_sec: float = 4.0
     anaphora_llm_model: str | None = None
     anaphora_expose_meta: bool = False
-    # 本厂/该厂等问句锁定电厂专属知识库 namespace（RAG 链路 rag_scope_resolve）
+    # locale_kb（字段名仍叫 plant_kb）：取值优先 CHATBOT_DOMAIN 包，显式 CHATBOT_PLANT_KB_* 覆盖。
+    # 地降包默认 enabled=false；锅炉包默认本厂锁库。dataclass 字面默认值是锅炉兜底，运行时会被包覆盖。
     plant_kb_enabled: bool = True
     plant_kb_namespace: str = "Power_plant_knowledge"
     plant_kb_query_boost_name: str = "华电五彩湾北一发电有限公司"
     plant_kb_fallback_on_empty: bool = False
-    # 厂别指代是否延续到近几轮 user 历史；默认 false=仅本轮 query 含本厂/本公司等才锁 namespace
+    # 厂别/地域指代是否延续到近几轮 user 历史；默认 false=仅本轮 query 含 markers 才锁 namespace
     plant_kb_history_continuation: bool = False
     # 高分 FAQ 软直通：首条 citation 高分且 anaphora=none 时，生成阶段不注入 history_messages（默认开）
     faq_soft_direct_enabled: bool = True
@@ -1337,6 +1343,57 @@ def _load_from_env() -> AppConfig:
         normalize_embeddings=os.getenv("MIS_TEI_NORMALIZE_EMBEDDINGS", "true").lower() == "true",
     )
 
+    # Chatbot 业务域：显式 CHATBOT_* 覆盖 domain 包 locale_kb；缺省 domain=subsidence（地降主部署）
+    from app.llm.graphs.chatbot_business_profile import (
+        get_chatbot_business_profile,
+        normalize_chatbot_domain,
+    )
+
+    chatbot_business_domain = normalize_chatbot_domain(os.getenv("CHATBOT_DOMAIN") or "subsidence")
+    chatbot_biz_profile = get_chatbot_business_profile(chatbot_business_domain)
+    locale_kb = chatbot_biz_profile.locale_kb
+
+    def _env_or_profile_bool(env_key: str, profile_value: bool, *, default_when_no_profile: bool) -> bool:
+        raw = os.getenv(env_key)
+        if raw is not None and str(raw).strip() != "":
+            return str(raw).lower() == "true"
+        return bool(profile_value) if chatbot_biz_profile is not None else default_when_no_profile
+
+    def _env_or_profile_str(env_key: str, profile_value: str, *, default_when_no_profile: str) -> str:
+        raw = os.getenv(env_key)
+        if raw is not None and str(raw).strip() != "":
+            return str(raw).strip()
+        pv = (profile_value or "").strip()
+        return pv or default_when_no_profile
+
+    plant_kb_enabled = _env_or_profile_bool(
+        "CHATBOT_PLANT_KB_ENABLED",
+        locale_kb.enabled,
+        # 包加载失败时的兜底偏锅炉（enabled=true）；正常地降由 yaml enabled=false 覆盖。
+        default_when_no_profile=True,
+    )
+    plant_kb_namespace = _env_or_profile_str(
+        "CHATBOT_PLANT_KB_NAMESPACE",
+        locale_kb.namespace,
+        # 同上：仅包缺失时回退电厂库名。
+        default_when_no_profile="Power_plant_knowledge",
+    )
+    plant_kb_query_boost_name = _env_or_profile_str(
+        "CHATBOT_PLANT_KB_QUERY_BOOST_NAME",
+        locale_kb.query_boost,
+        default_when_no_profile="华电五彩湾北一发电有限公司",
+    )
+    plant_kb_fallback_on_empty = _env_or_profile_bool(
+        "CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY",
+        locale_kb.fallback_on_empty,
+        default_when_no_profile=False,
+    )
+    plant_kb_history_continuation = _env_or_profile_bool(
+        "CHATBOT_PLANT_KB_HISTORY_CONTINUATION",
+        locale_kb.history_continuation,
+        default_when_no_profile=False,
+    )
+
     chatbot_cfg = ChatbotConfig(
         intent_enabled=os.getenv("CHATBOT_INTENT_ENABLED", "true").lower() == "true",
         intent_backend=(os.getenv("CHATBOT_INTENT_BACKEND", "rules") or "rules").strip().lower(),
@@ -1392,7 +1449,9 @@ def _load_from_env() -> AppConfig:
         ),
         nl2sql_analysis_meta_enabled=os.getenv("CHATBOT_NL2SQL_ANALYSIS_META_ENABLED", "true").lower() == "true",
         main_llm_temperature=_optional_clamped_temperature("CHATBOT_MAIN_LLM_TEMPERATURE"),
-        default_prompt_version=(os.getenv("CHATBOT_PROMPT_DEFAULT_VERSION", "boiler_v1") or "boiler_v1").strip(),
+        # 地降所主部署默认 subsidence_v1；锅炉部署设 CHATBOT_PROMPT_DEFAULT_VERSION=boiler_v1
+        default_prompt_version=(os.getenv("CHATBOT_PROMPT_DEFAULT_VERSION", "subsidence_v1") or "subsidence_v1").strip(),
+        business_domain=chatbot_business_domain,
         suggested_questions_enabled=os.getenv("CHATBOT_SUGGESTED_QUESTIONS_ENABLED", "true").lower() == "true",
         suggested_questions_max=max(1, min(10, int(os.getenv("CHATBOT_SUGGESTED_QUESTIONS_MAX", "5")))),
         image_preprocess_enabled=os.getenv("CHATBOT_IMAGE_PREPROCESS_ENABLED", "true").lower() == "true",
@@ -1426,13 +1485,11 @@ def _load_from_env() -> AppConfig:
         anaphora_llm_timeout_sec=max(0.5, float(os.getenv("CHATBOT_ANAPHORA_LLM_TIMEOUT_SEC", "4"))),
         anaphora_llm_model=(os.getenv("CHATBOT_ANAPHORA_LLM_MODEL") or "").strip() or None,
         anaphora_expose_meta=os.getenv("CHATBOT_ANAPHORA_EXPOSE_META", "false").lower() == "true",
-        plant_kb_enabled=os.getenv("CHATBOT_PLANT_KB_ENABLED", "true").lower() == "true",
-        plant_kb_namespace=(os.getenv("CHATBOT_PLANT_KB_NAMESPACE", "Power_plant_knowledge") or "Power_plant_knowledge").strip(),
-        plant_kb_query_boost_name=(
-            os.getenv("CHATBOT_PLANT_KB_QUERY_BOOST_NAME", "华电五彩湾北一发电有限公司") or "华电五彩湾北一发电有限公司"
-        ).strip(),
-        plant_kb_fallback_on_empty=os.getenv("CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY", "false").lower() == "true",
-        plant_kb_history_continuation=os.getenv("CHATBOT_PLANT_KB_HISTORY_CONTINUATION", "false").lower() == "true",
+        plant_kb_enabled=plant_kb_enabled,
+        plant_kb_namespace=plant_kb_namespace,
+        plant_kb_query_boost_name=plant_kb_query_boost_name,
+        plant_kb_fallback_on_empty=plant_kb_fallback_on_empty,
+        plant_kb_history_continuation=plant_kb_history_continuation,
         faq_soft_direct_enabled=os.getenv("CHATBOT_FAQ_SOFT_DIRECT_ENABLED", "true").lower() == "true",
         faq_soft_direct_min_score=max(0.0, min(1.0, float(os.getenv("CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE", "0.95")))),
         faq_soft_direct_snippet_top_n=max(1, min(10, int(os.getenv("CHATBOT_FAQ_SOFT_DIRECT_SNIPPET_TOP_N", "1")))),

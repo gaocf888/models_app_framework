@@ -273,8 +273,8 @@ class AnalysisImgDiagGraphRunner(AnalysisGraphRunner):
         app_cfg = get_app_config()
         chatbot_ver = (
             (self._analysis_cfg.img_diag_vision_chatbot_prompt_version or "").strip()
-            or (app_cfg.chatbot.default_prompt_version or "boiler_v1").strip()
-            or "boiler_v1"
+            or (app_cfg.chatbot.default_prompt_version or "subsidence_v1").strip()
+            or "subsidence_v1"
         )
         chat_tpl = self._prompts.get_template(
             scene="chatbot",

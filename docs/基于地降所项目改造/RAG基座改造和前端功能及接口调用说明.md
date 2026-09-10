@@ -30,6 +30,13 @@
 
 **兼容**：锅炉等仍可能用空 ns 时，用配置开关（如 `RAG_REQUIRE_NAMESPACE`，地降所开启）。NL2SQL 三库（`nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples`）本页侧栏排除，其写入不受「空 ns」影响（本身非空）。
 
+**侧栏排除三库（RAG 基座已实现）**：
+
+- 常量：`app/rag/namespace_kb.py` → `NL2SQL_KB_ADMIN_SIDEBAR_EXCLUDED_NAMESPACES`  
+- 接口：`GET /rag/namespaces?exclude_nl2sql=true`（**默认 true**）；运维排查可传 `false` 看全部  
+- 前端：知识管理侧栏应使用默认行为；勿依赖 AI 问答 / `CHATBOT_DOMAIN` 配置  
+- 说明：排除仅影响管理台列表展示，**不**阻止三库摄入/写入/NL2SQL 召回
+
 ---
 
 ## 2. 主流程
@@ -220,7 +227,7 @@
 
 | 功能 | 方法 | 路径 | 现状 |
 |------|------|------|------|
-| 侧栏分类 / 启用 / 优先级 / 文档数 | GET | `/rag/namespaces` | 已有 |
+| 侧栏分类 / 启用 / 优先级 / 文档数 | GET | `/rag/namespaces?exclude_nl2sql=true` | 默认排除 NL2SQL 三库（`NL2SQL_KB_ADMIN_SIDEBAR_EXCLUDED_NAMESPACES`）；运维可传 `false` |
 | 改启用与优先级 | PATCH | `/rag/namespaces/{namespace}/kb-config` | 已有 |
 | 文档列表 / 分页 / 按分类 | GET | `/rag/documents/overview` | 已有 |
 | 顶栏名称模糊 | GET | `/rag/documents/overview?doc_name_contains=` | **需加参数** |

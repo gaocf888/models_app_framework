@@ -285,11 +285,17 @@ def align_semantics(
                     binding.device_type_tables.append(tbl)
                 break
 
-        if not binding.device_types and any(
-            w in q_lower for w in ("沉降", "下沉", "回弹", "监测点")
+        if (
+            not binding.device_types
+            and assets.device_type_tables
+            and "fcb" in assets.device_type_tables
         ):
+            # 未指明监测类型时默认分层标(fcb)，仅地降语义包（含 fcb 表映射）生效
             binding.device_types.append("fcb")
-            binding.device_type_tables.append(assets.default_subsidence_table)
+            binding.device_type_tables.append(
+                assets.device_type_tables.get("fcb") or assets.default_subsidence_table
+            )
+            binding.warnings.append("default_device_type_fcb")
 
     # districts
     for dist in sorted(assets.districts, key=len, reverse=True):

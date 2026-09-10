@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from enum import Enum
 import re
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -91,6 +91,7 @@ class AgenticRAGService:
         mode: Optional[RAGMode] = None,
         top_k: Optional[int] = None,
         namespace: Optional[str] = None,
+        exclude_namespaces: Sequence[str] | None = None,
     ) -> RAGResult:
         """
         统一的 RAG 检索入口。
@@ -99,7 +100,8 @@ class AgenticRAGService:
         - query：用户问题或检索查询；
         - ctx：可选上下文信息（user_id/session_id/scene 等）；
         - mode：可选 RAG 模式，未指定时使用默认模式；
-        - top_k：可选检索数量（覆盖全局配置）。
+        - top_k：可选检索数量（覆盖全局配置）；
+        - exclude_namespaces：召回阶段剔除的 namespace（如 NL2SQL 三库），避免占满 top_k。
         """
         effective_mode = mode or self._default_mode
         # 全局开关关闭时，强制回退 BASIC，避免线上异常扩散。
@@ -112,6 +114,7 @@ class AgenticRAGService:
                 top_k=top_k,
                 namespace=namespace,
                 scene=(ctx.scene if ctx else None),
+                exclude_namespaces=exclude_namespaces,
             )
             snippets = [c.text for c in chunks if c.text]
             return RAGResult(query=query, context_snippets=snippets, chunks=chunks, used_agentic=False)
@@ -130,6 +133,7 @@ class AgenticRAGService:
             top_k=top_k,
             namespace=namespace,
             scene=scene,
+            exclude_namespaces=exclude_namespaces,
         )
         snippets = [c.text for c in merged if c.text]
         return RAGResult(
@@ -184,6 +188,7 @@ class AgenticRAGService:
         top_k: Optional[int],
         namespace: Optional[str],
         scene: Optional[str],
+        exclude_namespaces: Sequence[str] | None = None,
     ) -> List[RetrievedChunk]:
         """
         并行执行各子问题召回，按 score 与 step 权重融合后去重。
@@ -204,6 +209,8 @@ class AgenticRAGService:
                     namespace,
                     None,
                     scene,
+                    None,
+                    exclude_namespaces,
                 ): s
                 for s in steps
             }

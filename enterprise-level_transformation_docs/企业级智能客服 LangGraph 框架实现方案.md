@@ -1,6 +1,6 @@
 # 企业级智能客服 LangGraph 框架实现方案
 
-> 对照落地说明：`docs/智能客服LangGraph收敛与Hybrid意图改造方案.md`（P1 Stream-only+Graph-only、P2 案例/关联问进图、P3 `hybrid_qa`）。
+> 对照落地说明：`docs/智能客服LangGraph收敛与Hybrid意图改造方案.md`（Stream-only+Graph-only、案例/关联问进图、`hybrid_qa`）；地降所业务改造见 `docs/基于地降所项目改造/AI问答改造.md`（`CHATBOT_DOMAIN` 双域包、默认 `subsidence_v1`、查数后轻量知识引用等）。
 
 ## 1. 目标与范围
 
@@ -13,7 +13,7 @@
 
 - 编排与执行分离：LangGraph 负责状态流转与图内检索/案例/关联问；LLM/RAG/会话仍用现有服务；**流式 token / citation / NL2SQL 分析 yield 留 Runner 图后 adapter**。
 - **Stream-only + Graph-only**：`langgraph` 为**硬依赖**；图编译或 `ainvoke` 失败即**快速失败**，无 Legacy 顺序回退、无 `CHATBOT_GRAPH_ENABLED` 开关、无非流式 `/chatbot/chat`。
-- 结构先行：完整 `StateGraph`（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL + 收紧分析流，见 §4.6）**、**`hybrid_qa`（并行 NL2SQL + RAG 综合，见 §4.7）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；意图后端支持 **`rules | llm | bert`**（默认 `rules`，`llm` 为模式 B 窄触发，见 `docs/智能客服意图识别轻量LLM接入说明.md`）。结束 `meta` 含 **`suggested_questions`**（图内 `suggest_followups` 预填；Runner 仅在仍空且非纯 `data_query` 时补全；**纯 `data_query` 不下发**，见 §4.3）、**`rag_citations`**（RAG / Hybrid 路径结构化引用，见 §4.5）、**`nl2sql_analysis`**（查库旁路结构，见 §4.6）、**`hybrid_degraded`**（Hybrid 单臂降级，见 §4.7）等；关联问题生成规则为规则预设表 + 复用本轮 `context_snippets` 首行种子 + 可选 LLM JSON 补全，**不为关联问题单独做二次向量检索**。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**高分 FAQ 软直通**见 **§4.4**。**本厂专属知识库 RAG 范围（`rag_scope_resolve`）**见 **第 16 节**。**上下文指代消解（P0～P3）**见 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。
+- 结构先行：完整 `StateGraph`（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL + 收紧分析流，见 §4.6）**、**`hybrid_qa`（并行 NL2SQL + RAG 综合，见 §4.7）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；意图后端支持 **`rules | llm | bert`**（默认 `rules`，`llm` 为模式 B 窄触发，见 `docs/智能客服意图识别轻量LLM接入说明.md`）。结束 `meta` 含 **`suggested_questions`**（图内 `suggest_followups` 预填；Runner 仅在仍空且非纯 `data_query` 时补全；**纯 `data_query` 不下发**，见 §4.3）、**`rag_citations`**（`kb_qa` / `hybrid_qa` / **`data_query` 轻量检索**，已滤 NL2SQL 三库，见 §4.5）、**`nl2sql_analysis`**（查库旁路结构，见 §4.6）、**`hybrid_degraded`**（Hybrid 单臂降级，见 §4.7）等；关联问题生成规则为 **domain `follow_up.yaml`** 主题表 + 复用本轮 `context_snippets` 首行种子 + 可选 LLM JSON 补全，**不为关联问题单独做二次向量检索**。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**高分 FAQ 软直通**见 **§4.4**。**双业务域**见 **§3.1**。**locale_kb（原 plant_kb，`rag_scope_resolve`）**见 **第 16 节**。**上下文指代消解（P0～P3）**见 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。
 - 可观测优先：接入 LangSmith，节点级记录耗时、路由、重试与失败原因。
 
 ## 3. 总体架构
@@ -34,15 +34,32 @@
 - LangGraph：状态机（模板、历史、意图、故障门控、**按意图 A/B/C/D 分支**、RAG/C-RAG 或 NL2SQL 或 Hybrid 双臂、`finalize`、图内相似案例与关联问）。
 - `HybridRAGService` / `AgenticRAGService`：主链路及 Hybrid RAG 臂检索；相似案例在图内 **`similar_cases_retrieve`** 节点 `retrieve(namespace=…)`，Runner **不再二次检索**。
 - `NL2SQLService`（`nl2sql_service.py`）：`data_query` 分支生成 SQL 与执行；客服内嵌调用时 `record_conversation=False`。NL2SQL 与 RAG 同为基座基础能力；直连 HTTP 见 `POST /nl2sql/query`；**综合分析 V2** 在 **`POST /analysis/run-with-nl2sql`**（及流式 **`run-with-nl2sql-stream`**）与 **`POST /analysis/run-img-diag`**（及流式 **`run-img-diag-stream`**）（NL2SQL 并行臂 **`acquire_data`** → **`_execute_data_plan`**，**默认同 dependency 层并行多次 `query`**）阶段亦多次复用同一服务（`record_conversation=False`）。接入形态总览见 **`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`**。
-- `chatbot_intent.py` / `chatbot_intent_rules.py` / `chatbot_intent_llm.py` / `chatbot_intent_bert.py`：意图统一入口与三后端（`rules | llm | bert`）；生产路径须 `classify_chatbot_intent_async`。
+- `chatbot_intent.py` / `chatbot_intent_rules.py` / `chatbot_intent_llm.py` / `chatbot_intent_bert.py`：意图统一入口与三后端（`rules | llm | bert`）；词表/示例来自 **domain `intent_markers.yaml`**；生产路径须 `classify_chatbot_intent_async`。
 - `chatbot_faq_soft_direct.py`：高分 FAQ 软直通判定（`kb_build_messages` 阶段，见 **§4.4**）。
-- `chatbot_rag_citations.py` / `chatbot_citation_stream.py`：RAG 结构化引用与流式 `citation_ref` 事件（见 **§4.5**）。
-- `chatbot_follow_up.py`：`build_suggested_questions`（规则表 + 本轮片段种子 + 可选 LLM）。
+- `chatbot_rag_citations.py` / `chatbot_citation_stream.py`：RAG 结构化引用、三库过滤与流式 `citation_ref`（见 **§4.5**）。
+- `chatbot_follow_up.py`：`build_suggested_questions`（**domain `follow_up.yaml`** 主题表 + 本轮片段种子 + 可选 LLM）。
 - `chatbot_nl2sql_answer.py` / `chatbot_nl2sql_display.py`：查数统一入口 `run_chatbot_nl2sql_query`；列过滤展示；可选 **收紧分析**（`summarize_nl2sql_with_llm` / 流式 `nl2sql_analysis_stream_plan`，见 **§4.6**）。
 - `ConversationManager`：会话真源（`user_id + session_id`）。
-- `PromptTemplateRegistry` + `configs/prompts.yaml`：默认 `boiler_v1`（`CHATBOT_PROMPT_DEFAULT_VERSION`）。
+- `PromptTemplateRegistry` + `configs/prompts.yaml`：默认 **`subsidence_v1`**（`CHATBOT_PROMPT_DEFAULT_VERSION`；锅炉部署显式 `boiler_v1`）。
+- `chatbot_business_profile.py` + `configs/chatbot_business/<domain>/`：业务域词表/话术/locale_kb/follow-up（**`CHATBOT_DOMAIN`**，缺省 **`subsidence`**；与 `NL2SQL_BUSINESS_DOMAIN` 同名约定、独立加载）。
 - `VLLMHttpClient`：对话与 NL2SQL 收紧分析、关联问题 LLM、流式主答。
 - LangSmith：可选链路追踪（`LangSmithTracker`）。
+
+## 3.1 双业务域配置（锅炉 / 地面沉降）
+
+客服支持 **锅炉四管** 与 **地面沉降（地降所）** 两套业务包切换，职责与 NL2SQL 基座分离：
+
+| 层 | Env | 管什么 | 锅炉 | 地降（代码缺省） |
+|----|-----|--------|------|------------------|
+| Prompt version | `CHATBOT_PROMPT_DEFAULT_VERSION` | 专家人设、知识使用、查数解读边界 | `boiler_v1` | **`subsidence_v1`** |
+| Chatbot domain 包 | **`CHATBOT_DOMAIN`** | 意图词表、澄清/占位话术、follow-up、locale_kb、相似案例门控词、Hybrid 文案 | `boiler` | **`subsidence`** |
+| NL2SQL domain | `NL2SQL_BUSINESS_DOMAIN` | 表白名单、语义、方言、查数 RAG 三库 | `boiler_four_tube` | `subsidence` |
+
+配置包目录：`configs/chatbot_business/{boiler,subsidence}/`（`profile.yaml`、`intent_markers.yaml`、`clarify_texts.yaml`、`follow_up.yaml`）。
+
+加载器：`app/llm/graphs/chatbot_business_profile.py`。未设 `CHATBOT_DOMAIN` 时默认 **`subsidence`**；锅炉部署须显式 `CHATBOT_DOMAIN=boiler`。
+
+意图词表注意：`data_markers` 仅放查询动词/统计指标，勿放「分层标/行政区」等实体词，否则概念问易误判为 `hybrid_qa`。
 
 ## 4. 图设计（状态、节点、路由）
 
@@ -68,17 +85,16 @@
                                   ▼
               ┌───────────────────────────────────┐
               │ 意图分流（短句/指代不清 → 澄清；     │
-              │ 台账统计列表等 → 结构化查库；         │
+              │ 统计查询列表等 → 结构化查库；         │
               │ 机理/标准/原因等 → 文档知识问答；     │
               │ 既要数又要机理/处置 → 综合 Hybrid；   │
               │ 带图时默认走文档侧，避免误查库）     │
               └───────────────────┬───────────────┘
                                   ▼
               ┌───────────────────────────────────┐
-              │（可选）故障域门控：若开相似案例，     │
-              │ 结合文/图判断是否像锅炉管材故障，     │
-              │ 决定主答结束后是否追加「相似案例」块 │
-              │（默认总关；见第 14 节）              │
+              │（可选）相似案例门控：若开相似案例，   │
+              │ 结合文/图与 domain 门控词判断是否追加 │
+              │「相似案例」块（默认总关；见第 14 节） │
               └───────────────────┬───────────────┘
                                   ▼
               ┌─────────┬─────────┬─────────┬─────────┐
@@ -89,10 +105,12 @@
      ┌─────────────┘         │         │         └──────────────┐
      ▼                       ▼         ▼                        ▼
 ┌──────────┐        ┌──────────────┐ ┌────────────────┐ ┌──────────────────┐
-│固定澄清话│        │NL2SQL 链+执行 │ │select_rag→     │ │并行 NL2SQL + RAG │
-│术        │        │→nl2sql_answer│ │rag_scope→      │ │→hybrid_synthesize│
-│          │        │（可挂收紧分析│ │kb_retrieve→    │ │（双源综合 prompt）│
-│          │        │ stream_plan）│ │C-RAG→build     │ └────────┬─────────┘
+│domain 澄 │        │NL2SQL 链+执行 │ │select_rag→     │ │并行 NL2SQL + RAG │
+│清话术    │        │→nl2sql_answer│ │rag_scope→      │ │→hybrid_synthesize│
+│          │        │→data_query_  │ │kb_retrieve→    │ │（文案来自 domain）│
+│          │        │  kb_light    │ │C-RAG→build     │ └────────┬─────────┘
+│          │        │（轻量知识引用│ │                │          │
+│          │        │ 不改写主答） │ │                │          │
 └────┬─────┘        └──────┬───────┘ └────────┬───────┘          │
      │                     │                  │                  │
      └─────────────────────┴──────────────────┴──────────────────┘
@@ -131,7 +149,7 @@
 - **安全拒答、转人工、闲聊**：图内占位，**默认意图不产出**，主流量为 **澄清 / 查库 / 文档问答 / 综合 Hybrid**。
 - **相似案例**：图内 `similar_cases_retrieve` 预取；**A 澄清**、**B 查库**不追加；**C / D** 且门控命中时 Runner 在主答流后 yield `similar_cases_block`（见 `_should_append_similar_cases`）。
 - **关联问题**：图内 `suggest_followups` 预填；Runner 仅在仍空且非纯 **`data_query`** 时补全；**不为关联问题单独再做向量检索**；详见 `framework-guide/智能客服整体实现技术说明.md` **§7**。
-- **RAG 引用**：`kb_qa` / **`hybrid_qa`（双臂成功）** 路径在流式输出中可下发 `citation_ref` 事件，结束帧含 `rag_citations`（见 **§4.5**）。
+- **RAG 引用**：`kb_qa` / **`hybrid_qa`（双臂成功）** 路径在流式输出中可下发 `citation_ref`；**`data_query`** 亦可在结束帧带过滤后的知识 `rag_citations`（见 **§4.5**）。
 - **查库成文**：**B** 流式默认走 **收紧分析**（有 `stream_plan` 时 Runner **整段一次** `delta`，非逐 token；见 **§4.6**）。
 - **Hybrid 综合**：**D** 并行查数 + 文档召回后综合；单臂失败可降级，`meta.hybrid_degraded` 标明（见 **§4.7**）。
 
@@ -182,7 +200,7 @@
 │ 【图内前缀：模板 → 历史 → 意图 → 门控 → 路由】                  │
 │ file: chatbot_graph_runner.py · _node_*                         │
 │                                                                 │
-│  load_prompt_template — 加载场景话术（默认 boiler_v1）          │
+│  load_prompt_template — 加载场景话术（默认 subsidence_v1）     │
 │  load_history — 按会话读近期多轮（enable_context）              │
 │  intent_classify — 判 clarify / data_query / kb_qa / hybrid_qa  │
 │    └─ file: app/llm/graphs/chatbot_intent.py                   │
@@ -200,10 +218,11 @@
 ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐ ┌─────────────────────┐
 │ clarify_     │ │ nl2sql_      │ │ select_rag_engine│ │ hybrid_acquire      │
 │ build_       │ │ answer       │ │ → rag_scope_     │ │ 并行 NL2SQL + RAG   │
-│ response     │ │ defer_stream │ │   resolve        │ │ （无 C-RAG 重试）   │
-│              │ │ _plan=True   │ │ → kb_retrieve    │ │   └─ hybrid_synth   │
-│              │ │              │ │ → quality/C-RAG  │ │ 组装双源 llm_msgs   │
-│              │ │              │ │ → kb_build_msgs  │ │                     │
+│ response     │ │ → data_query │ │   resolve        │ │ （无 C-RAG 重试）   │
+│              │ │   _kb_light  │ │ → kb_retrieve    │ │   └─ hybrid_synth   │
+│              │ │ （轻量知识   │ │ → quality/C-RAG  │ │ 组装双源 llm_msgs   │
+│              │ │  引用，不改  │ │ → kb_build_msgs  │ │ （文案来自 domain）  │
+│              │ │  写主答）    │ │                  │ │                     │
 └──────┬───────┘ └──────┬───────┘ └────────┬─────────┘ └──────────┬──────────┘
        │                │                  │                        │
        └────────────────┴──────────────────┴────────────────────────┘
@@ -243,7 +262,7 @@
 
 - 框内优先 **`file:` + 类/方法**，其后 **`说明:`** 为该步职责摘要。
 - `langgraph` 缺失或 `_build_graph()` 失败：**启动/请求直接失败**，无顺序 `_node_*` 合并兜底。
-- Runner 优先消费 `nl2sql_analysis_stream_plan`；否则 `llm_messages` / 固定 `answer_text`；纯 **`data_query`** 不生成关联问、不追加相似案例；**`hybrid_qa`** 允许 citation 与关联问（同 C 策略）。
+- Runner 优先消费 `nl2sql_analysis_stream_plan`；否则 `llm_messages` / 固定 `answer_text`；纯 **`data_query`** 不生成关联问、不追加相似案例，但可有过滤后的知识 `rag_citations`；**`hybrid_qa`** 允许 citation 与关联问（同 C 策略）。
 
 **实现落点速查（文件 → 职责）**
 
@@ -253,6 +272,8 @@
 | 服务入口 | `app/services/chatbot_service.py` | `stream_chat_events`（预处理 + Runner，无 Legacy） |
 | 图编译与节点 | `app/llm/graphs/chatbot_graph_runner.py` | `_build_graph`、`_node_*`、`_route_by_intent`、`_route_after_quality_check` |
 | Hybrid 综合 | 同上 | `_node_hybrid_acquire`、`_node_hybrid_synthesize` |
+| 查数轻量知识引用 | 同上 | `_node_data_query_kb_light` |
+| 业务域配置 | `app/llm/graphs/chatbot_business_profile.py` | `get_chatbot_business_profile`、`get_chatbot_retrieve_exclude_namespaces` |
 | 图尾 P2 节点 | 同上 | `_node_similar_cases_retrieve`、`_node_suggest_followups` |
 | 意图分类 | `app/llm/graphs/chatbot_intent.py` | `classify_chatbot_intent_async`（`CHATBOT_INTENT_BACKEND=rules\|llm\|bert`） |
 | 意图规则 | `app/llm/graphs/chatbot_intent_rules.py` | `classify_chatbot_intent_by_rules`（含 `mixed_hybrid` → `hybrid_qa`） |
@@ -273,7 +294,7 @@
 说明（与代码一致；顺序同图 **A/B/C/D** 与 **§4.2～§4.7**）：
 
 - **`fault_case_gate`**：见 **第 14 节**；**A/B** 路径不追加相似案例（`_should_append_similar_cases`）。
-- **`_route_by_intent`**：**A** `clarify`；**B** `data_query` → `nl2sql_answer`；**C** `kb_qa` → RAG 链；**D** `hybrid_qa` → `hybrid_acquire` → `hybrid_synthesize`。
+- **`_route_by_intent`**：**A** `clarify`；**B** `data_query` → `nl2sql_answer` → **`data_query_kb_light`**；**C** `kb_qa` → RAG 链；**D** `hybrid_qa` → `hybrid_acquire` → `hybrid_synthesize`。
 - **图尾**：各分支 → `finalize` → `similar_cases_retrieve` → `suggest_followups` → END。
 - **`enable_rag=false`（C）**：`kb_retrieve` 空结果，质量路由通常直 **`build`**。
 - **B 查库流式**：`defer_analysis_stream=True`；图后 `_emit_nl2sql_analysis_stream`（§4.6）；**不下发** `suggested_questions`。
@@ -310,7 +331,7 @@
 
 **图内前缀（共性）**
 
-1. `load_prompt_template`：加载场景话术；未传 `prompt_version` 时用 `CHATBOT_PROMPT_DEFAULT_VERSION`（默认 `boiler_v1`）。
+1. `load_prompt_template`：加载场景话术；未传 `prompt_version` 时用 `CHATBOT_PROMPT_DEFAULT_VERSION`（默认 **`subsidence_v1`**；锅炉部署显式 `boiler_v1`）。
 2. `load_history`：`ConversationManager` 只读近期多轮（`enable_context`）。
 3. `intent_classify`：`classify_chatbot_intent_async` → **A** `clarify` / **B** `data_query` / **C** `kb_qa` / **D** `hybrid_qa`（`CHATBOT_INTENT_BACKEND=rules|llm|bert`；可关 `CHATBOT_INTENT_ENABLED`）。
 4. `fault_case_gate`：判定是否在本轮追加相似案例（默认总关；见 **第 14 节**）。
@@ -318,11 +339,12 @@
 
 **A 澄清（`clarify`）**
 
-6. `clarify_build_response`：问句过短/不清或检索证据用尽时，返回固定或模板澄清话术；图后一般一次性 `delta=answer_text`。
+6. `clarify_build_response`：问句过短/不清或检索证据用尽时，返回 **domain `clarify_texts.yaml`** 澄清话术；图后一般一次性 `delta=answer_text`。
 
 **B 结构化查库（`data_query`）**
 
-7. `nl2sql_answer`：`run_chatbot_nl2sql_query(..., defer_analysis_stream=True)` → `NL2SQLService.query(record_conversation=False)` + `summarize_nl2sql_with_llm`；**不做主链路 RAG**；成功且开启收紧分析时写入 **`nl2sql_analysis_stream_plan`**，正文由**图后**推送（见 **§4.6**）。
+7. `nl2sql_answer`：`run_chatbot_nl2sql_query(..., defer_analysis_stream=True)` → `NL2SQLService.query(record_conversation=False)` + `summarize_nl2sql_with_llm`；成功且开启收紧分析时写入 **`nl2sql_analysis_stream_plan`**，正文由**图后**推送（见 **§4.6**）。
+7b. **`data_query_kb_light`**：NL2SQL 后做一次轻量知识检索，**写入前**过滤 NL2SQL 三库 （`nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples`）→ `rag_citations`；**不改写** `answer_text`（与 Hybrid 双臂综合区分）；检索失败或无命中允许空数组。
 
 **C 文档知识问答（`kb_qa`）**
 
@@ -363,12 +385,12 @@
 
 ### 4.3 路由策略
 
-**共性前缀**（与图一致）：`load_prompt_template` → `load_history` → `intent_classify` → **`fault_case_gate`** → **`_route_by_intent`** →（各分支）→ **`finalize` → `similar_cases_retrieve` → `suggest_followups` → END**。
+**共性前缀**（与图一致）：`load_prompt_template` → `load_history` → `intent_classify` → **`fault_case_gate`** → **`_route_by_intent`** →（各分支；**B** 为 `nl2sql_answer` → `data_query_kb_light`）→ **`finalize` → `similar_cases_retrieve` → `suggest_followups` → END**。
 
 本期生效路由（对应图中 **A / B / C / D**）：
 
 - **A** `intent_label=clarify` → `clarify_build_response` → 图尾 → 图后 **③** 输出 `answer_text`；**不**追加相似案例；**仍**可生成 `suggested_questions`。
-- **B** `intent_label=data_query` → `nl2sql_answer`（`defer_analysis_stream=True`）→ 图尾 → 图后 **①**（有 `stream_plan`）或直接输出图内 `answer_text`；**不**追加相似案例；**不**生成、**不下发** `suggested_questions`；`rag_citations` 为空。
+- **B** `intent_label=data_query` → `nl2sql_answer`（`defer_analysis_stream=True`）→ **`data_query_kb_light`** → 图尾 → 图后 **①**（有 `stream_plan`）或直接输出图内 `answer_text`；**不**追加相似案例；**不**生成、**不下发** `suggested_questions`；结束帧 **可**含过滤后的知识 `rag_citations`（无召回则为 `[]`）；正文剥离 SQL 围栏；`meta.nl2sql_sql` 受 `CHATBOT_EXPOSE_NL2SQL_SQL_IN_META` 门控（前端勿渲染）。
 - **C** `intent_label=kb_qa` → `select_rag_engine` → **`rag_scope_resolve`** → `kb_retrieve` → `kb_quality_check` →（**retry** / **build** / 转 **A clarify**）→ `kb_build_messages` → 图尾 → 图后 **②** `stream_chat`；可选相似案例；关联问可含片段种子；结束帧含 `rag_citations`（§4.5）。
 - **D** `intent_label=hybrid_qa` → `hybrid_acquire` → `hybrid_synthesize` → 图尾 → 图后 **②** 或固定 `answer_text`（单臂降级）；**可同时** `used_rag=true` 且 `used_nl2sql=true`；`meta.hybrid_degraded` 标明单臂失败；允许 `citation_ref` 与关联问；相似案例策略同 **C**（§4.7）。
 
@@ -407,7 +429,7 @@
 
 ### 4.5 RAG 结构化引用与 citation 流
 
-**对应图中**：**C** 的 `kb_retrieve`（生成引用列表）→ 图后 **②** `CitationStreamParser`（流式拆 `[n]`）→ SSE / `finished.meta`。
+**对应图中**：**C** / **D** 的 `kb_retrieve`，以及 **B** 的 `data_query_kb_light` → （C/D）图后 **②** `CitationStreamParser` → SSE / `finished.meta`。
 
 **目标**：将召回片段转为编号引用，供前端展示来源并与流式正文中的 `[n]` 对齐。
 
@@ -417,8 +439,9 @@
 - **`kb_build_messages`** 将编号片段注入 `llm_messages`；
 - 图后流式主答时，若存在引用，`CitationStreamParser` 将正文 `[n]` 映射为 SSE **`{"citation_ref": n, "finished": false}`**（正文 `delta` 不再含该字面量）；
 - 结束帧 `meta.rag_citations` 与 `GET /chatbot/sessions/messages` 中 assistant 的 `rag_citations` **同形**；
-- **B/`data_query`**：`rag_citations` 为空，无 `citation_ref`；
-- NL2SQL 库表/QA namespace 片段在展示层过滤（见 `filter_rag_citation_dicts`）。
+- **B/`data_query`**：经 **`data_query_kb_light`** 可写入知识 `rag_citations`（过滤 NL2SQL 三库）；查数主答路径一般**无**流式 `citation_ref`（引用主要在结束帧）；
+- **C/`hybrid_qa`**：流式可下发 `citation_ref`；结束帧含 `rag_citations`；
+- NL2SQL 三库（`nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples`）在检索 `exclude_namespaces`（含 agentic）与 `filter_rag_citation_dicts` 双端剔除。
 
 **代码落点**：`chatbot_rag_citations.py`、`chatbot_citation_stream.py`；Runner `run_stream_events`；API 见 `app/api/chatbot.py` `chat_stream`。
 
@@ -441,26 +464,32 @@
 3. `finalize_streamed_nl2sql_analysis`：剥离多余小标题等，失败或空输出回退 Markdown 表；再 **一次性** `yield delta=answer_text`。
 4. 仍走共性尾部：`_fill_suggested_questions`（对 **B** 为空）、`_persist_success`、`finished.meta`（可含 `nl2sql_sql`、`nl2sql_analysis`）；**B** 路径 `_should_append_similar_cases` 为假，**不** yield 相似案例块。
 
-**开关与配置**（见 **§9**）：`CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED`、`CHATBOT_NL2SQL_EMPTY_LLM_GUIDE_ENABLED`、`CHATBOT_NL2SQL_ANALYSIS_MAX_ROWS` / `MAX_TOKENS` / `TIMEOUT_SEC` / `TEMPERATURE`、`CHATBOT_NL2SQL_ANALYSIS_META_ENABLED`。
+**域化分析 Prompt**：`CHATBOT_DOMAIN=subsidence` 时加载 `chatbot_nl2sql_analysis` / `empty` 的 **`subsidence_v1`**（负值下沉、禁锅炉口吻）；锅炉域用键名 **`v1`**（不是 `boiler_v1`）。
+
+**SQL 可见性**：正文经 `strip_sql_fences_from_analysis` 剥离；`meta.nl2sql_sql` 由 **`CHATBOT_EXPOSE_NL2SQL_SQL_IN_META`** 门控（成功/失败均适用；代码默认 `false`，地降 `.env` 建议 `true`；前端勿渲染）。
+
+**图序补充**：`nl2sql_answer` → **`data_query_kb_light`** → `finalize`（轻量知识引用不改写主答）。
+
+**开关与配置**（见 **§9**）：`CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED`、`CHATBOT_NL2SQL_EMPTY_LLM_GUIDE_ENABLED`、`CHATBOT_NL2SQL_ANALYSIS_MAX_ROWS` / `MAX_TOKENS` / `TIMEOUT_SEC` / `TEMPERATURE`、`CHATBOT_NL2SQL_ANALYSIS_META_ENABLED`、`CHATBOT_EXPOSE_NL2SQL_SQL_IN_META`。
 
 ### 4.7 Hybrid 综合意图（`hybrid_qa`）
 
 **对应图中**：**D** → `hybrid_acquire` → `hybrid_synthesize` → 图尾 → Runner 图后流式。
 
-**动机**：用户常见「查出超温列表 + 结合规程说明如何处置」类问句，互斥的 **B/C** 二选一无法同时给出表数据与文档机理；规则层对「台账/统计 + 原因/标准/怎么处理」共现产出 **`hybrid_qa`**（`intent_reason=mixed_hybrid` 等），**不再**使用 `mixed_prefers_*`。
+**动机**：用户常见「查数 + 结合规范/机理说明」类问句（锅炉如超温列表+规程；地降如区站沉降+规范关注点），互斥的 **B/C** 二选一无法同时给出表数据与文档依据；规则层对「查数标记 + 概念标记」共现产出 **`hybrid_qa`**（`intent_reason=mixed_hybrid` 等），**不再**使用 `mixed_prefers_*`。
 
 **`hybrid_acquire`（并行双臂）**：
 
 1. **NL2SQL 臂**：`run_chatbot_nl2sql_query(..., defer_analysis_stream=False)` → 查数 Markdown / 分析结构写入 state；失败标记 `nl2sql_failed`。
-2. **RAG 臂**：复用 `select_rag_engine` → **`rag_scope_resolve`**（本厂锁库，见 **§16**）→ `kb_retrieve`（**不做 C-RAG 重试**）→ `context_snippets` / `rag_citations`。
+2. **RAG 臂**：复用 `select_rag_engine` → **`rag_scope_resolve`**（locale_kb / 原 plant_kb，见 **§16**）→ `kb_retrieve`（**不做 C-RAG 重试**；exclude NL2SQL 三库）→ `context_snippets` / `rag_citations`。
 3. 并行 `asyncio.gather`；按双臂成败写入 **`hybrid_degraded`**：`""`（双臂 OK）| `"nl2sql"` | `"rag"` | `"both"`。
 
 **`hybrid_synthesize`（综合 / 降级）**：
 
 - 仅 NL2SQL OK、RAG 空：退回查数成文（`answer_text`，无 `llm_messages`）。
 - 仅 RAG OK、NL2SQL 失败：退回 **`kb_build_messages`**（同 **C**）。
-- 双臂 OK：组装「【查询结果】+【知识库】+ 综合约束」→ `llm_messages`，图后 **VLLM 流式**；数值以 SQL 为准，机理以 RAG 为准。
-- 双臂均失败：固定友好文案，`terminate_reason` 可为 `hybrid_both_failed`。
+- 双臂 OK：组装双源块 → `llm_messages`，图后 **VLLM 流式**；标题/综合约束/双失败文案来自 domain `clarify_texts.yaml`（`hybrid_*`）；数值以查数结果为准，机理以知识库为准。
+- 双臂均失败：domain `hybrid_both_failed` 文案，`terminate_reason` 可为 `hybrid_both_failed`。
 
 **输出与产品边界**：
 
@@ -496,7 +525,7 @@
 ### 6.1 提示词模板策略兼容
 
 - 必须继续走 `PromptTemplateRegistry`。
-- 支持按 `scene=chatbot`、`user_id`、`version` 获取模板；未指定 `version` 时使用 `default_version`（`CHATBOT_PROMPT_DEFAULT_VERSION`，默认 `boiler_v1`）。
+- 支持按 `scene=chatbot`、`user_id`、`version` 获取模板；未指定 `version` 时使用 `default_version`（`CHATBOT_PROMPT_DEFAULT_VERSION`，默认 **`subsidence_v1`**；锅炉部署显式 `boiler_v1`）。
 - 系统提示词注入顺序保持与原实现一致（先 system，再上下文）。
 - 保留 A/B 分流语义：同一 `user_id` 稳定命中同一 variant，并将 `variant/version/weight` 写入 trace 元数据。
 
@@ -510,7 +539,8 @@
 实现状态（当前代码）：
 
 - 已支持 `select_rag_engine` 节点动态选择 `agentic/hybrid`；
-- 已实现检索异常回退到 `CHATBOT_RAG_ENGINE_FALLBACK`。
+- 已实现检索异常回退到 `CHATBOT_RAG_ENGINE_FALLBACK`；
+- 客服检索默认 **exclude** NL2SQL 三库（agentic / hybrid `retrieve_chunks` 均传 `exclude_namespaces`）。
 
 ### 6.3 会话管理兼容
 
@@ -547,7 +577,7 @@
     - 输出增强：`suggested_questions`、`rag_citations`、`similar_cases_appended` 等（§14）、`processed_image_urls` / `original_image_urls`
     - 可选指代观测：`CHATBOT_ANAPHORA_EXPOSE_META=true` 时附带 `anaphora_*`（§15）
   - 异常：`{"error":"...","finished":true}`
-- **`data_query` 收紧分析**：前端通常只收到 **一次**（或少量）正文 `delta`，不是 kb_qa 式逐 token；`citation_ref` 不会出现。
+- **`data_query` 收紧分析**：前端通常只收到 **一次**（或少量）正文 `delta`，不是 kb_qa 式逐 token；流式一般无 `citation_ref`，结束帧可有过滤后的 `rag_citations`；勿渲染 `meta.nl2sql_sql`。
 - `ensure_ascii=false` 保持不变，中文不转义。
 - 终止语义（企业级默认）：
   1. 正常结束：落库 user + assistant（完整 answer，含 `rag_citations` 若有）。
@@ -617,7 +647,10 @@
   - `CHATBOT_NL2SQL_EMPTY_LLM_GUIDE_ENABLED=true`
   - `CHATBOT_NL2SQL_ANALYSIS_MAX_ROWS` / `CHATBOT_NL2SQL_ANALYSIS_MAX_TOKENS` / `CHATBOT_NL2SQL_ANALYSIS_TIMEOUT_SEC` / `CHATBOT_NL2SQL_ANALYSIS_TEMPERATURE`
   - `CHATBOT_NL2SQL_ANALYSIS_META_ENABLED=true`（结束帧是否附带 `nl2sql_analysis`）
-- `CHATBOT_PROMPT_DEFAULT_VERSION=boiler_v1`
+- **`CHATBOT_DOMAIN=subsidence`**（缺省；锅炉部署显式 `boiler`；配置包见 §3.1）
+- `CHATBOT_PROMPT_DEFAULT_VERSION=subsidence_v1`（锅炉部署显式 `boiler_v1`）
+- `CHATBOT_EXPOSE_NL2SQL_SQL_IN_META=true|false`（结束帧是否写入 `nl2sql_sql`；成功/失败均门控；前端勿渲染）
+- `NL2SQL_BUSINESS_DOMAIN=subsidence`（查数资产；与 `CHATBOT_DOMAIN` 同名约定、独立 env）
 - `CHATBOT_MAIN_LLM_TEMPERATURE`（可选，主答流式 sampling temperature）
 - `CHATBOT_LLM_CONTEXT_TOTAL_TOKENS` / `CHATBOT_LLM_COMPLETION_SLACK_TOKENS`（流式 `max_tokens` 预算裁剪）
 - `CHATBOT_SUGGESTED_QUESTIONS_ENABLED=true`
@@ -625,7 +658,7 @@
 - `CHATBOT_RAG_ENGINE_MODE=agentic`
 - `CHATBOT_RAG_ENGINE_FALLBACK=hybrid`
 - **`CHATBOT_FAQ_SOFT_DIRECT_ENABLED`** / **`CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE`** / **`CHATBOT_FAQ_SOFT_DIRECT_SNIPPET_TOP_N`**（见 **§4.4**）
-- **`CHATBOT_PLANT_KB_ENABLED`** / **`CHATBOT_PLANT_KB_NAMESPACE`** / **`CHATBOT_PLANT_KB_QUERY_BOOST_NAME`** / **`CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY`** / **`CHATBOT_PLANT_KB_HISTORY_CONTINUATION`**（本厂 RAG 范围，见 **第 16 节**；多轮延续默认 `false`）
+- **`CHATBOT_PLANT_KB_*`**（locale_kb / 原 plant_kb）：显式 env 覆盖 domain 包；地降包默认关本市锁库，锅炉包默认开本厂锁库（见 **第 16 节**）
 - `CHATBOT_CRAG_ENABLED=true`
 - `CHATBOT_CRAG_MAX_ATTEMPTS=2`
 - `CHATBOT_CRAG_MIN_SCORE=0.55`
@@ -658,7 +691,7 @@
 
 说明：通过开关支持能力灰度（意图标签、RAG 引擎、相似案例等）；**回滚 Legacy / 关图** 已移除，运维回滚见 **§10**。
 
-**相似案例 / 故障域扩展**相关配置见 **第 14 节**；**上下文指代消解**见 **第 15 节**；**本厂专属知识库 RAG 范围**见 **第 16 节**；**FAQ 软直通 / RAG 引用 / NL2SQL 收紧分析**见 **§4.4 / §4.5 / §4.6**。
+**双业务域**见 **§3.1**；**相似案例**见 **第 14 节**；**指代消解**见 **第 15 节**；**locale_kb（原 plant_kb）**见 **第 16 节**；**FAQ / 引用 / 查数分析**见 **§4.4 / §4.5 / §4.6**。
 
 ## 10. 发布、灰度与回滚
 
@@ -692,7 +725,7 @@
 - 本期主流量意图：**`kb_qa`**、**`clarify`**、**`data_query`**、**`hybrid_qa`**（由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制）；意图后端 **`rules | llm | bert`**。
 - `unsafe` / `handoff_human` / `smalltalk` 节点占位，默认不命中。
 - 关联问题**不**单独二次向量检索（见 `framework-guide/智能客服整体实现技术说明.md` §7）；图内 `suggest_followups` + Runner 补全；**纯 `data_query` 不下发** `suggested_questions`。
-- **FAQ 软直通**（§4.4）与 **RAG 引用流**（§4.5）为 `kb_qa` / **`hybrid_qa`（RAG 臂或双臂成功）** 路径增强。
+- **FAQ 软直通**（§4.4）限 `kb_qa`；**RAG 引用**（§4.5）覆盖 `kb_qa` / `hybrid_qa` / **`data_query`（轻量检索）**。
 - **NL2SQL 收紧分析流**（§4.6）为 **`data_query`** 路径默认能力；关 `CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED` 时退回表/友好文案。
 - **Hybrid 综合**（§4.7）为 **`hybrid_qa`** 专用；不替代 `/analysis/*` 长报告智能体。
 - **指代消解 P1/P2/P3** 默认关闭；P0 检索融合默认开；指代链在 LangGraph **`kb_retrieve` / Hybrid RAG 臂** 实现（**无** Legacy / **无** `ChatbotChain` 客服路径，见 **第 15 节**）。
@@ -700,7 +733,7 @@
 
 ## 12. 验收标准（最小可上线）
 
-- 功能：`kb_qa`、`clarify`、`data_query`、**`hybrid_qa`** 可达；对话入口**仅** `/chatbot/chat/stream`；SSE `finished.meta` 含 `suggested_questions`（非纯 `data_query`，开关开启时）、`rag_citations`（RAG/Hybrid 路径）、`faq_soft_direct`（若触发）、**`nl2sql_analysis`**、**`hybrid_degraded`**（Hybrid 路径）；默认模板 `boiler_v1` 可加载；`data_query` 收紧分析可一次 delta 出文（§4.6）。
+- 功能：`kb_qa`、`clarify`、`data_query`、**`hybrid_qa`** 可达；对话入口**仅** `/chatbot/chat/stream`；SSE `finished.meta` 含 `suggested_questions`（非纯 `data_query`）、`rag_citations`（kb_qa / hybrid / **data_query 轻量检索**，已滤三库）、`faq_soft_direct`（若触发）、**`nl2sql_analysis`**、**`hybrid_degraded`**；默认模板 **`subsidence_v1`** 可加载；`data_query` 收紧分析可一次 delta 出文（§4.6）。
 - 稳定：C-RAG 有循环上限与超时保护；`MAX_GRAPH_LATENCY_MS` 超预算可优雅终止（`latency_budget_exceeded`）；`langgraph` 缺失或图失败**快速失败**，无静默降级。
 - 兼容：Prompt 模板策略、RAG 双引擎、会话落库顺序与现网一致；assistant 落库可携带 `rag_citations`。
 - 可观测：LangSmith 可查看 run（含 `similar_cases_retrieve`、`suggest_followups`、Hybrid 节点）；`meta` 可观测意图、检索/查库标记、`request_id` 及 NL2SQL 失败码。
@@ -720,7 +753,7 @@
 8. `agentic` 主模式与 `hybrid` 回退模式。
 9. **指代消解（可选）**：弱指代下检索 query 融合、锚块、槽位与 `CHATBOT_ANAPHORA_EXPOSE_META`（见 **第 15 节**）。
 10. **FAQ 软直通**：高分 FAQ 命中时跳过 history；低分/指代续问时不触发（§4.4）。
-11. **RAG 引用**：`citation_ref` 与 `finished.meta.rag_citations` 的 `ref_index` 对齐；`data_query` 无引用（§4.5）。
+11. **RAG 引用**：`citation_ref` 与 `finished.meta.rag_citations` 的 `ref_index` 对齐；`data_query` 结束帧可有过滤后知识引用、无流式 `citation_ref`（§4.5）。
 12. **`CHATBOT_INTENT_BACKEND=llm`**：窄触发与 rules 回退（可选）。
 13. **NL2SQL 收紧分析**：开/关 `CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED`；流式一次 delta；失败回退表；`meta.nl2sql_analysis`（§4.6）。
 14. **时延预算**：人为拉长链路触发 `latency_budget_exceeded`，确认 partial 落库且**不**重复全量作答（Legacy 已删除）。
@@ -733,11 +766,11 @@
 - 无流式协议破坏；
 - 指标与 trace 完整可观测。
 
-## 14. 锅炉/管材故障域与相似案例（限定 namespace RAG）扩展方案
+## 14. 相似案例（限定 namespace RAG）扩展方案
 
 ### 14.1 业务目标
 
-在用户咨询中，若**语义和/或图片**涉及**锅炉及相关管材故障**类表述（如爆管断口、腐蚀、泄漏等），在正常完成**既有主回答**（模板、检索、大模型流式生成等现有链路）之后，**追加**一块「相似案例」内容：通过 RAG **仅在指定知识库 namespace** 内检索（如默认「事故案例」），将命中片段格式化后输出；**namespace 必须配置化**，便于后续改名为其它业务域标签而无需改代码字面量。
+在用户咨询中，若**语义和/或图片**命中当前业务域的相似案例门控（锅炉包：管材故障如爆管/腐蚀/泄漏等；地降包：由 domain `profile.yaml` / 门控词配置），在正常完成**既有主回答**之后，**追加**一块「相似案例」内容：通过 RAG **仅在指定知识库 namespace** 内检索（如默认「事故案例」），将命中片段格式化后输出；**namespace 与门控词必须配置化**（`CHATBOT_SIMILAR_CASE_*` + domain 包），便于换业务域而无需改代码字面量。**默认总关**。
 
 ### 14.2 可行性结论（概要）
 
@@ -751,8 +784,8 @@
 
 | 维度 | 说明 |
 |------|------|
-| 文本 | 用户 `query` 是否描述锅炉/管材及故障现象；可用「规则/关键词 MVP + LLM 结构化输出」提升准确率（输出如 `fault_related`、`confidence`、可选 `case_rag_query`）。 |
-| 视觉 | 当请求中存在**有效** `image_urls` 时，将图片纳入**同一次或独立一次**多模态调用，判断画面是否与锅炉/管材损伤相关；无图则不发送图像块，退化为**纯文本判定**。 |
+| 文本 | 用户 `query` 是否命中当前 domain 的相似案例门控词（锅炉：管材/故障现象；地降：包内配置）；可用「规则/关键词 MVP + LLM 结构化输出」提升准确率（输出如 `fault_related`、`confidence`、可选 `case_rag_query`）。 |
+| 视觉 | 当请求中存在**有效** `image_urls` 时，将图片纳入**同一次或独立一次**多模态调用，判断画面是否与当前域案例相关；无图则不发送图像块，退化为**纯文本判定**。 |
 
 **视觉参与条件（推荐同时满足配置与入参语义）：**
 
@@ -871,11 +904,16 @@ flowchart LR
 
 ---
 
-## 16. 本厂专属知识库 RAG 范围（`rag_scope_resolve`）
+## 16. 地域/组织锁库 locale_kb（原 plant_kb，`rag_scope_resolve`）
 
 ### 16.1 目标
 
-当用户问句含 **厂别/公司/单位指代**（如本厂、本公司、本电厂、我单位、厂里、我们这边等，见 `chatbot_rag_scope._PLANT_PRONOUN_MARKERS`）时，**主 RAG 检索**（**C `kb_qa`** 与 **D `hybrid_qa` RAG 臂**）仅在该电厂专属 namespace 内进行（默认 **`Power_plant_knowledge`**）；**不**改变 **`data_query`** → NL2SQL 路径。
+将原「本厂 plant_kb」抽象为 **locale_kb（地域/组织锁库）**，由 **`CHATBOT_DOMAIN` 配置包**提供 markers / namespace / boost（显式 `CHATBOT_PLANT_KB_*` 可覆盖）：
+
+- **锅炉包**：本厂/本公司等 → 默认 namespace `Power_plant_knowledge`，锁库默认 **开**；
+- **地降包**：本市/本地区等 → 预留 `Beijing_subsidence_knowledge`，锁库默认 **关**。
+
+命中时，**主 RAG 检索**（**C `kb_qa`**、**D Hybrid RAG 臂**、以及 **B `data_query_kb_light`**）按锁定 namespace 召回；**不**改变 NL2SQL 查数表白名单（由 `NL2SQL_BUSINESS_DOMAIN` 管）。
 
 ### 16.2 图节点与边
 
@@ -890,10 +928,11 @@ flowchart LR
 
 ### 16.3 规则要点
 
-- **本轮** query 含厂别指代 → 锁定 `CHATBOT_PLANT_KB_NAMESPACE`。
-- **多轮延续**（**须** `CHATBOT_PLANT_KB_HISTORY_CONTINUATION=true`，**默认 `false`**）：本轮无厂别指代，但近几轮 **user** 历史含厂别指代 → 仍锁定（`rag_scope_reason=plant_pronoun_history_continuation`）。
-- 锁定时可选将 **`CHATBOT_PLANT_KB_QUERY_BOOST_NAME`**（默认华电五彩湾北一发电有限公司）拼入检索 query，提升召回。
-- **`CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY=false`**（默认）：首轮 plant 库 0 命中不回退全库；设为 `true` 时仅 **首轮**（`retrieval_attempts==1`）空结果可回退全库，并在 `meta.rag_scope_fallback=true` 标记。
+- **本轮** query 含 domain 包 `locale_kb.markers`（或 env 覆盖）→ 锁定对应 namespace。
+- **多轮延续**（**须** `CHATBOT_PLANT_KB_HISTORY_CONTINUATION=true`，**默认 `false`**）：本轮无 markers，但近几轮 **user** 历史含 markers → 仍锁定。
+- 锁定时可选将 **query_boost**（锅炉默认电厂名；地降默认「北京市」）拼入检索 query。
+- **`CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY=false`**（默认）：首轮锁库 0 命中不回退全库；设为 `true` 时仅 **首轮**空结果可回退全库，并在 `meta.rag_scope_fallback=true` 标记。
+- 地降部署建议保持 **`locale_kb.enabled=false`**（或 `CHATBOT_PLANT_KB_ENABLED=false`），避免误锁未就绪的本市库。
 
 ### 16.4 与相似案例、指代的关系
 
@@ -907,11 +946,11 @@ flowchart LR
 
 | 变量 | 含义 |
 |------|------|
-| `CHATBOT_PLANT_KB_ENABLED` | 总开关（默认 `true`） |
-| `CHATBOT_PLANT_KB_NAMESPACE` | 电厂专属库 namespace（默认 `Power_plant_knowledge`） |
-| `CHATBOT_PLANT_KB_QUERY_BOOST_NAME` | 锁库时拼入检索句的电厂正式名称 |
-| `CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY` | 首轮 plant 库空结果是否回退全库 |
-| `CHATBOT_PLANT_KB_HISTORY_CONTINUATION` | 是否扫描近几轮 user 历史做厂别延续锁定（**默认 `false`**，仅看本轮） |
+| `CHATBOT_PLANT_KB_ENABLED` | 总开关；**优先读 domain 包**，显式 env 覆盖（地降包默认 `false`，锅炉包默认 `true`） |
+| `CHATBOT_PLANT_KB_NAMESPACE` | 锁库 namespace（锅炉默认 `Power_plant_knowledge`；地降包预留本市库名） |
+| `CHATBOT_PLANT_KB_QUERY_BOOST_NAME` | 锁库时拼入检索句的 boost 词 |
+| `CHATBOT_PLANT_KB_FALLBACK_ON_EMPTY` | 首轮锁库空结果是否回退全库 |
+| `CHATBOT_PLANT_KB_HISTORY_CONTINUATION` | 是否扫描近几轮 user 历史延续锁定（**默认 `false`**） |
 
 ### 16.6 代码落点与观测
 
@@ -923,4 +962,13 @@ flowchart LR
 | SSE meta | `rag_namespace`、`rag_scope_reason`、`rag_scope_fallback` |
 | 单测 | `tests/test_chatbot_rag_scope.py` |
 
-入库时向量 chunk 的 **`namespace` 字段须与 `CHATBOT_PLANT_KB_NAMESPACE` 完全一致**（大小写敏感）。
+入库时向量 chunk 的 **`namespace` 字段须与锁库目标 namespace 完全一致**（大小写敏感；以生效的 `CHATBOT_PLANT_KB_NAMESPACE` 或 domain 包值为准）。
+
+---
+
+## 附录：地降所改造对照
+
+详细改造条目、验收与环境样例见：
+
+- `docs/基于地降所项目改造/AI问答改造.md`
+- `app/app-deploy/.env.example`（地降缺省；锅炉须显式 `CHATBOT_DOMAIN=boiler` + `CHATBOT_PROMPT_DEFAULT_VERSION=boiler_v1`）

@@ -48,8 +48,8 @@ class ChatRequest(BaseModel):
     prompt_version: str | None = Field(
         None,
         description=(
-            "客服 system 模板版本，对应 configs/prompts_bak_new.yaml 中 chatbot 条目的 version。"
-            "为空时使用服务端 CHATBOT_PROMPT_DEFAULT_VERSION（默认 boiler_v1）。"
+            "客服 system 模板版本，对应 configs/prompts.yaml 中 chatbot 条目的 version。"
+            "为空时使用服务端 CHATBOT_PROMPT_DEFAULT_VERSION（默认 subsidence_v1；锅炉部署设 boiler_v1）。"
         ),
     )
 
@@ -63,8 +63,8 @@ class ChatRequest(BaseModel):
     enable_nl2sql_route: bool = Field(
         True,
         description=(
-            "是否允许将「台账/检修/统计类」问句路由到 NL2SQL（意图 data_query）。"
-            "关闭后此类问题也走向量 RAG。"
+            "是否允许意图走对话内 NL2SQL（data_query）。关闭后查数类问句也走向量 RAG。"
+            "地降问句是行政区/站点/沉降量等；锅炉为台账/检修/缺陷等。"
         ),
     )
 

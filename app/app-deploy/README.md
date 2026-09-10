@@ -195,20 +195,31 @@ cp .env.example .env
 
 `REDIS_URL=redis://redis:6379/0` 一般**保持默认**（`redis` 为本 compose 服务名）。
 
-建议同时在 `.env` 显式补充智能客服 LangGraph 参数（即便有默认值）：
+建议同时在 `.env` 显式补充智能客服 LangGraph 参数（即便有默认值）。
+
+**地降所部署默认（代码未设 env 时亦默认地面沉降；与 `app-deploy/.env.example` 对齐）**：
+
+- `CHATBOT_DOMAIN=subsidence`（词表/澄清/续问/锁库读 `configs/chatbot_business/subsidence/`；**代码缺省已是 subsidence**）
+- `CHATBOT_PROMPT_DEFAULT_VERSION=subsidence_v1`（**代码缺省已是 subsidence_v1**）
+- `CHATBOT_PLANT_KB_ENABLED=false`（地降关闭地域锁库；锅炉部署再按需打开）
+- `NL2SQL_BUSINESS_DOMAIN=` 按地降 NL2SQL 业务包配置（与 Chatbot domain 可分开）
+
+**锅炉部署须显式**改为 `CHATBOT_DOMAIN=boiler`、`CHATBOT_PROMPT_DEFAULT_VERSION=boiler_v1`，并按需开启：
+
+- `CHATBOT_PLANT_KB_ENABLED=true` / `CHATBOT_PLANT_KB_NAMESPACE=Power_plant_knowledge`（本厂指代锁定主 RAG namespace）
+
+通用开关：
 
 - `CHATBOT_INTENT_ENABLED=true`
 - `CHATBOT_INTENT_BACKEND=rules`（可选 `bert`；**bert 须已微调分类模型，不可用魔塔通用预训练 BERT**；见 `docs/智能客服意图识别BERT接入说明.md`）
 - `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query,hybrid_qa`
 - `CHATBOT_NL2SQL_ROUTE_ENABLED=true`（智能客服内嵌 NL2SQL 分流）
-- `CHATBOT_PROMPT_DEFAULT_VERSION=boiler_v1`（默认锅炉领域客服模板）
 - `CHATBOT_SUGGESTED_QUESTIONS_ENABLED=true` / `CHATBOT_SUGGESTED_QUESTIONS_MAX=5`
 - `CHATBOT_CRAG_ENABLED=true`
 - `CHATBOT_CRAG_MAX_ATTEMPTS=2`
 - `CHATBOT_CRAG_MIN_SCORE=0.55`
 - `CHATBOT_RAG_ENGINE_MODE=agentic`
 - `CHATBOT_RAG_ENGINE_FALLBACK=hybrid`
-- `CHATBOT_PLANT_KB_ENABLED=true` / `CHATBOT_PLANT_KB_NAMESPACE=Power_plant_knowledge`（本厂指代锁定主 RAG namespace，见企业方案 §16）
 - `CHATBOT_HISTORY_LIMIT=20`
 - `CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT=true`
 - `MAX_REWRITE_QUERY_LENGTH=256`

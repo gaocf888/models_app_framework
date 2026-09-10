@@ -1,7 +1,8 @@
 # 地降所项目 — AI 问答（智能客服）改造方案
 
-> **版本**：2026-09-09（修订：双层配置 `CHATBOT_DOMAIN` + Prompt version；`data_query` 结束帧放开知识 `rag_citations`）  
-> **状态**：方案稿（待按阶段实施；P0-9 协议已在 runner 落地）  
+> **版本**：2026-09-10（修订：**P0 / P1 / P2 已实现**；P1-1 已收缩；前端§一契约+联调页已齐；`CHATBOT_DOMAIN` + `subsidence_v1`；`data_query` 后轻量知识检索写过滤后 `rag_citations`）  
+> **默认域**：代码未设 env 时默认 `CHATBOT_DOMAIN=subsidence` / `CHATBOT_PROMPT_DEFAULT_VERSION=subsidence_v1`（锅炉部署显式设 `boiler` / `boiler_v1`）  
+> **状态**：方案稿（**P0 / P1 / P2 已实现**；P1-1 取消规划清单为问答必做项；**P3 可选**；生产前端 UI 在前端仓按 §一 契约落地）  
 > **分支**：`dev_djs`（北京市地面沉降监测 / 地降所）  
 > **范围**：四大板块之 **「智能问答」** → 算法侧 **`/chatbot/*`（`ChatbotService` + `ChatbotLangGraphRunner`）**；角色切为 **地面沉降分析专家**；回答须专业、可溯源。  
 > **明确边界**：**不是**左侧「数据查询」页（`/data-query-agent/*`）；**不是**「自动报告」（`/analysis-agent/*`）；**不是**「知识库」管理台（`/rag/*` 管理面）。  
@@ -12,9 +13,9 @@
 > - 部署预览：`https://ais-pre-6olqxdqey6dy3cjljwozif-596480797968.asia-east1.run.app/`  
 > **关联落地文档**：  
 > - NL2SQL 基座：`docs/基于地降所项目改造/NL2SQL基座改造.md`（`NL2SQL_BUSINESS_DOMAIN=subsidence`）  
-> - RAG 管理：`docs/基于地降所项目改造/RAG基座改造和前端功能及接口调用说明.md`  
+> - RAG 管理：`docs/基于地降所项目改造/RAG基座改造和前端功能及接口调用说明.md`（侧栏排除 NL2SQL 三库）  
 > - 数据查询页：`docs/基于地降所项目改造/数据查询智能体实现方案.md`  
-> - 前端总表：`docs/基于地降所项目改造/改造后前端UI及对应接口调用说明/地降所项目前端UI及对应接口调用说明.md`（**§一 智能问答** 待按本文补齐）  
+> - 前端总表：`docs/基于地降所项目改造/改造后前端UI及对应接口调用说明/地降所项目前端UI及对应接口调用说明.md`（**§一 智能问答** 契约已补齐；生产 UI 在前端仓实现）  
 > - 企业级客服基线：`enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md`
 
 ---
@@ -56,7 +57,7 @@
 | NL2SQL 域 | 依赖部署 `NL2SQL_BUSINESS_DOMAIN` | 必须 **`subsidence`** + 8 表白名单（见库说明）；与 `CHATBOT_DOMAIN` **同名约定、独立 env** |
 | 查数结果呈现 | 可有 `meta.nl2sql_sql`；正文分析可能误带 SQL；**结束帧曾强制 `rag_citations=[]`** | **正文不出现 SQL**；**`finished.meta` 可含 `nl2sql_sql`**；**前端不渲染 SQL**；**`data_query` 结束帧亦允许带过滤后的知识 `rag_citations`（不含 NL2SQL 三库）** |
 | HITL | 客服无图中断；仅占位 `handoff_human` | **本期仍不做 HITL**（选库 HITL 仅属数据查询页） |
-| 前端契约 | `地降所…前端UI…md` §一为空 | 需补齐 SSE / 引用 / 会话 / 推荐问 |
+| 前端契约 | `地降所…前端UI…md` §一曾为空 | **契约已补齐**（SSE / 引用 / 会话 / 推荐问 / 禁渲染 SQL）；生产 UI 在前端仓按契约落地；本仓联调页 `tests/web/chatbot-stream.html` |
 
 ### 0.4 本期原则
 
@@ -168,13 +169,13 @@ SSE：delta / citation_ref / finished.meta
 | **P0-6** | **NL2SQL 域打穿** | `NL2SQL_BUSINESS_DOMAIN=subsidence`；与 `CHATBOT_DOMAIN` 同名部署、职责分离 | 部署 + `NL2SQL基座改造.md` |
 | **P0-7** | **澄清/占位话术去锅炉化（domain 包）** | `clarify` / `unsafe` / `handoff` / `smalltalk` 文案进 domain 包 | `configs/chatbot_business/<domain>/` |
 | **P0-8** | **`CHATBOT_DOMAIN` 配置骨架** | 新增 env + `configs/chatbot_business/{boiler,subsidence}/`（词表、话术、locale_kb、follow-up 种子等）；加载器对齐 NL2SQL business profile | `config.py`；新目录；runner/intent 接线 |
-| **P0-9** | **`data_query` 结束帧放开知识引用** | `_build_finished_meta` **不再**因 `intent_label=data_query` 清空 `rag_citations`；统一 `filter_rag_citation_dicts`（排除 NL2SQL 三库） | `chatbot_graph_runner.py`（**已改协议**）；**填充依赖排期必做的 P2-5** |
+| **P0-9** | **`data_query` 结束帧放开知识引用** | `_build_finished_meta` **不再**因 `intent_label=data_query` 清空 `rag_citations`；统一 `filter_rag_citation_dicts`（排除 NL2SQL 三库） | `chatbot_graph_runner.py`（**已改协议**）；填充由 **P2-5 `data_query_kb_light` 已落地** |
 
 ### P1 — 专业 RAG 与引用体验
 
 | ID | 改造项 | 说明 | 主要落点 |
 |----|--------|------|----------|
-| **P1-1** | **知识 namespaces 规划** | 与知识库管理台对齐：法规/规范/监测方法/运维手册/历史报告等；侧栏排除 `nl2sql_*` | RAG 摄入约定；`rag_scope` |
+| **P1-1** | **知识 namespaces 规划** | ~~规划清单 / domain yaml~~ **取消为问答必做项**；问答侧保留检索排除三库加固；侧栏排除归 RAG 基座 | 见追踪表；RAG 文档 |
 | **P1-2** | **引用展示对齐实施方案** | 继续 SSE `citation_ref` + `meta.rag_citations`；无足够依据时**先明确说明**，再做通用收紧分析（不编造依据/数据）；文案与 Prompt 专业化 | 现网已有；Prompt/`kb_build_messages` 约束；验收 + 前端渲染 |
 | **P1-3** | **FAQ 软直通保留** | 高分规范 FAQ 仍可跳过历史防带偏；intent 仍限 `kb_qa` | `chatbot_faq_soft_direct.py` |
 | **P1-4** | **关联推荐问地降化** | `chatbot_follow_up` 规则表/LLM 提示改为沉降话题（区站、规范、成因、防控） | `chatbot_follow_up.py` |
@@ -184,11 +185,11 @@ SSE：delta / citation_ref / finished.meta
 
 | ID | 改造项 | 说明 | 主要落点 |
 |----|--------|------|----------|
-| **P2-1** | **收紧分析 Prompt 地降化** | 去掉「号炉」等锅炉约束；强调行政区/站点/`total_settle`/负值下沉；专业解读结构 | domain 包或 `chatbot_nl2sql_answer.py` |
-| **P2-2** | **查数默认监测类型** | 未指明库时默认 `fcb`（或产品确认 fcb+jyb 策略）；与语义层一致 | 依赖 NL2SQL 语义包；客服侧可传 scope 提示 |
-| **P2-3** | **Hybrid 综合约束** | 已有「数值以查询结果为准、机理以知识库为准」；文案改为沉降术语；失败降级文案专业化 | `_node_hybrid_synthesize` |
-| **P2-4** | **错误文案** | NL2SQL 失败用户文案去掉锅炉「台账/缺陷」口吻 | `format_nl2sql_user_error` |
-| **P2-5** | **`data_query` 轻量知识检索（排期必做）** | 协议已放开 `rag_citations`；**须在** NL2SQL 后增一次知识侧检索，写入过滤后的 `rag_citations`（排除 NL2SQL 三库；与 `hybrid_qa` 双臂综合区分——查数主答仍以数据为准，知识片段供引用/可选轻量佐证） | graph：`data_query` 臂；`chatbot_rag_citations` |
+| **P2-1** | **收紧分析 Prompt 地降化** | 去掉「号炉」等锅炉约束；强调行政区/站点/`total_settle`/负值下沉；专业解读结构 | `prompts.yaml` `chatbot_nl2sql_analysis`/`empty` 的 `subsidence_v1` + `chatbot_nl2sql_answer.py`（**已完成**） |
+| **P2-2** | **查数默认监测类型** | 未指明库时默认 `fcb`（或产品确认 fcb+jyb 策略）；与语义层一致 | `semantic_layer.py` 默认 fcb + 客服 SQL gen hint（**已完成**） |
+| **P2-3** | **Hybrid 综合约束** | 已有「数值以查询结果为准、机理以知识库为准」；文案改为沉降术语；失败降级文案专业化 | domain `clarify_texts.yaml` + `_node_hybrid_synthesize`（**已完成**） |
+| **P2-4** | **错误文案** | NL2SQL 失败用户文案去掉锅炉「台账/缺陷」口吻 | `format_nl2sql_user_error` 域化（**已完成**） |
+| **P2-5** | **`data_query` 轻量知识检索（排期必做）** | 节点写入前过滤 NL2SQL 三库，结束帧再滤；与 hybrid 双臂综合区分——查数主答仍以数据为准 | graph：`data_query_kb_light`（**已完成**） |
 
 ### P3 — 可选增强
 
@@ -234,7 +235,7 @@ configs/chatbot_business/
   boiler/
     profile.yaml          # locale_kb / similar_case 开关与默认 namespace
     intent_markers.yaml   # data / conceptual / hard gates
-    clarify_texts.yaml    # clarify / unsafe / handoff / smalltalk
+    clarify_texts.yaml    # clarify / unsafe / handoff / smalltalk + 生成侧文案
     follow_up.yaml
   subsidence/
     profile.yaml
@@ -354,7 +355,7 @@ data_query
 |-------------|----------------------|------|
 | **`kb_qa`** | **有**（有知识召回时） | 主路径；可伴 `citation_ref` |
 | **`hybrid_qa`** | **有**（RAG 臂成功且有片段时） | 双臂成功时与 `used_nl2sql` 并存；降级仅 NL2SQL 时通常为空 |
-| **`data_query`** | **须有能力返回**（P2-5 排期必做） | 协议已放开，不再因纯查数强制 `[]`。P2-5 落地后：NL2SQL 后做一次知识侧检索 → 过滤后写入 `rag_citations`；落地前无 `kb_retrieve` 时仍为空。`suggested_questions` 仍不下发 |
+| **`data_query`** | **可返回**（P2-5 已落地） | 协议已放开；图序：`nl2sql_answer` → `data_query_kb_light`（检索并**写入前过滤**三库）→ `finalize`；分析流在 runner 层对查数结果做可选收紧（不插入上述边之间）。无召回/关 RAG/检索失败时允许 `[]`。`suggested_questions` 仍不下发 |
 | **`clarify` 等** | 一般为空 | 无检索则无引用 |
 
 > **P0-9（协议）已落地**：`ChatbotLangGraphRunner._build_finished_meta` 对 `data_query` 与其它意图同样走过滤后的 `rag_citations`，不再特殊清空。
@@ -377,7 +378,9 @@ data_query
 
 - 继续 Hybrid/Agentic + C-RAG + 引用流。  
 - 知识内容换地降文档（实施方案：≥500 份、引用评测）。  
-- 管理台 namespaces 与问答召回一致；**展示层**排除 `nl2sql_*` 三库（与 §6.3 一致）。
+- **问答引用/检索**：现网 `chatbot_rag_citations` 过滤 NL2SQL 三库；检索阶段同步 `exclude_namespaces` 加固（避免占 top_k）。  
+- **知识管理侧栏隐藏三库**：属 RAG 基座（`GET /rag/namespaces?exclude_nl2sql=true`），见 `RAG基座改造和前端功能及接口调用说明.md`；**不**作为 AI 问答 domain 规划。  
+- 摄入 `namespace` 仅要求非空（`RAG_REQUIRE_NAMESPACE`）；**无**业务分类白名单强制。
 
 ### 7.2 地域/组织锁库（原 `plant_kb`，域配置区分）
 
@@ -451,9 +454,9 @@ CONV_MAX_HISTORY_MESSAGES=50
 
 ---
 
-## 10. 前端改造要点（填入 UI 说明 §一）
+## 10. 前端改造要点（UI 说明 §一）
 
-建议在 `地降所项目前端UI及对应接口调用说明.md` **「一、智能问答」** 中写明：
+`地降所项目前端UI及对应接口调用说明.md` **「一、智能问答」** 契约**已补齐**；生产页面在前端仓实现。要点如下：
 
 1. 路由建议 `/chat` 或 `/qa`；标题可用「智能问答」/「GRAG 对话」。  
 2. 主接口：`POST /chatbot/chat/stream`；停止：`POST /chatbot/chat/stop`；会话：`/chatbot/sessions*`。  
@@ -469,8 +472,8 @@ CONV_MAX_HISTORY_MESSAGES=50
 | 阶段 | 内容 | 出口标准 |
 |------|------|----------|
 | **S1** | P0-1～P0-9 + 部署 env（含 `CHATBOT_DOMAIN` 骨架） | 默认身份为沉降专家；无电厂 boost；澄清非锅炉话术；`data_query` meta 引用协议已放开 |
-| **S2** | P0-5 验收 + P1 引用/前端 §一 | 专业问答有引用；对话查数**界面**无 SQL（meta 可有）；有知识片段时查数亦可展示文献 |
-| **S3** | P2 查数/Hybrid 文案、默认表策略、**P2-5（必做）** | 通州/朝阳等样例问数专业可读；纯 `data_query` 结束帧在有召回时可带知识 `rag_citations`（已滤三库） |
+| **S2** | P1 引用/FAQ/前端 §一契约（P1-1 已收缩） | **本仓已达成**：专业问答有引用；对话查数**界面**无 SQL（meta 可有）；§一契约+联调页可用；生产 UI 跟前端仓 |
+| **S3** | P2 查数/Hybrid 文案、默认表策略、**P2-5（已完成）** | 通州/朝阳等样例问数专业可读；纯 `data_query` 结束帧在有召回时可带知识 `rag_citations`（已滤三库） |
 | **S4** | 评测集（规范问 + 查数问 + 混合问） | 对齐实施方案准确率/幻觉/引用指标（合同口径） |
 
 ---
@@ -479,7 +482,7 @@ CONV_MAX_HISTORY_MESSAGES=50
 
 1. **身份**：任意寒暄/专业问，回答不以锅炉专家自居；术语符合沉降监测。  
 2. **RAG**：规范类问题有 `rag_citations` / 角标；无足够依据时**先说明**，再做通用收紧分析，**不编造**依据与数据。  
-3. **对话查数**：典型区+时间+分层标问句能出业务结论；**正文与页面均无 SQL 展示**；`finished.meta` **可以**含 `nl2sql_sql`；**P2-5 落地后**典型问句在有知识召回时应有过滤后的 `rag_citations`（**不含** NL2SQL 三库）。  
+3. **对话查数**：典型区+时间+分层标问句能出业务结论；**正文与页面均无 SQL 展示**；`finished.meta` **可以**含 `nl2sql_sql`；典型问句在有知识召回时应有过滤后的 `rag_citations`（**不含** NL2SQL 三库；P2-5 已落地）。  
 4. **Hybrid**：混合问同时体现数据结论与规范依据（或单臂降级且 `hybrid_degraded` 可观测）；引用同样过滤三库。  
 5. **边界**：数据查询页仍只走 `/data-query-agent`；问答页不出现选库 HITL。  
 6. **配置**：地降部署 `CHATBOT_DOMAIN=subsidence` + `subsidence_v1` + locale_kb 关或本市策略；锅炉可切回 `boiler` + `boiler_v1` + 本厂锁库；结束帧可写 SQL、前端不渲染。
@@ -493,7 +496,7 @@ CONV_MAX_HISTORY_MESSAGES=50
 | 知识库未达标导致专业问答空 | 与阶段三知识库建设联动；空库/低召回时先声明无据，再通用收紧分析（不编造） |
 | NL2SQL 未切 subsidence | 问答查数串锅炉表或失败；部署检查清单强制项 |
 | 前端仍渲染 `nl2sql_sql` | 前端忽略 meta 字段；验收用例专门扫 UI |
-| `data_query` 引用长期为空 | **P2-5 已确认排期必做**；S3 出口须能稳定返回过滤后文献（无召回时允许空数组） |
+| `data_query` 引用为空 | **P2-5 已落地**（`data_query_kb_light`）；无召回/关 RAG/检索失败时允许空数组；联调时核对排除三库 |
 | 「默认 fcb 还是 fcb+jyb」 | 对话查数建议单库默认 fcb；双库列表仅属查询台 Java 浏览 |
 | `CHATBOT_DOMAIN` 与 `NL2SQL_BUSINESS_DOMAIN` 命名不一致 | 部署检查清单强制对齐或文档写明别名映射 |
 | 原型智能问答细交互未完全抓取 | 以实施方案 §6.1 为准；联调时用预发地址补截图 |
@@ -504,19 +507,25 @@ CONV_MAX_HISTORY_MESSAGES=50
 
 | ID | 状态 | Owner | 备注 |
 |----|------|-------|------|
-| P0-1 Prompt `subsidence_v1`（version） | 待办 | | |
-| P0-2 locale_kb 域化（本厂 vs 本市） | 待办 | | 替代单纯关 plant_kb |
-| P0-3 相似案例保持关 | 待办 | | |
-| P0-4 意图词表（domain 包） | 待办 | | |
-| P0-5 正文无 SQL；meta 可有；前端不渲染 | 待办 | | 含前端 |
-| P0-6 NL2SQL domain | 待办 | | 依赖基座 |
-| P0-7 固定话术（domain 包） | 待办 | | |
-| P0-8 `CHATBOT_DOMAIN` 骨架 | 待办 | | |
-| P0-9 `data_query` 放开 `rag_citations` | **协议已改** | | runner `_build_finished_meta`；有片段才非空 |
-| P1-* | 待办 | | |
-| P2-5 data_query 轻量知识检索 | 待办 | | **排期必做**（S3） |
-| P2-* 其余 | 待办 | | |
-| 前端 UI §一 | 待办 | | |
+| P0-1 Prompt `subsidence_v1`（version） | **已完成** | | `configs/prompts.yaml`；`.env.example` 默认 `subsidence_v1` |
+| P0-2 locale_kb 域化（本厂 vs 本市） | **已完成** | | `chatbot_rag_scope` + domain `locale_kb`；地降默认 `enabled=false` |
+| P0-3 相似案例保持关 | **已完成** | | 默认 false；门控词迁 domain（地降为空） |
+| P0-4 意图词表（domain 包） | **已完成** | | `intent_markers.yaml`（含硬闸/续问词）+ rules/LLM 读 profile |
+| P0-5 正文无 SQL；meta 可有；前端不渲染 | **已完成（后端+文档）** | | 分析/hybrid 流后剥离 \`\`\`sql；`CHATBOT_EXPOSE_NL2SQL_SQL_IN_META=true`；前端仓勿渲染 |
+| P0-6 NL2SQL domain | **已完成（部署核对）** | | `.env.example` 已 `NL2SQL_BUSINESS_DOMAIN=subsidence` |
+| P0-7 固定话术（domain 包） | **已完成** | | `clarify_texts.yaml` → runner 节点 |
+| P0-8 `CHATBOT_DOMAIN` 骨架 | **已完成** | | `chatbot_business_profile.py` + `configs/chatbot_business/{boiler,subsidence}/` |
+| P0-9 `data_query` 放开 `rag_citations` | **协议已改+单测** | | runner `_build_finished_meta`；`test_build_finished_meta_data_query_keeps_filtered_citations` |
+| P1-1 知识 namespaces 规划 | **已收缩** | | 取消无运行时作用的规划清单；保留问答检索排除三库加固；侧栏排除迁 RAG 基座 |
+| P1-2 引用/无据先声明 | **已完成** | | `subsidence_v1` + `kb_build_messages`/`format_rag_snippets_system_block` |
+| P1-3 FAQ 软直通保留 | **已完成** | | 仍限 `kb_qa`；权威块域化；`.env.example` 可开 |
+| P1-4 关联推荐问地降化 | **已完成** | | `follow_up.yaml` → `chatbot_follow_up.py` |
+| P1-5 前端 §一补齐 | **契约+联调页已完成** | | `地降所…前端UI…md` §一；`tests/web/chatbot-stream.html`；**生产 UI 在前端仓**（本仓不另列「前端 UI §一待办」） |
+| P2-1 收紧分析 Prompt 地降化 | **已完成** | | `prompts.yaml` `subsidence_v1` + 列优先级/fallback 域化 |
+| P2-2 查数默认监测类型 fcb | **已完成** | | `semantic_layer.py` + SQL gen hint |
+| P2-3 Hybrid 综合/降级文案 | **已完成** | | `clarify_texts.yaml` hybrid_* |
+| P2-4 NL2SQL 错误文案域化 | **已完成** | | `format_nl2sql_user_error` |
+| P2-5 data_query 轻量知识检索 | **已完成** | | `data_query_kb_light` 写入前过滤 + 结束帧再滤三库 |
 | 评测集 | 待办 | | |
 
 ---
@@ -526,7 +535,7 @@ CONV_MAX_HISTORY_MESSAGES=50
 - 入口：仅 `POST /chatbot/chat/stream`（无非流式 `/chat`、无 Legacy）。  
 - 意图：`clarify` / `data_query` / `kb_qa` / `hybrid_qa`。  
 - 图尾：`finalize` → `similar_cases_retrieve` → `suggest_followups`。  
-- 查数：NL2SQL →（可选）LLM 收紧分析流；结束帧 **可**带过滤后 `rag_citations`（无知识检索时为空）与 `nl2sql_sql`。  
+- 查数：图内 `nl2sql_answer` → `data_query_kb_light`（写入前滤三库）→ `finalize`；runner 层可对查数结果做可选 LLM 收紧分析流；结束帧 **可**带过滤后 `rag_citations` 与 `nl2sql_sql`（受 `CHATBOT_EXPOSE_NL2SQL_SQL_IN_META` 门控）。
 - 配置化目标：Prompt=`version`；词表/话术/locale_kb=`CHATBOT_DOMAIN`；查数资产=`NL2SQL_BUSINESS_DOMAIN`。  
 - HITL：无。  
 

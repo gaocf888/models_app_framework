@@ -1,7 +1,7 @@
 # 地降所项目 — 前端 UI 及对应接口调用说明
 
-> **版本**：2026-09-01  
-> **结构**：与左侧导航四大板块对齐。第三块 **数据查询**、第四块 **知识库** 为当前实现。第一、二块本期预留。  
+> **版本**：2026-09-10  
+> **结构**：与左侧导航四大板块对齐。第一块 **智能问答**（§一契约已补齐，生产 UI 在前端仓落地）、第四块 **知识库**、第三块 **数据查询** 为当前实现。第二块自动报告仍预留。  
 > **后台契约**（数据查询）：`docs/基于地降所项目改造/数据查询智能体实现方案.md`  
 > **后台契约**（知识库）：`docs/基于地降所项目改造/RAG基座改造和前端功能及接口调用说明.md`  
 > **本目录资源**：原型与改造后线框图均放在本文件夹内。
@@ -18,6 +18,75 @@
 ---
 
 ## 一、智能问答
+
+> 后台契约：`docs/基于地降所项目改造/AI问答改造.md`。主接口：`POST /chatbot/chat/stream`（SSE）。  
+> 本仓参考实现（联调页）：`tests/web/chatbot-stream.html`。生产 UI 在前端仓按下列契约落地。
+
+| 项 | 约定 |
+|----|------|
+| 路由建议 | `/chat` 或 `/qa`；侧栏标题「智能问答」 |
+| 空态文案 | 「你好，我是地面沉降分析专家…」；**勿**使用锅炉欢迎语 |
+| 鉴权 | `Authorization: Bearer <SERVICE_API_KEY>` |
+| 渲染 | `delta` 正文；`citation`/`citation_ref` 角标；`finished.meta.rag_citations` 来源列表；`suggested_questions` 推荐问 |
+| **禁止渲染** | **不得**展示 `meta.nl2sql_sql` / 回答底部 SQL 区（字段可保留供联调，前端忽略） |
+
+### 1.1 页面布局（建议）
+
+```text
+┌ 左侧：会话列表（新建 / 选中 / 改标题 / 清空） ┬ 右侧：消息区 + 输入框 + 停止 ┐
+│                                              │ 气泡：正文 + [n] 角标           │
+│                                              │ 来源条：rag_citations（可折叠） │
+│                                              │ 推荐问：suggested_questions     │
+└──────────────────────────────────────────────┴────────────────────────────────┘
+```
+
+### 1.2 会话列表与运维
+
+| UI | 行为 | 接口 |
+|----|------|------|
+| 会话列表 | 按用户拉目录；展示 title / 更新时间 | `GET /chatbot/sessions?user_id=` |
+| 打开会话 | 拉历史消息；assistant 可带 `rag_citations` | `GET /chatbot/sessions/messages?user_id=&session_id=` |
+| 改标题 | 用户重命名 | `PATCH /chatbot/sessions/title?user_id=&session_id=` |
+| 清空会话 | 二次确认后清空 | `DELETE /chatbot/sessions/messages?user_id=&session_id=` |
+| 删单条 | 可选 | `DELETE /chatbot/sessions/message` 或 `POST .../messages/delete` |
+
+`session_id` **由前端生成并维持**（UUID）；与 `user_id` 组成唯一对话线。
+
+### 1.3 流式问答（SSE）
+
+1. `POST /chatbot/chat/stream`，Body：`user_id`、`session_id`、`query`；可选 `image_urls`、`enable_rag` 等。  
+2. 响应 `Content-Type: text/event-stream`；每帧 `data: {JSON}\n\n`。  
+3. 首帧 `started` 含 `stream_id` → 启用「停止」按钮。  
+4. 中途：`delta`（正文增量）、`citation` / `citation_ref`（引用角标，与 `meta.rag_citations[].ref_index` 对齐）。  
+5. 尾帧 `finished: true` + `meta`。  
+6. 停止：`POST /chatbot/chat/stop`，Body：`user_id`、`session_id`、`stream_id`。
+
+| SSE 字段 | 前端处理 |
+|----------|----------|
+| `started` + `stream_id` | 保存；可点停止 |
+| `delta` | 追加到当前助手气泡（Markdown/公式按产品能力） |
+| `citation_ref` / `citation` | 插入可点击角标 `[n]`；点开对应来源 |
+| `finished.meta.rag_citations` | 来源列表（空数组不展示）；`kb_qa` / `hybrid_qa` / `data_query` 均可有 |
+| `finished.meta.suggested_questions` | 推荐问 chips；点击填入输入框并发送；**纯 `data_query` 通常为空** |
+| `finished.meta.nl2sql_sql` | **忽略，禁止渲染** |
+| `finished.meta.intent_label` | 可选角标（知识/查数/混合） |
+| `error` + `finished` | 错误提示 |
+
+无足够知识依据时：后端 Prompt 要求模型**先声明「知识库暂无足够依据」**再做收紧分析；前端无需特殊分支，正常渲染正文即可。
+
+### 1.4 知识 namespaces（与管理台）
+
+摄入 `namespace` 为扁平非空字符串（地降开启 `RAG_REQUIRE_NAMESPACE`）；**无** AI 问答侧白名单强制。  
+管理台侧栏：`GET /rag/namespaces?exclude_nl2sql=true`（RAG 基座默认隐藏 NL2SQL 三库）。智能问答检索/引用亦排除该三库。
+
+### 1.5 联调检查清单
+
+- [ ] 会话列表 ↔ 消息历史 ↔ 新会话  
+- [ ] SSE：`delta` + 引用角标 + 结束帧来源  
+- [ ] 推荐问可点  
+- [ ] 停止流有效  
+- [ ] 任意路径界面均**不出现 SQL**  
+- [ ] 空态为沉降专家口径  
 
 ---
 

@@ -11,6 +11,11 @@ DEFAULT_NS_KB_ENABLED = True
 DEFAULT_NS_KB_PRIORITY = 1
 DEFAULT_NAMESPACE_PATH = "__default__"
 
+# 知识库管理台侧栏默认隐藏的 NL2SQL 资产库（与业务知识分类隔离；写入/运维接口不受影响）
+NL2SQL_KB_ADMIN_SIDEBAR_EXCLUDED_NAMESPACES: frozenset[str] = frozenset(
+    {"nl2sql_schema", "nl2sql_biz_knowledge", "nl2sql_qa_examples"}
+)
+
 
 def normalize_namespace_kb_priority(priority: int | None) -> int:
     if priority is None:

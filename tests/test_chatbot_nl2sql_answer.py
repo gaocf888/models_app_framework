@@ -203,7 +203,10 @@ async def test_summarize_empty_with_llm_guide():
     assert "不是结果过多" in user_msg
 
 
-def test_format_nl2sql_user_error_hides_technical_detail() -> None:
+def test_format_nl2sql_user_error_hides_technical_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHATBOT_DOMAIN", "boiler")
+    from app.llm.graphs.chatbot_business_profile import clear_chatbot_business_profile_cache
+    clear_chatbot_business_profile_cache()
     err = NL2SQLExecutionError.from_executor_failure(
         sql="SELECT bad",
         cause=RuntimeError("(1054, \"Unknown column 'x'\")"),
@@ -215,7 +218,11 @@ def test_format_nl2sql_user_error_hides_technical_detail() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_chatbot_nl2sql_query_returns_friendly_text_on_execution_error() -> None:
+async def test_run_chatbot_nl2sql_query_returns_friendly_text_on_execution_error(monkeypatch: pytest.MonkeyPatch) -> None:
+
+    monkeypatch.setenv("CHATBOT_DOMAIN", "boiler")
+    from app.llm.graphs.chatbot_business_profile import clear_chatbot_business_profile_cache
+    clear_chatbot_business_profile_cache()
     nl2sql = MagicMock()
     nl2sql.query = AsyncMock(
         side_effect=NL2SQLExecutionError.from_executor_failure(
@@ -415,7 +422,9 @@ async def test_iter_analysis_llm_deltas_streams_chunks():
 
 
 @pytest.mark.asyncio
-async def test_finalize_stream_fallback_to_table():
+async def test_finalize_stream_fallback_to_table(monkeypatch: pytest.MonkeyPatch):
+
+    monkeypatch.setenv("CHATBOT_EXPOSE_NL2SQL_SQL_IN_META", "true")
     from app.llm.graphs.chatbot_nl2sql_answer import (
         Nl2sqlAnalysisStreamPlan,
         finalize_streamed_nl2sql_analysis,
@@ -451,3 +460,46 @@ async def test_finalize_stream_fallback_to_table():
     assert "|" in outcome.answer_text
     assert outcome.nl2sql_sql == "SELECT 1"
     assert outcome.nl2sql_analysis is not None
+
+
+def test_format_nl2sql_user_error_subsidence_domain(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.llm.graphs.chatbot_business_profile import clear_chatbot_business_profile_cache
+
+    monkeypatch.setenv("CHATBOT_DOMAIN", "subsidence")
+    clear_chatbot_business_profile_cache()
+    err = NL2SQLExecutionError.from_executor_failure(
+        sql="SELECT bad",
+        cause=RuntimeError("(1064, \"You have an error in your SQL syntax\")"),
+    )
+    text = format_nl2sql_user_error(err)
+    assert "监测数据" in text
+    assert "台账" not in text
+    assert "锅炉" not in text
+    default_text = format_nl2sql_user_error(None)
+    assert "行政区" in default_text or "监测" in default_text
+    assert "台账" not in default_text
+
+
+def test_analysis_prompt_version_and_col_priority_subsidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.llm.graphs.chatbot_business_profile import clear_chatbot_business_profile_cache
+    from app.llm.graphs.chatbot_nl2sql_answer import (
+        _active_analysis_col_priority_keys,
+        _active_analysis_fallback_system,
+        _analysis_prompt_default_version,
+        _chatbot_sql_gen_extra_hint,
+        _empty_prompt_default_version,
+    )
+
+    monkeypatch.setenv("CHATBOT_DOMAIN", "subsidence")
+    clear_chatbot_business_profile_cache()
+    assert _analysis_prompt_default_version() == "subsidence_v1"
+    assert _empty_prompt_default_version() == "subsidence_v1"
+    keys = _active_analysis_col_priority_keys()
+    assert "total_settle" in keys
+    assert "锅炉" not in keys
+    fallback = _active_analysis_fallback_system()
+    assert "下沉" in fallback
+    assert "锅炉" in fallback  # 明确禁止锅炉口吻
+    hint = _chatbot_sql_gen_extra_hint()
+    assert "fcb" in hint
+    assert "t_data_wash_fcb" in hint

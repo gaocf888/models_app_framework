@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Literal
 
 
 from app.core.config import get_app_config
+from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
 
 from app.core.logging import get_logger
 
@@ -74,21 +75,25 @@ IntentLlmTriggerKind = Literal["low_confidence", "mixed", "ambiguous_ctx"]
 
 
 
-_INTENT_LLM_EXAMPLES = (
-
+_BUILTIN_INTENT_LLM_EXAMPLES = (
+    # 锅炉内置示例；地降由 intent_markers.yaml intent_llm_examples 覆盖（见 _intent_llm_examples）。
     "分类示例（勿照抄 reason，仅作标签参考）：\n"
-
     '- data_query：「1号机组管子数量」「#3炉有多少根管」「查询台账里最近一次检修记录」\n'
-
     '- kb_qa：「过热器爆管常见原因」「锅炉启停注意事项」「什么是蠕变」\n'
-
     '- clarify：「这个」「怎么办」（且无足够会话上下文）\n'
     '- hybrid_qa：「查出超温列表并结合规程说明如何处置」\n'
-
 )
 
 
+def _intent_llm_examples() -> str:
+    """优先 domain 包 intent_llm_examples；缺省回退锅炉内置示例。"""
+    custom = (get_chatbot_business_profile().intent_llm_examples or "").strip()
+    if custom:
+        return "分类示例（勿照抄 reason，仅作标签参考）：\n" + custom
+    return "".join(_BUILTIN_INTENT_LLM_EXAMPLES)
 
+
+_INTENT_LLM_EXAMPLES = _BUILTIN_INTENT_LLM_EXAMPLES
 
 
 def should_invoke_intent_llm(rule: IntentRuleResult, *, conf_threshold: float) -> bool:
@@ -307,7 +312,7 @@ def _build_intent_llm_messages(
 
         "- clarify：过短、指代不清、无法判断用户要什么。\n\n"
 
-        f"{_INTENT_LLM_EXAMPLES}\n"
+        f"{_intent_llm_examples()}\n"
 
         f"NL2SQL 路由是否开启：{enable_nl2sql_route}（关闭时不应输出 data_query / hybrid_qa）。\n"
 

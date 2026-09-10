@@ -25,4 +25,5 @@ device_type_tables:
   gq: t_data_wash_gq
   qxz: t_data_wash_qxz
 
+# 问句未指明监测类型时的默认主表（分层标）；与客服 SQL gen hint / semantic_layer 默认 fcb 对齐。
 default_subsidence_table: t_data_wash_fcb

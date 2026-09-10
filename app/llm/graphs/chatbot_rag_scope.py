@@ -1,21 +1,24 @@
 """
-智能客服 RAG 检索范围解析：本厂/该厂等问句锁定电厂专属知识库 namespace。
+智能客服 RAG 检索范围解析：地域/组织指代锁定专属知识库 namespace。
 
 与 intent 三分流解耦：仅在 kb_qa → RAG 链路内，由 `rag_scope_resolve` 节点写入 state。
 
 默认（``CHATBOT_PLANT_KB_HISTORY_CONTINUATION=false``）仅根据**本轮** user query 判定；
 设为 true 时才会扫描近几轮 user 历史做延续锁定。
+
+markers / namespace / boost 可由 ``CHATBOT_DOMAIN`` 配置包 ``locale_kb`` 注入；
+未注入时回退锅炉「本厂」内置词表。
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, NamedTuple
+from typing import Any, Dict, List, NamedTuple, Sequence
 
 from app.services.chatbot_image_utils import strip_image_block_from_history
+from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
 
-# 厂别/公司/单位指代（命中即锁定 plant_kb_namespace；较长短语与专名类优先列出便于维护）
-_PLANT_PRONOUN_MARKERS = (
-    # 公司 / 单位
+# 锅炉内置「本厂」指代（配置包缺失时兜底）
+_BUILTIN_LOCALE_MARKERS = (
     "我们公司",
     "我们单位",
     "我们电厂",
@@ -31,7 +34,6 @@ _PLANT_PRONOUN_MARKERS = (
     "该单位",
     "本单位",
     "我司",
-    # 电厂 / 厂
     "本电厂",
     "该电厂",
     "本电站",
@@ -44,11 +46,14 @@ _PLANT_PRONOUN_MARKERS = (
     "厂里",
     "这个厂",
     "本锅炉厂",
-    # 现场 / 口语
     "本现场",
 )
 
-_DEFAULT_PLANT_QUERY_BOOST = "华电五彩湾北一发电有限公司"
+_DEFAULT_LOCALE_QUERY_BOOST = "华电五彩湾北一发电有限公司"
+
+# 兼容旧名
+_PLANT_PRONOUN_MARKERS = _BUILTIN_LOCALE_MARKERS
+_DEFAULT_PLANT_QUERY_BOOST = _DEFAULT_LOCALE_QUERY_BOOST
 
 
 class RagScopeResult(NamedTuple):
@@ -63,9 +68,21 @@ def _normalize(text: str) -> str:
     return (text or "").replace(" ", "").strip()
 
 
-def _has_plant_pronoun(text: str) -> bool:
+def _active_locale_markers(markers: Sequence[str] | None = None) -> tuple[str, ...]:
+    if markers:
+        return tuple(m for m in markers if str(m).strip())
+    profile_markers = get_chatbot_business_profile().locale_kb.markers
+    return profile_markers or _BUILTIN_LOCALE_MARKERS
+
+
+def _has_locale_pronoun(text: str, markers: Sequence[str] | None = None) -> bool:
     qn = _normalize(text)
-    return any(m in qn for m in _PLANT_PRONOUN_MARKERS)
+    return any(m in qn for m in _active_locale_markers(markers))
+
+
+# 兼容旧 API
+def _has_plant_pronoun(text: str) -> bool:
+    return _has_locale_pronoun(text)
 
 
 def _recent_user_texts(
@@ -97,36 +114,37 @@ def resolve_rag_namespace(
     history_messages: List[Dict[str, Any]] | None = None,
     enable_context: bool = True,
     history_continuation: bool = False,
-    query_boost_name: str | None = _DEFAULT_PLANT_QUERY_BOOST,
+    query_boost_name: str | None = None,
+    locale_markers: Sequence[str] | None = None,
 ) -> RagScopeResult:
     """
-    解析本轮 RAG 是否锁定电厂专属 namespace。
+    解析本轮 RAG 是否锁定地域/组织专属 namespace。
 
     规则：
-    - 本轮含厂别指代 → 锁定 plant_kb_namespace；
-    - 当 ``history_continuation=True``（``CHATBOT_PLANT_KB_HISTORY_CONTINUATION``）且
-      ``enable_context`` 时：本轮无厂别指代，但近几轮 user 含厂别指代 → 多轮延续锁定；
-    - 否则走全库（默认仅看本轮，不扫历史）。
+    - 本轮含 locale 指代 → 锁定 plant_kb_namespace；
+    - 当 ``history_continuation=True`` 且 ``enable_context`` 时：近几轮 user 含指代 → 多轮延续锁定；
+    - 否则走全库。
     """
     if not enabled:
-        return RagScopeResult(None, "plant_kb_disabled", None)
+        return RagScopeResult(None, "locale_kb_disabled", None)
     ns = (plant_kb_namespace or "").strip()
     if not ns:
-        return RagScopeResult(None, "plant_kb_namespace_empty", None)
+        return RagScopeResult(None, "locale_kb_namespace_empty", None)
 
     q = (query or "").strip()
     if not q:
         return RagScopeResult(None, "empty_query", None)
 
     boost = (query_boost_name or "").strip() or None
+    markers = _active_locale_markers(locale_markers)
 
-    if _has_plant_pronoun(q):
-        return RagScopeResult(ns, "plant_pronoun", boost)
+    if _has_locale_pronoun(q, markers):
+        return RagScopeResult(ns, "locale_pronoun", boost)
 
     if history_continuation and enable_context:
         for prev in _recent_user_texts(history_messages):
-            if _has_plant_pronoun(prev):
-                return RagScopeResult(ns, "plant_pronoun_history_continuation", boost)
+            if _has_locale_pronoun(prev, markers):
+                return RagScopeResult(ns, "locale_pronoun_history_continuation", boost)
 
     return RagScopeResult(None, "default_all_namespaces", None)
 
@@ -136,9 +154,13 @@ def augment_retrieval_query_for_plant_kb(
     *,
     query_boost: str | None,
 ) -> str:
-    """锁定电厂库时，将电厂正式名称拼入检索句（若尚未出现）。"""
+    """锁定专属库时，将正式名称拼入检索句（若尚未出现）。"""
     q = (rag_query or "").strip()
     boost = (query_boost or "").strip()
     if not q or not boost or boost in q:
         return q
     return f"{boost} {q}"
+
+
+# 别名：逐步迁移到 locale 命名
+augment_retrieval_query_for_locale_kb = augment_retrieval_query_for_plant_kb

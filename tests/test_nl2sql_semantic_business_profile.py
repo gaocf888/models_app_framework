@@ -189,3 +189,42 @@ def test_config_merges_boiler_profile_db(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "mysql+aiomysql" in db.url
     assert "charset=utf8mb4" in db.url
 
+
+def test_semantic_default_device_type_fcb_when_unspecified(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    intent = QuestionIntent(
+        raw_question="通州区近一年沉降多少",
+        scope_question="通州区近一年沉降多少",
+        time_window=None,
+        scope=QuestionScopeIntent(district="通州区"),
+    )
+    binding = align_semantics("通州区近一年沉降多少", intent, assets=assets)
+    assert binding is not None
+    assert "fcb" in binding.device_types
+    assert any("fcb" in str(t).lower() or "t_data_wash_fcb" in str(t).lower() for t in binding.device_type_tables)
+    assert "default_device_type_fcb" in binding.warnings
+
+
+def test_semantic_explicit_gnss_not_overridden_by_fcb_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    intent = QuestionIntent(
+        raw_question="通州区GNSS位移",
+        scope_question="通州区GNSS位移",
+        time_window=None,
+        scope=QuestionScopeIntent(district="通州区", device_type="gnss"),
+    )
+    binding = align_semantics("通州区GNSS位移", intent, assets=assets)
+    assert binding is not None
+    assert "gnss" in binding.device_types
+    assert "default_device_type_fcb" not in binding.warnings
+

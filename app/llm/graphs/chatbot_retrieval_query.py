@@ -148,8 +148,14 @@ def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
     与 `ChatbotLangGraphRunner._node_kb_build_messages` / legacy `_build_llm_messages` 对齐的
     「知识片段」system 段全文（含对「确定吗」类短句的硬性说明）。
     """
+    from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
+
     blocks = [str(c).strip() for c in (context_snippets or []) if str(c).strip()]
     numbered = _snippets_use_numbered_ref_format(blocks)
+    forbid = (
+        get_chatbot_business_profile().rag_snippet_granularity_forbid
+        or "故障类型、设备条目或规程内容"
+    ).strip()
     if numbered:
         ctx = "\n\n".join(blocks)
         intro = (
@@ -166,10 +172,10 @@ def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
         granularity_rule = (
             "【宽泛问题作答粒度】若用户问题较宽（如「常见…有哪些」「概述」「列举」「分别说明」等），且下列有多条编号片段："
             "须**仅依据下列片段逐条组织回答**——每条被使用的片段单独成节（标题可取该片段主题或《文档名》），"
-            "节内来自该片段的现象/原因/措施句末标对应 [n]；"
-            "禁止用模型自带知识扩写片段未覆盖的故障类型、设备条目或规程内容；"
+            f"节内来自该片段的现象/原因/措施句末标对应 [n]；禁止用模型自带知识扩写片段未覆盖的{forbid}；"
             "片段未涉及的主题可集中一句说明「知识库本轮未检索到相关条文」。"
             "若用户问题较窄且只命中单条片段，针对该问作答并标好 [n] 即可。"
+            "若整体依据仍不足：须先明确说明「知识库暂无足够依据」，再做收紧的通用分析，且不得伪装成规范/文档依据。"
         )
     else:
         ctx = "\n".join(f"- {c}" for c in blocks)
@@ -178,6 +184,10 @@ def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
             "均无对应关系，禁止用片段顺序顶替会话内容）。"
         )
         cite_rule = ""
+        granularity_rule = (
+            "若片段依据不足：须先明确说明「知识库暂无足够依据」，再做收紧的通用分析；"
+            "禁止把通用推断写成「依据某规范/某文档」。"
+        )
     common = (
         "用户泛指上文（如「上述现场排查/检修建议」）时，"
         "请先在对话历史中按语义对齐助手较近一轮的相关段落再展开；仅当用户明确说「第N点/条」时再对齐编号。"
@@ -186,5 +196,5 @@ def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
         "须先复述并回应对话历史中**紧邻的上一轮** assistant 的主要结论与依据，再引用下述片段作补充；"
         "不得以「请明确指代」「没有具体上下文」「请说明指什么」等话术敷衍回避。"
     )
-    parts = [intro, cite_rule, granularity_rule if numbered else "", common, ctx]
+    parts = [intro, cite_rule, granularity_rule, common, ctx]
     return "\n".join(p for p in parts if p)

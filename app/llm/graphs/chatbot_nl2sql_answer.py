@@ -14,6 +14,7 @@ from uuid import UUID
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
+from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
 from app.llm.graphs.chatbot_nl2sql_display import (
     CHATBOT_NL2SQL_SELECT_DISPLAY_RULES,
     filter_chatbot_nl2sql_display_rows,
@@ -35,7 +36,7 @@ _ANALYSIS_PROMPT_MAX_CHARS = 10000
 # 注入分析 LLM 的列数上限（宽表如超温明细易拖慢生成）
 _ANALYSIS_PROMPT_MAX_COLS = 10
 # 优先保留的列名关键字（序号越小越优先；宽表按最优命中分排序后截断）
-_ANALYSIS_COL_PRIORITY_KEYS = (
+_ANALYSIS_COL_PRIORITY_KEYS_BOILER = (
     "最高",
     "壁温",
     "限值",
@@ -59,12 +60,45 @@ _ANALYSIS_COL_PRIORITY_KEYS = (
     "load",
 )
 
-_DEFAULT_USER_ERROR_MESSAGE = (
+_ANALYSIS_COL_PRIORITY_KEYS_SUBSIDENCE = (
+    "行政区",
+    "区县",
+    "站点",
+    "监测点",
+    "点名",
+    "累计沉降",
+    "年沉降",
+    "沉降量",
+    "沉降速率",
+    "total_settle",
+    "埋深",
+    "水位",
+    "孔压",
+    "位移",
+    "时间",
+    "data_time",
+    "观测",
+    "name",
+    "time",
+)
+
+# 兼容旧引用；运行时列优先级/错误文案走 _active_*（按 CHATBOT_DOMAIN 切换）。
+_ANALYSIS_COL_PRIORITY_KEYS = _ANALYSIS_COL_PRIORITY_KEYS_BOILER
+
+_DEFAULT_USER_ERROR_MESSAGE_BOILER = (
     "暂时无法完成本次数据查询，请尝试缩小范围（如指定锅炉、时间）或改用知识库问答。"
     "若问题持续，请联系管理员并提供提问时间。"
 )
 
-_USER_ERROR_MESSAGES: dict[str, str] = {
+_DEFAULT_USER_ERROR_MESSAGE_SUBSIDENCE = (
+    "暂时无法完成本次监测数据查询，请尝试缩小范围（如行政区/站点、时间或监测类型）或改用知识库问答。"
+    "若问题持续，请联系管理员并提供提问时间。"
+)
+
+# 兼容旧引用；请用 _active_default_user_error() / _active_user_error_messages()。
+_DEFAULT_USER_ERROR_MESSAGE = _DEFAULT_USER_ERROR_MESSAGE_BOILER
+
+_USER_ERROR_MESSAGES_BOILER: dict[str, str] = {
     "unknown_column": (
         "暂时无法完成本次数据查询（查询字段配置异常，已记录）。"
         "请尝试缩小查询范围或改用知识库问答。"
@@ -80,12 +114,41 @@ _USER_ERROR_MESSAGES: dict[str, str] = {
     "db_access_denied": (
         "暂时无法完成本次数据查询（数据访问权限异常，已记录）。请联系管理员。"
     ),
-    "default": _DEFAULT_USER_ERROR_MESSAGE,
+    "default": _DEFAULT_USER_ERROR_MESSAGE_BOILER,
 }
+
+_USER_ERROR_MESSAGES_SUBSIDENCE: dict[str, str] = {
+    "unknown_column": (
+        "暂时无法完成本次监测数据查询（查询字段配置异常，已记录）。"
+        "请尝试缩小行政区/站点或时间范围，或改用知识库问答。"
+    ),
+    "unknown_table": (
+        "暂时无法完成本次监测数据查询（相关监测表未配置或不可用，已记录）。"
+        "请尝试缩小查询范围或改用知识库问答。"
+    ),
+    "sql_syntax_error": (
+        "暂时无法完成本次监测数据查询（查询语句未能正确生成，已记录）。"
+        "请换一种方式描述要查的行政区、站点、时间或监测类型（如分层标）。"
+    ),
+    "db_access_denied": (
+        "暂时无法完成本次监测数据查询（数据访问权限异常，已记录）。请联系管理员。"
+    ),
+    "default": _DEFAULT_USER_ERROR_MESSAGE_SUBSIDENCE,
+}
+
+# 兼容旧引用；运行时请用 _active_user_error_messages()。
+_USER_ERROR_MESSAGES = _USER_ERROR_MESSAGES_BOILER
 
 _EMPTY_ROWS_FIXED_MESSAGE = (
     "查询已执行，当前条件下没有返回数据行。\n\n"
     "若预期应有数据，请检查筛选条件或确认业务库是否已同步。"
+)
+
+_GEN_FAILED_MESSAGE_BOILER = (
+    "未能生成有效的 SQL 查询。请换一种方式描述要查的台账或记录条件，或改用知识库问答。"
+)
+_GEN_FAILED_MESSAGE_SUBSIDENCE = (
+    "未能生成有效的监测数据查询。请换一种方式描述行政区/站点、时间或监测类型（如分层标），或改用知识库问答。"
 )
 
 _DEFAULT_ANALYSIS_SYSTEM = (
@@ -98,6 +161,19 @@ _DEFAULT_ANALYSIS_SYSTEM = (
     "概括中的展示条数须与表内行数一致。"
     "禁止「注意/注意事项」独立章节与客套收尾；"
     "禁止建议用户补充字段、补充历史数据或扩大分析范围（列由系统生成，非用户手填）；只解读已给出且与问句相关的内容。"
+)
+
+_DEFAULT_ANALYSIS_SYSTEM_SUBSIDENCE = (
+    "你是地面沉降监测数据分析助手。下方查询结果是已执行完的事实源，只能基于其中字段与数值做中文 Markdown 整理与分析，"
+    "禁止编造测点读数或库外因果；禁止输出 SQL。"
+    "沉降量符号：负值通常表示下沉，解读时保持符号语义，勿擅自改为绝对值。"
+    "输出版式：开头直接写一段话概括结果，空一行后只输出一张 Markdown 表，"
+    "再空一行写一段专业解读（行政区/站点/时间/沉降指标；无依据可省略）；正文中不得出现任何 Markdown 标题行（#/##/###）"
+    "或单独成行的板块名。"
+    "明细表必须完整输出事实源提供的全部样本行，禁止再抽稀到更少行；"
+    "概括中的展示条数须与表内行数一致。"
+    "禁止「注意/注意事项」独立章节与客套收尾；禁止锅炉/台账口吻；"
+    "禁止建议用户补充字段或扩大分析范围；只解读已给出且与问句相关的内容。"
 )
 
 # 模型常把版式说明抄成 ### 小标题；定稿时剥离（仅整行标题，不影响正文句子）。
@@ -127,22 +203,121 @@ _MARKDOWN_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 
 _DEFAULT_EMPTY_SYSTEM = (
     "用户数据查询已执行，结果为 0 行。先一句说明未查到，再给 2～3 条改问建议（位置/时间/业务说法）。"
+    "禁止编造数值与 SQL；禁止「年份尚未到来/较新年份请查更早年」；禁止 0 行时说「数据量较大」；禁止客套收尾。"
+)
+
+_DEFAULT_EMPTY_SYSTEM_BOILER = (
+    "用户数据查询已执行，结果为 0 行。先一句说明未查到，再给 2～3 条改问建议（位置/时间/业务说法）。"
     "禁止编造数值与 SQL；禁止建议用户区分「号炉」与「号锅炉」（系统已自动归一）；"
     "禁止「年份尚未到来/较新年份请查更早年」；禁止 0 行时说「数据量较大」；禁止客套收尾。"
 )
 
+_DEFAULT_EMPTY_SYSTEM_SUBSIDENCE = (
+    "用户监测数据查询已执行，结果为 0 行。先一句说明未查到，再给 2～3 条改问建议（行政区/站点、时间、监测类型）。"
+    "禁止编造沉降数值与 SQL；禁止锅炉/台账口吻；"
+    "禁止「年份尚未到来/较新年份请查更早年」；禁止 0 行时说「数据量较大」；禁止客套收尾。"
+)
+
+
+def _chatbot_domain() -> str:
+    """当前客服业务域。正常缺省为 subsidence（与 CHATBOT_DOMAIN 一致）。"""
+    try:
+        return str(get_chatbot_business_profile().domain or "subsidence")
+    except Exception:
+        # 仅 profile 加载异常时回退 boiler，避免静默把地降错误文案/分析版当成「代码默认」。
+        # 正常路径缺省见 get_chatbot_business_profile / config：subsidence。
+        return "boiler"
+
+
+def _is_subsidence_domain() -> bool:
+    return _chatbot_domain() == "subsidence"
+
+
+def _active_analysis_col_priority_keys() -> tuple[str, ...]:
+    if _is_subsidence_domain():
+        return _ANALYSIS_COL_PRIORITY_KEYS_SUBSIDENCE
+    return _ANALYSIS_COL_PRIORITY_KEYS_BOILER
+
+
+def _active_user_error_messages() -> dict[str, str]:
+    if _is_subsidence_domain():
+        return _USER_ERROR_MESSAGES_SUBSIDENCE
+    return _USER_ERROR_MESSAGES_BOILER
+
+
+def _active_default_user_error() -> str:
+    if _is_subsidence_domain():
+        return _DEFAULT_USER_ERROR_MESSAGE_SUBSIDENCE
+    return _DEFAULT_USER_ERROR_MESSAGE_BOILER
+
+
+def _active_gen_failed_message() -> str:
+    if _is_subsidence_domain():
+        return _GEN_FAILED_MESSAGE_SUBSIDENCE
+    return _GEN_FAILED_MESSAGE_BOILER
+
+
+def _active_analysis_fallback_system() -> str:
+    if _is_subsidence_domain():
+        return _DEFAULT_ANALYSIS_SYSTEM_SUBSIDENCE
+    return _DEFAULT_ANALYSIS_SYSTEM
+
+
+def _analysis_prompt_default_version() -> str:
+    # 地降：prompts.yaml chatbot_nl2sql_analysis.subsidence_v1；
+    # 锅炉：键名仍是 v1（不是 boiler_v1），与 chatbot scene 的 boiler_v1 无关。
+    return "subsidence_v1" if _is_subsidence_domain() else "v1"
+
+
+def _empty_prompt_default_version() -> str:
+    # 同上：空结果引导按域取 subsidence_v1 或锅炉 v1。
+    return "subsidence_v1" if _is_subsidence_domain() else "v1"
+
+
+def _chatbot_sql_gen_extra_hint() -> str:
+    """客服 NL2SQL 生成附加提示：展示规则 + 地降未指明库时默认分层标(fcb)。"""
+    base = CHATBOT_NL2SQL_SELECT_DISPLAY_RULES
+    if not _is_subsidence_domain():
+        return base
+    default_hint = (
+        "【默认监测类型】若用户未明确监测类型/库（分层标/基岩标/GNSS/地下水等），"
+        "默认按分层标（fcb，表 t_data_wash_fcb）生成查询；勿擅自跨多库联合。"
+    )
+    return f"{base}\n{default_hint}"
+
 
 def _chatbot_expose_nl2sql_sql_in_meta() -> bool:
+    """
+    结束帧 meta.nl2sql_sql 门控（成功/失败路径均适用）。
+
+    - 代码默认 false，防漏配把 SQL 打到前端协议；
+    - 地降联调/审计在 .env 设 CHATBOT_EXPOSE_NL2SQL_SQL_IN_META=true；前端仍禁止渲染；
+    - 未进 ChatbotConfig：改默认时须同步 .env.example 与 run_chatbot_nl2sql_query 写入逻辑。
+    """
     return os.getenv("CHATBOT_EXPOSE_NL2SQL_SQL_IN_META", "false").lower() == "true"
 
 
 def format_nl2sql_user_error(exc: NL2SQLExecutionError | None = None) -> str:
     """将 NL2SQL 执行失败映射为客服用户可见文案（无 SQL、无堆栈）。"""
+    messages = _active_user_error_messages()
     if exc is None:
-        return _DEFAULT_USER_ERROR_MESSAGE
-    key = exc.user_message_key if exc.user_message_key in _USER_ERROR_MESSAGES else "default"
-    return _USER_ERROR_MESSAGES.get(key, _DEFAULT_USER_ERROR_MESSAGE)
+        return _active_default_user_error()
+    key = exc.user_message_key if exc.user_message_key in messages else "default"
+    return messages.get(key, _active_default_user_error())
 
+
+
+_SQL_FENCE_RE = re.compile(r"```(?:sql|SQL)?\s*[\s\S]*?```", re.M)
+
+
+def strip_sql_fences_from_analysis(text: str) -> str:
+    """剥离回答正文中的 SQL 代码围栏（结束帧 meta 仍可保留 nl2sql_sql）。"""
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    cleaned = _SQL_FENCE_RE.sub("", raw)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
 
 def strip_nl2sql_analysis_section_headings(text: str) -> str:
     """去掉模型误加的板块小标题行（含任意 ### 短标题），保留段落与表格正文。"""
@@ -382,7 +557,7 @@ async def run_chatbot_nl2sql_query(
         user_id=user_id,
         session_id=session_id,
         question=question,
-        sql_gen_extra_hint=CHATBOT_NL2SQL_SELECT_DISPLAY_RULES,
+        sql_gen_extra_hint=_chatbot_sql_gen_extra_hint(),
     )
     try:
         resp = await nl2sql.query(req, record_conversation=False)
@@ -412,9 +587,11 @@ async def run_chatbot_nl2sql_query(
             user_id=user_id,
             defer_analysis_stream=defer_analysis_stream,
         )
+        # 成功路径亦受 CHATBOT_EXPOSE_NL2SQL_SQL_IN_META 门控（与失败路径一致）
+        sql_meta = (resp.sql or None) if _chatbot_expose_nl2sql_sql_in_meta() else None
         return ChatbotNL2SQLOutcome(
             answer_text=summarized.answer_text,
-            nl2sql_sql=resp.sql or None,
+            nl2sql_sql=sql_meta,
             nl2sql_analysis=summarized.analysis_meta,
             analysis_stream_plan=summarized.stream_plan,
         )
@@ -484,8 +661,8 @@ def _collect_column_order(dict_rows: list[dict[str, Any]]) -> list[str]:
 
 def _column_priority_score(col: str) -> int:
     cl = (col or "").lower()
-    best = len(_ANALYSIS_COL_PRIORITY_KEYS) + 100
-    for i, key in enumerate(_ANALYSIS_COL_PRIORITY_KEYS):
+    best = len(_active_analysis_col_priority_keys()) + 100
+    for i, key in enumerate(_active_analysis_col_priority_keys()):
         if key.lower() in cl:
             best = min(best, i)
     return best
@@ -590,10 +767,21 @@ def _build_analysis_meta(
     }
 
 
-def _load_scene_system(scene: str, *, user_id: str | None, fallback: str) -> str:
+def _load_scene_system(
+    scene: str,
+    *,
+    user_id: str | None,
+    fallback: str,
+    default_version: str = "v1",
+) -> str:
     try:
         reg = PromptTemplateRegistry()
-        tpl = reg.get_template(scene=scene, user_id=user_id, version=None, default_version="v1")
+        tpl = reg.get_template(
+            scene=scene,
+            user_id=user_id,
+            version=None,
+            default_version=default_version,
+        )
         content = (tpl.content if tpl else "") or ""
         if content.strip():
             return content.strip()
@@ -680,7 +868,9 @@ def finalize_streamed_nl2sql_analysis(
     streamed_text: str,
 ) -> Nl2sqlSummarizeResult:
     """流式结束后组装正文与 meta；无有效输出则回退 Markdown 表。"""
-    answer = strip_nl2sql_analysis_section_headings((streamed_text or "").strip())
+    answer = strip_sql_fences_from_analysis(
+        strip_nl2sql_analysis_section_headings((streamed_text or "").strip())
+    )
     llm_used = bool(answer)
     if not answer:
         answer = plan.table_fallback
@@ -781,9 +971,7 @@ async def summarize_nl2sql_with_llm(
             (user_query or "")[:400],
         )
         return Nl2sqlSummarizeResult(
-            answer_text=(
-                "未能生成有效的 SQL 查询。请换一种方式描述要查的台账或记录条件，或改用知识库问答。"
-            )
+            answer_text=_active_gen_failed_message()
         )
 
     cfg = get_app_config().chatbot
@@ -799,18 +987,36 @@ async def summarize_nl2sql_with_llm(
         answer = _EMPTY_ROWS_FIXED_MESSAGE
         llm_used = False
         if bool(cfg.nl2sql_empty_llm_guide_enabled):
+            domain = get_chatbot_business_profile().domain
+            if domain == "subsidence":
+                empty_fallback = _DEFAULT_EMPTY_SYSTEM_SUBSIDENCE
+            elif domain == "boiler":
+                empty_fallback = _DEFAULT_EMPTY_SYSTEM_BOILER
+            else:
+                empty_fallback = _DEFAULT_EMPTY_SYSTEM
             system = _load_scene_system(
                 "chatbot_nl2sql_empty",
                 user_id=user_id,
-                fallback=_DEFAULT_EMPTY_SYSTEM,
+                fallback=empty_fallback,
+                default_version=_empty_prompt_default_version(),
             )
+            if domain == "boiler":
+                domain_hint = (
+                    "系统说明：锅炉口语「号炉/号机组」已自动归一为「号锅炉」，请勿建议用户区分二者。\n"
+                    "请输出：1 句未查到说明 + 2～3 条改问建议（优先放宽位置/孔号，其次该年内时间，再次字段说法）；"
+                    "勿写号炉与号锅炉差异；勿写较新年份去查更早年；勿客套收尾。"
+                )
+            else:
+                domain_hint = (
+                    "请输出：1 句未查到说明 + 2～3 条改问建议"
+                    "（优先放宽行政区/站点/监测点，其次该年内时间，再次字段或指标说法）；"
+                    "勿写较新年份去查更早年；勿客套收尾。"
+                )
             user_content = (
                 f"用户问题：{user_query or ''}\n\n"
                 f"今天日期：{date.today().isoformat()}（唯一时间基准；今天所在年份={date.today().year}）\n"
                 "查询结果：空（0 行）。已执行完成，不是失败，也不是结果过多。\n"
-                "系统说明：锅炉口语「号炉/号机组」已自动归一为「号锅炉」，请勿建议用户区分二者。\n"
-                "请输出：1 句未查到说明 + 2～3 条改问建议（优先放宽位置/孔号，其次该年内时间，再次字段说法）；"
-                "勿写号炉与号锅炉差异；勿写较新年份去查更早年；勿客套收尾。"
+                f"{domain_hint}"
             )
             guided = await _call_analysis_llm(llm_client, system=system, user_content=user_content)
             if guided:
@@ -853,7 +1059,8 @@ async def summarize_nl2sql_with_llm(
     system = _load_scene_system(
         "chatbot_nl2sql_analysis",
         user_id=user_id,
-        fallback=_DEFAULT_ANALYSIS_SYSTEM,
+        fallback=_active_analysis_fallback_system(),
+        default_version=_analysis_prompt_default_version(),
     )
     prompt_n = _analysis_prompt_max_rows()
     prompt_rows = display_rows[:prompt_n]

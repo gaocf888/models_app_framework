@@ -225,8 +225,9 @@
       <div id="status">就绪</div>
       <h2>回答（delta 拼接正文；citation_ref 渲染为可点引用；流结束后再 KaTeX）</h2>
       <div id="answer"></div>
+      <div id="suggestions" style="margin-top:0.75rem;display:none;"></div>
       <div id="err" class="err" hidden></div>
-      <h2 style="margin-top:1rem;">结束帧 meta</h2>
+      <h2 style="margin-top:1rem;">结束帧 meta（已隐藏 nl2sql_sql，前端不得渲染 SQL）</h2>
       <div id="meta">（尚未完成）</div>
     </div>
   </div>
@@ -665,8 +666,44 @@
           return;
         }
         if (ev.finished === true) {
-          flushAnswerWithKatex((ev.meta && ev.meta.rag_citations) || []);
-          $("meta").textContent = JSON.stringify(ev.meta || {}, null, 2);
+          const rawMeta = ev.meta || {};
+          flushAnswerWithKatex(rawMeta.rag_citations || []);
+          // P1-5：界面不得渲染 SQL；展示用 meta 剔除 nl2sql_sql
+          const safeMeta = Object.assign({}, rawMeta);
+          if (Object.prototype.hasOwnProperty.call(safeMeta, "nl2sql_sql")) {
+            safeMeta.nl2sql_sql = safeMeta.nl2sql_sql
+              ? "[REDACTED · 前端勿渲染 SQL]"
+              : null;
+          }
+          $("meta").textContent = JSON.stringify(safeMeta, null, 2);
+          const sugBox = $("suggestions");
+          const qs = Array.isArray(rawMeta.suggested_questions)
+            ? rawMeta.suggested_questions.filter((x) => String(x || "").trim())
+            : [];
+          if (qs.length) {
+            sugBox.style.display = "block";
+            sugBox.innerHTML =
+              "<div style=\"color:var(--muted);font-size:0.8rem;margin-bottom:0.35rem;\">推荐问</div>" +
+              qs
+                .map(function (q) {
+                  return (
+                    "<button type=\"button\" class=\"secondary\" style=\"margin:0.2rem 0.35rem 0.2rem 0;\" data-sq=\"" +
+                    String(q).replace(/"/g, "&quot;") +
+                    "\">" +
+                    String(q).replace(/</g, "&lt;") +
+                    "</button>"
+                  );
+                })
+                .join("");
+            sugBox.querySelectorAll("button[data-sq]").forEach(function (btn) {
+              btn.addEventListener("click", function () {
+                $("query").value = btn.getAttribute("data-sq") || "";
+              });
+            });
+          } else {
+            sugBox.style.display = "none";
+            sugBox.innerHTML = "";
+          }
           appendStatus("完成");
           return;
         }

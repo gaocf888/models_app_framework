@@ -2105,11 +2105,23 @@ class PatchNamespaceKbConfigResponse(BaseModel):
     summary="列出各 namespace 的 kb 启用/优先级配置",
     response_model=NamespaceKbConfigListResponse,
 )
-async def list_namespace_kb_configs() -> NamespaceKbConfigListResponse:
+async def list_namespace_kb_configs(
+    exclude_nl2sql: Annotated[
+        bool,
+        Query(
+            description=(
+                "知识库管理台侧栏默认排除 NL2SQL 三库"
+                "（nl2sql_schema / nl2sql_biz_knowledge / nl2sql_qa_examples）。"
+                "运维排查时可传 false 查看全部。"
+            ),
+        ),
+    ] = True,
+) -> NamespaceKbConfigListResponse:
     """
     列出各 namespace 的 ``namespace_kb_enabled`` / ``namespace_kb_priority`` 配置（从 docs 索引聚合）。
 
-    **路径/Query**：无。
+    **Query**
+    - ``exclude_nl2sql``：默认 ``true``，与地降知识管理台侧栏约定一致。
 
     **响应体 `NamespaceKbConfigListResponse`（200）**
     - `ok`、`namespaces[]`：每项含 `namespace`、`namespace_kb_enabled`、`namespace_kb_priority`、`document_count`。
@@ -2119,6 +2131,15 @@ async def list_namespace_kb_configs() -> NamespaceKbConfigListResponse:
     """
     try:
         rows = _get_doc_repo().list_namespace_kb_configs()
+        if exclude_nl2sql:
+            from app.rag.namespace_kb import NL2SQL_KB_ADMIN_SIDEBAR_EXCLUDED_NAMESPACES
+
+            excluded = NL2SQL_KB_ADMIN_SIDEBAR_EXCLUDED_NAMESPACES
+            rows = [
+                row
+                for row in rows
+                if str(row.get("namespace") or "").strip() not in excluded
+            ]
         return NamespaceKbConfigListResponse(
             ok=True,
             namespaces=[NamespaceKbConfigItem(**row) for row in rows],

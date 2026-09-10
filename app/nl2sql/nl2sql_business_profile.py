@@ -106,6 +106,8 @@ def get_nl2sql_business_profile(domain: str | None = None) -> NL2SQLBusinessProf
     加载当前部署 domain 对应的 NL2SQL 业务配置包。
 
     未设置 ``NL2SQL_BUSINESS_DOMAIN`` 或 domain 无效时返回 ``None``（保持现网锅炉默认行为）。
+    注意：Chatbot 缺省域已是 ``subsidence``（``CHATBOT_DOMAIN``）；地降部署须同步设置
+    ``NL2SQL_BUSINESS_DOMAIN=subsidence``，两套 env 同名约定、独立加载器。
     """
     dom = (domain or os.getenv("NL2SQL_BUSINESS_DOMAIN") or "").strip().lower()
     if not dom or dom not in _VALID_DOMAINS:

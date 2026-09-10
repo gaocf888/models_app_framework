@@ -1,0 +1,68 @@
+# 业务包总览（CHATBOT_DOMAIN=boiler；与 NL2SQL_BUSINESS_DOMAIN 独立 env）
+
+# 展示名：日志/运维识别用
+display_name: 锅炉四管智能客服
+
+# 本厂锁库（locale_kb / 原 plant_kb）：问句含本厂等时锁定电厂专属 namespace
+locale_kb:
+  enabled: true
+  # 触发锁库的问句关键词
+  markers:
+    - 我们公司
+    - 我们单位
+    - 我们电厂
+    - 我们电站
+    - 我们这边
+    - 咱们厂
+    - 本公司
+    - 我公司
+    - 我单位
+    - 我电厂
+    - 本企业
+    - 该企业
+    - 该单位
+    - 本单位
+    - 我司
+    - 本电厂
+    - 该电厂
+    - 本电站
+    - 该电站
+    - 我们厂
+    - 本厂
+    - 该厂
+    - 我厂
+    - 咱厂
+    - 厂里
+    - 这个厂
+    - 本锅炉厂
+    - 本现场
+  namespace: Power_plant_knowledge
+  query_boost: 华电五彩湾北一发电有限公司
+  fallback_on_empty: false
+  history_continuation: false
+
+# 相似案例块：问句命中 gate_markers 时可追加案例检索
+similar_case:
+  enabled_default: false
+  namespace: 事故案例
+  gate_markers:
+    - 锅炉
+    - 管材
+    - 管道
+    - 管子
+    - 爆管
+    - 断口
+    - 腐蚀
+    - 泄漏
+    - 渗漏
+    - 裂纹
+    - 蠕变
+    - 过热
+    - 结垢
+    - 省煤器
+    - 水冷壁
+    - 过热器
+    - 再热器
+    - 联箱
+    - 承压
+    - 焊口

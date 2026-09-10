@@ -3,7 +3,7 @@
 
 目的
 ----
-当检索首条 citation 与用户问题高度匹配（如「1000问」类问答库）且本轮无指代续问时，
+当检索首条 citation 与用户问题高度匹配（如规范 FAQ /「1000问」类问答库）且本轮无指代续问时，
 在 **生成拼消息** 阶段不注入多轮 history_messages，避免旧 assistant 回答把模型带偏；
 检索阶段（指代检测、rag_query 融合、namespace 锁定）不受影响。
 
@@ -37,10 +37,19 @@ _ANAPHORA_QUERY_PREFIX_RE = re.compile(
 )
 
 _FAQ_SOFT_DIRECT_AUTHORITY_BLOCK = (
+    # 锅炉内置权威块；地降文案以 clarify_texts.yaml faq_soft_direct_authority 为准（见 _active_faq_authority_block）。
     "【高分 FAQ 软直通·权威片段】下列第一条知识片段与本轮用户问题高度匹配（检索分达到软直通阈值）。"
     "回答时必须优先逐条复述该条片段中的问答内容，不得采用对话历史中关于同一问题的旧结论，"
     "不得改写成泛化的「燃烧优化/安全监控」等宏观框架，除非该片段本身如此表述。"
 )
+
+
+def _active_faq_authority_block() -> str:
+    """优先 domain 包 faq_soft_direct_authority；缺省回退锅炉内置块。"""
+    from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
+
+    text = (get_chatbot_business_profile().faq_soft_direct_authority or "").strip()
+    return text or _FAQ_SOFT_DIRECT_AUTHORITY_BLOCK
 
 
 @dataclass(frozen=True)
@@ -145,4 +154,4 @@ def format_rag_snippets_for_generation(
     body = base_formatter(list(context_snippets))
     if not soft_direct:
         return body
-    return f"{_FAQ_SOFT_DIRECT_AUTHORITY_BLOCK}\n{body}"
+    return f"{_active_faq_authority_block()}\n{body}"

@@ -2,6 +2,7 @@
 智能客服：回答后的关联问题推荐（规则 + LLM 补全）。
 
 合并策略：去重、截断长度、总量受配置上限约束。
+话题表与 LLM system 文案来自 ``configs/chatbot_business/<domain>/follow_up.yaml``。
 """
 
 from __future__ import annotations
@@ -11,10 +12,11 @@ import re
 from typing import Any, List
 
 from app.core.logging import get_logger
+from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
 
 logger = get_logger(__name__)
 
-_TOPIC_FOLLOW_UPS: dict[str, list[str]] = {
+_BUILTIN_TOPIC_FOLLOW_UPS: dict[str, list[str]] = {
     "爆管": [
         "如何控制过热爆管风险？",
         "类似爆管案例的处理经验有哪些？",
@@ -52,13 +54,32 @@ _TOPIC_FOLLOW_UPS: dict[str, list[str]] = {
     ],
 }
 
+_BUILTIN_LLM_SYSTEM = (
+    "你是电厂锅炉领域助手。只输出一个 JSON 对象，不要 Markdown。"
+    '格式：{"questions":["问题1","问题2","问题3"]}。'
+    "要求：3 条中文短问句，与用户主题相关，可引导查规范/案例/检修/运行；"
+    "不要重复用户原话；不要包含敏感违规内容。"
+)
+
+
+def _active_topic_follow_ups() -> dict[str, list[str]]:
+    topics = get_chatbot_business_profile().topic_follow_ups
+    if topics:
+        return {k: list(v) for k, v in topics.items()}
+    return {k: list(v) for k, v in _BUILTIN_TOPIC_FOLLOW_UPS.items()}
+
+
+def _active_llm_system() -> str:
+    text = (get_chatbot_business_profile().follow_up_llm_system or "").strip()
+    return text or _BUILTIN_LLM_SYSTEM
+
 
 def _rule_based_suggestions(query: str, max_n: int) -> list[str]:
     q = (query or "").strip()
     if not q or max_n <= 0:
         return []
     out: list[str] = []
-    for key, cands in _TOPIC_FOLLOW_UPS.items():
+    for key, cands in _active_topic_follow_ups().items():
         if key in q:
             for c in cands:
                 if c not in out:
@@ -118,12 +139,7 @@ async def build_suggested_questions(
     need_llm = intent_label in {"kb_qa", "data_query", "hybrid_qa"} and len(uniq) < max_total
     if need_llm:
         ans_excerpt = (answer or "").strip()[:1200]
-        sys_msg = (
-            "你是电厂锅炉领域助手。只输出一个 JSON 对象，不要 Markdown。"
-            '格式：{"questions":["问题1","问题2","问题3"]}。'
-            "要求：3 条中文短问句，与用户主题相关，可引导查规范/案例/检修/运行；"
-            "不要重复用户原话；不要包含敏感违规内容。"
-        )
+        sys_msg = _active_llm_system()
         user_msg = f"用户问：{query}\n助手答摘要：{ans_excerpt}\n请生成 questions。"
         try:
             raw = await llm_client.chat(
