@@ -128,7 +128,12 @@ services:
       - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
       - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
       - /dev:/dev
+      # 在 volumes 中挂载宿主机的时间文件（注意是只读 :ro）
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     environment:
+      # 添加 environment 配置，显式指定时区
+      - TZ=Asia/Shanghai
       # mis_tei 默认时建议留空，避免与 mis-tei 争用物理卡 4/5；local+npu 时在 .env 设 4,5
       ASCEND_RT_VISIBLE_DEVICES: ${ASCEND_RT_VISIBLE_DEVICES:-}
       RAG_RERANKER_MODEL_PATH: /workspace/models/rerank/bge-reranker-large

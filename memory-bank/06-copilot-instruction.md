@@ -598,3 +598,11 @@ e.数据展示逻辑：
 业务数据信息 --  docs/地降所需求及数据相关/数据库结构及逻辑/
 原型链接 --  https://aistudio.google.com/apps/13d167ab-5245-4b70-b706-133e8d723e82?showPreview=true&showAssistant=true&fullscreenApplet=true 中的 智能问答 板块（数据查询链路 返回的信息中，不要最下方的 sql信息）
 ```
+
+## 2026-09-09 智能问答改造提示词
+```text
+请基于上述生成的方案，帮我分析下面几个问题：
+1. 专家 Prompt；关电厂 plant_kb；意图词表地降化；澄清话术去锅炉；等相关提示词、配置、词表 是否适合实现 锅炉四管、地面沉降 配置化。 （我理解prompt是否可以通过version实现配置项配置化(地面沉降默认值改成地面沉降的)，其他的词表等是否可以通过 参考 NL2SQL中的 NL2SQL_BUSINESS_DOMAIN=subsidence，增加统一的 CHATBOT_DOMAIN 实现配置化））
+2. RAG知识库分析、数据查询、混合(RAG+NL2SQL)链路，结束帧是否都包含 RAG知识引用文献 的返回（不包含 NL2SQL相关三个namespace的文档）
+3. 本厂 Power_plant_knowledge，针对地面沉降没有这个 指代要求；只是有本市、本地区等的指代(北京市)。是否也可以在上述  锅炉四管、地面沉降 配置化实现中区别开
+```
