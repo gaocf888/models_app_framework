@@ -121,7 +121,12 @@ services:
       - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
       - face-galleries-data:/workspace/data/face_galleries
       - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
+      # 在 volumes 中挂载宿主机的时间文件（注意是只读 :ro）
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     environment:
+      # 添加 environment 配置，显式指定时区
+      TZ: Asia/Shanghai
       NVIDIA_VISIBLE_DEVICES: ${APP_NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       RAG_RERANKER_MODEL_PATH: /workspace/models/rerank/bge-reranker-base
