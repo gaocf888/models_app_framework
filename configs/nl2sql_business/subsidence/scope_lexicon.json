@@ -1,4 +1,5 @@
 {
+  "_comment": "地降范围词表：districts/device_types/stations 供 scope_parser_subsidence 规则解析；站点权威以本文件为准（可从 t_station 导出维护）。说明见同目录 配置项说明.md。未知键可忽略。",
   "districts": [
     "东城区",
     "西城区",

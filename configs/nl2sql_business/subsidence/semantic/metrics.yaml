@@ -1,11 +1,15 @@
-version: "2026.08.24"
+# 地降开放指标定义（semantic/metrics.yaml）
+# 供 align_semantics 命中指标、preferred_tables/columns、formula_note。
+# 周期沉降口径：Δ = total_settle(窗初)−(窗末)；Δ>0 下沉；站点用 monitor_layer=0。
+# 说明见上级「配置项说明.md」
+version: "2026.09.11"
 metrics:
   - id: period_subsidence_mm
     name: 周期沉降量
     synonyms: [沉降量, 下沉量, 累计沉降, 地面沉降, 沉降了多少, 下沉多少, 沉降, 下沉, 监测点沉降]
     unit: mm
     grain: station_period
-    formula_note: "窗口内 total_settle 终值减初值；负值表示下沉"
+    formula_note: "窗口内 total_settle 初值减末值（初−末）；Δ>0 下沉倾向，Δ<0 回弹；站点粒度须用 monitor_layer=0 代表标"
     forbidden_confusions: [groundwater_depth, gnss_displacement_3d, pore_pressure]
     preferred_tables: [t_data_wash_fcb, t_data_wash_jyb]
     preferred_columns: [total_settle]
@@ -16,7 +20,18 @@ metrics:
     synonyms: [回弹量, 回弹, 上升量]
     unit: mm
     grain: station_period
-    formula_note: "窗口内 total_settle 差值，语义为上升"
+    formula_note: "同周期沉降公式 Δ=初−末；回弹对应 Δ<0（或按业务取 |Δ| 表述时须说明符号约定）"
+    forbidden_confusions: [groundwater_depth, gnss_displacement_3d]
+    preferred_tables: [t_data_wash_fcb, t_data_wash_jyb]
+    preferred_columns: [total_settle]
+    time_column: data_time
+
+  - id: layer_compress_mm
+    name: 压缩层层间压缩量
+    synonyms: [压缩层沉降, 层间压缩, 层间沉降, 第1压缩层, 第2压缩层]
+    unit: mm
+    grain: layer_interval
+    formula_note: "compress(i→i+1)=Δ(层位i)−Δ(层位i+1)；边界标见 fcb_layer_map；非单标 total_settle 直接当层沉降"
     forbidden_confusions: [groundwater_depth, gnss_displacement_3d]
     preferred_tables: [t_data_wash_fcb, t_data_wash_jyb]
     preferred_columns: [total_settle]

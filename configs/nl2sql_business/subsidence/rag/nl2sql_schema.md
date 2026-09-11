@@ -1,4 +1,6 @@
 # 地降 NL2SQL Schema 知识（nl2sql_schema）
+# RAG 摄入命名空间：nl2sql_schema；方言 PostgreSQL；表白名单 8 表。
+# 运行时 catalog 以库反射为准，本文档供召回与人工校对。业务包说明见上级「配置项说明.md」。
 
 > 部署 `NL2SQL_BUSINESS_DOMAIN=subsidence`；方言 PostgreSQL；表白名单 8 表。
 > 运行时 catalog 以库反射为准，本文档供 RAG 召回与人工校对。
@@ -13,7 +15,7 @@
 
 - **用途**：地面沉降主分析数据（默认主表）
 - **关键列**：`station_id`、`station_name`、`project_name`、`data_time`（观测时间）、`total_settle`（累计沉降 mm，主指标）
-- **口径**：周期沉降量 = 时间窗内 `total_settle` 终值减初值；负值表示下沉
+- **口径**：周期沉降量 `Δ = total_settle(窗初) − total_settle(窗末)`（初−末）；**Δ>0 下沉倾向，Δ<0 回弹**。站点沉降须用监测层位=0 的 `station_name`（见 `fcb_layer_map.yaml` / `nl2sql_biz_knowledge_fcb_layer0_stations.md`），禁止对同站全部标聚合。
 
 ## t_data_wash_jyb（基岩标）
 

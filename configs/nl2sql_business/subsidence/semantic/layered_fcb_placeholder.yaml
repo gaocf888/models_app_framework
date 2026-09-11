@@ -1,3 +1,6 @@
+# 「第 N 层」占位配置（semantic/layered_fcb_placeholder.yaml）
+# 问句含「第N层」时由 semantic_layer 写 warning；完整分层表未入库前勿当独立表用。
+# 说明见上级「配置项说明.md」
 version: "2026.08.24"
 layered_fcb:
   status: placeholder

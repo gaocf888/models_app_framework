@@ -18,6 +18,23 @@ logger = get_logger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# 标编号形态：F8-10 / J8-1 等（用于区分站点名 vs 标编号）
+_MARK_NAME_RE = re.compile(r"^[A-Za-z]+\d+(?:-\d+)?$")
+# 压缩层 / 层间意图（grain C）
+_LAYER_COMPRESS_RE = re.compile(r"压缩层|层间压缩|层间沉降|层间差|层压缩")
+# 「第N压缩层」或「第N、M压缩层」（N 为压缩层序号，对应层位 N-1→N）
+_COMPRESS_ORDINAL_RE = re.compile(
+    r"第\s*(\d+)\s*(?:[、,，/和与]\s*(\d+)\s*)*(?:压缩层|层压缩)"
+)
+_COMPRESS_MULTI_NUM_RE = re.compile(r"第\s*((?:\d+\s*[、,，/和与]\s*)*\d+)\s*(?:压缩层|层压缩)")
+_LAYER_PAIR_RE = re.compile(
+    r"层位\s*(\d+)\s*(?:与|和|到|至|-|—|→)\s*(?:层位\s*)?(\d+)"
+)
+_SHALLOW_FIRST_COMPRESS_RE = re.compile(r"浅部.*?(?:第一|第\s*1)\s*压缩|第一压缩层")
+# 「第N层」占位（无「压缩」时易与标序号混淆，不走 C）
+_LAYER_PLACEHOLDER_RE = re.compile(r"第\s*\d+\s*层(?!压缩)")
+
+
 
 @dataclass(frozen=True)
 class MetricBinding:
@@ -40,7 +57,14 @@ class SemanticBinding:
     device_type_tables: list[str] = field(default_factory=list)
     district_codes: list[str] = field(default_factory=list)
     station_ids: list[str] = field(default_factory=list)
+    # 监测站点展示名（= DB project_name，如 F8(周村)）；勿直接当标编号过滤
     station_names: list[str] = field(default_factory=list)
+    # 站点场地过滤：DB project_name
+    project_names: list[str] = field(default_factory=list)
+    # 分层标代表标 / 显式标编号 / 压缩层边界标：DB station_name
+    preferred_station_names: list[str] = field(default_factory=list)
+    # 压缩层区间：[{project_name, layer_from, layer_to, mark_from, mark_to}]
+    compress_pairs: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     default_table: str | None = None
 
@@ -67,6 +91,9 @@ class SemanticBinding:
                 "district_codes": list(self.district_codes),
                 "station_ids": list(self.station_ids),
                 "station_names": list(self.station_names),
+                "project_names": list(self.project_names),
+                "preferred_station_names": list(self.preferred_station_names),
+                "compress_pairs": list(self.compress_pairs),
             },
             "default_table": self.default_table,
             "warnings": list(self.warnings),
@@ -84,6 +111,18 @@ class SemanticAssets:
     default_subsidence_table: str
     districts: tuple[str, ...]
     stations: tuple[dict[str, Any], ...]
+    # project_name → 层位0 标编号
+    fcb_layer0_by_project: dict[str, str] = field(default_factory=dict)
+    # 标编号 → project_name
+    fcb_project_by_mark: dict[str, str] = field(default_factory=dict)
+    # 全部已知标编号
+    fcb_mark_names: frozenset[str] = field(default_factory=frozenset)
+    # 全部层位0 标编号（稳定顺序）
+    fcb_layer0_marks: tuple[str, ...] = ()
+    # district_raw（xls 简称，可无「区」）→ 层位0 标列表
+    fcb_layer0_by_district_raw: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # project_name → {monitor_layer: station_name}（仅非空层位）
+    fcb_layers_by_project: dict[str, dict[int, str]] = field(default_factory=dict)
 
 
 def _resolve_semantic_root() -> Path | None:
@@ -101,6 +140,74 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     return data if isinstance(data, dict) else {}
+
+
+def _resolve_fcb_layer_map_path(base: Path) -> Path:
+    """优先 profile.fcb_layer_map_file，否则 semantic/dimensions/fcb_layer_map.yaml。"""
+    profile = get_nl2sql_business_profile()
+    if profile is not None:
+        raw = getattr(profile, "fcb_layer_map_file", None) or ""
+        if str(raw).strip():
+            p = Path(str(raw).strip())
+            if not p.is_absolute():
+                p = (_REPO_ROOT / p).resolve()
+            if p.is_file():
+                return p
+    return base / "dimensions" / "fcb_layer_map.yaml"
+
+
+def _parse_fcb_layer_map(
+    data: dict[str, Any],
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+    frozenset[str],
+    tuple[str, ...],
+    dict[str, tuple[str, ...]],
+    dict[str, dict[int, str]],
+]:
+    layer0_by_project: dict[str, str] = {}
+    project_by_mark: dict[str, str] = {}
+    marks: set[str] = set()
+    layer0_marks: list[str] = []
+    layer0_by_district: dict[str, list[str]] = {}
+    layers_by_project: dict[str, dict[int, str]] = {}
+
+    for ent in data.get("entries") or []:
+        if not isinstance(ent, dict):
+            continue
+        project = str(ent.get("project_name") or "").strip()
+        mark = str(ent.get("station_name") or "").strip()
+        if not project or not mark:
+            continue
+        marks.add(mark)
+        project_by_mark[mark] = project
+        layer_raw = ent.get("monitor_layer")
+        layer: int | None
+        try:
+            layer = None if layer_raw is None or layer_raw == "" else int(layer_raw)
+        except (TypeError, ValueError):
+            layer = None
+        if layer is not None:
+            layers_by_project.setdefault(project, {})[layer] = mark
+        if layer == 0:
+            layer0_by_project[project] = mark
+            if mark not in layer0_marks:
+                layer0_marks.append(mark)
+            district_raw = str(ent.get("district_raw") or "").strip()
+            if district_raw:
+                layer0_by_district.setdefault(district_raw, [])
+                if mark not in layer0_by_district[district_raw]:
+                    layer0_by_district[district_raw].append(mark)
+
+    return (
+        layer0_by_project,
+        project_by_mark,
+        frozenset(marks),
+        tuple(layer0_marks),
+        {k: tuple(v) for k, v in layer0_by_district.items()},
+        layers_by_project,
+    )
 
 
 @lru_cache(maxsize=2)
@@ -153,6 +260,29 @@ def load_semantic_assets(root: str) -> SemanticAssets | None:
         if isinstance(ent, dict):
             stations.append(ent)
 
+    map_path = _resolve_fcb_layer_map_path(base)
+    map_raw = _load_yaml(map_path)
+    (
+        layer0_by_project,
+        project_by_mark,
+        mark_names,
+        layer0_marks,
+        layer0_by_district,
+        layers_by_project,
+    ) = _parse_fcb_layer_map(map_raw)
+    if layer0_by_project:
+        map_ver = str(map_raw.get("version") or "").strip()
+        if map_ver and map_ver not in version:
+            version = f"{version}+fcb{map_ver}"
+        logger.info(
+            "fcb_layer_map loaded path=%s projects=%d layer0=%d marks=%d layered_projects=%d",
+            map_path,
+            len(layer0_by_project),
+            len(layer0_marks),
+            len(mark_names),
+            len(layers_by_project),
+        )
+
     return SemanticAssets(
         version=version,
         metrics=metrics,
@@ -163,6 +293,12 @@ def load_semantic_assets(root: str) -> SemanticAssets | None:
         default_subsidence_table=default_table,
         districts=tuple(districts),
         stations=tuple(stations),
+        fcb_layer0_by_project=layer0_by_project,
+        fcb_project_by_mark=project_by_mark,
+        fcb_mark_names=mark_names,
+        fcb_layer0_marks=layer0_marks,
+        fcb_layer0_by_district_raw=layer0_by_district,
+        fcb_layers_by_project=layers_by_project,
     )
 
 
@@ -204,6 +340,277 @@ def _normalize_forced_tables(forced_tables: list[str] | None) -> list[str]:
         seen.add(t)
         out.append(t)
     return out
+
+
+def _uniq_append(target: list[str], value: str) -> None:
+    v = (value or "").strip()
+    if v and v not in target:
+        target.append(v)
+
+
+def _looks_like_mark(name: str, assets: SemanticAssets) -> bool:
+    n = (name or "").strip()
+    if not n:
+        return False
+    if n in assets.fcb_mark_names:
+        return True
+    return bool(_MARK_NAME_RE.match(n)) and "-" in n
+
+
+def _is_fcb_station_grain(binding: SemanticBinding) -> bool:
+    """站点/地面沉降类问句（分层标主表），需要层位0 代表标。"""
+    if any(dt in {"gnss", "dxswj", "kxsylj", "qxz", "gq"} for dt in binding.device_types):
+        # 非分层标主路径（显式其它监测类型）不注入
+        if "fcb" not in binding.device_types and "jyb" not in binding.device_types:
+            return False
+    tables = {t.lower() for t in binding.device_type_tables}
+    if binding.default_table:
+        tables.add(binding.default_table.lower())
+    for m in binding.metrics:
+        tables.update(t.lower() for t in m.preferred_tables)
+    if tables & {"t_data_wash_fcb", "t_data_wash_jyb"}:
+        return True
+    if "fcb" in binding.device_types or "jyb" in binding.device_types:
+        return True
+    return False
+
+
+def _district_raw_keys(district: str) -> list[str]:
+    d = (district or "").strip()
+    if not d:
+        return []
+    keys = [d]
+    if d.endswith("区") and len(d) > 1:
+        keys.append(d[:-1])
+    elif not d.endswith("区"):
+        keys.append(d + "区")
+    return keys
+
+
+def _resolve_layer0_marks_for_district(assets: SemanticAssets, district: str) -> list[str]:
+    out: list[str] = []
+    for key in _district_raw_keys(district):
+        for mark in assets.fcb_layer0_by_district_raw.get(key) or ():
+            _uniq_append(out, mark)
+    return out
+
+
+def _collect_projects_from_binding(binding: SemanticBinding, assets: SemanticAssets) -> list[str]:
+    projects: list[str] = []
+    for name in list(binding.station_names) + list(binding.project_names):
+        if not name:
+            continue
+        if name in assets.fcb_layers_by_project or name in assets.fcb_layer0_by_project:
+            _uniq_append(projects, name)
+        elif name in assets.fcb_project_by_mark:
+            _uniq_append(projects, assets.fcb_project_by_mark[name])
+        elif not _looks_like_mark(name, assets):
+            _uniq_append(projects, name)
+    for sid in binding.station_ids:
+        sid_u = (sid or "").strip().upper()
+        if not sid_u:
+            continue
+        for project in assets.fcb_layers_by_project or assets.fcb_layer0_by_project:
+            if project.upper().startswith(sid_u + "(") or project.upper() == sid_u:
+                _uniq_append(projects, project)
+                break
+    return projects
+
+
+def _consecutive_layer_pairs(layers: dict[int, str]) -> list[tuple[int, int]]:
+    keys = sorted(layers)
+    return [(keys[i], keys[i + 1]) for i in range(len(keys) - 1) if keys[i + 1] == keys[i] + 1]
+
+
+def _parse_compress_layer_intervals(question: str) -> list[tuple[int, int]]:
+    """解析压缩层区间。『第N压缩层』→ (N-1, N)；『层位i与i+1』→ (i, i+1)。"""
+    q = question or ""
+    intervals: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+
+    def add(a: int, b: int) -> None:
+        lo, hi = (a, b) if a <= b else (b, a)
+        if hi != lo + 1:
+            return
+        pair = (lo, hi)
+        if pair not in seen:
+            seen.add(pair)
+            intervals.append(pair)
+
+    if _SHALLOW_FIRST_COMPRESS_RE.search(q):
+        add(0, 1)
+
+    for m in _LAYER_PAIR_RE.finditer(q):
+        add(int(m.group(1)), int(m.group(2)))
+
+    for m in _COMPRESS_MULTI_NUM_RE.finditer(q):
+        nums = [int(x) for x in re.findall(r"\d+", m.group(1) or "")]
+        for n in nums:
+            if n >= 1:
+                add(n - 1, n)
+
+    # 兼容「第1压缩层」被 MULTI 漏掉的情况
+    if not intervals:
+        for m in re.finditer(r"第\s*(\d+)\s*压缩层", q):
+            n = int(m.group(1))
+            if n >= 1:
+                add(n - 1, n)
+
+    return intervals
+
+
+def _is_compress_intent(question: str, binding: SemanticBinding) -> bool:
+    q = question or ""
+    if _LAYER_COMPRESS_RE.search(q) or _COMPRESS_MULTI_NUM_RE.search(q) or _LAYER_PAIR_RE.search(q):
+        return True
+    if _SHALLOW_FIRST_COMPRESS_RE.search(q):
+        return True
+    if any(m.id == "layer_compress_mm" for m in binding.metrics):
+        return True
+    return False
+
+
+def _inject_fcb_compress_pairs(
+    question: str,
+    binding: SemanticBinding,
+    assets: SemanticAssets,
+) -> bool:
+    """
+    压缩层 / 层间：注入相邻监测层位边界标。
+    compress(i→i+1)=Δ(i)−Δ(i+1)；『第N压缩层』默认对应层位 (N-1, N)。
+    返回是否已按压缩层路径处理（含仅 warning 的情况）。
+    """
+    if not assets.fcb_layers_by_project:
+        return False
+    if not _is_fcb_station_grain(binding):
+        return False
+    if not _is_compress_intent(question, binding):
+        return False
+
+    projects = _collect_projects_from_binding(binding, assets)
+    intervals = _parse_compress_layer_intervals(question)
+
+    if not projects:
+        binding.warnings.append("fcb_compress_need_station:压缩层需指定站点或可解析的 project_name")
+        return True
+
+    if not intervals:
+        # 未指明第几压缩层：对该站注入全部相邻层位对的边界标
+        binding.warnings.append("fcb_compress_all_adjacent:未指定压缩层序号，注入该站全部相邻层位边界标")
+
+    any_pair = False
+    missing: list[str] = []
+    for project in projects:
+        layers = assets.fcb_layers_by_project.get(project) or {}
+        if not layers:
+            missing.append(f"{project}:无层位字典")
+            _uniq_append(binding.project_names, project)
+            continue
+        _uniq_append(binding.project_names, project)
+        use_intervals = intervals or _consecutive_layer_pairs(layers)
+        for lo, hi in use_intervals:
+            mark_lo = layers.get(lo)
+            mark_hi = layers.get(hi)
+            if not mark_lo or not mark_hi:
+                missing.append(f"{project}:层位{lo}-{hi}不连续或缺失")
+                continue
+            # 仅当字典中确实相邻（或问句明确要求该对）
+            if hi != lo + 1:
+                continue
+            if lo not in layers or hi not in layers:
+                continue
+            pair = {
+                "project_name": project,
+                "layer_from": lo,
+                "layer_to": hi,
+                "mark_from": mark_lo,
+                "mark_to": mark_hi,
+                "formula": f"compress({lo}→{hi})=Δ({mark_lo})−Δ({mark_hi})",
+            }
+            binding.compress_pairs.append(pair)
+            _uniq_append(binding.preferred_station_names, mark_lo)
+            _uniq_append(binding.preferred_station_names, mark_hi)
+            any_pair = True
+
+    if any_pair:
+        binding.warnings.append("fcb_compress_boundary_marks")
+    if missing:
+        binding.warnings.append("fcb_compress_missing:" + ";".join(missing[:5]))
+    if not any_pair and not missing:
+        binding.warnings.append("fcb_compress_no_pair:未能解析可用相邻层位对")
+    return True
+
+
+def _inject_fcb_preferred_station_names(
+    question: str,
+    binding: SemanticBinding,
+    assets: SemanticAssets,
+) -> None:
+    """站点沉降层位0 / 压缩层边界标注入。"""
+    if not assets.fcb_layer0_by_project and not assets.fcb_layers_by_project:
+        return
+    if not _is_fcb_station_grain(binding):
+        return
+
+    # C：压缩层优先（不再注入层位0 单标）
+    if _inject_fcb_compress_pairs(question, binding, assets):
+        return
+
+    if _LAYER_PLACEHOLDER_RE.search(question or ""):
+        # 「第N层」无压缩语义：保留占位告警，不强制层位0
+        return
+
+    # 问句中显式点名的标编号优先保留（grain A）
+    explicit_marks: list[str] = []
+    for mark in assets.fcb_mark_names:
+        if mark and mark in (question or ""):
+            _uniq_append(explicit_marks, mark)
+    if explicit_marks:
+        for mark in explicit_marks:
+            _uniq_append(binding.preferred_station_names, mark)
+            project = assets.fcb_project_by_mark.get(mark)
+            if project:
+                _uniq_append(binding.project_names, project)
+                _uniq_append(binding.station_names, project)
+        binding.warnings.append("fcb_explicit_mark")
+        return
+
+    # B：已解析站点 → 层位0
+    projects = _collect_projects_from_binding(binding, assets)
+    for name in list(binding.station_names) + list(binding.project_names):
+        if name and _looks_like_mark(name, assets) and name not in assets.fcb_layer0_by_project:
+            if name not in assets.fcb_project_by_mark:
+                _uniq_append(binding.preferred_station_names, name)
+
+    injected = False
+    for project in projects:
+        mark = assets.fcb_layer0_by_project.get(project)
+        if mark:
+            _uniq_append(binding.project_names, project)
+            _uniq_append(binding.preferred_station_names, mark)
+            injected = True
+        else:
+            _uniq_append(binding.project_names, project)
+
+    if injected:
+        binding.warnings.append("fcb_layer0_preferred_station")
+        return
+
+    if binding.district_codes:
+        marks: list[str] = []
+        for dist in binding.district_codes:
+            for m in _resolve_layer0_marks_for_district(assets, dist):
+                _uniq_append(marks, m)
+        if marks:
+            for m in marks:
+                _uniq_append(binding.preferred_station_names, m)
+            binding.warnings.append("fcb_layer0_district_filter")
+            return
+
+    if assets.fcb_layer0_marks:
+        for m in assets.fcb_layer0_marks:
+            _uniq_append(binding.preferred_station_names, m)
+        binding.warnings.append("fcb_layer0_city_filter")
 
 
 def align_semantics(
@@ -249,7 +656,7 @@ def align_semantics(
 
     if len(metric_ids) >= 2:
         for i, a in enumerate(metric_ids):
-            for b in metric_ids[i + 1:]:
+            for b in metric_ids[i + 1 :]:
                 if (a, b) in assets.forbidden_pairs:
                     binding.warnings.append(f"metric_forbidden_mix:{a}+{b}")
 
@@ -308,16 +715,23 @@ def align_semantics(
         binding.station_ids.append(scope.station_id)
     if scope.station_name:
         binding.station_names.append(scope.station_name)
+        # 站点展示名默认按 project_name 理解
+        if not _looks_like_mark(scope.station_name, assets):
+            _uniq_append(binding.project_names, scope.station_name)
     for ent in assets.stations:
         name = str(ent.get("name") or ent.get("station_name") or "")
         if name and name in q:
             binding.station_names.append(name)
+            if not _looks_like_mark(name, assets):
+                _uniq_append(binding.project_names, name)
             sid = ent.get("station_id") or ent.get("id")
             if sid:
                 binding.station_ids.append(str(sid))
 
-    if re.search(r"第\s*\d+\s*层", q):
+    if _LAYER_PLACEHOLDER_RE.search(q):
         binding.warnings.append("layered_fcb_placeholder:分层各层数据尚未入库")
+
+    _inject_fcb_preferred_station_names(q, binding, assets)
 
     return binding
 
@@ -336,4 +750,3 @@ def semantic_version_fingerprint() -> str:
 
 def clear_semantic_assets_cache() -> None:
     load_semantic_assets.cache_clear()
-

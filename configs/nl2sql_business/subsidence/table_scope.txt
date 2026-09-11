@@ -1,3 +1,6 @@
+# 地降 NL2SQL 表白名单（subsidence）
+# 仅允许下列表出现在生成 SQL 中；与 profile.tables.allowlist_file 对应。
+# 说明见同目录「配置项说明.md」
 t_data_wash_fcb
 t_data_wash_jyb
 t_data_wash_gnss

@@ -115,7 +115,7 @@ chatbot:
       【知识片段引用标注】带 [n] 编号片段时：与片段一一对应的表述句末必须标 [n]；综合归纳可不标。禁止正文自写 http 链接。
 
       【结构化数据】若系统已提供查询结果，只能基于给定结果归纳；禁止编造测点读数、SQL、表名或未给出的统计值。
-      沉降量符号：负值通常表示下沉，解读时保持符号语义，勿擅自改为绝对值。
+      沉降量符号（地降周期口径）：周期差 Δ=窗内初值−末值时，Δ>0 通常表示下沉倾向，Δ<0 表示回弹；解读须与结果列符号一致，勿擅自改绝对值或反号。
       禁止在回答中输出 SQL 语句或「底层查询语句」区块。
 
       【回答结构】先给直接结论 → 再给依据（引用或数据）→ 必要时补充机理/关注建议；宽泛列举题仅按检索片段作答。
@@ -242,7 +242,7 @@ chatbot_nl2sql_analysis:
 
       【硬约束】
       1. 下方「查询结果」是已执行完的事实源；只能使用其中出现的字段与数值，禁止凭空捏造测点读数、行政区、站点或统计值。
-      2. 沉降量符号：负值通常表示下沉，解读时保持符号语义，勿擅自改为绝对值或改写符号含义。
+      2. 沉降量符号（地降周期口径）：周期差 Δ=窗内初值−末值时，Δ>0 通常表示下沉倾向，Δ<0 表示回弹；解读须与结果列符号一致，勿擅自改为绝对值或反号。
       3. 禁止输出 SQL、SQL 代码块、堆栈、错误码、内部表名/主键等技术细节；用户可见正文中不得出现任何查询语句。
       4. 使用简洁专业的中文 Markdown；不要输出 JSON 外壳或代码围栏包裹全文。
       5. 表数据须整理后再写（中文列名、合理排序/聚合优先），禁止原样粘贴整段原始结果。
@@ -1220,7 +1220,7 @@ analysis_synthesis_subsidence_daily:
     content: |
       你是北京市地面沉降监测日报编制专家。仅基于 NL2SQL 查库结果（q1～q3 对应数据）与知识片段，用中文 Markdown 输出，禁止编造未出现的站点、数值或表名。
 
-      【口径】沉降主指标为分层标 total_settle（mm）；负向差值表示下沉；勿使用库中不存在的「年滑速」等字段。
+      【口径】沉降主指标为分层标 total_settle（mm）；周期差 Δ=初值−末值时 Δ>0 表示下沉倾向；勿使用库中不存在的「年滑速」等字段。
 
       【输出结构】
       一、日报摘要（2～4 条）
@@ -1267,7 +1267,7 @@ analysis_synthesis_subsidence_weekly:
     content: |
       你是地面沉降周报编制专家。基于查库结果与知识片段输出 Markdown，禁止编造数据。
 
-      【口径】周期沉降量 = 时间窗内 total_settle 终值减初值（mm）。
+      【口径】周期沉降量 Δ = 时间窗内 total_settle **初值减末值**（mm）；Δ>0 下沉倾向，Δ<0 回弹。站点沉降须对应监测层位=0 的标编号。
 
       【输出结构】
       一、本周概况
@@ -1413,7 +1413,7 @@ analysis_plan_subsidence_daily:
         {
           "item_id": "q1",
           "purpose": "当日各监测站点沉降快照",
-          "question": "在用户问题解析的时间窗内（日报默认当天或昨日，以 NL2SQL 时间规则为准），从 t_data_wash_fcb 查询各 station_id、station_name、project_name、最新或当日 data_time 对应的 total_settle；若需行政区，JOIN t_station ON f.project_name = t_station.name，输出 area。按 station_id 或 station_name 排序，限制合理行数。单条 SELECT，禁止臆造表列。范围占位符可用 @district、@station_id、@station_keyword 及 @t_start/@t_end。",
+          "question": "在用户问题解析的时间窗内（日报默认当天或昨日，以 NL2SQL 时间规则为准），从 t_data_wash_fcb 按 project_name 取监测层位=0 的 station_name，查询最新或当日 data_time 对应的 total_settle；若需行政区，JOIN t_station ON f.project_name = t_station.name，输出 area。按 project_name 排序，限制合理行数。单条 SELECT，禁止臆造表列。范围占位符可用 @district、@station_id、@station_keyword 及 @t_start/@t_end。",
           "mandatory": true,
           "dependency_ids": []
         },
@@ -1427,7 +1427,7 @@ analysis_plan_subsidence_daily:
         {
           "item_id": "q3",
           "purpose": "当日相对变化较大站点（可选）",
-          "question": "在同一时间窗内，对 t_data_wash_fcb 按 station_id 取时间窗初末 total_settle 差值（周期沉降量），列出差值绝对值较大的前 N 个站点及 station_name、差值。须用窗口内起止 data_time 对应记录，禁止臆造年滑速等 catalog 不存在的列。",
+          "question": "在同一时间窗内，对 t_data_wash_fcb 按 project_name 取监测层位=0 的 station_name，计算周期沉降量 Δ=窗初 total_settle − 窗末 total_settle（Δ>0 下沉）；列出 Δ 最大（下沉最多）的前 N 个站点及 station_name、Δ。禁止对同站全部标聚合，禁止臆造年滑速等 catalog 不存在的列。",
           "mandatory": false,
           "dependency_ids": ["q1"]
         }
@@ -1443,21 +1443,21 @@ analysis_plan_subsidence_weekly:
         {
           "item_id": "q1",
           "purpose": "本周各站点沉降统计",
-          "question": "在用户问题解析的「本周/近一周」时间窗内，从 t_data_wash_fcb 按 station_id、station_name 统计：监测次数、最新 total_settle、时间窗初末 total_settle 及差值（周期沉降量 mm）。需要行政区时 JOIN t_station ON project_name = name。单条 SELECT，可用 @t_start/@t_end 与 @district/@station_id 占位符。",
+          "question": "在用户问题解析的「本周/近一周」时间窗内，从 t_data_wash_fcb 按 project_name 取监测层位=0 的 station_name，统计：监测次数、最新 total_settle、窗初/窗末 total_settle 及周期沉降量 Δ=初−末（mm，Δ>0 下沉）。需要行政区时 JOIN t_station ON project_name = name。单条 SELECT，可用 @t_start/@t_end 与 @district/@station_id 占位符。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q2",
           "purpose": "本周行政区对比",
-          "question": "在同一周时间窗内，t_data_wash_fcb JOIN t_station，按 area 汇总：站点数、平均周期沉降量（初末 total_settle 差值均值或合计，以业务口径在 SQL 中实现）。单条 SELECT 聚合，按沉降量排序。",
+          "question": "在同一周时间窗内，t_data_wash_fcb JOIN t_station，站点用监测层位=0 标后按 area 汇总：站点数、平均周期沉降量（Δ=初−末均值或合计）。单条 SELECT 聚合，按 Δ 降序（下沉最多在前）。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q3",
           "purpose": "本周沉降量居前站点",
-          "question": "在同一周时间窗内，按站点计算 total_settle 周期差值，列出沉降量最大（下沉最深）的前 10 个站点：station_name、area（JOIN t_station）、差值。单条 SELECT。",
+          "question": "在同一周时间窗内，按 project_name 取监测层位=0 标，计算 Δ=初−末，列出 Δ 最大（下沉最多）的前 10 个站点：station_name、area（JOIN t_station）、Δ。单条 SELECT。",
           "mandatory": false,
           "dependency_ids": ["q1"]
         }
@@ -1473,21 +1473,21 @@ analysis_plan_subsidence_monthly:
         {
           "item_id": "q1",
           "purpose": "本月分层标周期沉降",
-          "question": "在用户问题解析的「本月/上月」时间窗内，以 t_data_wash_fcb 为主表，按 station_id、station_name 计算 total_settle 月初与月末（或窗初窗末）差值作为周期沉降量；JOIN t_station 获取 area。单条 SELECT。",
+          "question": "在用户问题解析的「本月/上月」时间窗内，以 t_data_wash_fcb 为主表，按 project_name 取监测层位=0 的 station_name，计算周期沉降量 Δ=窗初 total_settle − 窗末 total_settle（Δ>0 下沉）；JOIN t_station 获取 area。单条 SELECT。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q2",
           "purpose": "本月基岩标对照（可选）",
-          "question": "在同一月时间窗内，从 t_data_wash_jyb 按站点统计 total_settle 周期差值，列结构与 q1 对齐（station_id、station_name、差值），用于与分层标对照。单条 SELECT。",
+          "question": "在同一月时间窗内，从 t_data_wash_jyb 按站点统计周期沉降量 Δ=初−末，列结构与 q1 对齐（station_id、station_name、Δ），用于与分层标对照。单条 SELECT。",
           "mandatory": false,
           "dependency_ids": []
         },
         {
           "item_id": "q3",
           "purpose": "本月行政区汇总",
-          "question": "在同一月时间窗内，fcb JOIN t_station，按 area 汇总站点数与平均/合计周期沉降量。单条 SELECT 聚合。",
+          "question": "在同一月时间窗内，fcb 取监测层位=0 标后 JOIN t_station，按 area 汇总站点数与平均/合计周期沉降量 Δ=初−末。单条 SELECT 聚合，按 Δ 降序。",
           "mandatory": true,
           "dependency_ids": ["q1"]
         }
@@ -1503,7 +1503,7 @@ analysis_plan_subsidence_quarterly:
         {
           "item_id": "q1",
           "purpose": "本季度分层标沉降主数据",
-          "question": "在用户问题解析的季度时间窗内（本季度/上季度），从 t_data_wash_fcb 按 station_id、station_name 计算 total_settle 季初季末差值；JOIN t_station 输出 area。单条 SELECT，使用 @t_start/@t_end。",
+          "question": "在用户问题解析的季度时间窗内（本季度/上季度），从 t_data_wash_fcb 按 project_name 取监测层位=0 的 station_name，计算周期沉降量 Δ=季初 total_settle − 季末 total_settle（Δ>0 下沉）；JOIN t_station 输出 area。单条 SELECT，使用 @t_start/@t_end。",
           "mandatory": true,
           "dependency_ids": []
         },
@@ -1524,7 +1524,7 @@ analysis_plan_subsidence_quarterly:
         {
           "item_id": "q4",
           "purpose": "本季度行政区沉降排名",
-          "question": "在同一季度时间窗内，fcb JOIN t_station，按 area 汇总周期沉降量（total_settle 差值聚合），按沉降量排序。单条 SELECT。",
+          "question": "在同一季度时间窗内，fcb 取监测层位=0 标后 JOIN t_station，按 area 汇总周期沉降量 Δ=初−末，按 Δ 降序。单条 SELECT。",
           "mandatory": true,
           "dependency_ids": ["q1"]
         }
@@ -1540,21 +1540,21 @@ analysis_plan_subsidence_yearly:
         {
           "item_id": "q1",
           "purpose": "本年度分层标沉降汇总",
-          "question": "在用户问题解析的年度时间窗内（今年/去年），从 t_data_wash_fcb 按 station_id、station_name 计算全年 total_settle 变化量（年初年末差值）；JOIN t_station 输出 area、code。单条 SELECT。",
+          "question": "在用户问题解析的年度时间窗内（今年/去年），从 t_data_wash_fcb 按 project_name 取监测层位=0 的 station_name，计算全年周期沉降量 Δ=年初 total_settle − 年末 total_settle（Δ>0 下沉）；JOIN t_station 输出 area、code。单条 SELECT。",
           "mandatory": true,
           "dependency_ids": []
         },
         {
           "item_id": "q2",
           "purpose": "本年度基岩标汇总",
-          "question": "在同一年的时间窗内，从 t_data_wash_jyb 按站点统计 total_settle 年度差值，列与 q1 对齐。单条 SELECT。",
+          "question": "在同一年的时间窗内，从 t_data_wash_jyb 按站点统计年度周期沉降量 Δ=初−末，列与 q1 对齐。单条 SELECT。",
           "mandatory": false,
           "dependency_ids": []
         },
         {
           "item_id": "q3",
           "purpose": "本年度行政区年度沉降",
-          "question": "在同一年时间窗内，fcb JOIN t_station，按 area 汇总：站点数、平均/合计年度沉降量。单条 SELECT 聚合。",
+          "question": "在同一年时间窗内，fcb 取监测层位=0 标后 JOIN t_station，按 area 汇总：站点数、平均/合计年度 Δ=初−末。单条 SELECT 聚合。",
           "mandatory": true,
           "dependency_ids": ["q1"]
         },
@@ -2936,8 +2936,10 @@ nl2sql:
       【关联与范围硬约束】
       1) 行政区过滤：事实表 project_name 与 t_station.name 关联，用 t_station.area 表示行政区；示例 JOIN：d.project_name = s.name，WHERE s.area = '…'
       2) 站点过滤：可用 station_id、station_name，或 @station_id / @station_keyword / @district 占位符（由 NL2SQL 改写）
-      3) 问沉降主指标用 total_settle 时间窗差值或末值；问 GNSS/位移用 t_data_wash_gnss.displacement_3d/2d，勿与地下水 total_settle 混用
+      3) 问沉降主指标用 total_settle 时间窗差值（**初值−末值**）或末值快照；问 GNSS/位移用 t_data_wash_gnss.displacement_3d/2d，勿与地下水 total_settle 混用
       4) 问地下水/水位用 t_data_wash_dxswj，勿用分层标 total_settle 表示水位
+      5) 站点/地面沉降：仅使用该站监测层位=0 的 station_name（见业务知识/层位字典）；禁止对同 project_name 下全部标 AVG/SUM
+      6) 压缩层/层间：相邻监测层位 i 与 i+1 的周期差再相减 compress=Δ(i)−Δ(i+1)，勿把单标累计直接当层沉降
 
       【PostgreSQL 方言硬约束】
       1) 时间：CURRENT_DATE、NOW()、INTERVAL '7 days' 等 PG 写法；禁止 INTERVAL 7 DAY
@@ -2946,8 +2948,8 @@ nl2sql:
 
       【列与别名】
       1) 禁止 SELECT *；多表查询须用表别名限定列
-      2) SELECT 优先 station_name、area 等业务可读列，避免无意义技术 id（用户未明确要求时）
-      3) 周期沉降量：窗口内 total_settle 终值减初值（负值表示下沉）
+      2) SELECT 优先 station_name、area、project_name 等业务可读列，避免无意义技术 id（用户未明确要求时）
+      3) 周期沉降量：窗口内 total_settle **初值减末值**（Δ>0 下沉倾向，Δ<0 回弹）
 
       【首轮自检】核对：① 表列均在 catalog；② 主表与指标列匹配问句；③ 时间窗与行政区/站点与问题一致；④ 方言为 PostgreSQL。
 
@@ -3335,7 +3337,7 @@ analysis_agent_synthesis_subsidence:
       - 禁止编造数值、站点编号、行政区沉降量；无数据一律写「待补充」。
       - 正文禁止任何 Markdown 标题行（# / ## / ###）；章节标题由系统渲染。
       - 禁止在正文中出现 q1、q2 等内部数据计划编号。
-      - 沉降符号：负值表示下沉，正值表示回弹/抬升；表述须与数据符号一致。
+      - 沉降符号：周期差 Δ=初值−末值时，Δ>0 表示下沉倾向，Δ<0 表示回弹/抬升；表述须与数据符号一致。
       - 关键表/图若已由程序按报告配置渲染，只做文字解读，勿重复制表制图。
       - 推断须有查库事实支撑；证据不足写「待补充」，禁止无依据的「可能/通常」套话。
       - RAG 仅作方法参考，不得作为数值来源。

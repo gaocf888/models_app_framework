@@ -1,2 +1,6 @@
+# 锅炉四管语义资产占位清单（boiler_four_tube/semantic）
+# 当前 profile.semantic_link_enabled=false，运行时不加载本目录。
+# 启用语义链接前须按地降包结构补齐 metrics/synonyms/dimensions。
+# 说明见上级目录「配置项说明.md」
 version: "2026.08.24"
 description: 锅炉四管语义资产占位（NL2SQL_SEMANTIC_LINK_ENABLED=false 时不加载；启用前补齐 metrics/dimensions）

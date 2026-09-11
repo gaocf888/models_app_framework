@@ -1,3 +1,6 @@
+# 单位同义词（semantic/units.yaml）
+# manifest 已登记；当前 semantic_layer 未强制换算，供后续单位对齐扩展。
+# 说明见上级「配置项说明.md」
 version: "2026.08.24"
 units:
   mm: [毫米, mm]

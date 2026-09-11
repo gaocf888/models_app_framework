@@ -1,5 +1,7 @@
-# 锅炉四管表白名单（与 app-deploy/.env.example ANALYSIS_NL2SQL_TABLE_SCOPE_DEFAULT 对齐）
-# 部署可用环境变量覆盖；NL2SQL_BUSINESS_DOMAIN=boiler_four_tube 时由 profile 注入。
+# 锅炉四管表白名单（boiler_four_tube）
+# 与部署 ANALYSIS_NL2SQL_TABLE_SCOPE / .env.example 对齐；可由环境变量覆盖。
+# NL2SQL_BUSINESS_DOMAIN=boiler_four_tube 时由 profile 注入。
+# 说明见同目录「配置项说明.md」
 account_boiler
 account_static_device
 account_device_piperow

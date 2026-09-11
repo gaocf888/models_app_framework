@@ -13,7 +13,7 @@ from app.nl2sql.schema_linker import link_schema
 from app.nl2sql.scope_parser_subsidence import parse_scope_subsidence
 from app.nl2sql.semantic_layer import align_semantics, clear_semantic_assets_cache, load_semantic_assets
 
-GOLDEN = Path(__file__).resolve().parents[1] / "configs/nl2sql_business/subsidence/eval/golden_set.json"
+GOLDEN = Path(__file__).resolve().parent / "fixtures" / "nl2sql_subsidence_golden_set.json"
 
 _FULL_COLS = {
     "t_data_wash_fcb": {"total_settle", "data_time", "station_id", "station_name", "project_name"},

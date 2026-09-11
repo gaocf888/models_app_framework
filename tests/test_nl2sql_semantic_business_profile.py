@@ -227,4 +227,194 @@ def test_semantic_explicit_gnss_not_overridden_by_fcb_default(monkeypatch: pytes
     assert binding is not None
     assert "gnss" in binding.device_types
     assert "default_device_type_fcb" not in binding.warnings
+    assert not binding.preferred_station_names
+
+
+def test_fcb_layer_map_loaded_and_layer0_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    assert profile.fcb_layer_map_file
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    assert len(assets.fcb_layer0_by_project) >= 40
+    assert assets.fcb_layer0_by_project.get("F8(周村)") == "F8-10"
+    assert "F8-10" in assets.fcb_mark_names
+
+
+def test_align_injects_layer0_preferred_station_for_site(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    intent = QuestionIntent(
+        raw_question="周村分层标沉降",
+        scope_question="周村分层标沉降",
+        time_window=None,
+        scope=QuestionScopeIntent(station_name="F8(周村)", station_id="F8", device_type="fcb"),
+    )
+    binding = align_semantics("周村分层标沉降", intent, assets=assets)
+    assert binding is not None
+    assert "F8(周村)" in binding.project_names
+    assert "F8-10" in binding.preferred_station_names
+    assert "fcb_layer0_preferred_station" in binding.warnings
+
+
+def test_align_injects_layer0_for_district_and_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    from app.nl2sql.question_intent_display import format_parsed_intent_prompt_block
+    from app.nl2sql.schema_linker import link_schema
+
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "朝阳区分层标沉降多少"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(district="朝阳区", device_type="fcb"),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert binding.preferred_station_names
+    assert "fcb_layer0_district_filter" in binding.warnings
+    # 朝阳层位0应包含常见站代表标
+    assert any(m.startswith("F") for m in binding.preferred_station_names)
+
+    table_columns = {
+        "t_data_wash_fcb": {"total_settle", "data_time", "station_id", "station_name", "project_name"},
+        "t_station": {"name", "area"},
+    }
+    linked = link_schema(q, intent, binding, table_columns, allowlist=set(table_columns), assets=assets)
+    mark_filters = [
+        f for f in linked.suggested_filters if f.get("column") == "station_name" and f.get("source") == "fcb_layer0"
+    ]
+    assert mark_filters
+    assert mark_filters[0]["op"] == "in"
+    assert "F1-7" in mark_filters[0]["value"] or any(str(v).startswith("F") for v in mark_filters[0]["value"])
+
+    # 站点展示名不应误写入 station_name like 过滤
+    bad = [
+        f
+        for f in linked.suggested_filters
+        if f.get("column") == "station_name" and "周村" in str(f.get("value"))
+    ]
+    assert not bad
+
+    block = format_parsed_intent_prompt_block(intent, semantic=binding.to_dict(), linked_schema=linked.to_dict())
+    assert "优选标编号" in block
+    assert "建议过滤" in block
+
+
+def test_align_explicit_mark_not_replaced_by_layer0(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "F8-7 本季度沉降"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(station_name="F8(周村)", station_id="F8", device_type="fcb"),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert "F8-7" in binding.preferred_station_names
+    assert "F8-10" not in binding.preferred_station_names
+    assert "fcb_explicit_mark" in binding.warnings
+
+
+def test_align_injects_compress_boundary_marks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    from app.nl2sql.question_intent_display import format_parsed_intent_prompt_block
+    from app.nl2sql.schema_linker import link_schema
+
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    assert assets.fcb_layers_by_project.get("F8(周村)", {}).get(0) == "F8-10"
+    assert assets.fcb_layers_by_project.get("F8(周村)", {}).get(1) == "F8-7"
+
+    q = "F8(周村)本季度第1压缩层沉降"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(station_name="F8(周村)", station_id="F8", device_type="fcb"),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert "fcb_compress_boundary_marks" in binding.warnings
+    assert {"F8-10", "F8-7"} <= set(binding.preferred_station_names)
+    assert any(p.get("layer_from") == 0 and p.get("layer_to") == 1 for p in binding.compress_pairs)
+    assert any(p.get("mark_from") == "F8-10" and p.get("mark_to") == "F8-7" for p in binding.compress_pairs)
+
+    table_columns = {
+        "t_data_wash_fcb": {"total_settle", "data_time", "station_id", "station_name", "project_name"},
+        "t_station": {"name", "area"},
+    }
+    linked = link_schema(q, intent, binding, table_columns, allowlist=set(table_columns), assets=assets)
+    mark_filters = [
+        f for f in linked.suggested_filters if f.get("column") == "station_name" and f.get("source") == "fcb_compress"
+    ]
+    assert mark_filters
+    assert mark_filters[0]["op"] == "in"
+    assert set(mark_filters[0]["value"]) >= {"F8-10", "F8-7"}
+
+    block = format_parsed_intent_prompt_block(intent, semantic=binding.to_dict(), linked_schema=linked.to_dict())
+    assert "压缩层边界标" in block
+    assert "compress" in block.lower() or "Δ" in block or "F8-10" in block
+
+
+def test_align_compress_multi_ordinals(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "周村第1、2压缩层"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(station_name="F8(周村)", station_id="F8", device_type="fcb"),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    pairs = {(p["layer_from"], p["layer_to"]) for p in binding.compress_pairs}
+    assert (0, 1) in pairs
+    assert (1, 2) in pairs
+    assert {"F8-10", "F8-7", "F8-4"} <= set(binding.preferred_station_names)
+
+
+def test_align_compress_without_station_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "朝阳区第1压缩层沉降"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(district="朝阳区", device_type="fcb"),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert any(w.startswith("fcb_compress_need_station") for w in binding.warnings)
+    assert not binding.compress_pairs
 

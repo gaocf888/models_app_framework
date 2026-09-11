@@ -25,6 +25,8 @@ class NL2SQLBusinessProfile:
     business_domain: str
     display_name: str = ""
     semantic_dict_path: str = ""
+    # 分层标层位字典（可选；空则 semantic/dimensions/fcb_layer_map.yaml）
+    fcb_layer_map_file: str | None = None
     table_allowlist: tuple[str, ...] = ()
     join_whitelist: tuple[str, ...] = ()
     scope_lexicon_file: str | None = None
@@ -166,6 +168,11 @@ def get_nl2sql_business_profile(domain: str | None = None) -> NL2SQLBusinessProf
         business_domain=dom,
         display_name=str(raw.get("display_name") or dom),
         semantic_dict_path=semantic_path,
+        fcb_layer_map_file=(
+            str(nl2sql_raw["fcb_layer_map_file"]).strip()
+            if nl2sql_raw.get("fcb_layer_map_file")
+            else None
+        ),
         table_allowlist=_read_lines_file(_resolve_path(allowlist_rel)),
         join_whitelist=_read_join_whitelist(_resolve_path(join_rel)),
         scope_lexicon_file=str(scope_lex) if scope_lex else f"configs/nl2sql_business/{dom}/scope_lexicon.json",

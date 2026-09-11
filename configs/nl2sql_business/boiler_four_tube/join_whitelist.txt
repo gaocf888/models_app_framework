@@ -1,1 +1,4 @@
-# 人工 JOIN 补充；FK 反射仍自动纳入。
+# 锅炉四管 JOIN 白名单（boiler_four_tube）
+# 格式：left_table.col=right_table.col（每行一条）
+# 本文件可为空或仅含人工补充边；库 FK 反射仍会自动纳入合法 JOIN。
+# 说明见同目录「配置项说明.md」

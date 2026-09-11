@@ -1,3 +1,6 @@
+# 监测类型维度（semantic/dimensions/device_type.yaml）
+# 规范码 / 中文名 / 同义词 / 主表；与 synonyms.device_type_*、scope_lexicon.device_types 对齐。
+# 说明见 configs/nl2sql_business/subsidence/配置项说明.md
 version: "2026.08.24"
 entries:
   - id: fcb

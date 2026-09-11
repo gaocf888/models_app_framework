@@ -1,6 +1,8 @@
+# 行政区维度（semantic/dimensions/district.yaml）
+# 北京市行政区标准名；与 scope_lexicon.json districts、t_station.area 对齐。
+# semantic_layer 用于问句行政区命中 → district_codes。
+# 说明见 configs/nl2sql_business/subsidence/配置项说明.md
 version: "2026.08.24"
-# 北京市行政区标准名；与 scope_lexicon.json districts 对齐
-# 运行时可从 t_station.area DISTINCT 导出校验
 entries:
   - name: 东城区
   - name: 西城区

@@ -1,3 +1,6 @@
+# 站点维度占位（semantic/dimensions/station.yaml）
+# semantic_layer 会加载 entries；当前为空时站点解析以 scope_lexicon.json 为准。
+# 部署前可从 t_station 导出补全（id/name/code/area/aliases）。
+# 说明见 configs/nl2sql_business/subsidence/配置项说明.md
 version: "2026.08.24"
-# 站点维表条目；部署前建议从 t_station 导出补全
 entries: []

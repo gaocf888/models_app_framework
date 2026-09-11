@@ -1,35 +1,43 @@
+# 锅炉四管 NL2SQL 业务配置包（boiler_four_tube）
+# 部署：NL2SQL_BUSINESS_DOMAIN=boiler_four_tube
+# 本文件为域入口；字段释义见同目录「配置项说明.md」
+# 密码禁止写入；显式环境变量 DB_* / DB_URL / NL2SQL_* 优先于本文件
+
 business_domain: boiler_four_tube
 display_name: 锅炉四管
 
-# 业务库连接默认（密码禁止写入本文件；部署设 DB_PASSWORD 或完整 DB_URL）
-# 显式环境变量 DB_* / DB_URL 优先于此处
+# ---------- 业务库连接默认 ----------
 db:
-  dialect: tidb
+  dialect: tidb              # tidb / mysql 系
   host: 192.168.90.62
   port: 4000
   name: fmfb
   user: aimodel
   async_driver: mysql+aiomysql
 
+# ---------- NL2SQL 行为 ----------
 nl2sql:
-  semantic_link_enabled: false
+  semantic_link_enabled: false            # 默认关；启用前须补齐 semantic/ 资产
   semantic_dict_path: configs/nl2sql_business/boiler_four_tube/semantic
   intent_parse_mode: rule
   scope_sql_rewrite_enabled: true
+  # 锅炉设备别名词表（仓库级，不在本业务包目录内）
   scope_lexicon_file: configs/nl2sql_scope_device_aliases.json
-  entity_rules_file: ""
+  entity_rules_file: ""                   # 空=不加载实体规则文件
   prompt_default_version: v2
-  schema_link_catalog_mode: legacy_wide
+  schema_link_catalog_mode: legacy_wide   # 宽 catalog；与地降 linked_only 不同
   on_link_failure: refuse
   inject_parsed_intent: false
   reject_unresolved_time_placeholders: true
-  anchor_fallback_now_enabled: true
+  anchor_fallback_now_enabled: true       # 锚点缺失时允许回退 NOW（图像诊断）
   anchor_fallback_analysis_types: "img_diag_leakage_burst,img_diag_defect_ident"
 
+# ---------- 表白名单 / JOIN ----------
 tables:
   allowlist_file: configs/nl2sql_business/boiler_four_tube/table_scope.txt
   join_whitelist_file: configs/nl2sql_business/boiler_four_tube/join_whitelist.txt
 
+# ---------- RAG 命名空间约定 ----------
 rag:
   namespaces:
     schema: nl2sql_schema

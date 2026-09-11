@@ -1,2 +1,20 @@
-version: "2026.08.24"
+# 地面沉降 NL2SQL 语义资产清单（subsidence/semantic）
+# 由 semantic_layer.load_semantic_assets 读取；版本参与缓存指纹。
+# 说明见上级目录「配置项说明.md」
+version: "2026.09.11"
 description: 地面沉降 NL2SQL 语义资产清单
+assets:
+  metrics: metrics.yaml
+  synonyms: synonyms.yaml
+  units: units.yaml
+  dimensions:
+    - dimensions/district.yaml
+    - dimensions/station.yaml
+    - dimensions/device_type.yaml
+    - dimensions/fcb_layer_map.yaml
+  placeholders:
+    - layered_fcb_placeholder.yaml
+notes:
+  - "fcb_layer_map.yaml 由 semantic_layer 加载；站点沉降注入 preferred_station_names（层位0）"
+  - "周期沉降口径：初−末；Δ>0 下沉；站点用 monitor_layer=0"
+  - "units.yaml / layered_fcb_placeholder 为清单登记；单位换算与第N层告警逻辑以代码为准"

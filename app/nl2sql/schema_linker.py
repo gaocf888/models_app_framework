@@ -206,7 +206,13 @@ def link_schema(
                 LinkedColumn(table=primary, column=dim_col, role=role, reason="table_default")
             )
 
-    need_station = bool(semantic.district_codes) or bool(semantic.station_ids) or bool(semantic.station_names)
+    need_station = bool(
+        semantic.district_codes
+        or semantic.station_ids
+        or semantic.station_names
+        or getattr(semantic, "project_names", None)
+        or getattr(semantic, "preferred_station_names", None)
+    )
     if need_station and _STATION_TABLE in allow:
         if not any(t.name == _STATION_TABLE for t in linked.tables):
             linked.tables.append(LinkedTable(name=_STATION_TABLE, reason="district_or_station_filter", score=0.7))
@@ -216,7 +222,6 @@ def link_schema(
                 linked.columns.append(
                     LinkedColumn(table=_STATION_TABLE, column=sc, role=role, reason="station_dim")
                 )
-        join_expr = f"{primary}.project_name=t_station.name"
         linked.joins.append(LinkedJoin(left=f"{primary}.project_name", right="t_station.name", reason="project_name=name"))
 
     if semantic.district_codes:
@@ -229,10 +234,44 @@ def link_schema(
             linked.suggested_filters.append(
                 {"table": primary, "column": "station_id", "op": "=", "value": sid, "source": "semantic"}
             )
-    if semantic.station_names:
-        for sn in semantic.station_names:
+
+    # 站点场地 → project_name；层位0/显式标 → station_name（勿把站点展示名当成标编号）
+    project_names = list(getattr(semantic, "project_names", None) or [])
+    preferred_marks = list(getattr(semantic, "preferred_station_names", None) or [])
+    if not project_names and semantic.station_names and not preferred_marks:
+        # 兼容旧 binding：无 preferred 时，station_names 按 project_name 过滤
+        project_names = list(semantic.station_names)
+
+    for pn in project_names:
+        linked.suggested_filters.append(
+            {"table": primary, "column": "project_name", "op": "=", "value": pn, "source": "semantic"}
+        )
+
+    if preferred_marks:
+        filter_source = (
+            "fcb_compress"
+            if getattr(semantic, "compress_pairs", None)
+            else "fcb_layer0"
+        )
+        if len(preferred_marks) == 1:
             linked.suggested_filters.append(
-                {"table": primary, "column": "station_name", "op": "like", "value": sn, "source": "semantic"}
+                {
+                    "table": primary,
+                    "column": "station_name",
+                    "op": "=",
+                    "value": preferred_marks[0],
+                    "source": filter_source,
+                }
+            )
+        else:
+            linked.suggested_filters.append(
+                {
+                    "table": primary,
+                    "column": "station_name",
+                    "op": "in",
+                    "value": list(preferred_marks),
+                    "source": filter_source,
+                }
             )
 
     # auxiliary tables for multi-metric questions（锁表时禁止拉入其它 t_data_wash_*）

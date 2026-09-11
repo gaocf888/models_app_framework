@@ -131,9 +131,38 @@ def format_parsed_intent_prompt_block(
                 metric_bits.append(f"{name}({mid},{unit}→{tbl_hint}.{col_hint})")
             if metric_bits:
                 lines.append(f"- 命中指标：{'；'.join(metric_bits)}")
+        dims = semantic.get("dimensions") if isinstance(semantic.get("dimensions"), dict) else {}
+        project_names = list((dims or {}).get("project_names") or [])
+        preferred_marks = list((dims or {}).get("preferred_station_names") or [])
+        compress_pairs = list((dims or {}).get("compress_pairs") or [])
+        if project_names:
+            lines.append(f"- 站点场地(project_name)：{'、'.join(str(x) for x in project_names[:5])}")
+        if compress_pairs:
+            bits = []
+            for p in compress_pairs[:4]:
+                if not isinstance(p, dict):
+                    continue
+                bits.append(
+                    f"{p.get('project_name')} 层位{p.get('layer_from')}→{p.get('layer_to')} "
+                    f"({p.get('mark_from')}/{p.get('mark_to')})"
+                )
+            more = f" 等共{len(compress_pairs)}对" if len(compress_pairs) > 4 else ""
+            lines.append(
+                f"- 压缩层边界标：{'；'.join(bits)}{more}；"
+                "公式 compress(i→i+1)=Δ(i)−Δ(i+1)，非单标累计当层沉降"
+            )
+        if preferred_marks:
+            preview = "、".join(str(x) for x in preferred_marks[:8])
+            more = f" 等共{len(preferred_marks)}个" if len(preferred_marks) > 8 else ""
+            hint = (
+                "压缩层边界 station_name"
+                if compress_pairs
+                else "优选标编号(station_name，站点沉降用层位0)"
+            )
+            lines.append(f"- {hint}：{preview}{more}；禁止对同 project_name 下全部标聚合")
         warnings = semantic.get("warnings") or []
         if warnings:
-            lines.append(f"- 语义告警：{'；'.join(str(w) for w in warnings[:3])}")
+            lines.append(f"- 语义告警：{'；'.join(str(w) for w in warnings[:5])}")
 
     if linked_schema:
         status = linked_schema.get("status") or "ok"
@@ -148,6 +177,24 @@ def format_parsed_intent_prompt_block(
             tbl_names = [n for n in tbl_names if n]
             if tbl_names:
                 lines.append(f"- 链接主表（{status}）：{', '.join(tbl_names)}")
+        filters = linked_schema.get("suggested_filters") or []
+        mark_filters = [
+            f
+            for f in filters
+            if isinstance(f, dict)
+            and f.get("column") == "station_name"
+            and f.get("source") in {"fcb_layer0", "fcb_compress"}
+        ]
+        if mark_filters:
+            f0 = mark_filters[0]
+            val = f0.get("value")
+            src = f0.get("source")
+            if isinstance(val, list):
+                preview = ",".join(str(x) for x in val[:6])
+                more = f"…(+{len(val) - 6})" if len(val) > 6 else ""
+                lines.append(f"- 建议过滤（{src}）：station_name IN ({preview}{more})")
+            else:
+                lines.append(f"- 建议过滤（{src}）：station_name = {val}")
         fail_reason = linked_schema.get("fail_reason")
         if fail_reason and status == "failed":
             lines.append(f"- 链接失败原因：{fail_reason}")

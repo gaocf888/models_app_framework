@@ -1,41 +1,55 @@
+# 地降 NL2SQL 业务配置包（subsidence）
+# 部署：NL2SQL_BUSINESS_DOMAIN=subsidence
+# 本文件为域入口；字段释义见同目录「配置项说明.md」
+# 密码禁止写入；显式环境变量 DB_* / DB_URL / NL2SQL_* 优先于本文件
+
 business_domain: subsidence
 display_name: 北京市地面沉降监测
 
-# 业务库连接默认（密码禁止写入本文件；部署设 DB_PASSWORD 或完整 DB_URL）
-# 显式环境变量 DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_URL 优先于此处
+# ---------- 业务库连接默认 ----------
 db:
-  dialect: postgres
+  dialect: postgres          # postgres | postgresql | pg
   host: 192.169.237.197
   port: 5432
-  name: dmcj
+  name: dmcj                 # 库名
   user: postgres
   async_driver: postgresql+asyncpg
 
+# ---------- NL2SQL 行为 ----------
 nl2sql:
   semantic_link_enabled: true
   semantic_dict_path: configs/nl2sql_business/subsidence/semantic
-  intent_parse_mode: rule
-  scope_sql_rewrite_enabled: true
+  # 分层标层位字典；semantic_layer 加载后对站点沉降注入层位0 preferred_station_names
+  fcb_layer_map_file: configs/nl2sql_business/subsidence/semantic/dimensions/fcb_layer_map.yaml
+  intent_parse_mode: rule                 # rule | llm（地降默认规则）
+  scope_sql_rewrite_enabled: true         # 将解析出的范围写入 SQL 占位符改写
   scope_lexicon_file: configs/nl2sql_business/subsidence/scope_lexicon.json
   entity_rules_file: configs/nl2sql_business/subsidence/entity_rules.json
   prompt_default_version: v2_subsidence
-  schema_link_catalog_mode: linked_only
-  on_link_failure: refuse
-  inject_parsed_intent: true
+  schema_link_catalog_mode: linked_only   # linked_only | linked_prefer | legacy_wide
+  on_link_failure: refuse                 # refuse | best_effort
+  inject_parsed_intent: true              # SQL 生成 Prompt 追加「已识别问句意图」块
   reject_unresolved_time_placeholders: true
-  anchor_fallback_now_enabled: false
-  anchor_fallback_analysis_types: ""
+  anchor_fallback_now_enabled: false      # 地降默认关闭「锚点缺失则 NOW」回退
+  anchor_fallback_analysis_types: ""      # 允许回退的 analysis_type 列表，逗号分隔；空=无
 
+# ---------- 表白名单 / JOIN ----------
 tables:
   allowlist_file: configs/nl2sql_business/subsidence/table_scope.txt
   join_whitelist_file: configs/nl2sql_business/subsidence/join_whitelist.txt
 
+# ---------- RAG 命名空间与业务知识源 ----------
 rag:
   namespaces:
     schema: nl2sql_schema
     biz: nl2sql_biz_knowledge
     qa: nl2sql_qa_examples
+  # 摄入 biz 命名空间时覆盖的源文件（含三维口径与层位0索引）
+  biz_source_files:
+    - configs/nl2sql_business/subsidence/rag/nl2sql_biz_knowledge.md
+    - configs/nl2sql_business/subsidence/rag/nl2sql_biz_knowledge_fcb_layer0_stations.md
 
+# ---------- 综合分析报告类型 ----------
 analysis:
   report_types:
     - subsidence_daily

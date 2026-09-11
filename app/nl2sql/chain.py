@@ -430,6 +430,11 @@ class NL2SQLChain:
                 district_codes=list(dims.get("district_codes") or []),
                 station_ids=list(dims.get("station_ids") or []),
                 station_names=list(dims.get("station_names") or []),
+                project_names=list(dims.get("project_names") or []),
+                preferred_station_names=list(dims.get("preferred_station_names") or []),
+                compress_pairs=[
+                    dict(p) for p in (dims.get("compress_pairs") or []) if isinstance(p, dict)
+                ],
                 warnings=list(semantic_binding_dict.get("warnings") or []),
                 default_table=semantic_binding_dict.get("default_table"),
             )
@@ -755,13 +760,13 @@ class NL2SQLChain:
             schema_catalog=prompt_catalog,
         )
         if inject_parsed_intent_enabled():
-            prompt = (
-                f"{prompt}\n\n{format_parsed_intent_prompt_block(
-                    question_intent,
-                    semantic=semantic_binding_dict,
-                    linked_schema=linked_schema_dict,
-                )}"
+            # 先算再拼，兼容 Python<3.12（f-string 内不可跨行表达式）
+            intent_block = format_parsed_intent_prompt_block(
+                question_intent,
+                semantic=semantic_binding_dict,
+                linked_schema=linked_schema_dict,
             )
+            prompt = f"{prompt}\n\n{intent_block}"
         extra_hint = (sql_gen_extra_hint or "").strip()
         if extra_hint:
             prompt = f"{prompt}\n\n{extra_hint}"

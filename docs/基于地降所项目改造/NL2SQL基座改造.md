@@ -1,7 +1,7 @@
 # NL2SQL 基座改造方案（锅炉四管 / 地面沉降）
 
-> **版本**：2026-08-24（合并语义+链接落地方案，**本文为唯一维护文档**）  
-> **实施进度**：P0–P5 主能力已落地；**配置包驱动分业务默认值（含 DB 连接默认、方言、白名单、Prompt）已补齐**。`.env` 中显式 `DB_*`/`NL2SQL_*` 仍优先于 profile。剩余联调：PG 连通、RAG 摄入、黄金集可执行率、锅炉回归。运维极简见企业级简版 §4.4。  
+> **版本**：2026-09-11（P0–P5 已落地；增补 **P6 分层标三维口径 + 层位字典**）  
+> **实施进度**：P0–P5 主能力已落地；**配置包驱动分业务默认值（含 DB 连接默认、方言、白名单、Prompt）已补齐**。`.env` 中显式 `DB_*`/`NL2SQL_*` 仍优先于 profile。剩余联调：PG 连通、RAG 摄入、黄金集可执行率、锅炉回归。**P6 配置侧已落地**（口径对齐季报脚本：初−末、正下沉；`fcb_layer_map`；知识库/Prompt/QA 已同步）；**待运维**：RAG re-ingest 与抽测——详见专项 [`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md)。运维极简见企业级简版 §4.4。  
 > **分支/项目**：`dev_djs`（地降所地面沉降）  
 > **范围**：`app/nl2sql/*`、`NL2SQLService`、相关配置与契约；不含 chatbot/报告前端 UI 实现细节。  
 > **原则**：**基座主链路不变**；范围默认 **rule**；时间 **始终规则**；通过 **部署级全局业务配置** 区分锅炉四管与地面沉降；语义建模 + 显式 Schema 链接为准确率核心增量。  
@@ -9,9 +9,11 @@
 > **域差异原则**：**不设** `NL2SQL_DOMAIN_PROFILE` 运行时双管线分流；锅炉/地降共用同一套「语义→链接→现网后半段」，差异仅在 `configs/nl2sql_business/<domain>/` 配置包。  
 > **关联文档**：  
 > - 现网基线：`enterprise-level_transformation_docs/企业级NL2SQL基座实现方案.md`  
+> - **分层标口径专项（P6）**：[`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md)  
 > - 五阶段背景：`NL2SQL基座五阶段改造方案.md`（或废弃提炼稿）  
 > - 时间/范围改写：`docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`  
 > - 库结构：`docs/地降所需求及数据相关/数据库结构及逻辑/数据库说明.md`、`226大模型数据库.docx`  
+> - 季报计算逻辑（口径真源）：`docs/地降所需求及数据相关/数据库结构及逻辑/沉降数据获取计算逻辑/`  
 > - 需求参考（**非数据真源**）：`docs/地降所需求及数据相关/需求梳理/智能数据查询及分析-需求剖析.md`
 
 ---
@@ -25,6 +27,7 @@
 | **① 基座适配 + 全局业务配置** | 换库/白名单/RAG/Prompt/词表等；`NL2SQL_BUSINESS_DOMAIN` + `configs/nl2sql_business/` | §2、§3、§7 |
 | **② 业务侧覆盖范围** | `confirmed_scope` → `human_confirmed`（**已具备，保持**）；时间用 `time_intent_text` | §4 |
 | **③ 语义建模 + Schema 链接** | 意图后插管；地降 8 表事实模型；指标/链接资产 | §5、§6 |
+| **④ 分层标三维口径 + 层位字典（P6）** | 周期=初−末、正下沉；站点=层位0；压缩层=相邻Δ差；`fcb_layer_map` + 知识库/Prompt/QA | 专项文档；§7.4、§8.1 |
 
 ### 0.2 基座主链路（改造后仍保持）
 
@@ -622,7 +625,7 @@ SemanticBinding:
 
 | metric_id | 名称 | 单位 | 主表 | 主列 | 公式/口径 |
 |-----------|------|------|------|------|-----------|
-| `period_subsidence_mm` | 周期沉降量 | mm | `t_data_wash_fcb`（默认） | `total_settle` | 周期末 `total_settle` − 周期初 `total_settle`；**负值表示下沉** |
+| `period_subsidence_mm` | 周期沉降量 | mm | `t_data_wash_fcb`（默认） | `total_settle` | 周期初 `total_settle` − 周期末 `total_settle`；**Δ>0 下沉**；站点用层位0 |
 | `period_rebound_mm` | 周期回弹量 | mm | `t_data_wash_fcb` / `jyb` | `total_settle` | 同上，语义为上升；可与沉降共用计算，展示取符号 |
 | `point_subsidence_mm` | 测点累计沉降 | mm | `t_data_wash_fcb` | `total_settle` | 问句指明某时刻/最新一条的 `total_settle`（非差值） |
 | `gnss_displacement_2d` | GNSS 水平位移 | mm | `t_data_wash_gnss` | `displacement_2d` | 专题问 GNSS 时用 |
@@ -653,7 +656,7 @@ metrics:
     synonyms: [沉降量, 下沉量, 累计沉降, 地面沉降, 沉降了多少]
     unit: mm
     grain: station_period
-    formula_note: "窗口内 total_settle 终值减初值；主表默认 t_data_wash_fcb"
+    formula_note: "窗口内 total_settle 初值减末值；Δ>0 下沉；主表默认 t_data_wash_fcb；站点用层位0"
     forbidden_confusions: [groundwater_depth, gnss_displacement_3d, pore_pressure]
     preferred_tables: [t_data_wash_fcb, t_data_wash_jyb]
     preferred_columns: [total_settle]
@@ -836,8 +839,8 @@ t_data_wash_qxz.project_name=t_station.name
 | 命名空间 | 地降内容建议 |
 |----------|--------------|
 | `nl2sql_schema` | 8 表字段说明（来自 `226大模型数据库.docx` + 反射校验） |
-| `nl2sql_biz_knowledge` | 监测类型说明、主/辅关系、`project_name`↔`t_station`、周期沉降口径 |
-| `nl2sql_qa_examples` | 问法→标准 SQL；按五类 `analysis_type` 标签 |
+| `nl2sql_biz_knowledge` | 监测类型说明、主/辅关系、`project_name`↔`t_station`、**三维 grain + 周期沉降口径（P6 对齐季报脚本）**、层位字典引用 |
+| `nl2sql_qa_examples` | 问法→标准 SQL；按五类 `analysis_type` 标签；周期差分为 **初−末** |
 
 **namespace 不拆分**；锅炉/地降靠 **部署 domain** 只摄入对应业务文档（避免同进程混库）。
 
@@ -851,12 +854,27 @@ t_data_wash_qxz.project_name=t_station.name
 - 行政区：**JOIN `t_station`**，`area` 过滤  
 - 允许聚合、子查询、UNION（只读）  
 - 禁止 TiDB 专属写法  
+- **（P6）周期沉降**：`Δ = 窗内初值 − 末值`；**Δ>0 下沉倾向，Δ<0 回弹**；站点沉降用监测层位 0 对应 `station_name`  
 
 版本建议：`NL2SQL_PROMPT_DEFAULT_VERSION=v2_subsidence`（在 `prompts.yaml` 或 `prompts_subsidence.yaml` 中定义）。
 
 ### 7.3 范围 LLM 提示词
 
 默认 **rule**，可不依赖 `nl2sql_scope_parse`。若开启 LLM，应为地降单独模板（`nl2sql_scope_parse_subsidence`），与锅炉分离。
+
+### 7.4 分层标三维口径与层位字典（P6）
+
+> **专项全文**：[`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md)。
+
+业务已确认口径对齐 `沉降数据获取计算逻辑/季度报告分层标处理.py`（**初−末、正下沉**），并采用 **知识库 + 配置文件**（`fcb_layer_map`），一期不做 DB 维表。
+
+| 维度 | 口径摘要 |
+|------|----------|
+| 分层标明细 | `(project_name, station_name)` 上 `total_settle` 序列 / `Δ` |
+| 站点沉降 | 层位字典 **`monitor_layer=0`**（≡ 深度最小标）的 `Δ`；禁止全标聚合 |
+| 压缩层 | 相邻层位 `Δ(i)−Δ(i+1)`，非单标累计直接当层沉降 |
+
+**须同步修改**：`nl2sql_biz_knowledge.md`、`nl2sql_schema.md`、`qa_examples_seed.md`、`metrics.yaml`、`v2_subsidence`、`analysis_*_subsidence_*`、客服 `subsidence_v1` 符号句；改完 **re-ingest**。
 
 ---
 
@@ -872,8 +890,10 @@ t_data_wash_qxz.project_name=t_station.name
 | **P3** | 地降范围词表 / rule / `@station_*` `@district` 改写 | `scope_lexicon.json`（含 83 站） | **已完成** |
 | **P4** | 五类 `analysis_plan/synthesis_*`、`v2_subsidence`、RAG 源文件与 QA 种子 | `prompts.yaml` + `rag/*` | **已完成** |
 | **P5** | `boiler_four_tube` 配置包（db.*、表白名单、语义默认关） | `boiler_four_tube/*` | **已完成**（锅炉语义 YAML 可后补） |
+| **P6** | 分层标三维口径 + 层位字典：公式对齐季报脚本；`fcb_layer_map`；知识库/Prompt/QA/综合分析同步 | 见专项方案 P6.1～P6.6 | **配置已落地**（待 RAG re-ingest/抽测） |
 
-**仍依赖服务器/联调（非代码缺口）**：地降 PG 反射与执行、RAG 三命名空间摄入、黄金集可执行率评测、五类报告端到端。
+**仍依赖服务器/联调（非代码缺口）**：地降 PG 反射与执行、RAG 三命名空间摄入、黄金集可执行率评测、五类报告端到端。  
+**P6 另依赖**：xls→配置转换、全量口径纠偏后 re-ingest 与符号手测。
 
 **M0 准入**：有结构文档（或可反射）；有白名单初稿；有指标口径责任人。
 
@@ -910,10 +930,12 @@ t_data_wash_qxz.project_name=t_station.name
 - [x] 8 表白名单与 JOIN 配置落地（反射/执行需服务器验证）  
 - [x] 语义+链接：泛化沉降 → `fcb`；GNSS → `gnss`（单测 + 黄金集链接测）  
 - [x] 行政区/站点 rule 解析与 `@district`/`@station_*` 改写  
-- [x] 周期沉降口径写入语义资产与 Prompt（`total_settle` 差值）  
+- [x] 周期沉降口径曾写入语义资产与 Prompt（**旧表述为终−初/负下沉；P6 须改为初−末/正下沉**）  
 - [x] `confirmed_scope` / `time_intent_text` / `structured_filters` 契约保留  
 - [x] 五类 `analysis_type` 的 plan/synthesis/report 模板  
 - [x] `boiler_four_tube` profile：`semantic_link_enabled=false` + 表白名单文件  
+- [x] **P6（配置）**：`fcb_layer_map` 已落地；biz/schema/metrics/QA/Prompt 口径统一为初−末、正下沉；三维 grain 入知识库（**RAG re-ingest 与抽测待运维**）  
+- [ ] **P6**：RAG re-ingest；站点层位 0 / 压缩层差 / 符号方向手测通过  
 - [ ] 地降库联调：朝阳区+沉降 JOIN/`fcb`/时间窗可执行  
 - [ ] RAG 三命名空间已摄入；QA 槽位可回放  
 - [ ] 黄金集：相对 baseline 的主表/度量列正确率报告（≥30 条，可执行联调）  
@@ -923,7 +945,7 @@ t_data_wash_qxz.project_name=t_station.name
 
 1. 服务器配置 `NL2SQL_BUSINESS_DOMAIN=subsidence` + `DB_*`（PG）并做反射烟测。  
 2. `POST /rag/documents/upsert` 摄入 `configs/nl2sql_business/subsidence/rag/*.md`。  
-3. 用 `eval/golden_set.json` 扩到 ≥30 条并跑可执行率对比。  
+3. 用 `tests/fixtures/nl2sql_subsidence_golden_set.json` 扩到 ≥30 条并跑可执行率对比。  
 4. 锅炉部署保持 `boiler_four_tube`，确认回归集。  
 
 ### 8.5 代码交付索引（本轮已落）
@@ -1001,7 +1023,7 @@ rows: []
 - [x] 同义词 / 指标命中与禁混用（`test_nl2sql_semantic_business_profile`）  
 - [x] 链接结果 ∩ allowlist；`linked_only` 白名单外表不进 catalog  
 - [x] 锅炉 domain：`semantic_link_enabled=false` + 表白名单  
-- [x] 地降黄金集主表链接（`eval/golden_set.json`，当前 15 条，可扩）  
+- [x] 地降黄金集主表链接（`tests/fixtures/nl2sql_subsidence_golden_set.json`，≥30 条）  
 - [ ] `refuse` 不调用 LLM（需 chain 级 mock，联调前可补）  
 - [ ] `best_effort` 降级路径可生成（同上）  
 
@@ -1072,11 +1094,13 @@ rows: []
 
 | 文档/代码 | 用途 |
 |-----------|------|
-| **本文** | NL2SQL 基座 **唯一**改造总方案 |
+| **本文** | NL2SQL 基座改造 **总方案**（P0–P5 主线 + P6 索引） |
+| [`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md) | **P6 专项**：周期/正负/三维 grain/层位配置与 Prompt 同步 |
 | `enterprise-level_transformation_docs/企业级NL2SQL基座实现方案.md` | 现网基座全链路 |
 | `NL2SQL基座五阶段改造方案.md` | 五阶段背景 |
 | `docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md` | 时间/范围改写 |
 | `数据库说明.md` / `226大模型数据库.docx` | 地降库结构真源 |
+| `沉降数据获取计算逻辑/` | 季报脚本与层位 xls（P6 口径真源） |
 | `app/nl2sql/chain.py` | 插管主挂载点 |
 | `app/nl2sql/question_intent.py` | 现网意图入口 |
 | `app/nl2sql/schema_service.py` | 反射 |
@@ -1085,4 +1109,4 @@ rows: []
 
 ---
 
-*本文是 NL2SQL 基座改造的唯一维护文档。若扩展查询类型意图或结果图表契约，另开文档，避免稀释语义+链接的准确率目标。密码、生产 IP 以运维侧为准，勿写入 git。*
+*本文是 NL2SQL 基座改造总方案的维护入口。周期沉降符号与分层标三维 grain 以 [`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md) §0.4 为准。若扩展查询类型意图或结果图表契约，另开文档。密码、生产 IP 以运维侧为准，勿写入 git。*

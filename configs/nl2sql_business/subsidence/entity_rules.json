@@ -1,5 +1,8 @@
 [
   {
+    "_comment": "地降实体规则（JSON 数组）。命中 question_contains_any 且 SQL 匹配 sql_pattern 时拒绝。加载器忽略无 question_contains_any 的项。说明见同目录「配置项说明.md」。"
+  },
+  {
     "question_contains_any": ["沉降", "下沉", "回弹"],
     "sql_pattern": "(?i)t_data_wash_dxswj",
     "message": "问沉降主指标时不应直接查地下水表；优先 fcb/jyb 的 total_settle"

@@ -1,10 +1,16 @@
+# 地降同义词 / 监测类型映射 / 禁混指标对（semantic/synonyms.yaml）
+# semantic_layer 读取：forbidden_pairs、device_type_*、default_subsidence_table。
+# 说明见上级「配置项说明.md」
 version: "2026.08.24"
+
+# 不可同时作为主指标混用的 metric_id 对（对齐后写 warning）
 forbidden_pairs:
   - [period_subsidence_mm, groundwater_depth]
   - [period_subsidence_mm, gnss_displacement_3d]
   - [period_subsidence_mm, pore_pressure]
   - [groundwater_depth, period_subsidence_mm]
 
+# 问句监测类型别名 → 规范码
 device_type_aliases:
   分层标: fcb
   分层: fcb
@@ -16,6 +22,7 @@ device_type_aliases:
   光纤: gq
   气象: qxz
 
+# 规范码 → 主事实表
 device_type_tables:
   fcb: t_data_wash_fcb
   jyb: t_data_wash_jyb
@@ -25,5 +32,5 @@ device_type_tables:
   gq: t_data_wash_gq
   qxz: t_data_wash_qxz
 
-# 问句未指明监测类型时的默认主表（分层标）；与客服 SQL gen hint / semantic_layer 默认 fcb 对齐。
+# 问句未指明监测类型时的默认主表（分层标）
 default_subsidence_table: t_data_wash_fcb

@@ -1,9 +1,10 @@
 # 企业级 NL2SQL 基座实现方案
 
-> **版本**：2026-08-25（对齐地降所域配置包 + 语义建模 + Schema 链接落地）  
+> **版本**：2026-09-11（在 2026-08-25 配置包 + 语义链接基础上，增补地降 **P6：分层标三维口径与层位字典运行时注入**）  
 > 本文档描述本仓库 **当前已实现** 的 NL2SQL 基座：与 **RAG** 并列的 **AI 应用基础能力**；接入形态包括 **独立 HTTP**、**智能客服内嵌**、**综合分析 V2（`run-with-nl2sql` / `run-with-nl2sql-stream`）** 与 **综合分析看图诊断（`run-img-diag` / `run-img-diag-stream`，NL2SQL 并行臂）** 等，底层均复用同一 `NL2SQLService`。  
 > **域差异原则**：不设运行时双管线分流；锅炉四管 / 地面沉降共用「意图 →（可选）语义对齐 →（可选）Schema 链接 → RAG/缓存 → Prompt → LLM → 时间·范围改写 → 校验 → 执行」；差异仅在 `NL2SQL_BUSINESS_DOMAIN` + `configs/nl2sql_business/<domain>/` 配置包。  
 > 地降改造总方案（设计与验收）：`docs/基于地降所项目改造/NL2SQL基座改造.md`。  
+> **分层标口径专项（P6）**：`docs/基于地降所项目改造/NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`（周期初−末 / 正下沉；层位0与压缩层边界标注入）。  
 > 实现细节与文件映射见 `framework-guide/NL2SQL整体实现技术说明.md`；代码行为明细见 `enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md`；问句时间/范围详设见 `docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`。  
 > **流程图体例**对齐 `enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` §4.0：先 **业务视角（文字流程）**，再 **实现视角（代码级流程图）**（框内优先 `file:` / 类·函数 + `说明:`）。
 
@@ -24,11 +25,14 @@
 
 ```text
 启用 nl2sql_qa_examples（强烈建议）——「问法 → 标准 SQL」样例通常比堆表结构更提准确率。
-启用 nl2sql_biz_knowledge（建议）——术语、统计口径、时间字段叙述。
+启用 nl2sql_biz_knowledge（建议）——术语、统计口径、时间字段叙述；地降另摄入层位0摘要。
 地降：语义资产 + Schema 链接（NL2SQL_SEMANTIC_LINK_ENABLED，profile 默认开启）——主表/度量列选对率主杠杆。
+地降 P6：fcb_layer_map → 站点沉降注入层位0标；压缩层/层间注入相邻层位边界标（见 P6 专项）。
 库内补外键（若允许）——catalog 出现 FK: 提示；地降另有 join_whitelist（project_name=t_station.name）。
 图检索（若已部署 GraphRAG）——补充实体关系召回（与 FK、文档组合）。
 ```
+
+**地降周期沉降口径（P6，与季报脚本一致）**：`Δ = total_settle(窗初) − total_settle(窗末)`（初−末）；**Δ>0 下沉倾向，Δ<0 回弹**。站点沉降用监测层位=0 代表标；压缩层 `compress(i→i+1)=Δ(i)−Δ(i+1)`。细则见 P6 专项，勿再写「终−初 / 负值下沉」。
 
 ---
 
@@ -79,12 +83,25 @@
 
 ```text
 configs/nl2sql_business/
-  boiler_four_tube/   # profile、table_scope、join_whitelist、语义占位（默认关）
+  boiler_four_tube/   # profile、table_scope、join_whitelist、语义占位（默认关）、配置项说明.md
   subsidence/         # profile、8 表白名单、JOIN、scope_lexicon、entity_rules、
-                      # semantic/*、rag/*、eval/golden_set.json
+                      # semantic/*（含 dimensions/fcb_layer_map.yaml）、rag/*、配置项说明.md
+                      # （黄金集在 tests/fixtures/nl2sql_subsidence_golden_set.json，不进配置包）
 ```
 
-`profile.yaml` 典型字段：`db.*`（无密码）、`nl2sql.semantic_link_enabled`、`sql_dialect`、`prompt_default_version`、`schema_link_catalog_mode`、`on_link_failure`、词表/实体规则路径、表白名单文件等。运维极简见企业级简版 §4.4 与 `app/app-deploy/.env.example` NL2SQL 段。
+`profile.yaml` 典型字段：`db.*`（无密码）、`nl2sql.semantic_link_enabled`、`sql_dialect`、`prompt_default_version`、`schema_link_catalog_mode`、`on_link_failure`、`inject_parsed_intent`、词表/实体规则路径、表白名单文件等。地降另有 **`nl2sql.fcb_layer_map_file`**（层位字典权威路径）与 **`rag.biz_source_files`**（含 `nl2sql_biz_knowledge.md` + `nl2sql_biz_knowledge_fcb_layer0_stations.md`）。运维极简见企业级简版 §4.4 与 `app/app-deploy/.env.example` NL2SQL 段。
+
+### 2.2 地降语义对齐扩展（P6 层位注入）
+
+当 `NL2SQL_BUSINESS_DOMAIN=subsidence` 且 `semantic_link_enabled=true` 时，`align_semantics` 在指标/监测类型/行政区之外：
+
+| 问句 grain | 注入内容 | `parsed_intent.semantic` |
+|------------|----------|---------------------------|
+| **B. 站点/地面沉降** | 该站（或行政区/全市范围）**监测层位=0** 的 `station_name` | `preferred_station_names`；告警如 `fcb_layer0_*` |
+| **C. 压缩层/层间** | 相邻层位 `i` 与 `i+1` 边界标；「第 N 压缩层」→ `(N-1→N)` | `compress_pairs` + 边界标进 `preferred_station_names`；`source=fcb_compress` |
+| **A. 显式标编号** | 问句中的 `F8-7` 等保留，不强制改成层位0 | `fcb_explicit_mark` |
+
+随后 `link_schema` 可将上述标写入 `suggested_filters`（`station_name` IN/等值）；`inject_parsed_intent=true` 时 Prompt「已识别问句意图」块展示优选标 / 压缩层对。权威字典：`configs/nl2sql_business/subsidence/semantic/dimensions/fcb_layer_map.yaml`。
 
 ---
 
@@ -99,11 +116,11 @@ configs/nl2sql_business/
 | 服务层 | `app/services/nl2sql_service.py` | Chain + Executor + EXPLAIN/执行 refine；填充 `gen_fail_reason` |
 | 业务配置包 | `nl2sql_business_profile.py` + `intent_config.py` | domain → profile；与 `app/core/config.py` 合并 DB/NL2SQL 默认 |
 | 生成链路 | `app/nl2sql/chain.py` | 意图 → **语义对齐** → **Schema 链接** → Schema/RAG → 缓存 → Prompt → LLM → **时间·范围改写（含 PG 适配）** → 校验/refine |
-| 语义层 | `semantic_layer.py` | 加载 `semantic/*`；`align_semantics` → `parsed_intent.semantic` |
-| Schema 链接 | `schema_linker.py` | `link_schema` → LinkedSchema；catalog 收窄；`refuse`/`best_effort` |
+| 语义层 | `semantic_layer.py` | 加载 `semantic/*`（含 **`fcb_layer_map`**）；`align_semantics` → `parsed_intent.semantic`（指标 + **层位0 / 压缩层边界标**） |
+| Schema 链接 | `schema_linker.py` | `link_schema` → LinkedSchema；catalog 收窄；`suggested_filters`（含 `fcb_layer0` / `fcb_compress`）；`refuse`/`best_effort` |
 | SQL 方言 | `sql_dialect.py` | MySQL 时间表达式 → PostgreSQL（`adapt_time_window`） |
 | 问句意图 | `question_intent.py`、`time_intent_display.py`、`scope_parser_rule.py`、`scope_parser_llm.py`、`scope_parser_subsidence.py` | 时间 **始终规则**（输出后按方言适配）；范围默认 **rule**；subsidence 走地降解析器；`confirmed_scope` → `human_confirmed` |
-| 意图展示 | `question_intent_display.py` | Prompt 注入时间/范围 + **语义指标摘要 / 链接主表** |
+| 意图展示 | `question_intent_display.py` | Prompt 注入时间/范围 + **语义指标 / 优选标 / 压缩层对 / 链接主表与建议过滤** |
 | Schema | `schema_service.py` | DB 反射；PG/MySQL 共用 `_create_business_engine` |
 | 专用 RAG | `rag_service.py` | 三命名空间检索 |
 | 缓存 / QA | `sql_cache.py`、`sql_skeleton.py`、`qa_feedback.py` | L2/L1；`policy_fp` 含 domain / semantic_version |
@@ -189,7 +206,7 @@ configs/nl2sql_business/
 
 - **时间**始终由基座规则解析；可用 `time_intent_text` 指定抽文本；**不能**靠 `confirmed_scope` 覆盖时间窗。地降执行前会把时间表达式适配为 **PostgreSQL**。  
 - **范围**：默认规则；可开 LLM；看图诊断等可传 **`confirmed_scope`** → `human_confirmed`。地降范围词表/解析器与锅炉不同（行政区、测站等）。  
-- **语义链接**：仅当配置包/`NL2SQL_SEMANTIC_LINK_ENABLED` 开启时生效（地降默认开、锅炉默认关）；链接失败策略见 `on_link_failure`（`refuse` / `best_effort`）。  
+- **语义链接**：仅当配置包/`NL2SQL_SEMANTIC_LINK_ENABLED` 开启时生效（地降默认开、锅炉默认关）；链接失败策略见 `on_link_failure`（`refuse` / `best_effort`）。地降语义对齐另含 **P6 层位字典注入**（站点→层位0；压缩层→相邻边界标）。  
 - **呈现**：基座返回 `sql`/`rows`（及可选意图/失败原因）；客服收紧分析、综合分析报告合成均在**调用方**完成。
 
 ---
@@ -233,8 +250,10 @@ configs/nl2sql_business/
 │       · confirmed_scope → parse_mode=human_confirmed（仅范围）  │
 │ ①b align_semantics（semantic_link 开启时）                      │
 │    └─ semantic_layer.py → parsed_intent.semantic                │
+│       · 地降：metrics + 默认 fcb；P6 注入层位0 / 压缩层边界标  │
 │ ①c link_schema（semantic_link 开启时）                          │
 │    └─ schema_linker.py → linked_schema；catalog 模式收窄        │
+│       · suggested_filters：project_name / station_name（层位） │
 │       refuse → 提前结束（gen_fail_reason=link_failed:…）        │
 │ ② _ensure_schema_refreshed_once — DB 反射（PG/MySQL）           │
 │    └─ schema_service.py                                         │
@@ -244,7 +263,7 @@ configs/nl2sql_business/
 │ 【Chain：规划 → RAG → 缓存 / QA 回放】                          │
 │ ③ _plan（可选；真实库默认跳过 NL2SQL_DISABLE_PLANNER_…）        │
 │ ④ NL2SQLRAGService.retrieve — schema/biz/qa 三命名空间          │
-│    └─ rag_service.py                                            │
+│    └─ rag_service.py；地降 biz 含口径 + 层位0 摘要 md           │
 │ ⑤ 可选 QA 槽位严格回放（qa_feedback）                           │
 │ ⑥ 可选 L2 / L1（policy_fp 含 domain、semantic_version、…）     │
 │ 说明: 意图/语义/链接在缓存查找之前；命中后仍走改写+校验         │
@@ -255,6 +274,7 @@ configs/nl2sql_business/
 │ ⑦ PromptBuilder + scene=nl2sql（v2 / v2_subsidence）            │
 │    catalog 来自 linked_only / linked_prefer / legacy_wide       │
 │    可注入 semantic / linked_schema 摘要（INJECT_PARSED_INTENT） │
+│    · 地降意图块可含优选标 / 压缩层对 / 建议 station_name 过滤  │
 │ ⑧ LLM → normalize_sql                                           │
 │ ⑨ _rewrite_* + _rewrite_query_filters                           │
 │    · 时间占位符 + sql_dialect.adapt_time_window（PG）           │
@@ -583,7 +603,7 @@ flowchart LR
 | **业务域** | `NL2SQL_BUSINESS_DOMAIN` → `configs/nl2sql_business/<domain>/`；一套进程一个 domain。 |
 | **连接串** | 密码用 `DB_PASSWORD`/`DB_URL`；host/port/库/用户优先显式 `DB_*`，否则 profile `db.*`。PG 需 **asyncpg**。 |
 | **表白名单 / JOIN** | 默认跟配置包文件；显式 `ANALYSIS_NL2SQL_TABLE_SCOPE_*` 仍可覆盖。地降另有 `join_whitelist`。 |
-| **语义链接** | `NL2SQL_SEMANTIC_LINK_ENABLED` + `SCHEMA_LINK_CATALOG_MODE` + `ON_LINK_FAILURE`；地降默认开。 |
+| **语义链接** | `NL2SQL_SEMANTIC_LINK_ENABLED` + `SCHEMA_LINK_CATALOG_MODE` + `ON_LINK_FAILURE`；地降默认开；P6 层位注入随语义资产加载。 |
 | **外键与 JOIN** | 反射 FK 写入 catalog；无物理 FK 依赖 RAG / join 白名单。 |
 | **列–表绑定** | `schema_ok` 时校验 `alias.column` 是否属于该物理表。 |
 | **实体规则** | 否定规则；路径可来自 profile `entity_rules_file`。 |
@@ -603,9 +623,10 @@ flowchart LR
 | `NL2SQL_BUSINESS_DOMAIN` | `boiler_four_tube` \| `subsidence` → 加载配置包 |
 | `DB_URL` / `DB_PASSWORD` / `DB_*` | 业务库；密码勿写入 profile |
 | `NL2SQL_SEMANTIC_LINK_ENABLED` | 语义对齐 + Schema 链接总开关（可被 profile 默认） |
+| `NL2SQL_SCHEMA_LINK_CATALOG_MODE` | `linked_only` / `linked_prefer` / `legacy_wide` |
+| `NL2SQL_ON_LINK_FAILURE` | `refuse` / `best_effort` |
+| （profile）`fcb_layer_map_file` | 地降层位字典路径；未设 env 时由 `profile.yaml` 提供 |
 | `NL2SQL_SEMANTIC_DICT_PATH` | 语义资产根（覆盖 profile） |
-| `NL2SQL_SCHEMA_LINK_CATALOG_MODE` | `linked_only` \| `linked_prefer` \| `legacy_wide` |
-| `NL2SQL_ON_LINK_FAILURE` | `refuse` \| `best_effort` |
 | `NL2SQL_PROMPT_DEFAULT_VERSION` | 如 `v2` / `v2_subsidence` |
 | `NL2SQL_DISABLE_PLANNER_WHEN_DB_SCHEMA` | 默认 `true`：反射成功则跳过 `_plan` |
 | `NL2SQL_CACHE_ENABLED` | 代码默认 `false`；`.env.example` 示例常开 |
@@ -634,8 +655,10 @@ flowchart LR
 
 | 文档 | 内容 |
 |------|------|
-| `docs/基于地降所项目改造/NL2SQL基座改造.md` | **现网演进主方案**（配置包 / 语义 / Schema 链接 / 验收） |
-| `enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md` | 代码行为端到端细节（**待补**语义链接与 domain） |
+| `docs/基于地降所项目改造/NL2SQL基座改造.md` | **现网演进主方案**（配置包 / 语义 / Schema 链接 / P6 索引与验收） |
+| `docs/基于地降所项目改造/NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md` | **P6 专项**：初−末/正下沉、三维 grain、`fcb_layer_map`、层位0与压缩层注入 |
+| `configs/nl2sql_business/subsidence/配置项说明.md` | 地降配置包字段与目录说明 |
+| `enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md` | 代码行为端到端细节（建议同步补 P6 注入句） |
 | `framework-guide/NL2SQL整体实现技术说明.md` | 模块映射、API、配置、日志（**待补**配置包与 PG） |
 | `docs/NL2SQL系统概要设计.md` | 产品与模块概要（**建议补**多业务域） |
 | `docs/NL2SQL缓存实现方案.md` | L2/L1 与 QA；核对 `policy_fp` 含 semantic_version |
@@ -649,4 +672,4 @@ flowchart LR
 
 ---
 
-*代码变更时请同步更新本文、`NL2SQL基座改造.md`（设计口径）与 `framework-guide/NL2SQL整体实现技术说明.md`（实现映射）。*
+*代码变更时请同步更新本文、`NL2SQL基座改造.md`（设计口径）、P6 专项与 `framework-guide/NL2SQL整体实现技术说明.md`（实现映射）。*
