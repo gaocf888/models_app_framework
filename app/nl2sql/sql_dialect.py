@@ -7,12 +7,29 @@ import re
 
 from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
 
+# ISO 周一起点（与 MySQL WEEKDAY=0→周一、PG date_trunc('week') 一致）
+_PG_WEEK_START = "(date_trunc('week', CURRENT_DATE)::date)"
+
+# 须在全局 CURDATE()→CURRENT_DATE 之前处理，否则 WEEKDAY(CURDATE()) 会被拆坏
+_WEEK_START_PATTERNS: tuple[str, ...] = (
+    # MySQL 标准「本周一起点」
+    r"DATE_SUB\s*\(\s*CURDATE\s*\(\s*\)\s*,\s*INTERVAL\s+WEEKDAY\s*\(\s*CURDATE\s*\(\s*\)\s*\)\s+DAY\s*\)",
+    r"DATE_SUB\s*\(\s*CURRENT_DATE\s*,\s*INTERVAL\s+WEEKDAY\s*\(\s*CURRENT_DATE\s*\)\s+DAY\s*\)",
+    r"DATE_SUB\s*\(\s*CURRENT_DATE\s*,\s*INTERVAL\s+WEEKDAY\s*\(\s*CURDATE\s*\(\s*\)\s*\)\s+DAY\s*\)",
+    # LLM / 半适配残留：CURRENT_DATE - INTERVAL '1 day' * WEEKDAY(...)
+    r"CURRENT_DATE\s*-\s*INTERVAL\s+'1\s+day'\s*\*\s*WEEKDAY\s*\(\s*CURRENT_DATE\s*\)",
+    r"CURRENT_DATE\s*-\s*INTERVAL\s+'1\s+day'\s*\*\s*WEEKDAY\s*\(\s*CURDATE\s*\(\s*\)\s*\)",
+    r"CURRENT_DATE\s*-\s*INTERVAL\s+1\s+DAY\s*\*\s*WEEKDAY\s*\(\s*CURRENT_DATE\s*\)",
+    r"CURRENT_DATE\s*-\s*INTERVAL\s+1\s+DAY\s*\*\s*WEEKDAY\s*\(\s*CURDATE\s*\(\s*\)\s*\)",
+)
+
 _KNOWN_PG_REPLACEMENTS: dict[str, str] = {
+    # 精确字面量优先于 CURDATE() 全局替换
+    "DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)": _PG_WEEK_START,
     "DATE_SUB(CURDATE(), INTERVAL 1 DAY)": "(CURRENT_DATE - INTERVAL '1 day')",
-    "CURDATE()": "CURRENT_DATE",
     "DATE_FORMAT(CURDATE(), '%Y-%m-01')": "(date_trunc('month', CURRENT_DATE)::date)",
     "DATE_FORMAT(CURDATE(), '%Y-01-01')": "(date_trunc('year', CURRENT_DATE)::date)",
-    "DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)": "(date_trunc('week', CURRENT_DATE)::date)",
+    "CURDATE()": "CURRENT_DATE",
     "NOW()": "NOW()",
 }
 
@@ -38,6 +55,12 @@ def adapt_time_expr(expr: str) -> str:
 
 def adapt_mysql_time_expr_to_postgres(expr: str) -> str:
     out = expr.strip()
+
+    # 1) 「本周一起点」整式替换（必须先于 CURDATE() 全局替换）
+    for pat in _WEEK_START_PATTERNS:
+        out = re.sub(pat, _PG_WEEK_START, out, flags=re.IGNORECASE)
+
+    # 2) 已知精确字面量（含 week 与昨日等）
     for src, dst in _KNOWN_PG_REPLACEMENTS.items():
         out = out.replace(src, dst)
 
@@ -74,9 +97,23 @@ def adapt_mysql_time_expr_to_postgres(expr: str) -> str:
         out,
         flags=re.IGNORECASE,
     )
+
+    # 残留 WEEKDAY(...)：对齐 MySQL WEEKDAY（周一=0）→ ISODOW-1
     out = re.sub(
         r"WEEKDAY\s*\(\s*CURDATE\s*\(\s*\)\s*\)",
-        "EXTRACT(DOW FROM CURRENT_DATE)::int",
+        "(EXTRACT(ISODOW FROM CURRENT_DATE)::int - 1)",
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(
+        r"WEEKDAY\s*\(\s*CURRENT_DATE\s*\)",
+        "(EXTRACT(ISODOW FROM CURRENT_DATE)::int - 1)",
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(
+        r"WEEKDAY\s*\(([^)]+)\)",
+        r"(EXTRACT(ISODOW FROM \1)::int - 1)",
         out,
         flags=re.IGNORECASE,
     )
@@ -184,3 +221,35 @@ def adapt_mysql_time_expr_to_postgres(expr: str) -> str:
 
 def adapt_time_window(start_expr: str, end_expr: str) -> tuple[str, str]:
     return adapt_time_expr(start_expr), adapt_time_expr(end_expr)
+
+
+def scrub_mysql_weekday_for_postgres(sql: str) -> str:
+    """
+    仅清洗 SQL 中的 MySQL WEEKDAY / 「本周一起点」残留（不改动其它字面量）。
+
+    用于 Postgres 路径在时间窗改写之后，去掉 LLM 或半适配留下的 WEEKDAY()。
+    """
+    if not sql:
+        return sql
+    out = sql
+    for pat in _WEEK_START_PATTERNS:
+        out = re.sub(pat, _PG_WEEK_START, out, flags=re.IGNORECASE)
+    out = re.sub(
+        r"WEEKDAY\s*\(\s*CURDATE\s*\(\s*\)\s*\)",
+        "(EXTRACT(ISODOW FROM CURRENT_DATE)::int - 1)",
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(
+        r"WEEKDAY\s*\(\s*CURRENT_DATE\s*\)",
+        "(EXTRACT(ISODOW FROM CURRENT_DATE)::int - 1)",
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(
+        r"WEEKDAY\s*\(([^)]+)\)",
+        r"(EXTRACT(ISODOW FROM \1)::int - 1)",
+        out,
+        flags=re.IGNORECASE,
+    )
+    return out

@@ -1617,6 +1617,13 @@ class NL2SQLChain:
             notes.extend(bound_notes)
             rewritten = self._normalize_end_time_upper_to_start_time(rewritten, end_expr=end_expr)
             rewritten = self._dedupe_redundant_time_upper_bounds(rewritten, end_expr=end_expr)
+            from app.nl2sql.sql_dialect import is_postgres_dialect, scrub_mysql_weekday_for_postgres
+
+            if is_postgres_dialect():
+                scrubbed = scrub_mysql_weekday_for_postgres(rewritten)
+                if scrubbed != rewritten:
+                    notes.append("scrub_mysql_weekday_for_postgres")
+                    rewritten = scrubbed
         rewritten, gc_notes = self._rewrite_group_concat_utf8_safe(rewritten, plan_item_id=plan_item_id)
         notes.extend(gc_notes)
         rewritten, scope_notes = self._rewrite_entity_scope_literals(
@@ -2493,6 +2500,8 @@ class NL2SQLChain:
             return False, "empty sql"
         if re.search(r"\bCURDATE\s*\(", s, re.IGNORECASE):
             return False, "CURDATE() is forbidden in PostgreSQL; use CURRENT_DATE"
+        if re.search(r"\bWEEKDAY\s*\(", s, re.IGNORECASE):
+            return False, "WEEKDAY() is forbidden in PostgreSQL; use date_trunc('week', …) or EXTRACT(ISODOW …)"
         if re.search(r"\bDATE_SUB\s*\(", s, re.IGNORECASE):
             return False, "DATE_SUB() is forbidden in PostgreSQL; use CURRENT_DATE - INTERVAL '…'"
         # MySQL: INTERVAL 1 DAY（无引号）在 PG 非法；PG 应为 INTERVAL '1 day'

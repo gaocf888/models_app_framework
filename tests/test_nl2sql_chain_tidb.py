@@ -138,6 +138,24 @@ def test_validate_sql_dialect_boiler_rejects_pg_interval(monkeypatch) -> None:
         clear_nl2sql_business_profile_cache()
 
 
+def test_validate_sql_dialect_subsidence_rejects_weekday(monkeypatch) -> None:
+    from app.nl2sql.nl2sql_business_profile import clear_nl2sql_business_profile_cache
+
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    monkeypatch.delenv("NL2SQL_SQL_DIALECT", raising=False)
+    clear_nl2sql_business_profile_cache()
+    try:
+        chain = _build_chain_for_unit()
+        ok, reason = chain._validate_sql_dialect(
+            "SELECT * FROM t WHERE ts >= CURRENT_DATE - INTERVAL '1 day' * WEEKDAY(CURRENT_DATE)"
+        )
+        assert not ok
+        assert reason is not None
+        assert "WEEKDAY" in reason
+    finally:
+        clear_nl2sql_business_profile_cache()
+
+
 def test_tidb_forbidden_aliases_env_extend(monkeypatch) -> None:
     monkeypatch.setenv("NL2SQL_TIDB_FORBIDDEN_ALIASES", "foo_alias,bar_alias")
     chain = _build_chain_for_unit()

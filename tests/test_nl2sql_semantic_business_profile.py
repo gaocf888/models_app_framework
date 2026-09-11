@@ -85,6 +85,55 @@ def test_sql_dialect_adapt_yesterday(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "INTERVAL" in out
 
 
+def test_sql_dialect_adapt_this_week(monkeypatch: pytest.MonkeyPatch) -> None:
+    """本周一起点须变为 date_trunc，且不得残留 WEEKDAY()。"""
+    from app.nl2sql.nl2sql_business_profile import clear_nl2sql_business_profile_cache
+    from app.nl2sql.sql_dialect import scrub_mysql_weekday_for_postgres
+    from app.nl2sql.time_intent_display import extract_time_window_from_question
+
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    monkeypatch.delenv("NL2SQL_SQL_DIALECT", raising=False)
+    clear_nl2sql_business_profile_cache()
+    try:
+        assert is_postgres_dialect()
+        mysql_week = "DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)"
+        out = adapt_mysql_time_expr_to_postgres(mysql_week)
+        assert "date_trunc('week'" in out
+        assert "WEEKDAY" not in out.upper()
+
+        # CURDATE 先被替换后的半适配残留
+        half = "DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) DAY)"
+        out2 = adapt_mysql_time_expr_to_postgres(half)
+        assert "date_trunc('week'" in out2
+        assert "WEEKDAY" not in out2.upper()
+
+        # LLM 常见写法
+        llm = "CURRENT_DATE - INTERVAL '1 day' * WEEKDAY(CURRENT_DATE)"
+        out3 = adapt_mysql_time_expr_to_postgres(llm)
+        assert "date_trunc('week'" in out3
+        assert "WEEKDAY" not in out3.upper()
+
+        win = extract_time_window_from_question("请帮我查询朝阳区本周的沉降量")
+        assert win is not None
+        start, end, tag = win
+        assert tag == "this_week"
+        from app.nl2sql.sql_dialect import adapt_time_window
+
+        pg_start, pg_end = adapt_time_window(start, end)
+        assert "date_trunc('week'" in pg_start
+        assert "WEEKDAY" not in pg_start.upper()
+        assert "WEEKDAY" not in pg_end.upper()
+        assert "INTERVAL" in pg_end
+
+        scrubbed = scrub_mysql_weekday_for_postgres(
+            "SELECT 1 WHERE t.data_time >= CURRENT_DATE - INTERVAL '1 day' * WEEKDAY(CURRENT_DATE)"
+        )
+        assert "date_trunc('week'" in scrubbed
+        assert "WEEKDAY" not in scrubbed.upper()
+    finally:
+        clear_nl2sql_business_profile_cache()
+
+
 def test_sql_dialect_adapt_quarter_and_concat(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
     this_q = (

@@ -227,7 +227,7 @@
       <div id="answer"></div>
       <div id="suggestions" style="margin-top:0.75rem;display:none;"></div>
       <div id="err" class="err" hidden></div>
-      <h2 style="margin-top:1rem;">结束帧 meta（已隐藏 nl2sql_sql，前端不得渲染 SQL）</h2>
+      <h2 style="margin-top:1rem;">结束帧 meta（完整展示，含 nl2sql_sql）</h2>
       <div id="meta">（尚未完成）</div>
     </div>
   </div>
@@ -668,14 +668,8 @@
         if (ev.finished === true) {
           const rawMeta = ev.meta || {};
           flushAnswerWithKatex(rawMeta.rag_citations || []);
-          // P1-5：界面不得渲染 SQL；展示用 meta 剔除 nl2sql_sql
-          const safeMeta = Object.assign({}, rawMeta);
-          if (Object.prototype.hasOwnProperty.call(safeMeta, "nl2sql_sql")) {
-            safeMeta.nl2sql_sql = safeMeta.nl2sql_sql
-              ? "[REDACTED · 前端勿渲染 SQL]"
-              : null;
-          }
-          $("meta").textContent = JSON.stringify(safeMeta, null, 2);
+          // 联调页完整展示 finished.meta（含 nl2sql_sql）；正式前端仍勿在气泡中渲染 SQL
+          $("meta").textContent = JSON.stringify(rawMeta, null, 2);
           const sugBox = $("suggestions");
           const qs = Array.isArray(rawMeta.suggested_questions)
             ? rawMeta.suggested_questions.filter((x) => String(x || "").trim())
