@@ -357,6 +357,31 @@ def _looks_like_mark(name: str, assets: SemanticAssets) -> bool:
     return bool(_MARK_NAME_RE.match(n)) and "-" in n
 
 
+
+_STATION_TABLE = "t_station"
+
+_STATION_CATALOG_RE = re.compile(
+    r"(?:"
+    r"(?:监测)?(?:站点|测站|监测点|监测站点).{0,12}(?:有哪些|有什么|哪些|列表|名录|清单|都有啥|都有哪些)"
+    r"|(?:有哪些|有什么|哪些|列出|查询|查一下).{0,12}(?:监测)?(?:站点|测站|监测点|监测站点)"
+    r"|(?:站点|测站|监测点).{0,6}(?:分布|布置).{0,6}(?:情况|如何|怎样|怎么)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_station_catalog_question(question: str) -> bool:
+    """判断是否为「监测站点有哪些/列表」类维表清单问句。"""
+    q = (question or "").strip()
+    if not q:
+        return False
+    if re.search(r"(沉降量|累计沉降|位移量|压缩量)", q) and not re.search(
+        r"(有哪些|哪些|列表|名录|清单)", q
+    ):
+        return False
+    return bool(_STATION_CATALOG_RE.search(q))
+
+
 def _is_fcb_station_grain(binding: SemanticBinding) -> bool:
     """站点/地面沉降类问句（分层标主表），需要层位0 代表标。"""
     if any(dt in {"gnss", "dxswj", "kxsylj", "qxz", "gq"} for dt in binding.device_types):
@@ -692,7 +717,10 @@ def align_semantics(
                     binding.device_type_tables.append(tbl)
                 break
 
-        if (
+        if is_station_catalog_question(q):
+            binding.default_table = _STATION_TABLE
+            binding.warnings.append("station_catalog_query")
+        elif (
             not binding.device_types
             and assets.device_type_tables
             and "fcb" in assets.device_type_tables
@@ -731,7 +759,12 @@ def align_semantics(
     if _LAYER_PLACEHOLDER_RE.search(q):
         binding.warnings.append("layered_fcb_placeholder:分层各层数据尚未入库")
 
-    _inject_fcb_preferred_station_names(q, binding, assets)
+    if is_station_catalog_question(q) or "station_catalog_query" in binding.warnings:
+        binding.default_table = _STATION_TABLE
+        if "station_catalog_query" not in binding.warnings:
+            binding.warnings.append("station_catalog_query")
+    else:
+        _inject_fcb_preferred_station_names(q, binding, assets)
 
     return binding
 

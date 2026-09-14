@@ -176,4 +176,71 @@ ORDER BY max_disp3d DESC
 
 **问句**：朝阳区最近一周分层标沉降最大的 5 个站点。
 
-> 「沉降最大」= 周期 `Δ=初−末` **最大**（下沉最多）；按 `project_name` 取层位 0 标后再排序 LIMIT 5。
+> 「沉降最大」= 周期 `Δ=初−末` **最大**（下沉最多）；按 `project_name` 取层位 0 标后再排序 LIMIT 5。  
+> 「最近一周」= **滚动**近 7 天（可用 `NOW() - INTERVAL '7 days'`），**不是**自然「本周」。
+
+---
+
+## nl2sql_direct · 朝阳区本周沉降最大站点（完整 Postgres 正例）
+
+**问句**：请帮我查询北京市朝阳区本周最大沉降的站点是哪个。
+
+> - **本周** = 自然周：`date_trunc('week', CURRENT_DATE)::date` ～ `+ INTERVAL '7 days'`（**禁止**写成 `CURRENT_DATE - INTERVAL '7 days'`）。  
+> - 站点沉降用朝阳区层位 0 代表标：`F1-7,F2-7,F27-8,F28-10,F29-10`（见 `nl2sql_biz_knowledge_fcb_layer0_stations.md`）。  
+> - `period_settle_mm = settle_start − settle_end`（初−末）；最大沉降 = `ORDER BY period_settle_mm DESC LIMIT 1`。  
+> - 同一 `project_name + station_name` 取窗内最早/最晚各一条；缺初或缺末的站不参与。
+
+```sql
+WITH bounds AS (
+  SELECT
+    date_trunc('week', CURRENT_DATE)::date AS t_start,
+    (date_trunc('week', CURRENT_DATE)::date + INTERVAL '7 days') AS t_end
+),
+ranked AS (
+  SELECT
+    f.project_name,
+    f.station_name,
+    s.area,
+    f.total_settle,
+    f.data_time,
+    ROW_NUMBER() OVER (
+      PARTITION BY f.project_name, f.station_name
+      ORDER BY f.data_time ASC
+    ) AS rn_asc,
+    ROW_NUMBER() OVER (
+      PARTITION BY f.project_name, f.station_name
+      ORDER BY f.data_time DESC
+    ) AS rn_desc
+  FROM t_data_wash_fcb AS f
+  JOIN t_station AS s ON f.project_name = s.name
+  CROSS JOIN bounds AS b
+  WHERE f.data_time >= b.t_start
+    AND f.data_time < b.t_end
+    AND s.area = '朝阳区'
+    AND f.station_name IN ('F1-7', 'F2-7', 'F27-8', 'F28-10', 'F29-10')
+),
+period AS (
+  SELECT
+    project_name,
+    station_name,
+    area,
+    MAX(CASE WHEN rn_asc = 1 THEN total_settle END) AS settle_start,
+    MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS settle_end,
+    MAX(CASE WHEN rn_asc = 1 THEN total_settle END)
+      - MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS period_settle_mm
+  FROM ranked
+  GROUP BY project_name, station_name, area
+  HAVING MAX(CASE WHEN rn_asc = 1 THEN total_settle END) IS NOT NULL
+     AND MAX(CASE WHEN rn_desc = 1 THEN total_settle END) IS NOT NULL
+)
+SELECT
+  project_name AS station_name,
+  station_name AS layer0_mark,
+  area,
+  settle_start,
+  settle_end,
+  period_settle_mm
+FROM period
+ORDER BY period_settle_mm DESC
+LIMIT 1;
+```

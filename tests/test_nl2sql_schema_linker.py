@@ -155,3 +155,67 @@ def test_link_schema_gnss(monkeypatch: pytest.MonkeyPatch) -> None:
     assert any(t.name == "t_data_wash_gnss" for t in linked.tables)
     assert any(c.column == "displacement_3d" for c in linked.columns)
 
+
+def test_link_schema_station_catalog_links_all_columns_including_lon_lat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """站点清单问句：主表 t_station，全列链接（含 lon/lat），且不灌入层位0标过滤。"""
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
+    from app.nl2sql.schema_linker import narrow_validation_sets
+    from app.nl2sql.semantic_layer import is_station_catalog_question
+
+    q = "请帮我查询北京地面沉降监测监测站点有哪些，并分析为什么这样布置监测站点"
+    assert is_station_catalog_question(q)
+
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    assets = load_semantic_assets(
+        str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    )
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert binding.default_table == "t_station"
+    assert "station_catalog_query" in binding.warnings
+    assert not binding.preferred_station_names
+
+    table_columns = {
+        "t_station": {"id", "name", "code", "lon", "lat", "area"},
+        "t_data_wash_fcb": {
+            "total_settle",
+            "data_time",
+            "station_id",
+            "station_name",
+            "project_name",
+        },
+    }
+    linked = link_schema(
+        q,
+        intent,
+        binding,
+        table_columns,
+        allowlist=set(table_columns.keys()),
+        assets=assets,
+    )
+    assert linked.tables[0].name == "t_station"
+    station_cols = {c.column for c in linked.columns if c.table == "t_station"}
+    assert {"id", "name", "code", "lon", "lat", "area"} <= station_cols
+    assert not any(
+        f.get("source") in {"fcb_layer0", "fcb_compress"} for f in linked.suggested_filters
+    )
+
+    _tables, allowed_cols, _tc = narrow_validation_sets(
+        linked,
+        set(table_columns),
+        {c for cols in table_columns.values() for c in cols},
+        table_columns,
+        mode="linked_only",
+    )
+    assert "lon" in allowed_cols and "lat" in allowed_cols
+

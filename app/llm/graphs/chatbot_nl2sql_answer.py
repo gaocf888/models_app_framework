@@ -281,7 +281,10 @@ def _chatbot_sql_gen_extra_hint() -> str:
         return base
     default_hint = (
         "【默认监测类型】若用户未明确监测类型/库（分层标/基岩标/GNSS/地下水等），"
+        "且问题不是「监测站点有哪些/站点列表」类维表清单，"
         "默认按分层标（fcb，表 t_data_wash_fcb）生成查询；勿擅自跨多库联合。"
+        "若问站点清单/分布/有哪些站点，只查 t_station（含 name/code/area/lon/lat），"
+        "不要用层位0标编号过滤 t_station.name，不要写死 F8-10 这类标名。"
     )
     return f"{base}\n{default_hint}"
 

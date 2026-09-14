@@ -259,6 +259,35 @@ def test_semantic_default_device_type_fcb_when_unspecified(monkeypatch: pytest.M
     assert "default_device_type_fcb" in binding.warnings
 
 
+def test_semantic_station_catalog_skips_default_fcb_and_layer0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """站点清单问句：不默认 fcb，不注入全市层位0标编号。"""
+    from app.nl2sql.semantic_layer import is_station_catalog_question
+
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "北京地面沉降监测站点有哪些"
+    assert is_station_catalog_question(q)
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert binding.default_table == "t_station"
+    assert "station_catalog_query" in binding.warnings
+    assert "default_device_type_fcb" not in binding.warnings
+    assert not binding.preferred_station_names
+    assert "fcb" not in binding.device_types
+
+
 def test_semantic_explicit_gnss_not_overridden_by_fcb_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
     profile = get_nl2sql_business_profile()
