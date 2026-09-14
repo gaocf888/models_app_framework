@@ -134,7 +134,7 @@ docker compose -f docker-nvidia/docker-compose-nvidia.yml --profile small-model-
 
 | 层级 | 作用 | 典型变量 |
 |------|------|----------|
-| **Docker Compose 在宿主机解析** | 用于 `docker-compose.yml` 里的**插值**（镜像、端口、网络名、数据卷源路径）。只在执行 `docker compose` 的 shell 环境 + **本目录 `.env`** 中取值。 | `APP_PORT`、`EMBEDDING_MODELS_HOST_PATH`、`RERANKER_MODELS_HOST_PATH`、`INTENT_MODELS_HOST_PATH`、`INTENT_LLM_MODELS_HOST_PATH`、`SMALL_MODEL_WEIGHTS_HOST_PATH` 等 |
+| **Docker Compose 在宿主机解析** | 用于 `docker-compose.yml` 里的**插值**（镜像、端口、网络名、数据卷源路径）。只在执行 `docker compose` 的 shell 环境 + **本目录 `.env`** 中取值。 | `APP_PORT`、`EMBEDDING_MODELS_HOST_PATH`、`RERANKER_MODELS_HOST_PATH`、`SMALL_MODEL_WEIGHTS_HOST_PATH` 等 |
 | **注入应用容器的环境变量** | **`env_file: .env`** 把整个 `.env` 打进 **`models-app` / `models-app-gpu` 进程**，由 **`app/core/config.py`** 的 `os.getenv` 读取。应用**不会**自己 `load_dotenv` 读磁盘上的 `.env`。 | `SERVICE_API_KEYS` / `SERVICE_API_KEY`、`LLM_*`、`RAG_*`、`REDIS_URL`、`DB_*`、`GRAPH_*`、`MINERU_*`、`EMBEDDING_*` 等 |
 
 **配置策略建议**
@@ -211,7 +211,7 @@ cp .env.example .env
 通用开关：
 
 - `CHATBOT_INTENT_ENABLED=true`
-- `CHATBOT_INTENT_BACKEND=rules`（可选 `bert`；**bert 须已微调分类模型，不可用魔塔通用预训练 BERT**；见 `docs/智能客服意图识别BERT接入说明.md`）
+- `CHATBOT_INTENT_BACKEND=rules`（口语漏召回用 `funnel`；已废弃 `llm`/`bert`）
 - `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query,hybrid_qa`
 - `CHATBOT_NL2SQL_ROUTE_ENABLED=true`（智能客服内嵌 NL2SQL 分流）
 - `CHATBOT_SUGGESTED_QUESTIONS_ENABLED=true` / `CHATBOT_SUGGESTED_QUESTIONS_MAX=5`
@@ -416,10 +416,10 @@ docker compose --profile small-model-gpu up -d --build
 | `huggingface-cache` | 应用容器 `/root/.cache/huggingface` | 嵌入/下载模型缓存，减少重复拉取 |
 | `small-model-data` | **仅 models-app-gpu** `/workspace/data/small_model_evidence` | 小模型证据片段等可写数据 |
 | `SMALL_MODEL_WEIGHTS_HOST_PATH` → `/workspace/models/small:ro` | **仅 models-app-gpu** | 只读权重；未设置时用占位卷 **`small-model-weights-dummy`**（空卷，仅开发联调 compose） |
-| `${EMBEDDING_MODELS_HOST_PATH}/Qwen3-Embedding-0.6B` → `/workspace/models/embeddings/Qwen3-Embedding-0.6B:ro` | `models-app` / `models-app-gpu` | **离线嵌入**；配合 `EMBEDDING_MODEL_PATH`、`EMBEDDING_QUERY_PROMPT_NAME=query` |
+| `${EMBEDDING_MODELS_HOST_PATH}/Qwen3-Embedding-0.6B` → `/workspace/models/embeddings/Qwen3-Embedding-0.6B:ro` | `models-app` / `models-app-gpu` | **离线嵌入**；配合 `EMBEDDING_MODEL_PATH`、`EMBEDDING_QUERY_PROMPT_NAME=query`；`funnel` L2 亦复用 |
 | `${RERANKER_MODELS_HOST_PATH}/Qwen3-Reranker-0.6B` → `/workspace/models/rerank/...` 或 `/models/rerank/...:ro` | `models-app` / `models-app-gpu` | **离线重排**；`models-app` 用 `/workspace/models/rerank/...`，`models-app-gpu` 用 `/models/rerank/...` |
-| `${INTENT_MODELS_HOST_PATH}/chatbot-intent-bert` → `.../chatbot-intent-bert:ro` | `models-app` / `models-app-gpu` | **BERT 意图**（`backend=bert`）；须微调 HF 目录 |
-| `${INTENT_LLM_MODELS_HOST_PATH}/qwen2.5-0.5b-instruct` → `.../qwen2.5-0.5b-instruct:ro` | `models-app` / `models-app-gpu` | **轻量意图 LLM**（`backend=llm`）；HF 目录直挂，见 `docs/智能客服意图识别轻量LLM接入说明.md` |
+
+> 意图后端仅 **`rules|funnel`**（已废弃独立 0.5B/BERT 挂载）。`funnel` 复用嵌入 + vLLM 主对话。
 
 > 多卡环境建议在 `.env` 显式设置 **`EMBEDDING_DEVICE`**（如 `cuda:0`）与 **`RAG_RERANKER_DEVICE`**（如 `cuda:1`），与 vLLM 分卡。仅 **GPU 栈**（`docker-nvidia` / `docker-mx` / `small-model-gpu`）下生效；默认 CPU 栈无效。
 
@@ -532,10 +532,6 @@ docker compose --profile small-model-gpu down
        Qwen3-Embedding-0.6B/    # Qwen/Qwen3-Embedding-0.6B 完整 HF 目录
      reranker/
        Qwen3-Reranker-0.6B/     # Qwen/Qwen3-Reranker-0.6B 完整 HF 目录
-     intent/
-       chatbot-intent-bert/     # 可选，BERT 意图
-     llm/
-       qwen2.5-0.5b-instruct/   # 可选，轻量意图 LLM
    ```
 
    离线下载示例（魔塔 / HuggingFace，目录名与 compose 挂载子路径一致）：
@@ -546,18 +542,12 @@ docker compose --profile small-model-gpu down
    # huggingface-cli download Qwen/Qwen3-Reranker-0.6B --local-dir /aidata/models/reranker/Qwen3-Reranker-0.6B
    ```
 
-   > **轻量意图 LLM**：`huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct --local-dir /aidata/models/llm/qwen2.5-0.5b-instruct`；见 `docs/智能客服意图识别轻量LLM接入说明.md`。
-
-   > **注意**：`chatbot-intent-bert` **不能**直接放魔塔下载的 `bert-base-chinese` 等通用预训练模型。  
-   > 当前代码使用 `AutoModelForSequenceClassification`，**必须**是已完成三分类微调并导出的模型。  
-   > 不想训练请保持 `CHATBOT_INTENT_BACKEND=rules`（默认）。
+   > 意图不另挂模型：`CHATBOT_INTENT_BACKEND=rules`（默认）或 `funnel`（复用嵌入 + vLLM 主对话）。已废弃 `llm`/`bert`。
 
    并在 `app/app-deploy/.env` 中配置：
 
    - `EMBEDDING_MODELS_HOST_PATH=/aidata/models/embeddings`
    - `RERANKER_MODELS_HOST_PATH=/aidata/models/reranker`
-   - `INTENT_MODELS_HOST_PATH=/aidata/models/intent`（启用 BERT 意图时）
-   - `INTENT_LLM_MODELS_HOST_PATH=/aidata/models/llm`（启用轻量意图 LLM 时）
 
 2. **在 compose 中挂载到应用容器**
 
@@ -597,7 +587,7 @@ docker compose --profile small-model-gpu down
 
    见上文 [部署形态选择](#部署形态选择cpu--英伟达-gpu--沐曦-gpu) 中对应 `docker compose` 命令。
 
-更换嵌入、重排或 BERT 意图模型时：
+更换嵌入或重排模型时：
 
 - 在宿主机 `${EMBEDDING_MODELS_HOST_PATH}` / `${RERANKER_MODELS_HOST_PATH}` 下放置新模型子目录；  
 - 同步 compose 挂载子目录名与 `.env` 中 `EMBEDDING_MODEL_PATH` / `RAG_RERANKER_MODEL_PATH`；  

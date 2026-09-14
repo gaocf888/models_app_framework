@@ -66,8 +66,8 @@ docker compose -f app/app-deploy/docker-compose-mx.yml logs -f models-app
 
 - `CHATBOT_GRAPH_ENABLED=true`
 - `CHATBOT_INTENT_ENABLED=true`
-- `CHATBOT_INTENT_BACKEND=rules`（BERT 灰度时为 `bert`，**须已微调三分类模型，不可用通用预训练 BERT**；见 `docs/智能客服意图识别BERT接入说明.md`）
-- `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify`
+- `CHATBOT_INTENT_BACKEND=rules` 或 `funnel`（口语漏召回用 `funnel`；已废弃 `llm`/`bert`）
+- `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query,hybrid_qa`
 
 再查响应尾帧 `meta`：
 

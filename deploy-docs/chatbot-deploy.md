@@ -276,6 +276,7 @@ CONV_MAX_HISTORY_MESSAGES=50
 ```env
 CHATBOT_INTENT_ENABLED=true
 CHATBOT_INTENT_BACKEND=rules
+# 口语查数漏召回：CHATBOT_INTENT_BACKEND=funnel
 CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query,hybrid_qa
 CHATBOT_CRAG_ENABLED=true
 CHATBOT_CRAG_MAX_ATTEMPTS=2
@@ -296,7 +297,7 @@ CHATBOT_CHECKPOINT_NAMESPACE=chatbot_graph
 - 对话入口仅 `/chatbot/chat/stream`；须安装 `langgraph`（无 `CHATBOT_GRAPH_ENABLED` / Legacy 回退）；
 - `CHATBOT_HISTORY_LIMIT` 控制“单轮读取历史窗口”，`CONV_MAX_HISTORY_MESSAGES` 控制“会话总保留上限”；
 - `CHATBOT_INTENT_OUTPUT_LABELS` 建议含 `hybrid_qa`（RAG+NL2SQL 综合）；
-- `CHATBOT_INTENT_BACKEND` 默认 `rules`；轻量 LLM 灰度为 `llm`（进程内 CPU + 模式 B，见 `docs/智能客服意图识别轻量LLM接入说明.md`）；`bert` 须微调模型。
+- `CHATBOT_INTENT_BACKEND` 仅 **`rules`（默认）| `funnel`**：`funnel` = L1 规则 → L2 Embedding 原型 → L3 vLLM 主对话；已废弃 `llm`/`bert`。
 
 #### 6.1.5 业务数据库（NL2SQL，可选）
 

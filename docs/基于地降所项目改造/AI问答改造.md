@@ -1,8 +1,8 @@
 # 地降所项目 — AI 问答（智能客服）改造方案
 
-> **版本**：2026-09-10（修订：**P0 / P1 / P2 已实现**；P1-1 已收缩；前端§一契约+联调页已齐；`CHATBOT_DOMAIN` + `subsidence_v1`；`data_query` 后轻量知识检索写过滤后 `rag_citations`）  
+> **版本**：2026-09-14（修订：意图后端 **`rules` | `funnel` 已落地**；删除 0.5B/`bert`；其余 **P0 / P1 / P2 已实现**；前端§一契约+联调页已齐；`CHATBOT_DOMAIN` + `subsidence_v1`）  
 > **默认域**：代码未设 env 时默认 `CHATBOT_DOMAIN=subsidence` / `CHATBOT_PROMPT_DEFAULT_VERSION=subsidence_v1`（锅炉部署显式设 `boiler` / `boiler_v1`）  
-> **状态**：方案稿（**P0 / P1 / P2 已实现**；P1-1 取消规划清单为问答必做项；**P3 可选**；生产前端 UI 在前端仓按 §一 契约落地）  
+> **状态**：方案稿（**P0 / P1 / P2 已实现**；**意图漏斗 `funnel` 已落地**；P1-1 已收缩；**P3 可选**；生产前端 UI 在前端仓按 §一 契约落地）  
 > **分支**：`dev_djs`（北京市地面沉降监测 / 地降所）  
 > **范围**：四大板块之 **「智能问答」** → 算法侧 **`/chatbot/*`（`ChatbotService` + `ChatbotLangGraphRunner`）**；角色切为 **地面沉降分析专家**；回答须专业、可溯源。  
 > **明确边界**：**不是**左侧「数据查询」页（`/data-query-agent/*`）；**不是**「自动报告」（`/analysis-agent/*`）；**不是**「知识库」管理台（`/rag/*` 管理面）。  
@@ -197,8 +197,9 @@ SSE：delta / citation_ref / finished.meta
 |----|--------|------|
 | **P3-1** | 放量 `handoff_human` | 低置信专业问答「建议人工确认」与实施方案对齐（仍非真人接入） |
 | **P3-2** | 沉降「相似案例」 | 新 namespace + 非锅炉门控（仅当产品要「历史沉降案例」块） |
-| **P3-3** | 意图 BERT 四分类重训 | 含 `hybrid_qa`；否则 bert 后端继续规则兜底 mixed |
+| **P3-3** | ~~意图 BERT 四分类重训~~ | **取消**：不再保留 `bert` / 0.5B `llm` 意图后端；口语覆盖改走 §5.4 **`funnel`** |
 | **P3-4** | 指代消解 yaml | `chatbot_anaphora.yaml` 示例改为沉降对话 |
+| **P3-5** | **意图漏斗 `funnel`（已落地）** | L1 规则 → L2 Embedding 原型 → L3 vLLM 主对话；默认仍 `rules`；见 §5.4 |
 
 ---
 
@@ -211,7 +212,7 @@ SSE：delta / citation_ref / finished.meta
 | 层 | Env / 机制 | 管什么 | 锅炉 | 地降 |
 |----|------------|--------|------|------|
 | **Prompt version** | `CHATBOT_PROMPT_DEFAULT_VERSION` + `configs/prompts.yaml` | 专家人设、知识使用、查数解读边界 | `boiler_v1` | `subsidence_v1` |
-| **Chatbot domain 包** | **`CHATBOT_DOMAIN`** + `configs/chatbot_business/<domain>/` | 意图词表、澄清/占位话术、follow-up、收紧分析附属文案、**locale_kb（原 plant_kb）** markers/namespace/boost、相似案例门控词 | `boiler`（或 `boiler_four_tube`，与 NL2SQL 命名约定一致即可） | `subsidence` |
+| **Chatbot domain 包** | **`CHATBOT_DOMAIN`** + `configs/chatbot_business/<domain>/` | 意图词表、**funnel 原型问句**、澄清/占位话术、follow-up、收紧分析附属文案、**locale_kb（原 plant_kb）** markers/namespace/boost、相似案例门控词 | `boiler`（或 `boiler_four_tube`，与 NL2SQL 命名约定一致即可） | `subsidence` |
 | **NL2SQL domain** | `NL2SQL_BUSINESS_DOMAIN` + `configs/nl2sql_business/` | 表白名单、语义、方言、查数 RAG 三库 | `boiler_four_tube` | `subsidence` |
 
 ```text
@@ -235,11 +236,13 @@ configs/chatbot_business/
   boiler/
     profile.yaml          # locale_kb / similar_case 开关与默认 namespace
     intent_markers.yaml   # data / conceptual / hard gates
+    intent_prototypes.yaml  # funnel L2：按意图的原型问句（可选，后补）
     clarify_texts.yaml    # clarify / unsafe / handoff / smalltalk + 生成侧文案
     follow_up.yaml
   subsidence/
     profile.yaml
     intent_markers.yaml
+    intent_prototypes.yaml  # funnel L2：地降优先补齐
     clarify_texts.yaml
     follow_up.yaml
 ```
@@ -295,7 +298,7 @@ CHATBOT_PROMPT_DEFAULT_VERSION=subsidence_v1
 
 ---
 
-## 5. 意图识别改造（P0-4）
+## 5. 意图识别改造（P0-4 词表已落地；后端策略见 §5.4）
 
 ### 5.1 保持标签集合
 
@@ -305,11 +308,11 @@ CHATBOT_PROMPT_DEFAULT_VERSION=subsidence_v1
 
 | 方向 | 增加（示例） | 弱化/删除 |
 |------|--------------|-----------|
-| 查数 `_DATA_MARKERS` | 沉降、累计沉降、回弹、分层标、基岩标、水位、埋深、孔压、GNSS、位移、光纤、气象、通州/朝阳…、监测点/站点、年沉降 | 过度依赖「缺陷单/工单」等锅炉词（可保留通用「查询/统计/列出」） |
-| 概念 `_CONCEPTUAL_MARKERS` | 成因、机理、规范、规程、防控、监测方法、分层标原理… | — |
+| 查数 `data_markers` | 查询动词 / 统计指标（查询、统计、列出、沉降量、年沉降、回弹、`total_settle`…） | **勿**把「行政区/分层标」等实体词塞进查数词表（易把概念问打成 `hybrid_qa`）；锅炉「缺陷单/工单」弱化 |
+| 概念 `conceptual_markers` | 成因、机理、规范、规程、防控、监测方法、分层标原理… | — |
 | 混合 → `hybrid_qa` | 「查出…并结合规范说明…」 | 已落地 `mixed_hybrid`，需用新词表触发 |
 
-意图 LLM 示例与标签定义同步改为沉降场景（见 `chatbot_intent_llm.py`）。
+> **规则局限（已确认）**：子串/正则无法较好覆盖口语换说法。例：「哪些行政区近期沉降相对偏大？」两侧词表都不中 → `default_kb_qa`，误走知识问答。故需 §5.4 漏斗补口语覆盖，而不是无限堆词表。
 
 ### 5.3 与数据查询页意图的差异
 
@@ -318,6 +321,34 @@ CHATBOT_PROMPT_DEFAULT_VERSION=subsidence_v1
 | 库意图 | 可选澄清 / 默认 fcb；**无 HITL 弹窗** | 意图1 + **HITL 选库** |
 | 输出 | 自然语言 + 可选引用 | 结构化 `list` + `hud_by_entity` |
 | SQL | **meta 可带；前端不展示** | 默认不向业务用户展示；`expose_sql` 仅影响查询台结果包 |
+
+### 5.4 意图后端策略（2026-09-14 修订）
+
+**收敛后仅两种**（删除原 `llm`=进程内 0.5B、`bert`=须微调分类器）：
+
+| `CHATBOT_INTENT_BACKEND` | 行为 | 默认 |
+|--------------------------|------|------|
+| `rules` | 现网：硬闸 + domain `intent_markers.yaml` 启发式 | **是** |
+| `funnel` | **分层漏斗（已落地）**：L1 规则 → L2 Embedding 原型匹配 → L3 vLLM 主对话短提示兜底 | 否 |
+
+```text
+funnel 问句
+  → L1 硬闸 + rules（高置信明确查数/概念 → 直接返回）
+  → 若 default_kb_qa / 低置信 / mixed_ 等 → L2
+  → L2：EmbeddingService 嵌问句 vs domain intent_prototypes.yaml 原型库，余弦相似度；
+        top1 够高且与 top2 分差够大 → 返回；否则 → L3
+  → L3：现有 VLLMHttpClient（vllm-service 主对话模型）极短 JSON 四分类；失败回退 L1 规则结果
+```
+
+**约束（已确认）**：
+
+1. **嵌入 / 主 LLM 不新开配置**：L2 复用现有 `EmbeddingService`（`EMBEDDING_*` / `MIS_TEI_*`）；L3 复用 chatbot 主链路 `VLLMHttpClient`（同一 vllm-service），**不为意图再挂 0.5B 或独立 LLM 配置项**。  
+2. **L3 不用 0.5B**：短系统提示 + 小 `max_tokens`（仅 label/短 reason），窄触发以降时延与成本。  
+3. **L2 资产**：`configs/chatbot_business/<domain>/intent_prototypes.yaml`（按 `kb_qa` / `data_query` / `hybrid_qa` / `clarify` 维护口语原型；地降优先）。禁止只嵌四个标签名字符串。  
+4. **关键修复**：`funnel` 下规则「两侧未命中 → `default_kb_qa`」**不得**作为终态，必须下沉 L2/L3（否则口语查数仍漏）。  
+5. **兼容清理（已完成）**：已移除 `CHATBOT_INTENT_BACKEND=llm|bert` 及进程内 0.5B / BERT 意图路径；旧 env 值回退 `rules` 并告警。`.env.example` 仅保留 `rules|funnel`。
+
+**验收示例**：`funnel` 下「哪些行政区近期沉降相对偏大？」→ `data_query`；「分层标与基岩标差异是什么」仍 `kb_qa` 且尽量 L1/L2 短路。
 
 ---
 
@@ -425,9 +456,11 @@ CHATBOT_SIMILAR_CASE_ENABLED=false
 CHATBOT_DOMAIN=subsidence
 CHATBOT_PROMPT_DEFAULT_VERSION=subsidence_v1
 
-# 意图
+# 意图（仅 rules | funnel；已废弃 llm=0.5B / bert）
 CHATBOT_INTENT_ENABLED=true
 CHATBOT_INTENT_BACKEND=rules
+# 口语覆盖增强时改为 funnel（L1 规则 → L2 现有 Embedding 原型 → L3 vLLM 主对话短提示）
+# CHATBOT_INTENT_BACKEND=funnel
 CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query,hybrid_qa
 
 # 地域锁库：地降短期可关；中期由 chatbot_business/subsidence locale_kb 接管
@@ -510,7 +543,8 @@ CONV_MAX_HISTORY_MESSAGES=50
 | P0-1 Prompt `subsidence_v1`（version） | **已完成** | | `configs/prompts.yaml`；`.env.example` 默认 `subsidence_v1` |
 | P0-2 locale_kb 域化（本厂 vs 本市） | **已完成** | | `chatbot_rag_scope` + domain `locale_kb`；地降默认 `enabled=false` |
 | P0-3 相似案例保持关 | **已完成** | | 默认 false；门控词迁 domain（地降为空） |
-| P0-4 意图词表（domain 包） | **已完成** | | `intent_markers.yaml`（含硬闸/续问词）+ rules/LLM 读 profile |
+| P0-4 意图词表（domain 包） | **已完成** | | `intent_markers.yaml`（含硬闸/续问词）+ rules 读 profile |
+| P3-5 意图漏斗 `funnel` | **已完成** | | 仅 `rules\|funnel`；删 0.5B/`bert`；L2 原型库 + L3 主对话 vLLM；见 §5.4 |
 | P0-5 正文无 SQL；meta 可有；前端不渲染 | **已完成（后端+文档）** | | 分析/hybrid 流后剥离 \`\`\`sql；`CHATBOT_EXPOSE_NL2SQL_SQL_IN_META=true`；前端仓勿渲染 |
 | P0-6 NL2SQL domain | **已完成（部署核对）** | | `.env.example` 已 `NL2SQL_BUSINESS_DOMAIN=subsidence` |
 | P0-7 固定话术（domain 包） | **已完成** | | `clarify_texts.yaml` → runner 节点 |
@@ -533,7 +567,7 @@ CONV_MAX_HISTORY_MESSAGES=50
 ## 附录 A. 现网客服能力速查（改造基线）
 
 - 入口：仅 `POST /chatbot/chat/stream`（无非流式 `/chat`、无 Legacy）。  
-- 意图：`clarify` / `data_query` / `kb_qa` / `hybrid_qa`。  
+- 意图标签：`clarify` / `data_query` / `kb_qa` / `hybrid_qa`；后端仅 **`rules`（默认）| `funnel`（L1 规则→L2 Embedding 原型→L3 vLLM 主对话）**，不再使用 0.5B/`bert`。  
 - 图尾：`finalize` → `similar_cases_retrieve` → `suggest_followups`。  
 - 查数：图内 `nl2sql_answer` → `data_query_kb_light`（写入前滤三库）→ `finalize`；runner 层可对查数结果做可选 LLM 收紧分析流；结束帧 **可**带过滤后 `rag_citations` 与 `nl2sql_sql`（受 `CHATBOT_EXPOSE_NL2SQL_SQL_IN_META` 门控）。
 - 配置化目标：Prompt=`version`；词表/话术/locale_kb=`CHATBOT_DOMAIN`；查数资产=`NL2SQL_BUSINESS_DOMAIN`。  

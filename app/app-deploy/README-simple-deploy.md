@@ -91,7 +91,7 @@ CONV_MAX_HISTORY_MESSAGES=50
 ```env
 CHATBOT_INTENT_ENABLED=true
 CHATBOT_INTENT_BACKEND=rules
-# 启用轻量意图 LLM 时：CHATBOT_INTENT_BACKEND=llm + docs/智能客服意图识别轻量LLM接入说明.md
+# 口语查数漏召回时：CHATBOT_INTENT_BACKEND=funnel（L1 规则→L2 Embedding 原型→L3 vLLM 主对话）
 CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query,hybrid_qa
 CHATBOT_NL2SQL_ROUTE_ENABLED=true
 CHATBOT_PROMPT_DEFAULT_VERSION=boiler_v1
@@ -177,12 +177,10 @@ MINERU_DOCKER_NETWORK=mineru-stack   # 启用 MinerU 时必须存在
 GRAPH_DOCKER_NETWORK=graph-stack     # 启用 GraphRAG 时
 EMBEDDING_MODELS_HOST_PATH=/aidata/models/embeddings
 RERANKER_MODELS_HOST_PATH=/aidata/models/reranker
-INTENT_MODELS_HOST_PATH=/aidata/models/intent   # 仅 CHATBOT_INTENT_BACKEND=bert 时需要
-INTENT_LLM_MODELS_HOST_PATH=/aidata/models/llm   # 仅 CHATBOT_INTENT_BACKEND=llm 时需要
 ```
 
 - 网络名需与对应子项目的 `.env` / compose 一致（可用 `docker network ls` 核对）。  
-- 模型路径变量作为宿主机根目录，compose 会自动拼接子目录：**`Qwen3-Embedding-0.6B`**（嵌入）、**`Qwen3-Reranker-0.6B`**（重排）、`chatbot-intent-bert`（BERT 意图，可选）、`qwen2.5-0.5b-instruct`（轻量意图 LLM，可选）。
+- 模型路径变量作为宿主机根目录，compose 会自动拼接子目录：**`Qwen3-Embedding-0.6B`**（嵌入）、**`Qwen3-Reranker-0.6B`**（重排）。意图仅 `rules|funnel`，**不再**挂载独立 0.5B/BERT 意图模型。
 
 ### 2.7 MinerU（可选，扫描件 PDF 建议开启）
 
@@ -226,14 +224,12 @@ LOG_FILE_COMPRESS=true
 ### 2.9 模型离线使用（Qwen3 嵌入/重排）
 
 > 当前默认：**Qwen3-Embedding-0.6B**（1024 维）+ **Qwen3-Reranker-0.6B**。  
-> 整个项目中还包括：智能客服 BERT 意图（可选）、轻量意图 LLM（可选）、MinerU 模型等。
+> 智能客服意图：`rules`（默认）或 `funnel`（复用嵌入 + 主对话 vLLM）；已废弃独立 0.5B/BERT 意图模型。另含 MinerU 等。
 
 | 模型 | 作用 | 离线/在线 |
 |------|------|-----------|
-| **嵌入** | RAG 切块转向量 | 宿主机 `${EMBEDDING_MODELS_HOST_PATH}/Qwen3-Embedding-0.6B` 存在完整 HF 目录时走离线；否则 Hub 下载 |
+| **嵌入** | RAG 切块转向量；`funnel` L2 亦复用 | 宿主机 `${EMBEDDING_MODELS_HOST_PATH}/Qwen3-Embedding-0.6B` 存在完整 HF 目录时走离线；否则 Hub 下载 |
 | **重排** | 混合检索后精排 | 同上 `${RERANKER_MODELS_HOST_PATH}/Qwen3-Reranker-0.6B`；compose 已挂载并设置 `RAG_RERANKER_MODEL_PATH` |
-| BERT 意图 | `CHATBOT_INTENT_BACKEND=bert` | 须微调模型，暂不推荐 |
-| 轻量意图 LLM | `CHATBOT_INTENT_BACKEND=llm` | 见 `docs/智能客服意图识别轻量LLM接入说明.md` |
 | MinerU | 扫描 PDF | 见下文 mineru 小节 |
 
 **Qwen3 专用 `.env`（GPU/NPU 栈生效；CPU 栈下 `EMBEDDING_DEVICE` / `RAG_RERANKER_DEVICE` 无效）**：
@@ -267,9 +263,8 @@ BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 **从 BGE 升级**：向量维度 512→1024，须递增 `RAG_ES_INDEX_VERSION` 并 **全量 re-ingest**；FAQ 软直通阈值 `CHATBOT_FAQ_SOFT_DIRECT_MIN_SCORE` 可能需重调（Qwen rerank 为 logit 分）。
 
 若部署环境**无法访问 Hugging Face Hub**，推荐预下载到宿主机并挂载（compose 四栈均已预置 Qwen3 挂载）：
-> 嵌入模型和重排序模型离线下载方法：魔塔社区中搜索模型名称，然后使用 git lfs 下载到下述路径中。  
-> ollama的模型(qwen2.5-0.5-instract)需要从huggingface下载（git clone https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct /aidata/models/llm/qwen2.5-0.5b-instruct）
-> **例外**：BERT 意图模型**不适用**「直接魔塔下载通用预训练 BERT」的方式，须使用已微调三分类模型（见下文说明）。
+> 嵌入/重排离线下载：魔塔社区搜索模型名后用 git lfs 放到下述路径。  
+> 意图不另下模型：`funnel` 复用嵌入服务 + 现有 vLLM 主对话。
 
 1. **在项目根目录准备离线模型目录**
 
@@ -296,39 +291,6 @@ BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
    # huggingface-cli download Qwen/Qwen3-Embedding-0.6B --local-dir /aidata/models/embeddings/Qwen3-Embedding-0.6B
    # huggingface-cli download Qwen/Qwen3-Reranker-0.6B --local-dir /aidata/models/reranker/Qwen3-Reranker-0.6B
    ```
-
-   下面是智能客服 BERT 意图模型路径（仅 `CHATBOT_INTENT_BACKEND=bert` 时需要；默认 `rules` 可跳过）
-   ```text
-   /aidata/models/
-     intent/
-       chatbot-intent-bert/  # 微调后的 HF 序列分类模型（非通用预训练 BERT）
-         config.json         # 含 id2label：kb_qa / data_query / clarify
-         pytorch_model.bin   # 或 model.safetensors
-         tokenizer.json
-         vocab.txt           # 以及 tokenizer 相关文件
-   ```
-   **模型要求（必读）**：
-   - **可以上线**：自训或第三方交付的、标签为 `kb_qa` / `data_query` / `clarify` 的 HF 序列分类导出目录；
-   - **不可直接上线**：魔塔 / HuggingFace 的通用预训练 BERT（`bert-base-chinese`、`hfl/chinese-bert-wwm` 等）— 无业务分类头，挂载后输出无意义；
-   - **不想训练**：保持 `CHATBOT_INTENT_BACKEND=rules`，无需准备本目录。
-
-   下面是轻量意图 LLM 模型路径（仅 `CHATBOT_INTENT_BACKEND=llm` 时需要，与嵌入模型相同 HF 直挂）
-   ```text
-   /aidata/models/
-     llm/
-       qwen2.5-0.5b-instruct/     # Qwen/Qwen2.5-0.5B-Instruct 标准 HF 目录
-         config.json
-         model.safetensors
-         tokenizer.json
-   ```
-   离线下载（推荐 huggingface-cli，不必魔塔）：
-   ```bash
-   pip install -U huggingface_hub
-   mkdir -p /aidata/models/llm
-   huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct \
-     --local-dir /aidata/models/llm/qwen2.5-0.5b-instruct
-   ```
-   应用侧配置：`CHATBOT_INTENT_LLM_MODEL_PATH=/workspace/models/llm/qwen2.5-0.5b-instruct`。离线机房仅需拷贝 `${INTENT_LLM_MODELS_HOST_PATH}/qwen2.5-0.5b-instruct`。
 
    下面是mineru模型下载路径
    ```text
@@ -390,7 +352,7 @@ BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
    RAG_ES_AUTO_MIGRATE_ON_START=true
 
    CHATBOT_INTENT_BACKEND=rules
-   INTENT_MODELS_HOST_PATH=/aidata/models/intent
+   # 口语漏召回时可改为 funnel（复用嵌入 + vLLM，无需 INTENT_* 挂载）
    ```
 
 4. **启动/重启应用栈**

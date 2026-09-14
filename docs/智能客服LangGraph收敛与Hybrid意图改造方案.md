@@ -139,7 +139,7 @@ Runner: stream_or_emit(state) → persist_once → finished.meta
 
 - 标签建议：`hybrid_qa`（或 `rag_nl2sql`）
 - 纳入 `CHATBOT_INTENT_OUTPUT_LABELS`（灰度：先测试环境加标签）
-- `rules` / `llm` / `bert` 三后端均需可产出；规则优先识别「台账/列表/统计 + 原因/标准/怎么处理」类共现
+- `rules` / `funnel` 均需可产出（已废弃 `llm`/`bert`）；规则优先识别「台账/列表/统计 + 原因/标准/怎么处理」类共现
 
 ### 4.3 编排（LangGraph）
 

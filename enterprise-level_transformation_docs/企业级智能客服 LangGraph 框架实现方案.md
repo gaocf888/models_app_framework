@@ -1,6 +1,6 @@
 # 企业级智能客服 LangGraph 框架实现方案
 
-> 对照落地说明：`docs/智能客服LangGraph收敛与Hybrid意图改造方案.md`（Stream-only+Graph-only、案例/关联问进图、`hybrid_qa`）；地降所业务改造见 `docs/基于地降所项目改造/AI问答改造.md`（`CHATBOT_DOMAIN` 双域包、默认 `subsidence_v1`、查数后轻量知识引用等）。
+> 对照落地说明：`docs/智能客服LangGraph收敛与Hybrid意图改造方案.md`（Stream-only+Graph-only、案例/关联问进图、`hybrid_qa`）；地降所业务改造见 `docs/基于地降所项目改造/AI问答改造.md`（`CHATBOT_DOMAIN` 双域包、默认 `subsidence_v1`、查数后轻量知识引用；**意图仅 `rules|funnel`，见该文 §5.4**）。
 
 ## 1. 目标与范围
 
@@ -13,7 +13,7 @@
 
 - 编排与执行分离：LangGraph 负责状态流转与图内检索/案例/关联问；LLM/RAG/会话仍用现有服务；**流式 token / citation / NL2SQL 分析 yield 留 Runner 图后 adapter**。
 - **Stream-only + Graph-only**：`langgraph` 为**硬依赖**；图编译或 `ainvoke` 失败即**快速失败**，无 Legacy 顺序回退、无 `CHATBOT_GRAPH_ENABLED` 开关、无非流式 `/chatbot/chat`。
-- 结构先行：完整 `StateGraph`（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL + 收紧分析流，见 §4.6）**、**`hybrid_qa`（并行 NL2SQL + RAG 综合，见 §4.7）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；意图后端支持 **`rules | llm | bert`**（默认 `rules`，`llm` 为模式 B 窄触发，见 `docs/智能客服意图识别轻量LLM接入说明.md`）。结束 `meta` 含 **`suggested_questions`**（图内 `suggest_followups` 预填；Runner 仅在仍空且非纯 `data_query` 时补全；**纯 `data_query` 不下发**，见 §4.3）、**`rag_citations`**（`kb_qa` / `hybrid_qa` / **`data_query` 轻量检索**，已滤 NL2SQL 三库，见 §4.5）、**`nl2sql_analysis`**（查库旁路结构，见 §4.6）、**`hybrid_degraded`**（Hybrid 单臂降级，见 §4.7）等；关联问题生成规则为 **domain `follow_up.yaml`** 主题表 + 复用本轮 `context_snippets` 首行种子 + 可选 LLM JSON 补全，**不为关联问题单独做二次向量检索**。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**高分 FAQ 软直通**见 **§4.4**。**双业务域**见 **§3.1**。**locale_kb（原 plant_kb，`rag_scope_resolve`）**见 **第 16 节**。**上下文指代消解（P0～P3）**见 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。
+- 结构先行：完整 `StateGraph`（含占位节点）；当前已放量 **`kb_qa`（向量 RAG）**、**`clarify`**、**`data_query`（内嵌 NL2SQL + 收紧分析流，见 §4.6）**、**`hybrid_qa`（并行 NL2SQL + RAG 综合，见 §4.7）**，由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制；意图后端仅 **`rules | funnel`**（默认 `rules`；`funnel` = L1 规则 → L2 Embedding 原型问句 → L3 vLLM 主对话短分类，见 `docs/基于地降所项目改造/AI问答改造.md` §5.4）。结束 `meta` 含 **`suggested_questions`**（图内 `suggest_followups` 预填；Runner 仅在仍空且非纯 `data_query` 时补全；**纯 `data_query` 不下发**，见 §4.3）、**`rag_citations`**（`kb_qa` / `hybrid_qa` / **`data_query` 轻量检索**，已滤 NL2SQL 三库，见 §4.5）、**`nl2sql_analysis`**（查库旁路结构，见 §4.6）、**`hybrid_degraded`**（Hybrid 单臂降级，见 §4.7）等；关联问题生成规则为 **domain `follow_up.yaml`** 主题表 + 复用本轮 `context_snippets` 首行种子 + 可选 LLM JSON 补全，**不为关联问题单独做二次向量检索**。逐步说明见 `framework-guide/智能客服整体实现技术说明.md` **§7**。**高分 FAQ 软直通**见 **§4.4**。**双业务域**见 **§3.1**。**locale_kb（原 plant_kb，`rag_scope_resolve`）**见 **第 16 节**。**上下文指代消解（P0～P3）**见 **第 15 节** 与 `docs/智能客服上下文理指代实现优化方案-20260514.md`。
 - 可观测优先：接入 LangSmith，节点级记录耗时、路由、重试与失败原因。
 
 ## 3. 总体架构
@@ -34,7 +34,7 @@
 - LangGraph：状态机（模板、历史、意图、故障门控、**按意图 A/B/C/D 分支**、RAG/C-RAG 或 NL2SQL 或 Hybrid 双臂、`finalize`、图内相似案例与关联问）。
 - `HybridRAGService` / `AgenticRAGService`：主链路及 Hybrid RAG 臂检索；相似案例在图内 **`similar_cases_retrieve`** 节点 `retrieve(namespace=…)`，Runner **不再二次检索**。
 - `NL2SQLService`（`nl2sql_service.py`）：`data_query` 分支生成 SQL 与执行；客服内嵌调用时 `record_conversation=False`。NL2SQL 与 RAG 同为基座基础能力；直连 HTTP 见 `POST /nl2sql/query`；**综合分析 V2** 在 **`POST /analysis/run-with-nl2sql`**（及流式 **`run-with-nl2sql-stream`**）与 **`POST /analysis/run-img-diag`**（及流式 **`run-img-diag-stream`**）（NL2SQL 并行臂 **`acquire_data`** → **`_execute_data_plan`**，**默认同 dependency 层并行多次 `query`**）阶段亦多次复用同一服务（`record_conversation=False`）。接入形态总览见 **`enterprise-level_transformation_docs/企业级NL2SQL实现方案.md`**。
-- `chatbot_intent.py` / `chatbot_intent_rules.py` / `chatbot_intent_llm.py` / `chatbot_intent_bert.py`：意图统一入口与三后端（`rules | llm | bert`）；词表/示例来自 **domain `intent_markers.yaml`**；生产路径须 `classify_chatbot_intent_async`。
+- `chatbot_intent.py` / `chatbot_intent_rules.py` / `chatbot_intent_funnel.py` / `chatbot_intent_prototypes.py`：意图统一入口；仅 **`rules` | `funnel`**（已移除 0.5B/`bert`）。`rules` 读 domain `intent_markers.yaml`；`funnel` 为 L1 规则 → L2 原型问句向量匹配（`intent_prototypes.yaml` + 现有 Embedding）→ L3 vLLM 主对话短 JSON。生产路径须 `classify_chatbot_intent_async`。
 - `chatbot_faq_soft_direct.py`：高分 FAQ 软直通判定（`kb_build_messages` 阶段，见 **§4.4**）。
 - `chatbot_rag_citations.py` / `chatbot_citation_stream.py`：RAG 结构化引用、三库过滤与流式 `citation_ref`（见 **§4.5**）。
 - `chatbot_follow_up.py`：`build_suggested_questions`（**domain `follow_up.yaml`** 主题表 + 本轮片段种子 + 可选 LLM）。
@@ -52,14 +52,16 @@
 | 层 | Env | 管什么 | 锅炉 | 地降（代码缺省） |
 |----|-----|--------|------|------------------|
 | Prompt version | `CHATBOT_PROMPT_DEFAULT_VERSION` | 专家人设、知识使用、查数解读边界 | `boiler_v1` | **`subsidence_v1`** |
-| Chatbot domain 包 | **`CHATBOT_DOMAIN`** | 意图词表、澄清/占位话术、follow-up、locale_kb、相似案例门控词、Hybrid 文案 | `boiler` | **`subsidence`** |
+| Chatbot domain 包 | **`CHATBOT_DOMAIN`** | 意图词表、`funnel` 原型问句、澄清/占位话术、follow-up、locale_kb、相似案例门控词、Hybrid 文案 | `boiler` | **`subsidence`** |
 | NL2SQL domain | `NL2SQL_BUSINESS_DOMAIN` | 表白名单、语义、方言、查数 RAG 三库 | `boiler_four_tube` | `subsidence` |
 
-配置包目录：`configs/chatbot_business/{boiler,subsidence}/`（`profile.yaml`、`intent_markers.yaml`、`clarify_texts.yaml`、`follow_up.yaml`）。
+配置包目录：`configs/chatbot_business/{boiler,subsidence}/`（`profile.yaml`、`intent_markers.yaml`、`intent_prototypes.yaml`、`clarify_texts.yaml`、`follow_up.yaml`）。
 
 加载器：`app/llm/graphs/chatbot_business_profile.py`。未设 `CHATBOT_DOMAIN` 时默认 **`subsidence`**；锅炉部署须显式 `CHATBOT_DOMAIN=boiler`。
 
-意图词表注意：`data_markers` 仅放查询动词/统计指标，勿放「分层标/行政区」等实体词，否则概念问易误判为 `hybrid_qa`。
+意图注意：
+- `data_markers` 只放查询动词/统计指标，勿放「分层标/行政区」等实体词（易误判 `hybrid_qa`）。
+- 口语无查询动词的查数问：开 **`CHATBOT_INTENT_BACKEND=funnel`**，并在 `intent_prototypes.yaml` 补例句（详见 AI问答改造 §5.4）。
 
 ## 4. 图设计（状态、节点、路由）
 
@@ -275,10 +277,9 @@
 | 查数轻量知识引用 | 同上 | `_node_data_query_kb_light` |
 | 业务域配置 | `app/llm/graphs/chatbot_business_profile.py` | `get_chatbot_business_profile`、`get_chatbot_retrieve_exclude_namespaces` |
 | 图尾 P2 节点 | 同上 | `_node_similar_cases_retrieve`、`_node_suggest_followups` |
-| 意图分类 | `app/llm/graphs/chatbot_intent.py` | `classify_chatbot_intent_async`（`CHATBOT_INTENT_BACKEND=rules\|llm\|bert`） |
+| 意图分类 | `app/llm/graphs/chatbot_intent.py` | `classify_chatbot_intent_async`（`CHATBOT_INTENT_BACKEND=rules\|funnel`） |
 | 意图规则 | `app/llm/graphs/chatbot_intent_rules.py` | `classify_chatbot_intent_by_rules`（含 `mixed_hybrid` → `hybrid_qa`） |
-| 意图轻量 LLM | `app/llm/graphs/chatbot_intent_llm.py` | 模式 B 窄触发（见 `docs/智能客服意图识别轻量LLM接入说明.md`） |
-| 意图 BERT | `app/llm/graphs/chatbot_intent_bert.py` | `classify_chatbot_intent_by_bert`（须已微调序列分类模型） |
+| 意图漏斗 | `chatbot_intent_funnel.py` / `chatbot_intent_prototypes.py` | L1 规则 → L2 Embedding 原型 → L3 vLLM 主对话；见 AI问答改造 §5.4 |
 | FAQ 软直通 | `app/llm/graphs/chatbot_faq_soft_direct.py` | `evaluate_faq_soft_direct`（见 **§4.4**） |
 | RAG 引用 | `app/llm/graphs/chatbot_rag_citations.py` | `chunks_to_rag_context`、`filter_rag_citation_dicts` |
 | 引用流式解析 | `app/llm/graphs/chatbot_citation_stream.py` | `CitationStreamParser`、`citation_ref` 事件 |
@@ -333,7 +334,7 @@
 
 1. `load_prompt_template`：加载场景话术；未传 `prompt_version` 时用 `CHATBOT_PROMPT_DEFAULT_VERSION`（默认 **`subsidence_v1`**；锅炉部署显式 `boiler_v1`）。
 2. `load_history`：`ConversationManager` 只读近期多轮（`enable_context`）。
-3. `intent_classify`：`classify_chatbot_intent_async` → **A** `clarify` / **B** `data_query` / **C** `kb_qa` / **D** `hybrid_qa`（`CHATBOT_INTENT_BACKEND=rules|llm|bert`；可关 `CHATBOT_INTENT_ENABLED`）。
+3. `intent_classify`：`classify_chatbot_intent_async` → **A** `clarify` / **B** `data_query` / **C** `kb_qa` / **D** `hybrid_qa`（`CHATBOT_INTENT_BACKEND=rules|funnel`；可关 `CHATBOT_INTENT_ENABLED`）。
 4. `fault_case_gate`：判定是否在本轮追加相似案例（默认总关；见 **第 14 节**）。
 5. **条件路由** `_route_by_intent`（非独立节点）：进入下方 A/B/C/D。
 
@@ -637,10 +638,10 @@
 
 - **`langgraph`**：**必选依赖**（镜像/CI 缺包即失败；无顺序 `_node_*` 兜底）
 - `CHATBOT_INTENT_ENABLED=true`
-- `CHATBOT_INTENT_BACKEND=rules|llm|bert`（默认 `rules`）
+- `CHATBOT_INTENT_BACKEND=rules|funnel`（默认 `rules`）
+  - **`rules`**：仅 domain `intent_markers.yaml` 关键词/正则
+  - **`funnel`**：L1 同上 → L2 `intent_prototypes.yaml` + 现有 Embedding 相似度 → L3 现有 vLLM 主对话短 JSON（**不**再配置 0.5B/`bert`）
 - `CHATBOT_INTENT_OUTPUT_LABELS=kb_qa,clarify,data_query,hybrid_qa`
-- **轻量意图 LLM**（`backend=llm`）：`CHATBOT_INTENT_LLM_MODEL_PATH` / `CHATBOT_INTENT_LLM_MODEL_NAME` / `CHATBOT_INTENT_LLM_DEVICE` / `CHATBOT_INTENT_LLM_CONF_THRESHOLD` / `CHATBOT_INTENT_LLM_FALLBACK_TO_RULES`（见 `docs/智能客服意图识别轻量LLM接入说明.md`）
-- **BERT 意图**（`backend=bert`）：`CHATBOT_INTENT_BERT_MODEL_PATH` / `CHATBOT_INTENT_BERT_*`（见 `docs/智能客服意图识别BERT接入说明.md`）
 - `CHATBOT_NL2SQL_ROUTE_ENABLED=true`
 - **NL2SQL 收紧分析（客服内嵌，见 §4.6）**：
   - `CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED=true`
@@ -722,7 +723,7 @@
 
 ## 11. 本期实现边界（避免过度设计）
 
-- 本期主流量意图：**`kb_qa`**、**`clarify`**、**`data_query`**、**`hybrid_qa`**（由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制）；意图后端 **`rules | llm | bert`**。
+- 本期主流量意图：**`kb_qa`**、**`clarify`**、**`data_query`**、**`hybrid_qa`**（由 `CHATBOT_INTENT_OUTPUT_LABELS` 控制）；意图后端仅 **`rules | funnel`**（已移除 `llm`/`bert`）。
 - `unsafe` / `handoff_human` / `smalltalk` 节点占位，默认不命中。
 - 关联问题**不**单独二次向量检索（见 `framework-guide/智能客服整体实现技术说明.md` §7）；图内 `suggest_followups` + Runner 补全；**纯 `data_query` 不下发** `suggested_questions`。
 - **FAQ 软直通**（§4.4）限 `kb_qa`；**RAG 引用**（§4.5）覆盖 `kb_qa` / `hybrid_qa` / **`data_query`（轻量检索）**。
@@ -754,7 +755,7 @@
 9. **指代消解（可选）**：弱指代下检索 query 融合、锚块、槽位与 `CHATBOT_ANAPHORA_EXPOSE_META`（见 **第 15 节**）。
 10. **FAQ 软直通**：高分 FAQ 命中时跳过 history；低分/指代续问时不触发（§4.4）。
 11. **RAG 引用**：`citation_ref` 与 `finished.meta.rag_citations` 的 `ref_index` 对齐；`data_query` 结束帧可有过滤后知识引用、无流式 `citation_ref`（§4.5）。
-12. **`CHATBOT_INTENT_BACKEND=llm`**：窄触发与 rules 回退（可选）。
+12. **`CHATBOT_INTENT_BACKEND=funnel`**：口语查数进 `data_query`；明确概念问仍 `kb_qa`；L3 失败回退规则（可选）。
 13. **NL2SQL 收紧分析**：开/关 `CHATBOT_NL2SQL_LLM_ANALYSIS_ENABLED`；流式一次 delta；失败回退表；`meta.nl2sql_analysis`（§4.6）。
 14. **时延预算**：人为拉长链路触发 `latency_budget_exceeded`，确认 partial 落库且**不**重复全量作答（Legacy 已删除）。
 15. **Hybrid**：混合问样例 → `hybrid_qa`；双臂成功 meta 同时 `used_rag`+`used_nl2sql`；单臂失败 `hybrid_degraded` 非空且不 5xx。

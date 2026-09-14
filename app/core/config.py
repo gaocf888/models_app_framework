@@ -459,25 +459,11 @@ class ChatbotConfig:
     """
 
     intent_enabled: bool = True
-    # 意图分类后端：rules（默认）| llm（规则+进程内轻量 LLM 窄触发）| bert（微调 BERT，需训练）
+    # 意图分类后端：rules（默认）| funnel（L1 规则 → L2 Embedding 原型 → L3 vLLM 主对话）
     intent_backend: str = "rules"
     intent_output_labels: list[str] = field(
         default_factory=lambda: ["kb_qa", "clarify", "data_query", "hybrid_qa"]
     )
-    # 模式 B：进程内轻量意图 LLM（CHATBOT_INTENT_BACKEND=llm），与嵌入模型相同的离线优先策略
-    intent_llm_model_path: str | None = None
-    intent_llm_model_name: str = "Qwen/Qwen2.5-0.5B-Instruct"
-    intent_llm_device: str = "cpu"
-    intent_llm_max_tokens: int = 128
-    intent_llm_temperature: float = 0.0
-    intent_llm_conf_threshold: float = 0.78
-    intent_llm_fallback_to_rules: bool = True
-    # BERT 意图模型：优先本地路径，其次 HuggingFace 模型名；未配置且 backend=bert 时回退 rules
-    intent_bert_model_path: str | None = None
-    intent_bert_model_name: str | None = None
-    intent_bert_device: str = "cpu"
-    intent_bert_max_length: int = 256
-    intent_bert_fallback_to_rules: bool = True
     crag_enabled: bool = True
     persist_partial_on_disconnect: bool = True
     # 图执行总时长预算（毫秒），用于硬超时保护。
@@ -1400,20 +1386,6 @@ def _load_from_env() -> AppConfig:
         intent_output_labels=_split_csv_env(
             "CHATBOT_INTENT_OUTPUT_LABELS", "kb_qa,clarify,data_query,hybrid_qa"
         ),
-        intent_llm_model_path=(os.getenv("CHATBOT_INTENT_LLM_MODEL_PATH") or "").strip() or None,
-        intent_llm_model_name=(
-            os.getenv("CHATBOT_INTENT_LLM_MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct") or "Qwen/Qwen2.5-0.5B-Instruct"
-        ).strip(),
-        intent_llm_device=(os.getenv("CHATBOT_INTENT_LLM_DEVICE", "cpu") or "cpu").strip(),
-        intent_llm_max_tokens=max(32, int(os.getenv("CHATBOT_INTENT_LLM_MAX_TOKENS", "128"))),
-        intent_llm_temperature=max(0.0, min(2.0, float(os.getenv("CHATBOT_INTENT_LLM_TEMPERATURE", "0")))),
-        intent_llm_conf_threshold=max(0.0, min(1.0, float(os.getenv("CHATBOT_INTENT_LLM_CONF_THRESHOLD", "0.78")))),
-        intent_llm_fallback_to_rules=os.getenv("CHATBOT_INTENT_LLM_FALLBACK_TO_RULES", "true").lower() == "true",
-        intent_bert_model_path=(os.getenv("CHATBOT_INTENT_BERT_MODEL_PATH") or "").strip() or None,
-        intent_bert_model_name=(os.getenv("CHATBOT_INTENT_BERT_MODEL_NAME") or "").strip() or None,
-        intent_bert_device=(os.getenv("CHATBOT_INTENT_BERT_DEVICE", "cpu") or "cpu").strip(),
-        intent_bert_max_length=max(32, int(os.getenv("CHATBOT_INTENT_BERT_MAX_LENGTH", "256"))),
-        intent_bert_fallback_to_rules=os.getenv("CHATBOT_INTENT_BERT_FALLBACK_TO_RULES", "true").lower() == "true",
         crag_enabled=os.getenv("CHATBOT_CRAG_ENABLED", "true").lower() == "true",
         persist_partial_on_disconnect=os.getenv("CHATBOT_PERSIST_PARTIAL_ON_DISCONNECT", "true").lower() == "true",
         max_graph_latency_ms=max(1000, int(os.getenv("MAX_GRAPH_LATENCY_MS", "60000"))),
