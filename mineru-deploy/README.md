@@ -4,7 +4,8 @@
 
 - CPU：`Dockerfile.cpu` + `docker-compose.cpu.yml`
 - GPU（英伟达）：`Dockerfile.gpu` + `docker-compose.gpu.yml`
-- GPU（昇腾 Ascend）：`Dockerfile.gpu.ascend` + `docker-compose.gpu.ascend.yml`
+- GPU（昇腾 Ascend / vLLM-Ascend）：`Dockerfile.gpu.ascend` + `docker-compose.gpu.ascend.yml`
+- GPU（昇腾 MindIE 试验）：`Dockerfile.gpu.ascend-mindie` + `docker-compose.gpu.ascend-mindie.yml`
 
 目标：
 - 模型不进镜像，统一通过宿主机挂载卷提供
@@ -15,13 +16,16 @@
 - `Dockerfile.cpu`：CPU 镜像构建
 - `Dockerfile.gpu`：英伟达 GPU 镜像构建（CUDA 基础镜像）
 - `Dockerfile.gpu.ascend`：昇腾 GPU 镜像（底座 `vllm-ascend:v0.23.0-310p`）
+- `Dockerfile.gpu.ascend-mindie`：昇腾 MindIE 试验镜像（底座 `mindie:1.0.RC2-300I-Duo-aarch64`）
 - `docker-compose.cpu.yml`：CPU 编排（推荐入口）
 - `docker-compose.gpu.yml`：英伟达 GPU 编排
-- `docker-compose.gpu.ascend.yml`：昇腾 GPU 编排
+- `docker-compose.gpu.ascend.yml`：昇腾 GPU 编排（vLLM-Ascend）
+- `docker-compose.gpu.ascend-mindie.yml`：昇腾 MindIE 试验编排
 - `docker-compose.yml`：CPU 兼容入口（与 `docker-compose.cpu.yml` 等效）
 - `config/mineru.json`：离线 `local` 模式模型路径映射（挂载到容器 `/config/mineru.json`）
 - `docker/entrypoint.sh`：容器入口（初始化 `/io/.hf_cache` 和 `/io/mineru-output`）
-- `.env.example`：统一环境变量模板（含英伟达 / 昇腾注释）
+- `docker/entrypoint.ascend-mindie.sh`：MindIE 栈入口（加载 CANN/MindIE env）
+- `.env.example`：统一环境变量模板（含英伟达 / 昇腾 / MindIE 注释）
 
 ## 2. 前提条件
 
@@ -136,10 +140,11 @@ curl -l http://127.0.0.1:8009/health
 
 ### 6.1 关键说明
 
-- `docker-compose.gpu.yml`(英伟达)/`docker-compose.gpu.ascend.yml`(晟腾) 为独立编排，不依赖 CPU compose
-- GPU 镜像使用 `Dockerfile.gpu`(英伟达)/`Dockerfile.gpu.ascend`(晟腾) 构建
+- `docker-compose.gpu.yml`(英伟达)/`docker-compose.gpu.ascend.yml`(晟腾 vLLM-Ascend)/`docker-compose.gpu.ascend-mindie.yml`(晟腾 MindIE 试验) 为独立编排，不依赖 CPU compose
+- GPU 镜像使用 `Dockerfile.gpu`(英伟达)/`Dockerfile.gpu.ascend`(晟腾)/`Dockerfile.gpu.ascend-mindie`(MindIE) 构建
 - 英伟达版基础镜像默认 **`nvidia/cuda:12.3.0-runtime-ubuntu22.04`**（与 `vllm-deploy` 英伟达栈一致）；PyTorch 仍从 `cu121` wheel 安装
 - 晟腾版基础镜像默认 **`quay.io/ascend/vllm-ascend:v0.23.0-310p`（与 `app-deploy`/`vllm-deploy` 昇腾栈一致，CANN 9.1.0）**
+- MindIE 试验底座：**`quay.io/ascend/mindie:1.0.RC2-300I-Duo-aarch64`**（与 vLLM 栈分叉；宿主驱动须匹配镜像 CANN）
 - 英伟达版默认安装 CUDA 版 PyTorch，晟腾版不安装（通过 `.env` INSTALL_CUDA_TORCH开关控制）
 
 ### 6.2 关键 `.env` 配置
@@ -167,9 +172,13 @@ MINERU_BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 docker compose --env-file .env -f docker-compose.gpu.yml up -d --build
 docker compose --env-file .env -f docker-compose.gpu.yml logs -f mineru-api
 
-# 晟腾版部署
+# 晟腾版部署（vllm-ascend）
 docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
 docker compose --env-file .env -f docker-compose.gpu.ascend.yml logs -f mineru-api
+
+# 晟腾 MindIE 试验底座（与上者二选一，容器名默认同为 mineru-api）
+docker compose --env-file .env -f docker-compose.gpu.ascend-mindie.yml up -d --build
+docker compose --env-file .env -f docker-compose.gpu.ascend-mindie.yml logs -f mineru-api
 ```
 
 若 NPU 侧 MinerU 暂不稳定，可先用 `docker-compose.cpu.yml` 保功能。
