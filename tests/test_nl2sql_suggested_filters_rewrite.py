@@ -164,3 +164,34 @@ def test_e2e_chaoyang_dxswj_catalog_rewrite(monkeypatch: pytest.MonkeyPatch) -> 
     assert "F28(金盏)" in fixed
     assert "F29(东窑)" in fixed
     assert any("device_station_map:name" in n for n in notes)
+
+
+def test_strip_legacy_station_id_predicate() -> None:
+    sql = (
+        "SELECT g.project_name, g.data_time, g.total_settle FROM t_data_wash_gq AS g "
+        "JOIN t_station AS s ON g.project_name = s.name "
+        "WHERE g.project_name = 'F22(尹家河)' "
+        "AND g.data_time >= (CURRENT_DATE - INTERVAL '7 days') "
+        "AND g.data_time < CURRENT_DATE AND g.station_id = 'F22' "
+        "ORDER BY g.data_time DESC"
+    )
+    out, notes = rewrite_sql_with_suggested_filters(sql, [])
+    assert "station_id" not in out.lower()
+    assert "g.project_name = 'F22(尹家河)'" in out
+    assert any(n == "strip_legacy_pk:station_id" for n in notes)
+
+
+def test_station_id_suggested_filter_ignored() -> None:
+    sql = "SELECT * FROM t_data_wash_gq g WHERE g.project_name = 'F22(尹家河)'"
+    filters = [
+        {
+            "table": "t_data_wash_gq",
+            "column": "station_id",
+            "op": "=",
+            "value": "F22",
+            "source": "semantic",
+        }
+    ]
+    out, notes = rewrite_sql_with_suggested_filters(sql, filters)
+    assert "station_id" not in out.lower()
+    assert not any("station_id" in n for n in notes if n.startswith("suggested_filter_"))

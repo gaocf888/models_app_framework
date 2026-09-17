@@ -260,9 +260,8 @@ def link_schema(
                 LinkedColumn(table=primary, column=tc, role="time", reason=f"metric:{m.id}")
             )
 
-    # dim columns on primary table
+    # dim columns on primary table（事实表遗留列 station_id/id/data_id 不作默认 dim）
     for dim_col, role in (
-        ("station_id", "dim"),
         ("station_name", "dim"),
         ("project_name", "dim"),
         ("data_time", "time"),
@@ -344,12 +343,8 @@ def link_schema(
         # 清单问句：覆盖名单落在 t_station.name
         _append_project_name_filters(_STATION_TABLE, "name")
     else:
-        if semantic.station_ids:
-            for sid in semantic.station_ids:
-                linked.suggested_filters.append(
-                    {"table": primary, "column": "station_id", "op": "=", "value": sid, "source": "semantic"}
-                )
-
+        # 站点范围只用 project_name；禁止把 station_ids 写成事实表 station_id 过滤
+        # （id/data_id/station_id 为清洗遗留联合主键，不作关联/过滤）
         _append_project_name_filters(primary, "project_name")
 
         if preferred_marks:

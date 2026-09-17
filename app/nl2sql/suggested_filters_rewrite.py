@@ -23,7 +23,11 @@ _SOURCE_PRIORITY: dict[str, int] = {
     "semantic": 10,
 }
 
-_FORCE_COLUMNS = frozenset({"name", "project_name", "station_name", "area", "station_id"})
+# 不含 station_id：事实表遗留主键列禁止强制改写/注入
+_FORCE_COLUMNS = frozenset({"name", "project_name", "station_name", "area"})
+
+# 事实表清洗遗留联合主键列：生成 SQL 后一律剥掉过滤谓词
+_LEGACY_FACT_PK_COLUMNS = ("station_id", "data_id")
 
 
 def _sql_string_literal(value: Any) -> str:
@@ -89,8 +93,8 @@ def _pick_filters(filters: list[Any]) -> list[dict[str, Any]]:
             prev["source"], 0
         ):
             best[key] = item
-    # 稳定顺序：area → name/project_name → station_id → station_name
-    order = {"area": 0, "name": 1, "project_name": 2, "station_id": 3, "station_name": 4}
+    # 稳定顺序：area → name/project_name → station_name
+    order = {"area": 0, "name": 1, "project_name": 2, "station_name": 3}
     return sorted(best.values(), key=lambda x: (order.get(x["column"], 9), x["column"]))
 
 
@@ -225,6 +229,64 @@ def _inject_predicate(sql: str, item: dict[str, Any]) -> tuple[str, bool]:
     return sql.rstrip() + " WHERE " + pred, True
 
 
+def strip_legacy_fact_pk_predicates(sql: str) -> tuple[str, list[str]]:
+    """剥掉事实表遗留主键列 ``station_id`` / ``data_id`` 的 WHERE 谓词（= / IN）。"""
+    if not sql:
+        return sql, []
+    rewritten = sql
+    notes: list[str] = []
+    for col in _LEGACY_FACT_PK_COLUMNS:
+        while True:
+            rewritten2, removed = _remove_column_predicate(rewritten, col)
+            if not removed:
+                break
+            rewritten = rewritten2
+            notes.append(f"strip_legacy_pk:{col}")
+    return rewritten, notes
+
+
+def _remove_column_predicate(sql: str, column: str) -> tuple[str, bool]:
+    """删除 SQL 中该列的 = / IN 谓词，并清理多余 AND/OR/WHERE。"""
+    col = re.escape(column)
+
+    in_re = re.compile(_COL_IN_RE_TMPL.format(col=col))
+    m = in_re.search(sql)
+    if m:
+        open_idx = m.end() - 1
+        close_idx = _match_span_end_for_in(sql, open_idx)
+        if close_idx is not None:
+            return _excise_predicate_span(sql, m.start(), close_idx + 1), True
+
+    eq_re = re.compile(_COL_EQ_RE_TMPL.format(col=col))
+    m2 = eq_re.search(sql)
+    if m2:
+        return _excise_predicate_span(sql, m2.start(), m2.end()), True
+    return sql, False
+
+
+def _excise_predicate_span(sql: str, start: int, end: int) -> str:
+    """去掉 [start,end) 谓词，并吞掉紧邻的 AND/OR；避免留下空 WHERE。"""
+    left = sql[:start]
+    right = sql[end:]
+
+    right_m = re.match(r"(?is)\s+(AND|OR)\b\s*", right)
+    if right_m:
+        right = right[right_m.end() :]
+        return (left.rstrip() + " " + right.lstrip()) if right.lstrip() else left.rstrip() + right
+
+    left_m = re.search(r"(?is)\s+(AND|OR)\s*$", left)
+    if left_m:
+        left = left[: left_m.start()]
+        return left.rstrip() + ((" " + right.lstrip()) if right.lstrip() else right)
+
+    where_m = re.search(r"(?is)\bWHERE\s*$", left)
+    if where_m:
+        left = left[: where_m.start()]
+        return left.rstrip() + ((" " + right.lstrip()) if right.lstrip() else right)
+
+    return left.rstrip() + ((" " + right.lstrip()) if right.lstrip() else right)
+
+
 def rewrite_sql_with_suggested_filters(
     sql: str,
     suggested_filters: list[Any] | None,
@@ -234,32 +296,31 @@ def rewrite_sql_with_suggested_filters(
 
     - 已有 ``col IN (...)`` / ``=`` / ``LIKE``：替换为权威名单或等值；
     - 缺失：在 WHERE 中追加；
-    - 空 IN（如 gnss 占位）：跳过，不生成 ``IN ()``。
+    - 空 IN（如 gnss 占位）：跳过，不生成 ``IN ()``；
+    - 始终剥掉事实表遗留主键 ``station_id`` / ``data_id`` 过滤谓词。
     """
-    if not sql or not suggested_filters:
-        return sql, []
-
-    picked = _pick_filters(list(suggested_filters))
-    if not picked:
-        return sql, []
-
-    rewritten = sql
     notes: list[str] = []
-    for item in picked:
-        rewritten2, replaced = _replace_column_predicate(rewritten, item)
-        if replaced:
-            rewritten = rewritten2
-            notes.append(
-                f"suggested_filter_replace:{item['source']}:{item['column']}:{item['op']}:{len(item['values'])}"
-            )
-            continue
-        rewritten3, injected = _inject_predicate(rewritten, item)
-        if injected:
-            rewritten = rewritten3
-            notes.append(
-                f"suggested_filter_inject:{item['source']}:{item['column']}:{item['op']}:{len(item['values'])}"
-            )
-    return rewritten, notes
+    rewritten = sql or ""
+
+    if rewritten and suggested_filters:
+        picked = _pick_filters(list(suggested_filters))
+        for item in picked:
+            rewritten2, replaced = _replace_column_predicate(rewritten, item)
+            if replaced:
+                rewritten = rewritten2
+                notes.append(
+                    f"suggested_filter_replace:{item['source']}:{item['column']}:{item['op']}:{len(item['values'])}"
+                )
+                continue
+            rewritten3, injected = _inject_predicate(rewritten, item)
+            if injected:
+                rewritten = rewritten3
+                notes.append(
+                    f"suggested_filter_inject:{item['source']}:{item['column']}:{item['op']}:{len(item['values'])}"
+                )
+
+    stripped, strip_notes = strip_legacy_fact_pk_predicates(rewritten)
+    return stripped, notes + strip_notes
 
 
 def suggested_filters_from_parsed_intent(parsed_intent: dict[str, Any] | None) -> list[Any]:

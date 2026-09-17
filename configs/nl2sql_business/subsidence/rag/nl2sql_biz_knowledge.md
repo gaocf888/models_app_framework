@@ -28,6 +28,10 @@
 - **`project_name`**：站点名称，格式如 `F27(大鲁店)`；与 `t_station.name` 等值关联。
 - **`station_name`**：分层标/基岩标**标编号**，格式如 `F27-8`、`J8-1`（库注释若写「站点名称」亦按标编号理解）。
 - 禁止把 `station_name` 当成行政区或站点中文名单独过滤行政区。
+- **`id` / `data_id` / `station_id`（事实表 `t_data_wash_*`）**：清洗前遗留联合主键/溯源字段，**不是**现行站点身份。
+  问站点/场地时只用 `project_name`；问分层标明细时用 `station_name`。
+  **禁止**对 `id`/`data_id`/`station_id` 做过滤或 JOIN（例如禁止 `station_id = 'F22'`）。
+  勿把问句站点简称解析出的 `F22` 写成事实表 `station_id` 条件。
 
 ## 分层标三维计算汇总逻辑
 
@@ -129,6 +133,7 @@
 | 用单点 `MAX(total_settle)` / 最新一条累计值当「本周沉降最大」 | 「沉降最大」指周期 `Δ`，不是累计快照 |
 | 用 `CURRENT_DATE - INTERVAL '7 days'` 回答「本周」 | 本周=自然周，见上一节 |
 | 把层位 0 的 `station_name`（如 `F1-7`）写进 `t_station.name` 过滤 | 标编号 ≠ 站点名；站点名是 `project_name` / `t_station.name` |
+| 事实表 `WHERE station_id = 'F22'`（或 `id`/`data_id` 过滤/JOIN） | 遗留主键列，不是现行站点身份；站点用 `project_name` |
 
 推荐完整正例见 `qa_examples_seed.md`「朝阳区本周沉降最大站点」。
 

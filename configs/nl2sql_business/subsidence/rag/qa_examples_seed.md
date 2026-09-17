@@ -161,14 +161,31 @@ ORDER BY d.project_name, d.data_time
 **问句**：本年度 GNSS 站点 displacement_3d 极值（勿用 fcb.total_settle）。
 
 ```sql
-SELECT g.station_id, g.station_name,
+SELECT g.project_name,
        MIN(g.displacement_3d) AS min_disp3d,
        MAX(g.displacement_3d) AS max_disp3d
 FROM t_data_wash_gnss AS g
 WHERE g.data_time >= @t_start AND g.data_time < @t_end
-GROUP BY g.station_id, g.station_name
+GROUP BY g.project_name
 ORDER BY max_disp3d DESC
 ```
+
+---
+
+## nl2sql_direct · 光纤站点时段明细
+
+**问句**：请帮我查询尹家河上周的光纤监测数据。
+
+```sql
+SELECT g.project_name, g.data_time, g.total_settle, s.area
+FROM t_data_wash_gq AS g
+JOIN t_station AS s ON g.project_name = s.name
+WHERE g.project_name = 'F22(尹家河)'
+  AND g.data_time >= @t_start AND g.data_time < @t_end
+ORDER BY g.data_time DESC
+```
+
+> 站点只用 `project_name`；禁止 `station_id` / `id` / `data_id` 过滤。时间窗由 NL2SQL 按「上周」意图注入。
 
 ---
 
