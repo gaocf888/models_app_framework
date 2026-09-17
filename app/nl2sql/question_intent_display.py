@@ -137,11 +137,16 @@ def format_parsed_intent_prompt_block(
         preferred_marks = list((dims or {}).get("preferred_station_names") or [])
         compress_pairs = list((dims or {}).get("compress_pairs") or [])
         if project_names:
-            lines.append(f"- 站点场地(project_name)：{'、'.join(str(x) for x in project_names[:5])}")
+            lines.append(
+                f"- 用户点名站点场地(project_name)：共{len(project_names)}个"
+                f"（示例：{'、'.join(str(x) for x in project_names[:3])}）；"
+                "完整名单以链接 suggested_filters 为准，禁止只写预览子集"
+            )
         elif coverage_names:
-            preview = "、".join(str(x) for x in coverage_names[:5])
-            more = f" 等共{len(coverage_names)}个" if len(coverage_names) > 5 else ""
-            lines.append(f"- 监测方式站点覆盖(project_name)：{preview}{more}")
+            lines.append(
+                f"- 监测方式官方站点覆盖：共{len(coverage_names)}个 project_name；"
+                "生成 SQL 时勿手写截断 IN 名单；系统会按 suggested_filters 强制改写完整覆盖"
+            )
         if compress_pairs:
             bits = []
             for p in compress_pairs[:4]:
@@ -157,14 +162,16 @@ def format_parsed_intent_prompt_block(
                 "公式 compress(i→i+1)=Δ(i)−Δ(i+1)，非单标累计当层沉降"
             )
         if preferred_marks:
-            preview = "、".join(str(x) for x in preferred_marks[:8])
-            more = f" 等共{len(preferred_marks)}个" if len(preferred_marks) > 8 else ""
             hint = (
                 "压缩层边界 station_name"
                 if compress_pairs
                 else "优选标编号(station_name，站点沉降用层位0)"
             )
-            lines.append(f"- {hint}：{preview}{more}；禁止对同 project_name 下全部标聚合")
+            lines.append(
+                f"- {hint}：共{len(preferred_marks)}个；"
+                "完整 IN 名单以链接 suggested_filters 为准，禁止只写预览子集；"
+                "禁止对同 project_name 下全部标聚合"
+            )
         warnings = semantic.get("warnings") or []
         if warnings:
             lines.append(f"- 语义告警：{'；'.join(str(w) for w in warnings[:5])}")
@@ -183,23 +190,24 @@ def format_parsed_intent_prompt_block(
             if tbl_names:
                 lines.append(f"- 链接主表（{status}）：{', '.join(tbl_names)}")
         filters = linked_schema.get("suggested_filters") or []
-        mark_filters = [
-            f
-            for f in filters
-            if isinstance(f, dict)
-            and f.get("column") == "station_name"
-            and f.get("source") in {"fcb_layer0", "fcb_compress"}
-        ]
-        if mark_filters:
-            f0 = mark_filters[0]
-            val = f0.get("value")
-            src = f0.get("source")
-            if isinstance(val, list):
-                preview = ",".join(str(x) for x in val[:6])
-                more = f"…(+{len(val) - 6})" if len(val) > 6 else ""
-                lines.append(f"- 建议过滤（{src}）：station_name IN ({preview}{more})")
-            else:
-                lines.append(f"- 建议过滤（{src}）：station_name = {val}")
+        if filters:
+            lines.append(
+                "- 链接建议过滤（权威，生成后系统强制改写对齐；请按此语义写条件，勿抄截断预览）："
+            )
+            for f in filters:
+                if not isinstance(f, dict):
+                    continue
+                col = f.get("column")
+                op = f.get("op")
+                src = f.get("source")
+                table = f.get("table") or ""
+                val = f.get("value")
+                if op == "in" and isinstance(val, list):
+                    lines.append(
+                        f"  · {table}.{col} IN (共{len(val)}个，source={src})"
+                    )
+                else:
+                    lines.append(f"  · {table}.{col} {op} {val!r} (source={src})")
         fail_reason = linked_schema.get("fail_reason")
         if fail_reason and status == "failed":
             lines.append(f"- 链接失败原因：{fail_reason}")

@@ -1636,6 +1636,15 @@ class NL2SQLChain:
         notes.extend(scope_notes)
         rewritten, region_notes = self._rewrite_relaxed_region_match(rewritten, question=question)
         notes.extend(region_notes)
+        # 通用 suggested_filters 强制改写（覆盖/层位/区县等权威名单，避免 LLM 抄截断预览）
+        from app.nl2sql.suggested_filters_rewrite import (
+            rewrite_sql_with_suggested_filters,
+            suggested_filters_from_parsed_intent,
+        )
+
+        sf = suggested_filters_from_parsed_intent(parsed_intent)
+        rewritten, sf_notes = rewrite_sql_with_suggested_filters(rewritten, sf)
+        notes.extend(sf_notes)
         return rewritten, notes
 
     @staticmethod

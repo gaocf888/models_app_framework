@@ -387,7 +387,8 @@ def test_align_injects_layer0_for_district_and_prompt(monkeypatch: pytest.Monkey
 
     block = format_parsed_intent_prompt_block(intent, semantic=binding.to_dict(), linked_schema=linked.to_dict())
     assert "优选标编号" in block
-    assert "建议过滤" in block
+    assert "链接建议过滤" in block or "建议过滤" in block
+    assert "禁止只写预览子集" in block or "强制改写" in block
 
 
 def test_align_explicit_mark_not_replaced_by_layer0(monkeypatch: pytest.MonkeyPatch) -> None:
