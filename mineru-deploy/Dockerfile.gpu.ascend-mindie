@@ -5,12 +5,13 @@
 # 与 Dockerfile.gpu.ascend（vllm-ascend CANN 9.1）并列，互不替换。
 #
 # 注意：
-# - MindIE 镜像侧重 LLM 推理套件；本文件仍按「厂商 Python + torch/torch_npu 上装 mineru」路径构建。
+# - MindIE 自带 /usr/local/python3.10.x 常缺标准库扩展 _bz2，会导致 mineru 启动
+#   import torchvision → bz2 失败。本文件优先选用「带 _bz2」的解释器（含系统
+#   /usr/bin/python3）；若仅 MindIE Python 有 torch，则尝试从系统 Python 拷贝 _bz2
+#   扩展到同主版本 lib-dynload。
 # - 构建机通常无 NPU：探测/校验时使用 TORCH_DEVICE_BACKEND_AUTOLOAD=0。
-# - 勿 apt 安装 python3-pip（易抢 PATH / 破坏厂商 torch 栈）。
-# - 勿对 MindIE 镜像执行 apt-get update + 装新包：镜像内 libcurl/gcc 等被冻结，
-#   与 jammy-updates 索引冲突（Unmet dependencies / curl Depends libcurl4=...）。
-# - 宿主 HDK/驱动须与 MindIE 镜像内 CANN 版本匹配，否则运行期仍会算子/驱动失败。
+# - 勿 apt 安装 python3-pip / 勿 apt-get update 装新包（MindIE 冻结依赖会冲突）。
+# - 宿主 HDK/驱动须与 MindIE 镜像内 CANN 版本匹配。
 # =============================================================================
 
 ARG BASE_IMAGE=quay.io/ascend/mindie:1.0.RC2-300I-Duo-aarch64
@@ -23,10 +24,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PATH=/usr/local/python3.10.0/bin:/usr/local/python3.10/bin:/usr/local/python3.11.13/bin:/usr/local/python3.12.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH=/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/bin:/usr/local/python3.10.0/bin:/usr/local/python3.10/bin:/usr/local/python3.11.13/bin:/usr/local/python3.12.13/bin
 
-# MindIE 底座已含运行库；跳过 apt，避免破坏冻结依赖。健康检查改用 python。
-# 加载 MindIE / CANN 环境后探测「带 torch（优先 torch_npu）」的 Python
+# 探测 Python：必须能 import _bz2；优先系统 Python；再要求 torch（优先 torch_npu）
 RUN set -eux; \
     for envf in \
       /usr/local/Ascend/ascend-toolkit/set_env.sh \
@@ -36,48 +36,115 @@ RUN set -eux; \
       /usr/local/Ascend/mindformers/set_env.sh; do \
       if [ -f "$envf" ]; then . "$envf"; fi; \
     done; \
-    PY=""; \
-    PY_FALLBACK=""; \
     shopt -s nullglob; \
+    # 系统 Python 优先（通常带完整 _bz2），MindIE 裁剪 Python 放后
     CANDIDATES=( \
-      /usr/local/python3.*/bin/python3 \
+      /usr/bin/python3 \
+      /usr/bin/python3.12 \
+      /usr/bin/python3.11 \
+      /usr/bin/python3.10 \
+      /usr/bin/python \
       /usr/local/bin/python3 \
       /opt/conda/bin/python3 \
       /root/miniconda3/bin/python3 \
       /home/*/miniconda*/bin/python3 \
+      /usr/local/python3.*/bin/python3 \
     ); \
-    if command -v python3 >/dev/null 2>&1; then \
-      CANDIDATES+=("$(command -v python3)"); \
-    fi; \
-    if command -v python >/dev/null 2>&1; then \
-      CANDIDATES+=("$(command -v python)"); \
-    fi; \
+    if command -v python3 >/dev/null 2>&1; then CANDIDATES+=("$(command -v python3)"); fi; \
+    if command -v python >/dev/null 2>&1; then CANDIDATES+=("$(command -v python)"); fi; \
+    \
+    py_has_bz2() { TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$1" -c "import _bz2, bz2" >/dev/null 2>&1; }; \
+    py_has_torch() { TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$1" -c "import torch" >/dev/null 2>&1; }; \
+    py_has_torch_npu() { TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$1" -c "import torch_npu" >/dev/null 2>&1; }; \
+    \
+    PY=""; \
+    PY_BZ2_TORCH=""; \
+    PY_BZ2_ONLY=""; \
+    PY_TORCH_NO_BZ2=""; \
     for hit in "${CANDIDATES[@]}"; do \
       [ -x "$hit" ] || continue; \
-      if TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$hit" -c "import torch" >/dev/null 2>&1; then \
-        if TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$hit" -c "import torch_npu" >/dev/null 2>&1; then \
-          PY="$hit"; \
-          break; \
+      if py_has_bz2 "$hit"; then \
+        if [ -z "$PY_BZ2_ONLY" ]; then PY_BZ2_ONLY="$hit"; fi; \
+        if py_has_torch "$hit"; then \
+          if py_has_torch_npu "$hit"; then PY="$hit"; break; fi; \
+          if [ -z "$PY_BZ2_TORCH" ]; then PY_BZ2_TORCH="$hit"; fi; \
         fi; \
-        if [ -z "$PY_FALLBACK" ]; then PY_FALLBACK="$hit"; fi; \
+      else \
+        if py_has_torch "$hit" && [ -z "$PY_TORCH_NO_BZ2" ]; then PY_TORCH_NO_BZ2="$hit"; fi; \
       fi; \
     done; \
-    if [ -z "$PY" ]; then PY="$PY_FALLBACK"; fi; \
+    if [ -z "$PY" ]; then PY="$PY_BZ2_TORCH"; fi; \
+    \
+    # MindIE Python 有 torch 但无 _bz2：从同主版本系统 Python 拷贝 _bz2*.so
+    if [ -z "$PY" ] && [ -n "$PY_TORCH_NO_BZ2" ]; then \
+      echo "MindIE/torch Python lacks _bz2: $PY_TORCH_NO_BZ2 ; trying to copy _bz2 from system Python"; \
+      TORCH_VER="$("$PY_TORCH_NO_BZ2" -c 'import sys; print("%d.%d"%sys.version_info[:2])')"; \
+      DONOR=""; \
+      for d in /usr/bin/python3 /usr/bin/python"${TORCH_VER}" /usr/bin/python3.10 /usr/bin/python3.11 /usr/bin/python3.12; do \
+        if [ -x "$d" ] && py_has_bz2 "$d"; then \
+          DVER="$("$d" -c 'import sys; print("%d.%d"%sys.version_info[:2])')"; \
+          if [ "$DVER" = "$TORCH_VER" ]; then DONOR="$d"; break; fi; \
+        fi; \
+      done; \
+      if [ -n "$DONOR" ]; then \
+        DST_DYN="$("$PY_TORCH_NO_BZ2" -c 'import sysconfig; print(sysconfig.get_config_var("DESTSHARED") or "")')"; \
+        SRC_DYN="$("$DONOR" -c 'import sysconfig; print(sysconfig.get_config_var("DESTSHARED") or "")')"; \
+        if [ -z "$DST_DYN" ] || [ -z "$SRC_DYN" ]; then \
+          DST_DYN="$("$PY_TORCH_NO_BZ2" -c 'import sys,glob; import os; print(glob.glob(os.path.join(sys.base_prefix,"lib","python*","lib-dynload"))[0])')"; \
+          SRC_DYN="$("$DONOR" -c 'import sys,glob; import os; print(glob.glob(os.path.join(sys.base_prefix,"lib","python*","lib-dynload"))[0])')"; \
+        fi; \
+        echo "Copy _bz2 from $SRC_DYN -> $DST_DYN (donor=$DONOR)"; \
+        mkdir -p "$DST_DYN"; \
+        copied=0; \
+        for f in "$SRC_DYN"/_bz2*.so "$SRC_DYN"/_bz2*.so.*; do \
+          if [ -f "$f" ]; then cp -a "$f" "$DST_DYN/"; copied=1; fi; \
+        done; \
+        if [ "$copied" = "1" ] && py_has_bz2 "$PY_TORCH_NO_BZ2"; then \
+          PY="$PY_TORCH_NO_BZ2"; \
+          echo "Repaired _bz2 on $PY"; \
+        else \
+          echo "WARNING: copy _bz2 failed or still not importable"; \
+        fi; \
+      else \
+        echo "WARNING: no same-version donor Python with _bz2"; \
+      fi; \
+    fi; \
+    \
+    # 仍无：带 _bz2 的系统 Python + MindIE site-packages（torch）注入 PYTHONPATH
+    if [ -z "$PY" ] && [ -n "$PY_BZ2_ONLY" ] && [ -n "$PY_TORCH_NO_BZ2" ]; then \
+      echo "Using system Python with _bz2 + MindIE site-packages on PYTHONPATH"; \
+      PY="$PY_BZ2_ONLY"; \
+      SITE="$("$PY_TORCH_NO_BZ2" -c 'import site; print(site.getsitepackages()[0])')"; \
+      printf '%s\n' "$SITE" > /etc/mineru-extra-pythonpath; \
+      echo "export PYTHONPATH=${SITE}\${PYTHONPATH:+:\$PYTHONPATH}" >> /etc/profile.d/ascend-python.sh; \
+    fi; \
+    \
     if [ -z "$PY" ]; then \
-      echo "ERROR: MindIE image has no Python with torch (need torch/torch_npu for MinerU)"; \
+      echo "ERROR: no usable Python with _bz2 (+ torch preferred) for MinerU on MindIE image"; \
       echo "PATH=$PATH"; \
+      ls -la /usr/bin/python3* 2>/dev/null || true; \
       ls -la /usr/local/python3.*/bin/ 2>/dev/null || true; \
-      command -v python3 || true; \
-      command -v python || true; \
       exit 1; \
     fi; \
+    \
     echo "Using PYTHON=$PY"; \
-    "$PY" -c "import sys; print('python', sys.version)"; \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -c "import sys,_bz2,bz2; print('python', sys.version); print('_bz2 ok')"; \
     PY_BIN="$(dirname "$PY")"; \
-    echo "export PATH=${PY_BIN}:\$PATH" > /etc/profile.d/ascend-python.sh; \
+    { \
+      echo "export PATH=${PY_BIN}:\$PATH"; \
+      if [ -f /etc/mineru-extra-pythonpath ]; then \
+        _site="$(cat /etc/mineru-extra-pythonpath)"; \
+        echo "export PYTHONPATH=${_site}\${PYTHONPATH:+:\$PYTHONPATH}"; \
+      fi; \
+    } > /etc/profile.d/ascend-python.sh; \
     printf '%s\n' "$PY_BIN" > /etc/ascend-python-bindir; \
     ln -sfn "$PY" /usr/local/bin/python3; \
     ln -sfn "$PY" /usr/local/bin/python; \
+    \
+    if ! "$PY" -m pip --version >/dev/null 2>&1; then \
+      TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -m ensurepip --upgrade \
+        || curl -fsSL https://bootstrap.pypa.io/get-pip.py | "$PY" -; \
+    fi; \
     "$PY" -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 --index-url "${PIP_INDEX_URL}" \
       || "$PY" -m pip install --upgrade pip setuptools wheel --default-timeout=600 --retries=20 --index-url "https://pypi.org/simple"; \
     if [ -n "${PIP_INDEX_URL}" ]; then \
@@ -86,10 +153,12 @@ RUN set -eux; \
     else \
       "$PY" -m pip install --index-url "https://pypi.org/simple" "${MINERU_PIP_SPEC}" --default-timeout=600 --retries=20; \
     fi; \
-    TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -c "import importlib.util as u; assert u.find_spec('torch') is not None, 'torch missing after mineru install'"; \
-    if ! TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -c "import importlib.util as u; assert u.find_spec('torch_npu') is not None" >/dev/null 2>&1; then \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -c "import _bz2,bz2,torch; print('post-install: _bz2+torch ok')"; \
+    if ! TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -c "import torch_npu" >/dev/null 2>&1; then \
       echo "WARNING: torch_npu missing after mineru install; NPU device mode may fail at runtime"; \
     fi; \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -c "import torchvision; print('torchvision ok')" \
+      || echo "WARNING: torchvision import failed (may still fail at mineru startup)"; \
     if [ -x "${PY_BIN}/mineru-api" ]; then ln -sfn "${PY_BIN}/mineru-api" /usr/local/bin/mineru-api; fi; \
     command -v mineru-api || ls -la "${PY_BIN}/mineru-api" || true
 
@@ -97,6 +166,5 @@ COPY docker/entrypoint.ascend-mindie.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 WORKDIR /workspace
-# MindIE 镜像通常无 tini；直接走 entrypoint
 ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]
 CMD ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]

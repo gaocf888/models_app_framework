@@ -47,8 +47,8 @@ services:
       - NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-8}
       - TORCH_NUM_THREADS=${TORCH_NUM_THREADS:-8}
       - TORCH_NUM_INTEROP_THREADS=${TORCH_NUM_INTEROP_THREADS:-2}
-      # 构建阶段会再写入 /etc/ascend-python-bindir；此处覆盖常见 MindIE Python 路径
-      - PATH=/usr/local/python3.10.0/bin:/usr/local/python3.10/bin:/usr/local/python3.11.13/bin:/usr/local/python3.12.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # 构建阶段会写入 /etc/ascend-python-bindir；/usr/bin 优先便于系统 Python+_bz2
+      - PATH=/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/bin:/usr/local/python3.10.0/bin:/usr/local/python3.10/bin:/usr/local/python3.11.13/bin:/usr/local/python3.12.13/bin
     volumes:
       - ${MINERU_MODELS_HOST_PATH}:/models:ro
       - ${MINERU_IO_HOST_PATH}:/io

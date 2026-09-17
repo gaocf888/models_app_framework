@@ -16,7 +16,7 @@ for envf in \
   fi
 done
 
-# 构建阶段写入的厂商 Python bin
+# 构建阶段写入的厂商 / 系统 Python bin
 if [ -f /etc/ascend-python-bindir ]; then
   _py_bin="$(cat /etc/ascend-python-bindir)"
   if [ -n "$_py_bin" ] && [ -d "$_py_bin" ]; then
@@ -26,6 +26,13 @@ fi
 if [ -f /etc/profile.d/ascend-python.sh ]; then
   # shellcheck disable=SC1091
   . /etc/profile.d/ascend-python.sh
+fi
+# 系统 Python + MindIE site-packages 场景
+if [ -f /etc/mineru-extra-pythonpath ]; then
+  _site="$(cat /etc/mineru-extra-pythonpath)"
+  if [ -n "$_site" ]; then
+    export PYTHONPATH="${_site}${PYTHONPATH:+:$PYTHONPATH}"
+  fi
 fi
 
 # 兼容 Nvidia wheel 布局（MindIE 栈通常无这些目录；存在则追加）
