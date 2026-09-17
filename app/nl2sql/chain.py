@@ -431,6 +431,7 @@ class NL2SQLChain:
                 station_ids=list(dims.get("station_ids") or []),
                 station_names=list(dims.get("station_names") or []),
                 project_names=list(dims.get("project_names") or []),
+                device_coverage_project_names=list(dims.get("device_coverage_project_names") or []),
                 preferred_station_names=list(dims.get("preferred_station_names") or []),
                 compress_pairs=[
                     dict(p) for p in (dims.get("compress_pairs") or []) if isinstance(p, dict)

@@ -133,10 +133,15 @@ def format_parsed_intent_prompt_block(
                 lines.append(f"- 命中指标：{'；'.join(metric_bits)}")
         dims = semantic.get("dimensions") if isinstance(semantic.get("dimensions"), dict) else {}
         project_names = list((dims or {}).get("project_names") or [])
+        coverage_names = list((dims or {}).get("device_coverage_project_names") or [])
         preferred_marks = list((dims or {}).get("preferred_station_names") or [])
         compress_pairs = list((dims or {}).get("compress_pairs") or [])
         if project_names:
             lines.append(f"- 站点场地(project_name)：{'、'.join(str(x) for x in project_names[:5])}")
+        elif coverage_names:
+            preview = "、".join(str(x) for x in coverage_names[:5])
+            more = f" 等共{len(coverage_names)}个" if len(coverage_names) > 5 else ""
+            lines.append(f"- 监测方式站点覆盖(project_name)：{preview}{more}")
         if compress_pairs:
             bits = []
             for p in compress_pairs[:4]:

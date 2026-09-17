@@ -27,6 +27,8 @@ class NL2SQLBusinessProfile:
     semantic_dict_path: str = ""
     # 分层标层位字典（可选；空则 semantic/dimensions/fcb_layer_map.yaml）
     fcb_layer_map_file: str | None = None
+    # 监测方式站点覆盖（可选；空则 semantic/dimensions/device_station_map.yaml）
+    device_station_map_file: str | None = None
     table_allowlist: tuple[str, ...] = ()
     join_whitelist: tuple[str, ...] = ()
     scope_lexicon_file: str | None = None
@@ -171,6 +173,11 @@ def get_nl2sql_business_profile(domain: str | None = None) -> NL2SQLBusinessProf
         fcb_layer_map_file=(
             str(nl2sql_raw["fcb_layer_map_file"]).strip()
             if nl2sql_raw.get("fcb_layer_map_file")
+            else None
+        ),
+        device_station_map_file=(
+            str(nl2sql_raw["device_station_map_file"]).strip()
+            if nl2sql_raw.get("device_station_map_file")
             else None
         ),
         table_allowlist=_read_lines_file(_resolve_path(allowlist_rel)),

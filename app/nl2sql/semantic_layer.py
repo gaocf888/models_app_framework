@@ -59,8 +59,10 @@ class SemanticBinding:
     station_ids: list[str] = field(default_factory=list)
     # 监测站点展示名（= DB project_name，如 F8(周村)）；勿直接当标编号过滤
     station_names: list[str] = field(default_factory=list)
-    # 站点场地过滤：DB project_name
+    # 站点场地过滤：DB project_name（用户点名或裁剪后的具体站）
     project_names: list[str] = field(default_factory=list)
+    # P7：监测方式官方覆盖名单（全量 allowlist；与 project_names 分工）
+    device_coverage_project_names: list[str] = field(default_factory=list)
     # 分层标代表标 / 显式标编号 / 压缩层边界标：DB station_name
     preferred_station_names: list[str] = field(default_factory=list)
     # 压缩层区间：[{project_name, layer_from, layer_to, mark_from, mark_to}]
@@ -92,6 +94,7 @@ class SemanticBinding:
                 "station_ids": list(self.station_ids),
                 "station_names": list(self.station_names),
                 "project_names": list(self.project_names),
+                "device_coverage_project_names": list(self.device_coverage_project_names),
                 "preferred_station_names": list(self.preferred_station_names),
                 "compress_pairs": list(self.compress_pairs),
             },
@@ -123,6 +126,8 @@ class SemanticAssets:
     fcb_layer0_by_district_raw: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # project_name → {monitor_layer: station_name}（仅非空层位）
     fcb_layers_by_project: dict[str, dict[int, str]] = field(default_factory=dict)
+    # device_type → 官方 project_name 覆盖名单（P7）
+    device_projects_by_type: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _resolve_semantic_root() -> Path | None:
@@ -154,6 +159,47 @@ def _resolve_fcb_layer_map_path(base: Path) -> Path:
             if p.is_file():
                 return p
     return base / "dimensions" / "fcb_layer_map.yaml"
+
+
+def _resolve_device_station_map_path(base: Path) -> Path:
+    """优先 profile.device_station_map_file，否则 semantic/dimensions/device_station_map.yaml。"""
+    profile = get_nl2sql_business_profile()
+    if profile is not None:
+        raw = getattr(profile, "device_station_map_file", None) or ""
+        if str(raw).strip():
+            p = Path(str(raw).strip())
+            if not p.is_absolute():
+                p = (_REPO_ROOT / p).resolve()
+            if p.is_file():
+                return p
+    return base / "dimensions" / "device_station_map.yaml"
+
+
+def _parse_device_station_map(data: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+    """解析 device_type → project_names 覆盖名单。"""
+    out: dict[str, tuple[str, ...]] = {}
+    devices = data.get("devices") or {}
+    if not isinstance(devices, dict):
+        return out
+    for dtype, payload in devices.items():
+        key = str(dtype or "").strip().lower()
+        if not key:
+            continue
+        names: list[str] = []
+        if isinstance(payload, dict):
+            raw_names = payload.get("project_names") or []
+        elif isinstance(payload, list):
+            raw_names = payload
+        else:
+            continue
+        seen: set[str] = set()
+        for item in raw_names:
+            name = str(item or "").strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+        out[key] = tuple(names)
+    return out
 
 
 def _parse_fcb_layer_map(
@@ -283,6 +329,19 @@ def load_semantic_assets(root: str) -> SemanticAssets | None:
             len(layers_by_project),
         )
 
+    device_map_path = _resolve_device_station_map_path(base)
+    device_map_raw = _load_yaml(device_map_path)
+    device_projects_by_type = _parse_device_station_map(device_map_raw)
+    if device_projects_by_type:
+        dsm_ver = str(device_map_raw.get("version") or "").strip()
+        if dsm_ver and dsm_ver not in version:
+            version = f"{version}+dsm{dsm_ver}"
+        logger.info(
+            "device_station_map loaded path=%s types=%s",
+            device_map_path,
+            {k: len(v) for k, v in device_projects_by_type.items()},
+        )
+
     return SemanticAssets(
         version=version,
         metrics=metrics,
@@ -299,6 +358,7 @@ def load_semantic_assets(root: str) -> SemanticAssets | None:
         fcb_layer0_marks=layer0_marks,
         fcb_layer0_by_district_raw=layer0_by_district,
         fcb_layers_by_project=layers_by_project,
+        device_projects_by_type=device_projects_by_type,
     )
 
 
@@ -638,6 +698,62 @@ def _inject_fcb_preferred_station_names(
         binding.warnings.append("fcb_layer0_city_filter")
 
 
+def _device_coverage_allowlist(binding: SemanticBinding, assets: SemanticAssets) -> list[str]:
+    """合并当前 device_types 的官方 project_name 覆盖（去重保序）。"""
+    if not assets.device_projects_by_type or not binding.device_types:
+        return []
+    out: list[str] = []
+    empty_types: list[str] = []
+    known = False
+    for dtype in binding.device_types:
+        key = str(dtype or "").strip().lower()
+        if key not in assets.device_projects_by_type:
+            continue
+        known = True
+        names = assets.device_projects_by_type.get(key) or ()
+        if not names:
+            empty_types.append(key)
+            continue
+        for name in names:
+            _uniq_append(out, name)
+    if known and not out and empty_types:
+        binding.warnings.append("device_station_map_empty:" + ",".join(empty_types))
+    return out
+
+
+def _inject_device_station_coverage(
+    binding: SemanticBinding,
+    assets: SemanticAssets,
+) -> None:
+    """P7：按监测方式官方覆盖写入 device_coverage_project_names，并裁剪已点名 project_names。"""
+    allowlist = _device_coverage_allowlist(binding, assets)
+    if not allowlist and "device_station_map_empty" not in " ".join(binding.warnings):
+        # 空名单时 _device_coverage_allowlist 已写 empty warning
+        return
+    if not allowlist:
+        return
+
+    binding.device_coverage_project_names = list(allowlist)
+    binding.warnings.append("device_station_map_coverage")
+
+    allow_set = set(allowlist)
+    existing = [p for p in binding.project_names if p]
+    if not existing:
+        return
+
+    kept = [p for p in existing if p in allow_set]
+    dropped = [p for p in existing if p not in allow_set]
+    if dropped:
+        binding.warnings.append(
+            "device_station_map_intersect_drop:" + ",".join(dropped[:5])
+        )
+    if not kept:
+        binding.warnings.append("device_station_map_intersect_empty")
+        return
+    binding.project_names = kept
+    binding.warnings.append("device_station_map_intersect")
+
+
 def align_semantics(
     question: str,
     intent: QuestionIntent,
@@ -717,6 +833,14 @@ def align_semantics(
                     binding.device_type_tables.append(tbl)
                 break
 
+        if not binding.device_types:
+            dtype = str(intent.scope.device_type or "").strip()
+            if dtype:
+                binding.device_types.append(dtype)
+                tbl = assets.device_type_tables.get(dtype)
+                if tbl:
+                    binding.device_type_tables.append(tbl)
+
         if is_station_catalog_question(q):
             binding.default_table = _STATION_TABLE
             binding.warnings.append("station_catalog_query")
@@ -758,6 +882,9 @@ def align_semantics(
 
     if _LAYER_PLACEHOLDER_RE.search(q):
         binding.warnings.append("layered_fcb_placeholder:分层各层数据尚未入库")
+
+    # P7：监测方式官方站点覆盖（在层位注入前，便于 fcb 在裁剪后的 project_names 上取层位0）
+    _inject_device_station_coverage(binding, assets)
 
     if is_station_catalog_question(q) or "station_catalog_query" in binding.warnings:
         binding.default_table = _STATION_TABLE
