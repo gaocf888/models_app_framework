@@ -1,55 +1,82 @@
 # 地降 NL2SQL 业务配置包（subsidence）
-# 部署：NL2SQL_BUSINESS_DOMAIN=subsidence
-# 本文件为域入口；字段释义见同目录「配置项说明.md」
-# 密码禁止写入；显式环境变量 DB_* / DB_URL / NL2SQL_* 优先于本文件
+# 部署时设 NL2SQL_BUSINESS_DOMAIN=subsidence（与 CHATBOT_DOMAIN 独立；地降建议两边都设）
+# 本文件是域入口；细则见同目录「配置项说明.md」
+# 优先级：显式环境变量 DB_* / DB_URL / NL2SQL_* ＞ 本文件 ＞ 代码默认值
+# 密码禁止写入本文件
 
+# 当前配置包所属业务域（须与目录名 configs/nl2sql_business/subsidence 一致）
 business_domain: subsidence
+# 给人看的业务名称（日志/管理展示用）
 display_name: 北京市地面沉降监测
 
 # ---------- 业务库连接默认 ----------
+# NL2SQL 查数用的默认库连接（地降 PostgreSQL）；密码只用环境变量 DB_PASSWORD / DB_URL
 db:
-  dialect: postgres          # postgres | postgresql | pg
+  dialect: postgres
   host: 192.169.237.197
   port: 5432
-  name: dmcj                 # 库名
+  name: dmcj
   user: postgres
   async_driver: postgresql+asyncpg
 
 # ---------- NL2SQL 行为 ----------
 nl2sql:
+  # 让 LLM 生成 SQL 之前，是否先走「语义对齐 + Schema 链接」
+  # true：先定指标/监测方式/站点覆盖/层位，再收窄表列目录后交给 LLM
+  # false：跳过上述步骤，按改造前宽 catalog 直接生成（灰度/回退用）
   semantic_link_enabled: true
+  # 语义资产根目录：指标、同义词、监测类型、层位字典、站点覆盖等 YAML 都在这里
   semantic_dict_path: configs/nl2sql_business/subsidence/semantic
-  # 分层标层位字典；semantic_layer 加载后对站点沉降注入层位0 preferred_station_names
+  # 分层标「标编号↔层位」字典（P6）。问站点沉降时，用来锁定层位0 对应的 station_name
   fcb_layer_map_file: configs/nl2sql_business/subsidence/semantic/dimensions/fcb_layer_map.yaml
-  intent_parse_mode: rule                 # rule | llm（地降默认规则）
-  scope_sql_rewrite_enabled: true         # 将解析出的范围写入 SQL 占位符改写
+  # 监测方式「官方有哪些场地」覆盖名单（P7）。先按监测方式取 project_name 列表，再与 t_station 做区县匹配
+  device_station_map_file: configs/nl2sql_business/subsidence/semantic/dimensions/device_station_map.yaml
+  # 问句里的范围（区县/站点/监测类型）怎么解析：rule=本地词表规则（地降推荐）；llm=交给大模型解析
+  intent_parse_mode: rule
+  # LLM 出 SQL 之后，是否用已解析的范围去改写 SQL 里的范围占位（如行政区、站点条件）
+  scope_sql_rewrite_enabled: true
+  # 范围解析用的词表文件（行政区名、监测类型别名、站点别名等）
   scope_lexicon_file: configs/nl2sql_business/subsidence/scope_lexicon.json
+  # SQL 生成后的业务校验规则（例如「问沉降却查水位表」这类明显跑偏时告警/拦截）
   entity_rules_file: configs/nl2sql_business/subsidence/entity_rules.json
+  # 调用哪一版 NL2SQL 系统提示词（在 configs/prompts.yaml 里按该名字取模板）
   prompt_default_version: v2_subsidence
-  schema_link_catalog_mode: linked_only   # linked_only | linked_prefer | legacy_wide
-  on_link_failure: refuse                 # refuse | best_effort
-  inject_parsed_intent: true              # SQL 生成 Prompt 追加「已识别问句意图」块
+  # 喂给 LLM 的「可查表列目录」怎么裁：
+  # linked_only=只给 Schema 链接结果（推荐）；linked_prefer=链接优先可补宽；legacy_wide=旧的宽目录
+  schema_link_catalog_mode: linked_only
+  # 语义对齐或 Schema 链接失败时怎么办：refuse=本请求直接失败不生成；best_effort=降级继续尽量出 SQL
+  on_link_failure: refuse
+  # 是否在给 LLM 的 Prompt 里附加一段「系统已识别的意图摘要」（指标、覆盖站点、建议过滤等）
+  inject_parsed_intent: true
+  # 时间窗占位解析不出来时是否拒绝出 SQL（避免用错时间条件）
   reject_unresolved_time_placeholders: true
-  anchor_fallback_now_enabled: false      # 地降默认关闭「锚点缺失则 NOW」回退
-  anchor_fallback_analysis_types: ""      # 允许回退的 analysis_type 列表，逗号分隔；空=无
+  # 报告/分析缺少时间锚点时，是否自动用当前时间 NOW 顶上（地降默认关，防止报告时间窗漂移）
+  anchor_fallback_now_enabled: false
+  # 哪些 analysis_type 允许上面的 NOW 回退（逗号分隔）；空字符串=全部不允许
+  anchor_fallback_analysis_types: ""
 
 # ---------- 表白名单 / JOIN ----------
+# 限制 NL2SQL「最多能碰哪些表、允许怎样 JOIN」（防止扫到白名单外的表）
 tables:
+  # 允许查询的表清单（地降 8 表）
   allowlist_file: configs/nl2sql_business/subsidence/table_scope.txt
+  # 允许的表间关联（如事实表.project_name = t_station.name，用来带出行政区）
   join_whitelist_file: configs/nl2sql_business/subsidence/join_whitelist.txt
 
 # ---------- RAG 命名空间与业务知识源 ----------
+# 生成 SQL 前可检索的知识库命名空间；与锅炉共用名字，靠摄入内容区分业务。改 md 后需 re-ingest
 rag:
   namespaces:
-    schema: nl2sql_schema
-    biz: nl2sql_biz_knowledge
-    qa: nl2sql_qa_examples
-  # 摄入 biz 命名空间时覆盖的源文件（含三维口径与层位0索引）
+    schema: nl2sql_schema          # 表结构/字段说明，帮助选对表列
+    biz: nl2sql_biz_knowledge      # 业务口径（沉降公式、覆盖/层位规则等）
+    qa: nl2sql_qa_examples         # 问答样例，利于相似问句回放
+  # 往 biz 命名空间摄入时实际读取哪些源文件（含层位0 站点索引）
   biz_source_files:
     - configs/nl2sql_business/subsidence/rag/nl2sql_biz_knowledge.md
     - configs/nl2sql_business/subsidence/rag/nl2sql_biz_knowledge_fcb_layer0_stations.md
 
 # ---------- 综合分析报告类型 ----------
+# 综合分析智能体可用的报告周期类型（对应 analysis_type）
 analysis:
   report_types:
     - subsidence_daily

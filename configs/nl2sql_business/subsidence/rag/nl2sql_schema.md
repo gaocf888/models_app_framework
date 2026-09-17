@@ -10,6 +10,7 @@
 - **用途**：行政区、站点名称、编码、坐标
 - **列**：`id`（站点编码）、`name`（站点名称，与事实表 `project_name` 关联）、`code`、`lon`、`lat`、`area`（行政区）
 - **关联**：各 `t_data_wash_*` 事实表通过 `project_name = t_station.name` JOIN 获取 `area`
+- **监测方式覆盖**：官方场地名单见 `device_station_map.yaml`；清单/范围过滤应 `name IN (覆盖名单)` 且可再滤 `area`，勿用全区 `t_station` 代替某监测方式站点集
 
 ## t_data_wash_fcb（分层标 · 主沉降表）
 

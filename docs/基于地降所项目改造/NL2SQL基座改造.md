@@ -1,7 +1,7 @@
 # NL2SQL 基座改造方案（锅炉四管 / 地面沉降）
 
-> **版本**：2026-09-11（P0–P5 已落地；增补 **P6 分层标三维口径 + 层位字典**）  
-> **实施进度**：P0–P5 主能力已落地；**配置包驱动分业务默认值（含 DB 连接默认、方言、白名单、Prompt）已补齐**。`.env` 中显式 `DB_*`/`NL2SQL_*` 仍优先于 profile。剩余联调：PG 连通、RAG 摄入、黄金集可执行率、锅炉回归。**P6 配置侧已落地**（口径对齐季报脚本：初−末、正下沉；`fcb_layer_map`；知识库/Prompt/QA 已同步）；**待运维**：RAG re-ingest 与抽测——详见专项 [`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md)。运维极简见企业级简版 §4.4。  
+> **版本**：2026-09-17（P0–P5 已落地；P6 分层标三维口径 + 层位字典；增补 **P7 监测方式站点覆盖配置**）  
+> **实施进度**：P0–P5 主能力已落地；**配置包驱动分业务默认值（含 DB 连接默认、方言、白名单、Prompt）已补齐**。`.env` 中显式 `DB_*`/`NL2SQL_*` 仍优先于 profile。剩余联调：PG 连通、RAG 摄入、黄金集可执行率、锅炉回归。**P6 配置侧已落地**（口径对齐季报脚本：初−末、正下沉；`fcb_layer_map`；知识库/Prompt/QA 已同步）；**待运维**：RAG re-ingest 与抽测——详见专项 [`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md)。**P7 已落地**（`device_station_map.yaml` + semantic/schema 注入；GNSS 占位空；与 `t_station` 匹配）；**待运维**：biz/schema re-ingest。运维极简见企业级简版 §4.4。  
 > **分支/项目**：`dev_djs`（地降所地面沉降）  
 > **范围**：`app/nl2sql/*`、`NL2SQLService`、相关配置与契约；不含 chatbot/报告前端 UI 实现细节。  
 > **原则**：**基座主链路不变**；范围默认 **rule**；时间 **始终规则**；通过 **部署级全局业务配置** 区分锅炉四管与地面沉降；语义建模 + 显式 Schema 链接为准确率核心增量。  
@@ -10,9 +10,11 @@
 > **关联文档**：  
 > - 现网基线：`enterprise-level_transformation_docs/企业级NL2SQL基座实现方案.md`  
 > - **分层标口径专项（P6）**：[`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md)  
+> - **监测方式站点覆盖（P7）**：本文 **§7.5**（与 P6 层位字典分工：覆盖 vs 标/层位）  
 > - 五阶段背景：`NL2SQL基座五阶段改造方案.md`（或废弃提炼稿）  
 > - 时间/范围改写：`docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`  
 > - 库结构：`docs/地降所需求及数据相关/数据库结构及逻辑/数据库说明.md`、`226大模型数据库.docx`  
+> - 监测方式站点名单真源：`docs/地降所需求及数据相关/数据库结构及逻辑/站点列表-除了gnss.xls`  
 > - 季报计算逻辑（口径真源）：`docs/地降所需求及数据相关/数据库结构及逻辑/沉降数据获取计算逻辑/`  
 > - 需求参考（**非数据真源**）：`docs/地降所需求及数据相关/需求梳理/智能数据查询及分析-需求剖析.md`
 
@@ -28,6 +30,7 @@
 | **② 业务侧覆盖范围** | `confirmed_scope` → `human_confirmed`（**已具备，保持**）；时间用 `time_intent_text` | §4 |
 | **③ 语义建模 + Schema 链接** | 意图后插管；地降 8 表事实模型；指标/链接资产 | §5、§6 |
 | **④ 分层标三维口径 + 层位字典（P6）** | 周期=初−末、正下沉；站点=层位0；压缩层=相邻Δ差；`fcb_layer_map` + 知识库/Prompt/QA | 专项文档；§7.4、§8.1 |
+| **⑤ 监测方式站点覆盖（P7）** | 统一 `device_type → project_name[]` allowlist；与 `t_station` 匹配取区县；GNSS 占位空；fcb 层位仍走 P6 | **§7.5**、§8.1 |
 
 ### 0.2 基座主链路（改造后仍保持）
 
@@ -119,6 +122,7 @@ NL2SQLQueryResponse（sql, rows, parsed_intent…）
 | C8 | 范围默认 **rule**；时间 **规则** | `NL2SQL_INTENT_PARSE_MODE=rule` |
 | C9 | 沉降主数据：**分层标 `t_data_wash_fcb`**（兼基岩标 `jyb`） | 泛化「监测点沉降」默认主表；气象/水位等为辅助 |
 | C10 | 行政区通过 **`t_station`** | `事实表.project_name = t_station.name` → `t_station.area` |
+| C11 | **监测方式站点覆盖（P7）** | 各监测方式官方站点名单进统一配置；与 `t_station.name` 匹配；**不以**事实表「有数据」代替官方覆盖；区县维属性只认 `t_station`；分层标 **标/层位** 仍只认 `fcb_layer_map`（P6） |
 
 ---
 
@@ -176,15 +180,25 @@ NL2SQL_BUSINESS_DOMAIN=subsidence
 ### 1.3 关联与范围（已确认）
 
 ```text
-范围维度：行政区划 + 监测站点
+范围维度：行政区划 + 监测站点（场地）+ 监测方式
 
 行政区：
   各事实表.project_name  =  t_station.name
   → 过滤/展示用 t_station.area（行政区）
+  → **真源：t_station.area**（配置文件不抄区县）
 
-站点：
-  事实表.station_id / station_name
-  或 t_station.code / t_station.name
+监测方式 → 官方站点覆盖（P7）：
+  device_station_map：device_type → project_name[]
+  → 与 t_station.name 等值匹配（交集）
+  → 不以事实表「当前有数据」代替官方名单
+
+站点场地：
+  事实表.project_name ≡ t_station.name（如 F8(周村)）
+  scope_lexicon.stations 仅服务问句站名识别，不作监测方式覆盖权威
+
+分层标标编号（P6，仅 fcb/jyb）：
+  事实表.station_name（如 F8-10）← fcb_layer_map
+  → **不在 t_station**；站点沉降另限层位 0
 
 时间：
   统一过滤列 → 各事实表.data_time（语义资产中标注）
@@ -196,6 +210,8 @@ NL2SQL_BUSINESS_DOMAIN=subsidence
 ```sql
 -- 事实表别名 d，站点维表 s
 d.project_name = s.name
+-- 监测方式覆盖：AND d.project_name IN (... device_station_map allowlist ...)
+-- 行政区：AND s.area = '朝阳区'
 -- 或按 station_id 关联（若库内 id 体系一致，反射确认后补充）
 ```
 
@@ -259,7 +275,9 @@ configs/nl2sql_business/
       dimensions/
         district.yaml            # 来自 t_station.area 导出或规则
         station.yaml             # t_station
-        device_type.yaml
+        device_type.yaml         # 监测类型 → 主表
+        device_station_map.yaml  # P7：监测方式 → project_name[] 官方覆盖
+        fcb_layer_map.yaml       # P6：分层标层位/代表标（附加能力）
       units.yaml
       layered_fcb_placeholder.yaml   # 分层各层预留
 ```
@@ -283,6 +301,10 @@ db:
 nl2sql:
   semantic_link_enabled: true
   semantic_dict_path: configs/nl2sql_business/subsidence/semantic
+  # P6：分层标层位字典（标编号 / monitor_layer）
+  fcb_layer_map_file: configs/nl2sql_business/subsidence/semantic/dimensions/fcb_layer_map.yaml
+  # P7：监测方式站点覆盖（与 fcb 共用同一注入策略：project_names allowlist）
+  device_station_map_file: configs/nl2sql_business/subsidence/semantic/dimensions/device_station_map.yaml
   intent_parse_mode: rule
   scope_sql_rewrite_enabled: true
   scope_lexicon_file: configs/nl2sql_business/subsidence/scope_lexicon.json
@@ -557,7 +579,9 @@ semantic/
   dimensions/
     district.yaml        # 地降：行政区
     station.yaml         # 地降：站点
-    device_type.yaml     # 监测类型
+    device_type.yaml     # 监测类型 → 主表
+    device_station_map.yaml  # 地降 P7：监测方式 → project_name[] 覆盖
+    fcb_layer_map.yaml   # 地降 P6：分层标层位 / 代表标
     boiler.yaml          # 锅炉：机组
     device.yaml          # 锅炉：受热面
     piperow.yaml         # 锅炉：管排
@@ -574,9 +598,11 @@ semantic/
 
 | 字典 | 用途 | 来源建议 |
 |------|------|----------|
-| 行政区 | 朝阳/通州 → 标准名 | `t_station.area` 导出或权威 Excel |
-| 站点 | 站名 ↔ `station_id` | **优先 `t_station` 维表** |
-| 设备/监测类 | GNSS、分层标… | 对照 §1.2 表映射 |
+| 行政区 | `area` 标准名（朝阳/通州等） | **真源 `t_station.area`**（导出或权威 Excel 对齐） |
+| 站点场地 | 站名 ↔ `project_name` / `name` | **维表 `t_station`**；问句别名见 `scope_lexicon` |
+| 监测类型 | 问句 → 主表（GNSS、分层标…） | `device_type.yaml`，对照 §1.2 |
+| 监测方式覆盖 | 类型 → 官方 `project_name[]` | **`device_station_map.yaml`（P7）** ← xls；与 `t_station.name` 匹配 |
+| 分层标层位 | 标编号 / 层位 0 / 压缩层 | **`fcb_layer_map.yaml`（P6）** |
 
 ### 5.3 `SemanticBinding`（建议结构）
 
@@ -876,6 +902,217 @@ t_data_wash_qxz.project_name=t_station.name
 
 **须同步修改**：`nl2sql_biz_knowledge.md`、`nl2sql_schema.md`、`qa_examples_seed.md`、`metrics.yaml`、`v2_subsidence`、`analysis_*_subsidence_*`、客服 `subsidence_v1` 符号句；改完 **re-ingest**。
 
+### 7.5 监测方式站点覆盖配置（P7）— 完整实现方案
+
+> **状态**：配置+代码已落地（2026-09-17）；**待运维**：RAG re-ingest（biz/schema）。  
+> **真源**：`docs/地降所需求及数据相关/数据库结构及逻辑/站点列表-除了gnss.xls`；业务要求见同目录 `数据库说明.md`。  
+> **与 P6 分工**：P7 = **站点覆盖（project_name 名单）**；P6 = **分层标标/层位（station_name + monitor_layer）**。二者叠用，不是两套互斥的「站点配置方式」。
+
+#### 7.5.1 背景与问题
+
+不同监测技术覆盖的场地集合不同（分层标约 42、光纤仅 3 等）。现网已有：
+
+- 监测方式 → 表（`device_type.yaml` / scope_lexicon）
+- 未指明方式默认分层标
+- 区县过滤：`JOIN t_station` + `area`
+- 分层标层位 0 / 压缩层（P6 `fcb_layer_map`）
+
+**缺口**：没有「某监测方式官方覆盖哪些 `project_name`」的统一 allowlist。
+
+| 错误路径 | 后果 |
+|----------|------|
+| 只扫 `t_station`（按区） | 「朝阳区孔隙水站」混入无孔隙水能力的站 |
+| 只靠事实表「有数据」 | 空窗期/未入库漏报；无法表达「应有但暂无数据」 |
+| 另起一套与 fcb 不同的配置写法 | 维护分叉、注入路径分叉，难与层位策略对齐 |
+
+#### 7.5.2 已确认决策
+
+| # | 决策 |
+|---|------|
+| D1 | **应该配置化**：`device_type → project_name[]` 官方覆盖名单 |
+| D2 | **统一配置策略**：所有监测方式（含 fcb/jyb）共用同一套「覆盖配置 + 语义注入 `project_names` + 与 `t_station` 匹配」；**不要**两套站点名单写法 |
+| D3 | **P6 层位字典保留为 fcb 附加能力**：不把孔压/光纤等写成 `monitor_layer`/`station_name` 假口径；也不用 `fcb_layer_map` 条目结构硬塞其它监测方式 |
+| D4 | **GNSS 占位留空**：配置保留 `gnss` 键，`project_names: []`；表映射可继续存在 |
+| D5 | **维属性取自 `t_station`**：`area`/坐标等只认维表；配置只表达「归属某监测方式」；查询 = 维表过滤 ∩ 覆盖名单 |
+| D6 | **配置不抄 `area`**，避免与 `t_station` 双源 |
+| D7 | **一期不改库**：不给 `t_station` 加多值监测方式字段 / 桥表 |
+
+**真源矩阵**：
+
+| 信息 | 真源 |
+|------|------|
+| 行政区 `area`、坐标 | `t_station` |
+| 站点场地键 / 与事实表关联 | `t_station.name` ≡ `project_name` |
+| 是否具备某监测方式 | `device_station_map`（与 `name` 匹配） |
+| 分层标代表标 / 压缩层边界 | `fcb_layer_map`（**不在** `t_station`） |
+| 问句站名别名识别 | `scope_lexicon.stations`（**不作**覆盖权威） |
+
+#### 7.5.3 架构（一层策略、两类数据）
+
+```text
+统一策略：device_station_map（监测方式站点覆盖）
+  device_type → project_name[]
+  含：fcb / jyb / dxswj / kxsylj / gq / qxz；gnss = []
+        │
+        ▼ semantic_layer 注入 binding.project_names（source=device_station_map）
+        ▼ schema_linker：事实表.project_name IN allowlist
+        ▼ 若有行政区：JOIN t_station ON project_name=name AND area=…
+
+仅 fcb（及必要时 jyb）附加：fcb_layer_map（P6）
+        ▼ 再注入 preferred_station_names（层位0 / 压缩层边界）
+```
+
+```mermaid
+flowchart TD
+  Q[用户问句] --> DT{解析监测方式}
+  DT -->|未指明且问沉降回弹| FCB[默认 fcb]
+  DT -->|显式孔隙水等| DEV[对应 device_type]
+  DT -->|GNSS 且名单空| GNSS[锁表 gnss；暂不裁剪站点]
+  FCB --> AL[device_station_map allowlist]
+  DEV --> AL
+  AL --> DIST{是否有行政区}
+  DIST -->|有| JOIN["JOIN t_station WHERE area AND name IN allowlist"]
+  DIST -->|无| FILT["事实表 WHERE project_name IN allowlist"]
+  JOIN --> GRAIN{是否分层标站点沉降}
+  FILT --> GRAIN
+  GRAIN -->|是| L0[P6：限制 station_name 层位0]
+  GRAIN -->|否| METRIC[按该表指标聚合或清单]
+```
+
+#### 7.5.4 配置文件形态
+
+**路径**：`configs/nl2sql_business/subsidence/semantic/dimensions/device_station_map.yaml`  
+**profile 指针**：`nl2sql.device_station_map_file`（见 §2.4）
+
+建议结构（示意）：
+
+```yaml
+version: "2026.09.17"
+source: docs/地降所需求及数据相关/数据库结构及逻辑/站点列表-除了gnss.xls
+description: 监测方式 → 官方站点场地（project_name ≡ t_station.name）覆盖名单
+notes:
+  - 区县以 t_station.area 为准；本文件不存 area
+  - fcb/jyb 的 project_names 宜与 fcb_layer_map 唯一 project_name 对齐，避免双份漂移
+  - gnss 一期占位为空；有名单后再填
+  - scope_lexicon.stations 不做本文件的第二份拷贝
+devices:
+  fcb:
+    table: t_data_wash_fcb
+    project_names: [F1(王四营), F8(周村), ...]   # 约 42
+  jyb:
+    table: t_data_wash_jyb
+    project_names: [...]                         # 约 17；可与 xls 基岩标列 / 层位字典校验
+  dxswj:
+    table: t_data_wash_dxswj
+    project_names: [...]                         # 约 41
+  kxsylj:
+    table: t_data_wash_kxsylj
+    project_names: [...]                         # 约 41
+  gq:
+    table: t_data_wash_gq
+    project_names: [F22(尹家河), F32(梨花), F35(张家务)]  # 3
+  qxz:
+    table: t_data_wash_qxz
+    project_names: [...]                         # 约 34
+  gnss:
+    table: t_data_wash_gnss
+    project_names: []                            # 占位
+```
+
+**名单来源约定**：
+
+| device_type | 来源 |
+|-------------|------|
+| `dxswj` / `kxsylj` / `gq` / `qxz` | xls 对应列 |
+| `fcb` / `jyb` | 优先由 `fcb_layer_map` 唯一 `project_name`（及基岩标孔）推导或与 xls 交叉校验后写入**同一文件**，保证「覆盖策略」只有一份权威 YAML |
+| `gnss` | 空列表占位 |
+
+**可选物理合一**：若希望磁盘上「一个 YAML」，可将 `fcb_layer_map` 的层位 entries 作为同文件内 `fcb.layers` 附加段；**加载器仍一套**，站点覆盖字段与层位字段分离解析。一期推荐 **两个文件、同一注入策略**（覆盖文件 + 层位文件），降低与已落地 P6 的冲突面。
+
+#### 7.5.5 Excel 规模参考（xls，不含 GNSS）
+
+| 监测方式 | 约站点数 | 事实表 |
+|---------|---------|--------|
+| 基岩标 | 17 | `t_data_wash_jyb` |
+| 分层标 | 42 | `t_data_wash_fcb` |
+| 地下水 | 41 | `t_data_wash_dxswj` |
+| 孔隙水 | 41 | `t_data_wash_kxsylj` |
+| 光纤 | 3 | `t_data_wash_gq` |
+| 气象站 | 34 | `t_data_wash_qxz` |
+
+命名形如 `F8(周村)`，须与 `t_station.name` / 事实表 `project_name` 一致（注意全角括号等脏字符，落地时做差集校验）。
+
+#### 7.5.6 运行时改造点
+
+| 模块 | 改动 |
+|------|------|
+| `nl2sql_business_profile.py` | 增加 `device_station_map_file` |
+| `semantic_layer.py` | 加载 → `device_projects_by_type: dict[str, tuple[str, ...]]`；解析出 `device_types` 后注入 `project_names`（若问句已点名具体站，则与 allowlist 求交；清单类问句可直接用 allowlist） |
+| `schema_linker.py` | 有监测方式覆盖时：对主事实表追加 `project_name IN (...)`（或等价 suggested_filters，`source=device_station_map`）；有区县时仍 JOIN `t_station` 并滤 `area` |
+| `question_intent_display.py` | Prompt 意图块展示覆盖站点摘要（截断） |
+| `chain.py` | 重建 `SemanticBinding` 时保留已注入的 `project_names`（与 P6 同模式） |
+| `manifest.yaml` / `配置项说明.md` | 登记新资产 |
+| RAG `nl2sql_biz_knowledge.md` / `nl2sql_schema.md` | 写明：覆盖以 `device_station_map` 为准；区县以 `t_station.area` 为准；层位仍以 `fcb_layer_map` 为准 |
+
+**注入原则（与「统一策略」对齐）**：
+
+1. 监测方式已解析（含默认 fcb）→ 取该 type 的 `project_names` 作为覆盖 allowlist。  
+2. 若用户已点名站点/场地 → `用户点名 ∩ allowlist`（交集为空则 warning，勿静默扩到全区）。  
+3. 仅区县、未点名站 → allowlist ∩（后续 SQL 侧 `t_station.area`）。  
+4. `gnss` 且 allowlist 空 → **不**注入站点 IN 列表（避免 `IN ()`）；仅锁表。  
+5. fcb 站点沉降 / 压缩层 → 在 1–3 之后继续走现有 P6 `_inject_fcb_preferred_station_names`。
+
+#### 7.5.7 问句示例（验收口径）
+
+**例 A：朝阳区所有孔隙水监测站点**
+
+1. `device_type = kxsylj` → 表 `t_data_wash_kxsylj`（清单亦可只查 `t_station`）。  
+2. 站点集合 = `device_station_map.kxsylj.project_names`。  
+3. SQL 语义：`t_station.name IN (allowlist) AND area = '朝阳区'`。  
+4. **禁止**用「朝阳区全部 `t_station`」。
+
+**例 B：朝阳区上个月哪个监测站点沉降/回弹最大（未指明监测方式）**
+
+1. 默认 `fcb` + `t_data_wash_fcb`。  
+2. 范围：`device_station_map.fcb` ∩ `t_station.area = '朝阳区'`。  
+3. 每站只用层位 0 `station_name`（P6）算周期 `Δ`（初−末），再排序取最大。  
+4. 覆盖配置裁剪场地集合；层位逻辑仍由 `fcb_layer_map` 负责。
+
+**例 C：全市光纤监测站点有哪些**
+
+1. `gq` allowlist（3 站）→ 可 JOIN `t_station` 补 `area` 展示。  
+2. 最能体现 P7 价值：不得扩成全区全站。
+
+#### 7.5.8 实施步骤与交付物
+
+| 步骤 | 内容 | 交付物 |
+|------|------|--------|
+| P7.1 | 从 xls 生成 `device_station_map.yaml`；fcb/jyb 与 `fcb_layer_map` / lexicon / 抽检 `t_station.name` 做差集报告 | YAML + 一致性报告（可放 `tests` 或脚本输出） |
+| P7.2 | `profile` / `manifest` / `配置项说明.md` 挂载说明 | 配置包文档 |
+| P7.3 | `semantic_layer` 加载索引 + 按 `device_type` 注入 | 代码 |
+| P7.4 | `schema_linker`：区县 JOIN + `project_name` 覆盖过滤 | 代码 |
+| P7.5 | 单测：孔隙水+朝阳区清单；默认分层标+朝阳区排名路径绑定；光纤名单不被全区污染；gnss 空名单不生成非法 `IN ()` | `tests/test_nl2sql_*.py` |
+| P7.6 | 更新 biz/schema 知识一句权威来源；**RAG re-ingest** | md + 运维摄入 |
+
+#### 7.5.9 非目标（一期）
+
+- 改库增加 `t_station.device_types` 或多对多桥表  
+- 配置内存放 `area` / lon/lat  
+- 把 GNSS 完整名单强行编造进配置  
+- 用事实表 DISTINCT `project_name` 自动生成覆盖名单并当作权威  
+- 将 `scope_lexicon.stations` 复制成第三份监测方式名单  
+- 锅炉域改造  
+
+#### 7.5.10 风险与对策
+
+| 风险 | 对策 |
+|------|------|
+| 全角括号等脏名 | 落配置时与 `t_station` / lexicon / `fcb_layer_map` 差集校验并人工修 |
+| fcb 覆盖与层位字典漂移 | fcb/jyb 名单从层位字典推导或强制交叉校验门禁 |
+| `IN` 列表过长 | 可接受（数十级）；极端时再考虑临时表/半连接，一期不必 |
+| GNSS 空名单误伤 | 空则跳过站点 IN 注入 |
+| 清单问句与有数问句混淆 | 知识库区分「官方覆盖」与「有观测数据」；SQL 清单优先维表∩allowlist |
+
 ---
 
 ## 8. 实施分期与交付物
@@ -891,9 +1128,11 @@ t_data_wash_qxz.project_name=t_station.name
 | **P4** | 五类 `analysis_plan/synthesis_*`、`v2_subsidence`、RAG 源文件与 QA 种子 | `prompts.yaml` + `rag/*` | **已完成** |
 | **P5** | `boiler_four_tube` 配置包（db.*、表白名单、语义默认关） | `boiler_four_tube/*` | **已完成**（锅炉语义 YAML 可后补） |
 | **P6** | 分层标三维口径 + 层位字典：公式对齐季报脚本；`fcb_layer_map`；知识库/Prompt/QA/综合分析同步 | 见专项方案 P6.1～P6.6 | **配置已落地**（待 RAG re-ingest/抽测） |
+| **P7** | 监测方式站点覆盖：统一 `device_station_map`；与 `t_station` 匹配；GNSS 占位空；叠用 P6 层位 | 见本文 §7.5（P7.1～P7.6） | **配置+代码已落地**（待 RAG re-ingest） |
 
 **仍依赖服务器/联调（非代码缺口）**：地降 PG 反射与执行、RAG 三命名空间摄入、黄金集可执行率评测、五类报告端到端。  
-**P6 另依赖**：xls→配置转换、全量口径纠偏后 re-ingest 与符号手测。
+**P6 另依赖**：xls→配置转换、全量口径纠偏后 re-ingest 与符号手测。  
+**P7 另依赖**：`站点列表-除了gnss.xls` → `device_station_map.yaml`；与 `t_station`/lexicon/`fcb_layer_map` 名称一致性校验；实现后 re-ingest。
 
 **M0 准入**：有结构文档（或可反射）；有白名单初稿；有指标口径责任人。
 
@@ -936,6 +1175,8 @@ t_data_wash_qxz.project_name=t_station.name
 - [x] `boiler_four_tube` profile：`semantic_link_enabled=false` + 表白名单文件  
 - [x] **P6（配置）**：`fcb_layer_map` 已落地；biz/schema/metrics/QA/Prompt 口径统一为初−末、正下沉；三维 grain 入知识库（**RAG re-ingest 与抽测待运维**）  
 - [ ] **P6**：RAG re-ingest；站点层位 0 / 压缩层差 / 符号方向手测通过  
+- [x] **P7（方案）**：§7.5 已定稿（统一覆盖策略 + `t_station` 匹配 + GNSS 占位）  
+- [x] **P7（实现）**：`device_station_map.yaml` + semantic/schema 注入；孔隙水区县清单 / 默认 fcb 排名 / 光纤名单 / gnss 空名单单测通过（**知识库已改；RAG re-ingest 待运维**）  
 - [ ] 地降库联调：朝阳区+沉降 JOIN/`fcb`/时间窗可执行  
 - [ ] RAG 三命名空间已摄入；QA 槽位可回放  
 - [ ] 黄金集：相对 baseline 的主表/度量列正确率报告（≥30 条，可执行联调）  
@@ -947,6 +1188,7 @@ t_data_wash_qxz.project_name=t_station.name
 2. `POST /rag/documents/upsert` 摄入 `configs/nl2sql_business/subsidence/rag/*.md`。  
 3. 用 `tests/fixtures/nl2sql_subsidence_golden_set.json` 扩到 ≥30 条并跑可执行率对比。  
 4. 锅炉部署保持 `boiler_four_tube`，确认回归集。  
+5. **P7**：按 §7.5 落地 `device_station_map` + 注入/链接；名称差集校验；补单测后更新 biz 知识并 re-ingest。  
 
 ### 8.5 代码交付索引（本轮已落）
 
@@ -996,8 +1238,8 @@ rows: []
 | 模块 | 动作 | 说明 |
 |------|------|------|
 | `app/core/config.py` | 扩展 | `NL2SQLBusinessProfile`、profile 加载 |
-| `app/nl2sql/semantic_layer.py` | **新增** | 资产加载、对齐、版本校验 |
-| `app/nl2sql/schema_linker.py` | **新增** | `_link_schema` / `LinkedSchema` |
+| `app/nl2sql/semantic_layer.py` | **新增**/扩展 | 资产加载、对齐、版本校验；**P7** 加载 `device_station_map` 并注入 `project_names` |
+| `app/nl2sql/schema_linker.py` | **新增**/扩展 | `_link_schema` / `LinkedSchema`；**P7** 监测方式 `project_name IN` + 区县 JOIN |
 | `app/nl2sql/chain.py` | 扩展 | 插管；PG 方言；catalog 收窄；后半段原则上不动 |
 | `app/nl2sql/time_intent_display.py` | 扩展 | PG 时间表达式（或方言适配器） |
 | `app/nl2sql/scope_parser_rule.py` | 扩展 | subsidence 维度（或插件） |
@@ -1024,6 +1266,7 @@ rows: []
 - [x] 链接结果 ∩ allowlist；`linked_only` 白名单外表不进 catalog  
 - [x] 锅炉 domain：`semantic_link_enabled=false` + 表白名单  
 - [x] 地降黄金集主表链接（`tests/fixtures/nl2sql_subsidence_golden_set.json`，≥30 条）  
+- [ ] **P7**：监测方式覆盖注入（孔隙水+区县；默认 fcb；光纤名单；gnss 空名单）  
 - [ ] `refuse` 不调用 LLM（需 chain 级 mock，联调前可补）  
 - [ ] `best_effort` 降级路径可生成（同上）  
 
@@ -1048,6 +1291,8 @@ rows: []
 |------|------|
 | PG 与 TiDB 改写混用 | `NL2SQL_SQL_DIALECT` 强制分支；单测覆盖 |
 | `project_name` 与 `t_station.name` 不一致 | 摄入前数据质量检查；链接 trace 暴露 JOIN 失败率 |
+| 监测方式覆盖名单与维表/层位字典漂移（P7） | 落配置差集校验；fcb/jyb 与 `fcb_layer_map` 交叉门禁；配置不存 area |
+| 误用「全区 t_station」代替监测方式名单 | Prompt/知识写清 allowlist；单测：光纤/孔隙水不得扩全站 |
 | 分层各层表未上线 | placeholder + warning |
 | 同进程误用锅炉/地降配置 | **一套部署一个 domain**；缓存键含 domain 指纹 |
 | RAG 未摄入 | 链接仍靠语义资产 + 反射；biz/qa 渐进补齐 |
@@ -1094,12 +1339,14 @@ rows: []
 
 | 文档/代码 | 用途 |
 |-----------|------|
-| **本文** | NL2SQL 基座改造 **总方案**（P0–P5 主线 + P6 索引） |
+| **本文** | NL2SQL 基座改造 **总方案**（P0–P5 主线 + P6 索引 + **P7 §7.5**） |
 | [`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md) | **P6 专项**：周期/正负/三维 grain/层位配置与 Prompt 同步 |
+| 本文 **§7.5** | **P7 专项全文**：监测方式站点覆盖统一策略、与 `t_station` 匹配、GNSS 占位 |
 | `enterprise-level_transformation_docs/企业级NL2SQL基座实现方案.md` | 现网基座全链路 |
 | `NL2SQL基座五阶段改造方案.md` | 五阶段背景 |
 | `docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md` | 时间/范围改写 |
 | `数据库说明.md` / `226大模型数据库.docx` | 地降库结构真源 |
+| `站点列表-除了gnss.xls` | P7 监测方式→站点名单真源 |
 | `沉降数据获取计算逻辑/` | 季报脚本与层位 xls（P6 口径真源） |
 | `app/nl2sql/chain.py` | 插管主挂载点 |
 | `app/nl2sql/question_intent.py` | 现网意图入口 |
@@ -1109,4 +1356,4 @@ rows: []
 
 ---
 
-*本文是 NL2SQL 基座改造总方案的维护入口。周期沉降符号与分层标三维 grain 以 [`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md) §0.4 为准。若扩展查询类型意图或结果图表契约，另开文档。密码、生产 IP 以运维侧为准，勿写入 git。*
+*本文是 NL2SQL 基座改造总方案的维护入口。周期沉降符号与分层标三维 grain 以 [`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md) §0.4 为准。监测方式站点覆盖以本文 **§7.5** 为准（与 P6 层位字典分工：覆盖 vs 标/层位）。若扩展查询类型意图或结果图表契约，另开文档。密码、生产 IP 以运维侧为准，勿写入 git。*

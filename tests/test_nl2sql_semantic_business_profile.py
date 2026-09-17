@@ -496,3 +496,164 @@ def test_align_compress_without_station_warns(monkeypatch: pytest.MonkeyPatch) -
     assert any(w.startswith("fcb_compress_need_station") for w in binding.warnings)
     assert not binding.compress_pairs
 
+
+def test_device_station_map_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    assert profile.device_station_map_file
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    assert len(assets.device_projects_by_type.get("fcb") or ()) == 42
+    assert len(assets.device_projects_by_type.get("kxsylj") or ()) == 41
+    assert len(assets.device_projects_by_type.get("gq") or ()) == 3
+    assert assets.device_projects_by_type.get("gnss") == ()
+    assert "F22(尹家河)" in (assets.device_projects_by_type.get("gq") or ())
+
+
+def test_align_kxsylj_district_catalog_uses_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """朝阳区孔隙水监测站点：覆盖名单 + t_station.name/area，不得扩成全区全站。"""
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    from app.nl2sql.schema_linker import link_schema
+
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "朝阳区有哪些孔隙水监测站点"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(district="朝阳区", device_type="kxsylj"),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert "kxsylj" in binding.device_types
+    assert "device_station_map_coverage" in binding.warnings
+    assert len(binding.device_coverage_project_names) == 41
+    assert "F8(周村)" in binding.device_coverage_project_names
+    assert binding.default_table == "t_station" or "station_catalog_query" in binding.warnings
+
+    table_columns = {
+        "t_data_wash_kxsylj": {"pressure", "data_time", "project_name"},
+        "t_station": {"name", "area", "code"},
+    }
+    linked = link_schema(q, intent, binding, table_columns, allowlist=set(table_columns), assets=assets)
+    assert any(t.name == "t_station" for t in linked.tables)
+    name_filters = [
+        f
+        for f in linked.suggested_filters
+        if f.get("column") == "name" and f.get("source") == "device_station_map"
+    ]
+    assert name_filters
+    assert name_filters[0]["op"] == "in"
+    assert len(name_filters[0]["value"]) == 41
+    assert any(f.get("column") == "area" and f.get("value") == "朝阳区" for f in linked.suggested_filters)
+
+
+def test_align_default_fcb_injects_coverage_and_layer0(monkeypatch: pytest.MonkeyPatch) -> None:
+    """未指明监测方式的沉降问句：默认 fcb 覆盖 + 层位0。"""
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    from app.nl2sql.schema_linker import link_schema
+
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "朝阳区上个月哪个监测站点沉降最大"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(district="朝阳区"),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert "fcb" in binding.device_types
+    assert "default_device_type_fcb" in binding.warnings
+    assert "device_station_map_coverage" in binding.warnings
+    assert len(binding.device_coverage_project_names) == 42
+    assert binding.preferred_station_names
+
+    table_columns = {
+        "t_data_wash_fcb": {"total_settle", "data_time", "station_id", "station_name", "project_name"},
+        "t_station": {"name", "area"},
+    }
+    linked = link_schema(q, intent, binding, table_columns, allowlist=set(table_columns), assets=assets)
+    pn_filters = [
+        f
+        for f in linked.suggested_filters
+        if f.get("column") == "project_name" and f.get("source") == "device_station_map"
+    ]
+    assert pn_filters and pn_filters[0]["op"] == "in"
+    assert len(pn_filters[0]["value"]) == 42
+
+
+def test_align_gq_coverage_not_citywide(monkeypatch: pytest.MonkeyPatch) -> None:
+    """光纤仅 3 站覆盖，不得扩成全区全站。"""
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    from app.nl2sql.schema_linker import link_schema
+
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "全市光纤监测站点有哪些"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(device_type="gq"),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert "gq" in binding.device_types
+    assert set(binding.device_coverage_project_names) == {"F22(尹家河)", "F32(梨花)", "F35(张家务)"}
+    assert not binding.project_names
+
+    table_columns = {
+        "t_data_wash_gq": {"total_settle", "data_time", "project_name"},
+        "t_station": {"name", "area"},
+    }
+    linked = link_schema(q, intent, binding, table_columns, allowlist=set(table_columns), assets=assets)
+    name_filters = [f for f in linked.suggested_filters if f.get("column") == "name"]
+    assert name_filters
+    assert set(name_filters[0]["value"]) == {"F22(尹家河)", "F32(梨花)", "F35(张家务)"}
+
+
+def test_align_gnss_empty_coverage_skips_in_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GNSS 占位空名单：告警且不注入 project_names IN。"""
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    from app.nl2sql.schema_linker import link_schema
+
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "通州区GNSS位移"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(district="通州区", device_type="gnss"),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert "gnss" in binding.device_types
+    assert any(w.startswith("device_station_map_empty:gnss") for w in binding.warnings)
+    assert not binding.project_names
+
+    table_columns = {
+        "t_data_wash_gnss": {"displacement_3d", "data_time", "project_name"},
+        "t_station": {"name", "area"},
+    }
+    linked = link_schema(q, intent, binding, table_columns, allowlist=set(table_columns), assets=assets)
+    pn_filters = [f for f in linked.suggested_filters if f.get("column") == "project_name"]
+    assert not pn_filters
+

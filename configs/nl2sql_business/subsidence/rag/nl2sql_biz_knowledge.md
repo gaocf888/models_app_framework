@@ -67,6 +67,7 @@
 
 - 事实表 **`project_name`** 与 **`t_station.name`** 等值关联。
 - 行政区过滤：`t_station.area`（标准名如「朝阳区」「通州区」）；层位字典中的 `district_raw` 可能是简称，**不以之为 SQL 过滤真源**。
+- **监测方式官方站点覆盖**：`semantic/dimensions/device_station_map.yaml`（`device_type → project_name[]`）。查询某监测方式站点时，先取覆盖名单再与 `t_station` 匹配；**不以**事实表「当前有数据」代替官方覆盖。GNSS 一期名单为空占位。
 - 北京市 16 区：东城、西城、朝阳、丰台、石景山、海淀、门头沟、房山、通州、顺义、昌平、大兴、怀柔、平谷、密云、延庆。
 
 ## 层位字典（配置文件）
@@ -74,6 +75,7 @@
 - 权威文件：`configs/nl2sql_business/subsidence/semantic/dimensions/fcb_layer_map.yaml`（由 `分层标层位分析.xls` 转换入库；层位变更时更新该 YAML）。
 - 字段：`project_name`、`station_name`、`borehole_type`、`depth_m`、`monitor_layer`、`note`、`district_raw`。
 - **一期不 JOIN 该文件为库表**；生成 SQL 时按本知识与层位 0 清单限定 `station_name`（或写死代表标）。
+- 与 `device_station_map` 分工：后者管「哪些场地具备该监测方式」；本文件管分层标「标编号 / 层位」。
 
 ## 报告分析类型（综合分析）
 

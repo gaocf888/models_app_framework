@@ -8,6 +8,8 @@
 # - MindIE 镜像侧重 LLM 推理套件；本文件仍按「厂商 Python + torch/torch_npu 上装 mineru」路径构建。
 # - 构建机通常无 NPU：探测/校验时使用 TORCH_DEVICE_BACKEND_AUTOLOAD=0。
 # - 勿 apt 安装 python3-pip（易抢 PATH / 破坏厂商 torch 栈）。
+# - 勿对 MindIE 镜像执行 apt-get update + 装新包：镜像内 libcurl/gcc 等被冻结，
+#   与 jammy-updates 索引冲突（Unmet dependencies / curl Depends libcurl4=...）。
 # - 宿主 HDK/驱动须与 MindIE 镜像内 CANN 版本匹配，否则运行期仍会算子/驱动失败。
 # =============================================================================
 
@@ -23,14 +25,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PATH=/usr/local/python3.10.0/bin:/usr/local/python3.10/bin:/usr/local/python3.11.13/bin:/usr/local/python3.12.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-RUN set -eux; \
-    if command -v apt-get >/dev/null 2>&1; then \
-      apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates tini \
-        libxcb1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 libgl1 \
-        && rm -rf /var/lib/apt/lists/*; \
-    fi
-
+# MindIE 底座已含运行库；跳过 apt，避免破坏冻结依赖。健康检查改用 python。
 # 加载 MindIE / CANN 环境后探测「带 torch（优先 torch_npu）」的 Python
 RUN set -eux; \
     for envf in \
@@ -102,6 +97,6 @@ COPY docker/entrypoint.ascend-mindie.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 WORKDIR /workspace
-# tini 若因基础镜像无 apt 而未装上，回退为直接 sh
-ENTRYPOINT ["/bin/sh", "-c", "if [ -x /usr/bin/tini ]; then exec /usr/bin/tini -- /bin/sh /entrypoint.sh \"$@\"; else exec /bin/sh /entrypoint.sh \"$@\"; fi", "--"]
+# MindIE 镜像通常无 tini；直接走 entrypoint
+ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]
 CMD ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,0 +1,93 @@
+version: 2026.09.15
+# 重点监测区站点分组（semantic/dimensions/key_monitoring_areas.yaml）
+# 来源：监测季报.docx 第四章「表4-1 重点监测区地面沉降监测情况」
+# 站点场地名 / 层位0代表标对齐 fcb_layer_map.yaml；行政区过滤仍以 t_station.area 为准。
+# 供自动报告「重点监测区」板块与后续 NL2SQL 范围约束使用。
+# 说明见 configs/nl2sql_business/subsidence/配置项说明.md
+source: docs/地降所需求及数据相关/报告模版/监测季报.docx
+description: 季报表4-1提炼的重点监测区→监测站清单；数值列不入库，运行时按报告时间窗重算
+notes:
+- 周报/月报正文称「××附近地区」，与本表 area_name 为同一组，见 aliases
+- project_name / layer0_station_name 必须与 fcb_layer_map 层位0条目一致，禁止用 t_station 全表替代
+- location_raw 取自季报附表1地点表述，仅供叙述；SQL 关联用 project_name = t_station.name
+- 部分站压缩层不齐（见 fcb_layer_map note：F9/F10 无第四，F11 无第三、四）；表4-1缺层单元格运行时留空，勿臆造
+area_count: 5
+station_count: 13
+entries:
+- area_id: sub_center
+  area_name: 城市副中心
+  aliases: [北京城市副中心, 城市副中心附近地区]
+  station_count: 4
+  stations:
+  - station_code: F17
+    project_name: F17(沟渠庄)
+    layer0_station_name: F17-8
+    location_raw: 宋庄镇沟渠庄村
+  - station_code: F18
+    project_name: F18(草寺)
+    layer0_station_name: F18-10
+    location_raw: 宋庄镇草寺村
+  - station_code: F19
+    project_name: F19(谢楼)
+    layer0_station_name: F19-10
+    location_raw: 潞城镇谢楼村
+  - station_code: F20
+    project_name: F20(八各庄)
+    layer0_station_name: F20-10
+    location_raw: 潞城镇八各庄村
+- area_id: future_science_city
+  area_name: 未来科学城
+  aliases: [未来科学城附近地区]
+  station_count: 2
+  stations:
+  - station_code: F4
+    project_name: F4(八仙庄)
+    layer0_station_name: F4-10
+    location_raw: 北七家镇未来科学城
+  - station_code: F38
+    project_name: F38(南七家庄)
+    layer0_station_name: F38-10
+    location_raw: 北七家镇南七家庄村
+- area_id: yizhuang
+  area_name: 亦庄经济开发区
+  aliases: [亦庄经济开发区附近地区, 亦庄]
+  station_count: 1
+  stations:
+  - station_code: F24
+    project_name: F24(小松垡)
+    layer0_station_name: F24-8
+    location_raw: 马驹桥镇小松垡村
+- area_id: capital_airport
+  area_name: 首都国际机场临空经济区
+  aliases: [首都国际机场临空经济区附近地区, 首都机场临空]
+  station_count: 2
+  stations:
+  - station_code: F3
+    project_name: F3（天竺）
+    layer0_station_name: F3-10
+    location_raw: 空港街道（天竺）
+  - station_code: F5
+    project_name: F5(平各庄）
+    layer0_station_name: F5-7
+    location_raw: 仁和镇平各庄村
+- area_id: daxing_airport
+  area_name: 大兴国际机场临空经济区
+  aliases: [大兴国际机场临空经济区附近地区, 大兴机场临空]
+  station_count: 4
+  stations:
+  - station_code: F7
+    project_name: F7(榆垡）
+    layer0_station_name: F7-7
+    location_raw: 榆垡镇西胡林村
+  - station_code: F33
+    project_name: F33(留士庄)
+    layer0_station_name: F33-9
+    location_raw: 榆垡镇留士庄村
+  - station_code: F34
+    project_name: F34(求贤)
+    layer0_station_name: F34-10
+    location_raw: 榆垡镇求贤村
+  - station_code: F35
+    project_name: F35(张家务)
+    layer0_station_name: F35-10
+    location_raw: 榆垡镇张家务村
