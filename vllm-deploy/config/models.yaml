@@ -337,6 +337,85 @@ presets:
         - "./videos"
     description: "Qwen3.6 27B FP8 原生多模态（沐曦 N260 不可用，请用 qwen3.6-27b 或 qwen3.6-27b-awq）"
 
+  # ==================== 通义千问 3.8 系列 ====================
+
+  # Qwen3.8 27B（BF16/FP16，原生多模态 + Gated DeltaNet）
+  # 架构与 Qwen3.6-27B 同属 hybrid GDN：64 层中 48 层线性注意力，hybrid 关闭 prefix caching，eager 降低 compile 风险
+  # 沐曦 N260 双卡 64GB 推荐本预设。官方 FP8 权重能加载，但 MXN260 上 W8A8 Block FP8 Triton 内核编译失败
+  # 参数对齐已验证的 qwen3.6-27b；原生上下文 262K，本预设 max_model_len 仍按双卡 64G 取 40960
+  # 下面是 qwen3.8-27b 部署在 RTX 4090的配置备份
+#  qwen3.8-27b:
+#    path: "./models/Qwen3.8-27B"
+#    served_model_name: "qwen3.8-27b"
+#    dtype: "half"
+#    max_model_len: 40960
+#    enforce_eager: false
+#    tensor_parallel_size: 2
+#    gpu_memory_utilization: 0.8
+#    max_num_seqs: 16
+#    max_num_batched_tokens: 12288
+#    enable_prefix_caching: false
+#    attention-backend: flash_attn
+#    default-chat-template-kwargs:
+#      enable_thinking: false
+#    multimodal:
+#      enabled: true
+#      limit_images: 4
+#      limit_videos: 1
+#      media_paths:
+#        - "./images"
+#        - "./videos"
+#    description: "Qwen3.8 27B 原生多模态，N260 双卡 64G 推荐预设（非 FP8）"
+  # 下面是 qwen3.8-27b 部署在 沐曦N260的配置
+  qwen3.8-27b:
+    path: "./models/Qwen3.8-27B"
+    served_model_name: "qwen3.8-27b"
+    dtype: "half"
+    max_model_len: 40960
+    enforce_eager: true
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.8
+    max_num_seqs: 16
+    max_num_batched_tokens: 12288
+    enable_prefix_caching: false
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.8 27B 原生多模态，N260 双卡 64G 推荐预设（非 FP8）"
+
+  # Qwen3.8 27B FP8（官方细粒度 FP8 W8A8；原生多模态 + Gated DeltaNet）
+  # ⚠️ 沐曦 N260 + vllm_metax：与 qwen3.6-27b-fp8 相同，profile_run 时 Triton 编译 W8A8 Block FP8 失败
+  #    无法通过 YAML 绕过，N260 请改用 qwen3.8-27b。本预设仅适用于 NVIDIA 等已有 FP8 GEMM 的平台
+  qwen3.8-27b-fp8:
+    path: "./models/Qwen3.8-27B-FP8"
+    served_model_name: "qwen3.8-27b-fp8"
+    dtype: "auto"
+    max_model_len: 16384
+    enforce_eager: true
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.7
+    max_num_seqs: 16
+    max_num_batched_tokens: 12288
+    enable_prefix_caching: false
+    attention-backend: flash_attn
+    default-chat-template-kwargs:
+      enable_thinking: false
+    multimodal:
+      enabled: true
+      limit_images: 4
+      limit_videos: 1
+      media_paths:
+        - "./images"
+        - "./videos"
+    description: "Qwen3.8 27B FP8 原生多模态（沐曦 N260 不可用，请用 qwen3.8-27b）"
+
   # Qwen3.5 35B-A3B MoE 多模态模型（256 专家 / 每 token 约 3B 激活）
   # 沐曦 N260 双卡 64GB：TP=2 + Expert Parallel；FP16 权重约 70GB，双卡可支撑 32K 上下文与高并发
   qwen3.5-35b-a3b:

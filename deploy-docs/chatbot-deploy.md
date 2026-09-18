@@ -19,11 +19,11 @@ cd rag_db-deploy
 cp .env.example .env
 docker compose -f docker-compose.easysearch_bak0.yml --env-file .env up -d
 
-# 2) vLLM
+# 2) vLLM（英伟达 overlay；沐曦改 docker-compose.mthreads.yml）
 cd ../vllm-deploy
 cp .env.example .env
-chmod +x deploy.sh
-./deploy.sh
+cd docker
+docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
 
 # 3) app（FastAPI + Redis）
 cd ../app/app-deploy
@@ -160,14 +160,14 @@ curl -k -u admin:ChangeMe_123! "https://127.0.0.1:9200/_cluster/health?pretty"
 
 ```bash
 cd vllm-deploy
-chmod +x deploy.sh
-./deploy.sh
+cp .env.example .env
+# 按显卡改 BASE_IMAGE、VLLM_REQUIREMENTS_PROFILE、MODEL_PRESET、CUDA_VISIBLE_DEVICES 等
+cd docker
+docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
+# 沐曦：-f docker-compose.yml -f docker-compose.mthreads.yml
 ```
 
-一般会暴露为宿主机 `127.0.0.1:8000`，容器名默认为 `vllm-service`。
-
-> 如需手动启动 compose，请使用：  
-> `cd vllm-deploy/docker && docker compose --env-file ../.env up -d --build`
+一般会暴露为宿主机 `127.0.0.1:${VLLM_PORT:-8000}`，容器名默认为 `vllm-service`。
 
 检查：
 
