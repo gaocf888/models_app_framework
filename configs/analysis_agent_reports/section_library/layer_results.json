@@ -1,0 +1,26 @@
+{
+  "id": "layer_results",
+  "iterate": "compress_groups",
+  "title": "{item.name}监测成果",
+  "kind": "llm_section",
+  "source_item_ids": ["q_compress"],
+  "outline": ["本压缩层组总体特征", "结合程序表图解读；缺层站点不出现在本层附表"],
+  "constraints": ["禁止编造层间差", "禁止把单标 total_settle 当压缩量", "禁止内部编号"],
+  "narrative_instruction": "撰写{item.name}（层位{item.layer_from}→{item.layer_to}）成果。数字只来自连续层间差 compress；无本层组数据写待补充。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "charts": [
+    {
+      "id": "c_layer_bar",
+      "title": "{item.name}压缩量",
+      "chart_type": "bar",
+      "source_item_ids": ["q_compress"],
+      "attach_to_chapter": "@self",
+      "filter_field": "layer_from",
+      "filter_from_iterate": "layer_from",
+      "x_field": "project_name",
+      "y_field": "compress_mm",
+      "max_points": 50
+    }
+  ]
+}

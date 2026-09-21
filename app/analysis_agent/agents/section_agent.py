@@ -46,6 +46,7 @@ def _build_user_prompt(
     task_status: dict[str, str] | None,
     intent_context: list[str] | None,
     prepared_viz_note: str = "",
+    period_label: str = "",
 ) -> str:
     subset = core.resolve_data_subset(gathered_data, slot.source_item_ids, strict=True)
     coverage = core.build_data_coverage_note(subset, task_status=task_status)
@@ -62,6 +63,7 @@ def _build_user_prompt(
         rag_block=rag_block,
         intent_context=intent_context,
         prepared_viz_note=prepared_viz_note,
+        period_label=period_label,
     )
 
 
@@ -89,6 +91,7 @@ async def synthesize_section(
     on_delta: DeltaCallback | None = None,
     cancel_checker: CancelChecker | None = None,
     prepared_viz_note: str = "",
+    period_label: str = "",
 ) -> SectionSynthesisResult:
     """
     llm_section 合成。
@@ -104,6 +107,7 @@ async def synthesize_section(
         task_status=task_status,
         intent_context=intent_context,
         prepared_viz_note=prepared_viz_note,
+        period_label=period_label,
     )
 
     if _should_use_react(use_react_agent=use_react_agent, slot=slot) and hybrid_rag is not None:

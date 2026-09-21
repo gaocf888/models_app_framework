@@ -12,9 +12,12 @@ def build_section_user_prompt(
     rag_block: str = "",
     intent_context: list[str] | None = None,
     prepared_viz_note: str = "",
+    period_label: str = "",
 ) -> str:
     """由槽位蓝图拼装 user prompt（outline / constraints / field_hints / 意图 RAG）。"""
     parts: list[str] = [f"用户问题：{query}"]
+    if period_label:
+        parts.append(f"【时间窗】{period_label}（数字只来自已取数结果，勿另估周期）")
     if intent_context:
         lines = [f"- {s[:800]}" for s in intent_context[:8] if (s or "").strip()]
         if lines:

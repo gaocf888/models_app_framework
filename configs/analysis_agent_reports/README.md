@@ -21,8 +21,22 @@
 
 ## 结构
 
-- `chapters[]`：章节列表（`static_markdown` / `llm_section`）
-- 可选 `plan.items[]`：内嵌 NL2SQL 数据计划；未内嵌时回退 `prompts.yaml` 的 `analysis_agent_plan_{type}`
+- `schema_version: 2`：锅炉等 V1 规格，直接写 `chapters[]` / 可选 `plan.items[]`
+- `schema_version: 3`：地降自动报告，写 `compose[]` 引用 `section_library/`，由 `compose.py` 展开后再走 V1 解析
+- 无 `compose` 或版本小于 3：**禁止**走展开器
+
+地降改章节只改 `section_library/*.json` 与五类 `subsidence_*.json` 的 compose 序。
+
+## 前端自动报告契约
+
+`POST /analysis-agent/run-stream`：
+
+- 必传 `analysis_type`（`subsidence_daily|weekly|monthly|quarterly|yearly`）
+- `query` 可省略
+- `options.start_time` / `end_time` 成对；日期-only 的 end 视为次日 0 点（半开上界）
+- `options.area`：`t_station.area` 标准名；空/全市/北京市=不按区过滤
+- 首帧 `started.period`：`t_start` / `t_end` / `period_label` / `area`
+- 表图：`dual_axis` / `map_placeholder` 用 `chart_type` 区分；设备章 `placeholder: true`
 
 ## 相关配置（不在此目录）
 

@@ -307,6 +307,7 @@ class SlotOrchestrator:
             l1 = check_l1_anchors(
                 query=str(state.get("query") or ""),
                 analysis_type=str(state.get("analysis_type") or ""),
+                options=opts,
             )
             state["quality_l1"] = {
                 "profile": profile,
@@ -652,6 +653,7 @@ class SlotOrchestrator:
                     "analysis_type": analysis_type,
                     "plan_template_version": plan_version,
                     "cache_hit": True,
+                    "executor": str(task.get("executor") or "nl2sql"),
                 }
             )
             events.append(
@@ -661,13 +663,173 @@ class SlotOrchestrator:
                     "row_count": len(rows),
                     "latency_ms": 0,
                     "cached": True,
+                    "executor": str(task.get("executor") or "nl2sql"),
                 }
             )
             return events
 
         question = str(task.get("question") or "")
         mandatory = bool(task.get("mandatory", False))
+        ex = str(task.get("executor") or "nl2sql").strip().lower() or "nl2sql"
+        resolved = (state.get("options") or {}).get("_resolved")
+        resolved = resolved if isinstance(resolved, dict) else {}
         last_err: str | None = None
+
+        if ex == "placeholder":
+            gathered[item_id] = []
+            task_status[item_id] = "optional_empty"
+            nl2sql_calls.append(
+                {
+                    "item_id": item_id,
+                    "row_count": 0,
+                    "latency_ms": 0,
+                    "analysis_type": analysis_type,
+                    "plan_template_version": plan_version,
+                    "cache_hit": False,
+                    "executor": "placeholder",
+                    "sql": "",
+                }
+            )
+            events.append(
+                {
+                    "event": "analysis_agent_nl2sql_done",
+                    "item_id": item_id,
+                    "row_count": 0,
+                    "latency_ms": 0,
+                    "cached": False,
+                    "executor": "placeholder",
+                    "placeholder": True,
+                }
+            )
+            return events
+
+        if ex == "python":
+            from app.analysis_agent.deterministics import run_python_fn
+
+            t0 = time.perf_counter()
+            try:
+                rows = run_python_fn(
+                    str(task.get("python_fn") or ""),
+                    gathered=gathered,
+                    resolved=resolved,
+                    task=task,
+                )[:max_rows]
+                latency_ms = int((time.perf_counter() - t0) * 1000)
+                gathered[item_id] = rows
+                task_status[item_id] = task_status_from_rows(item_id, rows, mandatory=mandatory)
+                nl2sql_calls.append(
+                    {
+                        "item_id": item_id,
+                        "row_count": len(rows),
+                        "latency_ms": latency_ms,
+                        "analysis_type": analysis_type,
+                        "plan_template_version": plan_version,
+                        "cache_hit": False,
+                        "executor": "python",
+                        "python_fn": task.get("python_fn"),
+                        "sql": "",
+                    }
+                )
+                events.append(
+                    {
+                        "event": "analysis_agent_nl2sql_done",
+                        "item_id": item_id,
+                        "row_count": len(rows),
+                        "latency_ms": latency_ms,
+                        "cached": False,
+                        "executor": "python",
+                    }
+                )
+                return events
+            except Exception as exc:  # noqa: BLE001
+                last_err = str(exc)
+                logger.warning("analysis_agent python_fn failed item=%s: %s", item_id, exc)
+                gathered[item_id] = []
+                task_status[item_id] = task_status_from_rows(
+                    item_id, [], mandatory=mandatory, error=last_err
+                )
+                events.append(
+                    {
+                        "event": "analysis_agent_nl2sql_done",
+                        "item_id": item_id,
+                        "row_count": 0,
+                        "latency_ms": 0,
+                        "cached": False,
+                        "executor": "python",
+                        "error": last_err,
+                    }
+                )
+                return events
+
+        if ex == "sql_template":
+            from app.analysis_agent.deterministics.fcb_endpoints import run_sql_template
+            from app.nl2sql.executor import SQLExecutor
+
+            executor = getattr(self._nl2sql, "_executor", None)
+            if executor is None or not callable(getattr(executor, "execute", None)):
+                executor = SQLExecutor()
+            t0 = time.perf_counter()
+            try:
+                rows, sql = await run_sql_template(
+                    sql_file=str(task.get("sql_file") or ""),
+                    resolved=resolved,
+                    executor=executor,
+                    max_rows=max_rows,
+                )
+                latency_ms = int((time.perf_counter() - t0) * 1000)
+                gathered[item_id] = rows
+                task_status[item_id] = task_status_from_rows(item_id, rows, mandatory=mandatory)
+                nl2sql_calls.append(
+                    {
+                        "item_id": item_id,
+                        "question": question[:500],
+                        "sql": sql,
+                        "row_count": len(rows),
+                        "latency_ms": latency_ms,
+                        "analysis_type": analysis_type,
+                        "plan_template_version": plan_version,
+                        "cache_hit": False,
+                        "executor": "sql_template",
+                    }
+                )
+                ANALYSIS_AGENT_NL2SQL_CALL_COUNT.labels(
+                    analysis_type=analysis_type, status="success"
+                ).inc()
+                events.append(
+                    {
+                        "event": "analysis_agent_nl2sql_done",
+                        "item_id": item_id,
+                        "row_count": len(rows),
+                        "latency_ms": latency_ms,
+                        "cached": False,
+                        "executor": "sql_template",
+                    }
+                )
+                return events
+            except Exception as exc:  # noqa: BLE001
+                last_err = str(exc)
+                logger.warning("analysis_agent sql_template failed item=%s: %s", item_id, exc)
+                gathered[item_id] = []
+                task_status[item_id] = task_status_from_rows(
+                    item_id, [], mandatory=mandatory, error=last_err
+                )
+                ANALYSIS_AGENT_NL2SQL_CALL_COUNT.labels(
+                    analysis_type=analysis_type, status="failed"
+                ).inc()
+                events.append(
+                    {
+                        "event": "analysis_agent_nl2sql_done",
+                        "item_id": item_id,
+                        "row_count": 0,
+                        "latency_ms": 0,
+                        "cached": False,
+                        "executor": "sql_template",
+                        "error": last_err,
+                    }
+                )
+                return events
+
+        last_err = None
         for attempt in range(max_item_attempts):
             try:
                 rows, call_rec = await run_nl2sql_for_plan_item(
@@ -697,6 +859,7 @@ class SlotOrchestrator:
                         "row_count": len(rows),
                         "latency_ms": call_rec.get("latency_ms"),
                         "cached": False,
+                        "executor": "nl2sql",
                     }
                 )
                 return events
@@ -722,6 +885,7 @@ class SlotOrchestrator:
                 "row_count": 0,
                 "latency_ms": 0,
                 "cached": False,
+                "executor": "nl2sql",
                 "error": last_err,
             }
         )
@@ -1033,6 +1197,7 @@ class SlotOrchestrator:
                 on_delta=on_delta if live else None,
                 cancel_checker=state.get("_cancel_checker"),
                 prepared_viz_note=str((state.get("_prepared_viz") or {}).get("note") or ""),
+                period_label=str(((state.get("options") or {}).get("_resolved") or {}).get("period_label") or ""),
             )
             out, chunks = section_result_to_slot_output(
                 slot, result, already_streamed=live

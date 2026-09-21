@@ -1,0 +1,26 @@
+{
+  "id": "district_results",
+  "iterate": "plain_districts",
+  "title": "{item.name}监测成果",
+  "kind": "llm_section",
+  "source_item_ids": ["q_layer0"],
+  "outline": ["只叙述本行政区层位0站点", "区内差异与需关注测点"],
+  "constraints": ["禁止编造", "禁止内部编号", "只写 {item.name} 内站点"],
+  "narrative_instruction": "只叙述 {item.name} 内层位0站点沉降特征；结合已渲染柱图。无本区数据写待补充。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "charts": [
+    {
+      "id": "c_district_bar",
+      "title": "{item.name}层位0站点沉降",
+      "chart_type": "bar",
+      "source_item_ids": ["q_layer0"],
+      "attach_to_chapter": "@self",
+      "filter_field": "area",
+      "filter_from_iterate": "name",
+      "x_field": "project_name",
+      "y_field": "delta_mm",
+      "max_points": 40
+    }
+  ]
+}

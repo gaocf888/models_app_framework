@@ -1,0 +1,12 @@
+{
+  "id": "conclusion",
+  "title": "二、（五）小结",
+  "kind": "llm_section",
+  "source_item_ids": ["q_layer0", "q_compress", "q_key_area"],
+  "outline": ["本期沉降总体结论", "重点关注区域与后续监测建议"],
+  "constraints": ["禁止编造", "禁止内部编号", "建议须可执行"],
+  "narrative_instruction": "撰写小结：归纳本期全市平原、压缩层与重点区域结论，给出简要监测建议。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "stream_live": true
+}

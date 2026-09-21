@@ -106,8 +106,75 @@ def chart_from_config(
     y_field: str = "",
     series_field: str = "",
     max_points: int = 60,
+    y_left: dict[str, Any] | None = None,
+    y_right: dict[str, Any] | None = None,
+    placeholder: bool = False,
 ) -> dict[str, Any] | None:
-    """声明式 bar / pie / line。字段空时自动挑标签列与数值列。"""
+    """声明式 bar / pie / line / dual_axis / map_placeholder。"""
+    ctype = (chart_type or "bar").strip().lower()
+    limit = max(1, int(max_points))
+
+    if ctype == "map_placeholder":
+        stations: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            stations.append(
+                {
+                    "project_name": str(row.get("project_name") or ""),
+                    "lon": row.get("lon"),
+                    "lat": row.get("lat"),
+                    "delta_mm": row.get("delta_mm"),
+                }
+            )
+        return {
+            "id": chart_id,
+            "chart_type": "map_placeholder",
+            "title": title or chart_id,
+            "placeholder": True,
+            "spec": {
+                "title": title or chart_id,
+                "stations": stations,
+            },
+        }
+
+    if ctype == "dual_axis":
+        left = y_left or {}
+        right = y_right or {}
+        xf = x_field or "x"
+        lf = str(left.get("field") or "settle_mm")
+        rf = str(right.get("field") or "aux_value")
+        data: list[dict[str, Any]] = []
+        for row in rows[:limit]:
+            if not isinstance(row, dict):
+                continue
+            try:
+                lv = float(row.get(lf))
+                rv = float(row.get(rf))
+            except (TypeError, ValueError):
+                continue
+            data.append({"x": str(row.get(xf, "")), "left": lv, "right": rv})
+        return {
+            "id": chart_id,
+            "chart_type": "dual_axis",
+            "title": title or chart_id,
+            "placeholder": bool(placeholder or not data),
+            "spec": {
+                "xField": "x",
+                "yLeft": {
+                    "field": "left",
+                    "name": str(left.get("name") or "左轴"),
+                    "unit": str(left.get("unit") or ""),
+                },
+                "yRight": {
+                    "field": "right",
+                    "name": str(right.get("name") or "右轴"),
+                    "unit": str(right.get("unit") or ""),
+                },
+                "series": data,
+            },
+        }
+
     if not rows:
         return None
     columns = _row_columns(rows)

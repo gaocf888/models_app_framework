@@ -46,14 +46,13 @@ def check_l1_anchors(
     *,
     query: str,
     analysis_type: str,
+    options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     L1：解析用户原句关键锚点。
 
-    返回：
-    - missing: 缺失锚点列表（time / zone）
-    - degrade_reasons: 写入 state 的原因标签
-    - anchors: 已解析摘要（便于 trace）
+    地降 V2：options._resolved 已有 t_start/t_end 则视为 time 满足；
+    area 空（全市）亦视为 zone 满足，避免空 query 误 degrade。
     """
     q = (query or "").strip()
     intent = resolve_question_intent(q, time_intent_source=q)
@@ -64,6 +63,12 @@ def check_l1_anchors(
         or (scope.station_name or "").strip()
         or (scope.station_id or "").strip()
     )
+    resolved = (options or {}).get("_resolved") if isinstance(options, dict) else None
+    if isinstance(resolved, dict):
+        if resolved.get("t_start") and resolved.get("t_end"):
+            has_time = True
+        # 结构化全市（area=None）或已指定区划，均视为 zone 已锚
+        has_zone = True
     required = required_anchors_for(analysis_type)
     missing: list[str] = []
     if "time" in required and not has_time:

@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.analysis_agent.compose import compose_report_dict
 from app.analysis_agent.slots.builder import slots_from_spec_dict
 from app.analysis_agent.slots.kinds import AnalysisAgentSlot
 from app.analysis_agent.slots.specs import REPORT_FALLBACK_SUFFIX, normalize_template_version
@@ -53,6 +54,7 @@ class ReportSpecFileModel(BaseModel):
     slots: list[dict[str, Any]] | None = None
     tables: list[dict[str, Any]] | None = None
     charts: list[dict[str, Any]] | None = None
+    compose: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,10 @@ def load_report_spec(
     raw = _load_report_json(analysis_type=analysis_type, version=ver)
     if raw is None:
         return None
+    # schema 3 + compose：先展开板块库，再走 V1 解析。锅炉/旧 JSON 无 compose 不进入。
+    schema_ver = int(raw.get("schema_version") or 1)
+    if schema_ver >= 3 and isinstance(raw.get("compose"), list) and raw.get("compose"):
+        raw = compose_report_dict(raw, analysis_type=analysis_type)
     try:
         ReportSpecFileModel.model_validate(raw)
     except Exception:  # noqa: BLE001

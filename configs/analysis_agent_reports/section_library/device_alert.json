@@ -1,0 +1,33 @@
+{
+  "id": "device_alert",
+  "title": "设备告警情况",
+  "kind": "llm_section",
+  "source_item_ids": ["q_alert_placeholder"],
+  "outline": ["说明本期告警数据待接入"],
+  "constraints": ["禁止编造告警", "禁止 q 编号", "禁止 # 标题行"],
+  "narrative_instruction": "本期设备告警数据待接入，以下为模版骨架。无库内告警表时不要用沉降极值冒充告警。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "tables": [
+    {
+      "id": "t_device_alert",
+      "title": "设备告警（待接入）",
+      "source_item_ids": ["q_alert_placeholder"],
+      "attach_to_chapter": "@self",
+      "placeholder": true,
+      "columns": ["序号", "标编号", "设备类型", "位置", "实时值", "告警内容"],
+      "max_rows": 20
+    }
+  ],
+  "charts": [
+    {
+      "id": "c_device_alert",
+      "title": "设备告警（待接入）",
+      "chart_type": "bar",
+      "source_item_ids": ["q_alert_placeholder"],
+      "attach_to_chapter": "@self",
+      "placeholder": true,
+      "max_points": 10
+    }
+  ]
+}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.conversation.ids import validate_session_id, validate_user_id
 
@@ -44,6 +44,34 @@ class AnalysisAgentOptions(BaseModel):
         None,
         description="质量门强度；默认跟随 ANALYSIS_AGENT_QUALITY_PROFILE（light）",
     )
+    start_time: str = Field(
+        "",
+        description="报告数据窗起点 ISO8601 或 YYYY-MM-DD；与 end_time 成对。空则上一完整周期",
+    )
+    end_time: str = Field(
+        "",
+        description="报告数据窗终点（半开上界）；日期-only 视为次日 0 点",
+    )
+    area: str = Field(
+        "",
+        description="t_station.area 标准名；空/全市/北京市=不按区过滤",
+    )
+    issue_no: str = Field("", description="封面期号；空则占位 XX")
+
+    @model_validator(mode="after")
+    def _pair_start_end(self) -> "AnalysisAgentOptions":
+        start = (self.start_time or "").strip()
+        end = (self.end_time or "").strip()
+        if bool(start) ^ bool(end):
+            raise ValueError("start_time and end_time must be provided together")
+        if (self.area or "").strip():
+            from app.analysis_agent.period import PeriodValidationError, resolve_area
+
+            try:
+                resolve_area(self.area)
+            except PeriodValidationError as exc:
+                raise ValueError(str(exc)) from exc
+        return self
 
 
 class AnalysisAgentStreamStopRequest(BaseModel):
@@ -80,7 +108,7 @@ class AnalysisAgentRunRequest(BaseModel):
     user_id: str = Field(..., description="用户唯一标识")
     session_id: str = Field(..., description="会话唯一标识")
     analysis_type: AnalysisAgentType = Field(..., description="分析类型")
-    query: str = Field(..., description="分析需求自然语言描述")
+    query: str = Field("", description="分析需求自然语言描述；地降自动报告可空，由周期/区划生成规范问句")
     options: AnalysisAgentOptions = Field(default_factory=AnalysisAgentOptions)
 
     @field_validator("user_id")

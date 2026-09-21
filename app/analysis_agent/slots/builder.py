@@ -19,10 +19,13 @@ def _field_hints_tuple(value: Any) -> tuple[tuple[str, str], ...]:
     if isinstance(value, dict):
         return tuple((str(k), str(v)) for k, v in value.items())
     out: list[tuple[str, str]] = []
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         for item in value:
             if isinstance(item, dict) and item.get("label"):
                 out.append((str(item["label"]), str(item.get("hint") or "")))
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                out.append((str(item[0]), str(item[1])))
+        return tuple(out)
     return tuple(out)
 
 

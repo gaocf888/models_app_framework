@@ -579,31 +579,31 @@ entries:
   district_raw: 顺义
   depth_m: 4.5
   monitor_layer: 0
-- project_name: F42(牌楼）
+- project_name: F42(牌楼站)
   station_name: F42-1
   borehole_type: 分层标孔
   district_raw: 顺义
   depth_m: 334.0
   monitor_layer: 4
-- project_name: F42(牌楼）
+- project_name: F42(牌楼站)
   station_name: F42-2
   borehole_type: 分层标孔
   district_raw: 顺义
   depth_m: 208.0
   monitor_layer: 3
-- project_name: F42(牌楼）
+- project_name: F42(牌楼站)
   station_name: F42-3
   borehole_type: 分层标孔
   district_raw: 顺义
   depth_m: 108.0
   monitor_layer: 2
-- project_name: F42(牌楼）
+- project_name: F42(牌楼站)
   station_name: F42-4
   borehole_type: 分层标孔
   district_raw: 顺义
   depth_m: 56.0
   monitor_layer: 1
-- project_name: F42(牌楼）
+- project_name: F42(牌楼站)
   station_name: F42-5
   borehole_type: 分层标孔
   district_raw: 顺义

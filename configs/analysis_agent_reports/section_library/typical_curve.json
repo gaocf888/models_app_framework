@@ -1,0 +1,24 @@
+{
+  "id": "typical_curve",
+  "title": "典型曲线",
+  "kind": "llm_section",
+  "source_item_ids": ["q_typical"],
+  "outline": ["说明所选站点与配对水位井", "解读双轴曲线，无图则待补充"],
+  "constraints": ["禁止编造站点或自行选站", "禁止把未在对应覆盖名单的辅助轴写成已配对", "禁止 GNSS 一期出图", "禁止 q 编号"],
+  "narrative_instruction": "解读程序择优后的典型双轴曲线。若无 dxswj 覆盖配对则写待补充，不要改绑其它场地充数。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "charts": [
+    {
+      "id": "c_typical_dual",
+      "title": "典型监测曲线（沉降-辅助）",
+      "chart_type": "dual_axis",
+      "source_item_ids": ["q_typical"],
+      "attach_to_chapter": "@self",
+      "x_field": "x",
+      "y_left": { "field": "settle_mm", "name": "累计沉降", "unit": "mm" },
+      "y_right": { "field": "aux_value", "name": "辅助序列", "unit": "" },
+      "max_points": 120
+    }
+  ]
+}

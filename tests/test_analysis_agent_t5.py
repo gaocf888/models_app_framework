@@ -34,15 +34,15 @@ def test_quarterly_report_structure() -> None:
     assert spec is not None
     assert "季度" in (spec.title or "")
     chapter_ids = {c.id for c in spec.chapters}
-    assert "ch_preface" in chapter_ids
-    assert "ch_city_overview" in chapter_ids
-    assert "ch_layer" in chapter_ids
-    assert "ch_appendix" in chapter_ids
+    assert "quarterly_preface" in chapter_ids
+    assert "city_plain" in chapter_ids
+    assert "layer_results__l01" in chapter_ids
+    assert "annex_ground" in chapter_ids
     plan_ids = {t["item_id"] for t in spec.plan_tasks}
-    assert {"q1", "q2", "q3", "q4", "q5", "q6"}.issubset(plan_ids)
-    assert any(t.get("attach_to_chapter") == "ch_city_overview" for t in spec.tables)
+    assert {"q_fcb_endpoints", "q_layer0", "q_compress"}.issubset(plan_ids)
+    assert any(t.get("attach_to_chapter") == "city_plain" for t in spec.tables)
     assert any(c.get("chart_type") == "bar" for c in spec.charts)
-    assert any(c.get("chart_type") == "line" for c in spec.charts)
+    assert any(c.get("chart_type") == "map_placeholder" for c in spec.charts)
 
 
 @pytest.mark.parametrize("analysis_type", _SUBSIDENCE)
@@ -58,7 +58,7 @@ def test_subsidence_context_loads(analysis_type: str) -> None:
 @pytest.mark.parametrize("analysis_type", _SUBSIDENCE)
 def test_subsidence_plan_and_synthesis(analysis_type: str) -> None:
     tasks = load_plan_tasks(analysis_type)
-    assert any(t.get("item_id") == "q1" for t in tasks)
+    assert any(t.get("item_id") in {"q_fcb_endpoints", "q1"} for t in tasks)
     tpl, scene = get_synthesis_template(analysis_type)
     assert tpl is not None
     assert "沉降" in (tpl.content or "")

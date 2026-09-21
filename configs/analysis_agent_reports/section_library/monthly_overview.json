@@ -1,0 +1,11 @@
+{
+  "id": "monthly_overview",
+  "title": "本月监测概况",
+  "kind": "llm_section",
+  "source_item_ids": ["q_layer0"],
+  "outline": ["监测覆盖与本月沉降总体形势", "需关注的极值站点"],
+  "constraints": ["禁止编造", "禁止 q 编号", "禁止 # 标题行", "仅层位0"],
+  "narrative_instruction": "简述本月平原区地面沉降监测概况与总体形势；数值仅来自层位0取数结果，无数据写待补充。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false
+}

@@ -1,0 +1,11 @@
+{
+  "id": "plain_monitoring",
+  "title": "平原区监测情况",
+  "kind": "llm_section",
+  "source_item_ids": ["q_layer0"],
+  "outline": ["总体沉降/回弹格局", "极值站点"],
+  "constraints": ["禁止编造", "禁止 q 编号", "禁止 # 标题行", "仅使用层位0数据", "Δ=初−末，Δ>0 为下沉倾向"],
+  "narrative_instruction": "按时间窗概述平原区地面沉降（仅层位0代表标）；无数据写待补充。结合已渲染表图做解读，不要手搓站点宽表。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false
+}

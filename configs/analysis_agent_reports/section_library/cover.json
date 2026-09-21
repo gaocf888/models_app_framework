@@ -1,0 +1,14 @@
+{
+  "id": "cover",
+  "title": "",
+  "kind": "static_markdown",
+  "source_item_ids": [],
+  "static_body": "内部材料\n\n{title}\n\n第 {issue_no} 期\n\n北京市地质矿产勘查院 地质环境监测所\n{report_date}\n",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "variants": {
+    "quarterly": {
+      "static_body": "{title}\n（{period_label}）\n\n{toc}\n\n北京市地质矿产勘查院 地质环境监测所\n{report_date}\n"
+    }
+  }
+}

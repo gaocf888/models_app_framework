@@ -1,0 +1,22 @@
+{
+  "id": "station_ops",
+  "title": "监测站运行情况",
+  "kind": "llm_section",
+  "source_item_ids": ["q_ops_placeholder"],
+  "outline": ["说明本期设备运行数据待接入", "保留模版骨架，不估算三率"],
+  "constraints": ["禁止编造三率或在线率", "禁止用有数天数近似完好率", "禁止 q 编号", "禁止 # 标题行"],
+  "narrative_instruction": "本期设备运行数据待接入，以下为模版骨架。不要用沉降观测天数或其它代理指标估算完好率、传输率、及时率。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "tables": [
+    {
+      "id": "t_station_ops",
+      "title": "监测站运行情况（待接入）",
+      "source_item_ids": ["q_ops_placeholder"],
+      "attach_to_chapter": "@self",
+      "placeholder": true,
+      "columns": ["序号", "标编号", "设备类型", "位置", "实时值", "告警内容"],
+      "max_rows": 20
+    }
+  ]
+}

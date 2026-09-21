@@ -175,6 +175,11 @@ def _resolve_device_station_map_path(base: Path) -> Path:
     return base / "dimensions" / "device_station_map.yaml"
 
 
+def parse_device_station_map(data: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+    """解析 device_type → project_names 覆盖名单。报告侧 deterministics 复用，避免复制 YAML 解析。"""
+    return _parse_device_station_map(data)
+
+
 def _parse_device_station_map(data: dict[str, Any]) -> dict[str, tuple[str, ...]]:
     """解析 device_type → project_names 覆盖名单。"""
     out: dict[str, tuple[str, ...]] = {}
@@ -200,6 +205,20 @@ def _parse_device_station_map(data: dict[str, Any]) -> dict[str, tuple[str, ...]
                 names.append(name)
         out[key] = tuple(names)
     return out
+
+
+def parse_fcb_layer_map(
+    data: dict[str, Any],
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+    frozenset[str],
+    tuple[str, ...],
+    dict[str, tuple[str, ...]],
+    dict[str, dict[int, str]],
+]:
+    """解析分层标层位字典。报告侧 deterministics 复用。"""
+    return _parse_fcb_layer_map(data)
 
 
 def _parse_fcb_layer_map(

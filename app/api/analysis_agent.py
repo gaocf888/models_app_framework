@@ -47,9 +47,10 @@ async def run_analysis_agent_stream(data: AnalysisAgentRunRequest) -> StreamingR
     按章串行 LangGraph 编排（T1：先全量 acquire_data，再按章合成；T2：真流式 + stop）。
 
     参数说明（见 `AnalysisAgentRunRequest`）：
-    - 必传：user_id、session_id、analysis_type、query
-    - 可选：options（enable_rag、strict、chart_mode、use_react_agent、narrative_streaming 等）
-    - 首帧 `started` 含 `stream_id`，可调用 `POST /analysis-agent/stream/stop` 中断
+    - 必传：user_id、session_id、analysis_type
+    - query：可选；地降自动报告可空，由周期/区划生成规范问句
+    - 可选：options（start_time/end_time/area/issue_no、enable_rag、strict、chart_mode 等）
+    - 首帧 `started` 含 `stream_id`；地降另含 `period`（t_start/t_end/period_label/area）
     - 缺数 HITL 已从主路径移除；`enable_human_in_the_loop` 默认 false 且编排忽略
     """
     return await service.run_stream(data)

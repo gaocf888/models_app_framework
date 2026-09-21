@@ -6,8 +6,10 @@ from typing import Any
 from app.analysis_agent.context_loader import load_analysis_run_context
 from app.analysis_agent.graph.orchestrator import SlotOrchestrator
 from app.analysis_agent.graph.state import AnalysisAgentState
+from app.analysis_agent.period import apply_resolved_period, canonical_query, fill_template_placeholders
 from app.analysis_agent.plans.loader import effective_plan_version
 from app.analysis_agent.slots.serialize import slot_to_dict
+from app.analysis_agent.slots.specs import is_subsidence_type
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -16,20 +18,35 @@ logger = get_logger(__name__)
 def make_nodes(orchestrator: SlotOrchestrator) -> dict[str, Any]:
     async def initialize(state: AnalysisAgentState) -> AnalysisAgentState:
         analysis_type = state["analysis_type"]
-        opts = state.get("options") or {}
+        opts = apply_resolved_period(analysis_type, state.get("options") or {})
+        resolved = opts.get("_resolved") if isinstance(opts.get("_resolved"), dict) else {}
+        if is_subsidence_type(analysis_type) and not str(state.get("query") or "").strip() and resolved:
+            state["query"] = canonical_query(analysis_type, resolved)
         plan_version = effective_plan_version(analysis_type, opts)
         ctx = load_analysis_run_context(
             analysis_type, version=plan_version, prompts=orchestrator._prompts
         )
         plan_version = ctx.plan_template_version
         opts["plan_template_version"] = plan_version
-        slots = ctx.slots
-        state["ordered_slots"] = [slot_to_dict(s) for s in slots]
-        state["slots_total"] = len(slots)
+        state["options"] = opts
+        title = str(ctx.report_title or "")
+        ordered: list[dict[str, Any]] = []
+        for slot in ctx.slots:
+            item = slot_to_dict(slot)
+            if resolved:
+                if item.get("static_body"):
+                    item["static_body"] = fill_template_placeholders(
+                        str(item["static_body"]), resolved, title=title
+                    )
+                if item.get("title"):
+                    item["title"] = fill_template_placeholders(str(item["title"]), resolved, title=title)
+            ordered.append(item)
+        state["ordered_slots"] = ordered
+        state["slots_total"] = len(ordered)
         state["slot_index"] = 0
         state["plan_tasks"] = ctx.plan_tasks
         if ctx.report_title:
-            state["report_title"] = ctx.report_title
+            state["report_title"] = fill_template_placeholders(title, resolved, title=title) if resolved else title
         state["from_report_spec"] = ctx.from_report_spec
         state.setdefault("gathered_data", {})
         state.setdefault("task_status", {})
@@ -60,12 +77,19 @@ def make_nodes(orchestrator: SlotOrchestrator) -> dict[str, Any]:
                 "event": "analysis_agent_meta",
                 "request_id": state["request_id"],
                 "analysis_type": analysis_type,
-                "slot_total": len(slots),
+                "slot_total": len(ordered),
                 "plan_items": len(state["plan_tasks"]),
                 "from_report_spec": ctx.from_report_spec,
                 "plan_template_version": plan_version,
             }
         ]
+        if resolved:
+            state["pending_events"][0]["period"] = {
+                "t_start": resolved.get("t_start"),
+                "t_end": resolved.get("t_end"),
+                "period_label": resolved.get("period_label"),
+                "area": resolved.get("area"),
+            }
         return state
 
     def intent_rag(state: AnalysisAgentState) -> AnalysisAgentState:

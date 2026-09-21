@@ -1,7 +1,8 @@
 # 地降所项目 — 前端 UI 及对应接口调用说明
 
-> **版本**：2026-09-10  
-> **结构**：与左侧导航四大板块对齐。第一块 **智能问答**（§一契约已补齐，生产 UI 在前端仓落地）、第四块 **知识库**、第三块 **数据查询** 为当前实现。第二块自动报告仍预留。  
+> **版本**：2026-09-20  
+> **结构**：与左侧导航四大板块对齐。第一块 **智能问答**、第二块 **自动报告生成**、第三块 **数据查询**、第四块 **知识库**。生产 UI 在前端仓落地。  
+> **后台契约**（自动报告）：`docs/基于地降所项目改造/自动报告生成实现方案(详细版)(即综合分析智能体改造V2).md`  
 > **后台契约**（数据查询）：`docs/基于地降所项目改造/数据查询智能体实现方案.md`  
 > **后台契约**（知识库）：`docs/基于地降所项目改造/RAG基座改造和前端功能及接口调用说明.md`  
 > **本目录资源**：原型与改造后线框图均放在本文件夹内。
@@ -92,7 +93,218 @@
 
 ## 二、自动报告生成
 
+> 后台契约：`docs/基于地降所项目改造/自动报告生成实现方案(详细版)(即综合分析智能体改造V2).md`。  
+> 主接口：`POST /analysis-agent/run-stream`（SSE）。停止：`POST /analysis-agent/stream/stop`。  
+> 本仓联调页：`tests/web/analysis-agent-stream.html`。生产 UI 在前端仓按下列契约落地。  
+> 进程须 `ANALYSIS_AGENT_ENABLED=true`、`NL2SQL_BUSINESS_DOMAIN=subsidence`。
+
+侧栏标题「自动报告生成」；路由建议 `/report` 或 `/auto-report`。这是 **选模版出报告**，不是智能问答，也不是数据查询台。
+
+鉴权：`Authorization: Bearer <SERVICE_API_KEY>`。SSE 与其它模块相同：`Content-Type: text/event-stream`，每帧 `data: {JSON}\n\n`，种类看 JSON 的 **`event`**。
+
+**本期地降五种模版（界面中文 → 请求 `analysis_type`）：**
+
+| 界面 | `analysis_type` | 说明 |
+|------|-----------------|------|
+| 日报 | `subsidence_daily` | 封面 / 运行 / 平原 / 告警占位 |
+| 周报 | `subsidence_weekly` | 日报骨架 + 重点区叙述（不挂表 4-1） |
+| 月报 | `subsidence_monthly` | 概况 / 平原 / 重点区 / 典型曲线 |
+| 季报 | `subsidence_quarterly` | 对齐季报 Word：分区循环、压缩层、表 4-1、附表 1–5 |
+| 年报 | `subsidence_yearly` | **套季报目录**；只是时间窗为「上年」 |
+
+不要调用：`POST /analysis/*`（现网锅炉综合分析）、`POST /nl2sql/query`（当报告入口）、`POST /data-query-agent/run-stream`（出表不是出报告）、`POST /analysis-agent/resume-stream`（主路径无缺数弹窗）。  
+**禁止渲染** 取数事件里的 `sql`（可留字段给联调，界面忽略）。设备三率/告警、地图 GIS **不要编假数、不要接真实地图 SDK**（后端是占位）。
+
 ---
+
+### 2.1 页面 — 自动报告工作台
+
+```text
+┌ 顶栏：模版（日/周/月/季/年）  周期  行政区  期号  [生成报告] [停止] ┐
+├ 进度：取数项完成条 / 当前章节名                                      ┤
+└ 报告区：按章 Markdown + 表 + 图（可滚动；结束后可导出）                ┘
+```
+
+#### 进入页面
+
+1. 默认选中 **季报**（或产品指定的默认模版）。  
+2. 周期、行政区可空：空周期 = **上一完整周期**；空行政区 = **全市**（不按区过滤）。  
+3. 「生成报告」始终可点（`query` 可空，不必先打字）。  
+4. 不要进页就自动打 `run-stream`。
+
+#### 顶栏
+
+| UI | 行为 | 接口 |
+|----|------|------|
+| 模版下拉 | 五种中文名 ↔ 上表 `analysis_type` | 不单独请求 |
+| 开始日期 / 结束日期 | **成对**：都空或都填。只填一端会 **422** | 写入 `options.start_time` / `end_time` |
+| 行政区 | 标准名且带「区」（如 `朝阳区`）；空/`全市`/`北京市` = 不按区过滤 | `options.area` |
+| 期号 | 封面用；空则封面显示 `XX` | `options.issue_no` |
+| 补充说明（可选） | 自然语言；可空 | 顶层 `query` |
+| **生成报告** | 文案改「生成中…」并禁用；打开 SSE | `POST /analysis-agent/run-stream` |
+| 生成中再点 | 忽略，不要并行开第二路流 | — |
+| **停止** | 首帧记下 `stream_id` 后才可点 | `POST /analysis-agent/stream/stop` |
+| 离开页 | 若仍在生成，先 stop | 同上 |
+
+日期规则（给日期选择器提示即可，不必前端自己算默认窗）：
+
+- 都空：日报=昨天，周报=上自然周，月报=上月，季报=上季，年报=上年。  
+- 都填：半开区间 `[start, end)`；只选日期时，结束日按 **次日 0 点** 理解（与后台一致）。  
+- 非法区名（如 `朝阳` 且无法补成 `朝阳区`）→ **422**，拦在提交前或提示「请选标准行政区」。
+
+`run-stream` 必填 `user_id`、`session_id`、`analysis_type`；`query` 可 `""`。`session_id` 由前端生成并维持（UUID），禁止含 `:`。
+
+#### 进度条
+
+| 收到的事件 | 界面 |
+|------------|------|
+| `started` | 转圈；保存 `stream_id` / `request_id`；地降用 `period.period_label` 展示「正在生成：2025年第二季度」 |
+| `analysis_agent_meta` | 可选：总章节数 `slot_total` |
+| `analysis_agent_nl2sql_done` | 「取数中」进度（按完成项计数即可）；看 `executor`，**不要展示 sql** |
+| `analysis_agent_chapter_start` | 「正在写：第 n 章」；用 `chapter_id` / `slot_id` 对应报告区锚点 |
+| `analysis_agent_cancelled` / `finished` 且 aborted | 按钮恢复；半截报告可留，标「已取消」 |
+| `analysis_agent_error` | toast/横幅；按钮恢复 |
+
+#### 报告区
+
+按章追加，不要等全部结束才画。
+
+| SSE | 前端处理 |
+|-----|----------|
+| `analysis_agent_chapter_start` | 新开一节容器（可用 `slot_id` 当 key） |
+| `analysis_agent_summary_delta` | **追加** `text` 到当前章（Markdown）；真流式会带章节标题行 |
+| `analysis_agent_table_payload` | 用 `table.columns` + `table.rows` 渲表（优先于再解析 Markdown 表） |
+| `analysis_agent_chart_payload` | 按 `chart.chart_type` 画：**bar / pie / line / dual_axis**；`map_placeholder` 只显示「地图占位」文案，**不要**接 GIS |
+| `analysis_agent_chapter_complete` | 该章完成勾选 |
+| `analysis_agent_report_complete` / `finished.result` | 可用 `structured_report` 做终稿校对或导出；`summary` 为全文 Markdown |
+
+`chart.placeholder === true` 或无 series：画空态「待补充」，不要编点。  
+设备运行/告警章后端是空占位，正文出现「待补充」属正常。
+
+导出（可选）：前端把当前 Markdown/HTML **本地另存**；算法不提供 Word 下载接口。版式不必还原 Word 双栏。
+
+---
+
+### 2.2 接口
+
+#### 2.2.1 HTTP 一览
+
+| 方法 | 路径 | 谁调用（界面） | 说明 |
+|------|------|----------------|------|
+| POST | `/analysis-agent/run-stream` | 点「生成报告」 | 主入口，边取数边推章节 |
+| POST | `/analysis-agent/stream/stop` | 点「停止」/ 离开页 | Body：`user_id`、`session_id`、`stream_id` |
+| GET | `/analysis-agent/trace/{request_id}` | 运维/失败排查 | 用户页可不做 |
+| GET | `/analysis-agent/traces` 等 | 运维 | 列表/统计/趋势/降级 TopN |
+| POST | `/analysis-agent/resume-stream` | **不要做** | 兼容旧 HITL，地降主路径不会弹 |
+
+`run-stream` 请求示例：
+
+```json
+{
+  "user_id": "u1",
+  "session_id": "s1",
+  "analysis_type": "subsidence_quarterly",
+  "query": "",
+  "options": {
+    "start_time": "",
+    "end_time": "",
+    "area": "",
+    "issue_no": "03",
+    "enable_rag": true,
+    "strict": false,
+    "chart_mode": "auto"
+  }
+}
+```
+
+| 字段 | 必填 | 说明（界面） |
+|------|------|------|
+| `user_id` / `session_id` | 是 | 登录用户与本次会话 |
+| `analysis_type` | 是 | 五种 `subsidence_*` 之一；不要传锅炉四类给地降页 |
+| `query` | 否 | 可空；空则后台按周期生成规范问句（给 RAG/质量门，不是给用户填 SQL） |
+| `options.start_time` / `end_time` | 否 | 成对；ISO8601 或 `YYYY-MM-DD` |
+| `options.area` | 否 | `朝阳区` 等；空=全市 |
+| `options.issue_no` | 否 | 封面期号 |
+| `options.chart_mode` | 否 | `auto`（默认）/ `minimal` / `off`（不要图） |
+| `options.strict` | 否 | `true` 时关键数缺失整次失败（产品默认 false：标待补充仍出报告） |
+
+`stream/stop`：`{ "user_id", "session_id", "stream_id" }` → 按钮恢复「生成报告」。
+
+#### 2.2.2 SSE 事件序
+
+不需要人机确认。用户看到的顺序大约是：按钮「生成中…」→ 展示实际周期 → 取数进度 → 按章出字/表/图 → 结束。
+
+```text
+started                         { stream_id, request_id, period? }
+analysis_agent_meta             { slot_total, plan_items, period? }
+analysis_agent_nl2sql_done      { item_id, row_count, executor }   # 可多次；忽略 sql
+analysis_agent_chapter_start    { slot_id, chapter_id, chapter_index, kind }
+analysis_agent_table_payload    { table, slot_id }                 # 常在叙述前
+analysis_agent_chart_payload    { chart, slot_id }
+analysis_agent_summary_delta    { text, slot_id? }                 # 多次
+analysis_agent_chapter_complete { slot_id, ... }
+analysis_agent_report_complete  { ... }
+analysis_agent_finished         { result }                         # 按钮恢复
+```
+
+`started.period`（地降才有）：
+
+| 字段 | 界面 |
+|------|------|
+| `period_label` | 「2025年第二季度」等，作副标题 |
+| `t_start` / `t_end` | 可选展示实际数据窗（半开上界） |
+| `area` | 空表示全市 |
+
+`nl2sql_done.executor`：`sql_template` / `python` / `placeholder` / `nl2sql`。地降附表真源是前三者；界面统一写成「取数完成」即可。
+
+取消：`analysis_agent_cancelled` + `finished` 且 `trace.status=aborted`、`terminate_reason=user_cancelled`。  
+`strict` 失败：`analysis_agent_error` 或 `finished` 且 `status=failed`，展示原因，不要把半截当成功。
+
+`finished.result` 常用字段：`summary`（全文）、`structured_report.sections/tables/charts`、`degrade_reasons`（可做成报告下小字，如 mandatory 降级继续）。
+
+#### 2.2.3 表 / 图 payload（报告区）
+
+表：`table.columns` 为列名，`table.rows` 为对象数组；缺 cell 显示空，不要猜列。沉降 **Δ=初−末，Δ>0 倾向下沉**，不要擅自取绝对值或反号。
+
+图 `chart.chart_type`：
+
+| 类型 | 界面 |
+|------|------|
+| `bar` / `pie` / `line` | 普通图 |
+| `dual_axis` | 左右双轴（月报典型曲线）；数据在 `chart.spec.series` |
+| `map_placeholder` | 文案占位「空间分布图待接入」，不要调地图服务 |
+
+---
+
+### 2.3 功能 × 接口速查
+
+| 功能（用户在页面上做什么） | 方法 | 路径 |
+|------|------|------|
+| 选日/周/月/季/年 | — | 只改请求里的 `analysis_type` |
+| 点「生成报告」 | POST | `/analysis-agent/run-stream` |
+| 点「停止」/ 离开页 | POST | `/analysis-agent/stream/stop` |
+| 报告正文 | SSE | `analysis_agent_summary_delta` |
+| 报告表/图 | SSE | `analysis_agent_table_payload` / `chart_payload` |
+| 导出 Word/PDF（可选） | — | 前端本地导出；算法无下载接口 |
+| 运维看一次生成记录 | GET | `/analysis-agent/trace/{request_id}` |
+
+本页可不做：人机补数弹窗、展示 SQL、GIS 底图、设备三率真值、把五种模版打成锅炉 `overheat_guidance`、用数据查询结果表冒充报告附表。
+
+---
+
+### 2.4 联调注意
+
+- 进程：`NL2SQL_BUSINESS_DOMAIN=subsidence`，`ANALYSIS_AGENT_ENABLED=true`。  
+- 地降页只传 `subsidence_*`；年报与季报 **章节结构相同**，不要再做另一套年报 UI。  
+- `query` 可空；不要强迫用户先写「请生成季报」。  
+- 起止日期必须成对；区名用 `朝阳区` 这种标准名。  
+- 界面不展示 SQL；`map_placeholder` 不接地图。  
+- 主路径不会 `user_input_required`，不要做选库/补数 resume。  
+- 取消必须带上 `started.stream_id`。  
+- 联调页：`tests/web/analysis-agent-stream.html`。
+
+---
+
 
 ## 三、数据查询
 

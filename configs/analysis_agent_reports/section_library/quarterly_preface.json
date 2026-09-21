@@ -1,0 +1,20 @@
+{
+  "id": "quarterly_preface",
+  "title": "一、前言",
+  "kind": "llm_section",
+  "source_item_ids": ["q_layer0"],
+  "outline": [
+    "监测任务与报告依据（简述）",
+    "本期监测站点规模与覆盖行政区（层位0）",
+    "本期沉降极值与整体形势摘要"
+  ],
+  "constraints": [
+    "禁止编造数值；无数据写待补充",
+    "禁止 Markdown # 标题行",
+    "禁止出现内部取数编号",
+    "周期沉降 Δ=初−末，Δ>0 表示下沉倾向"
+  ],
+  "narrative_instruction": "撰写前言：说明本期监测概况、层位0站点规模与沉降总体特征；数值仅来自已取数结果。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false
+}

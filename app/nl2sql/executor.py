@@ -4,6 +4,7 @@ import asyncio
 import os
 from typing import Any, List
 
+from sqlalchemy import String, bindparam
 from sqlalchemy.exc import DBAPIError, DisconnectionError, InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.sql import text
@@ -166,18 +167,38 @@ class SQLExecutor:
             self._engine = _create_business_engine(db_cfg)
             logger.info("SQLExecutor engine rebuilt after retryable DB error")
 
-    async def execute(self, sql: str) -> List[dict[str, Any]]:
+    def _statement(self, sql: str, params: dict[str, Any] | None) -> Any:
+        """可选 params 绑定；list/tuple 按 PG text[] 处理，禁止调用方把值拼进 SQL。"""
+        stmt = text(sql)
+        bind = params or {}
+        array_keys = [k for k, v in bind.items() if isinstance(v, (list, tuple))]
+        if array_keys:
+            from sqlalchemy.dialects.postgresql import ARRAY
+
+            stmt = stmt.bindparams(*[bindparam(k, type_=ARRAY(String)) for k in array_keys])
+        return stmt
+
+    async def execute(self, sql: str, params: dict[str, Any] | None = None) -> List[dict[str, Any]]:
         s = (sql or "").strip()
         preview = s
-        logger.info("SQLExecutor.execute start sql_len=%d preview=%r", len(s), preview)
+        bind = dict(params or {})
+        if bind:
+            bind = {k: v for k, v in bind.items() if f":{k}" in s}
+        logger.info(
+            "SQLExecutor.execute start sql_len=%d preview=%r param_keys=%s",
+            len(s),
+            preview,
+            sorted(bind.keys()),
+        )
         rows: List[dict[str, Any]] = []
         max_retries = self._execute_max_retries()
         last_exc: BaseException | None = None
+        stmt = self._statement(s, bind)
         for attempt in range(1, max_retries + 1):
             try:
                 async with self._engine.connect() as conn:
                     async with conn.begin():
-                        result = await conn.execute(text(sql))
+                        result = await conn.execute(stmt, bind) if bind else await conn.execute(stmt)
                         cols = result.keys()
                         for r in result.fetchall():
                             rows.append({col: value for col, value in zip(cols, r)})

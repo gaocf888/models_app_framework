@@ -1,0 +1,19 @@
+{
+  "id": "annex_ground",
+  "title": "附表1 分层标地面沉降监测成果",
+  "kind": "static_markdown",
+  "source_item_ids": ["q_layer0"],
+  "static_body": "附表1列出官方分层标覆盖 ∩ 层位0代表标的周期沉降（Δ=窗初−窗末）。缺初/末的标不出现。排版不做 Word 双栏还原。\n",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "tables": [
+    {
+      "id": "t_annex_ground",
+      "title": "附表1 分层标地面沉降监测成果",
+      "source_item_ids": ["q_layer0"],
+      "attach_to_chapter": "@self",
+      "columns": ["area", "project_name", "station_name", "delta_mm", "settle_start", "settle_end"],
+      "max_rows": 80
+    }
+  ]
+}

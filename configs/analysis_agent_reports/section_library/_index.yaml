@@ -1,0 +1,44 @@
+# 地降板块库索引。改章节只改本目录 JSON / compose；本文件提供循环词表与共享取数项。
+# 平原 8 区与季报有站目录对齐；名称须带「区」，对应 t_station.area。
+
+plain_districts:
+  - { id: chaoyang, name: 朝阳区 }
+  - { id: haidian, name: 海淀区 }
+  - { id: tongzhou, name: 通州区 }
+  - { id: shunyi, name: 顺义区 }
+  - { id: changping, name: 昌平区 }
+  - { id: daxing, name: 大兴区 }
+  - { id: pinggu, name: 平谷区 }
+  - { id: yanqing, name: 延庆区 }
+
+compress_groups:
+  # annex_no=2..5：附表1 是地面沉降，压缩层组从附表2 起
+  - { id: l01, name: 第一压缩层组, layer_from: 0, layer_to: 1, annex_no: 2 }
+  - { id: l12, name: 第二压缩层组, layer_from: 1, layer_to: 2, annex_no: 3 }
+  - { id: l23, name: 第三压缩层组, layer_from: 2, layer_to: 3, annex_no: 4 }
+  - { id: l34, name: 第四压缩层组, layer_from: 3, layer_to: 4, annex_no: 5 }
+
+# 所有需要沉降数字的模版共用；叙述章 source 指向 q_layer0，禁止用 nl2sql 生成器当附表真源
+shared_plan_items:
+  - item_id: q_fcb_endpoints
+    executor: sql_template
+    sql_file: fcb_period_endpoints.sql
+    mandatory: true
+    dependency_ids: []
+    purpose: 边界标窗初窗末累计沉降（覆盖名单 ∩ 层位字典）
+  - item_id: q_layer0
+    executor: python
+    python_fn: slice_layer0
+    mandatory: true
+    dependency_ids: [q_fcb_endpoints]
+    purpose: 层位0地面沉降 Δ=初−末
+  - item_id: q_ops_placeholder
+    executor: placeholder
+    mandatory: false
+    dependency_ids: []
+    purpose: 设备运行三率待接入
+  - item_id: q_alert_placeholder
+    executor: placeholder
+    mandatory: false
+    dependency_ids: []
+    purpose: 设备告警待接入

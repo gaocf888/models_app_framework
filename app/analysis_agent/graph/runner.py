@@ -12,10 +12,12 @@ from app.analysis_agent.context_loader import load_analysis_run_context
 from app.analysis_agent.graph.builder import build_analysis_agent_graph
 from app.analysis_agent.graph.orchestrator import SlotOrchestrator
 from app.analysis_agent.graph.state import AnalysisAgentState
+from app.analysis_agent.period import apply_resolved_period, canonical_query
 from app.analysis_agent.plans.loader import effective_plan_version
 from app.analysis_agent.session_store import create_resume_token, delete_resume_session, get_resume_session
 from app.analysis_agent.slots.registry import registry_available
 from app.analysis_agent.slots.serialize import slot_to_dict
+from app.analysis_agent.slots.specs import is_subsidence_type
 from app.conversation.manager import ConversationManager
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -199,11 +201,25 @@ class AnalysisAgentGraphRunner:
         ANALYSIS_AGENT_REQUEST_COUNT.labels(
             analysis_type=analysis_type, status="started"
         ).inc()
-        yield {
+        if is_subsidence_type(analysis_type):
+            opts = apply_resolved_period(analysis_type, opts)
+            resolved = opts.get("_resolved") if isinstance(opts.get("_resolved"), dict) else {}
+            if not (query or "").strip() and resolved:
+                query = canonical_query(analysis_type, resolved)
+        started: dict[str, Any] = {
             "event": "started",
             "stream_id": stream_id,
             "request_id": rid,
         }
+        if is_subsidence_type(analysis_type):
+            resolved = opts.get("_resolved") if isinstance(opts.get("_resolved"), dict) else {}
+            started["period"] = {
+                "t_start": resolved.get("t_start"),
+                "t_end": resolved.get("t_end"),
+                "period_label": resolved.get("period_label"),
+                "area": resolved.get("area"),
+            }
+        yield started
         initial = self._build_initial_state(
             request_id=rid,
             user_id=user_id,

@@ -1,0 +1,30 @@
+{
+  "id": "annex_layer",
+  "iterate": "compress_groups",
+  "title": "附表{item.annex_no} {item.name}监测成果",
+  "kind": "static_markdown",
+  "source_item_ids": ["q_compress"],
+  "static_body": "附表{item.annex_no}仅含 {item.name}（层位{item.layer_from}→{item.layer_to}）连续层间差。缺该层对的场地不出现（例如 F11 不出现在附表4/5）。\n",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "tables": [
+    {
+      "id": "t_annex_layer",
+      "title": "附表{item.annex_no} {item.name}监测成果",
+      "source_item_ids": ["q_compress"],
+      "attach_to_chapter": "@self",
+      "filter_field": "layer_from",
+      "filter_from_iterate": "layer_from",
+      "columns": [
+        "area",
+        "project_name",
+        "mark_from",
+        "mark_to",
+        "delta_from",
+        "delta_to",
+        "compress_mm"
+      ],
+      "max_rows": 80
+    }
+  ]
+}

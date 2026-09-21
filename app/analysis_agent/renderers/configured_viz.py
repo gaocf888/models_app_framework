@@ -41,6 +41,23 @@ def _resolve_columns(
     return out
 
 
+def _apply_row_filter(rows: list[dict[str, Any]], spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """循环章 row_filter: {field, equals}；字符串/数字宽松相等。"""
+    filt = spec.get("row_filter")
+    if not isinstance(filt, dict):
+        return rows
+    field = str(filt.get("field") or "").strip()
+    if not field:
+        return rows
+    equals = filt.get("equals")
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        val = row.get(field)
+        if val == equals or str(val) == str(equals):
+            out.append(row)
+    return out
+
+
 def render_configured_table(
     spec: dict[str, Any],
     *,
@@ -51,7 +68,7 @@ def render_configured_table(
     if not tid:
         return None
     source_ids = [str(x) for x in (spec.get("source_item_ids") or []) if str(x).strip()]
-    rows = _collect_rows(gathered_data, source_ids)
+    rows = _apply_row_filter(_collect_rows(gathered_data, source_ids), spec)
     max_rows = max(1, int(spec.get("max_rows") or 80))
     columns = _resolve_columns(spec.get("columns"), rows)
     title = str(spec.get("title") or tid)
@@ -66,6 +83,8 @@ def render_configured_table(
     )
     tbl["configured"] = True
     tbl["attach_to_chapter"] = str(spec.get("attach_to_chapter") or "")
+    if spec.get("placeholder"):
+        tbl["placeholder"] = True
     return md, tbl
 
 
@@ -81,13 +100,43 @@ def render_configured_chart(
     if not cid:
         return None
     chart_type = str(spec.get("chart_type") or "bar").strip().lower() or "bar"
+    source_ids = [str(x) for x in (spec.get("source_item_ids") or []) if str(x).strip()]
+    rows = _apply_row_filter(_collect_rows(gathered_data, source_ids), spec)
+    title = str(spec.get("title") or cid)
+    if chart_type in ("dual_axis", "map_placeholder"):
+        ch = chart_from_config(
+            chart_id=cid,
+            chart_type=chart_type,
+            title=title,
+            rows=rows,
+            x_field=str(spec.get("x_field") or "").strip(),
+            y_field=str(spec.get("y_field") or "").strip(),
+            series_field=str(spec.get("series_field") or "").strip(),
+            max_points=max(1, int(spec.get("max_points") or 60)),
+            y_left=spec.get("y_left") if isinstance(spec.get("y_left"), dict) else None,
+            y_right=spec.get("y_right") if isinstance(spec.get("y_right"), dict) else None,
+            placeholder=bool(spec.get("placeholder")),
+        )
+        if ch:
+            ch["configured"] = True
+            ch["attach_to_chapter"] = str(spec.get("attach_to_chapter") or "")
+            ch["source_item_ids"] = source_ids
+        return ch
     if chart_type not in ("bar", "pie", "line"):
         chart_type = "bar"
-    source_ids = [str(x) for x in (spec.get("source_item_ids") or []) if str(x).strip()]
-    rows = _collect_rows(gathered_data, source_ids)
     if not rows:
+        if spec.get("placeholder"):
+            return {
+                "id": cid,
+                "chart_type": chart_type,
+                "title": title,
+                "placeholder": True,
+                "configured": True,
+                "attach_to_chapter": str(spec.get("attach_to_chapter") or ""),
+                "source_item_ids": source_ids,
+                "spec": {"data": []},
+            }
         return None
-    title = str(spec.get("title") or cid)
     ch = chart_from_config(
         chart_id=cid,
         chart_type=chart_type,

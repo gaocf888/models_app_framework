@@ -1,0 +1,39 @@
+{
+  "id": "key_area",
+  "title": "重点监测区",
+  "kind": "llm_section",
+  "source_item_ids": ["q_layer0"],
+  "outline": ["按重点区概述层位0沉降", "无数据写待补充"],
+  "constraints": ["禁止编造", "禁止内部编号", "站点集合以重点区 YAML 为准，不用 t_station 全表"],
+  "narrative_instruction": "按重点监测区（城市副中心、未来科学城、亦庄、首都机场临空、大兴机场临空）解读层位0沉降。周/月不挂表 4-1。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "variants": {
+    "with_table": {
+      "title": "二、（四）重点区域",
+      "source_item_ids": ["q_key_area"],
+      "outline": ["解读表4-1 重点监测区地面沉降", "缺压缩层单元格保持空，勿臆造"],
+      "narrative_instruction": "撰写重点区域：解读表4-1。站点集合必须是配置的13站；缺层单元格留空。",
+      "tables": [
+        {
+          "id": "t_key_area",
+          "title": "表4-1 重点监测区地面沉降监测情况",
+          "source_item_ids": ["q_key_area"],
+          "attach_to_chapter": "@self",
+          "columns": [
+            "area_name",
+            "station_count",
+            "station_code",
+            "project_name",
+            "total_delta_mm",
+            "c01",
+            "c12",
+            "c23",
+            "c34"
+          ],
+          "max_rows": 20
+        }
+      ]
+    }
+  }
+}

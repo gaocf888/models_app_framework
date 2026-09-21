@@ -82,7 +82,7 @@ async def test_iter_stream_events_mock_nl2sql() -> None:
 
     names = [e.get("event") for e in events]
     assert "analysis_agent_meta" in names
-    assert "analysis_agent_slot_start" in names
+    assert "analysis_agent_chapter_start" in names
     assert "analysis_agent_finished" in names
     finished = [e for e in events if e.get("event") == "analysis_agent_finished"][0]
     assert finished.get("result", {}).get("request_id", "").startswith("aa_")
