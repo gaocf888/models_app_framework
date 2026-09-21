@@ -11,7 +11,7 @@ WHERE cardinality(CAST(:fcb_marks AS text[])) > 0
   AND w.data_time >= CAST(:t_start AS timestamp)
   AND w.data_time < CAST(:t_end AS timestamp)
   AND w.total_settle IS NOT NULL
-  AND (:area IS NULL OR EXISTS (
+  AND (CAST(:area AS text) IS NULL OR EXISTS (
     SELECT 1 FROM t_station st
     WHERE st.name = w.project_name AND st.area = CAST(:area AS text)
   ))

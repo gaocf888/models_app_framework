@@ -138,7 +138,11 @@ async def synthesize_section(
     ]
     buf = ""
     n = 0
-    async for chunk in client.stream_chat(messages=messages, max_tokens=cfg.narrative_max_tokens):
+    async for chunk in client.stream_chat(
+        model=None,
+        messages=messages,
+        max_tokens=cfg.narrative_max_tokens,
+    ):
         if cancel_checker is not None and n % 8 == 0:
             try:
                 if await cancel_checker():

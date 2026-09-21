@@ -22,6 +22,15 @@ def test_endpoints_sql_uses_bind_placeholders() -> None:
     assert ":fcb_marks" in sql
     assert "{area}" not in sql
     assert "ANY(" in sql
+    # asyncpg：裸 `:area IS NULL` 在 area=None 时无法推断 $n 类型
+    assert ":area IS NULL" not in sql
+    assert "CAST(:area AS text) IS NULL" in sql
+
+
+def test_typical_fcb_sql_casts_null_area() -> None:
+    sql = load_sql_template("typical_series_fcb.sql")
+    assert ":area IS NULL" not in sql
+    assert "CAST(:area AS text) IS NULL" in sql
 
 
 def test_resolved_sql_params_do_not_format_sql() -> None:

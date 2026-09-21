@@ -78,6 +78,6 @@ SELECT
 FROM paired p
 LEFT JOIN t_station st
   ON st.name = p.project_name
-WHERE (:area IS NULL OR st.area = CAST(:area AS text))
+WHERE (CAST(:area AS text) IS NULL OR st.area = CAST(:area AS text))
 ORDER BY st.area, p.project_name, p.station_name
 ;
