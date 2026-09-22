@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>自动报告生成 · 地降所联调</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #10b981;
+      --accent-hover: #059669;
+      --warn: #fbbf24;
+      --answer: #f0f4f8;
+      --meta: #22c55e;
+      --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 1.25rem 1rem 2.5rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin: 0 0 1rem; }
+    .banner {
+      margin-bottom: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--accent);
+      background: rgba(16, 185, 129, 0.08);
+      font-size: 0.8rem;
+    }
+    .banner a { color: var(--accent); }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+    }
+    @media (min-width: 860px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+      .grid .full { grid-column: 1 / -1; }
+    }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      margin: 0;
+      padding: 0.75rem 1rem 1rem;
+    }
+    legend { padding: 0 0.35rem; color: var(--muted); font-size: 0.8rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"],
+    input[type="url"],
+    input[type="password"],
+    input[type="date"],
+    textarea,
+    select {
+      width: 100%;
+      margin-top: 0.2rem;
+      padding: 0.45rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    textarea { min-height: 3.2rem; resize: vertical; font-family: inherit; }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; align-items: center; margin-top: 0.5rem; }
+    .row label { display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--text); font-size: 0.875rem; }
+    .hint { font-size: 0.75rem; color: var(--muted); margin-top: 0.35rem; }
+    .type-desc {
+      margin-top: 0.5rem;
+      padding: 0.5rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.85rem; }
+    button {
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button.primary { background: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.secondary { background: var(--border); color: var(--text); }
+    button.warn { background: rgba(251, 191, 36, 0.2); color: var(--warn); border: 1px solid var(--warn); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status { font-size: 0.85rem; color: var(--muted); margin: 1rem 0 0.5rem; }
+    .progress {
+      display: none;
+      margin: 0 0 0.85rem;
+      padding: 0.65rem 0.8rem;
+      border-radius: 8px;
+      border: 1px dashed var(--warn);
+      background: rgba(251, 191, 36, 0.08);
+      font-size: 0.8rem;
+      color: var(--warn);
+    }
+    .progress.visible { display: block; }
+    .progress .bar {
+      margin-top: 0.45rem;
+      height: 6px;
+      border-radius: 999px;
+      background: #0d1117;
+      overflow: hidden;
+    }
+    .progress .bar > span {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: var(--accent);
+      transition: width 0.2s ease;
+    }
+    .out {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 1rem;
+    }
+    .out h2 { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.6rem; font-weight: 500; }
+    .chapter {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #0d1117;
+      padding: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .chapter-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 0.45rem;
+    }
+    .chapter-head .ok { color: var(--meta); }
+    .chapter-md {
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--answer);
+      font-size: 0.95rem;
+    }
+    .chapter-md.rendered-md { white-space: normal; }
+    .chapter-md.rendered-md table,
+    .table-wrap table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 0.85rem;
+      margin: 0.5rem 0;
+    }
+    .chapter-md.rendered-md th,
+    .chapter-md.rendered-md td,
+    .table-wrap th,
+    .table-wrap td {
+      border: 1px solid var(--border);
+      padding: 0.35rem 0.5rem;
+      text-align: left;
+    }
+    .table-wrap {
+      overflow: auto;
+      margin: 0.55rem 0 0;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .table-wrap caption {
+      caption-side: top;
+      padding: 0.35rem 0.5rem;
+      color: var(--muted);
+      font-size: 0.75rem;
+      text-align: left;
+    }
+    .chart-box {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-top: 0.55rem;
+      padding: 0.5rem;
+      min-height: 240px;
+    }
+    .chart-box h3 { margin: 0 0 0.35rem; font-size: 0.8rem; font-weight: 500; color: var(--muted); }
+    .chart-canvas { width: 100%; height: 220px; }
+    .map-ph {
+      min-height: 80px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+    }
+    .fetch-log, #meta, #eventLog {
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.75rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      font-family: ui-monospace, Consolas, monospace;
+      color: var(--muted);
+      max-height: 180px;
+      overflow: auto;
+    }
+    #meta { color: var(--meta); }
+    .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
+    code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>自动报告生成 <span style="color:var(--accent);font-size:0.85em">地降所</span></h1>
+    <p class="sub">选模版出报告。主接口 <code>POST /analysis-agent/run-stream</code>，停止 <code>POST /analysis-agent/stream/stop</code>。不展示 SQL，不做 HITL / resume，地图仅占位。</p>
+    <div class="banner">
+      进程须 <code>ANALYSIS_AGENT_ENABLED=true</code>、<code>NL2SQL_BUSINESS_DOMAIN=subsidence</code>。
+      日期成对；都空则上一完整周期。行政区空 = 全市。
+      对照契约：<code>docs/基于地降所项目改造/改造后前端UI及对应接口调用说明/地降所项目前端UI及对应接口调用说明.md</code> §二。
+      锅炉通用联调页：<a href="../analysis-agent-stream.html">analysis-agent-stream.html</a>
+    </div>
+
+    <div class="grid">
+      <fieldset>
+        <legend>连接</legend>
+        <label>API 根地址</label>
+        <input type="url" id="baseUrl" value="http://127.0.0.1:8083" autocomplete="off" />
+        <label>Service API Key</label>
+        <input type="password" id="apiKey" placeholder="留空或粘贴密钥" autocomplete="off" />
+      </fieldset>
+      <fieldset>
+        <legend>会话</legend>
+        <label>user_id</label>
+        <input type="text" id="userId" value="u_web_auto_report" autocomplete="off" />
+        <label>session_id（禁止含 : ）</label>
+        <input type="text" id="sessionId" autocomplete="off" />
+        <p class="hint"><button type="button" class="secondary" id="btnNewSid" style="padding:0.2rem 0.5rem;font-size:0.75rem;">换一个 session_id</button></p>
+      </fieldset>
+
+      <fieldset class="full">
+        <legend>报告条件</legend>
+        <label>模版</label>
+        <select id="analysisType">
+          <option value="subsidence_daily">日报 · subsidence_daily</option>
+          <option value="subsidence_weekly">周报 · subsidence_weekly</option>
+          <option value="subsidence_monthly">月报 · subsidence_monthly</option>
+          <option value="subsidence_quarterly" selected>季报 · subsidence_quarterly</option>
+          <option value="subsidence_yearly">年报 · subsidence_yearly（目录同季报）</option>
+        </select>
+        <div id="typeDesc" class="type-desc"></div>
+        <div class="pair" style="margin-top:0.55rem;">
+          <div>
+            <label>开始日期（可空）</label>
+            <input type="date" id="startTime" />
+          </div>
+          <div>
+            <label>结束日期（可空，与开始成对）</label>
+            <input type="date" id="endTime" />
+          </div>
+        </div>
+        <p class="hint">只填一端会 422。只选日期时，结束日按次日 0 点理解（半开窗）。</p>
+        <div class="pair">
+          <div>
+            <label>行政区</label>
+            <select id="area">
+              <option value="" selected>全市（不按区过滤）</option>
+              <option>东城区</option>
+              <option>西城区</option>
+              <option>朝阳区</option>
+              <option>丰台区</option>
+              <option>石景山区</option>
+              <option>海淀区</option>
+              <option>门头沟区</option>
+              <option>房山区</option>
+              <option>通州区</option>
+              <option>顺义区</option>
+              <option>昌平区</option>
+              <option>大兴区</option>
+              <option>怀柔区</option>
+              <option>平谷区</option>
+              <option>密云区</option>
+              <option>延庆区</option>
+            </select>
+          </div>
+          <div>
+            <label>期号（封面；空则 XX）</label>
+            <input type="text" id="issueNo" placeholder="03" autocomplete="off" />
+          </div>
+        </div>
+        <label>补充说明（可选，对应 query）</label>
+        <textarea id="query" placeholder="可空。后台会按周期生成规范问句。"></textarea>
+        <div class="row">
+          <label><input type="checkbox" id="enableRag" checked /> enable_rag</label>
+          <label><input type="checkbox" id="strict" /> strict</label>
+          <label>chart_mode
+            <select id="chartMode" style="width:auto;margin:0 0 0 0.35rem;">
+              <option value="auto" selected>auto</option>
+              <option value="minimal">minimal</option>
+              <option value="off">off</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="debugSse" /> 调试事件日志</label>
+        </div>
+      </fieldset>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="primary" id="btnSend">生成报告</button>
+      <button type="button" class="warn" id="btnStop" disabled>停止</button>
+      <button type="button" class="secondary" id="btnClear">清空</button>
+      <button type="button" class="secondary" id="btnExport" disabled>导出 Markdown</button>
+    </div>
+
+    <div id="status">就绪。不要进页自动请求。</div>
+    <div id="progress" class="progress" aria-live="polite">
+      <div id="progressText">准备中…</div>
+      <div class="bar"><span id="progressBar"></span></div>
+    </div>
+
+    <div class="out">
+      <h2>报告区（按章追加）</h2>
+      <div id="report">（尚未开始）</div>
+      <h2 style="margin-top:1rem;">取数进度（不展示 SQL）</h2>
+      <div id="fetchLog" class="fetch-log">（尚未开始）</div>
+      <h2 style="margin-top:1rem;">meta / period / degrade</h2>
+      <div id="meta">（尚未开始）</div>
+      <h2 style="margin-top:1rem;">事件 trace</h2>
+      <div id="eventLog"></div>
+      <div id="err" class="err" hidden></div>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  const TEMPLATES = {
+    subsidence_daily: "封面 / 运行占位 / 平原 / 告警占位。数字来自层位 0。空周期 = 昨天。",
+    subsidence_weekly: "日报骨架 + 重点区叙述。空周期 = 上自然周。",
+    subsidence_monthly: "概况 / 平原 / 重点区 / 典型曲线。空周期 = 上月。",
+    subsidence_quarterly: "对齐季报：分区循环、压缩层、表 4-1、附表 1–5。空周期 = 上季。",
+    subsidence_yearly: "章节结构与季报相同，时间窗为上年。",
+  };
+
+  const EXECUTOR_LABEL = {
+    sql_template: "模板 SQL",
+    python: "确定性计算",
+    placeholder: "占位",
+    nl2sql: "NL2SQL",
+  };
+
+  const chartInstances = new Map();
+  const state = {
+    abortCtrl: null,
+    busy: false,
+    streamId: "",
+    requestId: "",
+    userId: "",
+    sessionId: "",
+    planItems: 0,
+    fetchDone: 0,
+    slotTotal: 0,
+    chapters: new Map(),
+    currentSlot: "",
+    summaryParts: [],
+  };
+
+  function newSessionId() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    return "s_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
+  }
+
+  function persistBase() {
+    try { localStorage.setItem("subsidence_auto_report_base", $("baseUrl").value.trim()); } catch (_) {}
+  }
+
+  (function init() {
+    $("sessionId").value = newSessionId();
+    try {
+      const saved = localStorage.getItem("subsidence_auto_report_base");
+      if (saved) $("baseUrl").value = saved;
+    } catch (_) {}
+    $("typeDesc").textContent = TEMPLATES[$("analysisType").value];
+  })();
+
+  $("analysisType").addEventListener("change", () => {
+    $("typeDesc").textContent = TEMPLATES[$("analysisType").value] || "";
+  });
+  $("baseUrl").addEventListener("change", persistBase);
+  $("btnNewSid").addEventListener("click", () => { $("sessionId").value = newSessionId(); });
+
+  const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
+  const headers = () => {
+    const h = { "Content-Type": "application/json", Accept: "text/event-stream" };
+    const k = $("apiKey").value.trim();
+    if (k) h.Authorization = "Bearer " + k;
+    return h;
+  };
+
+  function showErr(msg) {
+    const el = $("err");
+    if (!msg) { el.hidden = true; el.textContent = ""; return; }
+    el.hidden = false;
+    el.textContent = msg;
+  }
+
+  function setStatus(t) { $("status").textContent = t; }
+
+  function setBusy(b) {
+    state.busy = b;
+    $("btnSend").disabled = b;
+    $("btnStop").disabled = !b;
+    $("btnSend").textContent = b ? "生成中…" : "生成报告";
+  }
+
+  function setProgress(text, ratio) {
+    const box = $("progress");
+    box.classList.add("visible");
+    $("progressText").textContent = text;
+    const pct = Math.max(0, Math.min(1, ratio == null ? 0 : ratio));
+    $("progressBar").style.width = Math.round(pct * 100) + "%";
+  }
+
+  function hideProgress() { $("progress").classList.remove("visible"); }
+
+  function logEvent(line) {
+    if (!$("debugSse").checked) return;
+    const el = $("eventLog");
+    const ts = new Date().toISOString().slice(11, 23);
+    el.textContent += "[" + ts + "] " + line + "\n";
+    const parts = el.textContent.split("\n");
+    if (parts.length > 160) el.textContent = parts.slice(-160).join("\n");
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function logFetch(line) {
+    const el = $("fetchLog");
+    if (el.textContent.startsWith("（尚未")) el.textContent = "";
+    el.textContent += line + "\n";
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function validateDates() {
+    const a = $("startTime").value.trim();
+    const b = $("endTime").value.trim();
+    if (Boolean(a) !== Boolean(b)) {
+      showErr("开始日期与结束日期必须成对填写，或都留空。");
+      return false;
+    }
+    return true;
+  }
+
+  function buildBody() {
+    const options = {
+      enable_rag: $("enableRag").checked,
+      strict: $("strict").checked,
+      chart_mode: $("chartMode").value,
+      start_time: $("startTime").value.trim(),
+      end_time: $("endTime").value.trim(),
+      area: $("area").value.trim(),
+      issue_no: $("issueNo").value.trim(),
+    };
+    return {
+      user_id: $("userId").value.trim(),
+      session_id: $("sessionId").value.trim(),
+      analysis_type: $("analysisType").value,
+      query: $("query").value.trim(),
+      options,
+    };
+  }
+
+  function simpleMarkdownToHtml(md) {
+    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const lines = String(md || "").split("\n");
+    const out = [];
+    let inTable = false;
+    for (const line of lines) {
+      const t = line.trim();
+      if (t.startsWith("### ")) {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        out.push("<h3>" + esc(t.slice(4)) + "</h3>");
+      } else if (t.startsWith("#### ")) {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        out.push("<h4>" + esc(t.slice(5)) + "</h4>");
+      } else if (t.startsWith("|") && t.includes("|")) {
+        const cells = t.split("|").slice(1, -1).map((c) => c.trim());
+        if (/^[-:\s|]+$/.test(t.replace(/\|/g, ""))) continue;
+        if (!inTable) { out.push("<table>"); inTable = true; }
+        const tag = out[out.length - 1] === "<table>" ? "th" : "td";
+        out.push("<tr>" + cells.map((c) => "<" + tag + ">" + esc(c) + "</" + tag + ">").join("") + "</tr>");
+      } else {
+        if (inTable) { out.push("</table>"); inTable = false; }
+        if (t) out.push("<p>" + esc(t) + "</p>");
+      }
+    }
+    if (inTable) out.push("</table>");
+    return out.join("\n");
+  }
+
+  function ensureReportRoot() {
+    const root = $("report");
+    if (root.textContent === "（尚未开始）") root.replaceChildren();
+    return root;
+  }
+
+  function ensureChapter(slotId, meta) {
+    const id = slotId || state.currentSlot || "_stream";
+    let rec = state.chapters.get(id);
+    if (rec) {
+      if (meta && meta.title && !rec.title) rec.title = meta.title;
+      if (rec.head && rec.title) rec.head.querySelector(".ttl").textContent = rec.title;
+      return rec;
+    }
+    const root = ensureReportRoot();
+    const box = document.createElement("div");
+    box.className = "chapter";
+    box.dataset.slot = id;
+    const head = document.createElement("div");
+    head.className = "chapter-head";
+    const idx = meta && meta.chapter_index != null ? "第 " + meta.chapter_index + " 章" : "章节";
+    head.innerHTML = "<span><span class='ttl'></span></span><span class='st'>进行中</span>";
+    head.querySelector(".ttl").textContent = (meta && meta.title) || id;
+    head.prepend(document.createTextNode(idx + " · "));
+    const md = document.createElement("div");
+    md.className = "chapter-md";
+    const tables = document.createElement("div");
+    const charts = document.createElement("div");
+    box.appendChild(head);
+    box.appendChild(md);
+    box.appendChild(tables);
+    box.appendChild(charts);
+    root.appendChild(box);
+    rec = {
+      id,
+      title: (meta && meta.title) || "",
+      buffer: "",
+      box,
+      head,
+      md,
+      tables,
+      charts,
+    };
+    state.chapters.set(id, rec);
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    return rec;
+  }
+
+  function appendDelta(text, slotId) {
+    if (!text) return;
+    const rec = ensureChapter(slotId);
+    rec.buffer += text;
+    rec.md.textContent = rec.buffer;
+    state.summaryParts.push(text);
+    $("btnExport").disabled = false;
+  }
+
+  function markChapterDone(slotId) {
+    const rec = state.chapters.get(slotId || state.currentSlot);
+    if (!rec) return;
+    rec.head.querySelector(".st").textContent = "已完成";
+    rec.head.querySelector(".st").classList.add("ok");
+    if (rec.buffer) {
+      rec.md.classList.add("rendered-md");
+      rec.md.innerHTML = simpleMarkdownToHtml(rec.buffer);
+    }
+  }
+
+  function renderTable(table, slotId) {
+    if (!table || !Array.isArray(table.columns)) return;
+    const rec = ensureChapter(slotId);
+    const wrap = document.createElement("div");
+    wrap.className = "table-wrap";
+    const tbl = document.createElement("table");
+    if (table.title) {
+      const cap = document.createElement("caption");
+      cap.textContent = table.title;
+      tbl.appendChild(cap);
+    }
+    const thead = document.createElement("thead");
+    const hr = document.createElement("tr");
+    table.columns.forEach((c) => {
+      const th = document.createElement("th");
+      th.textContent = c;
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    tbl.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    (table.rows || []).forEach((row) => {
+      const tr = document.createElement("tr");
+      table.columns.forEach((c) => {
+        const td = document.createElement("td");
+        const v = row && typeof row === "object" ? row[c] : "";
+        td.textContent = v == null ? "" : String(v);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody);
+    wrap.appendChild(tbl);
+    rec.tables.appendChild(wrap);
+  }
+
+  function emptyChartBox(title, message) {
+    const box = document.createElement("div");
+    box.className = "chart-box";
+    const h = document.createElement("h3");
+    h.textContent = title || "图";
+    const ph = document.createElement("div");
+    ph.className = "map-ph";
+    ph.textContent = message;
+    box.appendChild(h);
+    box.appendChild(ph);
+    return box;
+  }
+
+  function renderChart(chart, slotId) {
+    if (!chart) return;
+    const rec = ensureChapter(slotId);
+    const title = chart.title || chart.id || "图";
+    const ct = String(chart.chart_type || "").toLowerCase();
+    if (ct === "map_placeholder" || chart.placeholder === true) {
+      rec.charts.appendChild(emptyChartBox(title, ct === "map_placeholder" ? "空间分布图待接入（不接 GIS）" : "待补充"));
+      return;
+    }
+    const spec = chart.spec || {};
+    const data = Array.isArray(spec.data) ? spec.data : [];
+    const series = Array.isArray(spec.series) ? spec.series : [];
+    const hasSeries = series.length > 0;
+    if (!data.length && !hasSeries) {
+      rec.charts.appendChild(emptyChartBox(title, "待补充"));
+      return;
+    }
+    if (typeof echarts === "undefined") {
+      rec.charts.appendChild(emptyChartBox(title, "ECharts 未加载"));
+      return;
+    }
+    const box = document.createElement("div");
+    box.className = "chart-box";
+    const h = document.createElement("h3");
+    h.textContent = title;
+    const canvas = document.createElement("div");
+    canvas.className = "chart-canvas";
+    box.appendChild(h);
+    box.appendChild(canvas);
+    rec.charts.appendChild(box);
+    const inst = echarts.init(canvas, null, { renderer: "canvas" });
+    const cid = chart.id || ("c_" + Math.random().toString(36).slice(2, 8));
+    chartInstances.set(cid, inst);
+    const axis = { color: "#8b9cb3" };
+    const base = {
+      backgroundColor: "transparent",
+      textStyle: { color: "#e6edf3" },
+      tooltip: { trigger: ct === "pie" ? "item" : "axis" },
+      grid: { left: 48, right: 24, top: 28, bottom: 40 },
+    };
+    if (ct === "pie") {
+      const nameField = spec.colorField || "category";
+      const valField = spec.angleField || "value";
+      inst.setOption({
+        ...base,
+        series: [{
+          type: "pie",
+          radius: "60%",
+          data: data.map((d) => ({ name: String(d[nameField] ?? ""), value: Number(d[valField]) || 0 })),
+        }],
+      });
+    } else if (ct === "dual_axis") {
+      const left = spec.yLeft || {};
+      const right = spec.yRight || {};
+      inst.setOption({
+        ...base,
+        legend: { textStyle: { color: "#8b9cb3" } },
+        xAxis: { type: "category", data: series.map((d) => d.x), axisLabel: { ...axis, rotate: 30 } },
+        yAxis: [
+          { type: "value", name: left.name || "左轴", axisLabel: axis, splitLine: { lineStyle: { color: "#2d3a4d" } } },
+          { type: "value", name: right.name || "右轴", axisLabel: axis, splitLine: { show: false } },
+        ],
+        series: [
+          { type: "line", name: left.name || "左轴", data: series.map((d) => d.left), smooth: true },
+          { type: "line", name: right.name || "右轴", yAxisIndex: 1, data: series.map((d) => d.right), smooth: true },
+        ],
+      });
+    } else if (ct === "line" && hasSeries && series[0] && Array.isArray(series[0].data)) {
+      const xf = spec.xField || "x";
+      const yf = spec.yField || "y";
+      const cats = series[0].data.map((p) => p[xf] ?? p.x);
+      inst.setOption({
+        ...base,
+        legend: { textStyle: { color: "#8b9cb3" } },
+        xAxis: { type: "category", data: cats, axisLabel: { ...axis, rotate: 30 } },
+        yAxis: { type: "value", axisLabel: axis, splitLine: { lineStyle: { color: "#2d3a4d" } } },
+        series: series.map((s) => ({
+          type: "line",
+          name: s.name,
+          data: (s.data || []).map((p) => p[yf] ?? p.y),
+          smooth: true,
+          showSymbol: false,
+        })),
+      });
+    } else {
+      const xf = spec.xField || spec.x_field || (ct === "bar" ? "zone" : "x");
+      const yf = spec.yField || spec.y_field || (ct === "bar" ? "count" : "y");
+      const rows = data.length ? data : series;
+      inst.setOption({
+        ...base,
+        xAxis: { type: "category", data: rows.map((d) => d[xf] ?? d.x), axisLabel: { ...axis, rotate: 20 } },
+        yAxis: { type: "value", axisLabel: axis, splitLine: { lineStyle: { color: "#2d3a4d" } } },
+        series: [{
+          type: ct === "bar" ? "bar" : "line",
+          data: rows.map((d) => d[yf] ?? d.y ?? d.left),
+          itemStyle: ct === "bar" ? { color: "#10b981" } : undefined,
+          smooth: ct !== "bar",
+          showSymbol: false,
+        }],
+      });
+    }
+    window.addEventListener("resize", () => inst.resize(), { passive: true });
+  }
+
+  function clearCharts() {
+    chartInstances.forEach((inst) => inst.dispose());
+    chartInstances.clear();
+  }
+
+  function resetUi() {
+    clearCharts();
+    state.streamId = "";
+    state.requestId = "";
+    state.planItems = 0;
+    state.fetchDone = 0;
+    state.slotTotal = 0;
+    state.chapters = new Map();
+    state.currentSlot = "";
+    state.summaryParts = [];
+    $("report").textContent = "（尚未开始）";
+    $("fetchLog").textContent = "（尚未开始）";
+    $("meta").textContent = "（尚未开始）";
+    $("eventLog").textContent = "";
+    $("btnExport").disabled = true;
+    hideProgress();
+    showErr("");
+  }
+
+  function periodLine(period) {
+    if (!period || typeof period !== "object") return "";
+    const area = period.area ? String(period.area) : "全市";
+    const label = period.period_label || "";
+    const win = (period.t_start || "") + " ~ " + (period.t_end || "");
+    return "正在生成：" + area + (label ? " · " + label : "") + (win.trim() !== "~" ? "  [" + win + ")" : "");
+  }
+
+  function handleEvent(ev) {
+    const kind = ev.event;
+    logEvent(kind || "?");
+
+    if (kind === "parse_error") {
+      showErr("SSE JSON 解析失败: " + ev.error);
+      return;
+    }
+    if (kind === "started") {
+      state.streamId = ev.stream_id || "";
+      state.requestId = ev.request_id || "";
+      $("meta").textContent =
+        "stream_id: " + state.streamId + "\nrequest_id: " + state.requestId +
+        (ev.period ? "\nperiod: " + JSON.stringify(ev.period) : "");
+      setProgress(periodLine(ev.period) || "已连接，取数中…", 0.05);
+      setStatus("已连接 · stream_id=" + state.streamId);
+      $("btnStop").disabled = !state.streamId;
+      return;
+    }
+    if (kind === "analysis_agent_meta") {
+      state.slotTotal = Number(ev.slot_total || ev.slots_total || 0);
+      state.planItems = Number(ev.plan_items || 0);
+      $("meta").textContent =
+        ($("meta").textContent || "") +
+        "\nslot_total: " + state.slotTotal +
+        "\nplan_items: " + state.planItems +
+        "\nanalysis_type: " + (ev.analysis_type || "") +
+        (ev.period ? "\nperiod: " + JSON.stringify(ev.period) : "");
+      if (ev.period) setProgress(periodLine(ev.period) || "取数中…", 0.08);
+      return;
+    }
+    if (kind === "analysis_agent_nl2sql_done") {
+      state.fetchDone += 1;
+      const ex = ev.executor || "";
+      logFetch(
+        (ev.item_id || "?") +
+        "  " + (EXECUTOR_LABEL[ex] || ex || "取数") +
+        "  rows=" + (ev.row_count != null ? ev.row_count : "—") +
+        (ev.error ? "  失败" : "")
+      );
+      const denom = state.planItems || Math.max(state.fetchDone, 1);
+      setProgress(
+        "取数中 " + state.fetchDone + "/" + (state.planItems || "?") +
+        " · " + (ev.item_id || ""),
+        0.1 + 0.35 * (state.fetchDone / denom)
+      );
+      return;
+    }
+    if (kind === "analysis_agent_chapter_start" || kind === "analysis_agent_slot_start") {
+      state.currentSlot = ev.slot_id || ev.chapter_id || "";
+      const idx = ev.chapter_index != null ? ev.chapter_index : ev.slot_index;
+      ensureChapter(state.currentSlot, {
+        title: ev.title || ev.slot_id || ev.chapter_id,
+        chapter_index: idx,
+      });
+      const n = idx != null ? idx : state.chapters.size;
+      const total = state.slotTotal || "?";
+      setProgress("正在写：第 " + n + " 章 / 共 " + total + " 章 · " + (ev.slot_id || ""), 0.5);
+      setStatus("正在写章节 " + (ev.slot_id || ""));
+      return;
+    }
+    if (kind === "analysis_agent_summary_delta") {
+      appendDelta(ev.text || "", ev.slot_id);
+      return;
+    }
+    if (kind === "analysis_agent_table_payload") {
+      renderTable(ev.table, ev.slot_id);
+      return;
+    }
+    if (kind === "analysis_agent_chart_payload") {
+      renderChart(ev.chart, ev.slot_id);
+      return;
+    }
+    if (kind === "analysis_agent_chapter_complete" || kind === "analysis_agent_slot_complete") {
+      markChapterDone(ev.slot_id);
+      setStatus("章节完成: " + (ev.slot_id || ""));
+      return;
+    }
+    if (kind === "analysis_agent_report_complete") {
+      const sr = ev.structured_report || {};
+      $("meta").textContent +=
+        "\n\n--- report_complete ---\nsummary_len: " + ((ev.summary || "").length) +
+        "\nsections: " + ((sr.sections || []).length) +
+        "\ntables: " + ((sr.tables || []).length) +
+        "\ncharts: " + ((sr.charts || []).length);
+      setProgress("报告合成完成", 0.95);
+      return;
+    }
+    if (kind === "analysis_agent_finished") {
+      const result = ev.result || {};
+      const sr = result.structured_report || {};
+      const degrade = result.degrade_reasons || [];
+      $("meta").textContent +=
+        "\n\n--- finished ---\nrequest_id: " + (ev.request_id || result.request_id || "") +
+        "\nstatus: " + ((result.trace && result.trace.status) || "ok") +
+        (degrade.length ? "\ndegrade_reasons: " + degrade.join(", ") : "");
+      if (!state.summaryParts.length && result.summary) {
+        appendDelta(result.summary, "_final");
+        markChapterDone("_final");
+      }
+      setProgress("已结束", 1);
+      setStatus("finished · request_id=" + (ev.request_id || result.request_id || state.requestId));
+      if ((result.trace && result.trace.status) === "failed") {
+        showErr(result.error || "生成失败");
+      }
+      return;
+    }
+    if (kind === "analysis_agent_cancelled") {
+      setProgress("已取消", 1);
+      setStatus("已取消");
+      return;
+    }
+    if (kind === "analysis_agent_error") {
+      showErr(ev.message || JSON.stringify(ev));
+      setStatus("错误");
+      hideProgress();
+    }
+  }
+
+  async function readSse(response, onEvent) {
+    const reader = response.body.getReader();
+    const dec = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const raw = buffer.slice(0, idx).trimEnd();
+        buffer = buffer.slice(idx + 2);
+        const dataLines = raw.split("\n").filter((l) => l.startsWith("data:"));
+        if (!dataLines.length) continue;
+        const payload = dataLines.map((l) => l.slice(5).trimStart()).join("\n");
+        try { onEvent(JSON.parse(payload)); }
+        catch (e) { onEvent({ event: "parse_error", error: String(e), raw: payload }); }
+      }
+    }
+  }
+
+  async function postStop() {
+    if (!state.streamId || !state.userId || !state.sessionId) return;
+    try {
+      await fetch(baseUrl() + "/analysis-agent/stream/stop", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          user_id: state.userId,
+          session_id: state.sessionId,
+          stream_id: state.streamId,
+        }),
+        keepalive: true,
+        credentials: "omit",
+      });
+    } catch (_) {}
+  }
+
+  async function run() {
+    if (state.busy) return;
+    if (!validateDates()) return;
+    const body = buildBody();
+    if (!body.user_id || !body.session_id || !body.analysis_type) {
+      showErr("请填写 user_id、session_id，并选择模版。");
+      return;
+    }
+    if (body.session_id.includes(":")) {
+      showErr("session_id 禁止包含冒号。");
+      return;
+    }
+    persistBase();
+    resetUi();
+    state.userId = body.user_id;
+    state.sessionId = body.session_id;
+    state.abortCtrl = new AbortController();
+    setBusy(true);
+    setProgress("连接中…", 0.02);
+    setStatus("连接 " + body.analysis_type + " …");
+    try {
+      const resp = await fetch(baseUrl() + "/analysis-agent/run-stream", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(body),
+        signal: state.abortCtrl.signal,
+        credentials: "omit",
+      });
+      if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error("HTTP " + resp.status + "\n" + t.slice(0, 4000));
+      }
+      await readSse(resp, handleEvent);
+    } catch (e) {
+      if (e.name === "AbortError") setStatus("已停止");
+      else {
+        showErr(String(e.message || e));
+        setStatus("失败");
+        hideProgress();
+      }
+    } finally {
+      setBusy(false);
+      state.abortCtrl = null;
+    }
+  }
+
+  $("btnSend").addEventListener("click", run);
+  $("btnStop").addEventListener("click", async () => {
+    await postStop();
+    if (state.abortCtrl) state.abortCtrl.abort();
+  });
+  $("btnClear").addEventListener("click", () => {
+    resetUi();
+    setBusy(false);
+    setStatus("已清空");
+  });
+  $("btnExport").addEventListener("click", () => {
+    const md = state.summaryParts.join("");
+    if (!md) return;
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = ($("analysisType").value || "report") + ".md";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  window.addEventListener("beforeunload", () => {
+    if (state.busy && state.streamId) postStop();
+  });
+})();
+  </script>
+</body>
+</html>

@@ -25,7 +25,8 @@ python3 -m http.server 8765
 | [analysis-nl2sql-stream-v1.html](analysis-nl2sql-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（全专项，默认策略）**：`POST /analysis/run-with-nl2sql-stream`                                 |
 | [analysis-nl2sql-overheat-stream-v1.html](analysis-nl2sql-overheat-stream-v1.html) | 综合分析 **NL2SQL 流式 synthesis v1（超温专项页）**                                                                            |
 | [analysis-nl2sql-stream-v2.html](analysis-nl2sql-stream-v2.html) | 综合分析 **NL2SQL 流式 synthesis v2（超温多槽位；需服务端 env）**：同上接口，可收 `table_payload` / `chart_payload`                         |
-| [analysis-agent-stream.html](analysis-agent-stream.html) | **综合分析智能体** `POST /analysis-agent/run-stream`（按章 SSE、HITL resume、ECharts）                                         |
+| [analysis-agent-stream.html](analysis-agent-stream.html) | **综合分析智能体** `POST /analysis-agent/run-stream`（按章 SSE、HITL resume、ECharts；含锅炉四类）                                         |
+| [subsidence/auto-report.html](subsidence/auto-report.html) | **地降自动报告生成**：五种 `subsidence_*`，周期/区划/期号，按章 Markdown+表+图；停止走 `stream/stop`，不展示 SQL、无 HITL |
 | [train-llm-console.html](train-llm-console.html) | **大模型 LoRA 微调控制台**：数据转换/校验、启停训练、loss/日志监视、产物列表（`/train/llm/*`） |
 
 ---
@@ -268,7 +269,29 @@ V0 单段异步任务 **`work_idx` 一般为 `1`**；`strict` 可不传，走 `I
 
 ---
 
-## 8. 通用常见问题与安全
+## 8. `subsidence/auto-report.html`（地降 · 自动报告生成）
+
+### 8.1 前置条件
+
+- `ANALYSIS_AGENT_ENABLED=true`，`NL2SQL_BUSINESS_DOMAIN=subsidence`
+- `POST /analysis-agent/run-stream`、`POST /analysis-agent/stream/stop` 可用
+
+### 8.2 访问示例
+
+[http://127.0.0.1:8765/subsidence/auto-report.html](http://127.0.0.1:8765/subsidence/auto-report.html)
+
+目录说明：[subsidence/README.md](subsidence/README.md)
+
+### 8.3 行为说明
+
+- 仅五种 `subsidence_*`；默认季报。`query` 可空。起止日期必须成对或都空。
+- 点「生成报告」后按章渲染 Markdown / 表 / `bar|pie|line|dual_axis`；`map_placeholder` 只显示「空间分布图待接入」。
+- 取数进度只显示 `item_id`、执行器、行数，**不渲染 sql**。
+- 「停止」与离开页调用 `stream/stop`（需已收到 `started.stream_id`）。无 HITL / resume。
+
+---
+
+## 9. 通用常见问题与安全
 
 - **401/403**：密钥错误或未填（而后端已开鉴权）  
 - **422**：`user_id` / `session_id` 等不符合后端校验规则  

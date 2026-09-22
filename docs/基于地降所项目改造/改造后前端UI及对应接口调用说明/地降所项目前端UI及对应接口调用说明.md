@@ -95,7 +95,7 @@
 
 > 后台契约：`docs/基于地降所项目改造/自动报告生成实现方案(详细版)(即综合分析智能体改造V2).md`。  
 > 主接口：`POST /analysis-agent/run-stream`（SSE）。停止：`POST /analysis-agent/stream/stop`。  
-> 本仓联调页：`tests/web/analysis-agent-stream.html`。生产 UI 在前端仓按下列契约落地。  
+> 本仓联调页：`tests/web/subsidence/auto-report.html`（地降五种模版）。锅炉通用页仍用 `tests/web/analysis-agent-stream.html`。生产 UI 在前端仓按下列契约落地。  
 > 进程须 `ANALYSIS_AGENT_ENABLED=true`、`NL2SQL_BUSINESS_DOMAIN=subsidence`。
 
 侧栏标题「自动报告生成」；路由建议 `/report` 或 `/auto-report`。这是 **选模版出报告**，不是智能问答，也不是数据查询台。
@@ -301,7 +301,7 @@ analysis_agent_finished         { result }                         # 按钮恢�
 - 界面不展示 SQL；`map_placeholder` 不接地图。  
 - 主路径不会 `user_input_required`，不要做选库/补数 resume。  
 - 取消必须带上 `started.stream_id`。  
-- 联调页：`tests/web/analysis-agent-stream.html`。
+- 联调页：`tests/web/subsidence/auto-report.html`。
 
 ---
 
