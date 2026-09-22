@@ -57,9 +57,12 @@ RUN /opt/conda/bin/pip install --no-cache-dir --timeout=300 --retries=15 \
 
 COPY app /workspace/app
 COPY app/app-deploy/compiled-common /tmp/compiled-common
+# Windows 检出的 .sh 常带 CRLF，内核会去找 /bin/sh\r → cannot execute: required file not found。
+# 直接用 conda Python 跑 compile_app.py，不依赖 shebang。
 RUN set -e; \
-    chmod +x /tmp/compiled-common/compile_app.sh; \
-    PYTHON=/opt/conda/bin/python /tmp/compiled-common/compile_app.sh /workspace /workspace/app; \
+    find /tmp/compiled-common -type f \( -name '*.sh' -o -name '*.py' \) -exec sed -i 's/\r$//' {} +; \
+    PYTHON=/opt/conda/bin/python /opt/conda/bin/python /tmp/compiled-common/compile_app.py /workspace \
+      --app-dir /workspace/app --keep-file /tmp/compiled-common/compile_keep_py.txt; \
     rm -rf /tmp/compiled-common /workspace/.cython_build; \
     find /workspace -maxdepth 1 -name '.cython_setup_*.py' -delete || true; \
     find /workspace/app -type d -name '__pycache__' -prune -exec rm -rf {} + || true; \
