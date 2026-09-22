@@ -8,10 +8,10 @@
 # 包含：
 #   - CUDA 版 torch / torchvision（cu121），避免 sentence-transformers 把 torch 换成 CPU 版
 #   - requirements-大模型应用.txt（FastAPI、RAG、ES 客户端、sentence-transformers 等）
-#   - requirements-人脸识别-CPU.txt
 #   - app/ 源码、configs/
 #
 # 不包含：小模型 GPU 推理依赖（YOLO/Ultralytics）→ 使用上级 Dockerfile.small-model-gpu
+# 不包含：CPU 人脸识别（requirements-人脸识别-CPU.txt）
 # 与 docker-mx/Dockerfile-mx（沐曦）对比：本文件用官方 CUDA 轮子，不依赖 Metax 镜像。
 # =============================================================================
 
@@ -47,11 +47,10 @@ RUN pip install --upgrade pip setuptools wheel \
         --index-url https://download.pytorch.org/whl/cu121
 
 COPY requirements-大模型应用.txt /workspace/requirements-app.txt
-COPY requirements-人脸识别-CPU.txt /workspace/requirements-face-cpu.txt
 RUN pip install --no-cache-dir --timeout=300 --retries=15 \
         ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
         ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
-        -r /workspace/requirements-app.txt -r /workspace/requirements-face-cpu.txt \
+        -r /workspace/requirements-app.txt \
     && pip install --no-cache-dir --timeout=300 --retries=15 \
         torch torchvision \
         --index-url https://download.pytorch.org/whl/cu121

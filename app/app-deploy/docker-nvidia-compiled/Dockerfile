@@ -37,11 +37,10 @@ RUN pip install --upgrade pip setuptools wheel \
         --index-url https://download.pytorch.org/whl/cu121
 
 COPY requirements-大模型应用.txt /workspace/requirements-app.txt
-COPY requirements-人脸识别-CPU.txt /workspace/requirements-face-cpu.txt
 RUN pip install --no-cache-dir --timeout=300 --retries=15 \
         ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
         ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
-        -r /workspace/requirements-app.txt -r /workspace/requirements-face-cpu.txt \
+        -r /workspace/requirements-app.txt \
     && pip install --no-cache-dir --timeout=300 --retries=15 \
         torch torchvision \
         --index-url https://download.pytorch.org/whl/cu121

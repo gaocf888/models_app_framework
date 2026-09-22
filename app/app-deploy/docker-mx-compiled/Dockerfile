@@ -35,12 +35,11 @@ ARG PIP_INDEX_URL
 ARG PIP_TRUSTED_HOST
 
 COPY requirements-大模型应用.txt /workspace/requirements-app.txt
-COPY requirements-人脸识别-CPU.txt /workspace/requirements-face-cpu.txt
 RUN /opt/conda/bin/pip install --upgrade pip setuptools wheel \
     && /opt/conda/bin/pip install --no-cache-dir --timeout=300 --retries=15 \
         ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
         ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
-        -r /workspace/requirements-app.txt -r /workspace/requirements-face-cpu.txt
+        -r /workspace/requirements-app.txt
 
 # ---------------------------------------------------------------------------
 FROM base AS builder
