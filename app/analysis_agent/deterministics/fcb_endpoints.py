@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -10,12 +11,28 @@ from app.analysis_agent.deterministics.coverage import (
     layer0_mark_keys,
     project_names,
 )
+from app.analysis_agent.period import PeriodValidationError, _parse_datetime
 from app.core.logging import get_logger
 from app.nl2sql.executor import SQLExecutor
 
 logger = get_logger(__name__)
 
 _SQL_DIR = Path(__file__).resolve().parents[3] / "configs" / "analysis_agent_reports" / "sql"
+
+
+def _bind_timestamp(value: Any, *, key: str) -> datetime:
+    """asyncpg 将 CAST(:t AS timestamp) 的参数编成 timestamp，必须绑 naive datetime，不能绑 ISO 字符串。"""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError(f"sql_bind_missing_{key}")
+    try:
+        return _parse_datetime(raw, as_end_date=False)
+    except PeriodValidationError as exc:
+        raise ValueError(f"sql_bind_invalid_{key}:{raw}") from exc
 
 
 def resolved_sql_params(
@@ -27,8 +44,8 @@ def resolved_sql_params(
     """绑定 _resolved + 字典 allowlist；禁止把未校验 area 拼进 SQL 字符串。"""
     lists = endpoint_bind_lists()
     params: dict[str, Any] = {
-        "t_start": str(resolved.get("t_start") or ""),
-        "t_end": str(resolved.get("t_end") or ""),
+        "t_start": resolved.get("t_start"),
+        "t_end": resolved.get("t_end"),
         "area": resolved.get("area"),
         **lists,
         "dxswj_projects": list(project_names("dxswj")),
@@ -43,6 +60,8 @@ def resolved_sql_params(
         params["fcb_projects"] = list(dict.fromkeys(project for project, _mark in keys))
     if extra:
         params.update(extra)
+    params["t_start"] = _bind_timestamp(params.get("t_start"), key="t_start")
+    params["t_end"] = _bind_timestamp(params.get("t_end"), key="t_end")
     return params
 
 
