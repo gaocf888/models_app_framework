@@ -11,6 +11,7 @@
 | 角色 | 文档 | 用途 |
 |------|------|------|
 | 实施 / 值班 / 运维 | [整体部署运维手册.md](./整体部署运维手册.md) | 装什么、怎么起、改哪些环境变量、五条业务怎么验收、备份与排障 |
+| 吉泰交付（去源码） | [吉泰部署运维方案.md](./吉泰部署运维方案.md) | 沐曦/英伟达 compiled 镜像、`.so` 构建、首次部署后删业务源码、无源码运维 |
 | 二次开发 / 改 Prompt / 改接口 | [源码移交说明.md](./源码移交说明.md) | 交哪些目录、业务线对应代码、改哪里、哪些能力未上线勿动 |
 | 值班快速止血 | [online-services-oncall-runbook.md](./online-services-oncall-runbook.md) | 5 分钟健康检查与客服排障 |
 | 备份目录对照 | [项目容器本地挂载和备份说明.md](./项目容器本地挂载和备份说明.md) | 宿主机 bind mount 清单 |
@@ -33,6 +34,8 @@
 - `deploy-docs/`（本目录）
 
 **不交：** `paddleocr-layout-deploy/`、`monitoring-deploy/`、`face_db-deploy/`、`graphrag_db-deploy/`、`benchmarks/`、`docs/`、`framework-guide/`、`enterprise-level_transformation_docs/`、`memory-bank/`、`tests/`、`mis-tei-deploy/` 等未上线或设计稿目录。
+
+**吉泰客户现场（去源码）：** 首次仍整包上传并构建 compiled 镜像，完成后删除 `app/` 中除 `app-deploy/` 外的业务代码。口径与步骤见 [吉泰部署运维方案.md](./吉泰部署运维方案.md)。内部排障仍可用 `docker-mx/` / `docker-nvidia/` 源码构建。
 
 **不在 Git、必须由现网一并交代的资产：** 大模型权重、嵌入/重排模型、EasySearch 数据盘、MinIO/Redis 挂载、业务 MySQL。
 

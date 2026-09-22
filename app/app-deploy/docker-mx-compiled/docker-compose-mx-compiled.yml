@@ -1,0 +1,118 @@
+# =============================================================================
+# 吉泰沐曦 compiled 应用栈：Redis + MinIO + FastAPI（业务 .so 在镜像内）
+# =============================================================================
+#
+# 现网 docker-mx/ 不改。本文件用于去源码交付：
+#   - 镜像多阶段编译 app/（不含 app-deploy）
+#   - 挂载 configs/ → /workspace/configs（可改 Prompt）
+#   - 禁止把整棵 app/ 挂到 /workspace/app
+#
+# 启动（app/app-deploy）：
+#   cp .env docker-mx-compiled/.env
+#   cd docker-mx-compiled
+#   docker compose --env-file .env -f docker-compose-mx-compiled.yml up -d --build
+# 验收通过并删宿主机业务源码后，禁止再 --build，改为 up -d。
+#
+# 外部依赖与现网 docker-mx 相同：EasySearch / vLLM / 可选 MinerU。
+# =============================================================================
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: models-app-redis
+    restart: unless-stopped
+    networks:
+      - app-internal
+    volumes:
+      - ${REDIS_DATA_HOST_PATH:-/aidata/data/redis_data}:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/minio/minio:latest
+    container_name: models-app-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - ${MINIO_DATA_HOST_PATH:-/aidata/data/minio_data}:/data
+    networks:
+      app-internal: {}
+      vllm-external: {}
+
+  models-app:
+    image: models-app-mx-compiled:latest
+    build:
+      context: ../../..
+      dockerfile: app/app-deploy/docker-mx-compiled/Dockerfile
+    container_name: models-app
+    restart: unless-stopped
+    privileged: true
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    env_file:
+      - .env
+    command:
+      - sh
+      - -c
+      - exec /opt/conda/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8083 --workers $${UVICORN_WORKERS:-1}
+    ports:
+      - "${APP_PORT:-8083}:8083"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      app-internal: {}
+      vllm-external: {}
+      rag-external: {}
+      mineru-external: {}
+    volumes:
+      # Prompt / 业务 YAML：宿主机明文，覆盖镜像内空目录
+      - ${CONFIGS_HOST_PATH:-../../../configs}:/workspace/configs
+      - huggingface-cache:/root/.cache/huggingface
+      - ../logs:/workspace/logs
+      - ${SESSION_STORAGE_HOST_PATH:-/aidata/data/session_storage}:/workspace/data/conversation_archive
+      - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
+      - ${RAG_FAISS_DATA_HOST_PATH:-/aidata/data/faiss_data}:/workspace/data/faiss
+      - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
+      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-base:/workspace/models/rerank/bge-reranker-base:ro
+      - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
+      - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
+      - ${MINERU_IO_HOST_PATH:-mineru-io-dummy}:/workspace/mineru-io
+      - face-galleries-data:/workspace/data/face_galleries
+      # 仅子目录，不会盖掉 /workspace/app 下的 .so
+      - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
+    environment:
+      - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-base
+
+networks:
+  app-internal:
+    driver: bridge
+  vllm-external:
+    name: ${VLLM_DOCKER_NETWORK:-docker_vllm-network}
+    external: true
+  rag-external:
+    name: ${RAG_DOCKER_NETWORK:-ai-stack}
+    external: true
+  mineru-external:
+    name: ${MINERU_DOCKER_NETWORK:-mineru-stack}
+    external: true
+
+volumes:
+  huggingface-cache: {}
+  face-galleries-data: {}
+  insightface-models-dummy:
+    driver: local
+  mineru-io-dummy:
+    driver: local
