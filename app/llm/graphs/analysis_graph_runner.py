@@ -224,9 +224,17 @@ class AnalysisGraphRunner:
         self._nl2sql = nl2sql_service or NL2SQLService(conv_manager=self._conv)
         self._stream_ctrl = stream_control
         self._analysis_cfg = get_app_config().analysis
+        logger.info("AnalysisGraphRunner: building checkpointer backend=%s", self._analysis_cfg.checkpoint_backend)
         self._checkpointer = self._build_analysis_checkpointer()
+        logger.info("AnalysisGraphRunner: compiling payload graph")
         self._graph_payload = self._build_payload_graph()
+        logger.info("AnalysisGraphRunner: compiling nl2sql graph")
         self._graph_nl2sql = self._build_nl2sql_graph()
+        logger.info(
+            "AnalysisGraphRunner: graphs ready payload=%s nl2sql=%s",
+            self._graph_payload is not None,
+            self._graph_nl2sql is not None,
+        )
 
     @staticmethod
     def _mark_node(node_latency_ms: dict[str, int], node_status: dict[str, str], node: str, started: float, ok: bool) -> None:

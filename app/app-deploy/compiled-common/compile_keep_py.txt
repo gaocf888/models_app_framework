@@ -1,17 +1,24 @@
 # App-relative paths (posix, under app/) that must stay as plaintext .py.
 # ``app/main.py`` is auto-kept by compile_app.py (uvicorn entry).
 #
-# LangGraph StateGraph.compile() on Nuitka .so node functions pegs CPU at
-# import time (AnalysisService / Chatbot / analysis_agent) and never binds
-# the HTTP port. Keep the compile() owners as .py.
+# LangGraph StateGraph.compile() inspects node functions AND the state
+# TypedDict / related Pydantic models. Nuitka .so here pegs CPU at import
+# and never binds the HTTP port.
 
 llm/graphs/analysis_graph_runner.py
 llm/graphs/analysis_img_diag_runner.py
+llm/graphs/analysis_graph_state.py
+llm/graphs/analysis_synthesis_v2.py
 llm/graphs/chatbot_graph_runner.py
+llm/graphs/chatbot_graph_state.py
 llm/graphs/img_diag_scope_graph.py
 analysis_agent/graph/builder.py
 analysis_agent/graph/runner.py
 analysis_agent/graph/nodes.py
 analysis_agent/graph/orchestrator.py
+analysis_agent/graph/state.py
 analysis_agent/agents/narrative_react.py
 inspection_extract_v0/graph/pipeline.py
+models/analysis.py
+models/analysis_nl2sql_llm.py
+models/analysis_agent.py

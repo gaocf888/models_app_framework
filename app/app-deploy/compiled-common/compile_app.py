@@ -387,6 +387,7 @@ def main() -> int:
         rel = path.resolve().relative_to(app_root).as_posix()
         if rel in keep_preset:
             preset_kept.append(rel)
+            print(f"[compile_app] preset-keep {rel}", flush=True)
             continue
         # Nuitka: "to compile a package, specify its directory, but not the __init__.py".
         if path.name == "__init__.py":

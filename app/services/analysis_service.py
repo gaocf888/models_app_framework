@@ -145,6 +145,10 @@ class AnalysisService:
         self._prompts = prompt_registry or PromptTemplateRegistry()
         self._nl2sql = NL2SQLService(conv_manager=self._conv)
         analysis_cfg = get_app_config().analysis
+        logger.info(
+            "AnalysisService: NL2SQL ready, creating trace store backend=%s",
+            analysis_cfg.trace_backend,
+        )
         self._trace_store = create_analysis_trace_store(
             backend=analysis_cfg.trace_backend,
             ttl_minutes=analysis_cfg.trace_ttl_minutes,
@@ -158,6 +162,7 @@ class AnalysisService:
             es_password=analysis_cfg.trace_es_password or None,
             es_api_key=analysis_cfg.trace_es_api_key or None,
         )
+        logger.info("AnalysisService: trace store ready, building AnalysisImgDiagGraphRunner")
         self._trace_trend_cache_ttl = max(1, int(analysis_cfg.trace_trend_cache_ttl_seconds))
         self._trace_trend_cache: dict[str, tuple[float, AnalysisTraceTrendResponse]] = {}
         self._trace_trend_cache_lock = Lock()
@@ -170,6 +175,7 @@ class AnalysisService:
             nl2sql_service=self._nl2sql,
             stream_control=self._stream_ctrl,
         )
+        logger.info("AnalysisService: graph runner ready")
 
     async def run_analysis_payload(self, data: AnalysisPayloadRequest) -> AnalysisV2Result:
         """执行 payload 分析并持久化 trace。"""
