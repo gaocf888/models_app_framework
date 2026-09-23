@@ -3,7 +3,9 @@
 
 Runs inside the compiled Docker builder (cwd / PYTHONPATH = /workspace).
 Failed files stay as .py and are listed in app/.compile_whitelist.txt.
-Large modules (e.g. analysis_graph_runner.py) are compiled the same as others.
+Nuitka refuses ``__init__.py`` as a compile target (must pass the package
+directory); those files stay as plaintext package markers so sibling ``.so``
+modules still import. Large modules are compiled the same as others.
 """
 from __future__ import annotations
 
@@ -112,6 +114,8 @@ def _cleanup_nuitka_sidecar(py_file: Path) -> None:
 
 def compile_one(workspace: Path, py_file: Path) -> Tuple[bool, str]:
     """Compile one module with Nuitka --module --nofollow-imports (full Python syntax)."""
+    if py_file.name == "__init__.py":
+        return False, "skip __init__.py: Nuitka requires the package directory"
     jobs = str(max(1, min(8, os.cpu_count() or 2)))
     timeout_s = max(120, int(os.getenv("NUITKA_FILE_TIMEOUT", "1800")))
     cmd = [
@@ -196,6 +200,7 @@ def write_report(
     compiled_ok: List[str],
     whitelist: List[str],
     keep_preset: set[str],
+    init_kept: List[str],
 ) -> None:
     report = app_root / ".compile_report.txt"
     try:
@@ -210,12 +215,16 @@ def write_report(
         f"nuitka={nuitka_ver}",
         f"compiled_ok={len(compiled_ok)}",
         f"whitelist_kept_py={len(whitelist)}",
+        f"init_py_package_markers={len(init_kept)}",
         "",
         "== compiled (source removed) ==",
         *compiled_ok,
         "",
         "== kept .py (compile failed or preset) ==",
         *whitelist,
+        "",
+        "== kept __init__.py (Nuitka package markers, not failures) ==",
+        *init_kept,
         "",
         "== preset keep list ==",
         *sorted(keep_preset),
@@ -266,16 +275,23 @@ def main() -> int:
     py_files = collect_py_files(app_root)
     to_compile: List[Path] = []
     preset_kept: List[str] = []
+    init_kept: List[str] = []
     for path in py_files:
         rel = path.resolve().relative_to(app_root).as_posix()
         if rel in keep_preset:
             preset_kept.append(rel)
             continue
+        # Nuitka: "to compile a package, specify its directory, but not the __init__.py".
+        # Compiling the directory would bake sibling modules into one blob and break
+        # per-file .so loading; keep thin inits as package markers instead.
+        if path.name == "__init__.py":
+            init_kept.append(rel)
+            continue
         to_compile.append(path)
 
     print(
         f"[compile_app] candidates={len(py_files)} compile={len(to_compile)} "
-        f"preset_keep={len(preset_kept)}",
+        f"preset_keep={len(preset_kept)} init_keep={len(init_kept)}",
         flush=True,
     )
     try:
@@ -312,12 +328,23 @@ def main() -> int:
         failed.append((path, err))
 
     failed_rel = {p.resolve().relative_to(app_root).as_posix() for p, _ in failed}
-    keep_rel = set(keep_preset) | failed_rel
-    extra_preset = [app_root / rel for rel in preset_kept if (app_root / rel).exists()]
-    removed, kept = strip_sources(to_compile + extra_preset, keep_rel, app_root)
+    keep_rel = set(keep_preset) | failed_rel | set(init_kept)
+    extra_keep_files = [
+        app_root / rel
+        for rel in (preset_kept + init_kept)
+        if (app_root / rel).exists()
+    ]
+    removed, kept = strip_sources(to_compile + extra_keep_files, keep_rel, app_root)
+    kept_without_init = [p for p in kept if p not in set(init_kept)]
 
     restore_empty_init(app_root)
-    write_report(app_root, compiled_ok=removed, whitelist=sorted(set(kept)), keep_preset=keep_preset)
+    write_report(
+        app_root,
+        compiled_ok=removed,
+        whitelist=sorted(set(kept_without_init)),
+        keep_preset=keep_preset,
+        init_kept=init_kept,
+    )
 
     main_ok = has_extension(app_root / "main.py") or (app_root / "main.py").exists()
     if not main_ok:
@@ -326,7 +353,11 @@ def main() -> int:
     if not removed:
         print("[compile_app] compiled 0 modules; Nuitka toolchain likely broken", file=sys.stderr)
         return 4
-    print(f"[compile_app] done compiled={len(removed)} kept_py={len(kept)}", flush=True)
+    print(
+        f"[compile_app] done compiled={len(removed)} kept_py={len(kept_without_init)} "
+        f"init_py={len(init_kept)}",
+        flush=True,
+    )
     return 0
 
 
