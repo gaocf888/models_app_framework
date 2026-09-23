@@ -287,6 +287,11 @@ def main() -> int:
         if path.name == "__init__.py":
             init_kept.append(rel)
             continue
+        # uvicorn loads ``app.main:app`` via importlib; Nuitka main.so trips
+        # Python 3.12 ``nuitka_module_loader`` / ``__name__``. Keep plaintext.
+        if path.name == "main.py" and path.parent.resolve() == app_root.resolve():
+            preset_kept.append(rel)
+            continue
         to_compile.append(path)
 
     print(

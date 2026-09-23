@@ -1,4 +1,5 @@
 # App-relative paths (posix, under app/) that must stay as plaintext .py.
 # Leave empty unless a module still fails Nuitka in lab builds.
+# ``app/main.py`` is auto-kept by compile_app.py (uvicorn entry).
 # Example:
 # some_module/foo.py
