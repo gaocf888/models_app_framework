@@ -47,11 +47,14 @@ FROM base AS builder
 RUN yum install -y --setopt=tsflags=nodocs gcc gcc-c++ make \
     && yum clean all && \
     rm -rf /var/cache/yum
+RUN yum install -y --setopt=tsflags=nodocs ccache || true
 
 ARG PIP_INDEX_URL
 ARG PIP_TRUSTED_HOST
-ENV NUITKA_CACHE_DIR=/tmp/nuitka-cache \
-    NUITKA_FILE_TIMEOUT=1800
+ENV NUITKA_CACHE_DIR=/var/cache/nuitka \
+    CCACHE_DIR=/root/.ccache \
+    NUITKA_FILE_TIMEOUT=1800 \
+    COMPILE_MIN_BYTES=2048
 
 RUN /opt/conda/bin/pip install --no-cache-dir --timeout=300 --retries=15 \
         ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
@@ -62,12 +65,15 @@ COPY app /workspace/app
 COPY app/app-deploy/compiled-common /tmp/compiled-common
 # Windows 检出的 .sh 常带 CRLF，内核会去找 /bin/sh\r → cannot execute: required file not found。
 # 直接用 conda Python 跑 compile_app.py，不依赖 shebang。
-# Nuitka 全量按文件编译，大模块不跳过，构建可能数小时。
-RUN set -e; \
+# 分档并行编译；Nuitka/ccache 走 BuildKit cache mount，重复 --build 可复用。
+RUN --mount=type=cache,target=/var/cache/nuitka \
+    --mount=type=cache,target=/root/.ccache \
+    set -e; \
+    if command -v ccache >/dev/null 2>&1; then export CC="ccache gcc" CXX="ccache g++"; fi; \
     find /tmp/compiled-common -type f \( -name '*.sh' -o -name '*.py' \) -exec sed -i 's/\r$//' {} +; \
     PYTHON=/opt/conda/bin/python /opt/conda/bin/python /tmp/compiled-common/compile_app.py /workspace \
       --app-dir /workspace/app --keep-file /tmp/compiled-common/compile_keep_py.txt; \
-    rm -rf /tmp/compiled-common /tmp/nuitka-cache; \
+    rm -rf /tmp/compiled-common; \
     find /workspace/app -type d \( -name '__pycache__' -o -name '*.build' -o -name '*.dist' \) -prune -exec rm -rf {} + || true; \
     test -f /workspace/app/.compile_report.txt
 

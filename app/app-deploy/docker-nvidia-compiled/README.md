@@ -22,7 +22,8 @@ docker compose --env-file .env -f docker-compose-nvidia-compiled.yml up -d --bui
 
 - 镜像 tag：`models-app-nvidia-compiled:latest`
 - 容器内编译报告：`/workspace/app/.compile_report.txt`、`.compile_whitelist.txt`（Nuitka 失败而保留的 `.py`）
-- 编译器：Nuitka（`--module --nofollow-imports`），不按文件大小跳过；全量构建可能数小时
+- 编译器：Nuitka 分档并行（小文件多进程、大文件少进程高 `--jobs`）；&lt;2KB 默认留明文
+- 重复构建：Dockerfile 使用 BuildKit cache mount（Nuitka cache + ccache）
 - 编译脚本：`../compiled-common/`
 
 `.so` 必须在本机 CPython 3.11 + cu121 镜像内编译，不能与沐曦 compiled 镜像互换。
