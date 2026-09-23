@@ -21,7 +21,8 @@ docker compose --env-file .env -f docker-compose-mx-compiled.yml up -d --build
 ## 构建产物
 
 - 镜像 tag：`models-app-mx-compiled:latest`
-- 容器内编译报告：`/workspace/app/.compile_report.txt`、`.compile_whitelist.txt`（Cython 失败而保留的 `.py`）
+- 容器内编译报告：`/workspace/app/.compile_report.txt`、`.compile_whitelist.txt`（Nuitka 失败而保留的 `.py`）
+- 编译器：Nuitka（`--module --nofollow-imports`），不按文件大小跳过；全量构建可能数小时
 - 编译脚本：`../compiled-common/`
 
 解释器必须是 `/opt/conda/bin/python`（与现网 Dockerfile-mx 一致）。

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Cython-compile the in-tree app package, then drop plaintext .py.
+"""Nuitka-compile the in-tree app package to .so, then drop plaintext .py.
 
 Runs inside the compiled Docker builder (cwd / PYTHONPATH = /workspace).
 Failed files stay as .py and are listed in app/.compile_whitelist.txt.
+Large modules (e.g. analysis_graph_runner.py) are compiled the same as others.
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Tuple
 
 EXCLUDE_DIR_NAMES = {
     "app-deploy",
@@ -21,22 +22,18 @@ EXCLUDE_DIR_NAMES = {
     "manage_scripts",
     "__pycache__",
     ".git",
-    ".cython_build",
 }
 
-# Binary / weight trees: keep as-is, do not compile.
 EXCLUDE_PATH_PARTS = {"pretrained"}
-
-COMPILER_DIRECTIVES = {
-    "language_level": "3",
-    "annotation_typing": False,
-    "emit_code_comments": False,
-    "docstrings": False,
-}
 
 
 def _rel_parts(path: Path, app_root: Path) -> Tuple[str, ...]:
     return path.resolve().relative_to(app_root.resolve()).parts
+
+
+def is_backup_py(path: Path) -> bool:
+    name = path.name
+    return "_bak_" in name or name.endswith("_bak.py") or "备份" in name
 
 
 def should_skip_file(path: Path, app_root: Path) -> bool:
@@ -44,6 +41,8 @@ def should_skip_file(path: Path, app_root: Path) -> bool:
     if any(p in EXCLUDE_DIR_NAMES for p in parts):
         return True
     if any(p in EXCLUDE_PATH_PARTS for p in parts):
+        return True
+    if is_backup_py(path):
         return True
     return False
 
@@ -54,6 +53,11 @@ def prune_excluded_trees(app_root: Path) -> None:
         if target.exists():
             shutil.rmtree(target)
             print(f"[compile_app] removed {target}", flush=True)
+    for path in list(app_root.rglob("*.py")):
+        if is_backup_py(path):
+            rel = path.resolve().relative_to(app_root.resolve()).as_posix()
+            path.unlink()
+            print(f"[compile_app] removed backup {rel}", flush=True)
     for cache in app_root.rglob("__pycache__"):
         if cache.is_dir():
             shutil.rmtree(cache, ignore_errors=True)
@@ -68,7 +72,7 @@ def collect_py_files(app_root: Path) -> List[Path]:
     return files
 
 
-def load_keep_list(keep_file: Path | None, app_root: Path) -> set[str]:
+def load_keep_list(keep_file: Path | None) -> set[str]:
     keep: set[str] = set()
     if keep_file is None or not keep_file.is_file():
         return keep
@@ -85,95 +89,68 @@ def load_keep_list(keep_file: Path | None, app_root: Path) -> set[str]:
     return keep
 
 
-def _posix_rel(path: Path, workspace: Path) -> str:
-    return path.resolve().relative_to(workspace.resolve()).as_posix()
-
-
-def _module_name(rel_posix: str) -> str:
-    if not rel_posix.endswith(".py"):
-        raise ValueError(rel_posix)
-    return rel_posix[: -len(".py")].replace("/", ".")
-
-
-def _write_setup(setup_path: Path, specs: Sequence[Tuple[str, str]]) -> None:
-    lines = [
-        "from setuptools import Extension, setup",
-        "from Cython.Build import cythonize",
-        "",
-        "directives = " + repr(COMPILER_DIRECTIVES),
-        "extensions = [",
-    ]
-    for mod, src in specs:
-        lines.append(f"    Extension({mod!r}, [{src!r}]),")
-    lines.extend(
-        [
-            "]",
-            "setup(",
-            "    name='models_app_compiled',",
-            "    ext_modules=cythonize(",
-            "        extensions,",
-            "        compiler_directives=directives,",
-            "        quiet=True,",
-            "        nthreads=0,",
-            "    ),",
-            ")",
-            "",
-        ]
-    )
-    setup_path.write_text("\n".join(lines), encoding="utf-8")
-
-
-def _run_setup(workspace: Path, setup_path: Path, build_temp: Path) -> subprocess.CompletedProcess[str]:
-    build_temp.mkdir(parents=True, exist_ok=True)
-    return subprocess.run(
-        [
-            sys.executable,
-            str(setup_path),
-            "build_ext",
-            "--inplace",
-            "--build-temp",
-            str(build_temp),
-        ],
-        cwd=str(workspace),
-        capture_output=True,
-        text=True,
-    )
-
-
-def compile_batch(workspace: Path, py_files: Sequence[Path], build_temp: Path) -> bool:
-    specs = [(_module_name(_posix_rel(p, workspace)), _posix_rel(p, workspace)) for p in py_files]
-    setup_path = workspace / ".cython_setup_batch.py"
-    _write_setup(setup_path, specs)
-    print(f"[compile_app] batch cythonize {len(specs)} modules", flush=True)
-    proc = _run_setup(workspace, setup_path, build_temp)
-    setup_path.unlink(missing_ok=True)
-    if proc.returncode == 0:
-        return True
-    sys.stderr.write("[compile_app] batch failed, falling back to per-file\n")
-    if proc.stderr:
-        sys.stderr.write(proc.stderr[-4000:] + "\n")
-    return False
-
-
-def compile_one(workspace: Path, py_file: Path, build_temp: Path) -> Tuple[bool, str]:
-    rel = _posix_rel(py_file, workspace)
-    spec = (_module_name(rel), rel)
-    setup_path = workspace / ".cython_setup_one.py"
-    _write_setup(setup_path, [spec])
-    proc = _run_setup(workspace, setup_path, build_temp)
-    setup_path.unlink(missing_ok=True)
-    if proc.returncode == 0:
-        return True, ""
-    err = (proc.stderr or proc.stdout or "compile failed").strip()
-    return False, err[-1500:]
-
-
 def has_extension(py_file: Path) -> bool:
     parent = py_file.parent
     stem = py_file.stem
     return any(parent.glob(f"{stem}.so")) or any(parent.glob(f"{stem}.*.so")) or any(
         parent.glob(f"{stem}.pyd")
     ) or any(parent.glob(f"{stem}.*.pyd"))
+
+
+def _cleanup_nuitka_sidecar(py_file: Path) -> None:
+    parent = py_file.parent
+    stem = py_file.stem
+    build_dir = parent / f"{stem}.build"
+    if build_dir.is_dir():
+        shutil.rmtree(build_dir, ignore_errors=True)
+    dist_dir = parent / f"{stem}.dist"
+    if dist_dir.is_dir():
+        shutil.rmtree(dist_dir, ignore_errors=True)
+    for extra in parent.glob(f"{stem}.pyi"):
+        extra.unlink(missing_ok=True)
+
+
+def compile_one(workspace: Path, py_file: Path) -> Tuple[bool, str]:
+    """Compile one module with Nuitka --module --nofollow-imports (full Python syntax)."""
+    jobs = str(max(1, min(8, os.cpu_count() or 2)))
+    timeout_s = max(120, int(os.getenv("NUITKA_FILE_TIMEOUT", "1800")))
+    cmd = [
+        sys.executable,
+        "-m",
+        "nuitka",
+        "--module",
+        "--nofollow-imports",
+        "--remove-output",
+        "--no-pyi-file",
+        "--assume-yes-for-downloads",
+        "--lto=no",
+        f"--jobs={jobs}",
+        f"--output-dir={str(py_file.parent)}",
+        str(py_file),
+    ]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(workspace) + os.pathsep + env.get("PYTHONPATH", "")
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        _cleanup_nuitka_sidecar(py_file)
+        return False, f"nuitka timeout after {timeout_s}s"
+    _cleanup_nuitka_sidecar(py_file)
+    if proc.returncode == 0 and has_extension(py_file):
+        return True, ""
+    err = (proc.stderr or proc.stdout or "nuitka failed").strip()
+    if proc.returncode == 0 and not has_extension(py_file):
+        err = (err + "\n(no .so produced)").strip()
+    return False, err[-2000:]
 
 
 def strip_sources(py_files: Iterable[Path], keep_rel: set[str], app_root: Path) -> Tuple[List[str], List[str]]:
@@ -187,17 +164,18 @@ def strip_sources(py_files: Iterable[Path], keep_rel: set[str], app_root: Path) 
         if has_extension(py_file):
             py_file.unlink()
             removed.append(rel)
-            for c_file in py_file.parent.glob(f"{py_file.stem}.c"):
-                c_file.unlink(missing_ok=True)
-            for cpp_file in py_file.parent.glob(f"{py_file.stem}.cpp"):
-                cpp_file.unlink(missing_ok=True)
+            for leftover in py_file.parent.glob(f"{py_file.stem}.c"):
+                leftover.unlink(missing_ok=True)
+            for leftover in py_file.parent.glob(f"{py_file.stem}.cpp"):
+                leftover.unlink(missing_ok=True)
+            for leftover in py_file.parent.glob(f"{py_file.stem}.pyi"):
+                leftover.unlink(missing_ok=True)
         else:
             kept.append(rel)
     return removed, kept
 
 
 def restore_empty_init(app_root: Path) -> None:
-    """Guarantee package import if Cython dropped __init__.py and produced no .so."""
     for dirpath, dirnames, filenames in os.walk(app_root):
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIR_NAMES]
         folder = Path(dirpath)
@@ -220,9 +198,16 @@ def write_report(
     keep_preset: set[str],
 ) -> None:
     report = app_root / ".compile_report.txt"
+    try:
+        import nuitka
+
+        nuitka_ver = getattr(nuitka, "__version__", "?")
+    except Exception:
+        nuitka_ver = "?"
     lines = [
-        "models-app Cython compile report",
+        "models-app Nuitka compile report",
         f"python={sys.version.replace(chr(10), ' ')}",
+        f"nuitka={nuitka_ver}",
         f"compiled_ok={len(compiled_ok)}",
         f"whitelist_kept_py={len(whitelist)}",
         "",
@@ -249,7 +234,7 @@ def main() -> int:
         "workspace",
         nargs="?",
         default="/workspace",
-        help="vLLM/app PYTHONPATH root (default /workspace)",
+        help="PYTHONPATH root (default /workspace)",
     )
     parser.add_argument(
         "--app-dir",
@@ -276,10 +261,10 @@ def main() -> int:
     keep_file = Path(args.keep_file) if args.keep_file else (
         Path(__file__).resolve().parent / "compile_keep_py.txt"
     )
-    keep_preset = load_keep_list(keep_file if keep_file.is_file() else None, app_root)
+    keep_preset = load_keep_list(keep_file if keep_file.is_file() else None)
 
     py_files = collect_py_files(app_root)
-    to_compile = []
+    to_compile: List[Path] = []
     preset_kept: List[str] = []
     for path in py_files:
         rel = path.resolve().relative_to(app_root).as_posix()
@@ -288,44 +273,50 @@ def main() -> int:
             continue
         to_compile.append(path)
 
-    print(f"[compile_app] candidates={len(py_files)} compile={len(to_compile)} preset_keep={len(preset_kept)}", flush=True)
+    print(
+        f"[compile_app] candidates={len(py_files)} compile={len(to_compile)} "
+        f"preset_keep={len(preset_kept)}",
+        flush=True,
+    )
+    try:
+        import nuitka
+
+        print(f"[compile_app] nuitka={getattr(nuitka, '__version__', '?')}", flush=True)
+    except Exception as exc:
+        print(f"[compile_app] nuitka import failed: {exc}", file=sys.stderr)
+        return 4
+
     if not to_compile and not preset_kept:
         print("[compile_app] no .py files to compile", file=sys.stderr)
         return 2
 
-    build_temp = workspace / ".cython_build"
     failed: List[Tuple[Path, str]] = []
-    if to_compile and not compile_batch(workspace, to_compile, build_temp):
-        for path in to_compile:
-            ok, err = compile_one(workspace, path, build_temp)
-            rel = path.resolve().relative_to(app_root).as_posix()
-            if ok:
-                print(f"[compile_app] ok {rel}", flush=True)
+    total = len(to_compile)
+    for idx, path in enumerate(to_compile, start=1):
+        rel = path.resolve().relative_to(app_root).as_posix()
+        size = path.stat().st_size
+        print(f"[compile_app] ({idx}/{total}) nuitka {rel} size={size}", flush=True)
+        ok, err = compile_one(workspace, path)
+        if ok:
+            print(f"[compile_app] ok {rel}", flush=True)
+            continue
+        print(f"[compile_app] FAIL keep-py {rel}", flush=True)
+        if len(failed) < 8 and err:
+            for line in err.splitlines():
+                low = line.lower()
+                if "error" in low or "exception" in low or "fatal" in low:
+                    sys.stderr.write("  " + line[:240] + "\n")
+                    break
             else:
-                print(f"[compile_app] FAIL {rel}", flush=True)
-                failed.append((path, err))
-    else:
-        # Verify each expected .so; anything missing goes to per-file retry.
-        missing = [p for p in to_compile if not has_extension(p)]
-        for path in missing:
-            ok, err = compile_one(workspace, path, build_temp)
-            rel = path.resolve().relative_to(app_root).as_posix()
-            if ok:
-                print(f"[compile_app] retry-ok {rel}", flush=True)
-            else:
-                print(f"[compile_app] FAIL {rel}", flush=True)
-                failed.append((path, err))
+                sys.stderr.write("  " + err[:240].replace("\n", " ") + "\n")
+        failed.append((path, err))
 
     failed_rel = {p.resolve().relative_to(app_root).as_posix() for p, _ in failed}
     keep_rel = set(keep_preset) | failed_rel
-    removed, kept = strip_sources(to_compile + [app_root / rel for rel in preset_kept if (app_root / rel).exists()], keep_rel, app_root)
+    extra_preset = [app_root / rel for rel in preset_kept if (app_root / rel).exists()]
+    removed, kept = strip_sources(to_compile + extra_preset, keep_rel, app_root)
 
     restore_empty_init(app_root)
-
-    shutil.rmtree(build_temp, ignore_errors=True)
-    for leftover in workspace.glob(".cython_setup_*.py"):
-        leftover.unlink(missing_ok=True)
-
     write_report(app_root, compiled_ok=removed, whitelist=sorted(set(kept)), keep_preset=keep_preset)
 
     main_ok = has_extension(app_root / "main.py") or (app_root / "main.py").exists()
@@ -333,7 +324,7 @@ def main() -> int:
         print("[compile_app] app.main missing after compile", file=sys.stderr)
         return 3
     if not removed:
-        print("[compile_app] compiled 0 modules; Cython toolchain likely broken", file=sys.stderr)
+        print("[compile_app] compiled 0 modules; Nuitka toolchain likely broken", file=sys.stderr)
         return 4
     print(f"[compile_app] done compiled={len(removed)} kept_py={len(kept)}", flush=True)
     return 0

@@ -1,5 +1,5 @@
 # =============================================================================
-# 吉泰沐曦：业务 Python Cython 编译进镜像（多阶段，最终层无源码 COPY）
+# 吉泰沐曦：业务 Python Nuitka 编译进镜像（多阶段，最终层无源码 COPY）
 # =============================================================================
 # 构建上下文必须是仓库根 models_app_framework。
 # 现网 docker-mx/Dockerfile-mx 不改；本文件仅给 docker-mx-compiled 使用。
@@ -50,22 +50,25 @@ RUN yum install -y --setopt=tsflags=nodocs gcc gcc-c++ make \
 
 ARG PIP_INDEX_URL
 ARG PIP_TRUSTED_HOST
+ENV NUITKA_CACHE_DIR=/tmp/nuitka-cache \
+    NUITKA_FILE_TIMEOUT=1800
+
 RUN /opt/conda/bin/pip install --no-cache-dir --timeout=300 --retries=15 \
         ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
         ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
-        cython
+        nuitka ordered-set zstandard
 
 COPY app /workspace/app
 COPY app/app-deploy/compiled-common /tmp/compiled-common
 # Windows 检出的 .sh 常带 CRLF，内核会去找 /bin/sh\r → cannot execute: required file not found。
 # 直接用 conda Python 跑 compile_app.py，不依赖 shebang。
+# Nuitka 全量按文件编译，大模块不跳过，构建可能数小时。
 RUN set -e; \
     find /tmp/compiled-common -type f \( -name '*.sh' -o -name '*.py' \) -exec sed -i 's/\r$//' {} +; \
     PYTHON=/opt/conda/bin/python /opt/conda/bin/python /tmp/compiled-common/compile_app.py /workspace \
       --app-dir /workspace/app --keep-file /tmp/compiled-common/compile_keep_py.txt; \
-    rm -rf /tmp/compiled-common /workspace/.cython_build; \
-    find /workspace -maxdepth 1 -name '.cython_setup_*.py' -delete || true; \
-    find /workspace/app -type d -name '__pycache__' -prune -exec rm -rf {} + || true; \
+    rm -rf /tmp/compiled-common /tmp/nuitka-cache; \
+    find /workspace/app -type d \( -name '__pycache__' -o -name '*.build' -o -name '*.dist' \) -prune -exec rm -rf {} + || true; \
     test -f /workspace/app/.compile_report.txt
 
 # ---------------------------------------------------------------------------

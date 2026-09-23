@@ -1,4 +1,4 @@
 # App-relative paths (posix, under app/) that must stay as plaintext .py.
-# Use when Cython fails on FastAPI/Pydantic/LangGraph modules after lab builds.
+# Leave empty unless a module still fails Nuitka in lab builds.
 # Example:
-# core/config.py
+# some_module/foo.py
