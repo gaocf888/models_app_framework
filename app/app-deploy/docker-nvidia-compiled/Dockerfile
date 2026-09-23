@@ -74,7 +74,11 @@ COPY app/app-deploy/compiled-common /tmp/compiled-common
 RUN --mount=type=cache,target=/var/cache/nuitka \
     --mount=type=cache,target=/root/.ccache \
     set -e; \
-    if command -v ccache >/dev/null 2>&1; then export CC="ccache gcc" CXX="ccache g++"; fi; \
+    if command -v ccache >/dev/null 2>&1; then \
+      for _ccache_lib in /usr/lib64/ccache /usr/lib/ccache; do \
+        if [ -x "${_ccache_lib}/gcc" ]; then export PATH="${_ccache_lib}:${PATH}"; break; fi; \
+      done; \
+    fi; \
     find /tmp/compiled-common -type f \( -name '*.sh' -o -name '*.py' \) -exec sed -i 's/\r$//' {} +; \
     PYTHON=python python /tmp/compiled-common/compile_app.py /workspace \
       --app-dir /workspace/app --keep-file /tmp/compiled-common/compile_keep_py.txt; \

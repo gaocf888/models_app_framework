@@ -5,7 +5,7 @@
 - `compile_app.sh`：容器内入口，解释器由环境变量 `PYTHON` 指定。
 - `compile_app.py`：按文件 `nuitka --module --nofollow-imports`，分档并行；删除已成功编译的 `.py`。失败项写入 `app/.compile_whitelist.txt`。
 - `__init__.py` 不交给 Nuitka（包标记）。`app/main.py` 保留（uvicorn 入口）。`app/__init__.py` 含 Python 3.12 × Nuitka loader 补丁。
-- `compile_keep_py.txt`：预置跳过编译的 `app/` 相对路径（实验室编不过时再填）。
+- `compile_keep_py.txt`：预置跳过编译的 `app/` 相对路径。默认包含 LangGraph `StateGraph.compile()` 所在模块（Nuitka `.so` 上 compile 会把启动卡在 200%+ CPU、health 被 RST）。
 
 **并行分档**
 
