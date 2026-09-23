@@ -1,5 +1,4 @@
 from pathlib import Path
-import threading
 
 from fastapi import Depends, FastAPI
 from fastapi.openapi.utils import get_openapi
@@ -16,12 +15,6 @@ from app.auth.dependencies import require_service_api_key
 from app.api import healthcheck
 from app.api.request_logging import register_api_request_logging
 from app.conversation.ids import ConversationIdValidationError
-
-
-def _is_compiled_app() -> bool:
-    """True when sibling packages were Nuitka-compiled to .so (closed-source image)."""
-    root = Path(__file__).resolve().parent
-    return any((root / "services").glob("*.so")) or any((root / "api").glob("*.so"))
 
 
 def create_app() -> FastAPI:
@@ -143,190 +136,117 @@ def create_app() -> FastAPI:
     async def health_api_prefix() -> dict:
         return {"status": "ok"}
 
-    import importlib
+    # 吉泰上线五条线走 /analysis、/chatbot、/inspection-extract，不挂 /analysis-agent。
+    from app.api import (
+        analysis,
+        chatbot,
+        graph_admin,
+        inspection_extract,
+        inspection_extract_v0,
+        llm_inference,
+        nl2sql,
+        rag_admin,
+    )
+    try:
+        from app.api import train_admin
+    except Exception as exc:  # noqa: BLE001 — compiled image drops app/train
+        log.warning("create_app: skip train_admin (%s)", exc)
+        train_admin = None
+    try:
+        from app.api.small_models import face_gallery, small_model
+    except Exception as exc:  # noqa: BLE001
+        log.warning("create_app: skip small_models (%s)", exc)
+        face_gallery = None
+        small_model = None
 
     _auth = [Depends(require_service_api_key)]
-    loaded: dict = {}
 
-    def _import_api(mod_name: str):
-        log.info("create_app: import app.api.%s ...", mod_name)
-        mod = importlib.import_module(f"app.api.{mod_name}")
-        log.info("create_app: import app.api.%s done", mod_name)
-        return mod
-
-    def _try_import_api(mod_name: str):
-        try:
-            return _import_api(mod_name)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("create_app: skip %s (%s)", mod_name, exc)
-            return None
-
-    def _attach_business_routers() -> dict:
-        analysis = _import_api("analysis")
-        analysis_agent = _try_import_api("analysis_agent")
-        chatbot = _try_import_api("chatbot")
-        graph_admin = _try_import_api("graph_admin")
-        inspection_extract = _try_import_api("inspection_extract")
-        inspection_extract_v0 = _try_import_api("inspection_extract_v0")
-        llm_inference = _try_import_api("llm_inference")
-        nl2sql = _try_import_api("nl2sql")
-        rag_admin = _try_import_api("rag_admin")
-        try:
-            train_admin = _import_api("train_admin")
-        except Exception as exc:  # noqa: BLE001 — compiled image drops app/train
-            log.warning("create_app: skip train_admin (%s)", exc)
-            train_admin = None
-        try:
-            log.info("create_app: import app.api.small_models ...")
-            from app.api.small_models import face_gallery, small_model
-            log.info("create_app: import app.api.small_models done")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("create_app: skip small_models (%s)", exc)
-            face_gallery = None
-            small_model = None
-
-        if llm_inference is not None:
-            app.include_router(
-                llm_inference.router,
-                prefix="/llm",
-                tags=["llm"],
-                dependencies=_auth,
-            )
-        if chatbot is not None:
-            app.include_router(
-                chatbot.router,
-                prefix="/chatbot",
-                tags=["chatbot"],
-                dependencies=_auth,
-            )
-        # 企业版综合分析 V2：payload / nl2sql / 看图诊断 + trace 运维（实现见 app/api/analysis.py）
+    app.include_router(
+        llm_inference.router,
+        prefix="/llm",
+        tags=["llm"],
+        dependencies=_auth,
+    )
+    app.include_router(
+        chatbot.router,
+        prefix="/chatbot",
+        tags=["chatbot"],
+        dependencies=_auth,
+    )
+    # 企业版综合分析 V2：payload / nl2sql / 看图诊断 + trace 运维（实现见 app/api/analysis.py）
+    app.include_router(
+        analysis.router,
+        prefix="/analysis",
+        tags=["analysis"],
+        dependencies=_auth,
+    )
+    if small_model is not None:
         app.include_router(
-            analysis.router,
-            prefix="/analysis",
-            tags=["analysis"],
+            small_model.router,
+            prefix="/small-model",
+            tags=["small-model"],
             dependencies=_auth,
         )
-        if analysis_agent is not None:
-            app.include_router(
-                analysis_agent.router,
-                prefix="/analysis-agent",
-                tags=["analysis-agent"],
-                dependencies=_auth,
-            )
-        if small_model is not None:
-            app.include_router(
-                small_model.router,
-                prefix="/small-model",
-                tags=["small-model"],
-                dependencies=_auth,
-            )
-        if face_gallery is not None:
-            app.include_router(
-                face_gallery.router,
-                prefix="/face",
-                tags=["face"],
-                dependencies=_auth,
-            )
-        if nl2sql is not None:
-            app.include_router(
-                nl2sql.router,
-                prefix="/nl2sql",
-                tags=["nl2sql"],
-                dependencies=_auth,
-            )
-        if inspection_extract is not None:
-            app.include_router(
-                inspection_extract.router,
-                prefix="/inspection-extract",
-                tags=["inspection-extract"],
-                dependencies=_auth,
-            )
-        if inspection_extract_v0 is not None:
-            app.include_router(
-                inspection_extract_v0.router,
-                prefix="/inspection-extract-v0",
-                tags=["inspection-extract-v0"],
-                dependencies=_auth,
-            )
-        if rag_admin is not None:
-            app.include_router(
-                rag_admin.router,
-                prefix="/rag",
-                tags=["rag-admin"],
-                dependencies=_auth,
-            )
-        if graph_admin is not None:
-            app.include_router(
-                graph_admin.router,
-                prefix="/graph",
-                tags=["graph-admin"],
-                dependencies=_auth,
-            )
-        if train_admin is not None:
-            app.include_router(
-                train_admin.router,
-                prefix="/dajia",
-                tags=["dajia-admin"],
-                dependencies=_auth,
-            )
-        mods = {
-            "rag_admin": rag_admin,
-            "inspection_extract": inspection_extract,
-            "inspection_extract_v0": inspection_extract_v0,
-        }
-        loaded.update(mods)
-        log.info("create_app: business routers attached")
-        return mods
+    if face_gallery is not None:
+        app.include_router(
+            face_gallery.router,
+            prefix="/face",
+            tags=["face"],
+            dependencies=_auth,
+        )
+    app.include_router(
+        nl2sql.router,
+        prefix="/nl2sql",
+        tags=["nl2sql"],
+        dependencies=_auth,
+    )
+    app.include_router(
+        inspection_extract.router,
+        prefix="/inspection-extract",
+        tags=["inspection-extract"],
+        dependencies=_auth,
+    )
+    app.include_router(
+        inspection_extract_v0.router,
+        prefix="/inspection-extract-v0",
+        tags=["inspection-extract-v0"],
+        dependencies=_auth,
+    )
+    app.include_router(
+        rag_admin.router,
+        prefix="/rag",
+        tags=["rag-admin"],
+        dependencies=_auth,
+    )
+    app.include_router(
+        graph_admin.router,
+        prefix="/graph",
+        tags=["graph-admin"],
+        dependencies=_auth,
+    )
+    if train_admin is not None:
+        app.include_router(
+            train_admin.router,
+            prefix="/dajia",
+            tags=["dajia-admin"],
+            dependencies=_auth,
+        )
 
-    def _warmup_loaded() -> None:
-        rag_admin = loaded.get("rag_admin")
-        inspection_extract = loaded.get("inspection_extract")
-        inspection_extract_v0 = loaded.get("inspection_extract_v0")
-        if rag_admin is not None:
-            rag_admin.warmup_rag_admin_components()
-        if inspection_extract is not None:
-            inspection_extract.service.recover_async_jobs_on_startup()
-        if cfg.inspection_extract_v0.enabled and inspection_extract_v0 is not None:
+    @app.on_event("startup")
+    async def _startup_warm_components() -> None:
+        rag_admin.warmup_rag_admin_components()
+        inspection_extract.service.recover_async_jobs_on_startup()
+        if cfg.inspection_extract_v0.enabled:
             inspection_extract_v0.service.recover_async_jobs_on_startup()
-
-    compiled = _is_compiled_app()
-    log.info("create_app: compiled_so=%s", compiled)
-    if compiled:
-        # Bind /health/ before Nuitka+LangGraph import work. GIL-bound compile
-        # in create_app would otherwise pin CPU and keep the port closed.
-        @app.on_event("startup")
-        async def _startup_load_business() -> None:
-            def _run() -> None:
-                try:
-                    _attach_business_routers()
-                    _warmup_loaded()
-                except Exception:
-                    log.exception("create_app: business router load failed")
-
-            threading.Thread(
-                target=_run, name="models-app-load-routers", daemon=True
-            ).start()
-            log.info("create_app: business routers loading in background")
-    else:
-        _attach_business_routers()
-
-        @app.on_event("startup")
-        async def _startup_warm_components() -> None:
-            _warmup_loaded()
 
     @app.on_event("shutdown")
     async def _shutdown_components() -> None:
-        rag_admin = loaded.get("rag_admin")
-        inspection_extract = loaded.get("inspection_extract")
-        inspection_extract_v0 = loaded.get("inspection_extract_v0")
-        if rag_admin is not None:
-            rag_admin.shutdown_rag_admin_components()
-        if inspection_extract is not None:
-            try:
-                inspection_extract.service.job_scheduler.shutdown_workers()
-            except Exception:
-                pass
-        if cfg.inspection_extract_v0.enabled and inspection_extract_v0 is not None:
+        rag_admin.shutdown_rag_admin_components()
+        try:
+            inspection_extract.service.job_scheduler.shutdown_workers()
+        except Exception:
+            pass
+        if cfg.inspection_extract_v0.enabled:
             try:
                 inspection_extract_v0.service.job_scheduler.shutdown_workers()
             except Exception:
@@ -379,7 +299,6 @@ def create_app() -> FastAPI:
 
     app.openapi = custom_openapi  # type: ignore[method-assign]
 
-    log.info("create_app: FastAPI factory done (health router live)")
     return app
 
 
