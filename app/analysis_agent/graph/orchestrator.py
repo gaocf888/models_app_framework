@@ -59,12 +59,18 @@ class SlotOrchestrator:
         hybrid_rag: HybridRAGService | None = None,
         nl2sql_service: NL2SQLService | None = None,
     ) -> None:
+        logger.info("SlotOrchestrator: creating ConversationManager")
         self._conv = conv_manager or ConversationManager()
+        logger.info("SlotOrchestrator: creating VLLMHttpClient")
         self._llm = llm_client or VLLMHttpClient()
+        logger.info("SlotOrchestrator: creating PromptTemplateRegistry")
         self._prompts = prompt_registry or PromptTemplateRegistry()
+        logger.info("SlotOrchestrator: creating HybridRAGService")
         self._hybrid_rag = hybrid_rag or HybridRAGService()
+        logger.info("SlotOrchestrator: creating NL2SQLService")
         self._nl2sql = nl2sql_service or NL2SQLService(conv_manager=self._conv)
         self._cfg = get_app_config().analysis_agent
+        logger.info("SlotOrchestrator: ready")
 
     def fetch_business_rag(self, analysis_type: str, query: str, top_k: int) -> list[str]:
         if not query.strip():

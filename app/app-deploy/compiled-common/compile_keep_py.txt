@@ -22,3 +22,12 @@ inspection_extract_v0/graph/pipeline.py
 models/analysis.py
 models/analysis_nl2sql_llm.py
 models/analysis_agent.py
+# Module-level service = Xxx() at import; keep plaintext so docker cp iterates.
+api/analysis.py
+api/analysis_agent.py
+api/chatbot.py
+api/inspection_extract.py
+api/inspection_extract_v0.py
+api/nl2sql.py
+services/analysis_agent_service.py
+services/chatbot_service.py

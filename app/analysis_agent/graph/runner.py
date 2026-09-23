@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -57,8 +58,24 @@ class AnalysisAgentGraphRunner:
         self._cfg = get_app_config().analysis_agent
         self._graph = None
         self._checkpointer = None
-        if self._cfg.use_langgraph:
+        self._graph_lock = threading.Lock()
+        logger.info(
+            "AnalysisAgentGraphRunner: orchestrator ready use_langgraph=%s (compile deferred)",
+            self._cfg.use_langgraph,
+        )
+
+    def _ensure_graph(self) -> None:
+        if not self._cfg.use_langgraph or self._graph is not None:
+            return
+        with self._graph_lock:
+            if self._graph is not None:
+                return
+            logger.info("AnalysisAgentGraphRunner: compiling graph")
             self._graph, self._checkpointer = build_analysis_agent_graph(self._orch)
+            logger.info(
+                "AnalysisAgentGraphRunner: graph ready compiled=%s",
+                self._graph is not None,
+            )
 
     def _build_initial_state(
         self,
@@ -143,6 +160,7 @@ class AnalysisAgentGraphRunner:
             }
             return
 
+        self._ensure_graph()
         opts = dict(options or {})
         opts["plan_template_version"] = effective_plan_version(analysis_type, opts)
         rid = request_id or _new_request_id()
@@ -223,6 +241,7 @@ class AnalysisAgentGraphRunner:
         if session.user_id != user_id or session.session_id != session_id:
             yield {"event": "analysis_agent_error", "message": "resume_token session mismatch"}
             return
+        self._ensure_graph()
         if self._graph is None or self._checkpointer is None:
             yield {"event": "analysis_agent_error", "message": "checkpoint not enabled"}
             return

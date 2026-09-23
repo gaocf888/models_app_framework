@@ -81,6 +81,7 @@ class ChatbotService:
         self._image_preprocessor = ChatbotImagePreprocessor(self._chatbot_cfg)
         self._outline_store = ChatbotOutlineStore(self._chatbot_cfg)
         self._stream_ctrl = ChatbotStreamControl()
+        logger.info("ChatbotService: building ChatbotLangGraphRunner")
         self._graph_runner = ChatbotLangGraphRunner(
             rag_service=self._rag,
             conv_manager=self._conv,
@@ -88,6 +89,7 @@ class ChatbotService:
             prompt_registry=self._prompts,
             outline_store=self._outline_store,
         )
+        logger.info("ChatbotService: ChatbotLangGraphRunner ready")
         self._nl2sql = NL2SQLService(conv_manager=self._conv)
         self._chain = None
 

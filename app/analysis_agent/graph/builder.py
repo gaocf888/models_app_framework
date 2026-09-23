@@ -64,5 +64,7 @@ def build_analysis_agent_graph(orchestrator: SlotOrchestrator) -> tuple[Any | No
     g.add_edge("finalize", END)
 
     checkpointer = build_analysis_agent_checkpointer()
+    logger.info("analysis_agent graph: compiling nodes=%s", list(nodes))
     compiled = g.compile(checkpointer=checkpointer)
+    logger.info("analysis_agent graph: compiled")
     return compiled, checkpointer

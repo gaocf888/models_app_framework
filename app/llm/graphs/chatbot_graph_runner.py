@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 import asyncio
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -184,8 +185,21 @@ class ChatbotLangGraphRunner:
         self._nl2sql_hitl_max_retries = max(0, int(cfg.nl2sql_hitl_max_retries))
 
         self._graph = None
-        if self._graph_enabled:
+        self._graph_lock = threading.Lock()
+        logger.info(
+            "ChatbotLangGraphRunner: init done graph_enabled=%s (compile deferred)",
+            self._graph_enabled,
+        )
+
+    def _ensure_graph(self) -> None:
+        if not self._graph_enabled or self._graph is not None:
+            return
+        with self._graph_lock:
+            if self._graph is not None:
+                return
+            logger.info("ChatbotLangGraphRunner: compiling graph")
             self._graph = self._build_graph()
+            logger.info("ChatbotLangGraphRunner: graph ready compiled=%s", self._graph is not None)
 
     def _build_graph(self):
         try:
@@ -271,9 +285,13 @@ class ChatbotLangGraphRunner:
         # 好处：可统一写 status/终止原因，SSE 结束 meta 与埋点口径一致。
         graph.add_edge("finalize", END)
         checkpointer = self._build_checkpointer()
+        logger.info("ChatbotLangGraphRunner: StateGraph.compile() ...")
         if checkpointer is not None:
-            return graph.compile(checkpointer=checkpointer)
-        return graph.compile()
+            compiled = graph.compile(checkpointer=checkpointer)
+        else:
+            compiled = graph.compile()
+        logger.info("ChatbotLangGraphRunner: StateGraph.compile() done")
+        return compiled
 
     def _build_checkpointer(self):
         """
@@ -611,6 +629,7 @@ class ChatbotLangGraphRunner:
 
     async def _run_graph(self, state: ChatbotGraphState, *, resume: bool = False) -> ChatbotGraphState:
         # HITL 续跑与窄触发确认走顺序执行，与 LangGraph 编译图语义对齐且可中断。
+        self._ensure_graph()
         if self._hitl_enabled or resume or self._graph is None:
             return await self._run_graph_sequential(state, resume=resume)
         return await self._graph.ainvoke(state)  # type: ignore[union-attr]

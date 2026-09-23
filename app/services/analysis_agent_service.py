@@ -39,8 +39,10 @@ class AnalysisAgentService:
     """综合分析智能体服务门面。"""
 
     def __init__(self, runner: AnalysisAgentGraphRunner | None = None) -> None:
+        logger.info("AnalysisAgentService: creating graph runner")
         self._runner = runner or AnalysisAgentGraphRunner()
         self._cfg = get_app_config().analysis_agent
+        logger.info("AnalysisAgentService: ready")
 
     def _save_trace(self, result: dict[str, Any]) -> None:
         rid = result.get("request_id")
