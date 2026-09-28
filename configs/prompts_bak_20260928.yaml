@@ -5,7 +5,7 @@
 # 【文件职责】
 #   由 PromptTemplateRegistry（app/llm/prompt_registry.py）加载；每个「顶级键」= 一个 scene，
 #   供 get_template(scene=...) 按场景 + user_id 权重分流或多版本选择。
-#   唯一加载路径：configs/prompts.yaml。
+#   唯一加载路径：configs/prompts.yaml（勿再引用历史 prompts_bak_*.yaml）。
 #
 # 【列表项通用字段】（每个 scene 下为数组，可配置多条做 A/B）
 #   - version：版本字符串；显式请求或 default_version 时可精确命中。
@@ -15,70 +15,27 @@
 #
 # -----------------------------------------------------------------------------
 # 【现网生产清单】（对齐 app/app-deploy/.env + 产品范围；运维以本清单为准）
-# 「现网版本」= 当前提示词板块生产环境版本(未在请求里显式传 version 时实际命中的条目)。
-# 「环境变量」= app/app-deploy/.env 中控制该 scene 默认 version 的参数；「—」= 无独立变量（代码固定 default_version 或哈希选版）。
-# 文件中可另有历史版本（如 chatbot 的 boiler_v2/v3），不等于现网在用。
 # -----------------------------------------------------------------------------
+# 已上生产（本文件必须保留对应 scene）：
+#   ① 智能客服：chatbot / chatbot_intent_disambiguation / chatbot_intent_route_suggest /
+#      chatbot_nl2sql_analysis /
+#      chatbot_nl2sql_empty；共用 nl2sql、nl2sql_scope_parse
+#      （.env：CHATBOT_GRAPH_ENABLED、CHATBOT_INTENT_DISAMBIGUATION_ENABLED、
+#       CHATBOT_NL2SQL_*_ENABLED=true）
+#   ② 综合分析·超温：analysis_*_overheat_guidance、analysis_synthesis_overheat_narrative、
+#      analysis_plan_overheat_guidance；加上无后缀 analysis / analysis_intent /
+#      analysis_data_plan / analysis_synthesis / analysis_report（阶段解析回落，勿删）
+#   ③ 综合分析·看图诊断(缺陷识别/泄爆分析)：analysis_*_img_diag_defect_ident / *_img_diag_leakage_burst、
+#      analysis_img_diag_vision_*、img_diag_scope_parse、img_diag_scope_candidate_rank
+#   ④ 检修报告结构化解析（现网主链路）：
+#      /inspection-extract + INSPECT_EXTRACT_PIPELINE_VERSION=v2
+#      → inspection_extract_parse / _classify / _repair，及 inspection_extract 兜底
+#      （日常主链路不走 V0；但 .env 中 INSPECT_EXTRACT_V0_ENABLED=true，故保留
+#       inspection_extract_v0_extract 供 /inspection-extract-v0 旁路）
+#   ⑤ RAG 图块描述：rag_figure_caption（.env：RAG_FIGURE_ENABLED=true）
 #
-# ① 智能客服（CHATBOT_GRAPH_ENABLED 等）
-# | 提示词板块 (scene)           | 现网版本  | 环境变量                         | 说明 |   边界不清时让用户选路线
-# |------------------------------|-----------|----------------------------------|------|
-# | chatbot                      | boiler_v1 | CHATBOT_PROMPT_DEFAULT_VERSION   | 主对话 system系统提示词 |
-# | chatbot_intent_route_suggest | v1        | —                                | 首轮意图识别失败时HITL提示词（边界不清时给出选项让用户选择） 即按钮选项信息，选项包括：基于业务数据分析、基于知识库分析、综合业务数据&知识库分析；代码 default_version=v1 |
-# | chatbot_intent_disambiguation| v1        | —                                | 第二轮意图识别扔识别时HITL提示词，与第一次HITL的主要区别是：第二轮意图消歧是基于LLM提供相似问题；代码 default_version=v1 |
-# | chatbot_nl2sql_analysis      | v1        | —                                | 查数有结果时的收紧分析(基于业务数据分析的LLM收紧分析提示词)；代码 default_version=v1 |
-# | chatbot_nl2sql_empty         | v1        | —                                | 查数空结果时的说明(基于业务数据分析的查询结果为空时的LLM说明信息提示词)；代码 default_version=v1 |
-# | nl2sql                       | v2        | NL2SQL_PROMPT_DEFAULT_VERSION    | 客服内嵌查数 SQL 生成；未配时代码默认 v2 |
-# | nl2sql_scope_parse           | v1        | NL2SQL_SCOPE_PARSE_PROMPT_VERSION| 通用 NL2SQL 范围解析(受热面、管排位置、排数、管数 LLM解析提示词)；未配时代码默认 v1 |
 #
-# ② 综合分析 · 超温分析（analysis_type=overheat_guidance）
-# | 提示词板块 (scene)                    | 现网版本 | 环境变量 | 说明 |
-# |---------------------------------------|----------|----------|------|
-# | analysis_intent_overheat_guidance     | v1       | —        | 意图解析（弄清这次超温分析要看什么（对象、时间、重点）） |
-# | analysis_data_plan_overheat_guidance  | v1       | —        | 给下面取数问句清单补充新题（不改原有问句） |
-# | analysis_plan_overheat_guidance       | v2       | ANALYSIS_PLAN_TEMPLATE_VERSION_OVERHEAT_GUIDANCE | 超温分析要查哪些业务数据：交给 NL2SQL 生成 SQL 的自然语言问句清单 |
-# | analysis_synthesis_overheat_guidance  | v2       | ANALYSIS_SYNTHESIS_TEMPLATE_VERSION_OVERHEAT_GUIDANCE | 根据查数结果写超温分析报告（现网 v2 时各章节正文在代码槽位） |
-# | analysis_synthesis_overheat_narrative | v1       | —        | 超温报告各章节怎么写（口吻、禁止编造等） |
-# | analysis_report_overheat_guidance     | v1       | —        | 报告章节结构/口吻兜底 |
-# | analysis                              | v2       | ANALYSIS_SYNTHESIS_TEMPLATE_VERSION | 通用综合分析兜底，专项模板找不到时用 |
-# | analysis_intent                       | v1       | —        | 通用「弄清要分析什么」兜底 |
-# | analysis_data_plan                    | v1       | —        | 通用「补充取数问句」兜底 |
-# | analysis_synthesis                    | v1       | ANALYSIS_SYNTHESIS_TEMPLATE_VERSION | 通用「写分析报告」兜底（超温现网走专项，本条备用） |
-# | analysis_report                       | v1       | —        | 通用「报告结构」兜底 |
-#
-# ③ 综合分析 · 看图诊断（缺陷识别 / 泄爆）
-# | 提示词板块 (scene)                        | 现网版本  | 环境变量 | 说明 |
-# |-------------------------------------------|-----------|----------|------|
-# | analysis_intent_img_diag_defect_ident     | v1        | —        | 意图解析（弄清这次缺陷识别要分析什么） |
-# | analysis_data_plan_img_diag_defect_ident  | v1        | —        | 给下面缺陷识别取数问句清单补充新题 |
-# | analysis_plan_img_diag_defect_ident       | v1        | ANALYSIS_PLAN_TEMPLATE_VERSION_IMG_DIAG_DEFECT_IDENT | 缺陷识别要查哪些台账/检测数据的问句清单（给 NL2SQL 用） |
-# | analysis_synthesis_img_diag_defect_ident  | v1        | ANALYSIS_SYNTHESIS_TEMPLATE_VERSION_IMG_DIAG_DEFECT_IDENT | 结合看图结论和查数结果，写缺陷识别报告 |
-# | analysis_report_img_diag_defect_ident     | v1        | —        | 缺陷识别报告结构/口吻兜底 |
-# | analysis_img_diag_vision_defect_ident     | v1        | —        | 看缺陷图：让视觉模型按固定 JSON 描述图上看到什么 |
-# | analysis_intent_img_diag_leakage_burst    | v1        | —        | 弄清这次泄爆分析要分析什么 |
-# | analysis_data_plan_img_diag_leakage_burst | v1        | —        | 给泄爆取数问句清单补充新题 |
-# | analysis_plan_img_diag_leakage_burst      | v1        | ANALYSIS_PLAN_TEMPLATE_VERSION_IMG_DIAG_LEAKAGE_BURST | 泄爆分析要查哪些数据的问句清单（给 NL2SQL 用） |
-# | analysis_synthesis_img_diag_leakage_burst | v1        | ANALYSIS_SYNTHESIS_TEMPLATE_VERSION_IMG_DIAG_LEAKAGE_BURST | 结合看图结论和查数结果，写泄爆分析报告 |
-# | analysis_report_img_diag_leakage_burst    | v1        | —        | 泄爆报告结构/口吻兜底 |
-# | analysis_img_diag_vision_leakage_burst    | v1        | —        | 看泄爆/爆口图：让视觉模型按固定 JSON 描述形貌 |
-# | img_diag_scope_parse                      | v1        | NL2SQL_SCOPE_PARSE_PROMPT_VERSION | 从用户话里解析机组、受热面、排数、管数等，供台账确认 |
-# | img_diag_scope_candidate_rank             | v1        | ANALYSIS_IMG_DIAG_SCOPE_CANDIDATE_RANK_PROMPT_VERSION | 台账对不上时，从候选名单里帮用户挑最像的几条 |
-# | chatbot（视觉 system 前缀）                | boiler_v1 | ANALYSIS_IMG_DIAG_VISION_CHATBOT_PROMPT_VERSION | 看图时套用客服人设，作为视觉模型的前缀 |
-#
-# ④ 检修报告结构化解析
-# | 提示词板块 (scene)            | 现网版本 | 环境变量                          | 说明 |
-# |-------------------------------|----------|-----------------------------------|------|
-# | inspection_extract_parse      | v1       | INSPECT_EXTRACT_PROMPT_VERSION    | 从检修报告里抽出结构化信息字段的主提示词 |
-# | inspection_extract_classify   | v1       | INSPECT_EXTRACT_PROMPT_VERSION    | 基于上述抽出的结构化字段信息进行补齐(针对 检测类型（测厚/缺陷）、缺陷类型、是否换管) |
-# | inspection_extract_repair     | v1       | INSPECT_EXTRACT_PROMPT_VERSION    | 基于上述抽出的结构化字段信息进行二次修正 |
-# | inspection_extract            | v1       | INSPECT_EXTRACT_PROMPT_VERSION    | 从检修报告里抽出结构化信息字段的兜底提示词，没有inspection_extract_parse时生效 |
-# | inspection_extract_v0_extract | v2       | INSPECT_EXTRACT_V0_PROMPT_VERSION | 仅 V0 接口用的抽取提示词（与现网主链路分开） |
-#
-# ⑤ RAG 图块描述（RAG_FIGURE_ENABLED）
-# | 提示词板块 (scene) | 现网版本              | 环境变量                         | 说明 |
-# |--------------------|-----------------------|----------------------------------|------|
-# | rag_figure_caption | rag_figure_caption_v1 | RAG_FIGURE_CAPTION_PROMPT_VERSION | 知识摄入时，给知识库里的图生成一段文字说明，方便检索 |
-#
+# 刻意保留的「YAML 兜底」：无后缀 analysis*、inspection_extract —— 代码仍依赖回落，勿删。
 # Python 内嵌 _DEFAULT_PROMPT 与本文件并行，收敛需另开改造，不在本文件删除范围内。
 #
 # -----------------------------------------------------------------------------
