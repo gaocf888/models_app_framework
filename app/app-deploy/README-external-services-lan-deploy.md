@@ -1,5 +1,9 @@
 # 外挂服务部署说明（局域网/离线场景）
-该文档集成了 所有外挂服务的部署策略，部署时直接参照该文档(或者根据对应外挂服务部署目录中的文档进行部署)进行外挂服务的部署即可
+
+> **当前应用部署与配置以同目录 [`README-simple-deploy.md`](./README-simple-deploy.md) 为准**（应用 `.env`、沐曦/英伟达/compiled 启动、联通性验证）。  
+> 本文只覆盖外挂服务（vLLM、EasySearch、MinerU、Paddle 版面侧车）的有网构建 / 离线导入。若与 `README-simple-deploy.md` 中的应用侧配置冲突，以 simple-deploy 为准。
+
+该文档集成了所有外挂服务的部署策略，部署外挂服务时可参照本文（或各外挂目录自己的 README）。
 
 本文用于 `app/app-deploy` 的外挂服务部署指引，覆盖：
 - `vllm-deploy`
@@ -65,11 +69,11 @@ docker save -o mineru-cpu.tar mineru-cpu:py311
 ```bash
 cd ../rag_db-deploy
 cp .env.example .env
-docker compose -f docker-compose.easysearch_bak0.yml --env-file .env pull
-docker save -o easysearch.tar infiniflow/easysearch:latest
+docker compose -f docker-compose.easysearch.yml --env-file .env pull
+docker save -o easysearch.tar infinilabs/easysearch:2.1.1
 ```
 
-> EasySearch 实际镜像名请以 `rag_db-deploy` compose 文件为准。
+> EasySearch 实际镜像名请以 `rag_db-deploy/.env` 中 `EASYSEARCH_IMAGE` 为准（默认 `infinilabs/easysearch:2.1.1`）。
 
 ### 3.4 Paddle 版面侧车（检修 V0，CPU 示例）
 
@@ -103,7 +107,7 @@ mkdir -p /aidata/models/llm
 
 # app RAG 离线模型目录（示例）
 mkdir -p /aidata/models/embeddings/bge-small-zh-v1.5
-mkdir -p /aidata/models/reranker/bge-reranker-large
+mkdir -p /aidata/models/reranker/bge-reranker-base
 
 # MinerU 模型与 IO 目录（示例，与 mineru-deploy/.env.example 中 MINERU_*_HOST_PATH 一致）
 mkdir -p /aidata/mineru/models
@@ -130,7 +134,7 @@ docker network create paddle-layout-stack || true
 2. `vllm-deploy`
 3. `mineru-deploy`（若启用）
 4. **`paddleocr-layout-deploy`**（若启用检修 V0 版面侧车）
-5. `app/app-deploy`
+5. 应用栈：按 **`README-simple-deploy.md`**（`docker-mx/` / `docker-nvidia/` / compiled，勿默认只写根目录 `docker compose`）
 
 ---
 
@@ -168,7 +172,7 @@ LLM_DEFAULT_MODEL=<与 vllm served_model_name 一致>
 VLLM_DOCKER_NETWORK=<与 vllm 实际网络名一致>
 EMBEDDING_MODELS_HOST_PATH=/aidata/models/embeddings
 RERANKER_MODELS_HOST_PATH=/aidata/models/reranker
-RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
+RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-base
 # 可选：多卡场景建议与 vLLM 分卡（如 cuda:1）
 # RAG_RERANKER_DEVICE=cuda:1
 ```

@@ -402,7 +402,13 @@ docker compose -f docker-compose.neo4j.yml --env-file .env up -d
 
 ### 3.2 启动应用栈
 
+> docker&docker-compose 应用部署说明
+> docker-mx/ 和 docker-nvidia/ 路径下是源码方式直接部署的docker配置文件(沐曦和英伟达)
+> docker-mx-compiled/ 和 docker-nvidia-compiled/ 路径下是源码编译(Nuitka编译)部署的docker配置文件(沐曦和英伟达) 
+
 ```bash
+# 因应用服务器中涉及嵌入和重排，基于嵌入和重排使用的设备CPU/GPU，部署包括如下方式：
+# cpu部署：RAG 重排/嵌入走 CPU
 cd app/app-deploy
 cp .env.example .env          # 首次，之后直接编辑 .env
 docker compose up -d --build
@@ -411,14 +417,14 @@ docker compose up -d --build
 cd app/app-deploy
 cp .env.example .env          # 首次，之后直接编辑 .env
 cp .env docker-nvidia/.env
-cd docker-nvidia
+cd docker-nvidia    # 当前docker-nvidia/为源码部署，docker-nvidia-compiled/为对应编译部署
 docker compose --env-file .env -f docker-compose-nvidia.yml up -d --build
 
-# 沐曦 GPU：使用沐曦 AI 框架镜像（为了 reranker 效率）
+# 沐曦 GPU：RAG 重排/嵌入走沐曦架构(使用沐曦 AI 框架镜像（为了 reranker 效率）)
 cd app/app-deploy
 cp .env.example .env          # 首次，之后直接编辑 .env
 cp .env docker-mx
-cd docker-mx
+cd docker-mx       # 当前docker-mx/为源码部署，docker-mx-compiled/为对应编译部署
 docker compose --env-file .env -f docker-compose-mx.yml up -d --build
 ```
 > 启动之前关键修改确认项：`LLM_DEFAULT_MODEL` 须与 vLLM `--served-model-name` 一致。英伟达栈还需核对 `RAG_RERANKER_DEVICE` / `APP_NVIDIA_VISIBLE_DEVICES`（与 vLLM 分卡）。

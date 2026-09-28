@@ -1,6 +1,9 @@
 # 应用服务 Docker 部署（在线 API）
 
-本目录提供 **FastAPI 应用层** 的容器化部署，与仓库内 **`vllm-deploy/`**、**`rag_db-deploy/`** 对接。本文档说明**如何配置、如何启动、两种运行形态（默认 / 小模型 GPU）的差异与排错**。
+> **当前应用部署与配置以同目录 [`README-simple-deploy.md`](./README-simple-deploy.md) 为准**（`.env` 必改项、沐曦/英伟达/compiled 启动命令、联通性验证）。  
+> 本文保留 GPU profile、卷约定、运维检查清单等补充说明；若与 `README-simple-deploy.md` 冲突，以 simple-deploy 为准。
+
+本目录提供 **FastAPI 应用层** 的容器化部署，与仓库内 **`vllm-deploy/`**、**`rag_db-deploy/`** 对接。
 
 > 局域网/离线部署外挂服务（vLLM、EasySearch、MinerU、**检修 V0 版面侧车 paddleocr-layout-deploy**）请配合阅读：`README-external-services-lan-deploy.md`。  
 > 值班排障请配合阅读：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
@@ -34,8 +37,8 @@
 
 | 目标 | 优先文档 |
 |------|----------|
-| 快速上线（最少步骤） | `README-simple-deploy.md` |
-| 完整部署与参数说明（本文件） | `README.md` |
+| **应用部署与配置（准绳）** | **`README-simple-deploy.md`** |
+| GPU profile、卷约定、运维检查清单（本文，作补充） | `README.md` |
 | 局域网/离线外挂服务（vLLM/EasySearch/MinerU/**Paddle 版面侧车**） | `README-external-services-lan-deploy.md` |
 | 值班排障（当前先覆盖智能客服） | `deploy-docs/online-services-oncall-runbook.md` |
 
@@ -159,7 +162,7 @@ cp .env.example .env
 ```bash
 # 2.1 EasySearch（在仓库 rag_db-deploy 目录，按该目录 README 准备 .env）
 cd rag_db-deploy
-docker compose -f docker-compose.easysearch_bak0.yml --env-file .env up -d
+docker compose -f docker-compose.easysearch.yml --env-file .env up -d
 
 # 2.2 vLLM
 cd ../vllm-deploy
@@ -184,7 +187,9 @@ docker network create paddle-layout-stack || true   # 若尚未由本 compose �
 docker compose -f docker-compose.cpu.yml up -d --build   # 或 docker-compose.yml；沐曦/英伟达见该目录 GPU compose
 ```
 
-### 步骤 3：启动本栈（Redis + models-app）
+### 步骤 3：启动本栈（Redis + MinIO + models-app）
+
+沐曦 / 英伟达 / compiled 的完整启动命令见 **`README-simple-deploy.md` §3.2**。下面仅为仓库根 `docker-compose.yml`（CPU 默认栈）示例：
 
 ```bash
 cd ../../app/app-deploy
@@ -303,7 +308,7 @@ docker compose --profile small-model-gpu up -d --build
 | `small-model-data` | **仅 models-app-gpu** `/workspace/data/small_model_evidence` | 小模型证据片段等可写数据 |
 | `SMALL_MODEL_WEIGHTS_HOST_PATH` → `/workspace/models/small:ro` | **仅 models-app-gpu** | 只读权重；未设置时用占位卷 **`small-model-weights-dummy`**（空卷，仅开发联调 compose） |
 | `${EMBEDDING_MODELS_HOST_PATH}/bge-small-zh-v1.5`（默认 `/aidata/models/embeddings/...`） → `/workspace/models/embeddings/bge-small-zh-v1.5:ro` | `models-app` / `models-app-gpu` | **离线嵌入模型权重目录**；配合 `EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5` 使用，实现完全离线加载 |
-| `${RERANKER_MODELS_HOST_PATH}/bge-reranker-large`（默认 `/aidata/models/reranker/...`） → `/models/rerank/bge-reranker-large:ro` | `models-app` / `models-app-gpu` | **离线重排模型目录**；`RAG_RERANKER_MODEL_PATH` 指向该容器路径 |
+| `${RERANKER_MODELS_HOST_PATH}/bge-reranker-base`（默认 `/aidata/models/reranker/...`） → `/workspace/models/rerank/bge-reranker-base:ro` | `models-app` / `models-app-gpu` | **离线重排模型目录**；`RAG_RERANKER_MODEL_PATH` 指向该容器路径 |
 | `${INTENT_MODELS_HOST_PATH}/chatbot-intent-bert` → `.../chatbot-intent-bert:ro` | `models-app` / `models-app-gpu` | **BERT 意图**（`backend=bert`）；须微调 HF 目录 |
 | `${INTENT_LLM_MODELS_HOST_PATH}/qwen2.5-0.5b-instruct` → `.../qwen2.5-0.5b-instruct:ro` | `models-app` / `models-app-gpu` | **轻量意图 LLM**（`backend=llm`）；HF 目录直挂，见 `docs/智能客服意图识别轻量LLM接入说明.md` |
 
@@ -412,7 +417,7 @@ docker compose --profile small-model-gpu down
      embeddings/
        bge-small-zh-v1.5/   # 存放 BAAI/bge-small-zh-v1.5 的所有文件
      reranker/
-       bge-reranker-large/  # 存放 BAAI/bge-reranker-large 的所有文件
+       bge-reranker-base/  # 存放 BAAI/bge-reranker-base 的所有文件
      intent/
        chatbot-intent-bert/ # 智能客服 BERT 意图（仅 CHATBOT_INTENT_BACKEND=bert 时需要）
          config.json        # 含 id2label：kb_qa / data_query / clarify
@@ -449,7 +454,7 @@ docker compose --profile small-model-gpu down
        # ...
        volumes:
          - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-base:/workspace/models/rerank/bge-reranker-base:ro
          - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
          - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
 
@@ -457,7 +462,7 @@ docker compose --profile small-model-gpu down
        # ...
        volumes:
          - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-small-zh-v1.5:/workspace/models/embeddings/bge-small-zh-v1.5:ro
-         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/models/rerank/bge-reranker-large:ro
+         - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-base:/workspace/models/rerank/bge-reranker-base:ro
          - ${INTENT_MODELS_HOST_PATH:-/aidata/models/intent}/chatbot-intent-bert:/workspace/models/intent/chatbot-intent-bert:ro
          - ${INTENT_LLM_MODELS_HOST_PATH:-/aidata/models/llm}/qwen2.5-0.5b-instruct:/workspace/models/llm/qwen2.5-0.5b-instruct:ro
    ```
@@ -468,7 +473,7 @@ docker compose --profile small-model-gpu down
 
    ```env
    EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-small-zh-v1.5
-   RAG_RERANKER_MODEL_PATH=/models/rerank/bge-reranker-large
+   RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-base
    # 可选：显式指定重排设备（cpu / cuda / cuda:1）
    # RAG_RERANKER_DEVICE=cuda:1
 
@@ -610,8 +615,10 @@ docker compose --profile small-model-gpu down
 |------|------|
 | `Dockerfile` | 默认镜像：`requirements-大模型应用.txt` + `app` + `configs` |
 | `Dockerfile.small-model-gpu` | GPU 小模型镜像：cu121 PyTorch + 大小模型 requirements + `ultralytics` |
-| `docker-compose.yml` | CPU 栈：`redis`、`models-app`；可选 **`models-app-gpu`**（`profiles: small-model-gpu`） |
+| `docker-compose.yml` | CPU 栈：`redis`、`minio`、`models-app`；可选 **`models-app-gpu`**（`profiles: small-model-gpu`） |
 | `docker-nvidia/` | 英伟达 GPU 栈：`Dockerfile-nvidia` + `docker-compose-nvidia.yml`（RAG 重排走 CUDA） |
 | `docker-mx/` | 沐曦 GPU 栈：`Dockerfile-mx` + `docker-compose-mx.yml` |
+| `docker-nvidia-compiled/` / `docker-mx-compiled/` | 吉泰 compiled（Nuitka `.so`）栈；见各目录 README 与 `deploy-docs/吉泰部署运维方案.md` |
 | `.env.example` | 环境变量模板与分块注释（复制为 `.env`） |
-| `README.md` | 本文档 |
+| `README-simple-deploy.md` | **应用部署与配置准绳** |
+| `README.md` | 本文档（补充） |
