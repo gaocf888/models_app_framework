@@ -2933,6 +2933,18 @@ nl2sql:
       - 站点维表：t_station（name、code、area 行政区、lon、lat）
       - 泛化「沉降/监测点」未指明类型时，默认查 t_data_wash_fcb 的 total_settle
 
+      【跨场景 SQL 生成硬约束（客服 / 智能数据查询 / 报告等共用）】
+      1) 默认监测类型：若用户未明确监测类型/库（分层标/基岩标/GNSS/地下水等），且问题不是「监测站点有哪些/站点列表」类维表清单，默认按分层标（fcb，表 t_data_wash_fcb）生成查询；勿擅自跨多库联合。
+      2) 站点清单：若问站点清单/分布/有哪些站点，只查 t_station（含 name/code/area/lon/lat）；不要用层位0标编号过滤 t_station.name，不要写死 F8-10 这类标名。
+      3) suggested_filters：权威名单由系统注入；生成 SQL 时可省略对应 IN/等值谓词；禁止写 IN (SELECT …) 凑名单或截断预览子集。
+      4) 「最新」：问句含「最新/每站最新/各站最新」时走每监测实体最新模板——PostgreSQL 优先 SELECT DISTINCT ON (grain) … ORDER BY grain, data_time DESC，或等价 JOIN (SELECT grain, MAX(data_time) … GROUP BY grain)；禁止写日历日窗；禁止用嵌套 IN (SELECT …) 表达最新。grain 优先 station_name（层位标）或 project_name（场地）。
+
+      【站点覆盖 / 区县 / 层位口径（概念分工；名单勿手写）】
+      1) 监测方式官方场地覆盖（device_station_map）：按监测方式给出合法 project_name（≡ t_station.name）；区县不存于该名单，行政区只认 t_station.area。
+      2) 「某区监测站点」类清单：主表 t_station；WHERE area='…'；与默认/指定监测方式的官方覆盖求交（name IN 覆盖名单由系统注入）。只输出维表字段，禁止层位0标编号过滤 t_station.name。
+      3) 「某区沉降/监测数据」类读数：主表默认 t_data_wash_fcb（或用户点名的监测表）；JOIN t_station ON project_name = name 做区县过滤；站点范围用 project_name（覆盖/点名）；分层标站点代表值再用监测层位=0 的 station_name（fcb_layer_map，由系统注入）。禁止对同 project_name 下全部标聚合。
+      4) 关联键固定：事实表.project_name = t_station.name；禁止臆造第二套区县/站名字典或用嵌套 IN (SELECT …) 代替系统注入的覆盖/层位名单。
+
       【关联与范围硬约束】
       1) 行政区过滤：事实表 project_name 与 t_station.name 关联，用 t_station.area 表示行政区；示例 JOIN：d.project_name = s.name，WHERE s.area = '…'
       2) 站点过滤：可用 station_id、station_name，或 @station_id / @station_keyword / @district 占位符（由 NL2SQL 改写）
@@ -2951,7 +2963,7 @@ nl2sql:
       2) SELECT 优先 station_name、area、project_name 等业务可读列，避免无意义技术 id（用户未明确要求时）
       3) 周期沉降量：窗口内 total_settle **初值减末值**（Δ>0 下沉倾向，Δ<0 回弹）
 
-      【首轮自检】核对：① 表列均在 catalog；② 主表与指标列匹配问句；③ 时间窗与行政区/站点与问题一致；④ 方言为 PostgreSQL。
+      【首轮自检】核对：① 表列均在 catalog；② 主表与指标列匹配问句；③ 时间窗与行政区/站点与问题一致；④ 方言为 PostgreSQL；⑤ 未为 suggested_filters 写 IN (SELECT …)；⑥ 「最新」问句未写日历日窗；⑦ 清单问句未用层位0滤 t_station；⑧ 读数问句区县经 t_station.area、覆盖/层位名单未手写臆造。
 
       【输出形式】除字符串字面量内部外，整条 SQL 输出为单行紧凑语句，不要换行与装饰性缩进。
 

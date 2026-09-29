@@ -501,5 +501,8 @@ def test_analysis_prompt_version_and_col_priority_subsidence(monkeypatch: pytest
     assert "下沉" in fallback
     assert "锅炉" in fallback  # 明确禁止锅炉口吻
     hint = _chatbot_sql_gen_extra_hint()
-    assert "fcb" in hint
-    assert "t_data_wash_fcb" in hint
+    assert "SELECT" in hint or "用户可读" in hint or "智能客服" in hint
+    # 域规则（默认 fcb / suggested_filters / 最新）已下沉到 NL2SQL 基座 v2_subsidence，客服 hint 不再重复
+    assert "t_data_wash_fcb" not in hint
+    assert "suggested_filters" not in hint
+    assert "DISTINCT ON" not in hint

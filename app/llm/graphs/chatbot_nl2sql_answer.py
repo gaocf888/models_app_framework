@@ -275,18 +275,8 @@ def _empty_prompt_default_version() -> str:
 
 
 def _chatbot_sql_gen_extra_hint() -> str:
-    """客服 NL2SQL 生成附加提示：展示规则 + 地降未指明库时默认分层标(fcb)。"""
-    base = CHATBOT_NL2SQL_SELECT_DISPLAY_RULES
-    if not _is_subsidence_domain():
-        return base
-    default_hint = (
-        "【默认监测类型】若用户未明确监测类型/库（分层标/基岩标/GNSS/地下水等），"
-        "且问题不是「监测站点有哪些/站点列表」类维表清单，"
-        "默认按分层标（fcb，表 t_data_wash_fcb）生成查询；勿擅自跨多库联合。"
-        "若问站点清单/分布/有哪些站点，只查 t_station（含 name/code/area/lon/lat），"
-        "不要用层位0标编号过滤 t_station.name，不要写死 F8-10 这类标名。"
-    )
-    return f"{base}\n{default_hint}"
+    """客服 NL2SQL 生成附加提示：仅 SELECT 用户可读性（域规则已在基座 v2_subsidence）。"""
+    return CHATBOT_NL2SQL_SELECT_DISPLAY_RULES
 
 
 def _chatbot_expose_nl2sql_sql_in_meta() -> bool:

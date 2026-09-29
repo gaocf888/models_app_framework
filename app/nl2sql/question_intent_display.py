@@ -78,11 +78,20 @@ def format_parsed_intent_prompt_block(
     linked_schema: dict[str, Any] | None = None,
 ) -> str:
     """供 NL2SQL SQL 生成 Prompt 追加的「已识别问句意图」块。"""
+    from app.nl2sql.latest_per_station import (
+        LATEST_PER_STATION_TAG,
+        format_latest_per_station_prompt_rule,
+        resolve_latest_grain,
+    )
+
     lines = ["【已识别问句意图】"]
 
     stat = resolve_statistical_time_range_display(intent.scope_question)
     tag = intent.time_window_tag or "yesterday_fallback"
-    lines.append(f"- 时间窗：{tag}（{stat[0]} ~ {stat[1]}）")
+    if tag == LATEST_PER_STATION_TAG:
+        lines.append(f"- 时间窗：{tag}（{stat[0]}；勿写日历日窗）")
+    else:
+        lines.append(f"- 时间窗：{tag}（{stat[0]} ~ {stat[1]}）")
 
     if intent.time_anchor is not None:
         _end, anchor_tag = intent.time_anchor
@@ -140,12 +149,14 @@ def format_parsed_intent_prompt_block(
             lines.append(
                 f"- 用户点名站点场地(project_name)：共{len(project_names)}个"
                 f"（示例：{'、'.join(str(x) for x in project_names[:3])}）；"
-                "完整名单以链接 suggested_filters 为准，禁止只写预览子集"
+                "完整名单由系统按 suggested_filters 注入，生成 SQL 时可省略该谓词，"
+                "禁止写 IN (SELECT …) 凑名单或只写预览子集"
             )
         elif coverage_names:
             lines.append(
                 f"- 监测方式官方站点覆盖：共{len(coverage_names)}个 project_name；"
-                "生成 SQL 时勿手写截断 IN 名单；系统会按 suggested_filters 强制改写完整覆盖"
+                "生成 SQL 时可省略 project_name/station_name 谓词，由系统按 suggested_filters 强制注入完整字面量；"
+                "禁止写 IN (SELECT …) 或截断 IN 名单"
             )
         if compress_pairs:
             bits = []
@@ -169,13 +180,14 @@ def format_parsed_intent_prompt_block(
             )
             lines.append(
                 f"- {hint}：共{len(preferred_marks)}个；"
-                "完整 IN 名单以链接 suggested_filters 为准，禁止只写预览子集；"
-                "禁止对同 project_name 下全部标聚合"
+                "完整名单由系统按 suggested_filters 注入，生成 SQL 时可省略该谓词；"
+                "禁止写 IN (SELECT …) 凑名单或只写预览子集；禁止对同 project_name 下全部标聚合"
             )
         warnings = semantic.get("warnings") or []
         if warnings:
             lines.append(f"- 语义告警：{'；'.join(str(w) for w in warnings[:5])}")
 
+    suggested_filters: list[Any] = []
     if linked_schema:
         status = linked_schema.get("status") or "ok"
         tables = linked_schema.get("tables") or []
@@ -190,13 +202,14 @@ def format_parsed_intent_prompt_block(
             if tbl_names:
                 lines.append(f"- 链接主表（{status}）：{', '.join(tbl_names)}")
         filters = linked_schema.get("suggested_filters") or []
-        if filters:
+        if isinstance(filters, list):
+            suggested_filters = [f for f in filters if isinstance(f, dict)]
+        if suggested_filters:
             lines.append(
-                "- 链接建议过滤（权威，生成后系统强制改写对齐；请按此语义写条件，勿抄截断预览）："
+                "- 链接建议过滤（权威；生成 SQL 时可省略对应谓词，"
+                "禁止为 suggested_filters 写 IN (SELECT …)；系统会强制注入完整字面量）："
             )
-            for f in filters:
-                if not isinstance(f, dict):
-                    continue
+            for f in suggested_filters:
                 col = f.get("column")
                 op = f.get("op")
                 src = f.get("source")
@@ -211,5 +224,9 @@ def format_parsed_intent_prompt_block(
         fail_reason = linked_schema.get("fail_reason")
         if fail_reason and status == "failed":
             lines.append(f"- 链接失败原因：{fail_reason}")
+
+    if tag == LATEST_PER_STATION_TAG:
+        grain = resolve_latest_grain(suggested_filters)
+        lines.append(format_latest_per_station_prompt_rule(grain=grain))
 
     return "\n".join(lines)

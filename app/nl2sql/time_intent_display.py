@@ -11,6 +11,13 @@ import calendar
 import re
 from datetime import date, datetime, time, timedelta
 
+from app.nl2sql.latest_per_station import (
+    LATEST_PER_STATION_TAG,
+    is_latest_per_station_question,
+    latest_per_station_display_range,
+    latest_per_station_sql_window,
+)
+
 DAY_WINDOW_TAGS = frozenset(
     {"today", "yesterday", "day_before_yesterday", "three_days_ago"}
 )
@@ -532,6 +539,10 @@ def extract_time_window_from_question(question: str) -> tuple[str, str, str] | N
     if m_year:
         y = m_year.group(1)
         return (f"'{y}-01-01 00:00:00'", f"'{int(y)+1}-01-01 00:00:00'", f"year_{y}")
+
+    # 显式「最新」优先于默认昨天回落：走每站最新模板，不注入日历日窗
+    if is_latest_per_station_question(q):
+        return latest_per_station_sql_window()
     return None
 
 
@@ -748,8 +759,11 @@ def resolve_statistical_time_range_display(
     从用户问句解析统计口径起止时间，供报告第一章展示。
 
     未解析到时间表达时，默认按昨天 00:00:00～23:59:59。
+    「最新」展示为每站最新一条（无日历边界）。
     """
     tag = extract_time_window_tag(question)
+    if tag == LATEST_PER_STATION_TAG:
+        return latest_per_station_display_range()
     if not tag:
         return default_statistical_time_range_display(now=now)
     ref = now or datetime.now()

@@ -1592,39 +1592,59 @@ class NL2SQLChain:
         )
         if time_window is not None:
             start_expr, end_expr, tag = time_window
-            from app.nl2sql.sql_dialect import adapt_time_window
+            from app.nl2sql.latest_per_station import LATEST_PER_STATION_TAG
 
-            start_expr, end_expr = adapt_time_window(start_expr, end_expr)
-            if self._sql_has_time_placeholders(rewritten):
-                rewritten, ph_notes = self._rewrite_time_placeholders(
+            if tag == LATEST_PER_STATION_TAG:
+                from app.nl2sql.latest_per_station import (
+                    resolve_latest_grain,
+                    rewrite_sql_for_latest_per_station,
+                )
+                from app.nl2sql.sql_dialect import is_postgres_dialect
+                from app.nl2sql.suggested_filters_rewrite import (
+                    suggested_filters_from_parsed_intent,
+                )
+
+                grain = resolve_latest_grain(suggested_filters_from_parsed_intent(parsed_intent))
+                rewritten, latest_notes = rewrite_sql_for_latest_per_station(
+                    rewritten,
+                    grain=grain,
+                    prefer_distinct_on=is_postgres_dialect(),
+                )
+                notes.extend(latest_notes)
+            else:
+                from app.nl2sql.sql_dialect import adapt_time_window
+
+                start_expr, end_expr = adapt_time_window(start_expr, end_expr)
+                if self._sql_has_time_placeholders(rewritten):
+                    rewritten, ph_notes = self._rewrite_time_placeholders(
+                        rewritten,
+                        start_expr=start_expr,
+                        end_expr=end_expr,
+                    )
+                    notes.extend(ph_notes)
+                rewritten, time_notes = self._rewrite_dynamic_time_window(
                     rewritten,
                     start_expr=start_expr,
                     end_expr=end_expr,
+                    tag=tag,
                 )
-                notes.extend(ph_notes)
-            rewritten, time_notes = self._rewrite_dynamic_time_window(
-                rewritten,
-                start_expr=start_expr,
-                end_expr=end_expr,
-                tag=tag,
-            )
-            notes.extend(time_notes)
-            rewritten, bound_notes = self._inject_missing_time_upper_bounds(
-                rewritten,
-                start_expr=start_expr,
-                end_expr=end_expr,
-                tag=tag,
-            )
-            notes.extend(bound_notes)
-            rewritten = self._normalize_end_time_upper_to_start_time(rewritten, end_expr=end_expr)
-            rewritten = self._dedupe_redundant_time_upper_bounds(rewritten, end_expr=end_expr)
-            from app.nl2sql.sql_dialect import is_postgres_dialect, scrub_mysql_weekday_for_postgres
+                notes.extend(time_notes)
+                rewritten, bound_notes = self._inject_missing_time_upper_bounds(
+                    rewritten,
+                    start_expr=start_expr,
+                    end_expr=end_expr,
+                    tag=tag,
+                )
+                notes.extend(bound_notes)
+                rewritten = self._normalize_end_time_upper_to_start_time(rewritten, end_expr=end_expr)
+                rewritten = self._dedupe_redundant_time_upper_bounds(rewritten, end_expr=end_expr)
+                from app.nl2sql.sql_dialect import is_postgres_dialect, scrub_mysql_weekday_for_postgres
 
-            if is_postgres_dialect():
-                scrubbed = scrub_mysql_weekday_for_postgres(rewritten)
-                if scrubbed != rewritten:
-                    notes.append("scrub_mysql_weekday_for_postgres")
-                    rewritten = scrubbed
+                if is_postgres_dialect():
+                    scrubbed = scrub_mysql_weekday_for_postgres(rewritten)
+                    if scrubbed != rewritten:
+                        notes.append("scrub_mysql_weekday_for_postgres")
+                        rewritten = scrubbed
         rewritten, gc_notes = self._rewrite_group_concat_utf8_safe(rewritten, plan_item_id=plan_item_id)
         notes.extend(gc_notes)
         rewritten, scope_notes = self._rewrite_entity_scope_literals(

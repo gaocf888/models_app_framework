@@ -21,9 +21,12 @@ def _adapt_time_window_tuple(
 ) -> tuple[str, str, str] | None:
     if win is None:
         return None
+    from app.nl2sql.latest_per_station import LATEST_PER_STATION_TAG
     from app.nl2sql.sql_dialect import adapt_time_window
 
     start, end, tag = win
+    if tag == LATEST_PER_STATION_TAG:
+        return start, end, tag
     start, end = adapt_time_window(start, end)
     return start, end, tag
 
