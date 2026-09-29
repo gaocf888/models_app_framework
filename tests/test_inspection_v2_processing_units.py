@@ -74,3 +74,27 @@ def test_split_docx_v2_includes_heading_path_header() -> None:
     assert "处理单元 heading_path=" in chunks[0]
     assert "（一）测试段" in chunks[0]
     assert "[DOCX_V2_TABLE" in chunks[0]
+
+
+def test_split_row_windows_reuse_prelude_on_every_chunk() -> None:
+    """大表按行窗切开时，每个窗都应带表前受热面说明。"""
+    lines = [
+        "（一）段",
+        "冷灰斗后墙下弯头规格Φ38×7.3mm材质15CrMoG测厚记录",
+        "[DOCX_V2_TABLE idx=1 rows=99 cols=2]",
+        "r0: c0='管子编号' | c1='壁厚'",
+        "r1: c0='编号' | c1='测量值'",
+    ]
+    for i in range(2, 40):
+        lines.append(f"r{i}: c0='管{i}' | c1='{i}.5'")
+    text = "\n".join(lines)
+    chunks = split_docx_v2_by_processing_units(
+        text,
+        max_chunk_chars=320,
+        table_row_window_enabled=True,
+        table_data_rows_per_window=8,
+    )
+    table_chunks = [c for c in chunks if "[DOCX_V2_TABLE" in c]
+    assert len(table_chunks) >= 2
+    for c in table_chunks:
+        assert "冷灰斗后墙下弯头" in c

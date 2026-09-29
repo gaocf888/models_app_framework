@@ -2,7 +2,7 @@
 检修 docx V2 序列化文本 → Processing Unit 分块。
 
 原则：
-- 含表的块以「表」为单元：紧邻该表上方的正文与该表同块（首块带 prelude）。
+- 含表的块以「表」为单元：紧邻该表上方的正文与该表同块（各行窗均带 prelude，供受热面解析）。
 - 单表超过字符预算时按「表头 + 数据行窗口」切分（可配置 rows-per-window）。
 - 不含表的纯文本按 max_chunk_chars 切分。
 """
@@ -124,10 +124,10 @@ def _pack_segments_to_chunks(
                 enable_column_split=table_column_split_enabled,
             )
 
-            for pi, part_lines in enumerate(table_parts):
+            for part_lines in table_parts:
                 tbl_full = "\n".join(part_lines).strip()
-                use_prelude = prelude if pi == 0 else ""
-                body = f"{use_prelude}\n{tbl_full}".strip() if use_prelude else tbl_full
+                # 每个行窗都挂同一 prelude：新模版受热面依赖表前文字，后窗不能丢
+                body = f"{prelude}\n{tbl_full}".strip() if prelude else tbl_full
                 full_chunk = (header + body).rstrip()
                 if len(full_chunk) > max_chunk_chars:
                     logger.warning(

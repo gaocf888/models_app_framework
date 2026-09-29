@@ -24,6 +24,25 @@ def _legacy_chunk_looks_like_table(chunk: str) -> bool:
     return len(lines) >= 2
 
 
+def _collect_table_block_lines(lines: list[str], start: int) -> tuple[list[str], int]:
+    """从 start（须为 DOCX_V2_TABLE 行）收集整块表行，返回 (block_lines, next_index)。"""
+    tbl_lines = [lines[start].rstrip()]
+    i = start + 1
+    while i < len(lines):
+        st = lines[i].strip()
+        if st.startswith(_DOCX_V2_TABLE_MARK):
+            break
+        if ROW_RE.match(st):
+            tbl_lines.append(lines[i].rstrip())
+            i += 1
+            continue
+        if not st:
+            i += 1
+            continue
+        break
+    return tbl_lines, i
+
+
 def _split_docx_v2_table_line_blocks(text: str) -> list[list[str]]:
     """将文本拆成多个表格块（每块首行为 [DOCX_V2_TABLE ...]）。"""
     lines = (text or "").splitlines()
@@ -34,37 +53,38 @@ def _split_docx_v2_table_line_blocks(text: str) -> list[list[str]]:
         if not stripped.startswith(_DOCX_V2_TABLE_MARK):
             i += 1
             continue
-
-        tbl_lines = [lines[i].rstrip()]
-        i += 1
-        while i < len(lines):
-            st = lines[i].strip()
-            if st.startswith(_DOCX_V2_TABLE_MARK):
-                break
-            if ROW_RE.match(st):
-                tbl_lines.append(lines[i].rstrip())
-                i += 1
-                continue
-            if not st:
-                i += 1
-                continue
-            break
+        tbl_lines, i = _collect_table_block_lines(lines, i)
         blocks.append(tbl_lines)
     return blocks
 
 
 def extract_docx_v2_table_blocks_for_llm(chunk: str) -> str:
     """
-    从 parse 分块中提取全部 [DOCX_V2_TABLE] 表格行（含 rN: 数据行），供 LLM user 消息使用。
+    从 parse 分块中提取「heading/prelude + 表格」供 LLM user 消息使用。
 
-    丢弃 [处理单元 heading_path=...]、prelude 等非表格正文；guard 仍应使用完整 chunk。
+    保留 [处理单元 heading_path=...] 与表前正文（受热面/规格等依赖 prelude）；
+    丢弃表后无关正文。guard / 落盘仍应使用完整 chunk。
     """
     text = (chunk or "").strip()
     if not text or _DOCX_V2_TABLE_MARK not in text:
         return ""
 
-    blocks = _split_docx_v2_table_line_blocks(text)
-    return "\n\n".join("\n".join(b) for b in blocks).strip()
+    lines = text.splitlines()
+    out_parts: list[str] = []
+    preamble: list[str] = []
+    i = 0
+    while i < len(lines):
+        st = lines[i].strip()
+        if st.startswith(_DOCX_V2_TABLE_MARK):
+            tbl_lines, i = _collect_table_block_lines(lines, i)
+            block_lines = [ln for ln in preamble if ln.strip()] + tbl_lines
+            out_parts.append("\n".join(block_lines).strip())
+            preamble = []
+            continue
+        preamble.append(lines[i].rstrip())
+        i += 1
+
+    return "\n\n".join(p for p in out_parts if p).strip()
 
 
 def _cell_part_nonempty(part: str) -> bool:
@@ -190,17 +210,23 @@ def _strip_one_table_block(lines: list[str]) -> list[str]:
 def strip_trailing_empty_columns_for_llm(text: str) -> str:
     """
     裁掉表格块从右起连续全空列，并更新表头 cols=N（仅用于 LLM 输入）。
+    保留 heading / prelude 等非表格行。
     """
     raw = (text or "").strip()
     if not raw or _DOCX_V2_TABLE_MARK not in raw:
         return raw
 
-    blocks = _split_docx_v2_table_line_blocks(raw)
-    if not blocks:
-        return raw
-
-    stripped = [_strip_one_table_block(b) for b in blocks]
-    return "\n\n".join("\n".join(b) for b in stripped).strip()
+    lines = raw.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().startswith(_DOCX_V2_TABLE_MARK):
+            tbl_lines, i = _collect_table_block_lines(lines, i)
+            out.extend(_strip_one_table_block(tbl_lines))
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out).strip()
 
 
 def resolve_llm_parse_chunk_body(
@@ -210,7 +236,7 @@ def resolve_llm_parse_chunk_body(
     strip_trailing_empty_cols: bool = True,
 ) -> str:
     """
-    LLM Parse user 消息正文：可选仅保留表格块，并裁 trailing 全空列。
+    LLM Parse user 消息正文：可选聚焦表格块（仍保留 heading/prelude），并裁 trailing 全空列。
     guard / 落盘仍应使用完整 chunk。
     """
     raw = chunk or ""

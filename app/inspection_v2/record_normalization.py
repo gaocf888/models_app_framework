@@ -82,8 +82,31 @@ def is_combo_index_protected(item: dict[str, Any]) -> bool:
     return False
 
 
+def pick_record_location(rec: dict[str, Any]) -> str:
+    """兼容 parse v1「检测位置」与 parse v2「受热面」（语义同一字段）。"""
+    return str(
+        rec.get("受热面")
+        or rec.get("检测位置")
+        or rec.get("location")
+        or rec.get("position")
+        or ""
+    ).strip()
+
+
+def sync_location_aliases(out: dict[str, Any], loc: str | None = None) -> str:
+    """将位置写入 检测位置/location；若输入曾用 受热面 则同步写回。"""
+    if loc is None:
+        loc = pick_record_location(out)
+    loc = _collapse_ws(loc)
+    out["检测位置"] = loc
+    out["location"] = loc
+    if "受热面" in out:
+        out["受热面"] = loc
+    return loc
+
+
 def _sync_row_tube_fields(out: dict[str, Any]) -> None:
-    loc = str(out.get("检测位置") or out.get("location") or "").strip()
+    loc = sync_location_aliases(out)
     row = str(out.get("行号") or out.get("row_no") or "").strip()
     tube = str(out.get("管号") or out.get("tube_no") or "").strip()
     out["检测位置"] = loc
@@ -109,7 +132,7 @@ def normalize_device_row_tube_by_location(
     tube_no: str,
 ) -> tuple[str, str, str, list[str]]:
     """
-    按检测位置设备类型校正行号/管号（与 parse 提示词 §行号与管号 一致）。
+    按检测位置/受热面设备类型校正行号/管号（与 parse 提示词 §行号与管号 一致）。
 
     - 水冷壁系：行号 → "1"；若 LLM 将编号误写入行号且管号为 1/空，迁到管号。
     - 再热器/过热器/省煤器系：管号 → "1"；行号去字母；若编号误写入管号且行号为 1/空，迁到行号。
@@ -218,11 +241,12 @@ def normalize_location_row_tube(
 def apply_deterministic_rules_to_record(item: dict[str, Any]) -> dict[str, Any]:
     """对单条原始 dict（中英字段混用）做规范化，供 canonicalize 前调用。"""
     out = dict(item)
+    sync_location_aliases(out)
     if is_combo_index_protected(out):
         _sync_row_tube_fields(out)
         return out
 
-    loc = str(out.get("检测位置") or out.get("location") or "").strip()
+    loc = pick_record_location(out)
     row = str(out.get("行号") or out.get("row_no") or "").strip()
     tube = str(out.get("管号") or out.get("tube_no") or "").strip()
     ev = str(out.get("evidence") or out.get("证据") or "").strip()
@@ -233,8 +257,7 @@ def apply_deterministic_rules_to_record(item: dict[str, Any]) -> dict[str, Any]:
         loc, row, tube, evidence=ev, prior_warnings=prior_list
     )
     # 始终写入中英字段，避免仅有 row_no/location 时 API 仍返回未修正的「行号」
-    out["检测位置"] = nloc
-    out["location"] = nloc
+    sync_location_aliases(out, nloc)
     out["行号"] = nrow
     out["row_no"] = nrow
     out["管号"] = ntube

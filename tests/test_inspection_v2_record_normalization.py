@@ -143,6 +143,20 @@ def test_apply_deterministic_rules_on_dict() -> None:
     assert out["管号"] == "3"
 
 
+def test_apply_deterministic_rules_accepts_surface_alias() -> None:
+    """parse v2 输出「受热面」时，应归一为检测位置并走水冷壁行号=1。"""
+    from app.inspection_v2.record_normalization import apply_deterministic_rules_to_record
+
+    out = apply_deterministic_rules_to_record(
+        {"受热面": "水冷壁B5吹灰器", "行号": "A3", "管号": "2", "壁厚": 7.5}
+    )
+    assert out["检测位置"] == "水冷壁B5吹灰器"
+    assert out["location"] == "水冷壁B5吹灰器"
+    assert out["受热面"] == "水冷壁B5吹灰器"
+    assert out["行号"] == "1"
+    assert out["管号"] == "2"
+
+
 def test_apply_deterministic_rules_english_keys_get_chinese_fields() -> None:
     from app.inspection_v2.record_normalization import apply_deterministic_rules_to_record
 

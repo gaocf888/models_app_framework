@@ -19,6 +19,7 @@ from app.inspection_v2.record_normalization import (
     _REHEATER_TUBE1_MARKERS,
     _WALL_ROW1_MARKERS,
     is_combo_index_protected,
+    pick_record_location,
 )
 
 _REHEATER_LOC = _REHEATER_TUBE1_MARKERS
@@ -26,7 +27,7 @@ _WALL_LOC = _WALL_ROW1_MARKERS
 
 
 def _record_location(rec: dict[str, Any]) -> str:
-    return str(rec.get("检测位置") or rec.get("location") or "").strip()
+    return pick_record_location(rec)
 
 
 def _record_thickness(rec: dict[str, Any]) -> float | None:

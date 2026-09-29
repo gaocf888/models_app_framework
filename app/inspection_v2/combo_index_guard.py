@@ -16,14 +16,14 @@ from app.inspection_v2.docx_v2_table_parse import (
     parse_tables_from_chunk,
     thk_close,
 )
-from app.inspection_v2.record_normalization import COMBO_INDEX_FROM_CHUNK
+from app.inspection_v2.record_normalization import COMBO_INDEX_FROM_CHUNK, pick_record_location
 from app.inspection_v2.tube_thickness_bind_guard import _location_matches
 
 _COMBO_GUARD_PREFIX = "combo_index_guard:"
 
 
 def _record_location(rec: dict[str, Any]) -> str:
-    return str(rec.get("检测位置") or rec.get("location") or "").strip()
+    return pick_record_location(rec)
 
 
 def _record_thickness(rec: dict[str, Any]) -> float | None:

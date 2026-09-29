@@ -22,6 +22,7 @@ from app.inspection_v2.docx_v2_table_parse import (
 from app.inspection_v2.record_normalization import (
     _REHEATER_TUBE1_MARKERS,
     is_combo_index_protected,
+    pick_record_location,
 )
 from app.inspection_v2.tube_thickness_bind_guard import _location_matches
 
@@ -29,7 +30,7 @@ _SIGN_GUARD_PREFIX = "direction_sign_guard:"
 
 
 def _record_location(rec: dict[str, Any]) -> str:
-    return str(rec.get("检测位置") or rec.get("location") or "").strip()
+    return pick_record_location(rec)
 
 
 def _record_thickness(rec: dict[str, Any]) -> float | None:

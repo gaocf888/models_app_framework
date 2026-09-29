@@ -286,7 +286,7 @@ class InspectionExtractService:
         if isinstance(item, dict):
             item = apply_deterministic_rules_to_record(dict(item))
 
-        location = self._pick(item, ["检测位置", "location", "position"])
+        location = self._pick(item, ["受热面", "检测位置", "location", "position"])
         row_no = self._pick(item, ["行号", "row_no", "row"])
         tube_no = self._pick(item, ["管号", "tube_no", "tube"])
         thickness_raw = self._pick(item, ["壁厚", "thickness", "thk"])

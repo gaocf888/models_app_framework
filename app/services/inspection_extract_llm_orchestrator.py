@@ -518,7 +518,7 @@ class InspectionExtractLlmOrchestrator:
         parse_system = (
             f"{parse_tpl}\n\n"
             "优先输出 NDJSON（每行一个 JSON 对象，不加 markdown 代码块）。\n"
-            "每个对象应包含：检测位置、行号、管号、壁厚、检测类型、缺陷类型、是否换管、evidence、warnings。\n"
+            "每个对象应包含：检测位置或受热面、行号、管号、壁厚、检测类型、缺陷类型、是否换管、evidence、warnings。\n"
             "其中 evidence 为空时填 null；warnings 为空时填 []。\n"
             "若你无法输出 NDJSON，则回退输出 JSON：{\"records\":[...]}。\n"
             "用户消息中将给出当前文档分块正文，请仅基于该分块抽取。"
@@ -995,6 +995,8 @@ def _need_repair(records: list[dict[str, Any]]) -> bool:
         keys = set(rec.keys())
         if "检测位置" in keys and "壁厚" in keys:
             continue
+        if "受热面" in keys and "壁厚" in keys:
+            continue
         if "location" in keys and ("thickness" in keys or "壁厚" in keys):
             continue
         return True
@@ -1004,13 +1006,14 @@ def _need_repair(records: list[dict[str, Any]]) -> bool:
 def _records_have_full_schema(records: list[dict[str, Any]]) -> bool:
     if not records:
         return False
-    required_cn = {"检测位置", "行号", "管号", "壁厚", "检测类型", "缺陷类型", "是否换管"}
+    required_cn_core = {"行号", "管号", "壁厚", "检测类型", "缺陷类型", "是否换管"}
     required_en = {"location", "row_no", "tube_no", "thickness", "detection_type", "defect_type", "replaced"}
     for rec in records:
         if not isinstance(rec, dict):
             return False
         keys = set(rec.keys())
-        has_cn = required_cn.issubset(keys)
+        has_loc_cn = "检测位置" in keys or "受热面" in keys
+        has_cn = has_loc_cn and required_cn_core.issubset(keys)
         has_en = required_en.issubset(keys)
         if not (has_cn or has_en):
             return False
@@ -1036,7 +1039,7 @@ def _extract_records_from_markdown_table(parsed_text: str) -> list[dict[str, Any
         normalized = [_norm_header(c) for c in cells]
         key_map: dict[str, int] = {}
         for idx, h in enumerate(normalized):
-            if any(k in h for k in ("检测位置", "位置", "location")):
+            if any(k in h for k in ("受热面", "检测位置", "位置", "location")):
                 key_map["location"] = idx
             elif any(k in h for k in ("行号", "行", "row")):
                 key_map["row_no"] = idx
@@ -1138,7 +1141,7 @@ def _looks_like_inspection_record_row(d: dict[str, Any]) -> bool:
     keys = set(d.keys())
     if keys <= {"records"}:
         return False
-    loc = "检测位置" in keys or "location" in keys
+    loc = "检测位置" in keys or "受热面" in keys or "location" in keys
     tube = "管号" in keys or "tube_no" in keys
     thk = "壁厚" in keys or "thickness" in keys
     return bool(loc and tube and thk)
