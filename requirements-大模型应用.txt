@@ -19,6 +19,7 @@ minio>=7.2.0              # 图片预处理后上传 MinIO，返回预签名 URL
 
 # === 数据库与 NL2SQL 相关 ===
 sqlalchemy>=2.0.0         # ORM/SQL 构建与执行，NL2SQL 的 SQLExecutor 使用
+greenlet>=3.0.0           # SQLAlchemy asyncio 必需（缺则 ImportError: No module named 'greenlet'）
 aiomysql>=0.2.0           # 异步 MySQL 驱动，用于 NL2SQL Demo 数据库访问（可按实际数据库替换）
 
 # === RAG / GraphRAG / 嵌入模型 ===
