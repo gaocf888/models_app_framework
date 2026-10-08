@@ -139,6 +139,7 @@ class InspectionExtractLlmOrchestrator:
                     model=model,
                     llm_timeout_s=llm_timeout_s,
                     parse_chunk_retry=parse_chunk_retry,
+                    prompt_version=prompt_version,
                 )
                 stage1_results.append((idx, recs))
         else:
@@ -154,6 +155,7 @@ class InspectionExtractLlmOrchestrator:
                         model=model,
                         llm_timeout_s=llm_timeout_s,
                         parse_chunk_retry=parse_chunk_retry,
+                        prompt_version=prompt_version,
                     )
                     return idx, recs
 
@@ -261,6 +263,7 @@ class InspectionExtractLlmOrchestrator:
                     model=model,
                     llm_timeout_s=llm_timeout_s,
                     parse_chunk_retry=parse_chunk_retry,
+                    prompt_version=prompt_version,
                 )
                 payload = {"work_idx": idx, "records": recs}
                 _atomic_write_json(chunks_dir / f"{idx}.json", payload)
@@ -497,6 +500,7 @@ class InspectionExtractLlmOrchestrator:
         model: str,
         llm_timeout_s: float,
         parse_chunk_retry: int,
+        prompt_version: str = "v1",
     ) -> list[dict[str, Any]]:
         records_i: list[dict[str, Any]] = []
         chunk_meta = _summarize_chunk(chunk)
@@ -578,8 +582,12 @@ class InspectionExtractLlmOrchestrator:
                 from app.inspection_v2.combo_index_guard import apply_docx_v2_combo_index_guard
 
                 records_i = apply_docx_v2_combo_index_guard(records_i, chunk)
-            if bool(getattr(self._cfg, "v2_tube_direction_sign_guard_enabled", True)) and "[DOCX_V2_TABLE" in (
-                chunk or ""
+            # 仅 parse 提示词 v1 走列组 sign_guard；v2+ 正负以 LLM/受热面为准，避免 default_down 剥掉「前上」负号
+            pv = (prompt_version or "v1").strip().lower()
+            if (
+                pv == "v1"
+                and bool(getattr(self._cfg, "v2_tube_direction_sign_guard_enabled", True))
+                and "[DOCX_V2_TABLE" in (chunk or "")
             ):
                 from app.inspection_v2.tube_direction_sign_guard import (
                     apply_docx_v2_tube_direction_sign_guard,
@@ -591,6 +599,13 @@ class InspectionExtractLlmOrchestrator:
                     allow_fallback_4col=bool(
                         getattr(self._cfg, "v2_tube_direction_sign_allow_fallback_4col", False)
                     ),
+                )
+            elif pv != "v1" and "[DOCX_V2_TABLE" in (chunk or ""):
+                logger.debug(
+                    "inspection_extract sign_guard skipped prompt_version=%s chunk=%s/%s",
+                    prompt_version,
+                    idx,
+                    total,
                 )
             if bool(getattr(self._cfg, "v2_color_guard_enabled", True)) and "[DOCX_V2_TABLE" in (chunk or ""):
                 from app.inspection_v2.detection_type_color_guard import apply_docx_v2_color_guard

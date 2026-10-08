@@ -833,7 +833,7 @@ class InspectionExtractConfig:
     v2_bind_guard_enabled: bool = True
     # DOCX V2：parse 后按 chunk 组合编号（2-1）标记并校正行号/管号
     v2_combo_guard_enabled: bool = True
-    # DOCX V2：parse 后按 chunk 列组 direction 校正管号正负（上数/下数等）
+    # DOCX V2：parse 后按 chunk 列组 direction 校正管号正负（上数/下数等）；仅 prompt_version=v1 时生效
     v2_tube_direction_sign_guard_enabled: bool = True
     v2_tube_direction_sign_allow_fallback_4col: bool = False
     # DOCX V2：Parse 送 LLM 时仅保留 [DOCX_V2_TABLE] 表格块（guard/落盘仍用完整 chunk）
