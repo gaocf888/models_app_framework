@@ -87,7 +87,8 @@ async def upload_inspection_report(file: UploadFile = File(...)) -> InspectionUp
         "- `prompt_version`: 可选。\n\n"
         "出参（200，`InspectionExtractResponse`）：\n"
         "- `ok`、`records`、`summary`、`trace`。\n"
-        "- 本接口对外响应会排除 `records[].evidence` 与 `records[].warnings`。"
+        "- 本接口对外响应会排除 `records[].evidence` 与 `records[].warnings`。\n"
+        "- `prompt_version=v2` 时 `records[]` 使用字段「受热面」（不含「检测位置」）；v1 仍为「检测位置」。"
     ),
     responses={
         200: {"description": "同步提取成功，返回结构化结果。"},

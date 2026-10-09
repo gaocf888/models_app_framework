@@ -1238,6 +1238,12 @@ class InspectionExtractJobScheduler:
             recs = []
         public_rows: list[dict[str, Any]] = []
         from app.inspection_v2.record_normalization import apply_deterministic_rules_to_record
+        from app.models.inspection_extract import shape_public_record_dict
+
+        meta = _read_meta(jd)
+        prompt_version = None
+        if isinstance(meta, dict):
+            prompt_version = (meta.get("metrics") or {}).get("prompt_version") or meta.get("prompt_version")
 
         for row in recs:
             if not isinstance(row, dict):
@@ -1249,7 +1255,7 @@ class InspectionExtractJobScheduler:
             y.pop("combo_index_from_chunk", None)
             for en_key in ("location", "row_no", "tube_no"):
                 y.pop(en_key, None)
-            public_rows.append(y)
+            public_rows.append(shape_public_record_dict(y, prompt_version=prompt_version))
         return InspectionExtractChunkRecordsResponse(job_id=job_id, work_idx=work_idx, records=public_rows)
 
 

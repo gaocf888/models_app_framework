@@ -3,9 +3,39 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from app.conversation.ids import validate_session_id, validate_user_id
+
+
+def normalize_inspect_prompt_version(prompt_version: str | None) -> str:
+    """inspection_extract:v2 / v2 → v2。"""
+    s = (prompt_version or "v1").strip()
+    if ":" in s:
+        s = s.rsplit(":", 1)[-1].strip()
+    return (s or "v1").lower()
+
+
+def shape_public_record_dict(record: dict[str, Any], *, prompt_version: str | None) -> dict[str, Any]:
+    """
+    对外记录整形：prompt_version=v2 时去掉「检测位置」/location，统一为「受热面」。
+    """
+    out = dict(record)
+    if normalize_inspect_prompt_version(prompt_version) != "v2":
+        return out
+    loc = out.get("受热面") or out.get("检测位置") or out.get("location") or ""
+    out.pop("检测位置", None)
+    out.pop("location", None)
+    out["受热面"] = str(loc).strip()
+    return out
 
 
 class DetectionType(str, Enum):
@@ -59,7 +89,12 @@ class InspectionExtractRequest(BaseModel):
 
 
 class InspectionRecord(BaseModel):
-    location: str = Field(..., alias="检测位置", description="检测位置")
+    location: str = Field(
+        ...,
+        validation_alias=AliasChoices("检测位置", "受热面", "location"),
+        serialization_alias="检测位置",
+        description="检测位置（v2 对外序列化为受热面）",
+    )
     row_no: str = Field(..., alias="行号", description="行号")
     tube_no: str = Field(..., alias="管号", description="管号")
     thickness: float = Field(..., alias="壁厚", description="壁厚")
@@ -69,7 +104,7 @@ class InspectionRecord(BaseModel):
     evidence: str | None = Field(default=None, description="证据片段（可选）")
     warnings: list[str] = Field(default_factory=list, description="该条记录的告警信息")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True)
 
     @field_validator("location", "row_no", "tube_no")
     @classmethod
@@ -118,6 +153,25 @@ class InspectionExtractResponse(BaseModel):
     records: list[InspectionRecord] = Field(default_factory=list, description="结构化记录")
     summary: InspectionSummary = Field(default_factory=InspectionSummary, description="统计摘要")
     trace: InspectionExtractTrace = Field(..., description="链路追踪信息")
+
+    @model_serializer(mode="wrap")
+    def _serialize_public(self, serializer: Any) -> dict[str, Any]:
+        """v2：最终对外 JSON 用「受热面」替代「检测位置」。"""
+        data = serializer(self)
+        pv = None
+        trace = data.get("trace") if isinstance(data, dict) else None
+        if isinstance(trace, dict):
+            pv = trace.get("prompt_version")
+        elif self.trace is not None:
+            pv = self.trace.prompt_version
+        if normalize_inspect_prompt_version(pv) != "v2":
+            return data
+        records = data.get("records") if isinstance(data, dict) else None
+        if isinstance(records, list):
+            data["records"] = [
+                shape_public_record_dict(r, prompt_version=pv) if isinstance(r, dict) else r for r in records
+            ]
+        return data
 
 
 class InspectionUploadResponse(BaseModel):
