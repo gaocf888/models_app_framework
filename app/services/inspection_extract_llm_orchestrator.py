@@ -118,19 +118,28 @@ class InspectionExtractLlmOrchestrator:
         if pr == "docx_v2":
             chunk_kwargs = v2_docx_chunk_params(self._cfg)
         chunks = split_parse_chunks(parsed_text, parse_route=parse_route, **chunk_kwargs)
-        total_chunks = len(chunks)
+        work_items = filter_table_work_items(
+            chunks,
+            parse_route=parse_route,
+            structure_whitelist=bool(
+                getattr(self._cfg, "v2_table_structure_whitelist_enabled", False)
+            ),
+        )
+        total_chunks = len(work_items)
         logger.info(
-            "inspection_extract parse chunk_count=%s parse_route=%s max_chunk_chars=%s",
+            "inspection_extract parse chunk_count=%s table_chunks=%s parse_route=%s max_chunk_chars=%s structure_whitelist=%s",
+            len(chunks),
             total_chunks,
             parse_route,
             chunk_kwargs["max_chunk_chars"],
+            bool(getattr(self._cfg, "v2_table_structure_whitelist_enabled", False)),
         )
-        logger.info("【检修提取】Parse阶段分块数量=%s", total_chunks)
+        logger.info("【检修提取】Parse阶段含表分块数量=%s", total_chunks)
         parse_concurrency = max(1, int(getattr(self._cfg, "parse_concurrency", 1)))
         logger.info("inspection_extract parse concurrency=%s", parse_concurrency)
         if parse_concurrency <= 1:
             stage1_results: list[tuple[int, list[dict[str, Any]]]] = []
-            for idx, chunk in enumerate(chunks, start=1):
+            for idx, chunk in work_items:
                 recs = await self._parse_one_chunk(
                     idx=idx,
                     total=total_chunks,
@@ -160,7 +169,7 @@ class InspectionExtractLlmOrchestrator:
                     return idx, recs
 
             stage1_results_raw = await asyncio.gather(
-                *[_run_with_sem(idx, chunk) for idx, chunk in enumerate(chunks, start=1)],
+                *[_run_with_sem(idx, chunk) for idx, chunk in work_items],
                 return_exceptions=True,
             )
             stage1_results: list[tuple[int, list[dict[str, Any]]]] = []
@@ -221,14 +230,21 @@ class InspectionExtractLlmOrchestrator:
         if pr == "docx_v2":
             chunk_kwargs = v2_docx_chunk_params(self._cfg)
         chunks = split_parse_chunks(parsed_text, parse_route=parse_route, **chunk_kwargs)
-        work_items = filter_table_work_items(chunks, parse_route=parse_route)
+        work_items = filter_table_work_items(
+            chunks,
+            parse_route=parse_route,
+            structure_whitelist=bool(
+                getattr(self._cfg, "v2_table_structure_whitelist_enabled", False)
+            ),
+        )
         total_work = len(work_items)
         logger.info(
-            "inspection_extract job_dir parse chunk_count=%s table_chunks=%s parse_route=%s max_chunk_chars=%s",
+            "inspection_extract job_dir parse chunk_count=%s table_chunks=%s parse_route=%s max_chunk_chars=%s structure_whitelist=%s",
             len(chunks),
             total_work,
             parse_route,
             chunk_kwargs["max_chunk_chars"],
+            bool(getattr(self._cfg, "v2_table_structure_whitelist_enabled", False)),
         )
 
         chunks_dir = job_dir / "chunks"

@@ -1,5 +1,6 @@
 from app.inspection_v2.chunk_table_filter import (
     chunk_contains_table,
+    chunk_matches_thickness_structure_whitelist,
     extract_docx_v2_table_blocks_for_llm,
     filter_table_work_items,
     resolve_llm_parse_chunk_body,
@@ -129,3 +130,82 @@ def test_filter_renumbers_work_idx() -> None:
     assert len(items) == 1
     assert items[0][0] == 1
     assert "DOCX_V2_TABLE" in items[0][1]
+
+
+def test_structure_whitelist_matches_no_header_up_down_pairs() -> None:
+    """图1类：无编号/壁厚列名，仅有上/下 + 整数|小数对。"""
+    chunk = "\n".join(
+        [
+            "[处理单元 heading_path=x]",
+            SAMPLE_TABLE_WITH_EMPTY_C4,
+        ]
+    )
+    assert chunk_matches_thickness_structure_whitelist(chunk) is True
+
+
+def test_structure_whitelist_matches_idx_thk_headers() -> None:
+    chunk = "\n".join(
+        [
+            "[DOCX_V2_TABLE idx=1 rows=2 cols=4]",
+            "r0: c0='编号' | c1='测量值' | c2='编号' | c3='测量值'",
+            "r1: c0='2' | c1='6.9' | c2='3' | c3='5.0'",
+        ]
+    )
+    assert chunk_matches_thickness_structure_whitelist(chunk) is True
+
+
+def test_structure_whitelist_matches_tube_remaining_thk_headers() -> None:
+    chunk = "\n".join(
+        [
+            "[DOCX_V2_TABLE idx=1 rows=2 cols=2]",
+            "r0: c0='管子编号' | c1='剩余壁厚（mm）'",
+            "r1: c0='10' | c1='6.56'",
+        ]
+    )
+    assert chunk_matches_thickness_structure_whitelist(chunk) is True
+
+
+def test_structure_whitelist_matches_omit_prefix_pair() -> None:
+    chunk = "\n".join(
+        [
+            "[DOCX_V2_TABLE idx=1 rows=2 cols=2]",
+            "r0: c0='A8下2' | c1='7.4'",
+            "r1: c0='3' | c1='7.2'",
+        ]
+    )
+    assert chunk_matches_thickness_structure_whitelist(chunk) is True
+
+
+def test_structure_whitelist_rejects_non_thickness_table() -> None:
+    chunk = "\n".join(
+        [
+            "[DOCX_V2_TABLE idx=1 rows=3 cols=2]",
+            "r0: c0='姓名' | c1='职务'",
+            "r1: c0='张三' | c1='班长'",
+            "r2: c0='李四' | c1='技术员'",
+        ]
+    )
+    assert chunk_matches_thickness_structure_whitelist(chunk) is False
+
+
+def test_filter_structure_whitelist_drops_non_thickness() -> None:
+    good = "\n".join(
+        [
+            "[DOCX_V2_TABLE idx=1 rows=2 cols=2]",
+            "r0: c0='管子编号' | c1='剩余壁厚（mm）'",
+            "r1: c0='1' | c1='6.56'",
+        ]
+    )
+    bad = "\n".join(
+        [
+            "[DOCX_V2_TABLE idx=2 rows=2 cols=2]",
+            "r0: c0='姓名' | c1='职务'",
+            "r1: c0='张三' | c1='班长'",
+        ]
+    )
+    items_off = filter_table_work_items([good, bad], parse_route="docx_v2", structure_whitelist=False)
+    assert len(items_off) == 2
+    items_on = filter_table_work_items([good, bad], parse_route="docx_v2", structure_whitelist=True)
+    assert len(items_on) == 1
+    assert items_on[0][0] == 1
+    assert "管子编号" in items_on[0][1]

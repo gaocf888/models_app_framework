@@ -1049,7 +1049,13 @@ class InspectionExtractJobScheduler:
             chunk_kwargs = v2_docx_chunk_params(self._svc._cfg)
 
         chunks = split_parse_chunks(parsed_text, parse_route=parse_route, **chunk_kwargs)
-        work_items = filter_table_work_items(chunks, parse_route=parse_route)
+        work_items = filter_table_work_items(
+            chunks,
+            parse_route=parse_route,
+            structure_whitelist=bool(
+                getattr(self._svc._cfg, "v2_table_structure_whitelist_enabled", False)
+            ),
+        )
         chunks_total = len(work_items)
 
         async def _after_chunk(work_idx: int, record_count: int) -> None:

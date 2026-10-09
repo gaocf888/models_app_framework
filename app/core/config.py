@@ -840,6 +840,8 @@ class InspectionExtractConfig:
     v2_llm_parse_table_only: bool = True
     # DOCX V2：LLM 表格块裁掉从右起连续全空列并更新 cols=N（guard 仍用完整 chunk）
     v2_llm_strip_trailing_empty_cols: bool = True
+    # DOCX V2：含表分块再按测厚结构白名单过滤（编号|壁厚列对 / 表头 / 上下分组+数值对）；默认关闭
+    v2_table_structure_whitelist_enabled: bool = False
     # 异步检修任务（断点续跑）根目录：每任务子目录含 request.json、chunks/*.json、job_meta.json
     async_jobs_state_dir: str = "./data/inspection_extract_jobs"
     # REDIS_URL 启用时：检修异步队列 worker 线程数（与摄入队列分离 key_prefix）
@@ -1722,6 +1724,10 @@ def _load_from_env() -> AppConfig:
         in ("1", "true", "yes", "on"),
         v2_llm_strip_trailing_empty_cols=os.getenv(
             "INSPECT_EXTRACT_V2_LLM_STRIP_TRAILING_EMPTY_COLS", "true"
+        ).lower()
+        in ("1", "true", "yes", "on"),
+        v2_table_structure_whitelist_enabled=os.getenv(
+            "INSPECT_EXTRACT_V2_TABLE_STRUCTURE_WHITELIST", "false"
         ).lower()
         in ("1", "true", "yes", "on"),
         async_jobs_state_dir=(
