@@ -648,7 +648,12 @@ class InspectionExtractLlmOrchestrator:
                         after_defect,
                     )
             records_i = _apply_parse_deterministic_rules(records_i)
-            if bool(getattr(self._cfg, "v2_bind_guard_enabled", True)) and "[DOCX_V2_TABLE" in (chunk or ""):
+            # 仅 parse 提示词 v1 走 bind_guard；v2+ 管号以 LLM / omit_prefix_fill 为准，避免纯数字网格误绑
+            if (
+                pv == "v1"
+                and bool(getattr(self._cfg, "v2_bind_guard_enabled", True))
+                and "[DOCX_V2_TABLE" in (chunk or "")
+            ):
                 from app.inspection_v2.tube_thickness_bind_guard import apply_docx_v2_tube_thickness_bind_guard
 
                 before_fix = sum(
@@ -678,6 +683,29 @@ class InspectionExtractLlmOrchestrator:
                         idx,
                         total,
                         after_fix - before_fix,
+                    )
+            elif pv != "v1" and "[DOCX_V2_TABLE" in (chunk or ""):
+                logger.debug(
+                    "inspection_extract bind_guard skipped prompt_version=%s chunk=%s/%s",
+                    prompt_version,
+                    idx,
+                    total,
+                )
+            # v2 + 省略前缀表：列组扫描补组顶纯数字 / 校正前缀（无配置开关）
+            if pv == "v2" and "[DOCX_V2_TABLE" in (chunk or ""):
+                from app.inspection_v2.omit_prefix_fill_guard import (
+                    apply_docx_v2_omit_prefix_fill_guard,
+                )
+
+                before_n = len(records_i)
+                records_i = apply_docx_v2_omit_prefix_fill_guard(records_i, chunk)
+                if len(records_i) != before_n:
+                    logger.info(
+                        "inspection_extract omit_prefix_fill_guard chunk=%s/%s records %s->%s",
+                        idx,
+                        total,
+                        before_n,
+                        len(records_i),
                     )
             logger.info("inspection_extract llm stage=parse chunk=%s result_records=%s", idx, len(records_i))
             logger.info("inspection_extract parse chunk=%s parse_format=%s", idx, parse_format)
