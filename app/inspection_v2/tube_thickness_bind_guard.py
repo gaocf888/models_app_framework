@@ -2,6 +2,7 @@
 DOCX V2 分块：Parse 后按单元格网格校正「管号+壁厚」绑定（方案 C）。
 
 在块内建立 (检测位置作用域, 方向, 编号, 壁厚) 索引；唯一匹配时纠正 LLM 错绑的管号。
+编排层仅在 prompt_version=v1 时调用（与 tube_direction_sign_guard 一致）。
 """
 
 from __future__ import annotations

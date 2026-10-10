@@ -829,7 +829,7 @@ class InspectionExtractConfig:
     v2_classify_batch_size: int = 40
     # DOCX V2：parse 后按分块内 [颜色标注] 校正检测类型，避免同行/跨列误标缺陷
     v2_color_guard_enabled: bool = True
-    # DOCX V2：parse 后按分块网格校正管号+壁厚绑定（方案 C）
+    # DOCX V2：parse 后按分块网格校正管号+壁厚绑定（方案 C）；仅 prompt_version=v1 时生效
     v2_bind_guard_enabled: bool = True
     # DOCX V2：parse 后按 chunk 组合编号（2-1）标记并校正行号/管号
     v2_combo_guard_enabled: bool = True
