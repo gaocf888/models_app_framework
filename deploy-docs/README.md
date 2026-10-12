@@ -46,7 +46,7 @@
 | 业务线 | 调用方名称 | 主接口 |
 |--------|------------|--------|
 | 智能客服 | AI 问答 | `POST /chatbot/chat/stream` |
-| 检修报告结构化解析 | 检修提取 | `POST /inspection-extract/upload` + `/run` 或 `/run/async` |
+| 检修报告结构化解析 | 检修提取 | `POST /inspection-extract/upload` + `/run` 或 `/run/async`（请求体 `prompt_version`=`v1`/`v2`；模板在 `configs/prompts.yaml` 的 `inspection_extract_parse`） |
 | 超温分析 | 综合分析 | `POST /analysis/run-with-nl2sql-stream`（`analysis_type=overheat_guidance`） |
 | 缺陷识别 | 看图诊断 | `POST /analysis/img-diag/upload` + `/run-img-diag-stream`（`img_diag_subtype=defect_ident`） |
 | 泄爆分析 | 看图诊断 | 同上，`img_diag_subtype=leakage_burst` |
