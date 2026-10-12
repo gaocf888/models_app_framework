@@ -10,9 +10,9 @@
 
 | 角色 | 文档 | 用途 |
 |------|------|------|
-| 实施 / 值班 / 运维 | [整体部署运维手册.md](./整体部署运维手册.md) | 装什么、怎么起、改哪些环境变量、五条业务怎么验收、备份与排障 |
-| 吉泰交付（`app/services` 部分编译） | [吉泰部署运维方案.md](./吉泰部署运维方案.md) | 实验室只编 `app/services` → `.so`；现场挂载 `app/` + `configs/`，运行镜像部署时再打 |
-| 二次开发 / 改 Prompt / 改接口 | [源码移交说明.md](./源码移交说明.md) | 交哪些目录、业务线对应代码、改哪里、哪些能力未上线勿动 |
+| 实施 / 值班 / 运维 | [整体部署运维手册.md](./整体部署运维手册-内部.md) | 装什么、怎么起、改哪些环境变量、五条业务怎么验收、备份与排障 |
+| 吉泰交付（`app/services` 部分编译） | [吉泰部署运维方案.md](./吉泰部署运维方案-内部.md) | 实验室只编 `app/services` → `.so`；现场挂载 `app/` + `configs/`，运行镜像部署时再打 |
+| 二次开发 / 改 Prompt / 改接口 | [源码移交说明.md](./源码移交说明-内部.md) | 交哪些目录、业务线对应代码、改哪里、哪些能力未上线勿动 |
 | 值班快速止血 | [online-services-oncall-runbook.md](./online-services-oncall-runbook.md) | 5 分钟健康检查与客服排障 |
 | 备份目录对照 | [项目容器本地挂载和备份说明.md](./项目容器本地挂载和备份说明.md) | 宿主机 bind mount 清单 |
 | 已踩过的坑 | [问题处理清单.md](./问题处理清单.md) | Python 环境错位、端口占用、EasySearch 内核参数等 |
@@ -35,7 +35,7 @@
 
 **不交：** `paddleocr-layout-deploy/`、`monitoring-deploy/`、`face_db-deploy/`、`graphrag_db-deploy/`、`benchmarks/`、`docs/`、`framework-guide/`、`enterprise-level_transformation_docs/`、`memory-bank/`、`tests/`、`mis-tei-deploy/` 等未上线或设计稿目录。
 
-**吉泰客户现场（当前采用 `app/services/` 部分编译）：** 实验室 `compiled-common-part/compile.sh` 编好 `app/services` 后整包交付；现场用 `compiled-common-part/docker-nvidia/` 或 `docker-mx/` 挂载 `app/` + `configs/` 并 `up --build` 打运行镜像。**不要**删掉 `app/` 下除 `app-deploy` 外的目录（容器靠挂载跑）。口径见 [吉泰部署运维方案.md](./吉泰部署运维方案.md)。内部排障仍可用 `docker-mx/` / `docker-nvidia/` 完全源码构建；整包 `compiled-common/docker-*-compiled/` 为备用、勿与吉泰栈混用。
+**吉泰客户现场（当前采用 `app/services/` 部分编译）：** 实验室 `compiled-common-part/compile.sh` 编好 `app/services` 后整包交付；现场用 `compiled-common-part/docker-nvidia/` 或 `docker-mx/` 挂载 `app/` + `configs/` 并 `up --build` 打运行镜像。**不要**删掉 `app/` 下除 `app-deploy` 外的目录（容器靠挂载跑）。口径见 [吉泰部署运维方案.md](./吉泰部署运维方案-内部.md)。内部排障仍可用 `docker-mx/` / `docker-nvidia/` 完全源码构建；整包 `compiled-common/docker-*-compiled/` 为备用、勿与吉泰栈混用。
 
 **不在 Git、必须由现网一并交代的资产：** 大模型权重、嵌入/重排模型、EasySearch 数据盘、MinIO/Redis 挂载、业务 MySQL。
 
