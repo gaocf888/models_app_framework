@@ -7,9 +7,9 @@
 #   cd app/app-deploy/compiled-common-part && ./compile.sh mx
 #
 # 现场启动（此时 --build 才打运行镜像）：
-#   cp .env.nvidia_bak compiled-common-part/docker-mx/.env.nvidia_bak
+#   cp .env compiled-common-part/docker-mx/.env
 #   cd compiled-common-part/docker-mx
-#   docker compose --env-file .env.nvidia_bak -f docker-compose-mx.yml up -d --build
+#   docker compose --env-file .env -f docker-compose-mx.yml up -d --build
 # =============================================================================
 
 services:
@@ -59,7 +59,7 @@ services:
       minio:
         condition: service_started
     env_file:
-      - .env.nvidia_bak
+      - .env
     command:
       - sh
       - -c

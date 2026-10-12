@@ -26,7 +26,7 @@ if command -v sed >/dev/null 2>&1; then
 fi
 
 ENV_ARGS=""
-if [ -f .env.nvidia_bak ]; then
+if [ -f .env ]; then
   ENV_ARGS="--env-file .env"
 elif [ -f "${SCRIPT_DIR}/../.env" ]; then
   ENV_ARGS="--env-file ${SCRIPT_DIR}/../.env"

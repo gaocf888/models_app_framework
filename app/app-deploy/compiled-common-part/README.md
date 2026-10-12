@@ -46,6 +46,8 @@ cp .env.example .env         # 首次
 cp .env compiled-common-part/docker-mx/.env         # 或 docker-nvidia
 cd compiled-common-part/docker-mx                    # 或 docker-nvidia
 docker compose --env-file .env -f docker-compose-mx.yml up -d --build
+# 英伟达：cd compiled-common-part/docker-nvidia
+# docker compose --env-file .env -f docker-compose-nvidia.yml up -d --build
 ```
 
 挂载默认：`APP_HOST_PATH` → `/workspace/app`，`CONFIGS_HOST_PATH` → `/workspace/configs`。

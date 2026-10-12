@@ -445,19 +445,19 @@ cp .env.example .env          # 首次，之后直接编辑 .env
 # 按第 2 节改完 LLM / RAG / DB / 网络名后再复制
 
 # 英伟达 GPU（吉泰常见）
-cp .env compiled-common-part/docker-nvidia/.env.nvidia_bak
+cp .env compiled-common-part/docker-nvidia/.env
 cd compiled-common-part/docker-nvidia
-docker compose --env-file .env.nvidia_bak -f docker-compose-nvidia.yml up -d --build
+docker compose --env-file .env -f docker-compose-nvidia.yml up -d --build
 
 # 沐曦 GPU（卡型为沐曦时）
-# cp .env compiled-common-part/docker-mx/.env.nvidia_bak
+# cp .env compiled-common-part/docker-mx/.env
 # cd compiled-common-part/docker-mx
-# docker compose --env-file .env.nvidia_bak -f docker-compose-mx.yml up -d --build
+# docker compose --env-file .env -f docker-compose-mx.yml up -d --build
 ```
 
 说明：
 
-- 本栈 compose 的 `env_file` 文件名是 **`.env.nvidia_bak`**（不是源码栈的 `.env`）；把改好的 `.env` 复制为该文件即可。
+- 本栈 compose 的 `env_file` 是子目录 **`.env`**；改完上级 `app/app-deploy/.env` 后必须再 `cp` 过来。
 - 默认挂载：`APP_HOST_PATH`（仓库 `app/`）→ `/workspace/app`，`CONFIGS_HOST_PATH`（仓库 `configs/`）→ `/workspace/configs`。
 - 不要改用 `docker-nvidia/`、`docker-mx/` 或 `compiled-common/docker-*-compiled/` 来起吉泰现场。
 
@@ -711,7 +711,7 @@ curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:${MINIO_PORT:-9000}/m
 
 ### 5.3 本栈常用命令
 
-**吉泰（当前）**：在 `compiled-common-part/docker-nvidia/`（沐曦则 `compiled-common-part/docker-mx/`）下执行，compose 分别为 `docker-compose-nvidia.yml` / `docker-compose-mx.yml`，并加 `--env-file .env.nvidia_bak`。  
+**吉泰（当前）**：在 `compiled-common-part/docker-nvidia/`（沐曦则 `compiled-common-part/docker-mx/`）下执行，compose 分别为 `docker-compose-nvidia.yml` / `docker-compose-mx.yml`，并加 `--env-file .env`。  
 完全源码部署：在 `app/app-deploy`（CPU）或 `docker-nvidia/` / `docker-mx/` 下。
 
 ```bash

@@ -4,7 +4,7 @@
 # 与 compiled-common/docker-nvidia-compiled 独立。现网 docker-nvidia 与 compiled-common/docker-nvidia-compiled 不改。
 #
 # 交付前：./compile.sh nvidia（只打 compile 镜像）
-# 现场：cp .env.nvidia_bak 后本目录 compose up -d --build（此时才打运行镜像）
+# 现场：cp .env 到本目录后 compose up -d --build（此时才打运行镜像）
 # =============================================================================
 
 x-nvidia-gpu: &nvidia-gpu
@@ -64,7 +64,7 @@ services:
       minio:
         condition: service_started
     env_file:
-      - .env.nvidia_bak
+      - .env
     command:
       - sh
       - -c
