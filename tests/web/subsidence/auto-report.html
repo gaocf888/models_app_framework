@@ -632,11 +632,30 @@
     const rec = ensureChapter(slotId);
     const title = chart.title || chart.id || "图";
     const ct = String(chart.chart_type || "").toLowerCase();
-    if (ct === "map_placeholder" || chart.placeholder === true) {
-      rec.charts.appendChild(emptyChartBox(title, ct === "map_placeholder" ? "空间分布图待接入（不接 GIS）" : "待补充"));
+    const spec = chart.spec || {};
+    const imgB64 = chart.image_base64 || spec.image_base64 || "";
+    const imgUrl = chart.image_url || spec.image_url || "";
+    const mime = chart.image_mime || spec.image_mime || "image/png";
+    if (imgB64 || imgUrl) {
+      const box = document.createElement("div");
+      box.className = "chart-box";
+      const h = document.createElement("h3");
+      h.textContent = title;
+      const img = document.createElement("img");
+      img.alt = title;
+      img.style.width = "100%";
+      img.style.height = "auto";
+      img.style.display = "block";
+      img.src = imgUrl || ("data:" + mime + ";base64," + imgB64);
+      box.appendChild(h);
+      box.appendChild(img);
+      rec.charts.appendChild(box);
       return;
     }
-    const spec = chart.spec || {};
+    if (ct === "map_placeholder" || ct === "map_image" || chart.placeholder === true) {
+      rec.charts.appendChild(emptyChartBox(title, "空间分布图待接入（离线出图失败或无站点坐标）"));
+      return;
+    }
     const data = Array.isArray(spec.data) ? spec.data : [];
     const series = Array.isArray(spec.series) ? spec.series : [];
     const hasSeries = series.length > 0;

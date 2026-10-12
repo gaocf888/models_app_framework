@@ -37,6 +37,7 @@
 - `options.area`：`t_station.area` 标准名；空/全市/北京市=不按区过滤
 - 首帧 `started.period`：`t_start` / `t_end` / `period_label` / `area`
 - 表图：`dual_axis` / `map_placeholder` 用 `chart_type` 区分；设备章 `placeholder: true`
+- 沉降分布图：报告配置仍写 `map_placeholder`；运行时有层位 0 坐标则出 PNG（`chart_type=map_image`，`image_base64` + `image_mime=image/png`），否则保持占位。资产目录见 `map_assets/`，可用 `ANALYSIS_AGENT_MAP_ASSETS_DIR` 覆盖。
 
 ## 相关配置（不在此目录）
 

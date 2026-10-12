@@ -110,31 +110,52 @@ def chart_from_config(
     y_right: dict[str, Any] | None = None,
     placeholder: bool = False,
 ) -> dict[str, Any] | None:
-    """声明式 bar / pie / line / dual_axis / map_placeholder。"""
+    """声明式 bar / pie / line / dual_axis / map_placeholder（成功出图为 map_image）。"""
     ctype = (chart_type or "bar").strip().lower()
     limit = max(1, int(max_points))
 
-    if ctype == "map_placeholder":
-        stations: list[dict[str, Any]] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            stations.append(
-                {
-                    "project_name": str(row.get("project_name") or ""),
-                    "lon": row.get("lon"),
-                    "lat": row.get("lat"),
-                    "delta_mm": row.get("delta_mm"),
-                }
-            )
+    if ctype in ("map_placeholder", "map_image"):
+        from app.analysis_agent.renderers.offline_map import (
+            png_to_base64,
+            render_subsidence_map_png,
+            stations_from_layer0_rows,
+        )
+
+        mapped = stations_from_layer0_rows(rows)
+        stations = [
+            {
+                "project_name": str(s.get("project_name") or s.get("id") or ""),
+                "lon": s.get("lon"),
+                "lat": s.get("lat"),
+                "delta_mm": s.get("delta_mm"),
+            }
+            for s in mapped
+        ]
+        chart_title = title or chart_id
+        png, renderer = render_subsidence_map_png(rows, title=chart_title)
+        if png:
+            return {
+                "id": chart_id,
+                "chart_type": "map_image",
+                "title": chart_title,
+                "placeholder": False,
+                "image_mime": "image/png",
+                "image_base64": png_to_base64(png),
+                "spec": {
+                    "title": chart_title,
+                    "stations": stations,
+                    "renderer": renderer,
+                },
+            }
         return {
             "id": chart_id,
             "chart_type": "map_placeholder",
-            "title": title or chart_id,
+            "title": chart_title,
             "placeholder": True,
             "spec": {
-                "title": title or chart_id,
+                "title": chart_title,
                 "stations": stations,
+                "renderer": renderer,
             },
         }
 

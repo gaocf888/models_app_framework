@@ -722,7 +722,29 @@
   }
 
   function renderEchartsChart(chart) {
-    if (!chart || typeof echarts === "undefined") return;
+    if (!chart) return;
+    const spec0 = chart.spec || {};
+    const imgB64 = chart.image_base64 || spec0.image_base64 || "";
+    const imgUrl = chart.image_url || spec0.image_url || "";
+    const mime = chart.image_mime || spec0.image_mime || "image/png";
+    if (imgB64 || imgUrl) {
+      const panels = $("chartPanels");
+      const box = document.createElement("div");
+      box.className = "chart-box";
+      const title = document.createElement("h3");
+      title.textContent = chart.title || chart.id || "图";
+      const img = document.createElement("img");
+      img.alt = title.textContent;
+      img.style.width = "100%";
+      img.style.height = "auto";
+      img.style.display = "block";
+      img.src = imgUrl || ("data:" + mime + ";base64," + imgB64);
+      box.appendChild(title);
+      box.appendChild(img);
+      panels.appendChild(box);
+      return;
+    }
+    if (typeof echarts === "undefined") return;
     const cid = chart.id || "chart_" + Math.random().toString(36).slice(2, 9);
     const panels = $("chartPanels");
     const box = document.createElement("div");

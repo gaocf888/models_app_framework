@@ -15,4 +15,4 @@ python -m http.server 8765
 
 进程：`ANALYSIS_AGENT_ENABLED=true`，`NL2SQL_BUSINESS_DOMAIN=subsidence`。鉴权 `Authorization: Bearer <SERVICE_API_KEY>`。
 
-本页只覆盖五种 `subsidence_*` 模版；不展示 SQL、不接 GIS、不做 HITL resume。锅炉通用智能体页仍用上级 [analysis-agent-stream.html](../analysis-agent-stream.html)。
+本页只覆盖五种 `subsidence_*` 模版；不展示 SQL、不做 HITL resume。沉降分布图由后端离线出 PNG（`map_image` / `image_base64`），不接交互 GIS。锅炉通用智能体页仍用上级 [analysis-agent-stream.html](../analysis-agent-stream.html)。

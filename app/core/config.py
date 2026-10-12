@@ -779,6 +779,8 @@ class AnalysisAgentConfig:
     trace_es_hosts: str = ""
     trace_es_index: str = "analysis_agent_trace_archive"
     plan_template_version: str = "analysis_agent_v1"
+    map_render_enabled: bool = True
+    map_assets_dir: str = ""
 
 
 @dataclass
@@ -1756,6 +1758,8 @@ def _load_from_env() -> AppConfig:
         plan_template_version=(
             os.getenv("ANALYSIS_AGENT_PLAN_TEMPLATE_VERSION", "analysis_agent_v1") or "analysis_agent_v1"
         ).strip(),
+        map_render_enabled=os.getenv("ANALYSIS_AGENT_MAP_RENDER_ENABLED", "true").lower() != "false",
+        map_assets_dir=(os.getenv("ANALYSIS_AGENT_MAP_ASSETS_DIR") or "").strip(),
     )
     data_query_agent_cfg = DataQueryAgentConfig(
         enabled=os.getenv("DATA_QUERY_AGENT_ENABLED", "true").lower() != "false",

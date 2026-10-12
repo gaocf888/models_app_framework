@@ -3,9 +3,9 @@
   "title": "二、（一）全市平原沉降成果",
   "kind": "llm_section",
   "source_item_ids": ["q_layer0", "q_area_rank"],
-  "outline": ["各行政区周期沉降量对比", "沉降/回弹显著区域", "结合已渲染统计图与地图占位做简要解读"],
-  "constraints": ["禁止编造", "禁止内部编号", "禁止 # 标题行", "地图仅为占位，禁止当成热力图假数据"],
-  "narrative_instruction": "撰写全市平原沉降成果：按行政区解读层位0沉降格局；关键柱状图与地图占位已由程序渲染，勿重复制图。",
+  "outline": ["各行政区周期沉降量对比", "沉降/回弹显著区域", "结合已渲染统计图与沉降分布图做简要解读"],
+  "constraints": ["禁止编造", "禁止内部编号", "禁止 # 标题行", "地图由程序离线出图，禁止当成热力图假数据"],
+  "narrative_instruction": "撰写全市平原沉降成果：按行政区解读层位0沉降格局；关键柱状图与沉降分布图已由程序渲染，勿重复制图。",
   "allowed_outputs": ["paragraph"],
   "use_emit_tools": false,
   "tables": [
@@ -32,7 +32,7 @@
     },
     {
       "id": "c_city_map",
-      "title": "全市平原沉降分布（地图占位）",
+      "title": "全市平原沉降分布图",
       "chart_type": "map_placeholder",
       "source_item_ids": ["q_layer0"],
       "attach_to_chapter": "@self"

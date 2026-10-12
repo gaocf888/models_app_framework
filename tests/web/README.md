@@ -285,7 +285,7 @@ V0 单段异步任务 **`work_idx` 一般为 `1`**；`strict` 可不传，走 `I
 ### 8.3 行为说明
 
 - 仅五种 `subsidence_*`；默认季报。`query` 可空。起止日期必须成对或都空。
-- 点「生成报告」后按章渲染 Markdown / 表 / `bar|pie|line|dual_axis`；`map_placeholder` 只显示「空间分布图待接入」。
+- 点「生成报告」后按章渲染 Markdown / 表 / `bar|pie|line|dual_axis`；沉降分布图优先渲染 `image_base64` PNG，失败时显示占位文案。
 - 取数进度只显示 `item_id`、执行器、行数，**不渲染 sql**。
 - 「停止」与离开页调用 `stream/stop`（需已收到 `started.stream_id`）。无 HITL / resume。
 

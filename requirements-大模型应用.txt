@@ -31,6 +31,10 @@ sentence-transformers>=5.4.0,<6.0.0   # 嵌入服务（EmbeddingService）主依
 transformers>=4.51.0
 faiss-cpu>=1.7.4              # 向量检索后端，当前默认使用本地 FAISS 文件索引
 numpy<2.0                     # 与 elasticsearch 7.x 兼容（7.x 依赖 np.float_，在 numpy 2.0 已移除）
+matplotlib>=3.7.0             # 地降自动报告离线沉降分布图（Agg 后端出 PNG）
+# geopandas>=0.14.0           # 可选：区县界/水系矢量底图；未安装时退化为经纬度散点图
+# rasterio>=1.3.0             # 可选：DEM 山体阴影
+# shapely>=2.0.0              # 可选：水系裁剪（随 geopandas 一并安装）
 # elasticsearch>=8.12.0         # ES / EasySearch（兼容 ES API）向量+全文混合检索
 elasticsearch==7.13.4         # ES / EasySearch（兼容 ES API）向量+全文混合检索(兼容easysearch版本)
 neo4j>=5.0.0                  # GraphRAG 使用的 Neo4j Python 驱动（配合 langchain graph）

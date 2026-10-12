@@ -18,6 +18,10 @@ def test_daily_compose_four_chapters() -> None:
     plan_ids = {t["item_id"] for t in spec.plan_tasks}
     assert "q_fcb_endpoints" in plan_ids
     assert "q_layer0" in plan_ids
+    assert any(
+        c.get("id") == "c_plain_map" and c.get("attach_to_chapter") == "plain_monitoring"
+        for c in spec.charts
+    )
 
 
 def test_quarterly_compose_districts_and_layers() -> None:

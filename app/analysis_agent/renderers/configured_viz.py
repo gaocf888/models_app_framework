@@ -103,7 +103,7 @@ def render_configured_chart(
     source_ids = [str(x) for x in (spec.get("source_item_ids") or []) if str(x).strip()]
     rows = _apply_row_filter(_collect_rows(gathered_data, source_ids), spec)
     title = str(spec.get("title") or cid)
-    if chart_type in ("dual_axis", "map_placeholder"):
+    if chart_type in ("dual_axis", "map_placeholder", "map_image"):
         ch = chart_from_config(
             chart_id=cid,
             chart_type=chart_type,
