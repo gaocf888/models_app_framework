@@ -8,8 +8,8 @@
 #   - 禁止把整棵 app/ 挂到 /workspace/app
 #
 # 启动（app/app-deploy）：
-#   cp .env docker-mx-compiled/.env
-#   cd docker-mx-compiled
+#   cp .env compiled-common/docker-mx-compiled/.env
+#   cd compiled-common/docker-mx-compiled
 #   docker compose --env-file .env -f docker-compose-mx-compiled.yml up -d --build
 # 验收通过并删宿主机业务源码后，禁止再 --build，改为 up -d。
 #
@@ -52,8 +52,8 @@ services:
   models-app:
     image: models-app-mx-compiled:latest
     build:
-      context: ../../..
-      dockerfile: app/app-deploy/docker-mx-compiled/Dockerfile
+      context: ../../../..
+      dockerfile: app/app-deploy/compiled-common/docker-mx-compiled/Dockerfile
     container_name: models-app
     restart: unless-stopped
     privileged: true
@@ -79,9 +79,9 @@ services:
       mineru-external: {}
     volumes:
       # Prompt / 业务 YAML：宿主机明文，覆盖镜像内空目录
-      - ${CONFIGS_HOST_PATH:-../../../configs}:/workspace/configs
+      - ${CONFIGS_HOST_PATH:-../../../../configs}:/workspace/configs
       - huggingface-cache:/root/.cache/huggingface
-      - ../logs:/workspace/logs
+      - ../../logs:/workspace/logs
       - ${SESSION_STORAGE_HOST_PATH:-/aidata/data/session_storage}:/workspace/data/conversation_archive
       - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
       - ${RAG_FAISS_DATA_HOST_PATH:-/aidata/data/faiss_data}:/workspace/data/faiss

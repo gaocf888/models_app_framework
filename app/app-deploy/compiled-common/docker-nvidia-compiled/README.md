@@ -1,6 +1,6 @@
-# 吉泰英伟达 compiled（`docker-nvidia-compiled/`）
+# 整包编译 · 英伟达（`compiled-common/docker-nvidia-compiled/`）
 
-业务 Python 编成 `.so` 打进 `models-app-nvidia-compiled`。现网 `docker-nvidia/` 不改。
+**备用栈，非当前吉泰入口。** 当前吉泰用 `compiled-common-part/`（只编 `app/services` + 挂载）。本目录把整包业务 Python 编成 `.so` 打进 `models-app-nvidia-compiled`。现网 `docker-nvidia/` 不改。Nuitka 入口在上级 `compiled-common/`。
 
 ## 启动
 
@@ -9,12 +9,12 @@
 ```bash
 cd app/app-deploy
 cp .env.example .env
-cp .env docker-nvidia-compiled/.env
-cd docker-nvidia-compiled
+cp .env compiled-common/docker-nvidia-compiled/.env
+cd compiled-common/docker-nvidia-compiled
 docker compose --env-file .env -f docker-compose-nvidia-compiled.yml up -d --build
 ```
 
-`configs/` 默认挂 `../../../configs` → `/workspace/configs`。**不要**把宿主机 `app/` 挂到 `/workspace/app`。
+`configs/` 默认挂 `../../../../configs` → `/workspace/configs`。**不要**把宿主机 `app/` 挂到 `/workspace/app`。
 
 验收通过后删掉宿主机 `app/` 下除 `app-deploy` 外的代码，并 `docker builder prune`。之后只 `up -d`，禁止 `--build`。
 
@@ -24,6 +24,6 @@ docker compose --env-file .env -f docker-compose-nvidia-compiled.yml up -d --bui
 - 容器内编译报告：`/workspace/app/.compile_report.txt`、`.compile_whitelist.txt`（Nuitka 失败而保留的 `.py`）
 - 编译器：Nuitka 分档并行（小文件多进程、大文件少进程高 `--jobs`）；&lt;2KB 默认留明文
 - 重复构建：Dockerfile 使用 BuildKit cache mount（Nuitka cache + ccache）
-- 编译脚本：`../compiled-common/`
+- 编译脚本：上级 `compiled-common/`（`compile_app.py`）
 
 `.so` 必须在本机 CPython 3.11 + cu121 镜像内编译，不能与沐曦 compiled 镜像互换。

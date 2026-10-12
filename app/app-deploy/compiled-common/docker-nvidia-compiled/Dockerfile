@@ -2,7 +2,7 @@
 # 吉泰英伟达：业务 Python Nuitka 编译进镜像（多阶段，最终层无源码 COPY）
 # =============================================================================
 # 构建上下文必须是仓库根 models_app_framework。
-# 现网 docker-nvidia/Dockerfile-nvidia 不改；本文件仅给 docker-nvidia-compiled 使用。
+# 现网 docker-nvidia/Dockerfile-nvidia 不改；本文件仅给 compiled-common/docker-nvidia-compiled 使用。
 #
 # builder：与现网相同的 CPython 3.11 + cu121 PyTorch 上编 .so
 # runtime：同一基座 + 同一 pip 依赖，只 COPY 编译后的 /workspace/app

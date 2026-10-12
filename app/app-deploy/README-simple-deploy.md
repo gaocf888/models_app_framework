@@ -1,6 +1,7 @@
 # 应用部署简明版（生产配置与上线流程）
 
 > 本文是 `README.md` 的**精简版**，重点面向「应用配置 + 生产/测试环境部署」，不讨论代码开发细节。  
+> **当前吉泰现场**采用「`app/services/` 部分源码编译部署」（见 §1.1、§3.2），不要与另外两种栈混用。  
 > 若需要完整说明（包括治理策略、GPU profile 细节、运维检查清单），请阅读同目录 `README.md`。
 > 若为局域网/离线环境部署外挂服务（vLLM、EasySearch、MinerU、**检修 V0 版面侧车 paddleocr-layout-deploy**），请阅读：`README-external-services-lan-deploy.md`。
 > 值班排障请阅读：`deploy-docs/online-services-oncall-runbook.md`（当前先覆盖智能客服）。
@@ -33,6 +34,22 @@
 | 会话存储 | `app/app-deploy/` 内置 Redis | 存储会话历史，可通过 `REDIS_URL` 切换到外部 Redis |
 
 部署顺序推荐：**EasySearch → vLLM →（可选）MinerU →（可选）`paddleocr-layout-deploy` →（可选 Neo4j）→ 应用栈**。
+
+### 1.1 三种部署方式（应用栈）
+
+应用栈（Redis + MinIO + `models-app`）有三种交付形态，**按卡型各有一套 compose，不要混用目录、不要混用镜像、沐曦/英伟达 `.so` 不能互换**。vLLM / EasySearch / MinerU 的启动与三种方式无关，仍按 §3.1。
+
+| 方式 | 口径 | 业务代码怎么进容器 | 部署目录与文件 | 适用 |
+|------|------|-------------------|----------------|------|
+| **完全源码部署** | 明文 `app/` + `configs/` 进镜像（`COPY`） | 源码打进 `models-app` | **CPU**：本目录 `docker-compose.yml` + `Dockerfile`；**英伟达**：`docker-nvidia/Dockerfile-nvidia` + `docker-compose-nvidia.yml`；**沐曦**：`docker-mx/Dockerfile-mx` + `docker-compose-mx.yml` | 内部排障、源码联调；结项现网也曾用 GPU 源码栈 |
+| **`app/` 源码完整编译部署** | 整包 `app/` 在构建期 Nuitka 成 `.so` 打进镜像 | 只挂 `configs/`，**禁止**再挂整棵 `app/` | `compiled-common/`（`compile_app.sh` / `compile_app.py` / `compile_keep_py.txt`）+ `compiled-common/docker-nvidia-compiled/`（`Dockerfile`、`docker-compose-nvidia-compiled.yml`）或 `compiled-common/docker-mx-compiled/`（`Dockerfile`、`docker-compose-mx-compiled.yml`） | 去源码交付的**备用**口径；详见各目录 README |
+| **`app/services/` 部分源码编译部署** | 实验室只编 `app/services` → `.so`；现场镜像不 `COPY` 业务代码 | **挂载**整棵 `app/` + `configs/` | `compiled-common-part/`（`compile.sh`、`compile_services.py`、`compile_keep_py.txt`）+ `compiled-common-part/docker-nvidia/` 或 `docker-mx/`（运行 `Dockerfile`、`docker-compose-*.yml`；编译用 `Dockerfile.compile`、`docker-compose.compile.yml`，**现场不用**） | **当前吉泰项目采用此方式**；见 `deploy-docs/吉泰部署运维方案.md` |
+
+对照要点：
+
+- **完全源码**：改 `.py` 后 `--build`（或挂载排障）即可；客户机能 `cat` 到业务明文。
+- **整包编译**：`.so` 在镜像层里；验收后可删宿主机 `app/` 下除 `app-deploy` 外的代码；之后禁止再 `--build`。
+- **部分编译（吉泰）**：交付前在对应卡型 Linux 上 `./compile.sh nvidia` 或 `mx`，只打编译镜像、写出 `app/services/*.so`；**运行镜像在现场 `up --build` 时再打**。客户机上 `app/services` 以 `.so` 为主，其余包仍为源码。细则见 `compiled-common-part/README.md`。
 
 ---
 
@@ -219,7 +236,7 @@ LOG_FILE_COMPRESS=true
 - `LOG_FILE_ENABLED=false` 时，仅 stdout。  
 - `LOG_FILE_ENABLED=true` 时，stdout + 文件双写。  
 - 轮转触发后会生成 `app.log.1.gz`、`app.log.2.gz` ...（当 `LOG_FILE_COMPRESS=true`）。  
-- compose 将 `/workspace/logs` bind 到 **app-deploy/logs**（`docker-compose.yml` 为 `./logs`，`docker-mx/docker-compose-mx.yml` 为 `../logs`，宿主机目录一致），容器重建后日志仍保留在宿主机。
+- compose 将 `/workspace/logs` bind 到 **app-deploy/logs**（CPU 栈 `docker-compose.yml` 为 `./logs`；`docker-mx/`、`compiled-common-part/docker-*` 等为 `../logs` 或 `../../logs`，宿主机目录一致），容器重建后日志仍保留在宿主机。
 
 ### 2.9 模型离线使用
 > 整个项目中包括 嵌入模型、重排序模型、智能客服 BERT 意图模型（可选，`bert` 后端）、智能客服轻量意图 LLM（可选，`llm` 后端）、mineru模型
@@ -402,32 +419,93 @@ docker compose -f docker-compose.neo4j.yml --env-file .env up -d
 
 ### 3.2 启动应用栈
 
-> docker&docker-compose 应用部署说明
-> docker-mx/ 和 docker-nvidia/ 路径下是源码方式直接部署的docker配置文件(沐曦和英伟达)
-> docker-mx-compiled/ 和 docker-nvidia-compiled/ 路径下是源码编译(Nuitka编译)部署的docker配置文件(沐曦和英伟达) 
+三种方式的目录对照见 §1.1。**当前吉泰项目用 `app/services/` 部分源码编译部署**（`compiled-common-part/`），现场按 **3.2.1**。另外两种仅内部/备用，见 3.2.2、3.2.3。
+
+> 启动之前关键修改确认项：`LLM_DEFAULT_MODEL` 须与 vLLM `--served-model-name` 一致。英伟达栈还需核对 `RAG_RERANKER_DEVICE` / `APP_NVIDIA_VISIBLE_DEVICES`（与 vLLM 分卡）。  
+> 改完上级 `app/app-deploy/.env` 后必须再复制到正在使用的 compose 子目录，否则容器读到的是子目录那份。
+
+#### 3.2.1 吉泰：`app/services/` 部分源码编译部署（当前采用）
+
+交付前在**对应卡型 Linux** 编译（现场不再跑；沐曦 conda 3.12 / 英伟达 CPython 3.11，两套 `.so` 不能互换）：
 
 ```bash
-# 因应用服务器中涉及嵌入和重排，基于嵌入和重排使用的设备CPU/GPU，部署包括如下方式：
-# cpu部署：RAG 重排/嵌入走 CPU
+cd app/app-deploy/compiled-common-part
+chmod +x compile.sh
+sed -i 's/\r$//' compile.sh    # 若报 /bin/sh^M
+./compile.sh nvidia            # 沐曦现场改用 mx
+```
+
+只构建 `*-part-compile` 并改写 `app/services/`（成功则删对应 `.py`，留 `.so`）。**不打**运行镜像。看 `app/services/.compile_report.txt`。
+
+现场启动（**此时才** `up --build` 打运行镜像；镜像不 `COPY` `app/` / `configs/`，靠挂载）：
+
+```bash
+cd app/app-deploy
+cp .env.example .env          # 首次，之后直接编辑 .env
+# 按第 2 节改完 LLM / RAG / DB / 网络名后再复制
+
+# 英伟达 GPU（吉泰常见）
+cp .env compiled-common-part/docker-nvidia/.env.nvidia_bak
+cd compiled-common-part/docker-nvidia
+docker compose --env-file .env.nvidia_bak -f docker-compose-nvidia.yml up -d --build
+
+# 沐曦 GPU（卡型为沐曦时）
+# cp .env compiled-common-part/docker-mx/.env.nvidia_bak
+# cd compiled-common-part/docker-mx
+# docker compose --env-file .env.nvidia_bak -f docker-compose-mx.yml up -d --build
+```
+
+说明：
+
+- 本栈 compose 的 `env_file` 文件名是 **`.env.nvidia_bak`**（不是源码栈的 `.env`）；把改好的 `.env` 复制为该文件即可。
+- 默认挂载：`APP_HOST_PATH`（仓库 `app/`）→ `/workspace/app`，`CONFIGS_HOST_PATH`（仓库 `configs/`）→ `/workspace/configs`。
+- 不要改用 `docker-nvidia/`、`docker-mx/` 或 `compiled-common/docker-*-compiled/` 来起吉泰现场。
+
+#### 3.2.2 完全源码部署（内部排障 / 非吉泰）
+
+RAG 重排与嵌入按设备选 CPU 或 GPU 栈；业务 `app/` 以明文 `COPY` 进镜像。
+
+```bash
+# CPU：RAG 重排/嵌入走 CPU
 cd app/app-deploy
 cp .env.example .env          # 首次，之后直接编辑 .env
 docker compose up -d --build
 
 # 英伟达 GPU：RAG 重排/嵌入走 CUDA（详见 docker-nvidia/README.md）
 cd app/app-deploy
-cp .env.example .env          # 首次，之后直接编辑 .env
+cp .env.example .env
 cp .env docker-nvidia/.env
-cd docker-nvidia    # 当前docker-nvidia/为源码部署，docker-nvidia-compiled/为对应编译部署
+cd docker-nvidia
 docker compose --env-file .env -f docker-compose-nvidia.yml up -d --build
 
-# 沐曦 GPU：RAG 重排/嵌入走沐曦架构(使用沐曦 AI 框架镜像（为了 reranker 效率）)
+# 沐曦 GPU：RAG 重排/嵌入走沐曦（Dockerfile-mx / 沐曦 AI 框架镜像）
 cd app/app-deploy
-cp .env.example .env          # 首次，之后直接编辑 .env
-cp .env docker-mx
-cd docker-mx       # 当前docker-mx/为源码部署，docker-mx-compiled/为对应编译部署
+cp .env.example .env
+cp .env docker-mx/.env
+cd docker-mx
 docker compose --env-file .env -f docker-compose-mx.yml up -d --build
 ```
-> 启动之前关键修改确认项：`LLM_DEFAULT_MODEL` 须与 vLLM `--served-model-name` 一致。英伟达栈还需核对 `RAG_RERANKER_DEVICE` / `APP_NVIDIA_VISIBLE_DEVICES`（与 vLLM 分卡）。
+
+#### 3.2.3 `app/` 源码完整编译部署（备用，非当前吉泰）
+
+整包 `app/` 在构建期编进镜像，只挂 `configs/`。**不要**把宿主机 `app/` 挂到 `/workspace/app`。细则见 `compiled-common/docker-*-compiled/README.md`。
+
+```bash
+cd app/app-deploy
+cp .env.example .env
+
+# 英伟达
+cp .env compiled-common/docker-nvidia-compiled/.env
+cd compiled-common/docker-nvidia-compiled
+docker compose --env-file .env -f docker-compose-nvidia-compiled.yml up -d --build
+
+# 沐曦
+# cp .env compiled-common/docker-mx-compiled/.env
+# cd compiled-common/docker-mx-compiled
+# docker compose --env-file .env -f docker-compose-mx-compiled.yml up -d --build
+```
+
+验收通过并删宿主机业务源码后，禁止再 `--build`，只 `up -d`。
 
 默认会启动：
 
@@ -445,7 +523,8 @@ docker compose --profile small-model-gpu up -d --build
 docker compose --env-file .env -f docker-compose-nvidia.yml --profile small-model-gpu up -d --build
 ```
 
-> GPU profile 的详细说明见 `README.md`，简化版只需知道：不加 `--profile small-model-gpu` 时不会占用 GPU。
+> GPU profile 的详细说明见 `README.md`，简化版只需知道：不加 `--profile small-model-gpu` 时不会占用 GPU。  
+> `compiled-common-part/`（吉泰当前栈）**没有**该 profile；`/small-model/*` 仅走完全源码栈的 CPU / `docker-nvidia/` 路径。
 
 ### 3.1 人脸识别（InsightFace，`/face/*`）
 
@@ -632,7 +711,8 @@ curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:${MINIO_PORT:-9000}/m
 
 ### 5.3 本栈常用命令
 
-在 `app/app-deploy` 目录（沐曦环境则在 `docker-mx/` 下，compose 文件换为 `docker-compose-mx.yml`）：
+**吉泰（当前）**：在 `compiled-common-part/docker-nvidia/`（沐曦则 `compiled-common-part/docker-mx/`）下执行，compose 分别为 `docker-compose-nvidia.yml` / `docker-compose-mx.yml`，并加 `--env-file .env.nvidia_bak`。  
+完全源码部署：在 `app/app-deploy`（CPU）或 `docker-nvidia/` / `docker-mx/` 下。
 
 ```bash
 # 查看状态
@@ -678,4 +758,6 @@ docker compose --profile small-model-gpu down
 - **检修 V0 + 版面侧车**：`framework-guide/报告解析企业级实现方案V0.md`、`enterprise-level_transformation_docs/企业级检修报告结构化提取V0版本实现和使用说明.md`、`paddleocr-layout-deploy/README.md`。  
 - RAG / GraphRAG 细节：`framework-guide/RAG整体实现技术说明.md`。  
 - 底座数据库部署：`rag_db-deploy/README.md`、`graphrag_db-deploy/README.md`。  
-- 大模型服务部署：`vllm-deploy/README.md`。
+- 大模型服务部署：`vllm-deploy/README.md`。  
+- 吉泰部分编译（当前采用）：`compiled-common-part/README.md`、`deploy-docs/吉泰部署运维方案.md`。  
+- 整包 `app/` 编译（备用）：`compiled-common/README.md`。

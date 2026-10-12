@@ -1,6 +1,11 @@
 # compiled-common
 
-吉泰 compiled 镜像共用的 **Nuitka** 入口。`docker-mx-compiled/` 与 `docker-nvidia-compiled/` 的 Dockerfile 在 builder 阶段 `COPY` 本目录。
+**备用**整包 `app/` Nuitka 编译进镜像（去源码交付）。**当前吉泰不采用本目录**，现场用并列的 `../compiled-common-part/`（只编 `app/services` + 挂载）。Nuitka 入口与沐曦/英伟达 Docker 栈都在本目录：
+
+- 本目录根：`compile_app.sh` / `compile_app.py` / `compile_keep_py.txt`（Dockerfile builder 阶段 `COPY` 到 `/tmp/compiled-common`）
+- `docker-mx-compiled/`、`docker-nvidia-compiled/`：多阶段镜像 + compose（挂 `configs/`，**不挂**整棵 `app/`）
+
+只编 `app/services`、源码挂载部署见并列的 `../compiled-common-part/`，不要与本目录混用。
 
 - `compile_app.sh`：容器内入口，解释器由环境变量 `PYTHON` 指定。
 - `compile_app.py`：按文件 `nuitka --module --nofollow-imports`，分档并行；删除已成功编译的 `.py`。失败项写入 `app/.compile_whitelist.txt`。

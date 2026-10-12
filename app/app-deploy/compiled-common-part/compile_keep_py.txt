@@ -1,0 +1,6 @@
+# Paths relative to app/services/ (posix) that must stay as plaintext .py.
+# __init__.py is always kept by compile_services.py (Nuitka package markers).
+# Backup *_bak_* files are skipped automatically.
+#
+# Example:
+# small_models/face_gallery_service.py

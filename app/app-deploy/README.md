@@ -618,7 +618,8 @@ docker compose --profile small-model-gpu down
 | `docker-compose.yml` | CPU 栈：`redis`、`minio`、`models-app`；可选 **`models-app-gpu`**（`profiles: small-model-gpu`） |
 | `docker-nvidia/` | 英伟达 GPU 栈：`Dockerfile-nvidia` + `docker-compose-nvidia.yml`（RAG 重排走 CUDA） |
 | `docker-mx/` | 沐曦 GPU 栈：`Dockerfile-mx` + `docker-compose-mx.yml` |
-| `docker-nvidia-compiled/` / `docker-mx-compiled/` | 吉泰 compiled（Nuitka `.so`）栈；见各目录 README 与 `deploy-docs/吉泰部署运维方案.md` |
+| `compiled-common/` | **备用**整包 `app/` Nuitka 编译进镜像（含 `docker-mx-compiled/`、`docker-nvidia-compiled/`）；非当前吉泰 |
+| `compiled-common-part/` | **当前吉泰**：只编 `app/services` 后挂载 `app/` + `configs/`；见 `deploy-docs/吉泰部署运维方案.md` |
 | `.env.example` | 环境变量模板与分块注释（复制为 `.env`） |
 | `README-simple-deploy.md` | **应用部署与配置准绳** |
 | `README.md` | 本文档（补充） |

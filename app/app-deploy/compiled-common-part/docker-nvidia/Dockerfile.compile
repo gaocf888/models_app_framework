@@ -1,0 +1,36 @@
+# =============================================================================
+# 英伟达：仅用于交付前编译 app/services（CPython 3.11，与运行镜像同一基座）
+# 部署不会使用本镜像；运行镜像由现场 docker-compose-nvidia.yml --build 再打。
+# =============================================================================
+
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/workspace \
+    NUITKA_CACHE_DIR=/var/cache/nuitka \
+    CCACHE_DIR=/root/.ccache \
+    NUITKA_FILE_TIMEOUT=1800 \
+    COMPILE_MIN_BYTES=0
+
+USER root
+WORKDIR /workspace
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    patchelf \
+    ccache \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir --timeout=300 --retries=15 \
+        ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
+        ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
+        nuitka ordered-set zstandard

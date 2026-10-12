@@ -1,0 +1,32 @@
+# 仅交付前编译 app/services。不打运行镜像，不连 vLLM/EasySearch。
+#   docker compose -f docker-compose.compile.yml build
+#   docker compose -f docker-compose.compile.yml run --rm compile-services
+# 或 compiled-common-part/compile.sh mx
+
+services:
+  compile-services:
+    image: models-app-mx-part-compile:latest
+    build:
+      context: ../../../..
+      dockerfile: app/app-deploy/compiled-common-part/docker-mx/Dockerfile.compile
+    working_dir: /workspace
+    environment:
+      PYTHONPATH: /workspace
+      NUITKA_CACHE_DIR: /var/cache/nuitka
+      COMPILE_MIN_BYTES: "0"
+    volumes:
+      - ../../../..:/workspace
+      - nuitka-cache:/var/cache/nuitka
+      - compile-ccache:/root/.ccache
+    command:
+      - /opt/conda/bin/python
+      - /workspace/app/app-deploy/compiled-common-part/compile_services.py
+      - /workspace
+      - --services-dir
+      - /workspace/app/services
+      - --keep-file
+      - /workspace/app/app-deploy/compiled-common-part/compile_keep_py.txt
+
+volumes:
+  nuitka-cache: {}
+  compile-ccache: {}

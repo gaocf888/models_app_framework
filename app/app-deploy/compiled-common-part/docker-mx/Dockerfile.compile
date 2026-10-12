@@ -1,0 +1,35 @@
+# =============================================================================
+# 沐曦：仅用于交付前编译 app/services（conda Python 3.12，与运行镜像同一基座）
+# 部署不会使用本镜像；运行镜像由现场 docker-compose-mx.yml --build 再打。
+# =============================================================================
+
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+FROM cr.metax-tech.com/public-ai-release/maca/vllm-metax:0.17.0-maca.ai3.5.3.307-torch2.8-py312-kylinv11-amd64
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/workspace \
+    PATH=/opt/conda/bin:${PATH} \
+    NUITKA_CACHE_DIR=/var/cache/nuitka \
+    CCACHE_DIR=/root/.ccache \
+    NUITKA_FILE_TIMEOUT=1800 \
+    COMPILE_MIN_BYTES=0
+
+USER root
+WORKDIR /workspace
+
+RUN yum install -y --setopt=tsflags=nodocs gcc gcc-c++ make \
+    && yum clean all && \
+    rm -rf /var/cache/yum
+RUN yum install -y --setopt=tsflags=nodocs ccache || true
+
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+
+RUN /opt/conda/bin/pip install --no-cache-dir --timeout=300 --retries=15 \
+        ${PIP_INDEX_URL:+-i} ${PIP_INDEX_URL:+$PIP_INDEX_URL} \
+        ${PIP_TRUSTED_HOST:+--trusted-host} ${PIP_TRUSTED_HOST:+$PIP_TRUSTED_HOST} \
+        nuitka ordered-set zstandard

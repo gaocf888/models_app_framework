@@ -2,7 +2,7 @@
 # 吉泰沐曦：业务 Python Nuitka 编译进镜像（多阶段，最终层无源码 COPY）
 # =============================================================================
 # 构建上下文必须是仓库根 models_app_framework。
-# 现网 docker-mx/Dockerfile-mx 不改；本文件仅给 docker-mx-compiled 使用。
+# 现网 docker-mx/Dockerfile-mx 不改；本文件仅给 compiled-common/docker-mx-compiled 使用。
 #
 # builder：与现网相同的 Metax conda Python 3.12 上编 .so
 # runtime：同一基座 + 同一 pip 依赖，只 COPY 编译后的 /workspace/app
