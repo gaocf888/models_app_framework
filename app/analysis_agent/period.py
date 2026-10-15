@@ -24,6 +24,16 @@ _REPORT_KIND = {
     "subsidence_quarterly": "季度报告",
     "subsidence_yearly": "年报",
 }
+FALLBACK_MAX_STEPS = {
+    "subsidence_daily": 60,
+    "subsidence_weekly": 26,
+    "subsidence_monthly": 24,
+    "subsidence_quarterly": 8,
+    "subsidence_yearly": 5,
+}
+_RESOLVED_CORE = frozenset(
+    {"t_start", "t_end", "area", "period_label", "report_date", "issue_no", "report_kind"}
+)
 
 
 class PeriodValidationError(ValueError):
@@ -114,6 +124,107 @@ def _quarter_start(d: date) -> date:
     return date(d.year, q * 3 + 1, 1)
 
 
+def label_for_complete_window(analysis_type: str, start: datetime, end: datetime) -> str:
+    """同粒度完整周期的展示名（日/周/月/季/年）。"""
+    at = (analysis_type or "").strip()
+    sd = start.date()
+    ed = end.date()
+    if at == "subsidence_daily":
+        return f"{sd.year}年{sd.month}月{sd.day}日"
+    if at == "subsidence_weekly":
+        last = ed - timedelta(days=1)
+        return f"{sd.year}年{sd.month}月{sd.day}日—{last.month}月{last.day}日"
+    if at == "subsidence_monthly":
+        return f"{sd.year}年{sd.month}月"
+    if at == "subsidence_quarterly":
+        qn = (sd.month - 1) // 3 + 1
+        cn = {1: "一", 2: "二", 3: "三", 4: "四"}.get(qn, str(qn))
+        return f"{sd.year}年第{cn}季度"
+    if at == "subsidence_yearly":
+        return f"{sd.year}年"
+    return f"{sd.year}年{sd.month}月{sd.day}日—{ed.year}年{ed.month}月{ed.day}日"
+
+
+def complete_window_containing(analysis_type: str, instant: datetime) -> tuple[datetime, datetime]:
+    """包含 instant 的同粒度完整半开窗。"""
+    at = (analysis_type or "").strip()
+    d = instant.date() if isinstance(instant, datetime) else instant
+    if at == "subsidence_weekly":
+        mon = _week_monday(d)
+        start = datetime(mon.year, mon.month, mon.day)
+        return start, start + timedelta(days=7)
+    if at == "subsidence_monthly":
+        start = datetime(d.year, d.month, 1)
+        if d.month == 12:
+            end = datetime(d.year + 1, 1, 1)
+        else:
+            end = datetime(d.year, d.month + 1, 1)
+        return start, end
+    if at == "subsidence_quarterly":
+        qs = _quarter_start(d)
+        start = datetime(qs.year, qs.month, qs.day)
+        if qs.month == 10:
+            end = datetime(qs.year + 1, 1, 1)
+        else:
+            end = datetime(qs.year, qs.month + 3, 1)
+        return start, end
+    if at == "subsidence_yearly":
+        start = datetime(d.year, 1, 1)
+        return start, datetime(d.year + 1, 1, 1)
+    start = datetime(d.year, d.month, d.day)
+    return start, start + timedelta(days=1)
+
+
+def step_back_complete_window(
+    analysis_type: str, start: datetime, end: datetime
+) -> tuple[datetime, datetime]:
+    """同一粒度往过去整步一个完整周期。"""
+    at = (analysis_type or "").strip()
+    d = start.date()
+    if at == "subsidence_weekly":
+        prev = d - timedelta(days=7)
+        new_start = datetime(prev.year, prev.month, prev.day)
+        return new_start, start
+    if at == "subsidence_monthly":
+        if d.month == 1:
+            prev = date(d.year - 1, 12, 1)
+        else:
+            prev = date(d.year, d.month - 1, 1)
+        new_start = datetime(prev.year, prev.month, 1)
+        return new_start, start
+    if at == "subsidence_quarterly":
+        if d.month == 1:
+            prev = date(d.year - 1, 10, 1)
+        else:
+            prev = date(d.year, d.month - 3, 1)
+        new_start = datetime(prev.year, prev.month, 1)
+        return new_start, start
+    if at == "subsidence_yearly":
+        new_start = datetime(d.year - 1, 1, 1)
+        return new_start, start
+    prev = d - timedelta(days=1)
+    new_start = datetime(prev.year, prev.month, prev.day)
+    return new_start, start
+
+
+def complete_window_ending_on_or_before(
+    analysis_type: str, *, before: datetime, instant: datetime
+) -> tuple[datetime, datetime]:
+    """包含 instant 的完整周期，且 t_end <= before（不与请求窗重叠）。"""
+    start, end = complete_window_containing(analysis_type, instant)
+    guard = 0
+    while end > before and guard < 400:
+        start, end = step_back_complete_window(analysis_type, start, end)
+        guard += 1
+    return start, end
+
+
+def previous_complete_before(analysis_type: str, before: datetime) -> tuple[datetime, datetime]:
+    """结束于 before 或更早的上一同粒度完整周期。"""
+    instant = before - timedelta(seconds=1)
+    return complete_window_ending_on_or_before(analysis_type, before=before, instant=instant)
+
+
 def default_window(analysis_type: str, *, today: date) -> tuple[datetime, datetime, str]:
     """未传起止时的上一完整周期。"""
     at = (analysis_type or "").strip()
@@ -121,18 +232,13 @@ def default_window(analysis_type: str, *, today: date) -> tuple[datetime, dateti
         start_d = today - timedelta(days=1)
         start = datetime(start_d.year, start_d.month, start_d.day)
         end = datetime(today.year, today.month, today.day)
-        return start, end, f"{start_d.year}年{start_d.month}月{start_d.day}日"
+        return start, end, label_for_complete_window(at, start, end)
     if at == "subsidence_weekly":
         this_mon = _week_monday(today)
         last_mon = this_mon - timedelta(days=7)
         start = datetime(last_mon.year, last_mon.month, last_mon.day)
         end = datetime(this_mon.year, this_mon.month, this_mon.day)
-        last_sun = this_mon - timedelta(days=1)
-        return (
-            start,
-            end,
-            f"{last_mon.year}年{last_mon.month}月{last_mon.day}日—{last_sun.month}月{last_sun.day}日",
-        )
+        return start, end, label_for_complete_window(at, start, end)
     if at == "subsidence_monthly":
         this_month = date(today.year, today.month, 1)
         if this_month.month == 1:
@@ -141,7 +247,7 @@ def default_window(analysis_type: str, *, today: date) -> tuple[datetime, dateti
             prev = date(this_month.year, this_month.month - 1, 1)
         start = datetime(prev.year, prev.month, 1)
         end = datetime(this_month.year, this_month.month, 1)
-        return start, end, f"{prev.year}年{prev.month}月"
+        return start, end, label_for_complete_window(at, start, end)
     if at == "subsidence_quarterly":
         this_q = _quarter_start(today)
         if this_q.month == 1:
@@ -150,16 +256,14 @@ def default_window(analysis_type: str, *, today: date) -> tuple[datetime, dateti
             prev_q = date(this_q.year, this_q.month - 3, 1)
         start = datetime(prev_q.year, prev_q.month, 1)
         end = datetime(this_q.year, this_q.month, 1)
-        qn = (prev_q.month - 1) // 3 + 1
-        cn = {1: "一", 2: "二", 3: "三", 4: "四"}[qn]
-        return start, end, f"{prev_q.year}年第{cn}季度"
+        return start, end, label_for_complete_window(at, start, end)
     if at == "subsidence_yearly":
         start = datetime(today.year - 1, 1, 1)
         end = datetime(today.year, 1, 1)
-        return start, end, f"{today.year - 1}年"
+        return start, end, label_for_complete_window(at, start, end)
     start = datetime(today.year, today.month, today.day)
     end = start + timedelta(days=1)
-    return start, end, f"{today.year}年{today.month}月{today.day}日"
+    return start, end, label_for_complete_window(at or "subsidence_daily", start, end)
 
 
 def resolve_area(area: str | None) -> str | None:
@@ -232,9 +336,58 @@ def apply_resolved_period(
     opts = dict(options or {})
     if not is_subsidence_type(analysis_type):
         return opts
+    extra: dict[str, Any] = {}
+    existing = opts.get("_resolved")
+    if isinstance(existing, dict):
+        extra = {k: v for k, v in existing.items() if k not in _RESOLVED_CORE}
     resolved = resolve_period(analysis_type, opts, today=today)
-    opts["_resolved"] = asdict(resolved)
+    data = asdict(resolved)
+    data.update(extra)
+    opts["_resolved"] = data
     return opts
+
+
+def overlay_resolved_window(
+    resolved: dict[str, Any],
+    *,
+    analysis_type: str,
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    out = dict(resolved)
+    out["t_start"] = _fmt(start)
+    out["t_end"] = _fmt(end)
+    out["period_label"] = label_for_complete_window(analysis_type, start, end)
+    return out
+
+
+def parse_resolved_dt(raw: Any) -> datetime:
+    if isinstance(raw, datetime):
+        return raw.replace(tzinfo=None)
+    if isinstance(raw, date):
+        return datetime(raw.year, raw.month, raw.day)
+    return _parse_datetime(str(raw or ""), as_end_date=False)
+
+
+def period_sse_dict(resolved: dict[str, Any] | None) -> dict[str, Any]:
+    data = dict(resolved or {})
+    out: dict[str, Any] = {
+        "t_start": data.get("t_start"),
+        "t_end": data.get("t_end"),
+        "period_label": data.get("period_label"),
+        "area": data.get("area"),
+    }
+    if data.get("fallback"):
+        out["fallback"] = True
+        out["fallback_reason"] = data.get("fallback_reason") or "no_paired_data_in_requested_window"
+        req_s = data.get("requested_t_start")
+        req_e = data.get("requested_t_end")
+        if req_s or req_e:
+            out["requested"] = {"t_start": req_s, "t_end": req_e}
+    elif data.get("fallback_reason"):
+        out["fallback"] = False
+        out["fallback_reason"] = data.get("fallback_reason")
+    return out
 
 
 def canonical_query(analysis_type: str, resolved: ResolvedPeriod | dict[str, Any]) -> str:

@@ -779,7 +779,13 @@
     const area = period.area ? String(period.area) : "全市";
     const label = period.period_label || "";
     const win = (period.t_start || "") + " ~ " + (period.t_end || "");
-    return "正在生成：" + area + (label ? " · " + label : "") + (win.trim() !== "~" ? "  [" + win + ")" : "");
+    let line = "正在生成：" + area + (label ? " · " + label : "") + (win.trim() !== "~" ? "  [" + win + ")" : "");
+    if (period.fallback) {
+      line += period.fallback_reason === "period_fallback_exhausted"
+        ? "（未找到有数据的完整周期，已用最后尝试窗）"
+        : "（已回退到最近有数据的完整周期）";
+    }
+    return line;
   }
 
   function handleEvent(ev) {

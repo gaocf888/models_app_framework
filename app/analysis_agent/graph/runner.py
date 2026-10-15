@@ -12,7 +12,13 @@ from app.analysis_agent.context_loader import load_analysis_run_context
 from app.analysis_agent.graph.builder import build_analysis_agent_graph
 from app.analysis_agent.graph.orchestrator import SlotOrchestrator
 from app.analysis_agent.graph.state import AnalysisAgentState
-from app.analysis_agent.period import apply_resolved_period, canonical_query
+from app.analysis_agent.period import (
+    apply_resolved_period,
+    canonical_query,
+    fill_template_placeholders,
+    period_sse_dict,
+)
+from app.analysis_agent.period_probe import apply_period_data_fallback, fallback_degrade_reasons
 from app.analysis_agent.plans.loader import effective_plan_version
 from app.analysis_agent.session_store import create_resume_token, delete_resume_session, get_resume_session
 from app.analysis_agent.slots.registry import registry_available
@@ -26,6 +32,7 @@ from app.llm.client import VLLMHttpClient
 from app.llm.prompt_registry import PromptTemplateRegistry
 from app.rag.hybrid_rag_service import HybridRAGService
 from app.services.analysis_agent_stream_control import AnalysisAgentStreamControl
+from app.nl2sql.executor import SQLExecutor
 from app.services.nl2sql_service import NL2SQLService
 
 logger = get_logger(__name__)
@@ -203,6 +210,8 @@ class AnalysisAgentGraphRunner:
         ).inc()
         if is_subsidence_type(analysis_type):
             opts = apply_resolved_period(analysis_type, opts)
+            executor = getattr(self._orch._nl2sql, "_executor", None) or SQLExecutor()
+            opts = await apply_period_data_fallback(analysis_type, opts, executor=executor)
             resolved = opts.get("_resolved") if isinstance(opts.get("_resolved"), dict) else {}
             if not (query or "").strip() and resolved:
                 query = canonical_query(analysis_type, resolved)
@@ -213,12 +222,7 @@ class AnalysisAgentGraphRunner:
         }
         if is_subsidence_type(analysis_type):
             resolved = opts.get("_resolved") if isinstance(opts.get("_resolved"), dict) else {}
-            started["period"] = {
-                "t_start": resolved.get("t_start"),
-                "t_end": resolved.get("t_end"),
-                "period_label": resolved.get("period_label"),
-                "area": resolved.get("area"),
-            }
+            started["period"] = period_sse_dict(resolved)
         yield started
         initial = self._build_initial_state(
             request_id=rid,
@@ -402,11 +406,26 @@ class AnalysisAgentGraphRunner:
 
         plan_version = ctx.plan_template_version
         opts["plan_template_version"] = plan_version
-        state["ordered_slots"] = [slot_to_dict(s) for s in slots]
+        resolved = opts.get("_resolved") if isinstance(opts.get("_resolved"), dict) else {}
+        title = str(ctx.report_title or "")
+        ordered = []
+        for slot in slots:
+            item = slot_to_dict(slot)
+            if resolved:
+                if item.get("static_body"):
+                    item["static_body"] = fill_template_placeholders(
+                        str(item["static_body"]), resolved, title=title
+                    )
+                if item.get("title"):
+                    item["title"] = fill_template_placeholders(str(item["title"]), resolved, title=title)
+            ordered.append(item)
+        state["ordered_slots"] = ordered
         state["plan_tasks"] = plan_tasks
         state["from_report_spec"] = ctx.from_report_spec
-        if ctx.report_title:
-            state["report_title"] = ctx.report_title
+        if title:
+            state["report_title"] = (
+                fill_template_placeholders(title, resolved, title=title) if resolved else title
+            )
         state["slot_index"] = 0
         state["slots_total"] = len(slots)
         state["report_tables"] = list(ctx.report_tables or [])
@@ -427,7 +446,7 @@ class AnalysisAgentGraphRunner:
 
         self._orch.run_intent_rag(state)
 
-        yield {
+        meta_ev: dict[str, Any] = {
             "event": "analysis_agent_meta",
             "request_id": state["request_id"],
             "analysis_type": analysis_type,
@@ -436,10 +455,16 @@ class AnalysisAgentGraphRunner:
             "from_report_spec": ctx.from_report_spec,
             "plan_template_version": plan_version,
         }
+        if resolved:
+            meta_ev["period"] = period_sse_dict(resolved)
+        yield meta_ev
 
         t0 = time.perf_counter()
         # T1：全量取数 → 质量门（可重试）→ 按章合成（读缓存）
         state.setdefault("degrade_reasons", [])
+        for reason in fallback_degrade_reasons(resolved if isinstance(resolved, dict) else None):
+            if reason not in state["degrade_reasons"]:
+                state["degrade_reasons"].append(reason)
         state.setdefault("_acquire_retries", 0)
         while True:
             if await self._orch._is_cancelled(state):

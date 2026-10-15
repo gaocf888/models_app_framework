@@ -6,7 +6,8 @@ from typing import Any
 from app.analysis_agent.context_loader import load_analysis_run_context
 from app.analysis_agent.graph.orchestrator import SlotOrchestrator
 from app.analysis_agent.graph.state import AnalysisAgentState
-from app.analysis_agent.period import apply_resolved_period, canonical_query, fill_template_placeholders
+from app.analysis_agent.period import apply_resolved_period, canonical_query, fill_template_placeholders, period_sse_dict
+from app.analysis_agent.period_probe import fallback_degrade_reasons
 from app.analysis_agent.plans.loader import effective_plan_version
 from app.analysis_agent.slots.serialize import slot_to_dict
 from app.analysis_agent.slots.specs import is_subsidence_type
@@ -55,6 +56,9 @@ def make_nodes(orchestrator: SlotOrchestrator) -> dict[str, Any]:
         state.setdefault("slot_trace", [])
         state.setdefault("human_interactions", [])
         state.setdefault("degrade_reasons", [])
+        for reason in fallback_degrade_reasons(resolved if isinstance(resolved, dict) else None):
+            if reason not in state["degrade_reasons"]:
+                state["degrade_reasons"].append(reason)
         state.setdefault("_acquire_retries", 0)
         state["report_tables"] = list(ctx.report_tables or [])
         state["report_charts"] = list(ctx.report_charts or [])
@@ -84,12 +88,7 @@ def make_nodes(orchestrator: SlotOrchestrator) -> dict[str, Any]:
             }
         ]
         if resolved:
-            state["pending_events"][0]["period"] = {
-                "t_start": resolved.get("t_start"),
-                "t_end": resolved.get("t_end"),
-                "period_label": resolved.get("period_label"),
-                "area": resolved.get("area"),
-            }
+            state["pending_events"][0]["period"] = period_sse_dict(resolved)
         return state
 
     def intent_rag(state: AnalysisAgentState) -> AnalysisAgentState:
