@@ -32,9 +32,12 @@ def test_daily_plain_monitoring_asks_districts_and_extremes() -> None:
     assert "q_layer0" in ch.source_item_ids
     assert "q_area_rank" in ch.source_item_ids
     outline = " ".join(ch.outline or [])
+    constraints = " ".join(ch.constraints or [])
     assert "行政区" in outline
-    assert "极值" in outline
-    assert "极值" in (ch.narrative_instruction or "")
+    assert "最大" in outline and "次之" in outline
+    assert "平均Δ" not in outline
+    assert "禁止" in constraints and "平均沉降量" in constraints
+    assert "Δ" in constraints
 
 
 def test_monthly_compose_includes_ops_and_alert() -> None:

@@ -85,11 +85,42 @@ def test_layer0_audit_facts_include_districts_and_extremes() -> None:
         "日报",
         slot_id="plain_monitoring",
     )
-    assert "全市层位0" in text
+    assert "全市" in text
     assert "朝阳区" in text
-    assert "极值下沉" in text
+    assert "以沉降为主" in text
     assert "东坝" in text
     assert "分行政区" in text
+    assert "Δ" not in text
+    assert "平均" not in text
+    assert "初−末" not in text
+
+
+def test_plain_monitoring_narrative_no_delta_no_mean() -> None:
+    from app.analysis_agent.deterministics.plain_narrative import (
+        render_plain_monitoring_narrative,
+    )
+
+    md = render_plain_monitoring_narrative(
+        {
+            "q_layer0": [
+                {"area": "朝阳区", "project_name": "F42(东坝)", "delta_mm": 12.5},
+                {"area": "朝阳区", "project_name": "F17(沟渠庄)", "delta_mm": 8.1},
+                {"area": "海淀区", "project_name": "回龙观", "delta_mm": -3.2},
+                {"area": "通州区", "project_name": "张家湾", "delta_mm": -1.1},
+            ]
+        }
+    )
+    assert "Δ" not in md
+    assert "初−末" not in md and "初-末" not in md
+    assert "平均沉降" not in md
+    assert "朝阳区" in md and "以沉降为主" in md
+    assert "海淀区" in md and "以上升为主" in md
+    assert "东坝" in md and "12.50mm" in md
+    assert "沟渠庄" in md and "8.10mm" in md
+    assert "回龙观" in md and "3.20mm" in md
+    assert "张家湾" in md and "1.10mm" in md
+    assert "沉降最大" in md and "次之" in md
+    assert "上升最大" in md
 
 
 def test_ops_narrative_covers_every_rate_type() -> None:

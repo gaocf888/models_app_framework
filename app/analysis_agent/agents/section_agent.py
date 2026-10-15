@@ -106,6 +106,15 @@ async def synthesize_section(
         if body:
             await _emit_delta(on_delta, body)
         return SectionSynthesisResult(markdown=body or "（待补充）")
+    if slot.id == "plain_monitoring":
+        from app.analysis_agent.deterministics.plain_narrative import (
+            render_plain_monitoring_narrative,
+        )
+
+        body = render_plain_monitoring_narrative(gathered_data)
+        if body:
+            await _emit_delta(on_delta, body)
+        return SectionSynthesisResult(markdown=body or "（待补充）")
 
     user_prompt = _build_user_prompt(
         slot=slot,

@@ -208,7 +208,7 @@ def _append_q2a_top_points(lines: list[str], rows: list[dict]) -> None:
 
 
 def _append_layer0_plain_facts(lines: list[str], rows: list[dict]) -> None:
-    """全市/分区/极值，供平原区叙述引用，避免只预览前几行。"""
+    """全市/分区主导方向/最大次之站点；不写 Δ、平均沉降量。"""
     scored: list[tuple[float, str, str]] = []
     by_area: dict[str, list[float]] = {}
     for row in rows:
@@ -224,31 +224,37 @@ def _append_layer0_plain_facts(lines: list[str], rows: list[dict]) -> None:
     if not scored:
         return
     n = len(scored)
-    mean = sum(d for d, _, _ in scored) / n
     sink_n = sum(1 for d, _, _ in scored if d > 0)
-    rebound_n = sum(1 for d, _, _ in scored if d < 0)
-    lines.append(
-        f"- 全市层位0：{n}站，平均Δ={mean:.2f}mm（Δ>0下沉），下沉{sink_n}站，回弹{rebound_n}站"
-    )
+    rise_n = sum(1 for d, _, _ in scored if d < 0)
+    if sink_n > rise_n:
+        dominate = "以沉降为主"
+    elif rise_n > sink_n:
+        dominate = "以上升为主"
+    else:
+        dominate = "沉降与上升基本相当"
+    lines.append(f"- 全市：{n}站，沉降{sink_n}站，上升{rise_n}站，{dominate}")
     sink_sorted = sorted(scored, key=lambda x: x[0], reverse=True)
-    rebound_sorted = sorted(scored, key=lambda x: x[0])
-    top_sink = [x for x in sink_sorted if x[0] > 0][:3]
-    top_rebound = [x for x in rebound_sorted if x[0] < 0][:3]
+    rise_sorted = sorted(scored, key=lambda x: x[0])
+    top_sink = [x for x in sink_sorted if x[0] > 0][:2]
+    top_rise = [x for x in rise_sorted if x[0] < 0][:2]
     if top_sink:
-        parts = [f"{name}（{area}）Δ={delta:.2f}mm" for delta, name, area in top_sink]
-        lines.append(f"- 极值下沉站点: {'；'.join(parts)}")
-    if top_rebound:
-        parts = [f"{name}（{area}）Δ={delta:.2f}mm" for delta, name, area in top_rebound]
-        lines.append(f"- 极值回弹站点: {'；'.join(parts)}")
+        parts = [f"{name}（{area}）沉降{abs(delta):.2f}mm" for delta, name, area in top_sink]
+        lines.append(f"- 最大/次之沉降站点: {'；'.join(parts)}")
+    if top_rise:
+        parts = [f"{name}（{area}）上升{abs(delta):.2f}mm" for delta, name, area in top_rise]
+        lines.append(f"- 最大/次之上升站点: {'；'.join(parts)}")
     area_bits: list[str] = []
     for area in sorted(by_area.keys()):
         vals = by_area[area]
-        avg = sum(vals) / len(vals)
-        area_max = max(vals)
-        area_min = min(vals)
-        area_bits.append(
-            f"{area}{len(vals)}站平均Δ={avg:.2f}mm（最大下沉{area_max:.2f}/最大回弹{area_min:.2f}）"
-        )
+        a_sink = sum(1 for v in vals if v > 0)
+        a_rise = sum(1 for v in vals if v < 0)
+        if a_sink > a_rise:
+            lead = "以沉降为主"
+        elif a_rise > a_sink:
+            lead = "以上升为主"
+        else:
+            lead = "沉降与上升基本相当"
+        area_bits.append(f"{area}{len(vals)}站（沉降{a_sink}/上升{a_rise}，{lead}）")
     if area_bits:
         lines.append("- 分行政区: " + "；".join(area_bits))
 
