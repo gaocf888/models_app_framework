@@ -24,6 +24,34 @@ _COLOR_ZERO = "#95a5a6"
 _basemap_lock = threading.Lock()
 _basemap_cache: dict[str, Any] | None = None
 _mpl_ready = False
+_cjk_font_file: str | None = None
+_cjk_font_searched = False
+
+_CJK_NAME_HINTS = (
+    "Noto Sans CJK",
+    "Noto Sans SC",
+    "Source Han Sans",
+    "WenQuanYi",
+    "Droid Sans Fallback",
+    "Microsoft YaHei",
+    "SimHei",
+    "PingFang",
+    "Heiti",
+    "Source Han Serif",
+    "Noto Sans CJK SC",
+)
+_CJK_FILE_HINTS = (
+    "notosanscjk",
+    "notosanssc",
+    "sourcehansans",
+    "wqy-zenhei",
+    "wqy-microhei",
+    "droid-fallback",
+    "msyh",
+    "simhei",
+    "simsun",
+    "pingfang",
+)
 
 
 def display_station_name(project_name: str) -> str:
@@ -104,6 +132,90 @@ def map_render_enabled() -> bool:
         return True
 
 
+def _iter_font_dirs() -> list[Path]:
+    dirs = [
+        default_map_assets_dir() / "fonts",
+        Path("/usr/share/fonts"),
+        Path("/usr/share/fonts/truetype"),
+        Path("/usr/share/fonts/opentype"),
+        Path("/usr/local/share/fonts"),
+        Path("C:/Windows/Fonts"),
+        Path("/System/Library/Fonts"),
+        Path("/Library/Fonts"),
+    ]
+    return [d for d in dirs if d.exists()]
+
+
+def resolve_cjk_font_file() -> str | None:
+    """系统或 map_assets/fonts 中可渲染中文的字体文件。"""
+    global _cjk_font_file, _cjk_font_searched
+    if _cjk_font_searched:
+        return _cjk_font_file
+    _cjk_font_searched = True
+    try:
+        from matplotlib import font_manager
+    except Exception:
+        return None
+    for font in font_manager.fontManager.ttflist:
+        blob = f"{font.name or ''} {font.fname or ''}"
+        if any(h.lower() in blob.lower() for h in _CJK_NAME_HINTS):
+            if font.fname and Path(font.fname).is_file():
+                _cjk_font_file = str(font.fname)
+                return _cjk_font_file
+    for folder in _iter_font_dirs():
+        for ext in ("*.ttf", "*.otf", "*.ttc"):
+            for path in folder.rglob(ext):
+                name = path.name.lower()
+                if any(h in name for h in _CJK_FILE_HINTS):
+                    try:
+                        font_manager.fontManager.addfont(str(path))
+                    except Exception:
+                        pass
+                    _cjk_font_file = str(path)
+                    return _cjk_font_file
+    logger.warning("offline_map no CJK font found; Chinese labels will tofu")
+    return None
+
+
+def cjk_font_properties(size: float, *, weight: str = "normal"):
+    from matplotlib.font_manager import FontProperties
+
+    fname = resolve_cjk_font_file()
+    if fname:
+        return FontProperties(fname=fname, size=size, weight=weight)
+    return FontProperties(size=size, weight=weight)
+
+
+def _rc_sans_serif_families() -> list[str]:
+    """只写入已注册字体名，避免 font_manager 对 SimHei 等缺失族刷 WARNING。"""
+    from matplotlib import font_manager
+
+    families: list[str] = []
+    cjk = resolve_cjk_font_file()
+    if cjk:
+        try:
+            font_manager.fontManager.addfont(cjk)
+        except Exception:
+            logger.info("offline_map addfont skipped path=%s", cjk)
+        registered: set[str] = set()
+        for font in font_manager.fontManager.ttflist:
+            if font.fname and os.path.normpath(str(font.fname)) == os.path.normpath(cjk):
+                if font.name:
+                    registered.add(str(font.name))
+        if not registered:
+            try:
+                name = font_manager.FontProperties(fname=cjk).get_name()
+                if name and any(
+                    (f.name == name) for f in font_manager.fontManager.ttflist
+                ):
+                    registered.add(name)
+            except Exception:
+                pass
+        families.extend(sorted(registered))
+    families.append("DejaVu Sans")
+    return families
+
+
 def _ensure_mpl() -> bool:
     global _mpl_ready
     if _mpl_ready:
@@ -114,16 +226,7 @@ def _ensure_mpl() -> bool:
         matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt  # noqa: F401
 
-        plt.rcParams["font.sans-serif"] = [
-            "SimHei",
-            "Microsoft YaHei",
-            "WenQuanYi Zen Hei",
-            "Noto Sans CJK SC",
-            "Source Han Sans CN",
-            "Arial Unicode MS",
-            "DejaVu Sans",
-            "sans-serif",
-        ]
+        plt.rcParams["font.sans-serif"] = _rc_sans_serif_families()
         plt.rcParams["axes.unicode_minus"] = False
         _mpl_ready = True
         return True
@@ -171,11 +274,90 @@ def _is_wgs84(crs: Any) -> bool:
         return str(crs).upper() in ("EPSG:4326", "WGS84")
 
 
-def _load_dem_hillshade(path: Path) -> tuple[Any, tuple[float, float, float, float]] | None:
+def _dem_array_to_hillshade(
+    dem: Any,
+    *,
+    west: float,
+    east: float,
+    south: float,
+    north: float,
+    nodata: Any,
+) -> tuple[Any, tuple[float, float, float, float]] | None:
     import numpy as np
-    import rasterio
     from matplotlib.colors import LightSource
-    from rasterio.warp import Resampling, calculate_default_transform, reproject
+
+    dem = dem.astype(np.float32, copy=False)
+    invalid = ~np.isfinite(dem)
+    if nodata is not None:
+        try:
+            nd = float(nodata)
+            if np.isfinite(nd):
+                invalid |= np.isclose(dem, nd)
+        except (TypeError, ValueError):
+            pass
+    invalid |= (dem < -1000) | (dem > 9000)
+    dem[invalid] = np.nan
+    if np.all(np.isnan(dem)):
+        return None
+    extent = (west, east, south, north)
+    fill_val = np.nanmedian(dem)
+    dem_filled = np.where(np.isnan(dem), fill_val, dem)
+    lat_mid = (south + north) / 2.0
+    height, width = dem_filled.shape[:2]
+    dx = abs((east - west) / max(width, 1)) * 111320.0 * np.cos(np.deg2rad(lat_mid))
+    dy = abs((north - south) / max(height, 1)) * 111320.0
+    ls = LightSource(azdeg=315, altdeg=45)
+    vert_exag = 4.0
+    e_dy, e_dx = np.gradient(vert_exag * dem_filled, -dy, dx)
+    normal = np.empty(dem_filled.shape + (3,), dtype=np.float32)
+    normal[..., 0] = -e_dx
+    normal[..., 1] = -e_dy
+    normal[..., 2] = 1.0
+    mag = np.sqrt(np.sum(normal * normal, axis=-1, keepdims=True))
+    mag = np.maximum(mag, 1e-12)
+    normal /= mag
+    intensity = normal.dot(ls.direction.astype(np.float32))
+    flat = float(ls.direction[2])
+    hs = np.clip(intensity / max(flat, 1e-6), 0.0, 1.0)
+    hs = np.where(hs >= 0.92, 1.0, hs)
+    hs = np.where(np.isnan(dem), np.nan, hs)
+    return hs.astype(np.float32), extent
+
+
+def _load_dem_hillshade_pil(path: Path) -> tuple[Any, tuple[float, float, float, float]] | None:
+    """WGS84 GeoTIFF：无 rasterio 时用 Pillow 读高程。"""
+    from PIL import Image
+    import numpy as np
+
+    im = Image.open(path)
+    tags = getattr(im, "tag_v2", None) or {}
+    scale = tags.get(33550)
+    tie = tags.get(33922)
+    geo = str(tags.get(34737) or "")
+    if not scale or not tie:
+        return None
+    if "WGS" not in geo.upper() and "4326" not in geo:
+        logger.info("offline_map PIL DEM skip non-WGS84 crs=%s", geo[:80])
+        return None
+    sx, sy = float(scale[0]), float(scale[1])
+    west, north = float(tie[3]), float(tie[4])
+    arr = np.array(im, dtype=np.float32)
+    if arr.ndim != 2:
+        return None
+    height, width = arr.shape
+    east = west + width * sx
+    south = north - height * sy
+    nodata = tags.get(42113)
+    return _dem_array_to_hillshade(arr, west=west, east=east, south=south, north=north, nodata=nodata)
+
+
+def _load_dem_hillshade(path: Path) -> tuple[Any, tuple[float, float, float, float]] | None:
+    try:
+        import numpy as np
+        import rasterio
+        from rasterio.warp import Resampling, calculate_default_transform, reproject
+    except Exception:
+        return _load_dem_hillshade_pil(path)
 
     with rasterio.open(path) as src:
         nodata = src.nodata
@@ -202,48 +384,28 @@ def _load_dem_hillshade(path: Path) -> tuple[Any, tuple[float, float, float, flo
                 dst_nodata=np.nan,
             )
             nodata = np.nan
-    dem = dem.astype(np.float32, copy=False)
-    invalid = ~np.isfinite(dem)
-    if nodata is not None and np.isfinite(nodata):
-        invalid |= np.isclose(dem, nodata)
-    invalid |= (dem < -1000) | (dem > 9000)
-    dem[invalid] = np.nan
-    if np.all(np.isnan(dem)):
-        return None
     west, south, east, north = rasterio.transform.array_bounds(dem.shape[0], dem.shape[1], transform)
-    extent = (west, east, south, north)
-    fill_val = np.nanmedian(dem)
-    dem_filled = np.where(np.isnan(dem), fill_val, dem)
-    lat_mid = (south + north) / 2.0
-    dx = abs(transform.a) * 111320.0 * np.cos(np.deg2rad(lat_mid))
-    dy = abs(transform.e) * 111320.0
-    ls = LightSource(azdeg=315, altdeg=45)
-    vert_exag = 4.0
-    e_dy, e_dx = np.gradient(vert_exag * dem_filled, -dy, dx)
-    normal = np.empty(dem_filled.shape + (3,), dtype=np.float32)
-    normal[..., 0] = -e_dx
-    normal[..., 1] = -e_dy
-    normal[..., 2] = 1.0
-    mag = np.sqrt(np.sum(normal * normal, axis=-1, keepdims=True))
-    mag = np.maximum(mag, 1e-12)
-    normal /= mag
-    intensity = normal.dot(ls.direction.astype(np.float32))
-    flat = float(ls.direction[2])
-    hs = np.clip(intensity / max(flat, 1e-6), 0.0, 1.0)
-    hs = np.where(hs >= 0.92, 1.0, hs)
-    hs = np.where(np.isnan(dem), np.nan, hs)
-    return hs.astype(np.float32), extent
+    return _dem_array_to_hillshade(dem, west=west, east=east, south=south, north=north, nodata=nodata)
 
 
 def _load_basemap_uncached(assets: Path) -> dict[str, Any] | None:
     shp = assets / "shapefile" / "北京市.shp"
+    if not shp.is_file():
+        found = list((assets / "shapefile").glob("*.shp")) if (assets / "shapefile").is_dir() else []
+        shp = found[0] if found else shp
     if not _shapefile_complete(shp) or not _try_gis_imports():
+        lite = _load_basemap_rings(assets)
+        if lite is not None:
+            return lite
         logger.info("offline_map skip GIS basemap shp_ok=%s gis=%s", _shapefile_complete(shp), _try_gis_imports())
         return None
     import geopandas as gpd
     from shapely.ops import unary_union
 
-    beijing = gpd.read_file(shp).to_crs(epsg=4326)
+    try:
+        beijing = gpd.read_file(shp, encoding="gbk").to_crs(epsg=4326)
+    except TypeError:
+        beijing = gpd.read_file(shp).to_crs(epsg=4326)
     city_union = unary_union(beijing.geometry)
     hillshade = None
     dem_extent = None
@@ -285,6 +447,7 @@ def _load_basemap_uncached(assets: Path) -> dict[str, Any] | None:
                 name_col = cand
                 break
     return {
+        "mode": "gpd",
         "beijing": beijing,
         "city_union": city_union,
         "hillshade": hillshade,
@@ -427,7 +590,7 @@ def _draw_stations(ax: Any, stations: list[dict[str, Any]], minx: float, maxx: f
     fontsize = 7 if len(stations) > 24 else 8
 
     def _font():
-        return FontProperties(family="SimHei", size=fontsize)
+        return cjk_font_properties(fontsize)
 
     def _text_width(text: str) -> float:
         try:
@@ -442,7 +605,7 @@ def _draw_stations(ax: Any, stations: list[dict[str, Any]], minx: float, maxx: f
         return da
 
     def _label_box(val_text: str, name_text: str, align: str):
-        tp = dict(size=fontsize, color="#111111")
+        tp = dict(size=fontsize, color="#111111", fontproperties=_font())
         line_w = max(_text_width(val_text), _text_width(name_text))
         headed = VPacker(
             children=[TextArea(val_text, textprops=tp), _hline(line_w)],
@@ -491,12 +654,12 @@ def _draw_legend(ax: Any) -> None:
     import matplotlib.patches as mpatches
     from matplotlib.offsetbox import AnnotationBbox, DrawingArea, HPacker, TextArea, VPacker
 
-    title = TextArea("图例", textprops=dict(size=11, color="#111111", fontweight="bold"))
+    title = TextArea("图例", textprops=dict(size=11, color="#111111", fontweight="bold", fontproperties=cjk_font_properties(11, weight="bold")))
 
     def swatch_row(color: str, label: str):
         da = DrawingArea(20, 13, 0, 0)
         da.add_artist(mpatches.Rectangle((1, 2), 16, 9, facecolor=color, edgecolor="#333333", linewidth=0.4))
-        return HPacker(children=[da, TextArea(label, textprops=dict(size=10, color="#111111"))], align="center", pad=0, sep=6)
+        return HPacker(children=[da, TextArea(label, textprops=dict(size=10, color="#111111", fontproperties=cjk_font_properties(10)))], align="center", pad=0, sep=6)
 
     pack = VPacker(
         children=[
@@ -586,10 +749,11 @@ def _render_with_basemap(stations: list[dict[str, Any]], title: str, basemap: di
                 weight="bold",
                 zorder=4,
                 path_effects=text_stroke,
+                fontproperties=cjk_font_properties(9, weight="bold"),
             )
     minx, miny, maxx, maxy = beijing.total_bounds
     _draw_stations(ax, stations, minx, maxx, miny, maxy)
-    ax.set_title(title, fontsize=16, pad=16)
+    ax.set_title(title, fontsize=16, pad=16, fontproperties=cjk_font_properties(16))
     pad_x = (maxx - minx) * 0.035
     pad_y = (maxy - miny) * 0.035
     ax.set_xlim(minx - pad_x, maxx + pad_x)
@@ -617,11 +781,204 @@ def _render_points_only(stations: list[dict[str, Any]], title: str) -> bytes:
     span_y = max(maxy - miny, 0.08)
     fig, ax = plt.subplots(1, 1, figsize=(11, 9.5))
     ax.set_facecolor("white")
-    ax.set_title(title, fontsize=16, pad=16)
+    ax.set_title(title, fontsize=16, pad=16, fontproperties=cjk_font_properties(16))
     _draw_stations(ax, stations, minx - span_x * 0.1, maxx + span_x * 0.1, miny - span_y * 0.1, maxy + span_y * 0.1)
     ax.set_xlim(minx - span_x * 0.25, maxx + span_x * 0.25)
     ax.set_ylim(miny - span_y * 0.25, maxy + span_y * 0.25)
     ax.set_aspect("equal", adjustable="box")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    _draw_legend(ax)
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_color("#333333")
+        spine.set_linewidth(0.8)
+    fig.tight_layout()
+    return _fig_to_png(fig)
+
+
+def _load_dem_optional(assets: Path) -> tuple[Any, tuple[float, float, float, float] | None] | tuple[None, None]:
+    dem_path = assets / "dem" / "beijing.tif"
+    if not dem_path.is_file():
+        return None, None
+    try:
+        loaded = _load_dem_hillshade(dem_path)
+        if loaded:
+            return loaded
+    except Exception:
+        logger.warning("offline_map DEM hillshade failed", exc_info=True)
+        try:
+            loaded = _load_dem_hillshade_pil(dem_path)
+            if loaded:
+                return loaded
+        except Exception:
+            logger.warning("offline_map PIL DEM failed", exc_info=True)
+    return None, None
+
+
+def _load_basemap_rings(assets: Path) -> dict[str, Any] | None:
+    """geopandas 不可用时：原生读取区县 shp（WGS84）+ 可选 DEM/水系。"""
+    from app.analysis_agent.renderers.shp_lite import (
+        bbox_intersects,
+        first_shp,
+        iter_shp_rings,
+        read_dbf_rows,
+        ring_bbox,
+    )
+
+    shp = assets / "shapefile" / "北京市.shp"
+    if not shp.is_file():
+        alt = first_shp(assets / "shapefile")
+        if alt is None:
+            return None
+        shp = alt
+    records = iter_shp_rings(shp, want_types=(5,))
+    if not records:
+        logger.info("offline_map lite shapefile empty path=%s", shp)
+        return None
+    dbf = shp.with_suffix(".dbf")
+    attrs = read_dbf_rows(dbf) if dbf.is_file() else []
+    districts: list[dict[str, Any]] = []
+    xs_all: list[float] = []
+    ys_all: list[float] = []
+    for i, (_stype, rings) in enumerate(records):
+        attr = attrs[i] if i < len(attrs) else {}
+        name = str(attr.get("district") or attr.get("NAME") or attr.get("name") or attr.get("区县") or "")
+        exteriors = [rings[0]] if rings else []
+        interiors = rings[1:] if len(rings) > 1 else []
+        for ring in rings:
+            xs_all.extend(p[0] for p in ring)
+            ys_all.extend(p[1] for p in ring)
+        districts.append({"name": name, "exteriors": exteriors, "interiors": interiors})
+    if not xs_all:
+        return None
+    bounds = (min(xs_all), min(ys_all), max(xs_all), max(ys_all))
+    hillshade, dem_extent = _load_dem_optional(assets)
+    water_polys: list[list[tuple[float, float]]] = []
+    water_lines: list[list[tuple[float, float]]] = []
+    wa = first_shp(assets / "water_area")
+    ww = first_shp(assets / "waterway")
+    try:
+        if wa is not None:
+            for _st, rings in iter_shp_rings(wa, want_types=(5,)):
+                for ring in rings:
+                    bb = ring_bbox(ring)
+                    if not bb or not bbox_intersects(bb, bounds) or len(ring) < 4:
+                        continue
+                    if (bb[2] - bb[0]) * (bb[3] - bb[1]) < 2e-5:
+                        continue
+                    water_polys.append(ring)
+                    if len(water_polys) >= 400:
+                        break
+                if len(water_polys) >= 400:
+                    break
+    except Exception:
+        logger.warning("offline_map lite water_area skipped", exc_info=True)
+    try:
+        if ww is not None:
+            for _st, rings in iter_shp_rings(ww, want_types=(3, 5)):
+                for ring in rings:
+                    bb = ring_bbox(ring)
+                    if not bb or not bbox_intersects(bb, bounds):
+                        continue
+                    if (bb[2] - bb[0]) + (bb[3] - bb[1]) < 0.04:
+                        continue
+                    water_lines.append(ring)
+                    if len(water_lines) >= 300:
+                        break
+                if len(water_lines) >= 300:
+                    break
+    except Exception:
+        logger.warning("offline_map lite waterway skipped", exc_info=True)
+    logger.info(
+        "offline_map lite districts=%s water_poly=%s water_line=%s dem=%s",
+        len(districts),
+        len(water_polys),
+        len(water_lines),
+        hillshade is not None,
+    )
+    return {
+        "mode": "rings",
+        "districts": districts,
+        "bounds": bounds,
+        "hillshade": hillshade,
+        "dem_extent": dem_extent,
+        "water_polys": water_polys,
+        "water_lines": water_lines,
+    }
+
+
+def _render_with_rings(stations: list[dict[str, Any]], title: str, basemap: dict[str, Any]) -> bytes:
+    import matplotlib.patheffects as pe
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.path import Path as MplPath
+    from matplotlib.patches import PathPatch
+
+    fig, ax = plt.subplots(1, 1, figsize=(11, 9.5))
+    ax.set_facecolor("white")
+    hillshade, dem_extent = basemap.get("hillshade"), basemap.get("dem_extent")
+    if hillshade is not None and dem_extent is not None:
+        relief_cmap = LinearSegmentedColormap.from_list("relief_white", ["#8a8a8a", "#ffffff"])
+        hs_plot = np.nan_to_num(hillshade, nan=1.0)
+        ax.imshow(
+            hs_plot,
+            extent=dem_extent,
+            cmap=relief_cmap,
+            vmin=0.32,
+            vmax=1.0,
+            interpolation="bilinear",
+            origin="upper",
+            zorder=0,
+            aspect="auto",
+        )
+    for ring in basemap.get("water_polys") or []:
+        if len(ring) < 3:
+            continue
+        verts = list(ring)
+        codes = [MplPath.MOVETO] + [MplPath.LINETO] * (len(verts) - 2) + [MplPath.CLOSEPOLY]
+        path = MplPath(verts, codes)
+        ax.add_patch(
+            PathPatch(path, facecolor="#9dcee8", edgecolor="none", linewidth=0, alpha=0.88, zorder=1)
+        )
+    for line in basemap.get("water_lines") or []:
+        if len(line) < 2:
+            continue
+        xs, ys = [p[0] for p in line], [p[1] for p in line]
+        ax.plot(xs, ys, color="#9dcee8", linewidth=0.9, zorder=1.2, solid_capstyle="round")
+    text_stroke = [pe.withStroke(linewidth=2.4, foreground="white", alpha=0.75)]
+    for dist in basemap.get("districts") or []:
+        for ring in dist.get("exteriors") or []:
+            if len(ring) < 3:
+                continue
+            xs, ys = [p[0] for p in ring], [p[1] for p in ring]
+            ax.plot(xs, ys, color="#5a5a5a", linewidth=0.8, zorder=2, linestyle=(0, (4.0, 2.4)))
+        name = str(dist.get("name") or "")
+        ring0 = (dist.get("exteriors") or [None])[0]
+        if name and ring0:
+            cx = sum(p[0] for p in ring0) / len(ring0)
+            cy = sum(p[1] for p in ring0) / len(ring0)
+            ax.text(
+                cx,
+                cy,
+                name,
+                fontsize=9,
+                color="#222222",
+                ha="center",
+                va="center",
+                zorder=4,
+                path_effects=text_stroke,
+                fontproperties=cjk_font_properties(9, weight="bold"),
+            )
+    minx, miny, maxx, maxy = basemap["bounds"]
+    _draw_stations(ax, stations, minx, maxx, miny, maxy)
+    ax.set_title(title, fontsize=16, pad=16, fontproperties=cjk_font_properties(16))
+    pad_x = (maxx - minx) * 0.035
+    pad_y = (maxy - miny) * 0.035
+    ax.set_xlim(minx - pad_x, maxx + pad_x)
+    ax.set_ylim(miny - pad_y, maxy + pad_y)
+    ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
     _draw_legend(ax)
@@ -650,6 +1007,8 @@ def render_subsidence_map_png(
     try:
         basemap = _load_basemap(assets)
         if basemap is not None:
+            if basemap.get("mode") == "rings":
+                return _render_with_rings(stations, title, basemap), "offline_shp"
             return _render_with_basemap(stations, title, basemap), "offline_gis"
         return _render_points_only(stations, title), "offline_points"
     except Exception:

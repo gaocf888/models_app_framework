@@ -71,6 +71,97 @@ def test_static_narrative_marker() -> None:
     assert apply_static_narrative("仅前缀", "中段") == "仅前缀\n\n中段"
 
 
+def test_layer0_audit_facts_include_districts_and_extremes() -> None:
+    from app.analysis_agent.renderers.section_data import build_audit_facts
+
+    text = build_audit_facts(
+        {
+            "q_layer0": [
+                {"area": "朝阳区", "project_name": "F42(东坝)", "delta_mm": 12.5},
+                {"area": "海淀区", "project_name": "回龙观", "delta_mm": -3.2},
+                {"area": "朝阳区", "project_name": "F17", "delta_mm": 1.0},
+            ]
+        },
+        "日报",
+        slot_id="plain_monitoring",
+    )
+    assert "全市层位0" in text
+    assert "朝阳区" in text
+    assert "极值下沉" in text
+    assert "东坝" in text
+    assert "分行政区" in text
+
+
+def test_ops_narrative_covers_every_rate_type() -> None:
+    from app.analysis_agent.deterministics.ops_narrative import render_station_ops_narrative
+
+    gathered = {
+        "q_ops_rates": [
+            {
+                "device_type": "GNSS",
+                "total": 92,
+                "online": 92,
+                "offline": 0,
+                "online_rate": 100.0,
+                "complete_rate": 82.07,
+                "effective_rate": 82.07,
+            },
+            {
+                "device_type": "光纤自动解调仪",
+                "total": 3,
+                "online": 3,
+                "offline": 0,
+                "online_rate": 100.0,
+                "complete_rate": 80.56,
+                "effective_rate": 80.56,
+            },
+            {
+                "device_type": "地下水位计",
+                "total": 302,
+                "online": 302,
+                "offline": 0,
+                "online_rate": 100.0,
+                "complete_rate": 99.89,
+                "effective_rate": 99.65,
+            },
+            {
+                "device_type": "静力水准仪",
+                "total": 716,
+                "online": 716,
+                "offline": 0,
+                "online_rate": 100.0,
+                "complete_rate": 95.82,
+                "effective_rate": 88.62,
+            },
+            {
+                "device_type": "孔隙水压力计",
+                "total": 289,
+                "online": 289,
+                "offline": 0,
+                "online_rate": 100.0,
+                "complete_rate": 99.45,
+                "effective_rate": 96.94,
+            },
+            {
+                "device_type": "气象站",
+                "total": 34,
+                "online": 34,
+                "offline": 0,
+                "online_rate": 100.0,
+                "complete_rate": 99.54,
+                "effective_rate": 99.54,
+            },
+        ],
+        "q_ops_offline_list": [],
+    }
+    md = render_station_ops_narrative(gathered)
+    for name in ("GNSS", "光纤自动解调仪", "地下水位计", "静力水准仪", "孔隙水压力计", "气象站"):
+        assert name in md
+    assert "气象站共计设备34套" in md
+    assert "其他仪器类型本批暂无运维汇总" not in md
+    assert md.count("具体情况详见图1") == 6
+
+
 def test_grouped_bar_y_fields() -> None:
     rows = [
         {
@@ -101,6 +192,7 @@ def test_grouped_bar_y_fields() -> None:
     assert ch is not None
     assert ch["spec"].get("grouped") is True
     assert len(ch["spec"]["series"]) == 3
+    assert ch["spec"].get("categories") == ["GNSS", "静力水准仪"]
 
     rendered = render_configured_chart(
         {

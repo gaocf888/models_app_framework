@@ -99,6 +99,14 @@ async def synthesize_section(
     - 默认 / 非 emit 章：stream_chat，经 on_delta 真流式推送
     - use_react_agent 且 use_emit_tools：ReAct（整章完成后一次 on_delta 正文，避免假切片主路径）
     """
+    if slot.id == "station_ops":
+        from app.analysis_agent.deterministics.ops_narrative import render_station_ops_narrative
+
+        body = render_station_ops_narrative(gathered_data)
+        if body:
+            await _emit_delta(on_delta, body)
+        return SectionSynthesisResult(markdown=body or "（待补充）")
+
     user_prompt = _build_user_prompt(
         slot=slot,
         query=query,

@@ -18,10 +18,23 @@ def test_daily_compose_four_chapters() -> None:
     plan_ids = {t["item_id"] for t in spec.plan_tasks}
     assert "q_fcb_endpoints" in plan_ids
     assert "q_layer0" in plan_ids
+    assert "q_area_rank" in plan_ids
     assert any(
         c.get("id") == "c_plain_map" and c.get("attach_to_chapter") == "plain_monitoring"
         for c in spec.charts
     )
+
+
+def test_daily_plain_monitoring_asks_districts_and_extremes() -> None:
+    spec = load_report_spec("subsidence_daily")
+    assert spec is not None
+    ch = next(c for c in spec.chapters if c.id == "plain_monitoring")
+    assert "q_layer0" in ch.source_item_ids
+    assert "q_area_rank" in ch.source_item_ids
+    outline = " ".join(ch.outline or [])
+    assert "行政区" in outline
+    assert "极值" in outline
+    assert "极值" in (ch.narrative_instruction or "")
 
 
 def test_monthly_compose_includes_ops_and_alert() -> None:

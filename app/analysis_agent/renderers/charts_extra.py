@@ -243,6 +243,11 @@ def chart_from_config(
                 series_list.append({"name": yf["name"], "data": pts})
         if not series_list:
             return None
+        categories: list[str] = []
+        for pt in series_list[0]["data"]:
+            label = str(pt.get("x") or "")
+            if label not in categories:
+                categories.append(label)
         return {
             "id": chart_id,
             "chart_type": "bar",
@@ -252,6 +257,7 @@ def chart_from_config(
                 "yField": "y",
                 "seriesField": "name",
                 "grouped": True,
+                "categories": categories,
                 "series": series_list,
             },
         }

@@ -21,6 +21,10 @@ _PLAN_ITEM_LABELS: dict[str, str] = {
     "q6b": "多测点对照",
     "q6c": "历史同类对标",
     "q6d": "DCS参数联动趋势",
+    "q_ops_rates": "各仪器类型运行三率",
+    "q_ops_offline_list": "离线设备明细",
+    "q_layer0": "层位0地面沉降",
+    "q_area_rank": "各行政区沉降汇总",
     # 地降季报等（与 report plan.items 对齐；同号多义时用业务语义覆盖展示）
     "q2": "行政区沉降汇总",
     "q3": "分区站点统计",
@@ -168,6 +172,10 @@ def _audit_preview_row_limit(item_id: str, row_count: int, *, slot_id: str = "")
         return min(1, row_count)
     if item_id == "q2c":
         return min(3, row_count)
+    if item_id in ("q_ops_rates", "q_ops_offline_list"):
+        return min(max(row_count, 0), 40)
+    if item_id in ("q_layer0", "q_area_rank"):
+        return min(max(row_count, 0), 80)
     return min(3, row_count)
 
 
@@ -197,6 +205,52 @@ def _append_q2a_top_points(lines: list[str], rows: list[dict]) -> None:
         return
     scored.sort(key=lambda x: x[0], reverse=True)
     lines.append(f"- 尖峰测点(时长排序): {'、'.join(c for _, c in scored[:5])}")
+
+
+def _append_layer0_plain_facts(lines: list[str], rows: list[dict]) -> None:
+    """全市/分区/极值，供平原区叙述引用，避免只预览前几行。"""
+    scored: list[tuple[float, str, str]] = []
+    by_area: dict[str, list[float]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        delta = _numeric(row.get("delta_mm"))
+        if delta is None:
+            continue
+        area = str(row.get("area") or "未知").strip() or "未知"
+        name = str(row.get("project_name") or row.get("station_name") or "").strip() or "未命名站"
+        scored.append((delta, name, area))
+        by_area.setdefault(area, []).append(delta)
+    if not scored:
+        return
+    n = len(scored)
+    mean = sum(d for d, _, _ in scored) / n
+    sink_n = sum(1 for d, _, _ in scored if d > 0)
+    rebound_n = sum(1 for d, _, _ in scored if d < 0)
+    lines.append(
+        f"- 全市层位0：{n}站，平均Δ={mean:.2f}mm（Δ>0下沉），下沉{sink_n}站，回弹{rebound_n}站"
+    )
+    sink_sorted = sorted(scored, key=lambda x: x[0], reverse=True)
+    rebound_sorted = sorted(scored, key=lambda x: x[0])
+    top_sink = [x for x in sink_sorted if x[0] > 0][:3]
+    top_rebound = [x for x in rebound_sorted if x[0] < 0][:3]
+    if top_sink:
+        parts = [f"{name}（{area}）Δ={delta:.2f}mm" for delta, name, area in top_sink]
+        lines.append(f"- 极值下沉站点: {'；'.join(parts)}")
+    if top_rebound:
+        parts = [f"{name}（{area}）Δ={delta:.2f}mm" for delta, name, area in top_rebound]
+        lines.append(f"- 极值回弹站点: {'；'.join(parts)}")
+    area_bits: list[str] = []
+    for area in sorted(by_area.keys()):
+        vals = by_area[area]
+        avg = sum(vals) / len(vals)
+        area_max = max(vals)
+        area_min = min(vals)
+        area_bits.append(
+            f"{area}{len(vals)}站平均Δ={avg:.2f}mm（最大下沉{area_max:.2f}/最大回弹{area_min:.2f}）"
+        )
+    if area_bits:
+        lines.append("- 分行政区: " + "；".join(area_bits))
 
 
 def _append_q3b_top_points(lines: list[str], rows: list[dict]) -> None:
@@ -251,6 +305,8 @@ def build_audit_facts(
             _append_q2a_top_points(lines, rows)
         if iid == "q3b":
             _append_q3b_top_points(lines, rows)
+        if iid == "q_layer0":
+            _append_layer0_plain_facts(lines, rows)
     q = (query or "").strip()
     if q:
         lines.append(f"- 用户问题约束: {q[:500]}")

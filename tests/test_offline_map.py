@@ -67,7 +67,7 @@ def test_chart_from_config_map_png_or_placeholder(monkeypatch: pytest.MonkeyPatc
         assert ch["image_base64"]
         raw = __import__("base64").b64decode(ch["image_base64"])
         assert raw.startswith(b"\x89PNG")
-        assert ch["spec"]["renderer"] in {"offline_gis", "offline_points"}
+        assert ch["spec"]["renderer"] in {"offline_gis", "offline_shp", "offline_points"}
     else:
         assert ch["chart_type"] == "map_placeholder"
         assert ch["placeholder"] is True
@@ -117,6 +117,53 @@ def test_prepare_chapter_viz_emits_map() -> None:
     ch = out["charts"][0]
     assert ch["configured"] is True
     assert ch["chart_type"] in {"map_image", "map_placeholder"}
+
+
+def test_ensure_mpl_does_not_request_simhei() -> None:
+    pytest.importorskip("matplotlib")
+    import matplotlib.pyplot as plt
+
+    from app.analysis_agent.renderers import offline_map as om
+
+    om._mpl_ready = False
+    assert om._ensure_mpl() is True
+    families = [str(x) for x in plt.rcParams["font.sans-serif"]]
+    assert "SimHei" not in families
+
+
+def test_map_png_uses_vector_basemap_when_shapefile_present() -> None:
+    pytest.importorskip("matplotlib")
+    from app.analysis_agent.renderers.offline_map import (
+        default_map_assets_dir,
+        render_subsidence_map_png,
+    )
+
+    shp_dir = default_map_assets_dir() / "shapefile"
+    if not list(shp_dir.glob("*.shp")):
+        pytest.skip("map shapefile missing")
+    png, tag = render_subsidence_map_png(
+        SAMPLE_ROWS,
+        title="平原区沉降分布图",
+    )
+    assert png is not None
+    assert png.startswith(b"\x89PNG")
+    assert tag in {"offline_gis", "offline_shp"}
+
+
+def test_shp_lite_reads_beijing_districts() -> None:
+    from app.analysis_agent.renderers.offline_map import default_map_assets_dir
+    from app.analysis_agent.renderers.shp_lite import first_shp, iter_shp_rings, read_dbf_rows
+
+    shp = first_shp(default_map_assets_dir() / "shapefile")
+    if shp is None:
+        pytest.skip("map shapefile missing")
+    recs = iter_shp_rings(shp, want_types=(5,))
+    assert len(recs) == 16
+    dbf = shp.with_suffix(".dbf")
+    rows = read_dbf_rows(dbf)
+    names = {str(r.get("district") or "") for r in rows}
+    assert "大兴区" in names
+    assert "朝阳区" in names
 
 
 def test_daily_plain_monitoring_has_map_chart() -> None:

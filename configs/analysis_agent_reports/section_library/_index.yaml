@@ -33,6 +33,12 @@ shared_plan_items:
     mandatory: true
     dependency_ids: [q_fcb_endpoints]
     purpose: 层位0地面沉降 Δ=初−末
+  - item_id: q_area_rank
+    executor: python
+    python_fn: rank_by_area
+    mandatory: false
+    dependency_ids: [q_layer0]
+    purpose: 全市平原按行政区汇总层位0
   - item_id: q_ops_rates
     executor: sql_template
     sql_file: om_ops_rates_by_type.sql
