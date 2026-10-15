@@ -526,12 +526,17 @@ POST
 | analysis_agent_cancelled / analysis_agent_error | 取消或失败 |
 
 ### 前端调用渲染说明
+调用方接收加载说明：
+    1）监听 analysis_agent_chapter_start 和 analysis_agent_chapter_complete event（这是报告中一个章节的开始和结束），按照analysis_agent_chapter_start 中的 chapter_index（章节序号）数值从小到大即为章节顺序
+	2）analysis_agent_chapter_start 和 analysis_agent_chapter_complete event 中间按照SSE **到达顺序**渲染章节的文本信息
+	3）报告中除了文本信息，还包括表格(即表格数据，对应流的event为 analysis_agent_table_payload)和图表(即折线/柱状图和图片，对应流的event为 analysis_agent_chart_payload)，表格和图表使用流中slot_id来分辨所属章节(与章节开始event analysis_agent_chapter_start中的slot_id进行匹配)
 
-按 SSE **到达顺序**画即可，不要等终帧，也不要按模版在前端预排章节。
+
+正文、表、图渲染说明。
 
 - **正文**：`analysis_agent_summary_delta`。每来一帧把 `text` **追加**到当前章（Markdown）。可多次。
 - **表**：`analysis_agent_table_payload`。用 `table.columns` + `table.rows` 画表；不要从正文 Markdown 里再拆表。
-- **图**：`analysis_agent_chart_payload`。按 `chart.chart_type` 画：`bar` / `pie` / `line` / `dual_axis`；`map_placeholder` 只显示「地图占位」，不要接 GIS。
+- **图**：`analysis_agent_chart_payload`。按 `chart.chart_type` 画：`bar`(柱状图) / `pie`(饼图) / `line`(折线图) / `dual_axis`(双轴图) / `map_image`(地图图片)； `map_image`为静态图片(沉降数据的地图分布图片)，通过image_base64 + image_mime 当 PNG加载图片。
 
 表/图也是 **来一帧画一帧**。收到 `chapter_start` 时用 `slot_id`（= `chapter_id`）新开一节；之后该章的表、图、正文都挂到这个 `slot_id`。同一章里表/图 **常常比正文先到**，常见顺序：
 

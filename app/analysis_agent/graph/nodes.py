@@ -15,9 +15,92 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# LangGraph updates 会把节点返回里的 pending_events 再推一次。上一节点已下发的事件
+# 不得原样带回，否则会出现多条 meta、多组 nl2sql_done。
+_INIT_KEYS = (
+    "query",
+    "options",
+    "ordered_slots",
+    "slots_total",
+    "slot_index",
+    "plan_tasks",
+    "report_title",
+    "from_report_spec",
+    "gathered_data",
+    "task_status",
+    "nl2sql_calls",
+    "summary_parts",
+    "slot_trace",
+    "human_interactions",
+    "degrade_reasons",
+    "_acquire_retries",
+    "report_tables",
+    "report_charts",
+    "structured_report",
+    "trace",
+    "intent_context",
+    "_run_started_at",
+)
+_INTENT_KEYS = ("context_snippets", "intent_context")
+_ACQUIRE_KEYS = (
+    "plan_tasks",
+    "gathered_data",
+    "task_status",
+    "nl2sql_calls",
+    "acquire_retry",
+    "slot_retry_nl2sql",
+    "abort_requested",
+    "error",
+)
+_QUALITY_KEYS = (
+    "needs_human_interrupt",
+    "acquire_retry",
+    "slot_retry_nl2sql",
+    "abort_requested",
+    "error",
+    "degrade_reasons",
+    "_l1_anchor_checked",
+    "quality_l1",
+    "gathered_data",
+    "task_status",
+    "_acquire_retries",
+)
+_CHAPTER_KEYS = (
+    "abort_requested",
+    "error",
+    "slot_index",
+    "trace",
+    "options",
+    "_prepared_viz",
+    "_last_slot_output",
+    "_last_stream_chunks",
+    "_narrative_live_streamed",
+    "summary_parts",
+    "structured_report",
+    "slot_trace",
+    "slot_outputs",
+)
+_FINALIZE_KEYS = ("_final_result",)
+
+
+def _begin_node(state: AnalysisAgentState) -> None:
+    """上一节点 updates 已把 pending_events 交给 runner 下发；本节点从空列表写增量。"""
+    state["pending_events"] = []
+
+
+def _increment(state: AnalysisAgentState, *keys: str) -> dict[str, Any]:
+    """发出后只把本节点新增 SSE 与改过的字段写回图。"""
+    events = list(state.pop("pending_events", []) or [])
+    update: dict[str, Any] = {"pending_events": events}
+    for k in keys:
+        if k in state:
+            update[k] = state[k]
+    return update
+
 
 def make_nodes(orchestrator: SlotOrchestrator) -> dict[str, Any]:
-    async def initialize(state: AnalysisAgentState) -> AnalysisAgentState:
+    async def initialize(state: AnalysisAgentState) -> dict[str, Any]:
+        _begin_node(state)
         analysis_type = state["analysis_type"]
         opts = apply_resolved_period(analysis_type, state.get("options") or {})
         resolved = opts.get("_resolved") if isinstance(opts.get("_resolved"), dict) else {}
@@ -89,23 +172,32 @@ def make_nodes(orchestrator: SlotOrchestrator) -> dict[str, Any]:
         ]
         if resolved:
             state["pending_events"][0]["period"] = period_sse_dict(resolved)
-        return state
+        return _increment(state, *_INIT_KEYS)
 
-    def intent_rag(state: AnalysisAgentState) -> AnalysisAgentState:
-        return orchestrator.run_intent_rag(state)
+    def intent_rag(state: AnalysisAgentState) -> dict[str, Any]:
+        _begin_node(state)
+        orchestrator.run_intent_rag(state)
+        return _increment(state, *_INTENT_KEYS)
 
-    async def acquire_data(state: AnalysisAgentState) -> AnalysisAgentState:
-        return await orchestrator.run_acquire_data(state)
+    async def acquire_data(state: AnalysisAgentState) -> dict[str, Any]:
+        _begin_node(state)
+        await orchestrator.run_acquire_data(state)
+        return _increment(state, *_ACQUIRE_KEYS)
 
-    def data_quality(state: AnalysisAgentState) -> AnalysisAgentState:
-        return orchestrator.run_data_quality(state)
+    def data_quality(state: AnalysisAgentState) -> dict[str, Any]:
+        _begin_node(state)
+        orchestrator.run_data_quality(state)
+        return _increment(state, *_QUALITY_KEYS)
 
-    async def chapter_pipeline(state: AnalysisAgentState) -> AnalysisAgentState:
-        return await orchestrator.run_chapter_pipeline(state)
+    async def chapter_pipeline(state: AnalysisAgentState) -> dict[str, Any]:
+        _begin_node(state)
+        await orchestrator.run_chapter_pipeline(state)
+        return _increment(state, *_CHAPTER_KEYS)
 
-    def finalize(state: AnalysisAgentState) -> AnalysisAgentState:
+    def finalize(state: AnalysisAgentState) -> dict[str, Any]:
         from datetime import datetime, timezone
 
+        _begin_node(state)
         started = float(state.get("_run_started_at") or time.perf_counter())
         finished = time.perf_counter()
         latency_ms = int((finished - started) * 1000)
@@ -152,7 +244,7 @@ def make_nodes(orchestrator: SlotOrchestrator) -> dict[str, Any]:
             ]
         )
         state["pending_events"] = events
-        return state
+        return _increment(state, *_FINALIZE_KEYS)
 
     return {
         "initialize": initialize,
