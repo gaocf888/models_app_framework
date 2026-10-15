@@ -29,21 +29,25 @@ _cjk_font_searched = False
 
 _CJK_NAME_HINTS = (
     "Noto Sans CJK",
+    "Noto Serif CJK",
     "Noto Sans SC",
+    "Noto Serif SC",
     "Source Han Sans",
+    "Source Han Serif",
     "WenQuanYi",
     "Droid Sans Fallback",
     "Microsoft YaHei",
     "SimHei",
     "PingFang",
     "Heiti",
-    "Source Han Serif",
-    "Noto Sans CJK SC",
 )
 _CJK_FILE_HINTS = (
     "notosanscjk",
+    "notoserifcjk",
     "notosanssc",
+    "notoserifsc",
     "sourcehansans",
+    "sourcehanserif",
     "wqy-zenhei",
     "wqy-microhei",
     "droid-fallback",
@@ -51,6 +55,9 @@ _CJK_FILE_HINTS = (
     "simhei",
     "simsun",
     "pingfang",
+    "cjksc",
+    "cjk-sc",
+    "noto",
 )
 
 
@@ -132,22 +139,97 @@ def map_render_enabled() -> bool:
         return True
 
 
-def _iter_font_dirs() -> list[Path]:
+def _repo_map_assets_fonts_dir() -> Path:
+    return Path(__file__).resolve().parents[3] / "configs" / "analysis_agent_reports" / "map_assets" / "fonts"
+
+
+def _candidate_bundled_font_dirs() -> list[Path]:
+    """容器内常见挂载点都扫一遍，避免只放在宿主机或 env 指错目录时漏检。"""
     dirs = [
         default_map_assets_dir() / "fonts",
+        _repo_map_assets_fonts_dir(),
+        Path.cwd() / "configs" / "analysis_agent_reports" / "map_assets" / "fonts",
+        Path("/workspace/configs/analysis_agent_reports/map_assets/fonts"),
+    ]
+    seen: set[str] = set()
+    out: list[Path] = []
+    for d in dirs:
+        try:
+            key = str(d.resolve()) if d.exists() else str(d)
+        except Exception:
+            key = str(d)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(d)
+    return out
+
+
+def _iter_font_dirs() -> list[Path]:
+    dirs = [
+        *_candidate_bundled_font_dirs(),
         Path("/usr/share/fonts"),
         Path("/usr/share/fonts/truetype"),
         Path("/usr/share/fonts/opentype"),
+        Path("/usr/share/fonts/opentype/noto"),
+        Path("/usr/share/fonts/truetype/noto"),
         Path("/usr/local/share/fonts"),
         Path("C:/Windows/Fonts"),
         Path("/System/Library/Fonts"),
         Path("/Library/Fonts"),
     ]
-    return [d for d in dirs if d.exists()]
+    seen: set[str] = set()
+    out: list[Path] = []
+    for d in dirs:
+        if not d.exists():
+            continue
+        try:
+            key = str(d.resolve())
+        except Exception:
+            key = str(d)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(d)
+    return out
+
+
+def _list_font_files(folder: Path) -> list[Path]:
+    if not folder.is_dir():
+        return []
+    out: list[Path] = []
+    for ext in ("*.ttf", "*.otf", "*.ttc", "*.TTF", "*.OTF", "*.TTC"):
+        out.extend(p for p in folder.rglob(ext) if p.is_file())
+    # 去重（Windows 大小写 glob 可能重复）
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for p in out:
+        key = str(p.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(p)
+    return uniq
+
+
+def _is_cjk_font_filename(name: str) -> bool:
+    n = (name or "").lower()
+    if not n.endswith((".ttf", ".otf", ".ttc")):
+        return False
+    return any(h in n for h in _CJK_FILE_HINTS) or "cjk" in n
+
+
+def _try_addfont(path: Path) -> None:
+    try:
+        from matplotlib import font_manager
+
+        font_manager.fontManager.addfont(str(path))
+    except Exception:
+        logger.info("offline_map addfont skipped path=%s", path)
 
 
 def resolve_cjk_font_file() -> str | None:
-    """系统或 map_assets/fonts 中可渲染中文的字体文件。"""
+    """优先 map_assets/fonts 下任意 ttf/otf（含 NotoSerifCJKsc），再搜系统字体。"""
     global _cjk_font_file, _cjk_font_searched
     if _cjk_font_searched:
         return _cjk_font_file
@@ -156,23 +238,41 @@ def resolve_cjk_font_file() -> str | None:
         from matplotlib import font_manager
     except Exception:
         return None
+
+    bundled_files: list[Path] = []
+    for bundled in _candidate_bundled_font_dirs():
+        files = _list_font_files(bundled)
+        logger.info(
+            "offline_map fonts_dir=%s exists=%s files=%s",
+            bundled,
+            bundled.is_dir(),
+            [p.name for p in files],
+        )
+        bundled_files.extend(files)
+    # 用户放入 fonts/ 的文件一律当作中文字体，不再要求文件名含 Sans
+    if bundled_files:
+        preferred = [p for p in bundled_files if _is_cjk_font_filename(p.name)] or bundled_files
+        path = preferred[0]
+        _try_addfont(path)
+        _cjk_font_file = str(path)
+        logger.info("offline_map CJK font=%s", path)
+        return _cjk_font_file
+
     for font in font_manager.fontManager.ttflist:
         blob = f"{font.name or ''} {font.fname or ''}"
         if any(h.lower() in blob.lower() for h in _CJK_NAME_HINTS):
             if font.fname and Path(font.fname).is_file():
                 _cjk_font_file = str(font.fname)
+                logger.info("offline_map CJK font=%s", _cjk_font_file)
                 return _cjk_font_file
     for folder in _iter_font_dirs():
-        for ext in ("*.ttf", "*.otf", "*.ttc"):
-            for path in folder.rglob(ext):
-                name = path.name.lower()
-                if any(h in name for h in _CJK_FILE_HINTS):
-                    try:
-                        font_manager.fontManager.addfont(str(path))
-                    except Exception:
-                        pass
-                    _cjk_font_file = str(path)
-                    return _cjk_font_file
+        for path in _list_font_files(folder):
+            if not _is_cjk_font_filename(path.name):
+                continue
+            _try_addfont(path)
+            _cjk_font_file = str(path)
+            logger.info("offline_map CJK font=%s", path)
+            return _cjk_font_file
     logger.warning("offline_map no CJK font found; Chinese labels will tofu")
     return None
 

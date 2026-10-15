@@ -686,24 +686,43 @@
       tooltip: { trigger: ct === "pie" ? "item" : "axis" },
       grid: { left: 48, right: 24, top: 28, bottom: 40 },
     };
-    const seriesHasXY = hasSeries && series[0] && Array.isArray(series[0].data)
-      && series[0].data.length > 0
-      && (series[0].data[0].x != null || series[0].data[0].y != null);
-    if ((spec.grouped === true || (ct === "bar" && seriesHasXY && series.length > 1)) && seriesHasXY) {
+    function seriesNumeric(s, cats) {
+      const raw = (s && Array.isArray(s.values) && s.values.length)
+        ? s.values
+        : ((s && Array.isArray(s.data)) ? s.data : []);
+      if (!raw.length) return [];
+      if (typeof raw[0] === "number") return raw.map((v) => Number(v) || 0);
+      if (cats && cats.length) {
+        const byX = new Map(raw.map((p) => [String(p && (p.x ?? p.category) ?? ""), Number(p && (p.y ?? p.value)) || 0]));
+        return cats.map((c) => byX.get(String(c)) ?? 0);
+      }
+      return raw.map((p) => Number(p && (p.y ?? p.value)) || 0);
+    }
+    const looksGrouped = hasSeries && (
+      spec.grouped === true
+      || (spec.option && Array.isArray(spec.option.series) && spec.option.series.length > 1)
+      || (ct === "bar" && series.length > 1 && Array.isArray(series[0].data))
+    );
+    if (looksGrouped || (spec.option && spec.option.series)) {
+      const opt = spec.option || {};
       const cats = Array.isArray(spec.categories) && spec.categories.length
         ? spec.categories
-        : series[0].data.map((p) => p.x ?? p.category ?? "");
+        : (opt.xAxis && Array.isArray(opt.xAxis.data) ? opt.xAxis.data : (
+          (series[0] && Array.isArray(series[0].data) && series[0].data[0] && typeof series[0].data[0] === "object")
+            ? series[0].data.map((p) => p.x ?? p.category ?? "")
+            : []
+        ));
+      const eSeries = (opt.series && opt.series.length)
+        ? opt.series.map((s) => ({ type: "bar", name: s.name, data: Array.isArray(s.data) ? s.data : seriesNumeric(s, cats) }))
+        : series.map((s) => ({ type: "bar", name: s.name, data: seriesNumeric(s, cats) }));
       inst.setOption({
         ...base,
-        legend: { textStyle: { color: "#8b9cb3" } },
+        legend: { textStyle: { color: "#8b9cb3" }, data: eSeries.map((s) => s.name) },
         xAxis: { type: "category", data: cats, axisLabel: { ...axis, rotate: 20 } },
         yAxis: { type: "value", name: "%", axisLabel: axis, splitLine: { lineStyle: { color: "#2d3a4d" } } },
-        series: series.map((s) => ({
-          type: "bar",
-          name: s.name,
-          data: (s.data || []).map((p) => Number(p.y ?? p.value) || 0),
-        })),
+        series: eSeries,
       });
+      inst.resize();
     } else if (ct === "pie") {
       const nameField = spec.colorField || "category";
       const valField = spec.angleField || "value";

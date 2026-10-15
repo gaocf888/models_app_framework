@@ -240,7 +240,14 @@ def chart_from_config(
                     continue
                 pts.append({"x": str(row.get(xf, "")), "y": val})
             if pts:
-                series_list.append({"name": yf["name"], "data": pts})
+                series_list.append(
+                    {
+                        "name": yf["name"],
+                        "type": "bar",
+                        "data": pts,
+                        "values": [p["y"] for p in pts],
+                    }
+                )
         if not series_list:
             return None
         categories: list[str] = []
@@ -248,6 +255,9 @@ def chart_from_config(
             label = str(pt.get("x") or "")
             if label not in categories:
                 categories.append(label)
+        echarts_series = [
+            {"name": s["name"], "type": "bar", "data": list(s["values"])} for s in series_list
+        ]
         return {
             "id": chart_id,
             "chart_type": "bar",
@@ -259,6 +269,12 @@ def chart_from_config(
                 "grouped": True,
                 "categories": categories,
                 "series": series_list,
+                "option": {
+                    "legend": {"data": [s["name"] for s in series_list]},
+                    "xAxis": {"type": "category", "data": categories},
+                    "yAxis": {"type": "value", "name": "%"},
+                    "series": echarts_series,
+                },
             },
         }
 

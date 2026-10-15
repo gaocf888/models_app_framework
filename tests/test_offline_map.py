@@ -119,6 +119,32 @@ def test_prepare_chapter_viz_emits_map() -> None:
     assert ch["chart_type"] in {"map_image", "map_placeholder"}
 
 
+def test_resolve_cjk_uses_bundled_noto_serif_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("matplotlib")
+    from app.analysis_agent.renderers import offline_map as om
+
+    fonts = tmp_path / "fonts"
+    fonts.mkdir()
+    fake = fonts / "NotoSerifCJKsc-Regular.otf"
+    fake.write_bytes(b"OTTO")
+    om._cjk_font_searched = False
+    om._cjk_font_file = None
+    monkeypatch.setattr(om, "default_map_assets_dir", lambda: tmp_path)
+    path = om.resolve_cjk_font_file()
+    assert path is not None
+    assert path.endswith("NotoSerifCJKsc-Regular.otf")
+    om._cjk_font_searched = False
+    om._cjk_font_file = None
+
+
+def test_cjk_filename_accepts_noto_serif_sc() -> None:
+    from app.analysis_agent.renderers.offline_map import _is_cjk_font_filename
+
+    assert _is_cjk_font_filename("NotoSerifCJKsc-Regular.otf")
+    assert _is_cjk_font_filename("NotoSansSC-Regular.otf")
+    assert _is_cjk_font_filename("wqy-zenhei.ttc")
+
+
 def test_ensure_mpl_does_not_request_simhei() -> None:
     pytest.importorskip("matplotlib")
     import matplotlib.pyplot as plt

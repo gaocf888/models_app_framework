@@ -193,6 +193,10 @@ def test_grouped_bar_y_fields() -> None:
     assert ch["spec"].get("grouped") is True
     assert len(ch["spec"]["series"]) == 3
     assert ch["spec"].get("categories") == ["GNSS", "静力水准仪"]
+    assert ch["spec"]["series"][0].get("values") == [95.0, 100.0]
+    assert (ch["spec"].get("option") or {}).get("series")
+    assert len(ch["spec"]["option"]["series"][0]["data"]) == 2
+    assert not ch.get("image_base64")
 
     rendered = render_configured_chart(
         {

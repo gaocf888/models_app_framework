@@ -12,5 +12,6 @@ water_area/
 水系目录目前仅有 `.shp`、缺 `.dbf/.shx/.prj` 时仍会按市界包围盒裁切绘制（无需 geopandas）。
 关闭出图：`ANALYSIS_AGENT_MAP_RENDER_ENABLED=false`。
 
-中文标注依赖系统或本目录字体：把 `NotoSansSC-Regular.otf` / `wqy-zenhei.ttc` 放到 `fonts/` 即可；
-Linux 镜像也可 `apt-get install fonts-wqy-zenhei fonts-noto-cjk`。未装中文字体时站名/图例会显示方框。
+中文标注：把任意中文 `.otf/.ttf`（如 `NotoSerifCJKsc-Regular.otf`、`NotoSansSC-Regular.otf`）放到 **`fonts/`**。
+该目录下的字体文件会被直接使用，不要求文件名含 Sans。字体必须出现在**容器内**该路径（绑定挂载仓库，或拷进镜像）；只放在未挂载的宿主机上进程读不到。
+Linux 也可 `apt-get install fonts-wqy-zenhei fonts-noto-cjk`。未装中文字体时站名/图例会显示方框。
