@@ -379,7 +379,11 @@
   };
 
   function newSessionId() {
-    if (crypto.randomUUID) return crypto.randomUUID();
+    try {
+      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+      }
+    } catch (_) {}
     return "s_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
   }
 
@@ -388,12 +392,16 @@
   }
 
   (function init() {
-    $("sessionId").value = newSessionId();
     try {
+      $("sessionId").value = newSessionId();
       const saved = localStorage.getItem("subsidence_auto_report_base");
       if (saved) $("baseUrl").value = saved;
-    } catch (_) {}
-    $("typeDesc").textContent = TEMPLATES[$("analysisType").value];
+    } catch (_) {
+      if ($("sessionId") && !$("sessionId").value) {
+        $("sessionId").value = "s_" + Date.now();
+      }
+    }
+    if ($("typeDesc")) $("typeDesc").textContent = TEMPLATES[$("analysisType").value] || "";
   })();
 
   $("analysisType").addEventListener("change", () => {
@@ -692,29 +700,53 @@
         : ((s && Array.isArray(s.data)) ? s.data : []);
       if (!raw.length) return [];
       if (typeof raw[0] === "number") return raw.map((v) => Number(v) || 0);
-      if (cats && cats.length) {
-        const byX = new Map(raw.map((p) => [String(p && (p.x ?? p.category) ?? ""), Number(p && (p.y ?? p.value)) || 0]));
-        return cats.map((c) => byX.get(String(c)) ?? 0);
+      function pointX(p) {
+        if (!p || typeof p !== "object") return "";
+        if (p.x != null) return String(p.x);
+        if (p.category != null) return String(p.category);
+        return "";
       }
-      return raw.map((p) => Number(p && (p.y ?? p.value)) || 0);
+      function pointY(p) {
+        if (typeof p === "number") return Number(p) || 0;
+        if (!p || typeof p !== "object") return 0;
+        if (p.y != null) return Number(p.y) || 0;
+        if (p.value != null) return Number(p.value) || 0;
+        return 0;
+      }
+      if (cats && cats.length) {
+        const byX = new Map();
+        raw.forEach((p) => { byX.set(pointX(p), pointY(p)); });
+        return cats.map((c) => (byX.has(String(c)) ? byX.get(String(c)) : 0));
+      }
+      return raw.map(pointY);
     }
+    const opt = spec.option || {};
+    const hasOptionSeries = Array.isArray(opt.series) && opt.series.length > 0;
     const looksGrouped = hasSeries && (
       spec.grouped === true
-      || (spec.option && Array.isArray(spec.option.series) && spec.option.series.length > 1)
+      || hasOptionSeries
       || (ct === "bar" && series.length > 1 && Array.isArray(series[0].data))
     );
-    if (looksGrouped || (spec.option && spec.option.series)) {
-      const opt = spec.option || {};
-      const cats = Array.isArray(spec.categories) && spec.categories.length
-        ? spec.categories
-        : (opt.xAxis && Array.isArray(opt.xAxis.data) ? opt.xAxis.data : (
-          (series[0] && Array.isArray(series[0].data) && series[0].data[0] && typeof series[0].data[0] === "object")
-            ? series[0].data.map((p) => p.x ?? p.category ?? "")
-            : []
-        ));
-      const eSeries = (opt.series && opt.series.length)
-        ? opt.series.map((s) => ({ type: "bar", name: s.name, data: Array.isArray(s.data) ? s.data : seriesNumeric(s, cats) }))
-        : series.map((s) => ({ type: "bar", name: s.name, data: seriesNumeric(s, cats) }));
+    if (looksGrouped || hasOptionSeries) {
+      let cats = [];
+      if (Array.isArray(spec.categories) && spec.categories.length) cats = spec.categories;
+      else if (opt.xAxis && Array.isArray(opt.xAxis.data)) cats = opt.xAxis.data;
+      else if (series[0] && Array.isArray(series[0].data) && series[0].data[0] && typeof series[0].data[0] === "object") {
+        cats = series[0].data.map((p) => {
+          if (!p) return "";
+          if (p.x != null) return p.x;
+          if (p.category != null) return p.category;
+          return "";
+        });
+      }
+      const src = hasOptionSeries ? opt.series : series;
+      const eSeries = src.map((s) => ({
+        type: "bar",
+        name: s.name,
+        data: Array.isArray(s.data) && s.data.length && typeof s.data[0] === "number"
+          ? s.data
+          : seriesNumeric(s, cats),
+      }));
       inst.setOption({
         ...base,
         legend: { textStyle: { color: "#8b9cb3" }, data: eSeries.map((s) => s.name) },
@@ -722,7 +754,7 @@
         yAxis: { type: "value", name: "%", axisLabel: axis, splitLine: { lineStyle: { color: "#2d3a4d" } } },
         series: eSeries,
       });
-      inst.resize();
+      requestAnimationFrame(function () { inst.resize(); });
     } else if (ct === "pie") {
       const nameField = spec.colorField || "category";
       const valField = spec.angleField || "value";

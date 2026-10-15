@@ -226,6 +226,7 @@ def chart_from_config(
         if not xf:
             return None
         series_list: list[dict[str, Any]] = []
+        categories: list[str] = []
         for yf in multi_y:
             field = yf["field"]
             if field not in columns:
@@ -239,24 +240,23 @@ def chart_from_config(
                 except (TypeError, ValueError):
                     continue
                 pts.append({"x": str(row.get(xf, "")), "y": val})
-            if pts:
-                series_list.append(
-                    {
-                        "name": yf["name"],
-                        "type": "bar",
-                        "data": pts,
-                        "values": [p["y"] for p in pts],
-                    }
-                )
+            if not pts:
+                continue
+            if not categories:
+                categories = [str(p["x"]) for p in pts]
+            values = [p["y"] for p in pts]
+            series_list.append(
+                {
+                    "name": yf["name"],
+                    "type": "bar",
+                    "data": values,
+                    "values": values,
+                }
+            )
         if not series_list:
             return None
-        categories: list[str] = []
-        for pt in series_list[0]["data"]:
-            label = str(pt.get("x") or "")
-            if label not in categories:
-                categories.append(label)
         echarts_series = [
-            {"name": s["name"], "type": "bar", "data": list(s["values"])} for s in series_list
+            {"name": s["name"], "type": "bar", "data": list(s["data"])} for s in series_list
         ]
         return {
             "id": chart_id,
