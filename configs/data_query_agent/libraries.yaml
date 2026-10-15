@@ -1,5 +1,7 @@
 # 查询台库注册表：library_id 与 Java 树、device_type.yaml 同源；一库一张 t_data_wash_*。
-version: "2026.08.27"
+# 方案 A：运维 om_result.t_om_* 不在本注册表；运维问答仅走智能客服/NL2SQL（见 library_intent ops_use_chatbot）。
+# 查询台仅沉降七库 + HUD，禁止在此增 om library。
+version: "2026.10.14"
 default_library_id: fcb
 hitl_prompt: "未能确定监测库，请选择要查询的数据类型。"
 generic_settle_words: [沉降, 下沉, 回弹, 监测点]

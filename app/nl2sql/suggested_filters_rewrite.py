@@ -12,6 +12,7 @@ _AUTHORITATIVE_SOURCES = frozenset(
         "fcb_layer0",
         "fcb_compress",
         "semantic",
+        "om_device_type",
     }
 )
 
@@ -20,11 +21,12 @@ _SOURCE_PRIORITY: dict[str, int] = {
     "device_station_map": 40,
     "fcb_compress": 30,
     "fcb_layer0": 20,
+    "om_device_type": 35,
     "semantic": 10,
 }
 
-# 不含 station_id：事实表遗留主键列禁止强制改写/注入
-_FORCE_COLUMNS = frozenset({"name", "project_name", "station_name", "area"})
+# 不含 station_id：事实表遗留主键列禁止强制改写/注入；type 供运维仪器类型
+_FORCE_COLUMNS = frozenset({"name", "project_name", "station_name", "area", "type"})
 
 # 事实表清洗遗留联合主键列：生成 SQL 后一律剥掉过滤谓词
 _LEGACY_FACT_PK_COLUMNS = ("station_id", "data_id")
@@ -93,8 +95,8 @@ def _pick_filters(filters: list[Any]) -> list[dict[str, Any]]:
             prev["source"], 0
         ):
             best[key] = item
-    # 稳定顺序：area → name/project_name → station_name
-    order = {"area": 0, "name": 1, "project_name": 2, "station_name": 3}
+    # 稳定顺序：area → name/project_name → station_name → type（运维）
+    order = {"area": 0, "name": 1, "project_name": 2, "station_name": 3, "type": 4}
     return sorted(best.values(), key=lambda x: (order.get(x["column"], 9), x["column"]))
 
 

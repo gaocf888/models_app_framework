@@ -356,6 +356,7 @@ class NL2SQLChain:
             analysis_type=analysis_type,
             table_columns=table_columns_map,
             forced_tables=forced_tables,
+            question=question,
         )
         forced_active = bool([str(t).strip() for t in (forced_tables or []) if str(t).strip()])
         if forced_active and not scoped_tables:
@@ -436,6 +437,7 @@ class NL2SQLChain:
                 compress_pairs=[
                     dict(p) for p in (dims.get("compress_pairs") or []) if isinstance(p, dict)
                 ],
+                om_instrument_types=list(dims.get("om_instrument_types") or []),
                 warnings=list(semantic_binding_dict.get("warnings") or []),
                 default_table=semantic_binding_dict.get("default_table"),
             )
@@ -768,6 +770,25 @@ class NL2SQLChain:
                 linked_schema=linked_schema_dict,
             )
             prompt = f"{prompt}\n\n{intent_block}"
+        try:
+            from app.nl2sql.om_intent import (
+                is_ops_question,
+                ops_snapshot_prompt_hint,
+                settlement_only_prompt_hint,
+            )
+            from app.nl2sql.schema_routing import (
+                settlement_data_source_prompt_hint,
+                should_apply_subsidence_search_path,
+            )
+
+            if should_apply_subsidence_search_path():
+                prompt = f"{prompt}\n\n{settlement_data_source_prompt_hint()}"
+                if is_ops_question(question):
+                    prompt = f"{prompt}\n\n{ops_snapshot_prompt_hint()}"
+                else:
+                    prompt = f"{prompt}\n\n{settlement_only_prompt_hint()}"
+        except Exception:  # noqa: BLE001
+            logger.debug("NL2SQLChain settlement/ops data-source hint skipped", exc_info=True)
         extra_hint = (sql_gen_extra_hint or "").strip()
         if extra_hint:
             prompt = f"{prompt}\n\n{extra_hint}"
@@ -1456,6 +1477,20 @@ class NL2SQLChain:
                 "2) 禁止使用高风险别名（如 load、row_number）；"
                 "3) 默认禁止窗口函数与 OVER()/LAG()/LEAD()/ROW_NUMBER()，请改写为普通聚合或直接去除窗口依赖。"
             )
+        try:
+            from app.nl2sql.om_intent import (
+                is_ops_question,
+                ops_snapshot_prompt_hint,
+                sql_mentions_om_tables,
+            )
+
+            need_ops = is_ops_question(question) or sql_mentions_om_tables(original_sql or "")
+            if need_ops or (
+                validation_error and "snapshot_time" in str(validation_error).lower()
+            ):
+                system += " " + ops_snapshot_prompt_hint()
+        except Exception:  # noqa: BLE001
+            pass
         if strict_schema_reminder:
             system += (
                 " 【校验修正·强制】你必须严格消除「校验失败原因」中列出的违规项："
@@ -1490,6 +1525,27 @@ class NL2SQLChain:
         out = content.strip()
         logger.debug("NL2SQLChain._refine_sql output_len=%d preview=%r", len(out), _text_preview(out, 160))
         return out
+
+    @staticmethod
+    def _rewrite_om_snapshot_filter(sql: str) -> tuple[str, list[str]]:
+        """运维 t_om_*：缺最新 snapshot_time / 离线 status=0 时确定性注入。"""
+        try:
+            from app.nl2sql.om_intent import (
+                ensure_latest_snapshot_filter,
+                ensure_offline_status_filter,
+            )
+            from app.nl2sql.schema_routing import get_om_result_schema
+
+            notes: list[str] = []
+            rewritten, snap_notes = ensure_latest_snapshot_filter(
+                sql, om_schema=get_om_result_schema()
+            )
+            notes.extend(snap_notes)
+            rewritten, offline_notes = ensure_offline_status_filter(rewritten)
+            notes.extend(offline_notes)
+            return rewritten, notes
+        except Exception:  # noqa: BLE001
+            return sql, []
 
     def _rewrite_tidb_compatible_sql(self, sql: str) -> tuple[str, list[str]]:
         """对 LLM SQL 进行方言兼容改写（TiDB 高风险 alias / PG interval 等）。"""
@@ -1665,6 +1721,9 @@ class NL2SQLChain:
         sf = suggested_filters_from_parsed_intent(parsed_intent)
         rewritten, sf_notes = rewrite_sql_with_suggested_filters(rewritten, sf)
         notes.extend(sf_notes)
+        # om_result：缺 snapshot_time 时注入最新批次（所有 refine 路径共用）
+        rewritten, snap_notes = self._rewrite_om_snapshot_filter(rewritten)
+        notes.extend(snap_notes)
         return rewritten, notes
 
     @staticmethod
@@ -2761,19 +2820,30 @@ class NL2SQLChain:
         analysis_type: str | None,
         table_columns: dict[str, set[str]],
         forced_tables: list[str] | None = None,
+        question: str | None = None,
     ) -> set[str]:
         from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
+        from app.nl2sql.om_intent import filter_allowlist_for_question, is_ops_question
 
         profile = get_nl2sql_business_profile()
-        if profile and profile.table_allowlist:
-            scoped = {t.lower() for t in profile.table_allowlist}
+        if profile and (profile.table_allowlist or profile.om_result_allowlist):
+            scoped = filter_allowlist_for_question(
+                question or "",
+                settlement_tables=profile.table_allowlist,
+                om_tables=profile.om_result_allowlist,
+            )
         else:
             scoped = self._parse_csv_env_set("ANALYSIS_NL2SQL_TABLE_SCOPE_DEFAULT")
         existing = set(table_columns.keys())
-        hit = {t for t in scoped if t in existing} if scoped else set()
+        # 运维表可能尚未反射进内存 catalog：仍保留配置名，供 linker/校验使用
+        if scoped and existing:
+            hit = {t for t in scoped if t in existing} or set(scoped)
+        else:
+            hit = set(scoped) if scoped else set()
         logger.info(
-            "NL2SQLChain table_scope analysis_type=%s configured=%d matched=%d",
+            "NL2SQLChain table_scope analysis_type=%s ops=%s configured=%d matched=%d",
             (analysis_type or "-"),
+            is_ops_question(question or ""),
             len(scoped),
             len(hit),
         )
@@ -2781,9 +2851,10 @@ class NL2SQLChain:
         if not forced:
             return hit
         allow_base = hit if hit else existing
-        selected = {t for t in forced if t in allow_base}
+        # forced 表若在意图收窄后的配置名单中也放行（即使尚未反射）
+        selected = {t for t in forced if t in allow_base or t in scoped}
         station = "t_station"
-        if station in allow_base:
+        if station in allow_base and not is_ops_question(question or ""):
             selected.add(station)
         logger.info(
             "NL2SQLChain table_scope forced=%s selected=%s",

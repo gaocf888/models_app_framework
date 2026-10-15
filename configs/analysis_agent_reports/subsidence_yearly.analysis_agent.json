@@ -4,11 +4,13 @@
   "description": "年报套季报 compose；params.period_kind=year 仅影响封面措辞（period_label 由 period.py 给出「上年」）。",
   "compose": [
     { "section": "cover", "variant": "quarterly", "params": { "cover_kind": "quarterly", "period_kind": "year" } },
+    { "section": "station_ops" },
     { "section": "quarterly_preface" },
     { "section": "city_plain" },
     { "section": "district_results" },
     { "section": "layer_results" },
     { "section": "key_area", "variant": "with_table" },
+    { "section": "device_alert" },
     { "section": "conclusion" },
     { "section": "annex_ground" },
     { "section": "annex_layer" }

@@ -67,6 +67,8 @@ class SemanticBinding:
     preferred_station_names: list[str] = field(default_factory=list)
     # 压缩层区间：[{project_name, layer_from, layer_to, mark_from, mark_to}]
     compress_pairs: list[dict[str, Any]] = field(default_factory=list)
+    # 运维库仪器类型（t_om_*.type 中文原文）
+    om_instrument_types: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     default_table: str | None = None
 
@@ -97,6 +99,7 @@ class SemanticBinding:
                 "device_coverage_project_names": list(self.device_coverage_project_names),
                 "preferred_station_names": list(self.preferred_station_names),
                 "compress_pairs": list(self.compress_pairs),
+                "om_instrument_types": list(self.om_instrument_types),
             },
             "default_table": self.default_table,
             "warnings": list(self.warnings),
@@ -128,6 +131,10 @@ class SemanticAssets:
     fcb_layers_by_project: dict[str, dict[int, str]] = field(default_factory=dict)
     # device_type → 官方 project_name 覆盖名单（P7）
     device_projects_by_type: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # 运维 type 中文 → device_type ids（om_result.t_om_*.type）
+    om_type_to_device_ids: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # 运维 type 同义词 → 规范 om_type 原文
+    om_type_aliases: dict[str, str] = field(default_factory=dict)
 
 
 def _resolve_semantic_root() -> Path | None:
@@ -178,6 +185,38 @@ def _resolve_device_station_map_path(base: Path) -> Path:
 def parse_device_station_map(data: dict[str, Any]) -> dict[str, tuple[str, ...]]:
     """解析 device_type → project_names 覆盖名单。报告侧 deterministics 复用，避免复制 YAML 解析。"""
     return _parse_device_station_map(data)
+
+
+def _parse_om_device_type(
+    data: dict[str, Any],
+) -> tuple[dict[str, tuple[str, ...]], dict[str, str]]:
+    """
+    解析运维仪器类型映射。
+
+    返回：
+    - om_type_to_device_ids: 平台 type 原文 → device_type id 元组
+    - om_type_aliases: 同义词/原文小写 → 规范 om_type 原文
+    """
+    type_map: dict[str, tuple[str, ...]] = {}
+    aliases: dict[str, str] = {}
+    for ent in data.get("entries") or []:
+        if not isinstance(ent, dict):
+            continue
+        om_type = str(ent.get("om_type") or "").strip()
+        if not om_type:
+            continue
+        ids = tuple(
+            str(x).strip().lower()
+            for x in (ent.get("device_type_ids") or [])
+            if str(x).strip()
+        )
+        type_map[om_type] = ids
+        aliases[om_type.lower()] = om_type
+        for syn in ent.get("synonyms") or []:
+            s = str(syn or "").strip()
+            if s:
+                aliases[s.lower()] = om_type
+    return type_map, aliases
 
 
 def _parse_device_station_map(data: dict[str, Any]) -> dict[str, tuple[str, ...]]:
@@ -361,6 +400,16 @@ def load_semantic_assets(root: str) -> SemanticAssets | None:
             {k: len(v) for k, v in device_projects_by_type.items()},
         )
 
+    om_type_to_device_ids, om_type_aliases = _parse_om_device_type(
+        _load_yaml(base / "dimensions" / "om_device_type.yaml")
+    )
+    if om_type_to_device_ids:
+        logger.info(
+            "om_device_type loaded types=%d aliases=%d",
+            len(om_type_to_device_ids),
+            len(om_type_aliases),
+        )
+
     return SemanticAssets(
         version=version,
         metrics=metrics,
@@ -377,6 +426,8 @@ def load_semantic_assets(root: str) -> SemanticAssets | None:
         fcb_layer0_marks=layer0_marks,
         fcb_layer0_by_district_raw=layer0_by_district,
         fcb_layers_by_project=layers_by_project,
+        om_type_to_device_ids=om_type_to_device_ids,
+        om_type_aliases=om_type_aliases,
         device_projects_by_type=device_projects_by_type,
     )
 
@@ -863,17 +914,41 @@ def align_semantics(
         if is_station_catalog_question(q):
             binding.default_table = _STATION_TABLE
             binding.warnings.append("station_catalog_query")
-        elif (
-            not binding.device_types
-            and assets.device_type_tables
-            and "fcb" in assets.device_type_tables
-        ):
-            # 未指明监测类型时默认分层标(fcb)，仅地降语义包（含 fcb 表映射）生效
-            binding.device_types.append("fcb")
-            binding.device_type_tables.append(
-                assets.device_type_tables.get("fcb") or assets.default_subsidence_table
-            )
-            binding.warnings.append("default_device_type_fcb")
+        else:
+            from app.nl2sql.om_intent import is_ops_question
+
+            ops_q = is_ops_question(q)
+            om_metric = any(str(m.id).startswith("om_") for m in binding.metrics)
+            if (
+                not ops_q
+                and not om_metric
+                and not binding.device_types
+                and assets.device_type_tables
+                and "fcb" in assets.device_type_tables
+            ):
+                # 未指明监测类型时默认分层标(fcb)；运维问句不注入，避免与 om allowlist 冲突
+                binding.device_types.append("fcb")
+                binding.device_type_tables.append(
+                    assets.device_type_tables.get("fcb") or assets.default_subsidence_table
+                )
+                binding.warnings.append("default_device_type_fcb")
+
+    # 运维仪器类型：问句别名 → 平台 type 原文（供 Prompt / type 过滤）
+    try:
+        from app.nl2sql.om_intent import is_ops_question as _is_ops_q
+
+        if _is_ops_q(q) and assets.om_type_aliases:
+            hit = _longest_match(q_lower, assets.om_type_aliases)
+            if hit:
+                _canon = hit[1]
+                if _canon not in binding.om_instrument_types:
+                    binding.om_instrument_types.append(_canon)
+                for did in assets.om_type_to_device_ids.get(_canon) or ():
+                    if did and did not in binding.device_types:
+                        binding.device_types.append(did)
+                binding.warnings.append(f"om_type_filter:{_canon}")
+    except Exception:  # noqa: BLE001
+        pass
 
     # districts
     for dist in sorted(assets.districts, key=len, reverse=True):

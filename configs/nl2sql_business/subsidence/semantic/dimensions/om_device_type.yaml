@@ -1,0 +1,39 @@
+# 运维中间库仪器类型（t_om_*.type）↔ 沉降监测类型规范码
+# 平台 type 为中文；与 device_type.yaml / synonyms 对齐。若库内文案有变，以 DISTINCT type 校准。
+# report_display_name：报告模版展示名（日/周运行·预警章）；缺省则用 om_type 原文。
+# 说明见 configs/nl2sql_business/subsidence/配置项说明.md
+version: "2026.10.14"
+# 运维 type 原文 → device_type id（可一对多：基岩标/分层标合并表述）
+entries:
+  - om_type: 地下水位井
+    report_display_name: 地下水位计
+    device_type_ids: [dxswj]
+    synonyms: [地下水, 水位井, 地下水井, 地下水位计]
+  - om_type: 光纤
+    report_display_name: 光纤自动解调仪
+    device_type_ids: [gq]
+    synonyms: [光纤, 光纤自动解调仪]
+  - om_type: 基岩标/分层标
+    report_display_name: 静力水准仪
+    device_type_ids: [jyb, fcb]
+    synonyms: [基岩标, 分层标, 分层, 基岩, 静力水准仪, 静力水准]
+  - om_type: 基岩标
+    report_display_name: 静力水准仪
+    device_type_ids: [jyb]
+    synonyms: [基岩标]
+  - om_type: 分层标
+    report_display_name: 静力水准仪
+    device_type_ids: [fcb]
+    synonyms: [分层标, 分层]
+  - om_type: 孔隙水压力井
+    report_display_name: 孔隙水压力计
+    device_type_ids: [kxsylj]
+    synonyms: [孔隙水, 孔压, 孔隙水压力, 孔隙水压力计]
+  - om_type: 气象站
+    report_display_name: 气象站
+    device_type_ids: [qxz]
+    synonyms: [气象, 气象站]
+  - om_type: GNSS
+    report_display_name: GNSS
+    device_type_ids: [gnss]
+    synonyms: [GNSS, gnss]

@@ -55,11 +55,27 @@ nl2sql:
   # 哪些 analysis_type 允许上面的 NOW 回退（逗号分隔）；空字符串=全部不允许
   anchor_fallback_analysis_types: ""
 
+# ---------- PostgreSQL schema 路由 ----------
+# 文档「schema: default」在本库中真实名为 public；校核库与准实时同构表、取数互斥。
+# 运维中间库固定 om_result；表白名单见 om_result_allowlist_file（与沉降白名单分列，按问句意图收窄）。
+# 环境变量可覆盖：SUBSIDENCE_DATA_SOURCE / SUBSIDENCE_SCHEMA_* / OM_RESULT_SCHEMA
+schemas:
+  # realtime | calibrated（亦接受 default→realtime）
+  settlement_data_source: realtime
+  # 准实时沉降（文档 default → PG public）
+  settlement_realtime: public
+  # 人工校核沉降（未就绪留空；启用时填真实 schema 名并设 SUBSIDENCE_DATA_SOURCE=calibrated）
+  settlement_calibrated: ""
+  # 设备运维中间库
+  om_result: om_result
+
 # ---------- 表白名单 / JOIN ----------
 # 限制 NL2SQL「最多能碰哪些表、允许怎样 JOIN」（防止扫到白名单外的表）
 tables:
-  # 允许查询的表清单（地降 8 表）
+  # 允许查询的表清单（地降 8 表；逻辑表名，schema 由 search_path / 路由注入）
   allowlist_file: configs/nl2sql_business/subsidence/table_scope.txt
+  # 运维表白名单（om_result.t_om_*；与沉降白名单分列，按问句意图收窄）
+  om_result_allowlist_file: configs/nl2sql_business/subsidence/table_scope_om_result.txt
   # 允许的表间关联（如事实表.project_name = t_station.name，用来带出行政区）
   join_whitelist_file: configs/nl2sql_business/subsidence/join_whitelist.txt
 

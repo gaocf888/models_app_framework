@@ -1120,18 +1120,22 @@ PYTHONPATH=. python -c "from app.auth.keygen import generate_service_api_key; pr
 # 占位网络（未部署侧车/人脸库时仍需存在，否则 compose 因 external 失败）
 docker network create paddle-layout-stack 2>/dev/null || true
 docker network create face-milvus-stack 2>/dev/null || true
-# MIS-TEI 须先 up（或至少已创建同名网络）；默认后端依赖 mis-tei-stack
+# MIS-TEI 须先 up（创建 mis-tei-stack）；默认 EMBEDDING_BACKEND=mis_tei
 # cd ../../../mis-tei-deploy && docker compose --env-file .env up -d
 
-# 启动  加速卡docker-compose配置文件与上方关键配置项对应
-docker compose --env-file .env -f docker-ascend/docker-compose-ascend.yml up -d --build
+# 推荐（方案 A）：CPU 小镜像 + MIS-TEI HTTP，无需 docker-ascend
+docker compose --env-file .env up -d --build
+
+# 仅当需要进程内 NPU / torch_npu 时再用 Ascend 大镜像：
+# docker compose --env-file .env -f docker-ascend/docker-compose-ascend.yml up -d --build
 ```
 
 验收：
 
 ```bash
 curl -s "http://127.0.0.1:${APP_PORT:-8083}/health"
-docker compose -f docker-ascend/docker-compose-ascend.yml logs -f models-app
+docker compose logs -f models-app
+# Ascend 栈：docker compose -f docker-ascend/docker-compose-ascend.yml logs -f models-app
 ```
 
 业务请求头：`Authorization: Bearer <SERVICE_API_KEYS>`。  

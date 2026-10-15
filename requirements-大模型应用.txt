@@ -18,7 +18,10 @@ httpx>=0.27.0             # HTTP 客户端，封装 vLLM/OpenAI 兼容接口等�
 minio>=7.2.0              # 图片预处理后上传 MinIO，返回预签名 URL 供 vLLM 多模态拉取
 
 # === 数据库与 NL2SQL 相关 ===
-sqlalchemy>=2.0.0         # ORM/SQL 构建与执行，NL2SQL 的 SQLExecutor 使用
+# sqlalchemy[asyncio] 会拉齐 greenlet；仅装 sqlalchemy 时 slim 镜像常缺 greenlet，
+# 导致 import sqlalchemy.ext.asyncio 失败（Ascend 底座常已自带 greenlet，故 docker-ascend 不易暴露）。
+sqlalchemy[asyncio]>=2.0.0  # ORM/SQL + AsyncEngine（NL2SQL SchemaMetadataService / SQLExecutor）
+greenlet>=3.0.0             # 显式钉住，避免镜像/解析器未展开 extras 时再次缺包
 aiomysql>=0.2.0           # 异步 MySQL/TiDB 驱动（锅炉四管等业务库）
 asyncpg>=0.29.0           # 异步 PostgreSQL 驱动（地面沉降 subsidence 业务库，profile 默认 postgresql+asyncpg）
 

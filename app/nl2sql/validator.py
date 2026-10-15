@@ -536,7 +536,37 @@ class SQLValidator:
         if not s:
             return False, "empty sql"
 
-        tables = {self._canonical_identifier(t) for t in self._table_ref_pattern.findall(s)}
+        raw_table_refs = self._table_ref_pattern.findall(s)
+        # 地降 PG：schema 白名单 + schema×表 组合（沉降表不可挂 om_result，反之亦然）
+        schema_err = self._validate_schema_table_refs(raw_table_refs)
+        if schema_err:
+            return False, schema_err
+
+        # 运维表：必须带 snapshot_time 最新批次过滤；离线列表须 status=0
+        try:
+            from app.nl2sql.om_intent import (
+                sql_has_latest_snapshot_filter,
+                sql_has_offline_status_filter,
+                sql_mentions_offline_list,
+                sql_mentions_om_tables,
+            )
+
+            if sql_mentions_om_tables(s) and not sql_has_latest_snapshot_filter(s):
+                return (
+                    False,
+                    "ops tables require snapshot_time latest-batch filter "
+                    "(e.g. snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_data_alarm_summary))",
+                )
+            if sql_mentions_offline_list(s) and not sql_has_offline_status_filter(s):
+                return (
+                    False,
+                    "t_om_offline_device_list requires status = 0 "
+                    "(current offline devices only)",
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+        tables = {self._canonical_identifier(t) for t in raw_table_refs}
         tables = {t for t in tables if t}
         allowed_tables_lower = {t.lower() for t in allowed_tables} if allowed_tables else set()
         if allowed_tables and tables:
@@ -665,4 +695,54 @@ class SQLValidator:
         if "." in t:
             t = t.split(".")[-1]
         return t.lower()
+
+    @classmethod
+    def _validate_schema_table_refs(cls, raw_table_refs: Iterable[str]) -> str | None:
+        """
+        若 SQL 带 ``schema.table``：
+
+        - schema ∈ {active 沉降, om_result}；
+        - 沉降 schema 不得挂 ``t_om_*``；om_result 仅允许 ``t_om_*``。
+
+        非 subsidence / 无路由时跳过（锅炉等不受影响）。
+        """
+        try:
+            from app.nl2sql.schema_routing import (
+                should_apply_subsidence_search_path,
+                validate_schema_table_pair,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        if not should_apply_subsidence_search_path():
+            return None
+        errors: list[str] = []
+        for raw in raw_table_refs:
+            t = (raw or "").strip().strip("`").strip('"').strip("[]")
+            if "." not in t:
+                continue
+            schema, table = t.split(".", 1)
+            schema = schema.strip()
+            table = table.strip()
+            # 仅取一级 schema.table（忽略更深限定）
+            if "." in table:
+                table = table.split(".", 1)[0]
+            err = validate_schema_table_pair(schema, table)
+            if err:
+                errors.append(err)
+        if not errors:
+            return None
+        # 合并同类 unknown schemas
+        unknown = sorted(
+            {
+                e.split(":", 1)[-1].strip()
+                for e in errors
+                if e.startswith("unknown schemas:")
+            }
+        )
+        other = [e for e in errors if not e.startswith("unknown schemas:")]
+        parts: list[str] = []
+        if unknown:
+            parts.append(f"unknown schemas: {', '.join(unknown)}")
+        parts.extend(other)
+        return "; ".join(parts)
 

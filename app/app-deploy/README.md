@@ -39,7 +39,7 @@
 | 完整部署与参数说明（本文件） | `README.md` |
 | **英伟达 GPU 嵌入/重排（Qwen3）** | **`docker-nvidia/README.md`** + **`docker-nvidia/docker-compose-nvidia.yml`** + 本文「部署形态选择」 |
 | **沐曦 GPU 嵌入/重排** | **`docker-mx/docker-compose-mx.yml`** + 本文「部署形态选择」 |
-| **昇腾 Ascend 嵌入/重排** | **默认 MIS-TEI**：`mis-tei-deploy/` + **`docker-ascend/`**（`EMBEDDING_BACKEND=mis_tei`）；见 `docker-ascend/README.md`、`README-DEPLOY-ASCEND.md` |
+| **昇腾 Ascend 嵌入/重排** | **默认 MIS-TEI**：`mis-tei-deploy/` + **推荐 `docker-compose.yml`（CPU 小镜像）**；仅需进程内 NPU/`local` 回退时用 **`docker-ascend/`**。见 `docker-ascend/README.md`、`README-DEPLOY-ASCEND.md` |
 | 局域网/离线外挂服务（vLLM/EasySearch/MinerU/**Paddle 版面侧车**） | `README-external-services-lan-deploy.md` |
 | 值班排障（当前先覆盖智能客服） | `deploy-docs/online-services-oncall-runbook.md` |
 
@@ -67,22 +67,25 @@ RAG **嵌入**与**重排**按宿主机算力选择 compose。昇腾现场 **默
 
 | 形态 | Compose / Dockerfile | 嵌入/重排设备 | 适用场景 |
 |------|----------------------|---------------|----------|
-| **CPU（默认）** | `docker-compose.yml` + `Dockerfile` | **CPU**（镜像无 CUDA/NPU PyTorch；`.env` 中 `cuda:N` / `npu:N` 不生效） | 开发联调、无加速卡、或 Qwen3 0.6B 可接受 CPU 延迟 |
-| **英伟达 GPU** | **`docker-nvidia/docker-compose-nvidia.yml`** + **`Dockerfile-nvidia`** | **GPU**（cu121 + `cuda:0` / `cuda:1`，`local`） | 英伟达服务器；与 vLLM 分卡跑嵌入/重排 |
-| **沐曦 GPU** | **`docker-mx/docker-compose-mx.yml`** + **`Dockerfile-mx`** | **GPU**（Metax 基础镜像 + conda；常用 `cuda:N` 串） | 沐曦/麒麟等 Metax 栈 |
-| **昇腾 Ascend** | **`docker-ascend/`** + 仓库根 **`mis-tei-deploy/`** | **默认 MIS-TEI HTTP**（NPU 4/5）；`local` 时 `npu:0`/`npu:1` | Atlas 300I Duo；与 vLLM/MinerU 同底座 |
+| **CPU（默认）** | `docker-compose.yml` + `Dockerfile` | **CPU** 进程内；或 **`mis_tei` HTTP**（推荐昇腾） | 开发联调；**昇腾 + MIS-TEI**（应用不占 NPU，镜像约 6G 级） |
+| **英伟达 GPU** | **`docker-nvidia/docker-compose-nvidia.yml`** + **`Dockerfile-nvidia`** | **GPU**（cu121 + `cuda:0` / `cuda:1`，`local`）；亦可 `mis_tei` | 英伟达服务器；与 vLLM 分卡跑嵌入/重排 |
+| **沐曦 GPU** | **`docker-mx/docker-compose-mx.yml`** + **`Dockerfile-mx`** | **GPU**（Metax 基础镜像 + conda；常用 `cuda:N` 串）；亦可 `mis_tei` | 沐曦/麒麟等 Metax 栈 |
+| **昇腾 Ascend（进程内 NPU）** | **`docker-ascend/`** + 可选 **`mis-tei-deploy/`** | **`local` + `npu:*`** 回退；或仍配 `mis_tei` | 需 `torch_npu`/Ascend runtime 时；镜像大 |
 | **小模型 GPU profile** | 英伟达/沐曦 compose + `--profile small-model-gpu` | 同上 + YOLO/通道等小模型 | 需 `/small-model/*`、视频通道等（昇腾默认不含） |
 
 **`.env` 共用**：各主栈均读取 **`app/app-deploy/.env`**（`docker-nvidia` / `docker-ascend` 用 `../.env`；`docker-mx` 常需复制到子目录）。显卡相关注释见 `.env.example`。
 
-**昇腾默认（MIS-TEI）`.env` 片段**：
+**昇腾推荐（MIS-TEI + 默认 CPU compose）`.env` 片段**：
 
 ```env
 EMBEDDING_BACKEND=mis_tei
 RAG_RERANKER_BACKEND=mis_tei
 MIS_TEI_EMBED_BASE_URL=http://mis-tei-embed:8080
 MIS_TEI_RERANK_BASE_URL=http://mis-tei-rerank:8080
-BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
+MIS_TEI_NETWORK_NAME=mis-tei-stack
+ASCEND_RT_VISIBLE_DEVICES=
+# 仅当改用 docker-ascend（进程内 NPU）时才需要：
+# BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
 ```
 
 **进程内 `local` 嵌入/重排 `.env` 片段**（英伟达 / 沐曦 / 昇腾回退）：
@@ -109,17 +112,20 @@ RAG_RERANKER_BACKEND=local
 ```bash
 cd app/app-deploy
 
-# CPU（默认）
+# CPU（默认）；昇腾 + MIS-TEI 亦用本栈（先起 mis-tei-deploy）
+# cd ../../mis-tei-deploy && docker compose --env-file .env up -d
+docker network create paddle-layout-stack 2>/dev/null || true
+docker network create face-milvus-stack 2>/dev/null || true
 docker compose up -d --build
 
-# 英伟达 GPU（嵌入/重排）
+# 英伟达 GPU（嵌入/重排 local，或同网调 mis_tei）
 docker compose -f docker-nvidia/docker-compose-nvidia.yml up -d --build
 
 # 沐曦 GPU
 cp .env docker-mx/   # 或 docker-mx 使用 ../.env
 cd docker-mx && docker compose -f docker-compose-mx.yml up -d --build
 
-# 昇腾 Ascend
+# 昇腾 Ascend（仅需进程内 NPU / torch_npu 时）
 docker compose -f docker-ascend/docker-compose-ascend.yml up -d --build
 
 # 可选小模型 GPU（英伟达栈示例）
@@ -719,9 +725,9 @@ docker compose --profile small-model-gpu down
 | **`docker-nvidia/README.md`** | 英伟达 GPU 栈快速说明 |
 | **`docker-mx/Dockerfile-mx`** | **沐曦 GPU** 主镜像：Metax 基础镜像 + conda |
 | **`docker-mx/docker-compose-mx.yml`** | **沐曦 GPU** 栈 |
-| **`docker-ascend/Dockerfile-ascend`** | **昇腾 Ascend** 主镜像：`vllm-ascend:v0.23.0-310p` + 业务依赖 |
-| **`docker-ascend/docker-compose-ascend.yml`** | **昇腾 Ascend** 栈 |
-| **`docker-ascend/README.md`** | 昇腾栈快速说明 |
+| **`docker-ascend/Dockerfile-ascend`** | 昇腾 **可选** 大镜像（进程内 NPU / `torch_npu`）；MIS-TEI 主路径用默认 `Dockerfile` |
+| **`docker-ascend/docker-compose-ascend.yml`** | 昇腾可选栈（local+npu） |
+| **`docker-ascend/README.md`** | 何时用 ascend vs 默认 CPU+MIS-TEI |
 | `.env.example` | 环境变量模板（含 **APP_SOURCE_HOST_PATH**、英伟达/沐曦/昇腾注释、Qwen3 嵌入/重排） |
 | `README.md` | 本文档 |
 | `README-simple-deploy.md` | 简明上线流程 |

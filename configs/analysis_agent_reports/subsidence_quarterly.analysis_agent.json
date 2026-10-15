@@ -1,14 +1,16 @@
 {
   "schema_version": 3,
   "title": "北京市地面沉降监测季度报告",
-  "description": "V2 拼装对齐季报 Word：前言/全市平原/分区循环/压缩层循环/重点区表4-1/小结/附表1-5。年报复用本 compose。",
+  "description": "V2 拼装对齐季报 Word：运行/前言/全市平原/分区循环/压缩层循环/重点区表4-1/告警/小结/附表1-5。年报复用本 compose。",
   "compose": [
     { "section": "cover", "variant": "quarterly", "params": { "cover_kind": "quarterly" } },
+    { "section": "station_ops" },
     { "section": "quarterly_preface" },
     { "section": "city_plain" },
     { "section": "district_results" },
     { "section": "layer_results" },
     { "section": "key_area", "variant": "with_table" },
+    { "section": "device_alert" },
     { "section": "conclusion" },
     { "section": "annex_ground" },
     { "section": "annex_layer" }

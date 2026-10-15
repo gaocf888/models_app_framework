@@ -78,6 +78,18 @@ def test_generic_settle_defaults_fcb() -> None:
     assert r.source == "default"
 
 
+def test_ops_question_rejected_use_chatbot() -> None:
+    from app.data_query_agent.library_intent import OPS_USE_CHATBOT_REASON
+
+    r = resolve_library_intent("各仪器当前在线率多少", None)
+    assert not r.ok
+    assert r.interrupt_reason == OPS_USE_CHATBOT_REASON
+
+    r2 = resolve_library_intent("当前告警设备占比", "fcb")
+    assert not r2.ok
+    assert r2.interrupt_reason == OPS_USE_CHATBOT_REASON
+
+
 @pytest.mark.asyncio
 async def test_library_llm_must_be_in_catalog(monkeypatch) -> None:
     from app.core.config import get_app_config

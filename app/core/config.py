@@ -804,6 +804,8 @@ class DataQueryAgentConfig:
     hud_layer_enabled: bool = False  # 无层位表则永不点亮
     strategy_block_enabled: bool = False  # P1-12 默认关
     default_max_rows: int = 500
+    browse_default_page_size: int = 20
+    browse_max_page_size: int = 100
     hitl_max_retries: int = 5
     libraries_file: str = "configs/data_query_agent/libraries.yaml"
     plan_file: str = "configs/data_query_agent/plan.yaml"
@@ -1797,6 +1799,12 @@ def _load_from_env() -> AppConfig:
         strategy_block_enabled=os.getenv("DATA_QUERY_AGENT_STRATEGY_BLOCK_ENABLED", "false").lower()
         == "true",
         default_max_rows=max(1, int(os.getenv("DATA_QUERY_AGENT_DEFAULT_MAX_ROWS", "500"))),
+        browse_default_page_size=max(
+            1, int(os.getenv("DATA_QUERY_AGENT_BROWSE_DEFAULT_PAGE_SIZE", "20"))
+        ),
+        browse_max_page_size=max(
+            1, int(os.getenv("DATA_QUERY_AGENT_BROWSE_MAX_PAGE_SIZE", "100"))
+        ),
         hitl_max_retries=max(1, int(os.getenv("DATA_QUERY_AGENT_HITL_MAX_RETRIES", "5"))),
         libraries_file=(
             os.getenv("DATA_QUERY_AGENT_LIBRARIES_FILE", "configs/data_query_agent/libraries.yaml")

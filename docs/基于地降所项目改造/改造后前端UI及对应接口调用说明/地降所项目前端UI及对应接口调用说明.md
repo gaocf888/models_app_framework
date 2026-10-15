@@ -106,14 +106,14 @@
 
 | 界面 | `analysis_type` | 说明 |
 |------|-----------------|------|
-| 日报 | `subsidence_daily` | 封面 / 运行 / 平原 / 告警占位 |
+| 日报 | `subsidence_daily` | 封面 / 运行 / 平原 / 告警 |
 | 周报 | `subsidence_weekly` | 日报骨架 + 重点区叙述（不挂表 4-1） |
-| 月报 | `subsidence_monthly` | 概况 / 平原 / 重点区 / 典型曲线 |
-| 季报 | `subsidence_quarterly` | 对齐季报 Word：分区循环、压缩层、表 4-1、附表 1–5 |
+| 月报 | `subsidence_monthly` | 运行 / 概况 / 平原 / 重点区 / 典型曲线 / 告警 |
+| 季报 | `subsidence_quarterly` | 运行 + 对齐季报 Word：分区循环、压缩层、表 4-1、告警、附表 1–5 |
 | 年报 | `subsidence_yearly` | **套季报目录**；只是时间窗为「上年」 |
 
 不要调用：`POST /analysis/*`（现网锅炉综合分析）、`POST /nl2sql/query`（当报告入口）、`POST /data-query-agent/run-stream`（出表不是出报告）、`POST /analysis-agent/resume-stream`（主路径无缺数弹窗）。  
-**禁止渲染** 取数事件里的 `sql`（可留字段给联调，界面忽略）。设备三率/告警、地图 GIS **不要编假数、不要接真实地图 SDK**（后端是占位）。
+**禁止渲染** 取数事件里的 `sql`（可留字段给联调，界面忽略）。设备三率/告警来自 `om_result` 最新批次（空批显示空态即可）；地图 GIS **不要编假数、不要接真实地图 SDK**（地图仍为占位）。
 
 ---
 
@@ -179,7 +179,7 @@
 | `analysis_agent_report_complete` / `finished.result` | 可用 `structured_report` 做终稿校对或导出；`summary` 为全文 Markdown |
 
 `chart.placeholder === true` 或无 series：画空态「待补充」，不要编点。  
-设备运行/告警章后端是空占位，正文出现「待补充」属正常。
+设备运行/告警章已接 `om_result`；本批无行时正文/表空态属正常，勿编假三率或告警。
 
 导出（可选）：前端把当前 Markdown/HTML **本地另存**；算法不提供 Word 下载接口。版式不必还原 Word 双栏。
 
@@ -316,11 +316,11 @@ analysis_agent_finished         { result }                         # 按钮恢�
 
 | 路径 | 何时 | 谁提供列表 | HUD（行详情） |
 |------|------|------------|-----|
-| **浏览**（点树看表，不说人话） | 进页默认表、点树刷新 | **Java**（业务后端）读库（默认全北京最新分层标+基岩标） | 没有历史曲线就隐藏「详参」按钮，或点行再请求 `GET /data-query-agent/hud`（按这一行补拉详情） |
+| **浏览**（点树看表，不说人话） | 进页默认表、点树刷新 | `GET /data-query-agent/tree` 画树；`GET /data-query-agent/browse` 出表（默认全北京最新分层标 `fcb`，强制分页） | 浏览表无曲线：点行再请求 `GET /data-query-agent/hud`（按这一行补拉详情） |
 | **解析 SQL**（用一句话查） | 顶栏有问句并点「解析 SQL」 | `POST /data-query-agent/run-stream`（开始解析）推来的 `data_query_result`（最终结果：表+详情） | **同一包结果里**就有 `hud_by_entity`（按行找详情的字典；站点找不到时再用 `hud_by_station`），**不要**再请求 `GET /hud` |
 
 鉴权：请求头带 `Authorization: Bearer <SERVICE_API_KEY>`（访问算法接口的口令）。算法端接口都在 `/data-query-agent/*`（数据查询智能体）。开关：`DATA_QUERY_AGENT_ENABLED`（总闸；关掉时返回 **503**「服务未开」，不是 **404**「没有这个地址」）。  
-进程须 `NL2SQL_BUSINESS_DOMAIN=subsidence`（告诉系统按地降所监测库工作，不要当成锅炉等其它业务）。`library_id`（监测库编号，如分层标=`fcb`）必须与 Java 左侧树、`GET /data-query-agent/libraries`（七库名单）**三方写成一样**。
+进程须 `NL2SQL_BUSINESS_DOMAIN=subsidence`（告诉系统按地降所监测库工作，不要当成锅炉等其它业务）。`library_id`（监测库编号，如分层标=`fcb`）必须与 `GET /tree` 节点、`GET /libraries`（七库名单）、解析请求 **写成一样**。Java 网关只转发本仓接口，不再自己读监测表出树/默认表。
 
 SSE（服务端边算边往浏览器推消息，像直播，不用等全部算完才一次性返回）：类型是 `text/event-stream`，每一帧是 `data: {JSON}\n\n`，消息种类写在 JSON 的 **`event`** 字段（和综合分析、看图诊断同一套写法，方便网关转发）。不要把报告类的 `summary_delta`（逐字吐报告）当成查询结果表。
 
@@ -333,8 +333,8 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 | 原始原型 | 改造后（本期） |
 |----------|----------------|
 | 多维过滤器（行政区 / 岩性 / 速度阈值）且解析后反向填充 | **不做过滤器**（页面上没有「再筛一遍」的控件）。区/站/时间只从问句（或树上明确传来的 `district`/`station_id`）写进 SQL 的 WHERE（查询条件） |
-| 感知树只读、不可点 | 树 **可点**：点库/区/站刷新列表走 **Java**（业务后端直接读库），**不要**再调 `run-stream`（解析 SQL） |
-| 进页固定 16 条演示站 | Java 默认表：分层标表 `t_data_wash_fcb` + 基岩标表 `t_data_wash_jyb`，全北京每站最新一条 `data_time`（观测时间） |
+| 感知树只读、不可点 | 树 **可点**：点库/区/站刷新列表走 `GET /data-query-agent/browse`（算法端直接读库，强制分页），**不要**再调 `run-stream`（解析 SQL） |
+| 进页固定 16 条演示站 | 默认表：`GET /browse` 不传 `library_id` 即分层标 `fcb`，全北京每站最新一条 `data_time`（观测时间）；一请求一库，不做 fcb+jyb UNION |
 | 列「年滑速 mm/yr」、岩性、InSAR ID | **不造列**（库里没有就不要编一列出来）。年变化用「这一年最后一次读数减去最早一次」（`annual_settle_mm` 等）；岩性/层位在 HUD 里标记 `unavailable`（没有这块数据，别画空卡片）；**不弹选库** |
 | 解析即出表，无选库 | 问不清查哪类监测数据时 **HITL 选库**（人机协同：先暂停，弹出「请选择分层标/地下水/…」，选完再继续；技术上是中断 SSE → 调 `resume-stream`） |
 | HUD 固定「监测站」模板，可编造策略/岩性 | HUD（行详情）跟 **这一行代表谁**（一个站 / 一个区 / 全市），不是跟「当前点了哪个库」死绑；`blocks` 不是 `ok` 就 **不画**（没有岩性/策略就留空，不要写假的）；解析一次把列表和详情 **同一包数据** 给齐 |
@@ -356,8 +356,8 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 
 #### 进入页面
 
-1. 画左侧树：数据来自 **Java**（库→行政区→站点及点数；界面上就是左边那棵可展开的树）。库节点 `id` 必须用下表 `library_id`（程序用的英文代号），不要用中文当稳定 ID（树上可以写「分层标」，请求里必须传 `fcb`）。  
-2. 右侧默认表：打 **Java 列表 API**（全北京最新 fcb+jyb；刚进页右侧那张表，分层标和基岩标拼在一起）。**不**打 `run-stream`（用户还没点「解析 SQL」，不要当成人话查询）。  
+1. 画左侧树：`GET /data-query-agent/tree`（库→行政区→站点及点数、每站最新值；界面上就是左边那棵可展开的树）。库节点 `id` 必须用下表 `library_id`（程序用的英文代号），不要用中文当稳定 ID（树上可以写「分层标」，请求里必须传 `fcb`）。站点 `station_id` = 场地 `project_name`（如 `F28(金盏)`），与点树过滤、`GET /hud` 的 `entity_id` 同源。  
+2. 右侧默认表：`GET /data-query-agent/browse?page=1&page_size=20`（不传 `library_id` = 全北京最新分层标）。**不**打 `run-stream`（用户还没点「解析 SQL」，不要当成人话查询）。翻页只改 `page` / `page_size`，看 `total` / `has_more`。  
 3. 可选预加载：`GET /data-query-agent/libraries`（拉一份「七种监测类型」名单），供 HITL 选库弹窗与树上中文名校验。  
 4. 输入框为空：「解析 SQL」**禁用**（灰掉，点不了）。
 
@@ -378,7 +378,7 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 
 #### 左侧感知树
 
-树数据与点选刷新列表由 **Java** 实现（点树 = 换右侧那张表）。算法端 **只认库这一级** `library_id`（点「分层标」才会带进解析；点「朝阳区」本身不会让算法换库）。点到朝阳区/某站且 **不点「解析 SQL」** 时不要打 `run-stream`。
+树数据来自 `GET /tree`；点选刷新列表走 `GET /browse`（点树 = 换右侧那张表，**不要**打 `run-stream`）。解析 SQL 时算法端 **只认库这一级** `library_id`（点「分层标」才会带进解析；点「朝阳区」本身不会让算法换库，浏览列表则按区/站过滤）。点到朝阳区/某站且 **不点「解析 SQL」** 时不要打 `run-stream`。
 
 展示名与稳定 ID（与 `GET /libraries`、配置 `device_type.yaml` 同源；树上中文、程序英文必须对得上）：
 
@@ -394,8 +394,8 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 
 | UI | 行为 | 接口 |
 |----|------|------|
-| 点 **库** 节点（如「分层标」） | 该节点高亮；右侧换成这一类监测点的表 | **Java** 列表 API（带 `library_id`） |
-| 点 **区 / 站** 节点 | 右侧只显示该区或该站 | **Java** 列表 API；不打 `run-stream`（不是「解析 SQL」） |
+| 点 **库** 节点（如「分层标」） | 该节点高亮；右侧换成这一类监测点的表 | `GET /browse?library_id=fcb&page=1&page_size=20` |
+| 点 **区 / 站** 节点 | 右侧只显示该区或该站 | `GET /browse?library_id=&district=` 或 `&station_id=`；不打 `run-stream`（不是「解析 SQL」） |
 | 收到 `data_query_library_hit`（解析已经锁定哪一类库） | 高亮/选中对应 **库** 节点（即使用户没先点树，解析出「地下水」也要把树点到地下水） | SSE，见 §3.2 |
 | 树选库后再点「解析 SQL」 | 请求带上该 `library_id`（告诉算法：按树上这种类型查） | `run-stream` |
 
@@ -408,7 +408,7 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 | 列来源 | 规则 |
 |--------|------|
 | 解析 SQL | `data_query_result.columns[].title` 当表头（用户看见的列名）；单元格取 `list[row][columns[i].key]`（这一格的值）；缺 key 显示空，不要自己猜列 |
-| 浏览（Java） | Java 自己带列；建议 key 与下表对齐（同样的英文字段，表头可以是中文） |
+| 浏览（`GET /browse`） | 用返回的 `columns[].title` 当表头；单元格取 `list[row][columns[i].key]`；与解析路径同一套表格 |
 
 站点列表典型度量列（除测位 ID / 站名 / 行政区 / 数据时间外；即表上多出来的「数」）：
 
@@ -436,7 +436,7 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 | 路径 | 按钮 | 行为 |
 |------|------|------|
 | 解析成功，且整表开了 HUD、这一行 `hud_available` | **详参 / HUD** | 在已经收到的结果里查 `hud_by_entity[这一行的 hud_entity_id]`（点哪行就打开哪行的详情，不必再等网络）；站点找不到时再用 `hud_by_station[测位编号]` |
-| 浏览（点树出来的 Java 表） | **详参 / HUD** | 再请求一次 `GET /data-query-agent/hud?...`（默认表里本来没有曲线，点一下再拉这条的详情），把返回的 `hud` 交给和解析路径同一套详情面板 |
+| 浏览（点树出来的表） | **详参 / HUD** | 再请求一次 `GET /data-query-agent/hud?...`（浏览表里本来没有曲线，点一下再拉这条的详情），把返回的 `hud` 交给和解析路径同一套详情面板 |
 | 解析刚出表 | — | **不要**再请求 `GET /hud`（详情已经在结果包里，再拉是重复） |
 
 #### 选库对话框（HITL）（人没说清查哪类数据时，先请用户选）
@@ -579,11 +579,33 @@ GET /data-query-agent/hud?library_id=fcb&entity_type=station&entity_id=JZGZ
 |------|------|------|
 | `library_id` | 是 | 这一行是哪类监测（默认表里可能上一行分层标、下一行基岩标，各传各的） |
 | `entity_type` | 是 | 点的是站、区还是全市。层位暂不支持 |
-| `entity_id` | 是 | 站=测位编号；区=「朝阳区」；全市传 `beijing`（也可写「全市」） |
+| `entity_id` | 是 | 站=`GET /browse` 行上的 `station_id`（场地 `project_name`，如 `F28(金盏)`）；区=「朝阳区」；全市传 `beijing`（也可写「全市」） |
 | `user_id` / `session_id` | 否 | 浏览表点详情时可以不传 |
 | `expose_sql` | 否 | 联调才打开 |
 
 成功后把返回的 `hud` 交给和解析路径同一套详情浮层。失败时按状态码提示（库不存在、参数错、查不到曲线等），不要当成「解析 SQL」失败。
+
+#### 3.2.5 `GET /tree` / `GET /browse`（浏览路径；Java 转发本仓）
+
+树与默认表由本仓读库，**不走** `run-stream`。站点稳定键是 `project_name` ≡ `t_station.name`。一请求只锁一张 `t_data_wash_*`（默认分层标 `fcb`，不做 fcb+jyb UNION）。
+
+```text
+GET /data-query-agent/tree
+GET /data-query-agent/tree?library_id=jyb
+GET /data-query-agent/browse?page=1&page_size=20
+GET /data-query-agent/browse?library_id=jyb&district=朝阳区&page=1&page_size=20
+GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_size=20
+```
+
+| 接口 | 参数 | 说明（界面） |
+|------|------|------|
+| `/tree` | `library_id` 可选 | 空=七库整棵树（库→区→站，带站点数与每站最新值）。只传 `jyb` 则只画基岩标这一枝 |
+| `/browse` | `library_id` 可选 | 空=默认分层标。点「基岩标」节点时传 `jyb` |
+| `/browse` | `district` 可选 | 点「朝阳区」时传 `朝阳区` |
+| `/browse` | `station_id` 可选 | 点某个站时传树上的 `station_id`（`F28(金盏)`） |
+| `/browse` | `page` / `page_size` | 页码从 1；默认 20 行，最大 100。看 `total`、`has_more` 做翻页 |
+
+`/browse` 返回 `columns` + `list`，列与解析路径同一套 key；行上带 `hud_entity_id`，点「详参」再打 `GET /hud`。树是站点粒度（每库几十站），不做时间序列分页；**列表必须分页**，禁止一次拉全表历史。
 
 ---
 
@@ -591,8 +613,8 @@ GET /data-query-agent/hud?library_id=fcb&entity_type=station&entity_id=JZGZ
 
 | 功能（用户在页面上做什么） | 方法 | 路径 |
 |------|------|------|
-| 刚进页看到的表 / 点左侧树刷新右侧表 | — | **Java** 列表 API（本仓库不提供路径） |
-| 左侧感知树有哪些库、区、站 | — | **Java** 树 API；库代号用 `fcb` 等，不要传「分层标」 |
+| 刚进页看到的表 / 点左侧树刷新右侧表 | GET | `/data-query-agent/browse`（分页；默认 `library_id=fcb`） |
+| 左侧感知树有哪些库、区、站 | GET | `/data-query-agent/tree`；库代号用 `fcb` 等，不要传「分层标」 |
 | 选库弹窗里的选项 / 核对七种监测类型 | GET | `/data-query-agent/libraries` |
 | 顶栏点「解析 SQL」 | POST | `/data-query-agent/run-stream`（边解析边推消息） |
 | 选库弹窗点确定后继续出表 | POST | `/data-query-agent/resume-stream` |
@@ -610,7 +632,7 @@ GET /data-query-agent/hud?library_id=fcb&entity_type=station&entity_id=JZGZ
 - 查询台进程：`NL2SQL_BUSINESS_DOMAIN=subsidence`（按地降监测库工作），`DATA_QUERY_AGENT_ENABLED=true`（数据查询页能打开）。  
 - `library_id` 三方一致：树上的代号、解析高亮、算法名单都用 `fcb` 这种英文；**不要把「分层标」三个字当作请求 id**（树上可以显示中文）。  
 - 点「解析 SQL」出的表和详参已经在这一包结果里；只有点树出来的表，点「详参」才再请求 `GET /hud`。  
-- 用户只说「沉降」、树上也没点库时，解析 **只查分层标**（树会亮到分层标）；进页那张「分层标+基岩标」拼表是点树/默认浏览，不是解析 SQL 的结果。  
+- 用户只说「沉降」、树上也没点库时，解析 **只查分层标**（树会亮到分层标）；进页默认表也是分层标（`GET /browse` 不传 `library_id`），不是 fcb+jyb 拼表。  
 - 选库弹窗的选项必须用推送过来的名单（或 `GET /libraries`），不要在页面里写死七个类型。  
 - 「各区平均 / 全市平均」的折线是该区或全市的日平均；**不要拿某一个站的曲线**画成朝阳区或全市。  
 - 输入框没字不要点解析（会 422）；取消解析要带上开始时记下的流编号。

@@ -14,6 +14,16 @@
 | 光纤 | t_data_wash_gq | total_settle | 光纤沉降 |
 | 气象 | t_data_wash_qxz | temp, real_time_rain | 降水气温辅助 |
 
+## 运维中心指标（schema om_result）
+
+- **域分离**：在线率/完整率/有效率/告警/离线 → 只查 `om_result.t_om_*`；沉降读数 → 只查 `t_data_wash_*`。禁止混查、禁止用有数天数估算三率。运维问句走智能客服 NL2SQL，**不要**走数据查询台（无 om library）。
+- **批次**：每小时约 20 分整批刷新；8 表 `snapshot_time` 同批一致；查询必须滤最新批次（与报告 `om_*.sql` 同口径，**非**报告日/周时间窗）。
+- **仪器类型**：列 `type` 对应监测类型（地下水位井、光纤、基岩标/分层标、孔隙水压力井、气象站、GNSS）；过滤 `type`，不要改写成 wash 表。
+- **离线列表**：`t_om_offline_device_list` 必须 `status = 0`（当前离线）；离线时长 = `now() - data_collect_time`（天数 ≈ EPOCH/86400）。
+- **告警占比**：`alarm_count / total_count * 100`（`t_om_data_alarm_summary`）；勿用 `week_avg`/`month_avg` 当作当前占比。
+- **月完整/有效列表**：只含低于阈值设备（&lt;92% / &lt;90%），回答须说明「不达标名单」。
+- **时长**：告警持续 = 查询时刻 − `off_time`；离线时长 = 查询时刻 − `data_collect_time`。
+
 ## 沉降口径（对齐季报脚本，2026-09 起）
 
 - **周期变化量**：`Δ = total_settle(窗初) − total_settle(窗末)`（mm），即时间窗内**最早有效点减去最晚有效点**（**初 − 末**）。

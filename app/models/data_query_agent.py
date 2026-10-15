@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.conversation.ids import validate_session_id, validate_user_id
 
@@ -170,3 +170,57 @@ class DataQueryAgentHudResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     found: bool = True
     sql: dict[str, Any] | None = None
+
+
+class DataQueryAgentTreeStation(BaseModel):
+    station_id: str
+    station_name: str
+    district: str = ""
+    latest_value: Any = None
+    data_time: Any = None
+    unit: str = ""
+
+
+class DataQueryAgentTreeDistrict(BaseModel):
+    district: str
+    station_count: int = 0
+    stations: list[DataQueryAgentTreeStation] = Field(default_factory=list)
+
+
+class DataQueryAgentTreeLibrary(BaseModel):
+    library_id: str
+    display_name: str = ""
+    group: str = ""
+    station_count: int = 0
+    districts: list[DataQueryAgentTreeDistrict] = Field(default_factory=list)
+
+
+class DataQueryAgentTreeResponse(BaseModel):
+    """GET /tree：监测库 → 行政区 → 站点（每站最新快照）。"""
+
+    ok: bool = True
+    default_library_id: str = "fcb"
+    libraries: list[DataQueryAgentTreeLibrary] = Field(default_factory=list)
+
+
+class DataQueryAgentBrowseResponse(BaseModel):
+    """GET /browse：点树 / 进页默认表；每站最新一行，强制分页。JSON 字段名仍为 list。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    ok: bool = True
+    library_id: str
+    display_name: str = ""
+    district: str | None = None
+    station_id: str | None = None
+    result_grain: str = "station"
+    page: int
+    page_size: int
+    total: int
+    has_more: bool = False
+    columns: list[dict[str, Any]] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(
+        default_factory=list, alias="list", serialization_alias="list"
+    )
+    hud_enabled: bool = False
+    warnings: list[str] = Field(default_factory=list)

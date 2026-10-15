@@ -1,5 +1,8 @@
-# 地降 NL2SQL 表白名单（subsidence）
+# 地降 NL2SQL 表白名单（subsidence）— 沉降监测（准实时 / 校核同构）
 # 仅允许下列表出现在生成 SQL 中；与 profile.tables.allowlist_file 对应。
+# 逻辑表名不含 schema：执行时由 search_path 落到 active 沉降 schema
+#（文档 default → PG public；校核见 SUBSIDENCE_SCHEMA_CALIBRATED）。
+# 运维表见 table_scope_om_result.txt（分列加载，运维问句才纳入 scope）。
 # 说明见同目录「配置项说明.md」
 t_data_wash_fcb
 t_data_wash_jyb

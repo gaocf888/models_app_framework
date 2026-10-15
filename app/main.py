@@ -93,7 +93,7 @@ def create_app() -> FastAPI:
         {
             "name": "data-query-agent",
             "description": (
-                "数据查询智能体（data_query_agent）：库意图 + HITL + NL2SQL 列表/HUD。"
+                "数据查询智能体（data_query_agent）：浏览树/分页列表 + 库意图 + HITL + NL2SQL 列表/HUD。"
                 "须携带 `Authorization: Bearer <SERVICE_API_KEY>`；开关 `DATA_QUERY_AGENT_ENABLED`。"
                 "路由始终存在；未开启时请求返回 **503**（非 404）。"
             ),

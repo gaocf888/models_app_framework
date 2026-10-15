@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "title": "北京市地面沉降监测日报",
-  "description": "V2 拼装：封面/运行/平原/告警占位。数字来自 q_layer0，禁止 NL2SQL 生成器当附表真源。部署需 NL2SQL_BUSINESS_DOMAIN=subsidence",
+  "description": "V2 拼装：封面/运行/平原/告警（om_result）。数字来自 q_layer0，禁止 NL2SQL 生成器当附表真源。部署需 NL2SQL_BUSINESS_DOMAIN=subsidence",
   "compose": [
     { "section": "cover", "params": { "cover_kind": "short" } },
     { "section": "station_ops" },

@@ -96,6 +96,23 @@ def chart_from_table(
     return None
 
 
+def _normalize_y_fields(y_fields: list[Any] | None) -> list[dict[str, str]]:
+    """y_fields: [\"online_rate\"] 或 [{\"field\":\"online_rate\",\"name\":\"在线率(%)\"}]。"""
+    out: list[dict[str, str]] = []
+    for item in y_fields or []:
+        if isinstance(item, dict):
+            field = str(item.get("field") or item.get("key") or "").strip()
+            if not field:
+                continue
+            name = str(item.get("name") or item.get("label") or field).strip() or field
+            out.append({"field": field, "name": name})
+        else:
+            field = str(item or "").strip()
+            if field:
+                out.append({"field": field, "name": field})
+    return out
+
+
 def chart_from_config(
     *,
     chart_id: str,
@@ -105,6 +122,7 @@ def chart_from_config(
     x_field: str = "",
     y_field: str = "",
     series_field: str = "",
+    y_fields: list[Any] | None = None,
     max_points: int = 60,
     y_left: dict[str, Any] | None = None,
     y_right: dict[str, Any] | None = None,
@@ -201,6 +219,43 @@ def chart_from_config(
     columns = _row_columns(rows)
     if not columns:
         return None
+
+    multi_y = _normalize_y_fields(y_fields if isinstance(y_fields, list) else None)
+    if multi_y and ctype == "bar":
+        xf = x_field if x_field in columns else (_first_label_col(columns, None) or "")
+        if not xf:
+            return None
+        series_list: list[dict[str, Any]] = []
+        for yf in multi_y:
+            field = yf["field"]
+            if field not in columns:
+                continue
+            pts: list[dict[str, Any]] = []
+            for row in rows[:limit]:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    val = float(row.get(field))
+                except (TypeError, ValueError):
+                    continue
+                pts.append({"x": str(row.get(xf, "")), "y": val})
+            if pts:
+                series_list.append({"name": yf["name"], "data": pts})
+        if not series_list:
+            return None
+        return {
+            "id": chart_id,
+            "chart_type": "bar",
+            "title": title or chart_id,
+            "spec": {
+                "xField": "x",
+                "yField": "y",
+                "seriesField": "name",
+                "grouped": True,
+                "series": series_list,
+            },
+        }
+
     y = y_field if y_field in columns else (_first_numeric_col(columns, rows) or "")
     x = x_field if x_field in columns else (_first_label_col(columns, y) or "")
     if not x or not y:

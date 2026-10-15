@@ -9,6 +9,15 @@ forbidden_pairs:
   - [period_subsidence_mm, gnss_displacement_3d]
   - [period_subsidence_mm, pore_pressure]
   - [groundwater_depth, period_subsidence_mm]
+  - [period_subsidence_mm, om_online_rate]
+  - [period_subsidence_mm, om_complete_rate]
+  - [period_subsidence_mm, om_alarm_list]
+  - [period_subsidence_mm, om_alarm_ratio]
+  - [period_subsidence_mm, om_offline_duration]
+  - [om_online_rate, period_subsidence_mm]
+  - [om_complete_rate, period_subsidence_mm]
+  - [om_alarm_ratio, period_subsidence_mm]
+  - [om_offline_duration, period_subsidence_mm]
 
 # 问句监测类型别名 → 规范码
 device_type_aliases:

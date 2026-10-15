@@ -104,3 +104,112 @@ metrics:
     preferred_tables: [t_data_wash_gq]
     preferred_columns: [total_settle]
     time_column: data_time
+
+  # ---------- 运维中间库 om_result（须按 snapshot_time 最新批次过滤）----------
+  - id: om_online_rate
+    name: 仪器在线率
+    synonyms: [在线率, 在线情况, 设备在线, 仪器在线]
+    unit: "%"
+    grain: device_type_snapshot
+    formula_note: "按仪器类型汇总；须 snapshot_time=最新批次；列 online_rate"
+    forbidden_confusions: [period_subsidence_mm]
+    preferred_tables: [t_om_device_online_by_type]
+    preferred_columns: [type, total, online, offline, online_rate]
+    time_column: snapshot_time
+
+  - id: om_complete_rate
+    name: 数据完整率
+    synonyms: [完整率, 数据完整率, 完好率]
+    unit: "%"
+    grain: device_type_snapshot
+    formula_note: "近4天窗口(T-5~T-2)；rate；须最新 snapshot_time；禁止用沉降有数天数估算"
+    forbidden_confusions: [period_subsidence_mm]
+    preferred_tables: [t_om_complete_rate_by_type]
+    preferred_columns: [type, rate, device_count, actual_count, theory_count]
+    time_column: snapshot_time
+
+  - id: om_effective_rate
+    name: 数据有效率
+    synonyms: [有效率, 数据有效率]
+    unit: "%"
+    grain: device_type_snapshot
+    formula_note: "近4天窗口；含 invalid_count；须最新 snapshot_time"
+    forbidden_confusions: [period_subsidence_mm]
+    preferred_tables: [t_om_effective_rate_by_type]
+    preferred_columns: [type, rate, invalid_count]
+    time_column: snapshot_time
+
+  - id: om_alarm_summary
+    name: 数据告警总览
+    synonyms: [告警总览, 告警统计, 告警仪器数, 数据告警, 告警台数, 告警设备台数]
+    unit: ""
+    grain: snapshot
+    formula_note: "固定1行；total_count/alarm_count/normal_count/week_avg/month_avg；最新批次"
+    forbidden_confusions: [period_subsidence_mm]
+    preferred_tables: [t_om_data_alarm_summary]
+    preferred_columns: [total_count, alarm_count, normal_count, week_avg, month_avg]
+    time_column: snapshot_time
+
+  - id: om_alarm_ratio
+    name: 告警设备占比
+    synonyms: [告警占比, 告警设备占比, 告警比例, 有警占比]
+    unit: "%"
+    grain: snapshot
+    formula_note: "alarm_count/total_count*100（t_om_data_alarm_summary）；须最新 snapshot_time；勿用 week_avg/month_avg 冒充当前占比"
+    forbidden_confusions: [period_subsidence_mm]
+    preferred_tables: [t_om_data_alarm_summary]
+    preferred_columns: [total_count, alarm_count]
+    time_column: snapshot_time
+
+  - id: om_alarm_list
+    name: 告警仪器列表
+    synonyms: [告警列表, 有警仪器, 设备告警, 仪器告警, 当前告警]
+    unit: ""
+    grain: device
+    formula_note: "status恒为有警；持续时间=now()-off_time；最新 snapshot_time"
+    forbidden_confusions: [period_subsidence_mm]
+    preferred_tables: [t_om_device_alarm_list]
+    preferred_columns: [device_name, type, area_name, ss_value, content, off_time]
+    time_column: snapshot_time
+
+  - id: om_offline_list
+    name: 离线仪器列表
+    synonyms: [离线仪器, 离线设备, 离线列表, 哪些设备离线]
+    unit: ""
+    grain: device
+    formula_note: "须 status=0 且最新 snapshot_time；离线时长=now()-data_collect_time；勿依赖 create_time"
+    forbidden_confusions: [period_subsidence_mm]
+    preferred_tables: [t_om_offline_device_list]
+    preferred_columns: [name, type, area_name, data_collect_time, status]
+    time_column: snapshot_time
+
+  - id: om_offline_duration
+    name: 离线时长
+    synonyms: [离线时长, 离线天数, 离线多久, 掉线多久, 离线时间]
+    unit: day
+    grain: device
+    formula_note: "t_om_offline_device_list；status=0；时长=now()-data_collect_time（天≈EPOCH/86400）；须最新 snapshot_time"
+    forbidden_confusions: [period_subsidence_mm]
+    preferred_tables: [t_om_offline_device_list]
+    preferred_columns: [name, type, area_name, data_collect_time]
+    time_column: snapshot_time
+
+  - id: om_month_complete_low
+    name: 月完整性不达标名单
+    synonyms: [月完整率低, 完整率不达标, 月完整性]
+    unit: "%"
+    grain: device
+    formula_note: "仅含完整率<92%设备；近30天窗口；最新 snapshot_time"
+    preferred_tables: [t_om_month_complete_list]
+    preferred_columns: [name, type, area_name, complete_rate]
+    time_column: snapshot_time
+
+  - id: om_month_effective_low
+    name: 月有效性不达标名单
+    synonyms: [月有效率低, 有效率不达标, 月有效性]
+    unit: "%"
+    grain: device
+    formula_note: "仅含有效率<90%设备；最新 snapshot_time"
+    preferred_tables: [t_om_month_effective_list]
+    preferred_columns: [name, type, area_name, complete_rate]
+    time_column: snapshot_time

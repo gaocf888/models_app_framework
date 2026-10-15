@@ -60,8 +60,11 @@ def resolved_sql_params(
         params["fcb_projects"] = list(dict.fromkeys(project for project, _mark in keys))
     if extra:
         params.update(extra)
-    params["t_start"] = _bind_timestamp(params.get("t_start"), key="t_start")
-    params["t_end"] = _bind_timestamp(params.get("t_end"), key="t_end")
+    # 运维 om_* 模板无时间窗绑定，跳过 t_start/t_end 强制转换
+    sql_name = (sql_file or "").strip().lower()
+    if not sql_name.startswith("om_"):
+        params["t_start"] = _bind_timestamp(params.get("t_start"), key="t_start")
+        params["t_end"] = _bind_timestamp(params.get("t_end"), key="t_end")
     return params
 
 
@@ -89,6 +92,12 @@ async def run_sql_template(
     rows = await executor.execute(sql, params)
     if max_rows > 0:
         rows = rows[:max_rows]
+    # 运维报告：库内 type → 模版展示名（静力水准仪等）
+    sql_name = (sql_file or "").strip().lower()
+    if sql_name.startswith("om_"):
+        from app.analysis_agent.deterministics.om_type_display import apply_om_type_display
+
+        rows = apply_om_type_display(rows)
     logger.info(
         "sql_template done file=%s rows=%s t_start=%s t_end=%s area=%s",
         sql_file,

@@ -42,7 +42,8 @@ docker compose --env-file .env logs -f mis-tei-embed
 | Embedding | `mis-tei-embed` | 8091 | `POST /embed` |
 | Rerank | `mis-tei-rerank` | 8092 | `POST /rerank` |
 
-Docker 网络名默认 **`mis-tei-stack`**（`models-app` 须以 external 接入）。
+Docker 网络名默认 **`mis-tei-stack`**（`models-app` 须以 external 接入）。  
+`app/app-deploy/docker-compose.yml`（默认 CPU）、`docker-nvidia`、`docker-mx`、`docker-ascend` 均已声明 `mis-tei-external`。
 
 ## 3. 自检
 
@@ -68,7 +69,17 @@ RAG_RERANKER_BACKEND=mis_tei
 MIS_TEI_EMBED_BASE_URL=http://mis-tei-embed:8080
 MIS_TEI_RERANK_BASE_URL=http://mis-tei-rerank:8080
 MIS_TEI_NETWORK_NAME=mis-tei-stack
+ASCEND_RT_VISIBLE_DEVICES=
 ```
+
+**昇腾推荐启动应用（CPU 小镜像，无需 `docker-ascend`）**：
+
+```bash
+cd app/app-deploy
+docker compose up -d --build
+```
+
+仅需进程内 NPU 回退时再用 `docker compose -f docker-ascend/docker-compose-ascend.yml up -d --build`。
 
 回退进程内 SentenceTransformer / CrossEncoder：
 

@@ -1,5 +1,6 @@
 # 地降板块库索引。改章节只改本目录 JSON / compose；本文件提供循环词表与共享取数项。
 # 平原 8 区与季报有站目录对齐；名称须带「区」，对应 t_station.area。
+# 注意：shared_plan_items 会全部进入报告 plan（按 item_id 去重），勿放重复 SQL 的别名项。
 
 plain_districts:
   - { id: chaoyang, name: 朝阳区 }
@@ -32,13 +33,33 @@ shared_plan_items:
     mandatory: true
     dependency_ids: [q_fcb_endpoints]
     purpose: 层位0地面沉降 Δ=初−末
-  - item_id: q_ops_placeholder
-    executor: placeholder
+  - item_id: q_ops_rates
+    executor: sql_template
+    sql_file: om_ops_rates_by_type.sql
     mandatory: false
     dependency_ids: []
-    purpose: 设备运行三率待接入
-  - item_id: q_alert_placeholder
-    executor: placeholder
+    purpose: 各仪器类型在线/完整/有效率（om_result 最新批次）
+  - item_id: q_ops_offline_list
+    executor: sql_template
+    sql_file: om_ops_offline_list.sql
     mandatory: false
     dependency_ids: []
-    purpose: 设备告警待接入
+    purpose: 当前离线设备明细与离线天数（om_result 最新批次 status=0）
+  - item_id: q_alert_summary
+    executor: sql_template
+    sql_file: om_alert_summary.sql
+    mandatory: false
+    dependency_ids: []
+    purpose: 告警总览一行（om_result）
+  - item_id: q_alert_count_by_type
+    executor: sql_template
+    sql_file: om_alert_count_by_type.sql
+    mandatory: false
+    dependency_ids: []
+    purpose: 各仪器类型告警设备台数（om_result 最新批次）
+  - item_id: q_alert_list
+    executor: sql_template
+    sql_file: om_alert_list.sql
+    mandatory: false
+    dependency_ids: []
+    purpose: 当前告警仪器列表（om_result，含序号）

@@ -1,33 +1,35 @@
 {
   "id": "device_alert",
-  "title": "设备告警情况",
+  "title": "设备预警情况",
   "kind": "llm_section",
-  "source_item_ids": ["q_alert_placeholder"],
-  "outline": ["说明本期告警数据待接入"],
-  "constraints": ["禁止编造告警", "禁止 q 编号", "禁止 # 标题行"],
-  "narrative_instruction": "本期设备告警数据待接入，以下为模版骨架。无库内告警表时不要用沉降极值冒充告警。",
+  "source_item_ids": ["q_alert_summary", "q_alert_count_by_type", "q_alert_list"],
+  "outline": [
+    "先总览：总数、告警台数、占比、分类型告警台数",
+    "再提示详见表1",
+    "禁止编造告警"
+  ],
+  "constraints": [
+    "禁止编造告警",
+    "禁止 q 编号",
+    "禁止 # 标题行",
+    "只基于取数结果",
+    "勿用沉降极值冒充告警",
+    "总数/告警台数以 q_alert_summary 为准；分类型台数以 q_alert_count_by_type 为准"
+  ],
+  "narrative_instruction": "基于 om_result 最新批次写预警总览一句：设备共计 total_count 台，其中告警设备 alarm_count 台，占比 alarm_count/total_count×100%（保留两位小数），再按 q_alert_count_by_type 列出「××数据告警设备 N 台」（类型已是报告展示名）。可带时间窗 period_label 或「本批」。无告警（alarm_count=0 或列表空）则明确本批暂无告警设备。结尾「具体情况详见表1」。勿罗列逐条告警正文（表已程序渲染）；勿编造。",
   "allowed_outputs": ["paragraph"],
   "use_emit_tools": false,
   "tables": [
     {
       "id": "t_device_alert",
-      "title": "设备告警（待接入）",
-      "source_item_ids": ["q_alert_placeholder"],
+      "title": "设备数据告警情况统计表",
+      "source_item_ids": ["q_alert_list"],
       "attach_to_chapter": "@self",
-      "placeholder": true,
+      "placeholder": false,
       "columns": ["序号", "标编号", "设备类型", "位置", "实时值", "告警内容"],
-      "max_rows": 20
+      "column_keys": ["seq", "device_name", "device_type", "area_name", "ss_value", "content"],
+      "max_rows": 50
     }
   ],
-  "charts": [
-    {
-      "id": "c_device_alert",
-      "title": "设备告警（待接入）",
-      "chart_type": "bar",
-      "source_item_ids": ["q_alert_placeholder"],
-      "attach_to_chapter": "@self",
-      "placeholder": true,
-      "max_points": 10
-    }
-  ]
+  "charts": []
 }

@@ -687,3 +687,49 @@ e.数据展示逻辑：
 ```text
 原来的 /docs/基于地降所项目改造/综合分析智能体改造.md 已修改为 综合分析智能体改造V1.md，请帮我基于 /docs/基于地降所项目改造/自动报告生成实现方案(粗略版).md，帮我设计生成 自动报告生成实现方案(详细版)(即综合分析智能体改造V2).md，后续将按照该详细方案直接实现。
 ```
+
+## 2026-10-13 整个地降所项目业务数据schema实现方案
+```text
+当前业务数据库的视图使用需要规范调整：
+1. 默认的schema(准实时沉降数据)：default  -- 对应docs/地降所需求及数据相关/数据库结构及逻辑/数据库说明.md 和 大模型数据库.docx，即原来的 t_data_wash_jyb、t_data_wash_fcb、t_data_wash_dxswj、t_data_wash_kxsylj、t_data_wash_gq、t_data_wash_gnss、t_data_wash_qxz、t_station
+2. schema：om_result -- 对应 docs/地降所需求及数据相关/数据库结构及逻辑/统计信息中间库交付使用说明.md，即t_om_data_alarm_summary、t_om_device_alarm_list、t_om_device_online_by_type、t_om_complete_rate_by_type、t_om_effective_rate_by_type、t_om_offline_device_list、t_om_month_complete_list、t_om_month_effective_list
+3. schema(人工校核沉降数据)：**** -- 目前数据还没有，名称占位。
+
+其中schema(准实时沉降数据) 和 schema(人工校核沉降数据)是一套数据，区别是部分数值人工调整了，也就是取数时只取其中一个schema。om_result 的schema是存放监测设备运维数据的。我理解应该实现一个配置项来配置沉降数据取那个schema，然后运维数据始终取om_result.
+
+请针对上述帮我分析梳理 NL2SQL、AI问答、数据查询、自动报告生成 涉及数据相关的怎么进行调整(针对 om_result的相关表的整个相关的相关配置和实现暂时先留空占位)
+```
+
+## 2026-10-13 运维业务数据引入
+```text
+之前整个项目的业务库只有各种维度的沉降数据表和站点表 及对应的语义建模等，现在要增加监测设备的运维数据（运行和预警数据），请依据 docs/地降所需求及数据相关/数据库结构及逻辑/统计信息中间库交付使用说明.md，并结合下面说明，帮我针对nl2sql的知识库内容、语义建模、链接等，帮我分析针对整个项目需要做哪些实现（先分析）
+1. 仪器类型指的是设备类型，即监测类型(对应沉降数据表)：地下水位井、光纤、基岩标/分层标、孔隙水压力井、气象站、GNSS
+2. 每个表都有snapshot_time字段，该字段是数据批次，查询时都要使用该字段过滤最新批次(批次是使用日期时间戳实现的)
+3. 结合上面的业务库三个schema的实现，当前运维数据的schema为om_result，需要把上述实现的运维的占位也完整实现
+```
+
+## 2026-10-13 运维数据针对整个项目的逻辑补充&自动报告生成中日/周设备运行和预警板块实现(未实现)
+```text
+请根据以下运维数据的逻辑说明，帮我完成运维数据针对整个项目的相关逻辑补充、自动报告生成中 日/周设备运行和预警板块实现 的分析，分析针对这两块的补充或实现的方案（先分析方案，不要直接修改）。
+（包括自动生成运维数据相关目前是占位实现，对照docs/地降所需求及数据相关/报告模版/中的监测日报和周报模版 中第一和第三章节的运行和预警板块）
+（运维数据依据结构 参照 docs/地降所需求及数据相关/数据库结构及逻辑/统计信息中间库交付使用说明.md;
+日/周 报告模版路径：docs/地降所需求及数据相关/报告模版）
+
+各仪器/设备类型运行情况数据（日/周 一、监测站点运行情况）
+设备类型、设备总数、在线率：t_om_device_online_by_type表，type -- 仪器类型；total -- 该类型设备总数；online_rate -- 在线率；
+设备类型、数据完整率：t_om_complete_rate_by_type表，type -- 仪器类型；rate -- 数据完整率；
+设备类型、数据有效率：t_om_effective_rate_by_type表，type -- 仪器类型；rate -- 数据有效率；
+设备类型、离线设备数量、离线设备对应离线时长：t_om_offline_device_list表（上述对应设备类型在线率不为100%时有数据）
+	离线设备数量(设备类型维度)查询sql：select type,count(*) from om_result.t_om_offline_device_list where status=0 group by type;
+	离线设备对应离线时长(设备类型、设备维度)查询sql：SELECT type AS 仪器类型,device_key AS 设备编号,name AS 标编号,area_name AS 位置,data_collect_time AS 最后数据采集时间,now()::timestamp - data_collect_time::timestamp AS 离线时长 FROM t_om_offline_device_list WHERE status = 0;
+
+
+设备预警信息（日/周 三、设备预警情况）
+设备总数 查询sql：select total_count from om_result.t_om_data_alarm_summary;
+告警设备台数 查询sql：SELECT COUNT(DISTINCT device_id) AS 告警设备数量 FROM t_om_device_alarm_list WHERE snapshot_time = (SELECT MAX(snapshot_time) FROM t_om_device_alarm_list);
+告警设备占比 ：通过上述查询计算
+各种设备类型的 告警设备台数 查询sql：SELECT type AS 仪器类型,COUNT(DISTINCT device_id) AS 告警设备数量 FROM t_om_device_alarm_list WHERE snapshot_time = (SELECT MAX(snapshot_time) FROM t_om_device_alarm_list) GROUP BY type;
+告警情况统计表 查询sql：
+SELECT ROW_NUMBER() OVER (ORDER BY type, device_name) AS 序号,device_name AS 标编号,type AS 设备类型,area_name AS 位置,ss_value AS 实时值,content AS 告警内容 FROM t_om_device_alarm_list WHERE snapshot_time = (SELECT MAX(snapshot_time) FROM t_om_device_alarm_list) ORDER BY type, device_name;
+
+```

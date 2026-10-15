@@ -30,6 +30,8 @@ class NL2SQLBusinessProfile:
     # 监测方式站点覆盖（可选；空则 semantic/dimensions/device_station_map.yaml）
     device_station_map_file: str | None = None
     table_allowlist: tuple[str, ...] = ()
+    # 运维中间库表白名单（om_result；与沉降 allowlist 分列，意图收窄时选用）
+    om_result_allowlist: tuple[str, ...] = ()
     join_whitelist: tuple[str, ...] = ()
     scope_lexicon_file: str | None = None
     entity_rules_file: str | None = None
@@ -51,9 +53,23 @@ class NL2SQLBusinessProfile:
     anchor_fallback_now_enabled: bool = True
     anchor_fallback_analysis_types: str = ""
     profile_path: str = ""
+    # PostgreSQL schema 路由（见 profile.yaml schemas.*；env 可覆盖）
+    schemas: dict[str, Any] = field(default_factory=dict)
 
     def allowlist_version_fp(self) -> str:
-        return "|".join(sorted(self.table_allowlist))
+        return "|".join(sorted(set(self.table_allowlist) | set(self.om_result_allowlist)))
+
+    def combined_table_allowlist(self) -> tuple[str, ...]:
+        """沉降 ∪ 运维逻辑表名（去重保序）。"""
+        seen: set[str] = set()
+        out: list[str] = []
+        for t in (*self.table_allowlist, *self.om_result_allowlist):
+            k = t.lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(t)
+        return tuple(out)
 
     def is_postgres(self) -> bool:
         return self.sql_dialect in {"postgres", "postgresql", "pg"}
@@ -123,6 +139,10 @@ def get_nl2sql_business_profile(domain: str | None = None) -> NL2SQLBusinessProf
 
     tables_file = raw.get("tables", {}) if isinstance(raw.get("tables"), dict) else {}
     allowlist_rel = str(tables_file.get("allowlist_file") or f"configs/nl2sql_business/{dom}/table_scope.txt")
+    om_allowlist_rel = str(
+        tables_file.get("om_result_allowlist_file")
+        or f"configs/nl2sql_business/{dom}/table_scope_om_result.txt"
+    )
     join_rel = str(tables_file.get("join_whitelist_file") or f"configs/nl2sql_business/{dom}/join_whitelist.txt")
 
     nl2sql_raw = raw.get("nl2sql", {}) if isinstance(raw.get("nl2sql"), dict) else {}
@@ -181,6 +201,9 @@ def get_nl2sql_business_profile(domain: str | None = None) -> NL2SQLBusinessProf
             else None
         ),
         table_allowlist=_read_lines_file(_resolve_path(allowlist_rel)),
+        om_result_allowlist=(
+            _read_lines_file(_resolve_path(om_allowlist_rel)) if dom == "subsidence" else ()
+        ),
         join_whitelist=_read_join_whitelist(_resolve_path(join_rel)),
         scope_lexicon_file=str(scope_lex) if scope_lex else f"configs/nl2sql_business/{dom}/scope_lexicon.json",
         entity_rules_file=entity_rules_resolved,
@@ -205,11 +228,17 @@ def get_nl2sql_business_profile(domain: str | None = None) -> NL2SQLBusinessProf
         anchor_fallback_now_enabled=bool(nl2sql_raw.get("anchor_fallback_now_enabled", dom != "subsidence")),
         anchor_fallback_analysis_types=str(anchor_types or ""),
         profile_path=str(profile_yaml),
+        schemas=(
+            dict(raw["schemas"])
+            if isinstance(raw.get("schemas"), dict)
+            else {}
+        ),
     )
     logger.info(
-        "NL2SQL business profile loaded domain=%s tables=%d joins=%d semantic=%s",
+        "NL2SQL business profile loaded domain=%s tables=%d om_tables=%d joins=%d semantic=%s",
         dom,
         len(profile.table_allowlist),
+        len(profile.om_result_allowlist),
         len(profile.join_whitelist),
         profile.semantic_dict_path,
     )

@@ -1,13 +1,15 @@
 {
   "schema_version": 3,
   "title": "北京市地面沉降监测月报",
-  "description": "V2 拼装：概况/平原/重点区叙述/典型双轴。GNSS 一期关闭。",
+  "description": "V2 拼装：运行/概况/平原/重点区叙述/典型双轴/告警。GNSS 一期关闭。",
   "compose": [
     { "section": "cover", "params": { "cover_kind": "short" } },
+    { "section": "station_ops" },
     { "section": "monthly_overview" },
     { "section": "plain_monitoring" },
     { "section": "key_area" },
-    { "section": "typical_curve" }
+    { "section": "typical_curve" },
+    { "section": "device_alert" }
   ],
   "plan": {
     "items": [

@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from app.core.logging import get_logger
 from app.data_query_agent.graph.runner import DataQueryAgentGraphRunner
 from app.models.data_query_agent import (
+    DataQueryAgentBrowseResponse,
     DataQueryAgentHudResponse,
     DataQueryAgentResumeRequest,
     DataQueryAgentRunRequest,
@@ -19,6 +20,7 @@ from app.models.data_query_agent import (
     DataQueryAgentTraceListItem,
     DataQueryAgentTraceListResponse,
     DataQueryAgentTraceStatsResponse,
+    DataQueryAgentTreeResponse,
 )
 from app.services.data_query_agent_stream_control import DataQueryAgentStreamControl
 from app.services.data_query_agent_trace_store import get_data_query_agent_trace_store
@@ -171,3 +173,29 @@ class DataQueryAgentService:
             expose_sql=expose_sql,
         )
         return DataQueryAgentHudResponse(**payload)
+
+    async def get_tree(self, *, library_id: str | None = None) -> DataQueryAgentTreeResponse:
+        from app.data_query_agent.browse import fetch_perception_tree
+
+        payload = await fetch_perception_tree(library_id=library_id)
+        return DataQueryAgentTreeResponse(**payload)
+
+    async def browse_list(
+        self,
+        *,
+        library_id: str | None = None,
+        district: str | None = None,
+        station_id: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> DataQueryAgentBrowseResponse:
+        from app.data_query_agent.browse import fetch_browse_list
+
+        payload = await fetch_browse_list(
+            library_id=library_id,
+            district=district,
+            station_id=station_id,
+            page=page,
+            page_size=page_size,
+        )
+        return DataQueryAgentBrowseResponse(**payload)

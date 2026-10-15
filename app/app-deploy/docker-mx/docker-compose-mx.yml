@@ -47,7 +47,7 @@
 #
 # 【启动顺序建议】
 #   rag_db-deploy → vllm-deploy（deploy.sh）→ mineru-deploy（若启用）→ paddleocr-layout-deploy（若启用检修 V0 版面侧车）→ 本目录 docker compose
-#   未部署侧车时：docker network create paddle-layout-stack（占位，否则 compose 因 external 网络不存在而失败）
+#   未部署侧车/TEI 时占位：docker network create paddle-layout-stack / face-milvus-stack / mis-tei-stack
 #
 # 【沐曦 models-app · 解释器与启动命令】
 #   Dockerfile-mx 基于沐曦 vllm-metax 镜像，业务依赖与 torch 安装在 conda base。
@@ -124,6 +124,7 @@ services:
       vllm-external: {}
       rag-external: {}
       mineru-external: {}
+      mis-tei-external: {}
       paddle-layout-external: {}
       face-milvus-external: {}
       # 暂未部署Neo4j，对应网络注释掉
@@ -148,7 +149,7 @@ services:
       - face-galleries-data:/workspace/data/face_galleries
       - ${INSIGHTFACE_MODELS_HOST_PATH:-/opt/deploy/models_app_framework/app/small_models/pretrained/insightface}:/workspace/app/small_models/pretrained/insightface
     environment:
-      - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
+      - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-large
 
   # ---------------------------------------------------------------------------
   # models-app-gpu
@@ -184,6 +185,7 @@ services:
       vllm-external: {}
       rag-external: {}
       mineru-external: {}
+      mis-tei-external: {}
       paddle-layout-external: {}
       face-milvus-external: {}
       # 暂未部署Neo4j，对应网络注释掉
@@ -231,6 +233,10 @@ networks:
   # 与 mineru-api 互通（须已存在；由 mineru-deploy 创建）
   mineru-external:
     name: ${MINERU_DOCKER_NETWORK:-mineru-stack}
+    external: true
+  # 与 mis-tei-embed / mis-tei-rerank 互通（须已存在；由 mis-tei-deploy 创建）
+  mis-tei-external:
+    name: ${MIS_TEI_NETWORK_NAME:-mis-tei-stack}
     external: true
   # 与 paddleocr-layout-api 互通（须已存在；由 paddleocr-layout-deploy 创建，默认名 paddle-layout-stack）
   paddle-layout-external:

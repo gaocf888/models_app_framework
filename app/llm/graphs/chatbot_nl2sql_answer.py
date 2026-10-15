@@ -176,6 +176,20 @@ _DEFAULT_ANALYSIS_SYSTEM_SUBSIDENCE = (
     "禁止建议用户补充字段或扩大分析范围；只解读已给出且与问句相关的内容。"
 )
 
+_DEFAULT_ANALYSIS_SYSTEM_SUBSIDENCE_OPS = (
+    "你是地面沉降监测运维数据分析助手。下方查询结果是已执行完的运维事实源，只能基于其中字段与数值做中文 Markdown 整理与分析，"
+    "禁止编造在线率/完整率/有效率/告警条数或库外因果；禁止输出 SQL。"
+    "本结果为运维指标（在线率、三率、告警、离线等），禁止用沉降量符号或Δ=初−末解读；"
+    "仪器类型即监测类型（列名常为 type / device_type）。"
+    "输出版式：开头直接写一段话概括结果，空一行后只输出一张 Markdown 表，"
+    "再空一行写一段运维解读（仪器类型/在线与告警要点；无依据可省略）；正文中不得出现任何 Markdown 标题行（#/##/###）"
+    "或单独成行的板块名。"
+    "明细表必须完整输出事实源提供的全部样本行，禁止再抽稀到更少行；"
+    "概括中的展示条数须与表内行数一致。"
+    "禁止「注意/注意事项」独立章节与客套收尾；禁止锅炉/台账口吻；"
+    "禁止建议用户补充字段或扩大分析范围；只解读已给出且与问句相关的内容。"
+)
+
 # 模型常把版式说明抄成 ### 小标题；定稿时剥离（仅整行标题，不影响正文句子）。
 # 1) 任意 Markdown AT1～H6 短行（本链路禁止章节标题）
 # 2) 无 # 的加粗/纯文本板块名
@@ -257,8 +271,15 @@ def _active_gen_failed_message() -> str:
     return _GEN_FAILED_MESSAGE_BOILER
 
 
-def _active_analysis_fallback_system() -> str:
+def _active_analysis_fallback_system(*, user_query: str = "") -> str:
     if _is_subsidence_domain():
+        try:
+            from app.nl2sql.om_intent import is_ops_question
+
+            if is_ops_question(user_query or ""):
+                return _DEFAULT_ANALYSIS_SYSTEM_SUBSIDENCE_OPS
+        except Exception:  # noqa: BLE001
+            pass
         return _DEFAULT_ANALYSIS_SYSTEM_SUBSIDENCE
     return _DEFAULT_ANALYSIS_SYSTEM
 
@@ -903,6 +924,31 @@ def finalize_streamed_nl2sql_analysis(
     return Nl2sqlSummarizeResult(answer_text=answer, analysis_meta=meta)
 
 
+def _subsidence_data_source_analysis_hint(*, user_query: str = "") -> str:
+    """地降域：注入准实时/校核或运维口径，避免回答口径混乱。"""
+    try:
+        if get_chatbot_business_profile().domain != "subsidence":
+            return ""
+        from app.nl2sql.om_intent import is_ops_question
+
+        if is_ops_question(user_query or ""):
+            return (
+                "【数据口径】本次查数为「运维监测（最新批次）」。"
+                "概括首句可自然点明运维/设备运行口径（勿展开 schema/库名）；"
+                "禁止用沉降量符号或Δ解读；勿暗示另有未查询的准实时/校核沉降结果。\n\n"
+            )
+        from app.nl2sql.schema_routing import settlement_data_source_label_zh
+
+        label = settlement_data_source_label_zh()
+        return (
+            f"【数据口径】本次查数为「{label}」。"
+            "概括首句可自然点明该口径（勿展开 schema/库名技术细节）；"
+            "勿暗示存在另一套未查询的校核/准实时结果。\n\n"
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _build_analysis_user_content(
     *,
     user_query: str,
@@ -919,8 +965,10 @@ def _build_analysis_user_content(
     col_note = ""
     if len(analysis_cols) < len(full_cols):
         col_note = f"；分析用表已从 {len(full_cols)} 列收窄为 {len(analysis_cols)} 列关键字段"
+    data_source_hint = _subsidence_data_source_analysis_hint(user_query=user_query)
     return _clip_prompt_text(
         f"用户问题：{user_query or ''}\n\n"
+        f"{data_source_hint}"
         f"结果总行数：{rows_total}；以下提供前 {len(prompt_rows)} 行作为分析事实源"
         f"{col_note}"
         f"（仅基于下列已给出行与列作答，勿臆造未给出的值；"
@@ -1005,9 +1053,13 @@ async def summarize_nl2sql_with_llm(
                     "（优先放宽行政区/站点/监测点，其次该年内时间，再次字段或指标说法）；"
                     "勿写较新年份去查更早年；勿客套收尾。"
                 )
+            empty_source_hint = _subsidence_data_source_analysis_hint(
+                user_query=user_query or ""
+            )
             user_content = (
                 f"用户问题：{user_query or ''}\n\n"
                 f"今天日期：{date.today().isoformat()}（唯一时间基准；今天所在年份={date.today().year}）\n"
+                f"{empty_source_hint}"
                 "查询结果：空（0 行）。已执行完成，不是失败，也不是结果过多。\n"
                 f"{domain_hint}"
             )
@@ -1052,9 +1104,21 @@ async def summarize_nl2sql_with_llm(
     system = _load_scene_system(
         "chatbot_nl2sql_analysis",
         user_id=user_id,
-        fallback=_active_analysis_fallback_system(),
+        fallback=_active_analysis_fallback_system(user_query=user_query or ""),
         default_version=_analysis_prompt_default_version(),
     )
+    try:
+        from app.nl2sql.om_intent import is_ops_question
+
+        if _is_subsidence_domain() and is_ops_question(user_query or ""):
+            # prompts.yaml subsidence_v1 偏沉降；运维问句追加规则，避免用沉降符号解读
+            system = (
+                f"{system}\n\n"
+                "【运维结果补充】若用户问的是在线率/三率/告警/离线等运维指标："
+                "按运维口径解读；禁止用沉降量符号或Δ=初−末；勿暗示另有未查询的准实时/校核沉降结果。"
+            )
+    except Exception:  # noqa: BLE001
+        pass
     prompt_n = _analysis_prompt_max_rows()
     prompt_rows = display_rows[:prompt_n]
     user_content = _build_analysis_user_content(

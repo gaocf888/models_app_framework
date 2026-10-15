@@ -339,10 +339,10 @@ BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
    EMBEDDING_TRUST_REMOTE_CODE=true
    RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
    RAG_RERANKER_TRUST_REMOTE_CODE=true
-   # GPU 栈（docker-nvidia / docker-mx）：
+   # GPU 栈（docker-nvidia / docker-mx）local：
    # EMBEDDING_DEVICE=cuda:0
    # RAG_RERANKER_DEVICE=cuda:1
-   # 昇腾栈（docker-ascend）：
+   # 昇腾推荐 mis_tei（docker-compose.yml），无需 DEVICE；仅 docker-ascend + local 时：
    # EMBEDDING_DEVICE=npu:0
    # RAG_RERANKER_DEVICE=npu:1
    # ASCEND_RT_VISIBLE_DEVICES=4,5
@@ -439,22 +439,25 @@ cp .env.example .env
 docker compose docker-mx/docker-compose-mx.yml up -d --build
 ```
 
-**昇腾部署** — Atlas 300I Duo；**默认 MIS-TEI 独立嵌入/重排**（底座 `v0.23.0-310p`）
-> 先起 `mis-tei-deploy/`（NPU 4/5），再起 `docker-ascend/`；`EMBEDDING_BACKEND=mis_tei`  
-> 回退进程内：`EMBEDDING_BACKEND=local` + `DEVICE=npu:0/1`（一般不推荐，见 `README-DEPLOY-ASCEND.md`）
+**昇腾部署（推荐）** — Atlas 300I Duo；**MIS-TEI 独立嵌入/重排 + 默认 CPU `docker-compose.yml`**
+> 先起 `mis-tei-deploy/`（NPU 4/5），再起 **`app/app-deploy/docker-compose.yml`**（应用不占 NPU，镜像小）。  
+> 仅当要进程内 `local` + `npu:*` 时才用 `docker-ascend/`（见 `README-DEPLOY-ASCEND.md`）。
 ```bash
 cd mis-tei-deploy && cp .env.example .env && docker compose --env-file .env up -d
 cd ../app/app-deploy
 cp .env.example .env
 # 确认：EMBEDDING_BACKEND=mis_tei  RAG_RERANKER_BACKEND=mis_tei
-#       MIS_TEI_*_BASE_URL、BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0-310p
-docker compose -f docker-ascend/docker-compose-ascend.yml up -d --build
+#       MIS_TEI_*_BASE_URL、MIS_TEI_NETWORK_NAME=mis-tei-stack、ASCEND_RT_VISIBLE_DEVICES=
+docker network create paddle-layout-stack 2>/dev/null || true
+docker network create face-milvus-stack 2>/dev/null || true
+docker compose up -d --build
 ```
 
-> 针对当前没有启动和使用face_db-deploy和paddleocr-layout-deploy，需要单独手动启动一下这两个网络(app-deploy的compose中默认配置了)
+> 未起 face_db / paddleocr-layout / mis-tei 时，external 网络需占位（本 compose 已声明）：
 ```text
 docker network create paddle-layout-stack 2>/dev/null || true
 docker network create face-milvus-stack 2>/dev/null || true
+docker network create mis-tei-stack 2>/dev/null || true   # 仅当未起 mis-tei-deploy
 ```
 
 > 启动前确认：**`LLM_DEFAULT_MODEL`** 与 `vllm-deploy/` 实际部署的大模型名称一致。
@@ -696,13 +699,13 @@ curl -s "http://127.0.0.1:9091/-/ready"
 
 ### 5.3 本栈常用命令
 
-在 `app/app-deploy` 目录按形态选择 compose（示例为昇腾；英伟达/沐曦/CPU 将 `-f` 换成对应文件即可）：
+在 `app/app-deploy` 目录按形态选择 compose（**昇腾+MIS-TEI 推荐默认 CPU 栈**）：
 
 ```bash
-COMPOSE="-f docker-ascend/docker-compose-ascend.yml"
+COMPOSE="-f docker-compose.yml"
 # 英伟达：COMPOSE="-f docker-nvidia/docker-compose-nvidia.yml"
 # 沐曦：  先 cd docker-mx，再 COMPOSE="-f docker-compose-mx.yml"
-# CPU：   COMPOSE="-f docker-compose.yml"
+# 昇腾进程内 NPU：COMPOSE="-f docker-ascend/docker-compose-ascend.yml"
 
 docker compose $COMPOSE ps
 docker compose $COMPOSE logs -f models-app
@@ -740,5 +743,5 @@ docker compose --profile small-model-gpu down
 - 底座数据库部署：`rag_db-deploy/README.md`、`graphrag_db-deploy/README.md`。  
 - 大模型服务部署：`vllm-deploy/README.md`（含 `--platform ascend`；**勿**再用 `--profile monitoring`）。  
 - **系统监控（Prometheus / Grafana）**：`monitoring-deploy/README.md`、`enterprise-level_transformation_docs/系统整体监控实现和使用说明(prometheus).md`、`docs/系统Prometheus资源监控实现方案.md`。  
-- 昇腾应用栈：`docker-ascend/README.md`。  
+- 昇腾 + MIS-TEI（推荐 CPU 栈）：`mis-tei-deploy/README.md`、本文件 §3.2；进程内 NPU 可选：`docker-ascend/README.md`。  
 - Atlas 宿主机：`docs/基础环境及部署/华为Atlas300IDuo基础环境及应用部署方案.md`。

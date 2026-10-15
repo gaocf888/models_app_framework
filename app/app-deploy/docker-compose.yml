@@ -15,6 +15,10 @@
 #   4) Paddle 版面侧车（检修 V0）：paddleocr-layout-deploy/docker-compose*.yml
 #      - 默认容器名：paddleocr-layout-api；网络名 paddle-layout-stack（与 PADDLE_LAYOUT_NETWORK_NAME 一致）
 #      - models-app 须经 PADDLE_LAYOUT_DOCKER_NETWORK 加入该 external 网络，否则 INSPECT_EXTRACT_V0_LAYOUT_OCR_ENDPOINT 主机名无法解析
+#   5) MIS-TEI（嵌入/重排 HTTP，昇腾推荐；.env 默认 EMBEDDING_BACKEND=mis_tei）：mis-tei-deploy/
+#      - 默认容器名：mis-tei-embed / mis-tei-rerank；网络名 mis-tei-stack（MIS_TEI_NETWORK_NAME）
+#      - models-app 经 mis-tei-external 接入，否则 MIS_TEI_*_BASE_URL 主机名无法解析
+#      - 昇腾现场可只起本 CPU 栈（无需 docker-ascend）+ mis-tei-deploy；NPU 仅 TEI 占用
 #
 # 【本文件使用的 .env 变量 · 由 Docker Compose 在宿主机解析】
 #   APP_PORT              → models-app 宿主机端口（默认 8083）
@@ -23,6 +27,7 @@
 #   RAG_DOCKER_NETWORK    → external 网络名，须已存在
 #   MINERU_DOCKER_NETWORK → external 网络名，须已存在（连接 mineru-api）
 #   PADDLE_LAYOUT_DOCKER_NETWORK → external 网络名，须已存在（连接 paddleocr-layout-api；与 paddleocr-layout-deploy 中网络名一致）
+#   MIS_TEI_NETWORK_NAME  → external 网络名，须已存在（连接 mis-tei-embed/rerank；默认 mis-tei-stack）
 #   GRAPH_DOCKER_NETWORK  → external 网络名，用于连接 Neo4j（GraphRAG）
 #   EMBEDDING_MODELS_HOST_PATH
 #                         → 宿主机嵌入模型根目录（默认 /aidata/models/embeddings）
@@ -47,8 +52,12 @@
 #   - 不要将密钥提交到 Git；生产可用密钥管理替换 env_file。
 #
 # 【启动顺序建议】
-#   rag_db-deploy → vllm-deploy（deploy.sh）→ mineru-deploy（若启用）→ paddleocr-layout-deploy（若启用检修 V0 版面侧车）→ 本目录 docker compose
-#   未部署侧车时：docker network create paddle-layout-stack（占位，否则 compose 因 external 网络不存在而失败）
+#   rag_db-deploy → vllm-deploy → mis-tei-deploy（若 EMBEDDING_BACKEND=mis_tei）→ mineru-deploy（若启用）
+#     → paddleocr-layout-deploy（若启用检修 V0）→ 本目录 docker compose
+#   未部署侧车/TEI 时占位网络（否则 compose 因 external 不存在而失败）：
+#     docker network create paddle-layout-stack 2>/dev/null || true
+#     docker network create face-milvus-stack 2>/dev/null || true
+#     docker network create mis-tei-stack 2>/dev/null || true   # 仅当未起 mis-tei-deploy 时
 #
 # =============================================================================
 
@@ -117,6 +126,7 @@ services:
       vllm-external: {}
       rag-external: {}
       mineru-external: {}
+      mis-tei-external: {}
       paddle-layout-external: {}
       face-milvus-external: {}
       # 暂未部署Neo4j，对应网络注释掉
@@ -134,10 +144,9 @@ services:
       - ${INSPECT_EXTRACT_JOBS_HOST_PATH:-/aidata/data/inspect_extract_jobs}:/workspace/data/inspection_extract_jobs
       # FAISS 索引目录（RAG_FAISS_INDEX_DIR；RAG_VECTOR_STORE_TYPE=faiss 时生效）
       - ${RAG_FAISS_DATA_HOST_PATH:-/aidata/data/faiss_data}:/workspace/data/faiss
-      # 嵌入模型离线挂载
+      # 嵌入/重排离线挂载（仅 EMBEDDING_BACKEND=local / RAG_RERANKER_BACKEND=local 时进程内使用；mis_tei 时权重在 mis-tei-deploy）
 #      - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/Qwen3-Embedding-0.6B:/workspace/models/embeddings/Qwen3-Embedding-0.6B:ro
       - ${EMBEDDING_MODELS_HOST_PATH:-/aidata/models/embeddings}/bge-large-zh-v1.5:/workspace/models/embeddings/bge-large-zh-v1.5:ro
-      # 重排模型离线挂载
 #      - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/Qwen3-Reranker-0.6B:/workspace/models/rerank/Qwen3-Reranker-0.6B:ro
       - ${RERANKER_MODELS_HOST_PATH:-/aidata/models/reranker}/bge-reranker-large:/workspace/models/rerank/bge-reranker-large:ro
       # 意图后端仅 rules|funnel：funnel 复用上方嵌入 + vllm-service，不再挂载 0.5B/BERT 意图模型
@@ -147,7 +156,8 @@ services:
       - face-galleries-data:/workspace/data/face_galleries
       - ${INSIGHTFACE_MODELS_HOST_PATH:-/opt/deploy/models_app_framework/app/small_models/pretrained/insightface}:/workspace/app/small_models/pretrained/insightface
     environment:
-      - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/Qwen3-Reranker-0.6B
+      # 与上方挂载一致；mis_tei 模式下本路径不参与推理，仅 local 回退用
+      - RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-large
 
   # ---------------------------------------------------------------------------
   # models-app-gpu：仅当 docker compose --profile small-model-gpu 时启动
@@ -182,6 +192,7 @@ services:
       vllm-external: {}
       rag-external: {}
       mineru-external: {}
+      mis-tei-external: {}
       paddle-layout-external: {}
       face-milvus-external: {}
       # 暂未部署Neo4j，对应网络注释掉
@@ -230,6 +241,10 @@ networks:
   # 与 mineru-api 互通（须已存在；由 mineru-deploy 创建）
   mineru-external:
     name: ${MINERU_DOCKER_NETWORK:-mineru-stack}
+    external: true
+  # 与 mis-tei-embed / mis-tei-rerank 互通（须已存在；由 mis-tei-deploy 创建，默认名 mis-tei-stack）
+  mis-tei-external:
+    name: ${MIS_TEI_NETWORK_NAME:-mis-tei-stack}
     external: true
   # 与 paddleocr-layout-api 互通（须已存在；由 paddleocr-layout-deploy 创建，默认名 paddle-layout-stack）
   paddle-layout-external:

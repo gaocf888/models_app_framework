@@ -193,8 +193,9 @@ def link_schema(
 ) -> LinkedSchema:
     profile = get_nl2sql_business_profile()
     allow = allowlist or set(table_columns.keys())
-    if profile and profile.table_allowlist:
-        profile_allow = {t.lower() for t in profile.table_allowlist}
+    # 沉降 ∪ 运维白名单（调用方传入的 allowlist 已按意图收窄时，再与并集求交）
+    if profile and (profile.table_allowlist or getattr(profile, "om_result_allowlist", ())):
+        profile_allow = {t.lower() for t in profile.combined_table_allowlist()}
         allow = {t for t in allow if t in profile_allow}
 
     semantic_root = None
@@ -293,6 +294,30 @@ def link_schema(
         for d in semantic.district_codes:
             linked.suggested_filters.append(
                 {"table": _STATION_TABLE, "column": "area", "op": "=", "value": d, "source": "semantic"}
+            )
+
+    # 运维仪器类型 → t_om_*.type 过滤（不改写为 wash 表）
+    om_types = list(getattr(semantic, "om_instrument_types", None) or [])
+    if om_types and primary.startswith("t_om_"):
+        if len(om_types) == 1:
+            linked.suggested_filters.append(
+                {
+                    "table": primary,
+                    "column": "type",
+                    "op": "=",
+                    "value": om_types[0],
+                    "source": "om_device_type",
+                }
+            )
+        else:
+            linked.suggested_filters.append(
+                {
+                    "table": primary,
+                    "column": "type",
+                    "op": "in",
+                    "value": list(om_types),
+                    "source": "om_device_type",
+                }
             )
 
     # 站点场地 → project_name / t_station.name；层位0/显式标 → station_name

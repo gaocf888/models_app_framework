@@ -16,5 +16,15 @@
     "question_contains_any": ["GNSS", "位移", "三维位移", "水平位移"],
     "sql_pattern": "(?i)t_data_wash_fcb(?!.*gnss)",
     "message": "GNSS 位移应查 t_data_wash_gnss 的 displacement_3d/2d"
+  },
+  {
+    "question_contains_any": ["在线率", "完整率", "有效率", "三率", "设备告警", "仪器告警", "数据告警", "离线仪器", "离线设备", "运维中心"],
+    "sql_pattern": "(?i)t_data_wash_",
+    "message": "运维/三率/告警问句应查 om_result.t_om_*，勿用沉降 wash 表估算"
+  },
+  {
+    "question_contains_any": ["周期沉降", "下沉量", "回弹量", "累计沉降", "水位埋深", "地下水埋深"],
+    "sql_pattern": "(?i)t_om_",
+    "message": "沉降/水位读数问句勿查运维 t_om_* 表"
   }
 ]

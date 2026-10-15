@@ -675,6 +675,41 @@ class SlotOrchestrator:
         resolved = resolved if isinstance(resolved, dict) else {}
         last_err: str | None = None
 
+        # 运维运行/预警：禁止 NL2SQL 生成器；误配则强制 sql_template 或失败
+        try:
+            from app.analysis_agent.compose import is_om_report_plan_item
+
+            if is_om_report_plan_item(task) and ex != "sql_template":
+                logger.warning(
+                    "analysis_agent refuse non-sql_template for om item=%s executor=%s; force sql_template",
+                    item_id,
+                    ex,
+                )
+                if not str(task.get("sql_file") or "").strip().lower().startswith("om_"):
+                    gathered[item_id] = []
+                    task_status[item_id] = task_status_from_rows(
+                        item_id,
+                        [],
+                        mandatory=mandatory,
+                        error="om_plan_item_requires_sql_template",
+                    )
+                    events.append(
+                        {
+                            "event": "analysis_agent_nl2sql_done",
+                            "item_id": item_id,
+                            "row_count": 0,
+                            "latency_ms": 0,
+                            "cached": False,
+                            "executor": ex,
+                            "error": "om_plan_item_requires_sql_template",
+                        }
+                    )
+                    return events
+                ex = "sql_template"
+                task = {**task, "executor": "sql_template"}
+        except Exception:  # noqa: BLE001
+            pass
+
         if ex == "placeholder":
             gathered[item_id] = []
             task_status[item_id] = "optional_empty"
@@ -1182,6 +1217,15 @@ class SlotOrchestrator:
             if live and slot.title.strip():
                 await on_delta(f"### {slot.title.strip()}\n\n")
 
+            static_pre = ""
+            static_post = ""
+            if slot.kind == "llm_section" and (slot.static_body or "").strip():
+                from app.analysis_agent.renderers.static_narrative import split_static_narrative
+
+                static_pre, static_post = split_static_narrative(slot.static_body)
+            if live and static_pre:
+                await on_delta(static_pre + "\n\n")
+
             result = await synthesize_section(
                 prompts=self._prompts,
                 slot=slot,
@@ -1199,6 +1243,8 @@ class SlotOrchestrator:
                 prepared_viz_note=str((state.get("_prepared_viz") or {}).get("note") or ""),
                 period_label=str(((state.get("options") or {}).get("_resolved") or {}).get("period_label") or ""),
             )
+            if live and static_post:
+                await on_delta("\n\n" + static_post)
             out, chunks = section_result_to_slot_output(
                 slot, result, already_streamed=live
             )

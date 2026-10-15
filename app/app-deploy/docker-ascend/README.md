@@ -5,8 +5,9 @@
 ## 适用场景
 
 - 宿主机为 **Atlas 300I Duo**，已安装 **NPU 驱动 26.1.1 / 固件 9.0.0.9.220** 与 **Ascend Docker Runtime 26.1.0**
-- **默认**：嵌入/重排走独立 **MIS-TEI**（`mis-tei-deploy/`，`EMBEDDING_BACKEND=mis_tei`）
-- **可选回退**：`EMBEDDING_BACKEND=local` + `EMBEDDING_DEVICE=npu:0`（进程内 ST，310P 上易遇 SDPA 问题，一般不推荐）
+- **何时用本目录**：需要 **`EMBEDDING_BACKEND=local` + `npu:*`**（进程内 ST/`torch_npu`），或必须与 vLLM 同 Ascend 底座调试
+- **昇腾 + 仅 MIS-TEI（推荐）**：用上级 **`docker-compose.yml`（CPU 镜像）** + `mis-tei-deploy/` 即可，**不必**本目录（应用不占 NPU，镜像更小）
+- **可选回退**：`EMBEDDING_BACKEND=local` + `EMBEDDING_DEVICE=npu:0`（310P 上易遇 SDPA，一般不推荐）
 - 底座镜像默认：`quay.io/ascend/vllm-ascend:v0.23.0-310p`（与 vLLM / MinerU 同底座；建议 `.env` 写 `BASE_IMAGE`）
 
 ## 文件说明
@@ -42,14 +43,15 @@
 # 1) 先起 MIS-TEI（独立目录）
 cd mis-tei-deploy && cp .env.example .env && docker compose --env-file .env up -d
 
-# 2) 再起 app
+# 2) 再起 app —— 推荐 CPU 栈（方案 A）
 cd app/app-deploy
 cp .env.example .env   # 首次；确认 EMBEDDING_BACKEND=mis_tei 等
-
 docker network create paddle-layout-stack 2>/dev/null || true
 docker network create face-milvus-stack 2>/dev/null || true
+docker compose up -d --build
 
-docker compose -f docker-ascend/docker-compose-ascend.yml up -d --build
+# 仅当需要本 Ascend 镜像 / 进程内 NPU 时：
+# docker compose -f docker-ascend/docker-compose-ascend.yml up -d --build
 ```
 
 详细宿主机步骤见 `README-DEPLOY-ASCEND.md`、`docs/基础环境及部署/华为Atlas300IDuo基础环境及应用部署方案.md`。

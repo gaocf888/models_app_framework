@@ -188,7 +188,12 @@ def section_result_to_slot_output(
     )
     from app.analysis_agent.slots.kinds import SlotOutput
 
-    md_parts = [sanitize_report_narrative(result.markdown)]
+    md = sanitize_report_narrative(result.markdown)
+    if slot.kind == "llm_section" and (slot.static_body or "").strip():
+        from app.analysis_agent.renderers.static_narrative import apply_static_narrative
+
+        md = apply_static_narrative(slot.static_body, md)
+    md_parts = [md]
     for extra in result.table_markdowns:
         if extra and extra.strip():
             md_parts.append(extra.strip())

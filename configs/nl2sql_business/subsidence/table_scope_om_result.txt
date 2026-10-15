@@ -1,0 +1,11 @@
+# 运维中间库（schema: om_result）表白名单
+# 与 profile.tables.om_result_allowlist_file 对应；逻辑表名，SQL 中须 qualify 为 om_result.* 或由执行层改写。
+# 每表须按 snapshot_time 过滤最新批次。参考：统计信息中间库交付使用说明.md
+t_om_data_alarm_summary
+t_om_device_alarm_list
+t_om_device_online_by_type
+t_om_complete_rate_by_type
+t_om_effective_rate_by_type
+t_om_offline_device_list
+t_om_month_complete_list
+t_om_month_effective_list

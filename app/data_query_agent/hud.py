@@ -1,4 +1,4 @@
-"""P2-2：Java 默认表按实体补拉 HUD（解析路径仍一组 payload，不走本接口）。"""
+"""P2-2：浏览表按实体补拉 HUD（解析路径仍一组 payload，不走本接口）。"""
 
 from __future__ import annotations
 

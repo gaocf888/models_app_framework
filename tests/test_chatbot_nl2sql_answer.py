@@ -500,6 +500,15 @@ def test_analysis_prompt_version_and_col_priority_subsidence(monkeypatch: pytest
     fallback = _active_analysis_fallback_system()
     assert "下沉" in fallback
     assert "锅炉" in fallback  # 明确禁止锅炉口吻
+    ops_fallback = _active_analysis_fallback_system(user_query="各仪器在线率多少")
+    assert "运维" in ops_fallback
+    assert "沉降量符号" in ops_fallback or "Δ" in ops_fallback
+    from app.llm.graphs.chatbot_nl2sql_answer import _subsidence_data_source_analysis_hint
+
+    settle_hint = _subsidence_data_source_analysis_hint(user_query="朝阳区分层标沉降")
+    assert "运维监测" not in settle_hint
+    ops_hint = _subsidence_data_source_analysis_hint(user_query="当前有哪些设备告警")
+    assert "运维监测" in ops_hint
     hint = _chatbot_sql_gen_extra_hint()
     assert "SELECT" in hint or "用户可读" in hint or "智能客服" in hint
     # 域规则（默认 fcb / suggested_filters / 最新）已下沉到 NL2SQL 基座 v2_subsidence，客服 hint 不再重复

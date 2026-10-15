@@ -178,8 +178,47 @@ class SQLExecutor:
             stmt = stmt.bindparams(*[bindparam(k, type_=ARRAY(String)) for k in array_keys])
         return stmt
 
+    @staticmethod
+    def _rewrite_sql_for_subsidence(sql: str) -> str:
+        """地降 PG：裸 t_om_* → om_result.t_om_*（沉降表仍靠 search_path）。"""
+        try:
+            from app.nl2sql.om_intent import qualify_bare_om_tables, sql_mentions_om_tables
+            from app.nl2sql.schema_routing import (
+                get_om_result_schema,
+                should_apply_subsidence_search_path,
+            )
+        except Exception:  # noqa: BLE001
+            return sql
+        if not should_apply_subsidence_search_path():
+            return sql
+        if not sql_mentions_om_tables(sql):
+            return sql
+        return qualify_bare_om_tables(sql, om_schema=get_om_result_schema())
+
+    @staticmethod
+    async def _maybe_set_search_path(conn: Any) -> None:
+        """
+        地降 PostgreSQL：事务内 SET LOCAL search_path，使裸表名落到当前沉降 schema。
+
+        默认仅 ``{settlement}``（不含 om_result），避免裸表名误解析到运维库。
+        运维表由 ``_rewrite_sql_for_subsidence`` 显式 qualify 为 om_result.*。
+        """
+        try:
+            from app.nl2sql.schema_routing import (
+                get_postgres_search_path,
+                should_apply_subsidence_search_path,
+            )
+        except Exception:  # noqa: BLE001
+            return
+        if not should_apply_subsidence_search_path():
+            return
+        path = get_postgres_search_path(include_om_result=False)
+        # path 已由 schema_routing 校验为安全标识符列表
+        await conn.execute(text(f"SET LOCAL search_path TO {path}"))
+        logger.debug("SQLExecutor SET LOCAL search_path TO %s", path)
+
     async def execute(self, sql: str, params: dict[str, Any] | None = None) -> List[dict[str, Any]]:
-        s = (sql or "").strip()
+        s = self._rewrite_sql_for_subsidence((sql or "").strip())
         preview = s
         bind = dict(params or {})
         if bind:
@@ -198,6 +237,7 @@ class SQLExecutor:
             try:
                 async with self._engine.connect() as conn:
                     async with conn.begin():
+                        await self._maybe_set_search_path(conn)
                         result = await conn.execute(stmt, bind) if bind else await conn.execute(stmt)
                         cols = result.keys()
                         for r in result.fetchall():
@@ -230,13 +270,14 @@ class SQLExecutor:
         TiDB/MySQL：对无效列名、未知表等，EXPLAIN 通常会像执行 SELECT 一样在解析/优化阶段报错。
         PostgreSQL：同样支持 EXPLAIN，语义略有差异，仍可作为执行前探针。
         """
-        s = (sql or "").strip()
+        s = self._rewrite_sql_for_subsidence((sql or "").strip())
         preview = s
         logger.info("SQLExecutor.explain start sql_len=%d preview=%r", len(s), preview)
         rows: List[dict[str, Any]] = []
         explain_stmt = f"EXPLAIN {s}"
         try:
             async with self._engine.begin() as conn:
+                await self._maybe_set_search_path(conn)
                 result = await conn.execute(text(explain_stmt))
                 cols = result.keys()
                 for r in result.fetchall():

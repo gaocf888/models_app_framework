@@ -23,6 +23,8 @@ def test_data_query_agent_defaults(monkeypatch) -> None:
     assert cfg.data_query_agent.hud_layer_enabled is False
     assert cfg.data_query_agent.strategy_block_enabled is False
     assert cfg.data_query_agent.trace_backend == "redis"
+    assert cfg.data_query_agent.browse_default_page_size == 20
+    assert cfg.data_query_agent.browse_max_page_size == 100
     get_app_config.cache_clear()
 
 

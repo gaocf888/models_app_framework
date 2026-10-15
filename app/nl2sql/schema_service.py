@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy import MetaData
@@ -97,7 +97,7 @@ class SchemaMetadataService:
         )
         try:
             async with self._engine.begin() as conn:
-                captured: dict[str, MetaData] = {}
+                captured: dict[str, Any] = {}
 
                 def _reflect(sync_conn) -> None:
                     md = MetaData()
@@ -113,6 +113,54 @@ class SchemaMetadataService:
                                 exc_info=True,
                             )
                             md = MetaData()
+                            md.reflect(bind=sync_conn)
+                    elif dialect in {"postgresql", "postgres"}:
+                        # 地降：反射当前沉降 schema +（若配置了）om_result 运维表
+                        settle_schema: str | None = None
+                        om_schema: str | None = None
+                        try:
+                            from app.nl2sql.schema_routing import (
+                                get_om_result_schema,
+                                get_settlement_schema,
+                                should_apply_subsidence_search_path,
+                            )
+                            from app.nl2sql.nl2sql_business_profile import (
+                                get_nl2sql_business_profile,
+                            )
+
+                            if should_apply_subsidence_search_path():
+                                settle_schema = get_settlement_schema()
+                                profile = get_nl2sql_business_profile()
+                                if profile and profile.om_result_allowlist:
+                                    om_schema = get_om_result_schema()
+                        except Exception:  # noqa: BLE001
+                            logger.warning(
+                                "resolve PG schemas for reflect failed; reflect without schema",
+                                exc_info=True,
+                            )
+                        if settle_schema:
+                            try:
+                                md.reflect(bind=sync_conn, schema=settle_schema)
+                                captured["reflected_schema"] = settle_schema
+                            except Exception:
+                                logger.warning(
+                                    "metadata.reflect(schema=%s) failed, retry without explicit schema",
+                                    settle_schema,
+                                    exc_info=True,
+                                )
+                                md = MetaData()
+                                md.reflect(bind=sync_conn)
+                            if om_schema:
+                                try:
+                                    md.reflect(bind=sync_conn, schema=om_schema)
+                                    captured["reflected_om_schema"] = om_schema
+                                except Exception:
+                                    logger.warning(
+                                        "metadata.reflect(om_schema=%s) failed; continue with settlement only",
+                                        om_schema,
+                                        exc_info=True,
+                                    )
+                        else:
                             md.reflect(bind=sync_conn)
                     else:
                         md.reflect(bind=sync_conn)
@@ -158,9 +206,12 @@ class SchemaMetadataService:
             names = sorted(self._tables.keys())
             fk_total = sum(len(t.foreign_keys) for t in self._tables.values())
             logger.info(
-                "schema metadata refreshed from database table_count=%d fk_edges=%d sample_tables=%s",
+                "schema metadata refreshed from database table_count=%d fk_edges=%d "
+                "reflected_schema=%s reflected_om_schema=%s sample_tables=%s",
                 len(names),
                 fk_total,
+                captured.get("reflected_schema"),
+                captured.get("reflected_om_schema"),
                 names[:12],
             )
         except Exception:

@@ -183,6 +183,13 @@ def format_parsed_intent_prompt_block(
                 "完整名单由系统按 suggested_filters 注入，生成 SQL 时可省略该谓词；"
                 "禁止写 IN (SELECT …) 凑名单或只写预览子集；禁止对同 project_name 下全部标聚合"
             )
+        dims = semantic.get("dimensions") if isinstance(semantic.get("dimensions"), dict) else {}
+        om_types = list((dims or {}).get("om_instrument_types") or [])
+        if om_types:
+            lines.append(
+                f"- 运维仪器类型(type)：{', '.join(str(x) for x in om_types[:4])}；"
+                "生成 SQL 时用 type 等值/IN 过滤，勿改写成沉降 wash 表"
+            )
         warnings = semantic.get("warnings") or []
         if warnings:
             lines.append(f"- 语义告警：{'；'.join(str(w) for w in warnings[:5])}")

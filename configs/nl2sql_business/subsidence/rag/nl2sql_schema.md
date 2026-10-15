@@ -1,8 +1,9 @@
 # 地降 NL2SQL Schema 知识（nl2sql_schema）
-# RAG 摄入命名空间：nl2sql_schema；方言 PostgreSQL；表白名单 8 表。
+# RAG 摄入命名空间：nl2sql_schema；方言 PostgreSQL；沉降 8 表 + 运维 om_result 8 表。
 # 运行时 catalog 以库反射为准，本文档供召回与人工校对。业务包说明见上级「配置项说明.md」。
 
-> 部署 `NL2SQL_BUSINESS_DOMAIN=subsidence`；方言 PostgreSQL；表白名单 8 表。
+> 部署 `NL2SQL_BUSINESS_DOMAIN=subsidence`；方言 PostgreSQL。
+> 沉降表在 active 沉降 schema（默认 public）；运维表在 **om_result**，须写 `om_result.t_om_*`。
 > 运行时 catalog 以库反射为准，本文档供 RAG 召回与人工校对。
 
 ## 遗留主键列（禁止用于关联与过滤）
@@ -80,4 +81,42 @@
 
 ## 时间列
 
-- 统一使用各事实表的 `data_time` 作为过滤与排序时间列
+- 沉降事实表：统一使用 `data_time` 作为过滤与排序时间列
+- 运维表：统一使用 `snapshot_time`（批次）；查询必须过滤最新批次
+
+## 运维中间库 schema：om_result（8 表）
+
+> 与沉降 wash 表不同源；禁止与 `t_data_wash_*` 混在同一条 SQL。仪器类型列 `type` = 监测类型中文（地下水位井、光纤、基岩标/分层标、孔隙水压力井、气象站、GNSS）。
+
+通用列：每表均有 `snapshot_time`（同批 8 表该值相同）。最新批过滤示例：
+
+`snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_data_alarm_summary)`
+
+### t_om_data_alarm_summary（告警总览，1 行）
+
+- 列：`total_count`、`alarm_count`、`normal_count`、`week_avg`、`month_avg`、`snapshot_time`
+- **当前告警占比**：`alarm_count / total_count * 100`；`week_avg`/`month_avg` 为近 7/30 日平均占比，勿混用
+
+### t_om_device_alarm_list（当前有警仪器）
+
+- 列：`id`、`device_id`、`device_name`（标编号）、`data_type`、`source`、`type`、`area_name`、`status`（恒「有警」）、`ss_value`、`yj_value`、`content`、`off_time`、`create_time`、`snapshot_time`
+- 告警持续时间：`now() - off_time`（off_time 空则未知）
+
+### t_om_device_online_by_type（按类型在线）
+
+- 列：`type`、`total`、`online`、`offline`、`online_rate`、`snapshot_time`
+
+### t_om_complete_rate_by_type / t_om_effective_rate_by_type
+
+- 列：`type`、`device_count`、`actual_count`、`invalid_count`（仅有效率表）、`theory_count`、`rate`、`window_start`、`window_end`、`snapshot_time`
+- 窗口约 T−5~T−2（不含最近两天）
+
+### t_om_offline_device_list
+
+- 列：`device_key`、`name`、`area_name`、`sn`、`type`、`status`、`data_collect_time`、`snapshot_time`
+- **必须** `status = 0`（当前离线）；离线时长：`now() - data_collect_time`（天数可用 `FLOOR(EXTRACT(EPOCH FROM …)/86400)`）；勿依赖 `create_time`
+
+### t_om_month_complete_list / t_om_month_effective_list
+
+- **仅含**完整率&lt;92% / 有效率&lt;90% 的设备；达标设备不在表中
+- 列含 `name`、`type`、`area_name`、`complete_rate`、`monitor_count`、`theory_count`、`window_*`、`snapshot_time`

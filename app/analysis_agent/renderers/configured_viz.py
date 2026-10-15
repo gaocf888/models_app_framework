@@ -41,6 +41,35 @@ def _resolve_columns(
     return out
 
 
+def _map_rows_by_column_keys(
+    rows: list[dict[str, Any]],
+    *,
+    display_columns: list[str],
+    column_keys: list[str] | None,
+) -> list[dict[str, Any]]:
+    """
+    将 SQL 英文字段映射为展示列名。
+
+    ``columns`` = 表头中文；``column_keys`` = 与 columns 等长的行字典键。
+    未配置 column_keys 时原样返回（兼容旧板块）。
+    """
+    keys = [str(k).strip() for k in (column_keys or []) if str(k).strip()]
+    if not keys or not display_columns or len(keys) != len(display_columns):
+        return rows
+    mapped: list[dict[str, Any]] = []
+    for row in rows:
+        mapped.append({display_columns[i]: row.get(keys[i]) for i in range(len(display_columns))})
+    return mapped
+
+
+def _chart_xy_fields(spec: dict[str, Any]) -> tuple[str, str, str]:
+    """兼容 x_field/y_field 与历史误写 x_key/y_key。"""
+    x = str(spec.get("x_field") or spec.get("x_key") or "").strip()
+    y = str(spec.get("y_field") or spec.get("y_key") or "").strip()
+    series = str(spec.get("series_field") or spec.get("series_key") or "").strip()
+    return x, y, series
+
+
 def _apply_row_filter(rows: list[dict[str, Any]], spec: dict[str, Any]) -> list[dict[str, Any]]:
     """循环章 row_filter: {field, equals}；字符串/数字宽松相等。"""
     filt = spec.get("row_filter")
@@ -71,6 +100,8 @@ def render_configured_table(
     rows = _apply_row_filter(_collect_rows(gathered_data, source_ids), spec)
     max_rows = max(1, int(spec.get("max_rows") or 80))
     columns = _resolve_columns(spec.get("columns"), rows)
+    col_keys = spec.get("column_keys") if isinstance(spec.get("column_keys"), list) else None
+    rows = _map_rows_by_column_keys(rows, display_columns=columns, column_keys=col_keys)
     title = str(spec.get("title") or tid)
     table_kind = str(spec.get("table_kind") or "raw") or "raw"
     md, tbl = emit_table_from_rows(
@@ -103,15 +134,18 @@ def render_configured_chart(
     source_ids = [str(x) for x in (spec.get("source_item_ids") or []) if str(x).strip()]
     rows = _apply_row_filter(_collect_rows(gathered_data, source_ids), spec)
     title = str(spec.get("title") or cid)
+    x_field, y_field, series_field = _chart_xy_fields(spec)
+    raw_y_fields = spec.get("y_fields") if isinstance(spec.get("y_fields"), list) else None
     if chart_type in ("dual_axis", "map_placeholder", "map_image"):
         ch = chart_from_config(
             chart_id=cid,
             chart_type=chart_type,
             title=title,
             rows=rows,
-            x_field=str(spec.get("x_field") or "").strip(),
-            y_field=str(spec.get("y_field") or "").strip(),
-            series_field=str(spec.get("series_field") or "").strip(),
+            x_field=x_field,
+            y_field=y_field,
+            series_field=series_field,
+            y_fields=raw_y_fields,
             max_points=max(1, int(spec.get("max_points") or 60)),
             y_left=spec.get("y_left") if isinstance(spec.get("y_left"), dict) else None,
             y_right=spec.get("y_right") if isinstance(spec.get("y_right"), dict) else None,
@@ -142,9 +176,10 @@ def render_configured_chart(
         chart_type=chart_type,
         title=title,
         rows=rows,
-        x_field=str(spec.get("x_field") or "").strip(),
-        y_field=str(spec.get("y_field") or "").strip(),
-        series_field=str(spec.get("series_field") or "").strip(),
+        x_field=x_field,
+        y_field=y_field,
+        series_field=series_field,
+        y_fields=raw_y_fields,
         max_points=max(1, int(spec.get("max_points") or 60)),
     )
     if ch is None:

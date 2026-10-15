@@ -36,6 +36,13 @@ def match_library_ids(query: str, catalog: LibraryCatalog | None = None) -> list
     return hits
 
 
+OPS_USE_CHATBOT_REASON = "ops_use_chatbot"
+OPS_USE_CHATBOT_MESSAGE = (
+    "运维指标（在线率/三率/告警/离线等）不在数据查询台范围内，"
+    "请改用智能客服问答（NL2SQL /chatbot）。"
+)
+
+
 def resolve_library_intent(
     query: str,
     library_id: str | None,
@@ -45,8 +52,21 @@ def resolve_library_intent(
 ) -> LibraryIntentResult:
     """
     优先级：HITL 选库 > 请求 library_id > 问句唯一命中 > 泛化沉降默认 > HITL。
+
+    运维问句（om_result）直接拒绝：方案 A 无 om library，应走智能客服。
     """
     cat = catalog or get_library_catalog()
+    try:
+        from app.nl2sql.om_intent import is_ops_question
+
+        if is_ops_question(query or ""):
+            return LibraryIntentResult(
+                ok=False,
+                interrupt_reason=OPS_USE_CHATBOT_REASON,
+                warnings=["ops_routed_to_chatbot"],
+            )
+    except Exception:  # noqa: BLE001
+        pass
     if hitl_library_id:
         lib = cat.get(hitl_library_id)
         if lib is None:

@@ -75,7 +75,7 @@
 | D3 | 部署 **vLLM**（`VLLM_PLATFORM=ascend`；底座以现场文档为准） | ☐ | `/health`、`/v1/models`；占用设备 `0,1,2,3` |
 | D3b | 部署 **MIS-TEI**（`mis-tei-deploy/`：embed + rerank） | ☐ | `/health`、`/embed`、`/rerank`；占设备 `4` / `5`；网络 `mis-tei-stack` |
 | D4 | 部署 **MinerU**（Ascend；底座同上 + NPU 业务层） | ☐ | `/health`；与 app 同网、同 IO 卷；设备 `6`，与 vLLM/mis-tei **不重叠** |
-| D5 | 部署 **app 栈**（昇腾 compose：Redis + MinIO + models-app） | ☐ | 对外端口可达；默认 `EMBEDDING_BACKEND=mis_tei` 调 MIS-TEI |
+| D5 | 部署 **app 栈**（推荐 `docker-compose.yml` CPU + MIS-TEI；仅 local+npu 用 `docker-ascend/`） | ☐ | 对外端口可达；`mis_tei` 能解析 `mis-tei-embed` |
 | D6 | 联通外部 Docker 网络（vllm / rag / mineru / **mis-tei**） | ☐ | 容器内用服务名互访成功 |
 | D7 | 配置 `SERVICE_API_KEYS`、`LLM_*`、`RAG_ES_*`、`MINERU_*`、设备号 | ☐ | 业务接口鉴权与推理可用 |
 | D8 | 端到端冒烟：健康检查 → 简单 chat → RAG 摄入/问答 →（可选）扫描 PDF | ☐ | 记录结果与耗时 |

@@ -238,6 +238,39 @@ class DataQueryAgentGraphRunner:
             await self._stream_ctrl.clear_stream(state.user_id, state.session_id, state.stream_id)
             return
 
+        # 运维问句：方案 A 无 om library，直接错误提示走客服（不进入选库 HITL）。
+        from app.data_query_agent.library_intent import (
+            OPS_USE_CHATBOT_MESSAGE,
+            OPS_USE_CHATBOT_REASON,
+        )
+
+        try:
+            from app.nl2sql.om_intent import is_ops_question
+
+            ops_q = is_ops_question(state.query or "")
+        except Exception:  # noqa: BLE001
+            ops_q = False
+        if ops_q:
+            yield _event(
+                "data_query_error",
+                state.request_id,
+                error=OPS_USE_CHATBOT_REASON,
+                message=OPS_USE_CHATBOT_MESSAGE,
+            )
+            yield _event(
+                "finished", state.request_id, status="error", stream_id=state.stream_id
+            )
+            DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="error", hitl=hitl_used).inc()
+            _save_run_trace(
+                state,
+                status="error",
+                extra={"interrupt_reason": OPS_USE_CHATBOT_REASON},
+            )
+            await self._stream_ctrl.clear_stream(
+                state.user_id, state.session_id, state.stream_id
+            )
+            return
+
         # resume 已带合法库时跳过意图1，直接 library_hit。
         if not skip_library_intent:
             intent = resolve_library_intent(state.query, state.library_id, catalog=catalog)
@@ -249,6 +282,29 @@ class DataQueryAgentGraphRunner:
             if not intent.ok or intent.library is None:
                 # 未锁库：interrupt + 断流，前端选库后 POST resume-stream。
                 reason = intent.interrupt_reason or "library_unresolved"
+                if reason == OPS_USE_CHATBOT_REASON:
+                    yield _event(
+                        "data_query_error",
+                        state.request_id,
+                        error=OPS_USE_CHATBOT_REASON,
+                        message=OPS_USE_CHATBOT_MESSAGE,
+                    )
+                    yield _event(
+                        "finished",
+                        state.request_id,
+                        status="error",
+                        stream_id=state.stream_id,
+                    )
+                    DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="error", hitl=hitl_used).inc()
+                    _save_run_trace(
+                        state,
+                        status="error",
+                        extra={"interrupt_reason": OPS_USE_CHATBOT_REASON},
+                    )
+                    await self._stream_ctrl.clear_stream(
+                        state.user_id, state.session_id, state.stream_id
+                    )
+                    return
                 token = create_resume_token(
                     request_id=state.request_id,
                     user_id=state.user_id,

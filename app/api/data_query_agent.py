@@ -12,9 +12,11 @@ from fastapi.responses import StreamingResponse
 from typing import Annotated, Any
 
 from app.core.config import get_app_config
+from app.data_query_agent.browse import BrowseRequestError
 from app.data_query_agent.catalog import CatalogError, get_library_catalog
 from app.data_query_agent.hud import HudRequestError
 from app.models.data_query_agent import (
+    DataQueryAgentBrowseResponse,
     DataQueryAgentHudResponse,
     DataQueryAgentLibrariesResponse,
     DataQueryAgentResumeRequest,
@@ -23,6 +25,7 @@ from app.models.data_query_agent import (
     DataQueryAgentStreamStopResponse,
     DataQueryAgentTraceListResponse,
     DataQueryAgentTraceStatsResponse,
+    DataQueryAgentTreeResponse,
 )
 from app.services.data_query_agent_service import DataQueryAgentService
 
@@ -132,7 +135,7 @@ async def get_data_query_trace_alias(request_id: str) -> dict[str, Any]:
 @router.get(
     "/hud",
     response_model=DataQueryAgentHudResponse,
-    summary="按实体补拉 HUD（Java 默认表；解析路径仍用 run-stream 一组 payload）",
+    summary="按实体补拉 HUD（浏览表点行；解析路径仍用 run-stream 一组 payload）",
 )
 async def get_data_query_hud(
     entity_type: Annotated[str, Query(description="station | district | city")],
@@ -156,3 +159,54 @@ async def get_data_query_hud(
             status_code=exc.status_code,
             detail={"code": exc.code, "message": exc.message},
         ) from exc
+
+
+def _browse_http_error(exc: BrowseRequestError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "message": exc.message},
+    )
+
+
+@router.get(
+    "/tree",
+    response_model=DataQueryAgentTreeResponse,
+    summary="感知树：监测库 → 行政区 → 站点（Java 浏览路径）",
+)
+async def get_data_query_tree(
+    library_id: Annotated[str | None, Query(description="只返回该库子树；空=七库全部")] = None,
+) -> DataQueryAgentTreeResponse:
+    try:
+        return await service.get_tree(library_id=library_id)
+    except BrowseRequestError as exc:
+        raise _browse_http_error(exc) from exc
+
+
+@router.get(
+    "/browse",
+    response_model=DataQueryAgentBrowseResponse,
+    summary="浏览列表：进页默认全北京分层标 / 点树刷新；每站最新一条，强制分页",
+)
+async def browse_data_query_list(
+    library_id: Annotated[
+        str | None,
+        Query(description="监测库；空=默认分层标 fcb"),
+    ] = None,
+    district: Annotated[str | None, Query(description="行政区标准名，如 朝阳区")] = None,
+    station_id: Annotated[
+        str | None,
+        Query(description="站点=project_name，与树节点 / HUD entity_id 一致"),
+    ] = None,
+    page: Annotated[int, Query(ge=1, description="页码，从 1 起")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100, description="每页行数")] = 20,
+) -> DataQueryAgentBrowseResponse:
+    try:
+        return await service.browse_list(
+            library_id=library_id,
+            district=district,
+            station_id=station_id,
+            page=page,
+            page_size=page_size,
+        )
+    except BrowseRequestError as exc:
+        raise _browse_http_error(exc) from exc

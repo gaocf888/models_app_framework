@@ -114,6 +114,7 @@ services:
       vllm-external: {}
       rag-external: {}
       mineru-external: {}
+      mis-tei-external: {}
       paddle-layout-external: {}
       face-milvus-external: {}
       # 暂未部署Neo4j，对应网络注释掉
@@ -144,7 +145,7 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: ${MODELS_APP_NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
-      RAG_RERANKER_MODEL_PATH: /workspace/models/rerank/Qwen3-Reranker-0.6B
+      RAG_RERANKER_MODEL_PATH: /workspace/models/rerank/bge-reranker-large
     deploy:
       resources:
         reservations:
@@ -187,6 +188,7 @@ services:
       vllm-external: {}
       rag-external: {}
       mineru-external: {}
+      mis-tei-external: {}
       paddle-layout-external: {}
       face-milvus-external: {}
       # 暂未部署Neo4j，对应网络注释掉
@@ -236,6 +238,9 @@ networks:
     external: true
   mineru-external:
     name: ${MINERU_DOCKER_NETWORK:-mineru-stack}
+    external: true
+  mis-tei-external:
+    name: ${MIS_TEI_NETWORK_NAME:-mis-tei-stack}
     external: true
   paddle-layout-external:
     name: ${PADDLE_LAYOUT_DOCKER_NETWORK:-paddle-layout-stack}

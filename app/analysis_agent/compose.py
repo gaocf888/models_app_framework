@@ -24,6 +24,48 @@ _SELF = "@self"
 # 封面 TOC 不需要数据库；页码用破折号占位
 _TOC_PAGE = "—"
 
+# 运维 plan 项：日/周运行·预警真源必须是 sql_template（禁止 NL2SQL 生成器当附表）
+_OM_PLAN_ID_PREFIXES = ("q_ops_", "q_alert_")
+
+
+def is_om_report_plan_item(item: dict[str, Any]) -> bool:
+    """是否运维报告取数项（item_id 前缀或 om_*.sql）。"""
+    iid = str(item.get("item_id") or "").strip().lower()
+    sql_file = str(item.get("sql_file") or "").strip().lower()
+    if any(iid.startswith(p) for p in _OM_PLAN_ID_PREFIXES):
+        return True
+    return sql_file.startswith("om_") and sql_file.endswith(".sql")
+
+
+def enforce_om_sql_template_plan_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    强制运维项 executor=sql_template 且 sql_file 为 om_*.sql。
+
+    误配为 nl2sql/placeholder 时纠正并打日志，避免生成器当运行/预警真源。
+    """
+    out: list[dict[str, Any]] = []
+    for raw in items:
+        item = dict(raw)
+        if not is_om_report_plan_item(item):
+            out.append(item)
+            continue
+        iid = str(item.get("item_id") or "").strip()
+        sql_file = str(item.get("sql_file") or "").strip()
+        ex = str(item.get("executor") or "").strip().lower()
+        if not sql_file.lower().startswith("om_") or not sql_file.lower().endswith(".sql"):
+            raise ValueError(
+                f"om_plan_item_requires_om_sql_file:{iid}:got={sql_file or '(empty)'}"
+            )
+        if ex != "sql_template":
+            logger.warning(
+                "compose force sql_template for om plan item_id=%s was_executor=%s",
+                iid,
+                ex or "(default nl2sql)",
+            )
+            item["executor"] = "sql_template"
+        out.append(item)
+    return out
+
 
 def _library_index() -> dict[str, Any]:
     path = _LIBRARY_DIR / "_index.yaml"
@@ -248,6 +290,8 @@ def compose_report_dict(raw: dict[str, Any], *, analysis_type: str = "") -> dict
         body = str(ch.get("static_body") or "")
         if body:
             ch["static_body"] = body.replace("{toc}", toc).replace("{title}", title)
+
+    plan_items = enforce_om_sql_template_plan_items(plan_items)
 
     out = dict(raw)
     out["schema_version"] = 3

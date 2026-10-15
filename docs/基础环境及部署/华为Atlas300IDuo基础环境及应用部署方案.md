@@ -77,7 +77,7 @@ lscpu | sed -n '1,40p'
 | 栈 | 现状（`dev_djs`） | 本方案目标 |
 |----|------------------|------------|
 | `vllm-deploy` | 已有 Ascend overlay：`Dockerfile-ascend` + `docker-compose.ascend.yml`；默认 `vllm-ascend:v0.10.0rc1-310p` | 现场 `docker compose -f docker-compose.yml -f docker-compose.ascend.yml up -d --build` |
-| `app/app-deploy` | 已有 **`docker-ascend/`**（对齐 nvidia/mx） | `docker compose -f docker-ascend/docker-compose-ascend.yml up` |
+| `app/app-deploy` | 已有默认 **`docker-compose.yml`**（接 `mis-tei-stack`）+ 可选 **`docker-ascend/`** | **推荐** `mis-tei-deploy` + `docker compose up`（CPU 小镜像）；仅 `local`+npu 用 `docker-ascend/` |
 | `mineru-deploy` | 已有 **`Dockerfile.gpu.ascend`** + **`docker-compose.gpu.ascend.yml`** | 昇腾 GPU 编排；失败可降级 CPU |
 | 宿主机文档 | Atlas/Kylin V10 SP3 专项 | 以本文为准 |
 
@@ -981,41 +981,43 @@ docker compose --env-file .env -f docker-compose.gpu.ascend.yml up -d --build
 
 | 形态 | 路径 |
 |------|------|
-| CPU | `docker-compose.yml` + `Dockerfile` |
+| CPU / **昇腾+MIS-TEI（推荐）** | `docker-compose.yml` + `Dockerfile`（external 含 **`mis-tei-stack`**） |
 | 英伟达 | `docker-nvidia/` |
 | 沐曦 | `docker-mx/` |
-| **昇腾** | 已有 **`docker-ascend/`**（见 `README-DEPLOY-ASCEND.md`） |
+| **昇腾进程内 NPU（可选）** | **`docker-ascend/`**（大镜像 + Ascend runtime；见 `README-DEPLOY-ASCEND.md`） |
 | **MIS-TEI** | 仓库根 **`mis-tei-deploy/`**（默认嵌入/重排 HTTP，先于 app 启动） |
 
-昇腾应用栈要点：
+昇腾应用栈要点（**推荐方案 A**）：
 
-- **底座**：`FROM quay.io/ascend/vllm-ascend:…-310p`（含 `torch_npu`；版本以现场 `.env` / `README-DEPLOY-ASCEND.md` 为准）；
-- compose：`privileged` / 外部网络含 `vllm-external`、`rag-external`、`mineru-external`、**`mis-tei-external`**；
-- **嵌入/重排（默认）**：`EMBEDDING_BACKEND=mis_tei` / `RAG_RERANKER_BACKEND=mis_tei` → HTTP 调 MIS-TEI；`local` 时再用 `EMBEDDING_DEVICE` / `RAG_RERANKER_DEVICE`；
+- **应用镜像**：默认 **`python:3.11-slim` CPU 栈**（`docker-compose.yml`），经 HTTP 调 MIS-TEI；**不必** `docker-ascend` / `torch_npu`；
+- compose：外部网络含 `vllm-external`、`rag-external`、`mineru-external`、**`mis-tei-external`**（与 nvidia/mx/ascend 一致）；
+- **嵌入/重排（默认）**：`EMBEDDING_BACKEND=mis_tei` → NPU 4/5 由 TEI 占用；`ASCEND_RT_VISIBLE_DEVICES=`（应用留空）；
+- **可选回退**：`docker-ascend/` + `local` + `npu:*`（底座 `vllm-ascend`，镜像大；一般不推荐）；
 - Redis、MinIO 同栈启动。
 
-拉取底座：
+仅当使用 `docker-ascend` 时再拉取底座：
 
 ```bash
-docker pull quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
+docker pull quay.io/ascend/vllm-ascend:v0.23.0-310p
 ```
 
 #### 6.5.2 目标目录结构
 
 ```text
-app/app-deploy/docker-ascend/
-  Dockerfile-ascend          # FROM quay.io/ascend/vllm-ascend:v0.10.0rc1-310p + 业务依赖
-  docker-compose-ascend.yml  # Redis + MinIO + models-app（+ 可选 profile）
-  README.md                  # 麒麟 ARM + Atlas 启动说明
+app/app-deploy/
+  docker-compose.yml         # 推荐：CPU + mis-tei-external（昇腾 MIS-TEI 主路径）
+  Dockerfile                 # python:3.11-slim + 业务依赖
+  docker-ascend/             # 可选：进程内 NPU / torch_npu
+    Dockerfile-ascend
+    docker-compose-ascend.yml
+    README.md
+mis-tei-deploy/              # 嵌入/重排 HTTP（NPU 4/5）
 ```
 
 #### 6.5.3 `.env` 关键项（与平台无关但必配）
 
 ```env
 SERVICE_API_KEYS=<本地生成密钥>
-
-# 底座默认见 docker-ascend/Dockerfile-ascend；一般不必配 BASE_IMAGE
-# BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.10.0rc1-310p
 
 LLM_DEFAULT_ENDPOINT=http://vllm-service:8000/v1
 LLM_DEFAULT_MODEL=<与 vLLM served name 一致>
@@ -1030,6 +1032,7 @@ EMBEDDING_BACKEND=mis_tei
 RAG_RERANKER_BACKEND=mis_tei
 MIS_TEI_EMBED_BASE_URL=http://mis-tei-embed:8080
 MIS_TEI_RERANK_BASE_URL=http://mis-tei-rerank:8080
+MIS_TEI_NETWORK_NAME=mis-tei-stack
 # local 回退时再配路径与 DEVICE（见 app/app-deploy/.env.example）
 EMBEDDING_MODEL_PATH=/workspace/models/embeddings/bge-large-zh-v1.5
 RAG_RERANKER_MODEL_PATH=/workspace/models/rerank/bge-reranker-large
@@ -1041,24 +1044,29 @@ MINERU_IO_HOST_PATH=/aidata/mineru/io
 REDIS_DATA_HOST_PATH=/aidata/data/redis_data
 # MinIO / 会话等路径按 .env.example
 
-ASCEND_RT_VISIBLE_DEVICES=4,5
+# mis_tei 时应用留空，勿与 TEI 争用 4/5；仅 docker-ascend + local 时再设 4,5
+ASCEND_RT_VISIBLE_DEVICES=
 ```
 
-网络名与 `VLLM_DOCKER_NETWORK`、`RAG_DOCKER_NETWORK`、`MINERU_DOCKER_NETWORK` 必须与已创建外部网络一致。
+网络名与 `VLLM_DOCKER_NETWORK`、`RAG_DOCKER_NETWORK`、`MINERU_DOCKER_NETWORK`、`MIS_TEI_NETWORK_NAME` 必须与已创建外部网络一致。
 
 #### 6.5.4 启动（目标命令）
 
 ```bash
-cd app/app-deploy
+# 1) MIS-TEI
+cd mis-tei-deploy && docker compose --env-file .env up -d
+
+# 2) 应用（推荐 CPU 栈）
+cd ../app/app-deploy
 cp .env.example .env
 # 编辑关键项
-
-# 确认外部网络已存在
+docker network create paddle-layout-stack 2>/dev/null || true
+docker network create face-milvus-stack 2>/dev/null || true
 docker network ls
+docker compose --env-file .env up -d --build
 
-cd docker-ascend
-cp ../.env .env
-docker compose --env-file .env -f docker-compose-ascend.yml up -d --build
+# 仅当需要进程内 NPU 时：
+# docker compose --env-file .env -f docker-ascend/docker-compose-ascend.yml up -d --build
 ```
 
 **验收**：
@@ -1066,7 +1074,7 @@ docker compose --env-file .env -f docker-compose-ascend.yml up -d --build
 ```bash
 curl -s "http://127.0.0.1:${APP_PORT:-8083}/health"   # 以实际健康路径为准
 docker logs models-app 2>&1 | tail -n 100
-# 确认嵌入/重排加载日志，无 CUDA 残留错误
+# 确认走 MIS-TEI（HTTP），非进程内 ST 加载失败
 ```
 
 业务请求头：`Authorization: Bearer <SERVICE_API_KEYS>`。

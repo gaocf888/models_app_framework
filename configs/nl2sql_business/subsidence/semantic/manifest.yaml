@@ -14,11 +14,13 @@ assets:
     - dimensions/device_station_map.yaml
     - dimensions/fcb_layer_map.yaml
     - dimensions/key_monitoring_areas.yaml
+    - dimensions/om_device_type.yaml
   placeholders:
     - layered_fcb_placeholder.yaml
 notes:
   - "device_station_map.yaml：监测方式→project_name 官方覆盖；semantic_layer 注入 project_names（P7）"
   - "fcb_layer_map.yaml 由 semantic_layer 加载；站点沉降注入 preferred_station_names（层位0）"
+  - "om_device_type.yaml：运维 type 中文↔device_type；semantic_layer 注入 om_instrument_types"
   - "key_monitoring_areas.yaml 供自动报告重点区板块；暂不注入 semantic_layer"
   - "周期沉降口径：初−末；Δ>0 下沉；站点用 monitor_layer=0"
   - "units.yaml / layered_fcb_placeholder 为清单登记；单位换算与第N层告警逻辑以代码为准"
