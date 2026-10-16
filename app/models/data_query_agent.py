@@ -196,7 +196,7 @@ class DataQueryAgentTreeLibrary(BaseModel):
 
 
 class DataQueryAgentTreeResponse(BaseModel):
-    """GET /tree：监测库 → 行政区 → 站点（每站最新快照）。"""
+    """GET /tree：监测库 → 行政区 → 站点（yaml 覆盖 + t_station.area；无洗数最新值）。"""
 
     ok: bool = True
     default_library_id: str = "fcb"

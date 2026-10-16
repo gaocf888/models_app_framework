@@ -171,7 +171,7 @@ def _browse_http_error(exc: BrowseRequestError) -> HTTPException:
 @router.get(
     "/tree",
     response_model=DataQueryAgentTreeResponse,
-    summary="感知树：监测库 → 行政区 → 站点（Java 浏览路径）",
+    summary="感知树：监测库 → 行政区 → 站点（yaml 覆盖 + t_station 出区）",
 )
 async def get_data_query_tree(
     library_id: Annotated[str | None, Query(description="只返回该库子树；空=七库全部")] = None,

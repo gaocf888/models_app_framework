@@ -37,7 +37,7 @@ def normalize_site_key(name: str) -> str:
     )
 
 
-def _site_code(name: str) -> str:
+def site_code(name: str) -> str:
     """F42(牌楼站) / F42(牌楼） → F42；无码返回空。"""
     m = _SITE_CODE_RE.match(normalize_site_key(name))
     return m.group(1).upper() if m else ""
@@ -73,7 +73,7 @@ def coverage_code_index(device_type: str) -> dict[str, str]:
     names = load_device_projects_by_type().get((device_type or "").strip().lower(), ())
     buckets: dict[str, list[str]] = {}
     for name in names:
-        code = _site_code(name)
+        code = site_code(name)
         if not code:
             continue
         buckets.setdefault(code, []).append(name)
@@ -88,7 +88,7 @@ def canonical_project(name: str, device_type: str) -> str | None:
     hit = coverage_index(device_type).get(normalize_site_key(raw))
     if hit:
         return hit
-    code = _site_code(raw)
+    code = site_code(raw)
     if not code:
         return None
     return coverage_code_index(device_type).get(code)

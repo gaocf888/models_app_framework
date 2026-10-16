@@ -1,6 +1,7 @@
 """浏览路径：感知树 + 每站最新列表。不走 run-stream / NL2SQL，直接参数化 SQL。
 
-站点稳定键是 wash.project_name ≡ t_station.name（与 HUD entity_id、树点击 station_id 同源）。
+树：device_station_map.yaml 出站，t_station.area 出区（与报告/NL2SQL 同一套覆盖），不读洗数表。
+列表：wash.project_name ≡ t_station.name（与 HUD entity_id、树点击 station_id 同源）。
 列表默认 catalog.default_library_id（分层标 fcb）；一请求一库一表，不做 fcb+jyb UNION。
 """
 
@@ -11,6 +12,11 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from app.analysis_agent.deterministics.coverage import (
+    load_device_projects_by_type,
+    normalize_site_key,
+    site_code,
+)
 from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.data_query_agent.annual import compute_annual_delta, resolve_annual_window
@@ -356,6 +362,74 @@ def _district_label(area: Any) -> str:
     return text or _UNASSIGNED_DISTRICT
 
 
+def build_station_area_sql() -> str:
+    """仅读 t_station 出区，不 JOIN 洗数表。"""
+    return (
+        "SELECT name, area FROM t_station "
+        "WHERE name IS NOT NULL AND btrim(name) <> ''"
+    )
+
+
+def _coverage_names(library: LibraryDef) -> tuple[str, ...]:
+    device = (library.device_type or library.id or "").strip().lower()
+    return load_device_projects_by_type().get(device, ())
+
+
+def _index_station_areas(rows: list[dict[str, Any]]) -> tuple[dict[str, str], dict[str, str]]:
+    """normalize(name) → area；唯一 F/J 码 → area（与报告 coverage 同一套对齐）。"""
+    by_norm: dict[str, str] = {}
+    buckets: dict[str, list[str]] = {}
+    for raw in rows:
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            continue
+        area = str(raw.get("area") or "").strip()
+        key = normalize_site_key(name)
+        if key and key not in by_norm:
+            by_norm[key] = area
+        code = site_code(name)
+        if code:
+            buckets.setdefault(code, []).append(area)
+    by_code = {code: items[0] for code, items in buckets.items() if len(items) == 1}
+    return by_norm, by_code
+
+
+def _area_for_name(name: str, by_norm: dict[str, str], by_code: dict[str, str]) -> str:
+    key = normalize_site_key(name)
+    if key in by_norm:
+        return by_norm[key]
+    code = site_code(name)
+    if code and code in by_code:
+        return by_code[code]
+    return ""
+
+
+def _stations_from_coverage(
+    library: LibraryDef,
+    names: tuple[str, ...],
+    by_norm: dict[str, str],
+    by_code: dict[str, str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    unmatched: list[str] = []
+    for name in names:
+        sid = str(name or "").strip()
+        if not sid:
+            continue
+        area = _area_for_name(sid, by_norm, by_code)
+        if not area:
+            unmatched.append(sid)
+        rows.append({"station_id": sid, "station_name": sid, "area": area})
+    if unmatched:
+        logger.warning(
+            "data_query_agent tree unmatched t_station library=%s count=%s sample=%s",
+            library.id,
+            len(unmatched),
+            unmatched[:8],
+        )
+    return rows
+
+
 def _group_tree_stations(
     library: LibraryDef,
     rows: list[dict[str, Any]],
@@ -366,16 +440,13 @@ def _group_tree_stations(
         if not sid:
             continue
         district = _district_label(raw.get("area"))
-        latest = raw.get(library.core_metrics[0].id) if library.core_metrics else raw.get(library.core_metric)
-        if latest is None:
-            latest = raw.get(library.core_metric)
         by_area.setdefault(district, []).append(
             {
                 "station_id": sid,
                 "station_name": str(raw.get("station_name") or sid),
                 "district": district,
-                "latest_value": _cell(latest),
-                "data_time": _cell(raw.get("data_time")),
+                "latest_value": None,
+                "data_time": None,
                 "unit": library.series_unit or "",
             }
         )
@@ -403,7 +474,7 @@ async def fetch_perception_tree(
     library_id: str | None = None,
     executor: SQLExecutor | None = None,
 ) -> dict[str, Any]:
-    """库 → 行政区 → 站点（每站最新快照）。树是站点粒度，不做时间序列分页。"""
+    """库 → 行政区 → 站点。站来自 device_station_map，区来自 t_station；不读洗数表。"""
     try:
         catalog = get_library_catalog()
     except CatalogError as exc:
@@ -414,17 +485,22 @@ async def fetch_perception_tree(
     else:
         libraries = list(catalog.libraries)
     exe = executor or SQLExecutor()
+    logger.info(
+        "data_query_agent browse tree libraries=%s source=device_station_map",
+        ",".join(x.id for x in libraries),
+    )
+    try:
+        station_rows = await exe.execute(build_station_area_sql(), {})
+    except BrowseRequestError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("data_query_agent browse tree failed t_station", exc_info=True)
+        raise BrowseRequestError(502, "tree_query_failed", str(exc) or "感知树查询失败") from exc
+    by_norm, by_code = _index_station_areas(station_rows)
     nodes: list[dict[str, Any]] = []
-    logger.info("data_query_agent browse tree libraries=%s", ",".join(x.id for x in libraries))
     for lib in libraries:
-        sql, params = build_latest_sql(lib)
-        try:
-            rows = await exe.execute(sql, params)
-        except BrowseRequestError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("data_query_agent browse tree failed library=%s", lib.id, exc_info=True)
-            raise BrowseRequestError(502, "tree_query_failed", str(exc) or "感知树查询失败") from exc
+        names = _coverage_names(lib)
+        rows = _stations_from_coverage(lib, names, by_norm, by_code)
         nodes.append(_group_tree_stations(lib, rows))
     return {
         "ok": True,

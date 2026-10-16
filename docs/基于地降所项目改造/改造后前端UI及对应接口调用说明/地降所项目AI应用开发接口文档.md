@@ -26,6 +26,7 @@
 | 2026-10-14 | 浏览路径改本仓：`GET /tree`、`GET /browse`（分页）；Java 转发 | — | V1.1 |
 | 2026-10-14 | 报告生成接口补充「前端调用渲染说明」（按到达顺序画正文/表/图） | — | V1.2 |
 | 2026-10-14 | 数据查询解析流与人机协同恢复接口补充衔接说明 | — | V1.3 |
+| 2026-10-16 | 感知树改与报告/NL2SQL 同一套：yaml 出站、`t_station` 出区，不再读洗数表补最新值 | — | V1.4 |
 
 ## 通用约定
 
@@ -634,7 +635,7 @@ POST
 
 ---
 
-## 3.1 查询监测库注册表接口
+## 3.1 查询监测库注册表接口(本项目不需要)
 
 ### 接口功能
 
@@ -681,11 +682,11 @@ Authorization: Bearer <service-api-key>
 
 ---
 
-## 3.2 查询感知树接口
+## 3.2 查询感知树(业务左侧监方式站点树)接口
 
 ### 接口功能
 
-拉取左侧感知树：监测库 → 行政区 → 站点（含站点数、每站最新核心指标）。进页画树；可选只拉某一库子树。不走 `run-stream`。树是站点粒度，不做时间序列分页。
+拉取左侧感知树：监测库 → 行政区 → 站点（含站点数）。站点名单来自 `device_station_map.yaml`（与报告/NL2SQL 同一套官方覆盖），行政区来自 `t_station.area`（全角括号/F 码对齐后再匹配）。**不读洗数表**，树节点 **不带** 每站最新观测值。GNSS 一期覆盖为空则该枝 0 站。进页画树；可选只拉某一库子树。不走 `run-stream`。树是站点粒度，不做时间序列分页。右侧表的最新值仍走 `GET /browse`。
 
 ### URL
 
@@ -723,7 +724,7 @@ GET
 | default_library_id | string | 默认库，固定 `fcb` |
 | libraries | array | 库节点：`library_id`、`display_name`、`group`、`station_count`、`districts` |
 | libraries[].districts | array | 行政区：`district`、`station_count`、`stations` |
-| libraries[].districts[].stations | array | 站点：`station_id`、`station_name`、`district`、`latest_value`、`data_time`、`unit` |
+| libraries[].districts[].stations | array | 站点：`station_id`、`station_name`、`district` 来自 yaml 权威名 + `t_station.area`；`latest_value` / `data_time` 固定 `null`（树不读洗数表）；`unit` 为库配置单位 |
 
 ### 接口示例
 

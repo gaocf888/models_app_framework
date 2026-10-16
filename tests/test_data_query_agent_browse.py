@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from app.analysis_agent.deterministics.coverage import load_device_projects_by_type
 from app.core.config import get_app_config
 from app.data_query_agent.browse import (
     BrowseRequestError,
     build_annual_sql,
     build_latest_sql,
+    build_station_area_sql,
     fetch_browse_list,
     fetch_perception_tree,
     normalize_page,
@@ -20,7 +22,12 @@ from app.services.data_query_agent_service import DataQueryAgentService
 
 
 class _FakeExecutor:
-    def __init__(self, pages: list[list[dict]] | None = None, total: int = 2) -> None:
+    def __init__(
+        self,
+        pages: list[list[dict]] | None = None,
+        total: int = 2,
+        station_rows: list[dict] | None = None,
+    ) -> None:
         self.calls: list[tuple[str, dict]] = []
         self._pages = pages or [
             [
@@ -42,12 +49,20 @@ class _FakeExecutor:
                 },
             ]
         ]
+        self._station_rows = station_rows or [
+            {"name": "F2(望京)", "area": "朝阳区"},
+            {"name": "F3(天竺）", "area": "顺义区"},
+            {"name": "F28(金盏)", "area": "朝阳区"},
+            {"name": "F42(牌楼）", "area": "通州区"},
+        ]
         self._total = total
         self._idx = 0
 
     async def execute(self, sql: str, params: dict | None = None) -> list[dict]:
         self.calls.append((sql, dict(params or {})))
         low = sql.lower()
+        if "from t_station" in low:
+            return list(self._station_rows)
         if "count(*)" in low:
             return [{"total": self._total}]
         if "w.project_name = any(:names)" in low:
@@ -174,31 +189,67 @@ async def test_browse_list_district_and_station_filters() -> None:
     assert ":station_id" in list_sql
 
 
+def test_station_area_sql_is_t_station_only() -> None:
+    sql = build_station_area_sql().lower()
+    assert "from t_station" in sql
+    assert "t_data_wash" not in sql
+
+
 @pytest.mark.asyncio
-async def test_tree_groups_districts_and_counts() -> None:
+async def test_tree_groups_yaml_stations_by_t_station_area() -> None:
     exe = _FakeExecutor()
     payload = await fetch_perception_tree(library_id="jyb", executor=exe)
+    names = load_device_projects_by_type()["jyb"]
     assert payload["default_library_id"] == "fcb"
     assert len(payload["libraries"]) == 1
     node = payload["libraries"][0]
     assert node["library_id"] == "jyb"
-    assert node["station_count"] == 2
-    assert node["districts"][0]["district"] == "朝阳区"
-    assert node["districts"][0]["station_count"] == 2
-    by_id = {s["station_id"]: s for s in node["districts"][0]["stations"]}
-    assert by_id["F28(金盏)"]["latest_value"] == pytest.approx(-84.2)
+    assert node["station_count"] == len(names)
+    by_district = {d["district"]: d for d in node["districts"]}
+    assert by_district["朝阳区"]["station_count"] == 1
+    assert by_district["顺义区"]["station_count"] == 1
+    assert by_district["未分区"]["station_count"] == len(names) - 2
+    chaoyang = {s["station_id"]: s for s in by_district["朝阳区"]["stations"]}
+    shunyi = {s["station_id"]: s for s in by_district["顺义区"]["stations"]}
+    assert chaoyang["F2(望京)"]["latest_value"] is None
+    assert chaoyang["F2(望京)"]["data_time"] is None
+    assert shunyi["F3(天竺)"]["district"] == "顺义区"
+    assert shunyi["F3(天竺)"]["station_name"] == "F3(天竺)"
     sql, _ = exe.calls[0]
-    assert "t_data_wash_jyb" in sql.lower()
-    assert "limit" not in sql.lower()
+    assert "from t_station" in sql.lower()
+    assert "t_data_wash" not in sql.lower()
+    assert len(exe.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_tree_all_libraries_seven_queries() -> None:
+async def test_tree_fcb_f_code_fallback_and_gnss_empty() -> None:
+    exe = _FakeExecutor()
+    fcb = await fetch_perception_tree(library_id="fcb", executor=exe)
+    names = load_device_projects_by_type()["fcb"]
+    node = fcb["libraries"][0]
+    assert node["station_count"] == len(names)
+    by_district = {d["district"]: d for d in node["districts"]}
+    tongzhou = {s["station_id"]: s for s in by_district["通州区"]["stations"]}
+    assert "F42(牌楼站)" in tongzhou
+    gnss = await fetch_perception_tree(library_id="gnss", executor=exe)
+    assert gnss["libraries"][0]["station_count"] == 0
+    assert gnss["libraries"][0]["districts"] == []
+
+
+@pytest.mark.asyncio
+async def test_tree_all_libraries_one_station_query() -> None:
     exe = _FakeExecutor()
     payload = await fetch_perception_tree(executor=exe)
     ids = [x["library_id"] for x in payload["libraries"]]
     assert ids == ["fcb", "jyb", "dxswj", "kxsylj", "gnss", "qxz", "gq"]
-    assert len(exe.calls) == 7
+    assert len(exe.calls) == 1
+    assert "from t_station" in exe.calls[0][0].lower()
+    by_id = {x["library_id"]: x for x in payload["libraries"]}
+    coverage = load_device_projects_by_type()
+    assert by_id["fcb"]["station_count"] == len(coverage["fcb"])
+    assert by_id["jyb"]["station_count"] == len(coverage["jyb"])
+    assert by_id["gnss"]["station_count"] == 0
+    assert by_id["gq"]["station_count"] == len(coverage["gq"])
 
 
 @pytest.mark.asyncio
@@ -220,6 +271,7 @@ async def test_service_browse_and_tree(monkeypatch: pytest.MonkeyPatch) -> None:
     tree = await svc.get_tree(library_id="fcb")
     listed = await svc.browse_list(library_id="fcb", page=1, page_size=20)
     assert tree.libraries[0].library_id == "fcb"
+    assert tree.libraries[0].station_count == len(load_device_projects_by_type()["fcb"])
     assert listed.ok is True
     assert listed.library_id == "fcb"
     assert listed.total == 2
