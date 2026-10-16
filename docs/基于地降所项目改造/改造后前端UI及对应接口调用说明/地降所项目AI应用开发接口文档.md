@@ -27,6 +27,9 @@
 | 2026-10-14 | 报告生成接口补充「前端调用渲染说明」（按到达顺序画正文/表/图） | — | V1.2 |
 | 2026-10-14 | 数据查询解析流与人机协同恢复接口补充衔接说明 | — | V1.3 |
 | 2026-10-16 | 感知树改与报告/NL2SQL 同一套：yaml 出站、`t_station` 出区，不再读洗数表补最新值 | — | V1.4 |
+| 2026-10-16 | 3.2 及后续接口补充「调用方使用说明」（返回字段与页面加载对应） | — | V1.5 |
+| 2026-10-16 | 浏览列表：点站出设备×时间矩阵；点库/区出代表标列表 | — | V1.6 |
+| 2026-10-16 | 点库/区改为代表标全部观测（`data_time` 倒序），不再只取最新一行 | — | V1.7 |
 
 ## 通用约定
 
@@ -726,6 +729,39 @@ GET
 | libraries[].districts | array | 行政区：`district`、`station_count`、`stations` |
 | libraries[].districts[].stations | array | 站点：`station_id`、`station_name`、`district` 来自 yaml 权威名 + `t_station.area`；`latest_value` / `data_time` 固定 `null`（树不读洗数表）；`unit` 为库配置单位 |
 
+### 调用方使用说明
+
+左侧感知树按 **分组 → 监测库 → 行政区 → 站点** 四层加载。进页一次拉整棵树（不传 `library_id`）；树上只展示覆盖名单与区划，**不要**用 `latest_value` 画观测值（最新值在点树后的右侧表）。
+
+| 返回字段 | 树上怎么加载 |
+|----------|--------------|
+| `ok` | `false` 时不要用空树覆盖上次成功的树，按错误提示 |
+| `default_library_id` | 进页默认高亮/选中的库，固定 `fcb`（分层标） |
+| `libraries[]` | 第二层：一种监测类型一个库节点，按数组顺序画 |
+| `libraries[].group` | 最外层分组标题。相同 `group` 的库画在同一组下（岩土本底层压实 / 流体赋存及应力 / 星地综合观测） |
+| `libraries[].display_name` | 库节点上写的中文（分层标、基岩标、地下水…） |
+| `libraries[].library_id` | 节点稳定 ID。点库刷新表、解析 SQL 都传这个（`fcb`），**不要传中文** |
+| `libraries[].station_count` | 该库下站点数，可显示在库节点旁 |
+| `libraries[].districts[]` | 第三层：该库下的行政区节点 |
+| `districts[].district` | 区节点展示名（如 `朝阳区`）。点区时原样传给 `GET /browse` 的 `district`。`未分区` 表示 yaml 有站但未对上 `t_station.area` |
+| `districts[].station_count` | 该区站点数，可显示在区节点旁 |
+| `districts[].stations[]` | 第四层：该区下的站点 |
+| `stations[].station_name` | 站节点上写的字（如 `F28(金盏)`） |
+| `stations[].station_id` | 点站刷新表、详参 `entity_id` 用这个，与树上展示名同源 |
+| `stations[].district` | 与父区节点相同，一般不用再画 |
+| `stations[].latest_value` / `data_time` | 固定 `null`，树上不要当观测值渲染 |
+| `stations[].unit` | 库配置单位，树上可不展示 |
+
+点击行为（**不要**打 `run-stream`）：
+
+| 用户点 | 树上 | 再调 |
+|--------|------|------|
+| 库节点 | 高亮该 `library_id` | `GET /browse?library_id=` |
+| 区节点 | 高亮该区 | `GET /browse?library_id=&district=` |
+| 站节点 | 高亮该站 | `GET /browse?library_id=&station_id=` |
+
+`station_count=0`（如 GNSS 一期）只画库节点，不要造空区/空站。只传 `library_id=jyb` 时只渲染基岩标这一枝。
+
 ### 接口示例
 
 ```http
@@ -742,7 +778,12 @@ Authorization: Bearer <service-api-key>
 
 ### 接口功能
 
-进页默认表、点树刷新右侧表：每站最新一条 `data_time`，强制分页。不走 `run-stream`。点「详参」再调 `GET /hud`。
+进页默认表、点树刷新右侧表。**两种视图**（看有没有传 `station_id`）：
+
+1. **点监测方式 / 行政区**（不传 `station_id`）：范围内 **代表标**（分层标=层位 0）的 **全部观测行**，按 `data_time` **倒序**；表头仍是测位/站名/行政区/年沉降/累计沉降/时间，**不要**用设备 `station_name` 当列。  
+2. **点站点**（传 `station_id`）：该场地 **全部设备** 的监测序列。行= `data_time`（新→旧），列=设备 `station_name`（如 `F9-1`、`F9-1T`），单元格=`total_settle`（其它库用该库核心指标）。
+
+强制分页。不走 `run-stream`。代表标表上点「详参」再调 `GET /hud`；设备矩阵不带详参。
 
 ### URL
 
@@ -768,13 +809,13 @@ GET
 
 ### 请求参数（Query）
 
-| 参数 | 必填 | 类型 | 说明 |
-|------|------|------|------|
-| library_id | false | string | 监测库；空=默认分层标 `fcb`。点库节点时必传该节点 id |
-| district | false | string | 点行政区时传标准名，如 `朝阳区` |
-| station_id | false | string | 点站点时传树上的 `station_id`（`project_name`，如 `F28(金盏)`） |
-| page | false | int | 页码，从 1；默认 1 |
-| page_size | false | int | 每页行数，默认 20，最大 100 |
+| 参数 | 必填 | 类型 | 说明                                                |
+|------|------|------|---------------------------------------------------|
+| library_id | false | string | 监测库；空=默认分层标 `fcb`。点库节点时必传该节点 id                   |
+| district | false | string | 点行政区时传标准名，如 `朝阳区`。与 `station_id` 同时传时忽略（以点站为准） |
+| station_id | false | string | 点站点时传树上的 `station_id`（`project_name`，如 `F9(后芮营)`） |
+| page | false | int | 页码，从 1；默认 1                                       |
+| page_size | false | int | 每页行数，默认 20，最大 100。点站时按 **监测时间** 条数分页 |
 
 ### 返回字段
 
@@ -784,12 +825,45 @@ GET
 | library_id | string | 实际锁定的库 |
 | display_name | string | 库中文名 |
 | district / station_id | string | 回显过滤条件；未传为 null |
-| page / page_size / total | int | 分页；`total` 为符合条件的站点数 |
+| result_grain | string | `station`=代表标列表；`device_time`=设备×时间矩阵 |
+| page / page_size / total | int | 分页。`station`：`total`=代表标观测行数（不是站点数）；`device_time`：`total`=该场地不重复 `data_time` 数 |
 | has_more | boolean | 是否还有下一页 |
-| columns | array | `{key, title}`，与解析路径同一套表头 |
+| columns | array | `{key, title}`。两种视图表头不同，见下方说明 |
 | list | array | 当前页行；单元格取 `list[i][columns[j].key]` |
-| list[].hud_entity_id | string | 点「详参」作 `GET /hud` 的 `entity_id` |
-| hud_enabled | boolean | 本页是否可点详参 |
+| list[].hud_entity_id | string | 仅 `result_grain=station`：点「详参」作 `GET /hud` 的 `entity_id` |
+| hud_enabled | boolean | 仅代表标列表为 true；设备矩阵固定 false |
+
+### 调用方使用说明
+
+用 `result_grain` 切换右侧表布局，**不要写死列**。点树 **不要** 打 `run-stream`。
+
+**A. 点库 / 点行政区**（`result_grain=station`，进页默认也是这种）
+
+范围内代表标的全部观测，按 `data_time` 从新到旧。分层标只取层位 0 代表标，不是该站所有设备。表头与解析路径同一套（测位 ID / 监测站名称 / 行政区 / 年沉降 / 累计沉降 / 数据时间）。同一站会有多行。
+
+| 返回字段 | 表上怎么加载 |
+|----------|--------------|
+| `columns[]` | `title` 当表头，`key` 取格。不要用设备编号当列 |
+| `list[].station_id` / `station_name` / `area` | 测位、站名（场地名如 `F8(周村)`）、行政区 |
+| `list[].total_settle_mm` / `annual_settle_mm` | 代表标的累计沉降、年沉降 |
+| `list[].data_time` | 该行观测时间（整表已按此倒序） |
+| `list[].hud_entity_id` | 点「详参」→ `GET /hud` |
+| `hud_enabled` | `false` 时整表不显示「详参」 |
+| `page` / `total` | 按 **观测行数** 翻页（同一站多行） |
+
+**B. 点站点**（`result_grain=device_time`）
+
+该场地全部设备（含辅助标）的时间序列，转成矩阵：行是时间，列是设备名。
+
+| 返回字段 | 表上怎么加载 |
+|----------|--------------|
+| `columns[0]` | 固定 `data_time` / 监测时间 |
+| `columns[1…]` | 每个设备一列，`key`=`title`=`station_name`（`F9-1`、`F9-1T`…已按编号排序） |
+| `list[]` | 一行一个 `data_time`（新→旧）。`list[i]["F9-1"]` 即该时刻该设备的 `total_settle`；缺测为空 |
+| `hud_enabled` | 固定 `false`，不要在矩阵行上画「详参」 |
+| `page` / `total` | 按 **监测时间条数** 翻页，不是按站点数 |
+
+进页：`GET /browse?page=1&page_size=20`（全北京分层标代表标全部观测，时间倒序）。点「基岩标」带 `library_id=jyb`。点「朝阳区」再加 `district=朝阳区`。点某个站只传 `library_id` + `station_id`。翻页只改 `page` / `page_size`。
 
 ### 接口示例
 
@@ -804,7 +878,7 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 Authorization: Bearer <service-api-key>
 ```
 
-进页不传 `library_id` = 全北京最新分层标。点「基岩标」传 `library_id=jyb`。翻页只改 `page` / `page_size`。
+进页不传 `library_id` = 全北京分层标代表标全部观测（时间倒序）。点「基岩标」传 `library_id=jyb`。点站时 `result_grain=device_time`。翻页只改 `page` / `page_size`。
 
 ---
 
@@ -858,6 +932,25 @@ POST
 | data_query_result | `columns`、`list`、`hud_by_entity`（解析路径勿再调 GET /hud） |
 | data_query_cancelled / data_query_error | 取消或失败 |
 | finished | 结束 |
+
+### 调用方使用说明
+
+仅顶栏点「解析 SQL」时调用。空 `query` 会 422，应拦在按钮上。记下首帧 `started.stream_id` 供停止。页面按 SSE **到达顺序**处理，不要自己重排。
+
+| 事件 | 页面怎么加载 |
+|------|--------------|
+| `started` | 按钮变「解析中…」；保存 `stream_id` |
+| `data_query_library_hit` | 用 `library_id` 高亮左侧树对应库节点（即使用户没先点树） |
+| `data_query_library_input_required` | 弹出选库窗；本轮到此结束，右侧 **还没有新表**。见下方衔接 |
+| `data_query_result` | 换右侧表：`columns` 当表头，`list` 当行，单元格取 `list[i][columns[j].key]` |
+| `data_query_result.hud_by_entity` | 点「详参」时用 `hud_by_entity[该行 hud_entity_id]` 打开详情；站点找不到再用 `hud_by_station`。**不要**再调 `GET /hud` |
+| `data_query_result.hud_enabled` / 行上 `hud_available` | 控制「详参」按钮显隐 |
+| `data_query_cancelled` / `data_query_error` | 按钮恢复；提示失败，不要清空上一张表除非产品要求 |
+| `finished` | 按钮恢复「解析 SQL」 |
+
+可选帧（有则用、无则忽略）：`data_query_scope_parsed` 可做「朝阳区 / 近一年」芯片（本页不做过滤器也可忽略）；`data_query_nl2sql_progress` 可做底部「正在查列表 / 正在查曲线」，**禁止展示 sql**。
+
+`warnings` 常见值做成表下小字即可：`library_defaulted`（已默认分层标）、`library_conflict_nl_ignored`（问句里的库被树覆盖）、`hud_series_truncated`（后面的行没有详参）、`hud_series_failed`（表有了但曲线没有）。
 
 ### 与人机协同恢复接口的衔接
 
@@ -938,6 +1031,19 @@ POST
 
 若 `library_id` 非法，可能再次推送 `data_query_library_input_required`（同一 `resume_token`），继续弹窗即可。
 
+### 调用方使用说明
+
+本接口是 **新开一条 SSE**，不是接着原 `run-stream` 连接推。未收到选库事件不要调用。选库窗选项必须用上一轮 `library_options`，不要写死七个类型。
+
+| 事件 / 字段 | 页面怎么加载 |
+|-------------|--------------|
+| 新的 `started.stream_id` | 覆盖保存，停止/离开页用这一轮的 id |
+| `data_query_library_hit` | 高亮用户刚选的库节点 |
+| `data_query_result` | 与 3.4 相同：换表 + `hud_by_entity` 点详参，勿再调 `GET /hud` |
+| 再次 `data_query_library_input_required` | `library_id` 非法；同一 `resume_token` 继续弹窗 |
+| `data_query_cancelled` | 用户 `abort=true`；关弹窗、按钮恢复，不要出表 |
+| `finished` | 按钮恢复 |
+
 ### 与解析流式接口的衔接
 
 | 步骤 | 做什么 |
@@ -1002,6 +1108,12 @@ POST
 |----------|----------|------|
 | ok | boolean | 是否受理停止 |
 
+### 调用方使用说明
+
+离开页、点取消、或新开解析前，用当前流的 `started.stream_id` 调本接口。`ok=true` 只表示受理停止，随后原 SSE 会推 `data_query_cancelled` / `finished`。按钮恢复可点即可；不要用本接口清表。
+
+`stream_id` 必须来自 **正在进行的那一轮**（`run-stream` 或 `resume-stream` 各自有新的 `started`）。选库等待期间原轮已结束，一般不必再 stop。
+
 ### 接口示例
 
 ```json
@@ -1055,6 +1167,24 @@ GET
 | 返回字段 | 字段类型 | 说明 |
 |----------|----------|------|
 | hud | object | 与解析结果中单行详情同结构（title / core_metrics / series 等） |
+
+### 调用方使用说明
+
+仅 `GET /browse` 出的表上点「详参」时调用。把返回的 `hud` 交给和解析路径同一套详情浮层（不跳走）。解析 SQL 出表后详情已在 `data_query_result.hud_by_entity`，**不要**再调本接口。
+
+| 返回字段 | 详情面板怎么加载 |
+|----------|------------------|
+| `found=false` | 提示暂无详情，不要画空折线冒充 |
+| `hud.title` | 浮层标题（如「金盏 · 分层标」） |
+| `hud.core_metrics[]` | 顶部指标卡（累计沉降/埋深等，随库变） |
+| `hud.series.points` | 主折线：`t` 横轴、`v` 纵轴；区/市是日平均（`series.agg=avg`），不要拿某一个站的曲线画成朝阳区或全市 |
+| `hud.series_list[]` | 气象等多条曲线时按此画（气温/降水） |
+| `hud.identity` | 站名、行政区等辅助信息 |
+| `hud.blocks.geology` / `strategy` | `unavailable` 时不画该块（库无岩性/第 N 层） |
+| `warnings` 含 `hud_series_failed` | 表还在，详情里折线为空，提示「时序暂不可用」 |
+| `sql` | **禁止渲染** |
+
+入参：`library_id` = 当前表所在库；`entity_type` 用该行 `hud_entity_type`（浏览表站点行为 `station`）；`entity_id` = 行上 `hud_entity_id`（站=`station_id`，区=`朝阳区`，市=`beijing`）。
 
 ### 接口示例
 
@@ -1112,6 +1242,19 @@ GET
 | 返回字段 | 字段类型 | 说明 |
 |----------|----------|------|
 | namespaces | array | 含 namespace、document_count、namespace_kb_enabled、namespace_kb_priority |
+
+### 调用方使用说明
+
+进知识库页先调本接口画 **左侧分类**。建议 `exclude_nl2sql=true`，不要用 `/rag/kb-tree`。无文档的分类不出现。默认选中「所有文献」，再拉右侧文档表（4.3）。
+
+| 返回字段 | 侧栏怎么加载 |
+|----------|--------------|
+| `namespaces[].namespace` | 分类稳定键（`法规` / `规程` 等）。请求过滤、上传、摄入都传这个键，不要传展示名 |
+| `namespaces[].document_count` | 分类旁文档数。「所有文献」的 count = 各业务分类之和 |
+| `namespaces[].namespace_kb_enabled` | 启用开关回显（关闭=不参与召回，列表仍在） |
+| `namespaces[].namespace_kb_priority` | 优先级数字回显（越小越优先） |
+
+展示名可用前端映射（政策法规台账←`法规` 等）；未映射的键直接显示键名。点某分类：右侧 `GET /rag/documents/overview?namespace=`；点「所有文献」不传 `namespace`。
 
 ### 接口示例
 
@@ -1173,6 +1316,10 @@ Body：
 |----------|----------|------|
 | ok | boolean | 是否成功 |
 
+### 调用方使用说明
+
+当前地降所项目无该功能，**不调用、不渲染**。若后续要做分类启用/优先级：成功后用请求体回写该分类行的开关与数字即可，不必整页重拉；失败保持原值。
+
 ### 接口示例
 
 ```json
@@ -1228,6 +1375,26 @@ GET
 | documents | array | 文档行（doc_name、status、chunk_count、namespace、last_job_* 等） |
 | total_documents | int | 总数（分页） |
 
+### 调用方使用说明
+
+本接口是右侧文档表的 **唯一主数据源**（不必再调 `GET /rag/documents/meta`）。顶栏搜索是文档名包含，不是语义检索。
+
+| 返回字段 | 表上怎么加载 |
+|----------|--------------|
+| `total_documents` | 分页总数；配合请求的 `limit` / `offset` |
+| `documents[].doc_name` | 文档名称列 |
+| `documents[].metadata.file_size` | 文件大小（字节，前端格式化；无则 —） |
+| `documents[].source_type` | 格式（pdf/docx…） |
+| `documents[].chunk_count` | 切块数（未摄入为 0） |
+| `documents[].namespace` | 分类列（在「所有文献」下显示） |
+| `documents[].created_at` / `updated_at` | 创建 / 更新 |
+| `documents[].error` | 仅失败行显示失败原因 |
+| `documents[].status` + `last_job_status` | 文档状态，见下表 |
+| `documents[].last_job_id` | 「查看进度」跳转 `/kb/ingest-jobs/{jobId}` |
+| `documents[].metadata.object_key` / `source_uri` | 点「摄入」时作为 `content`；没有则禁用摄入、提示重新上传 |
+
+**状态判定（不要用原型「已录入 / 已向量化」）：** `last_job_status` 为 `PENDING`/`RUNNING` → 摄入中；`status=UPLOADED` → 已上传；`SUCCESS` → 已摄入；`FAILED` → 摄入失败。行按钮：已上传「摄入」、摄入中「查看进度」、失败「重新摄入」、非进行中可删、已上传/已摄入可迁移。
+
 ### 接口示例
 
 ```http
@@ -1280,6 +1447,19 @@ POST
 |----------|----------|------|
 | ok | boolean | 是否成功 |
 | document | object | 含 status=UPLOADED、object_key / source_uri 等 |
+
+### 调用方使用说明
+
+「+ 上传」只落对象存储，**不触发摄入、不跳转进度页**。成功后关掉对话框，刷新右侧列表（再调 4.3）。记住 `document` 里的对象键，供稍后点「摄入」使用。
+
+| 返回字段 | 页面怎么用 |
+|----------|------------|
+| `ok=false` / 业务错误 | 留在对话框提示，不要当已上传 |
+| `document.status=UPLOADED` | 列表应出现「已上传」，可点「摄入」 |
+| `document.object_key` / `source_uri` | 摄入请求的 `content`（`minio://…`），禁止预签名 URL |
+| 同名进行中再传 | 一般 409：提示等待或查看进度 |
+
+分类：对话框必选；默认=当前左侧分类；在「所有文献」则必选一项。`dataset_id` 用环境默认，界面不展示。
 
 ### 接口示例
 
@@ -1341,6 +1521,17 @@ POST
 | ok | boolean | 是否受理 |
 | job_id | string | 任务 ID；前端跳转进度页 |
 
+### 调用方使用说明
+
+行内「摄入 / 重新摄入」都调本接口（失败重来也走这里，**不要**调 `jobs/retry`）。`content` = 列表行上的 `object_key` / `source_uri`。受理后 **立即跳转进度页**（`/kb/ingest-jobs/{job_id}`），本页不要转圈。
+
+| 返回字段 | 页面怎么用 |
+|----------|------------|
+| `ok=false` | 留在文档表提示，不跳转 |
+| `job_id` | 进度页路由参数；之后轮询 4.6 |
+
+无对象键：禁用按钮，提示重新上传。摄入中的行禁用再摄入，只提供「查看进度」。
+
 ### 接口示例
 
 ```json
@@ -1400,6 +1591,19 @@ GET
 | chunks_total | int | 切块总数 |
 | error_message | string | 失败原因 |
 
+### 调用方使用说明
+
+进度页主数据。`PENDING` / `RUNNING` 时建议 1～2s 轮询本接口；进入终态后停止轮询，显示「返回知识库」。失败后回文档表再点「重新摄入」（走 4.5），**不要**调 `POST /rag/jobs/{id}/retry`。
+
+| 返回字段 | 进度页怎么加载 |
+|----------|----------------|
+| `status` | 总状态：等待中 / 进行中 / 成功 / 失败 |
+| `step` | 当前步骤文案（解析、切块、索引等） |
+| `chunks_total` | 切块总数 |
+| `error_message` | 仅失败时展示原因 |
+
+文档级明细可选再调 4.7。
+
 ### 接口示例
 
 ```http
@@ -1448,6 +1652,10 @@ GET
 | 返回字段 | 字段类型 | 说明 |
 |----------|----------|------|
 | documents | array | 本任务文档清单及状态 |
+
+### 调用方使用说明
+
+进度页 **可选** 区块：本任务下各文档一行。没有明细也可只靠 4.6 的总状态。按每条的状态/错误展示成功或失败，不要用本接口替代任务级 `status`。
 
 ### 接口示例
 
@@ -1501,6 +1709,10 @@ POST
 |----------|----------|------|
 | ok | boolean | 是否成功 |
 | chunks_updated | int | 更新的向量 chunk 数 |
+
+### 调用方使用说明
+
+行内「迁移」：目标分类必选且非空（地降所勿迁到空分区）。成功后刷新文档表和左侧分类文档数（再调 4.1、4.3）。`chunks_updated` 给联调/提示即可，界面不必单独画一列。
 
 ### 接口示例
 
@@ -1556,6 +1768,10 @@ POST
 |----------|----------|------|
 | ok | boolean | 是否成功 |
 | deleted | int | 删除的 chunk 条数 |
+
+### 调用方使用说明
+
+行内「删除」：仅非进行中状态可删（摄入中禁用）。地降所建议 **必传** `namespace`，避免跨类同名误删。成功后从当前页列表去掉该行，并刷新左侧 `document_count`。`deleted` 为清理的索引条数，界面不必单独展示。
 
 ### 接口示例
 
@@ -1616,6 +1832,10 @@ Body：
 | 返回字段 | 字段类型 | 说明 |
 |----------|----------|------|
 | ok | boolean | 是否成功 |
+
+### 调用方使用说明
+
+危险操作：必须二次确认，且 Body `confirm` 必须为 `true`。成功后该分类从侧栏消失（无文档不再展示），右侧若正看该类则切回「所有文献」并重拉 4.1、4.3。不要用本接口当单文档删除（单条走 4.9）。
 
 ### 接口示例
 

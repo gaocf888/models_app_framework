@@ -204,7 +204,7 @@ class DataQueryAgentTreeResponse(BaseModel):
 
 
 class DataQueryAgentBrowseResponse(BaseModel):
-    """GET /browse：点树 / 进页默认表；每站最新一行，强制分页。JSON 字段名仍为 list。"""
+    """GET /browse：点库/区=代表标列表；点站=设备×时间矩阵。JSON 字段名仍为 list。"""
 
     model_config = ConfigDict(populate_by_name=True)
 

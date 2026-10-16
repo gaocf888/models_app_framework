@@ -334,7 +334,7 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 |----------|----------------|
 | 多维过滤器（行政区 / 岩性 / 速度阈值）且解析后反向填充 | **不做过滤器**（页面上没有「再筛一遍」的控件）。区/站/时间只从问句（或树上明确传来的 `district`/`station_id`）写进 SQL 的 WHERE（查询条件） |
 | 感知树只读、不可点 | 树 **可点**：点库/区/站刷新列表走 `GET /data-query-agent/browse`（算法端直接读库，强制分页），**不要**再调 `run-stream`（解析 SQL） |
-| 进页固定 16 条演示站 | 默认表：`GET /browse` 不传 `library_id` 即分层标 `fcb`，全北京每站最新一条 `data_time`（观测时间）；一请求一库，不做 fcb+jyb UNION |
+| 进页固定 16 条演示站 | 默认表：`GET /browse` 不传 `library_id` 即分层标 `fcb` 代表标全部观测（`data_time` 倒序）；一请求一库，不做 fcb+jyb UNION |
 | 列「年滑速 mm/yr」、岩性、InSAR ID | **不造列**（库里没有就不要编一列出来）。年变化用「这一年最后一次读数减去最早一次」（`annual_settle_mm` 等）；岩性/层位在 HUD 里标记 `unavailable`（没有这块数据，别画空卡片）；**不弹选库** |
 | 解析即出表，无选库 | 问不清查哪类监测数据时 **HITL 选库**（人机协同：先暂停，弹出「请选择分层标/地下水/…」，选完再继续；技术上是中断 SSE → 调 `resume-stream`） |
 | HUD 固定「监测站」模板，可编造策略/岩性 | HUD（行详情）跟 **这一行代表谁**（一个站 / 一个区 / 全市），不是跟「当前点了哪个库」死绑；`blocks` 不是 `ok` 就 **不画**（没有岩性/策略就留空，不要写假的）；解析一次把列表和详情 **同一包数据** 给齐 |
@@ -394,8 +394,9 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 
 | UI | 行为 | 接口 |
 |----|------|------|
-| 点 **库** 节点（如「分层标」） | 该节点高亮；右侧换成这一类监测点的表 | `GET /browse?library_id=fcb&page=1&page_size=20` |
-| 点 **区 / 站** 节点 | 右侧只显示该区或该站 | `GET /browse?library_id=&district=` 或 `&station_id=`；不打 `run-stream`（不是「解析 SQL」） |
+| 点 **库** 节点（如「分层标」） | 该节点高亮；右侧换成该监测方式 **代表标全部观测**（层位 0，按监测时间倒序；不是全部设备） | `GET /browse?library_id=fcb&page=1&page_size=20` |
+| 点 **区** 节点 | 右侧只显示该区代表标全部观测（时间倒序） | `GET /browse?library_id=&district=`；不打 `run-stream` |
+| 点 **站** 节点 | 右侧换成该场地 **全部设备 × 时间** 矩阵（行=监测时间，列=设备名如 `F9-1`，格=`total_settle`） | `GET /browse?library_id=&station_id=`；不打 `run-stream` |
 | 收到 `data_query_library_hit`（解析已经锁定哪一类库） | 高亮/选中对应 **库** 节点（即使用户没先点树，解析出「地下水」也要把树点到地下水） | SSE，见 §3.2 |
 | 树选库后再点「解析 SQL」 | 请求带上该 `library_id`（告诉算法：按树上这种类型查） | `run-stream` |
 
@@ -403,12 +404,13 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 
 #### 右侧结果表
 
-表头 **禁止写死**「测位 / 年沉降 / 累计沉降」（查地下水时应出现「埋深」，查气象应出现「气温/降水」，列是跟着监测类型变的）。浏览路径（点树出来的表）列名尽量和解析路径的 `columns`（结果里下发的表头清单）对齐，好用同一套表格。
+表头 **禁止写死**「测位 / 年沉降 / 累计沉降」（查地下水时应出现「埋深」，查气象应出现「气温/降水」，列是跟着监测类型变的）。浏览路径看 `result_grain`：点库/区是代表标列表；点站是设备矩阵，列是设备编号。
 
 | 列来源 | 规则 |
 |--------|------|
 | 解析 SQL | `data_query_result.columns[].title` 当表头（用户看见的列名）；单元格取 `list[row][columns[i].key]`（这一格的值）；缺 key 显示空，不要自己猜列 |
-| 浏览（`GET /browse`） | 用返回的 `columns[].title` 当表头；单元格取 `list[row][columns[i].key]`；与解析路径同一套表格 |
+| 浏览点库/区（`result_grain=station`） | 用返回的 `columns[].title` 当表头；单元格取 `list[row][columns[i].key]`；与解析路径同一套表格 |
+| 浏览点站（`result_grain=device_time`） | 第一列监测时间，其后每列一个设备 `station_name`；`list[i][设备名]` 为该时刻沉降值 |
 
 站点列表典型度量列（除测位 ID / 站名 / 行政区 / 数据时间外；即表上多出来的「数」）：
 
@@ -587,7 +589,7 @@ GET /data-query-agent/hud?library_id=fcb&entity_type=station&entity_id=JZGZ
 
 #### 3.2.5 `GET /tree` / `GET /browse`（浏览路径；Java 转发本仓）
 
-树与默认表由本仓读库，**不走** `run-stream`。树的站点名单是 `device_station_map.yaml`，区是 `t_station.area`（与报告/NL2SQL 同一套，不拿洗数表「当前有数」补站）。列表仍按洗数表每站最新一行。站点稳定键是覆盖名单 `project_name`（对齐 `t_station.name`）。一请求只锁一张 `t_data_wash_*`（默认分层标 `fcb`，不做 fcb+jyb UNION）。
+树与默认表由本仓读库，**不走** `run-stream`。树的站点名单是 `device_station_map.yaml`，区是 `t_station.area`。点库/区的列表是洗数表里 **代表标**（分层标层位 0）的全部观测，按 `data_time` 倒序；点站是该场地全部设备按 `data_time`×`station_name` 展开的矩阵（格内 `total_settle`）。站点稳定键是覆盖名单 `project_name`。一请求只锁一张 `t_data_wash_*`（默认分层标 `fcb`，不做 fcb+jyb UNION）。
 
 ```text
 GET /data-query-agent/tree
@@ -600,12 +602,12 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 | 接口 | 参数 | 说明（界面） |
 |------|------|------|
 | `/tree` | `library_id` 可选 | 空=七库整棵树（库→区→站，带站点数；无每站最新值）。只传 `jyb` 则只画基岩标这一枝 |
-| `/browse` | `library_id` 可选 | 空=默认分层标。点「基岩标」节点时传 `jyb` |
-| `/browse` | `district` 可选 | 点「朝阳区」时传 `朝阳区` |
-| `/browse` | `station_id` 可选 | 点某个站时传树上的 `station_id`（`F28(金盏)`） |
-| `/browse` | `page` / `page_size` | 页码从 1；默认 20 行，最大 100。看 `total`、`has_more` 做翻页 |
+| `/browse` | `library_id` 可选 | 空=默认分层标代表标全部观测（时间倒序）。点「基岩标」节点时传 `jyb` |
+| `/browse` | `district` 可选 | 点「朝阳区」时传 `朝阳区`（该区代表标全部观测，时间倒序） |
+| `/browse` | `station_id` 可选 | 点某个站时传树上的 `station_id`（`F9(后芮营)`）；此时右侧改为设备×时间矩阵 |
+| `/browse` | `page` / `page_size` | 页码从 1；默认 20 行，最大 100。点库/区按观测行数；点站按监测时间条数 |
 
-`/browse` 返回 `columns` + `list`，列与解析路径同一套 key；行上带 `hud_entity_id`，点「详参」再打 `GET /hud`。树是站点粒度（每库几十站），不做时间序列分页；**列表必须分页**，禁止一次拉全表历史。
+`/browse` 用 `result_grain` 区分布局：`station` 时 `columns`+`list` 与解析路径同一套 key，行上带 `hud_entity_id`，点「详参」再打 `GET /hud`；`device_time` 时列是设备名，不要画详参。树是站点粒度；**列表必须分页**，禁止一次拉全表历史。
 
 ---
 

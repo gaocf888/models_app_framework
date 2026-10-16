@@ -9,11 +9,15 @@ from app.core.config import get_app_config
 from app.data_query_agent.browse import (
     BrowseRequestError,
     build_annual_sql,
+    build_device_names_sql,
+    build_device_time_sql,
+    build_device_values_sql,
     build_latest_sql,
     build_station_area_sql,
     fetch_browse_list,
     fetch_perception_tree,
     normalize_page,
+    representative_marks,
     resolve_browse_library,
 )
 from app.data_query_agent.catalog import get_library_catalog
@@ -27,6 +31,9 @@ class _FakeExecutor:
         pages: list[list[dict]] | None = None,
         total: int = 2,
         station_rows: list[dict] | None = None,
+        device_names: list[dict] | None = None,
+        time_rows: list[dict] | None = None,
+        value_rows: list[dict] | None = None,
     ) -> None:
         self.calls: list[tuple[str, dict]] = []
         self._pages = pages or [
@@ -34,6 +41,7 @@ class _FakeExecutor:
                 {
                     "station_id": "F28(金盏)",
                     "station_name": "F28(金盏)",
+                    "mark_name": "F28-10",
                     "area": "朝阳区",
                     "total_settle_mm": -84.2,
                     "total_settle": -84.2,
@@ -42,6 +50,7 @@ class _FakeExecutor:
                 {
                     "station_id": "F2(望京)",
                     "station_name": "F2(望京)",
+                    "mark_name": "F2-8",
                     "area": "朝阳区",
                     "total_settle_mm": -76.5,
                     "total_settle": -76.5,
@@ -55,6 +64,23 @@ class _FakeExecutor:
             {"name": "F28(金盏)", "area": "朝阳区"},
             {"name": "F42(牌楼）", "area": "通州区"},
         ]
+        self._device_names = device_names or [
+            {"station_name": "F9-1T"},
+            {"station_name": "F9-2"},
+            {"station_name": "F9-1"},
+        ]
+        self._time_rows = time_rows or [
+            {"data_time": "2025-11-30 23:00:00"},
+            {"data_time": "2025-11-30 22:00:00"},
+        ]
+        self._value_rows = value_rows or [
+            {"data_time": "2025-11-30 23:00:00", "station_name": "F9-1", "v": 0.0},
+            {"data_time": "2025-11-30 23:00:00", "station_name": "F9-1T", "v": -8.691},
+            {"data_time": "2025-11-30 23:00:00", "station_name": "F9-2", "v": 11.877},
+            {"data_time": "2025-11-30 22:00:00", "station_name": "F9-1", "v": 0.0},
+            {"data_time": "2025-11-30 22:00:00", "station_name": "F9-1T", "v": -8.72},
+            {"data_time": "2025-11-30 22:00:00", "station_name": "F9-2", "v": 12.002},
+        ]
         self._total = total
         self._idx = 0
 
@@ -65,10 +91,18 @@ class _FakeExecutor:
             return list(self._station_rows)
         if "count(*)" in low:
             return [{"total": self._total}]
-        if "w.project_name = any(:names)" in low:
+        if "distinct w.station_name" in low:
+            return list(self._device_names)
+        if "distinct w.data_time" in low:
+            return list(self._time_rows)
+        if "w.data_time = any(:times)" in low:
+            return list(self._value_rows)
+        if "any(:marks)" in low or "any(:names)" in low:
             return [
                 {"station_id": "F28(金盏)", "t": "2025-08-01", "v": -70.0},
                 {"station_id": "F28(金盏)", "t": "2026-08-01", "v": -84.2},
+                {"station_id": "F2(望京)", "t": "2025-08-01", "v": -62.3},
+                {"station_id": "F2(望京)", "t": "2026-08-01", "v": -76.5},
             ]
         rows = self._pages[min(self._idx, len(self._pages) - 1)]
         self._idx += 1
@@ -108,38 +142,55 @@ def test_normalize_page() -> None:
 def test_latest_sql_projects_physical_not_display_alias() -> None:
     lib = get_library_catalog().get("fcb")
     assert lib is not None
-    sql, _ = build_latest_sql(lib, limit=20, offset=0)
+    sql, params = build_latest_sql(lib, marks=("F8-10", "F28-10"), limit=20, offset=0)
     assert "w.total_settle AS total_settle_mm" in sql
     assert "w.total_settle_mm AS" not in sql
+    assert "w.station_name = ANY(:rep_marks)" in sql
+    assert params["rep_marks"] == ["F8-10", "F28-10"]
+    assert "distinct on" not in sql.lower()
+    assert "order by w.data_time desc" in sql.lower()
+    assert "limit :limit offset :offset" in sql.lower()
+    assert "t_data_wash_jyb" not in sql.lower()
+    count_sql, count_params = build_latest_sql(lib, marks=("F8-10",), count_only=True)
+    assert "count(*)" in count_sql.lower()
+    assert "distinct on" not in count_sql.lower()
+    assert count_params["rep_marks"] == ["F8-10"]
 
 
-def test_latest_sql_locks_one_wash_table_and_paginates() -> None:
+def test_latest_sql_without_marks_uses_project_name() -> None:
+    lib = get_library_catalog().get("dxswj")
+    assert lib is not None
+    sql, params = build_latest_sql(lib, marks=(), projects=("F2(望京)",), limit=20, offset=0)
+    assert "distinct on" not in sql.lower()
+    assert "w.project_name = ANY(:projects)" in sql
+    assert params["projects"] == ["F2(望京)"]
+    assert "order by w.data_time desc" in sql.lower()
+    assert "t_data_wash_dxswj" in sql.lower()
+
+
+def test_fcb_representative_marks_are_layer0() -> None:
     lib = get_library_catalog().get("fcb")
     assert lib is not None
-    sql, params = build_latest_sql(lib, district="朝阳区", limit=20, offset=20)
-    low = sql.lower()
-    assert "t_data_wash_fcb" in low
-    assert "t_data_wash_jyb" not in low
-    assert "distinct on (w.project_name)" in low
-    assert "left join t_station" in low
-    assert "s.area = :district" in low
-    assert "limit :limit offset :offset" in low
-    assert params["district"] == "朝阳区"
-    assert params["limit"] == 20
-    assert params["offset"] == 20
-    count_sql, count_params = build_latest_sql(lib, district="朝阳区", count_only=True)
-    assert "count(*)" in count_sql.lower()
-    assert count_params["district"] == "朝阳区"
+    marks = representative_marks(lib)
+    assert "F8-10" in marks
+    assert "F8-1" not in marks
+    assert len(marks) >= 40
 
 
-def test_latest_sql_station_binds_project_name() -> None:
-    lib = get_library_catalog().get("jyb")
+def test_device_matrix_sql_matches_project_and_paginates_time() -> None:
+    lib = get_library_catalog().get("fcb")
     assert lib is not None
-    sql, params = build_latest_sql(lib, station_id="F28(金盏)", limit=20, offset=0)
-    assert "w.project_name = :station_id" in sql
-    assert params["station_id"] == "F28(金盏)"
-    assert "t_data_wash_jyb" in sql.lower()
-    assert "t_data_wash_fcb" not in sql.lower()
+    names_sql, names_params = build_device_names_sql(lib, "F9(后芮营)")
+    assert "t_data_wash_fcb" in names_sql.lower()
+    assert names_params["station_id"] == "F9(后芮营)"
+    count_sql, _ = build_device_time_sql(lib, "F9(后芮营)", count_only=True)
+    assert "count(*)" in count_sql.lower()
+    times_sql, times_params = build_device_time_sql(lib, "F9(后芮营)", limit=20, offset=0)
+    assert "order by w.data_time desc" in times_sql.lower()
+    assert times_params["limit"] == 20
+    values_sql, _ = build_device_values_sql(lib, "F9(后芮营)")
+    assert "w.total_settle AS v" in values_sql
+    assert "w.data_time = ANY(:times)" in values_sql
 
 
 def test_annual_sql_uses_any_names() -> None:
@@ -149,44 +200,114 @@ def test_annual_sql_uses_any_names() -> None:
     assert "t_data_wash_fcb" in sql
     assert "ANY(:names)" in sql
     assert "total_settle" in sql
+    mark_sql = build_annual_sql(lib, by_mark=True)
+    assert "w.station_name = ANY(:marks)" in mark_sql
+    assert "ANY(:names)" not in mark_sql
 
 
 @pytest.mark.asyncio
-async def test_browse_list_default_fcb_paginated() -> None:
-    exe = _FakeExecutor(total=42)
+async def test_browse_list_default_fcb_is_rep_station() -> None:
+    exe = _FakeExecutor()
     payload = await fetch_browse_list(page=1, page_size=20, executor=exe)
     assert payload["library_id"] == "fcb"
     assert payload["page"] == 1
     assert payload["page_size"] == 20
-    assert payload["total"] == 42
-    assert payload["has_more"] is True
+    assert payload["total"] == 2
+    assert payload["has_more"] is False
     assert payload["result_grain"] == "station"
-    assert payload["list"][0]["station_id"] == "F28(金盏)"
-    assert payload["list"][0]["hud_entity_id"] == "F28(金盏)"
-    assert payload["list"][0]["hud_available"] is True
-    assert payload["list"][0]["annual_settle_mm"] == pytest.approx(-14.2)
+    by_id = {row["station_id"]: row for row in payload["list"]}
+    assert by_id["F28(金盏)"]["hud_entity_id"] == "F28(金盏)"
+    assert by_id["F28(金盏)"]["hud_available"] is True
+    assert by_id["F28(金盏)"]["annual_settle_mm"] == pytest.approx(-14.2)
+    assert by_id["F2(望京)"]["annual_settle_mm"] == pytest.approx(-14.2)
     assert any(c["key"] == "total_settle_mm" for c in payload["columns"])
+    assert all(c["key"] != "F9-1" for c in payload["columns"])
+    assert any("any(:rep_marks)" in sql.lower() for sql, _ in exe.calls)
+    assert any("order by w.data_time desc" in sql.lower() for sql, _ in exe.calls)
+    assert all("distinct on" not in sql.lower() for sql, _ in exe.calls)
     assert all("t_data_wash_jyb" not in sql.lower() for sql, _ in exe.calls)
 
 
 @pytest.mark.asyncio
-async def test_browse_list_district_and_station_filters() -> None:
-    exe = _FakeExecutor(total=1)
+async def test_browse_list_rep_keeps_all_times_desc() -> None:
+    exe = _FakeExecutor(
+        total=2,
+        pages=[
+            [
+                {
+                    "station_id": "F28(金盏)",
+                    "station_name": "F28(金盏)",
+                    "mark_name": "F28-10",
+                    "area": "朝阳区",
+                    "total_settle_mm": -84.2,
+                    "total_settle": -84.2,
+                    "data_time": "2026-08-01",
+                },
+                {
+                    "station_id": "F28(金盏)",
+                    "station_name": "F28(金盏)",
+                    "mark_name": "F28-10",
+                    "area": "朝阳区",
+                    "total_settle_mm": -70.0,
+                    "total_settle": -70.0,
+                    "data_time": "2025-08-01",
+                },
+            ]
+        ],
+    )
+    payload = await fetch_browse_list(library_id="fcb", page=1, page_size=20, executor=exe)
+    assert payload["total"] == 2
+    assert [row["data_time"] for row in payload["list"]] == ["2026-08-01", "2025-08-01"]
+    assert payload["list"][0]["station_id"] == "F28(金盏)"
+    assert payload["list"][1]["station_id"] == "F28(金盏)"
+
+
+@pytest.mark.asyncio
+async def test_browse_list_district_filters_rep_stations() -> None:
+    exe = _FakeExecutor()
     payload = await fetch_browse_list(
         library_id="jyb",
         district="朝阳区",
-        station_id="F28(金盏)",
         page=1,
         page_size=20,
         executor=exe,
     )
     assert payload["library_id"] == "jyb"
     assert payload["district"] == "朝阳区"
-    assert payload["station_id"] == "F28(金盏)"
-    assert payload["has_more"] is False
-    list_sql = next(sql for sql, _ in exe.calls if "distinct on" in sql.lower())
-    assert ":district" in list_sql
-    assert ":station_id" in list_sql
+    assert payload["station_id"] is None
+    assert payload["result_grain"] == "station"
+    assert all(row["station_id"] != "F28(金盏)" for row in payload["list"])
+    assert payload["list"][0]["station_id"] == "F2(望京)"
+    list_sql = next(sql for sql, _ in exe.calls if "order by w.data_time desc" in sql.lower())
+    assert "any(:rep_marks)" in list_sql.lower()
+    assert "t_data_wash_jyb" in list_sql.lower()
+    assert "distinct on" not in list_sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_browse_list_station_click_is_device_time_matrix() -> None:
+    exe = _FakeExecutor(total=48)
+    payload = await fetch_browse_list(
+        library_id="fcb",
+        station_id="F9(后芮营)",
+        page=1,
+        page_size=20,
+        executor=exe,
+    )
+    assert payload["result_grain"] == "device_time"
+    assert payload["station_id"] == "F9(后芮营)"
+    assert payload["total"] == 48
+    assert payload["has_more"] is True
+    assert payload["hud_enabled"] is False
+    keys = [c["key"] for c in payload["columns"]]
+    assert keys[0] == "data_time"
+    assert keys[1:] == ["F9-1", "F9-1T", "F9-2"]
+    assert payload["list"][0]["data_time"] == "2025-11-30 23:00:00"
+    assert payload["list"][0]["F9-1"] == pytest.approx(0.0)
+    assert payload["list"][0]["F9-1T"] == pytest.approx(-8.691)
+    assert payload["list"][1]["data_time"] == "2025-11-30 22:00:00"
+    assert any("distinct w.data_time" in sql.lower() for sql, _ in exe.calls)
+    assert all("distinct on (w.station_name)" not in sql.lower() for sql, _ in exe.calls)
 
 
 def test_station_area_sql_is_t_station_only() -> None:

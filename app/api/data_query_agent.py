@@ -185,17 +185,17 @@ async def get_data_query_tree(
 @router.get(
     "/browse",
     response_model=DataQueryAgentBrowseResponse,
-    summary="浏览列表：进页默认全北京分层标 / 点树刷新；每站最新一条，强制分页",
+    summary="浏览列表：点库/区查代表标；点站查该场地全部设备时间矩阵",
 )
 async def browse_data_query_list(
     library_id: Annotated[
         str | None,
-        Query(description="监测库；空=默认分层标 fcb"),
+        Query(description="监测库；空=默认分层标 fcb。点库节点时传该 id"),
     ] = None,
-    district: Annotated[str | None, Query(description="行政区标准名，如 朝阳区")] = None,
+    district: Annotated[str | None, Query(description="点行政区时传标准名，如 朝阳区；与 station_id 同时传时忽略")] = None,
     station_id: Annotated[
         str | None,
-        Query(description="站点=project_name，与树节点 / HUD entity_id 一致"),
+        Query(description="点站点时传树上 project_name；走设备×时间矩阵，不再出代表标表"),
     ] = None,
     page: Annotated[int, Query(ge=1, description="页码，从 1 起")] = 1,
     page_size: Annotated[int, Query(ge=1, le=100, description="每页行数")] = 20,
