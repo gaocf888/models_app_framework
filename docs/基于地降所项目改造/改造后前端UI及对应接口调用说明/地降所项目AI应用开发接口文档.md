@@ -30,6 +30,7 @@
 | 2026-10-16 | 3.2 及后续接口补充「调用方使用说明」（返回字段与页面加载对应） | — | V1.5 |
 | 2026-10-16 | 浏览列表：点站出设备×时间矩阵；点库/区出代表标列表 | — | V1.6 |
 | 2026-10-16 | 点库/区改为代表标全部观测（`data_time` 倒序），不再只取最新一行 | — | V1.7 |
+| 2026-10-16 | 4.6 摄入任务查询补充 `step` / `status` 中文对照，便于进度页渲染 | — | V1.8 |
 
 ## 通用约定
 
@@ -780,8 +781,8 @@ Authorization: Bearer <service-api-key>
 
 进页默认表、点树刷新右侧表。**两种视图**（看有没有传 `station_id`）：
 
-1. **点监测方式 / 行政区**（不传 `station_id`）：范围内 **代表标**（分层标=层位 0）的 **全部观测行**，按 `data_time` **倒序**；表头仍是测位/站名/行政区/年沉降/累计沉降/时间，**不要**用设备 `station_name` 当列。  
-2. **点站点**（传 `station_id`）：该场地 **全部设备** 的监测序列。行= `data_time`（新→旧），列=设备 `station_name`（如 `F9-1`、`F9-1T`），单元格=`total_settle`（其它库用该库核心指标）。
+1. **点树中监测方式 / 行政区**（不传 `station_id`）：查询范围内 **代表标**（分层标=层位 0）的 **全部观测行**，按 `data_time` **倒序**；表头仍是测位/站名/行政区/年沉降/累计沉降/时间，**不要**用设备 `station_name` 当列。  
+2. **点树中站点**（传 `station_id`）：该场地 **全部设备** 的监测序列。行= `data_time`（新→旧），列=设备 `station_name`（如 `F9-1`、`F9-1T`），单元格=`total_settle`（其它库用该库核心指标）。
 
 强制分页。不走 `run-stream`。代表标表上点「详参」再调 `GET /hud`；设备矩阵不带详参。
 
@@ -913,14 +914,25 @@ POST
 
 ### 请求参数
 
-| 参数 | 必填 | 类型 | 说明 |
-|------|------|------|------|
-| user_id | true | string | 用户标识 |
-| session_id | true | string | 会话标识；禁止含 `:` |
-| query | true | string | 顶栏自然语言；空串会 **422** |
-| library_id | false | string | 左侧树当前选中的库（如 `fcb`）；未选库可省略 |
-| district | false | string | 树点到行政区且同时解析时传入；以树为准 |
-| station_id | false | string | 树点到站点且同时解析时传入；以树为准 |
+| 参数 | 必填 | 类型 | 说明                                |
+|------|------|------|-----------------------------------|
+| user_id | true | string | 用户标识                              |
+| session_id | true | string | 会话标识；禁止含 `:`                      |
+| query | true | string | 顶栏自然语言；空串会 **422**                |
+| library_id | false | string | 左侧树当前选中的库（如 `fcb`）；未选库可省略(默认 fcb) |
+| district | false | string | 树点到行政区且同时解析时传入；以树为准               |
+| station_id | false | string | 树点到站点且同时解析时传入；以树为准                |
+
+入参说明：
+library_id(监测类型库) -- 传入左侧树当前选中监测类型节点(一级)的 library_id
+district(行政区) -- 传入左侧树当前选中行政区的 district
+station_id(监测站点) -- 传入左侧树当前选中站点的 station_id
+
+上述三级均未选中时，检测类型库、行政区、监测站点由算法端自动解析，library_id(监测类型库)算法端解析失败时会进入HITL模式
+HITL人机交互说明：
+1. 触发HITL后，此时当前接口返回流中会返回data_query_library_input_required event
+2. 前端需要弹出监测方式库列表(data_query_library_input_required)供用户选择
+3. 用户选择确定后，需要调用 3.5 数据查询人机协同恢复接口 进行续跑
 
 ### 返回字段（SSE）
 
@@ -935,7 +947,7 @@ POST
 
 ### 调用方使用说明
 
-仅顶栏点「解析 SQL」时调用。空 `query` 会 422，应拦在按钮上。记下首帧 `started.stream_id` 供停止。页面按 SSE **到达顺序**处理，不要自己重排。
+仅顶栏点「解析 SQL」时调用。空 `query` 会 422，应拦在按钮上。记下首帧 `started.stream_id` 供停止使用。页面按 SSE **到达顺序**处理，不要自己重排。
 
 | 事件 | 页面怎么加载 |
 |------|--------------|
@@ -958,6 +970,7 @@ POST
 
 只有监听到 **`data_query_library_input_required`**（问不清查哪类监测、要用户选库）时：
 
+(同上方 HITL人机交互说明)
 1. 本轮 SSE **到此结束**（随后会有 `finished`），不要继续等结果表。  
 2. 用该事件里的 `prompt`、`library_options` 弹出选库（选项不要写死）。  
 3. 用户选定后，再 `POST /data-query-agent/resume-stream`，带上：
@@ -1015,13 +1028,13 @@ POST
 
 ### 请求参数
 
-| 参数 | 必填 | 类型 | 说明 |
-|------|------|------|------|
-| user_id | true | string | 须与 run-stream 相同 |
-| session_id | true | string | 须与 run-stream 相同 |
-| resume_token | true | string | 来自 `data_query_library_input_required` |
-| library_id | true* | string | 用户选中的库；`abort=true` 时可省略 |
-| abort | false | boolean | `true` 表示放弃选库 |
+| 参数 | 必填 | 类型 | 说明                                                 |
+|------|------|------|----------------------------------------------------|
+| user_id | true | string | 须与 run-stream 相同                                   |
+| session_id | true | string | 须与 run-stream 相同                                   |
+| resume_token | true | string | 来自3.4接口中 `data_query_library_input_required` event |
+| library_id | true* | string | 用户选中的库；`abort=true` 时可省略                           |
+| abort | false | boolean | `true` 表示放弃选库                                      |
 
 \*确认选库时必填。`resume_token`、`user_id`、`session_id` 必须来自上一轮 `run-stream` 的选库事件，不能新造。
 
@@ -1126,7 +1139,7 @@ POST
 
 ---
 
-## 3.7 行详情 HUD 接口（浏览路径）
+## 3.7 行详情 HUD 接口（浏览路径） -- 暂时不用，后续需要扩展HUD页面再考虑
 
 ### 接口功能
 
@@ -1265,7 +1278,7 @@ Authorization: Bearer <service-api-key>
 
 ---
 
-## 4.2 更新知识分类启用与优先级接口
+## 4.2 更新知识分类启用与优先级接口（地降所项目暂无该功能）
 
 ### 接口功能
 
@@ -1377,7 +1390,7 @@ GET
 
 ### 调用方使用说明
 
-本接口是右侧文档表的 **唯一主数据源**（不必再调 `GET /rag/documents/meta`）。顶栏搜索是文档名包含，不是语义检索。
+本接口是右侧文档表的 **唯一主数据源**。顶栏搜索是文档名包含模糊检索。
 
 | 返回字段 | 表上怎么加载 |
 |----------|--------------|
@@ -1475,7 +1488,7 @@ doc_name=堤防工程设计规范
 
 ---
 
-## 4.5 知识摄入任务接口
+## 4.5 知识摄入异步任务接口
 
 ### 接口功能
 
@@ -1593,14 +1606,46 @@ GET
 
 ### 调用方使用说明
 
-进度页主数据。`PENDING` / `RUNNING` 时建议 1～2s 轮询本接口；进入终态后停止轮询，显示「返回知识库」。失败后回文档表再点「重新摄入」（走 4.5），**不要**调 `POST /rag/jobs/{id}/retry`。
+进度页主数据。`PENDING` / `RUNNING` 时建议 1～2s 轮询本接口；进入终态后停止轮询，显示「返回知识库」。失败后回文档表再点「重新摄入」（走 4.5 接口）。
 
 | 返回字段 | 进度页怎么加载 |
 |----------|----------------|
-| `status` | 总状态：等待中 / 进行中 / 成功 / 失败 |
-| `step` | 当前步骤文案（解析、切块、索引等） |
+| `status` | 总状态，用下方中文对照，不要直接展示英文 |
+| `step` | 当前步骤码，用下方中文对照做进度文案；未列入的值原样显示，不要留空 |
 | `chunks_total` | 切块总数 |
 | `error_message` | 仅失败时展示原因 |
+
+`status` 中文对照：
+
+| `status` | 界面文案 |
+|----------|----------|
+| `PENDING` | 等待中 |
+| `RUNNING` | 进行中 |
+| `SUCCESS` | 成功 |
+| `FAILED` | 失败 |
+| `PARTIAL` | 部分成功 |
+
+`step` 中文对照（按常见出现顺序；单次任务不会走全，如非 PDF 无 MinerU、非图片无视觉描述）：
+
+| `step` | 界面文案 |
+|--------|----------|
+| `created` | 已创建 |
+| `validate_input` | 校验入参 |
+| `content_fetch` | 拉取原文 |
+| `mineru_route` | PDF 解析准备 |
+| `mineru_parse` | PDF 解析 |
+| `vision_caption` | 图片描述 |
+| `parse` | 解析正文 |
+| `clean` | 清洗文本 |
+| `chunk` | 切块 |
+| `enrich` | 补全元数据 |
+| `index` | 写入索引 |
+| `quality_check` | 质量检查 |
+| `finalize_alias_version` | 版本收尾 |
+| `finalize` | 完成 |
+| `requeued_after_restart` | 服务重启后重试 |
+| `recovered_stuck` | 卡住任务已恢复 |
+| `error` | 处理失败 |
 
 文档级明细可选再调 4.7。
 
@@ -1670,7 +1715,7 @@ Authorization: Bearer <service-api-key>
 
 ### 接口功能
 
-将已上传/已摄入文档迁移到另一 namespace。
+将已上传/已摄入文档迁移到另一 namespace(修改文档所属分类)。
 
 ### URL
 
@@ -1784,7 +1829,7 @@ POST
 
 ---
 
-## 4.10 按分类清空知识库接口
+## 4.10 按分类清空知识库接口（地降所项目暂无该功能）
 
 ### 接口功能
 
