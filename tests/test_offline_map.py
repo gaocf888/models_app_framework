@@ -192,6 +192,64 @@ def test_shp_lite_reads_beijing_districts() -> None:
     assert "朝阳区" in names
 
 
+def test_legend_has_no_delta_parentheses() -> None:
+    import inspect
+
+    from app.analysis_agent.renderers.offline_map import _draw_legend
+
+    src = inspect.getsource(_draw_legend)
+    assert "地面回弹" in src
+    assert "地面沉降" in src
+    assert "Δ" not in src
+
+
+def test_choose_lr_avoids_district_and_other_labels() -> None:
+    from app.analysis_agent.renderers.offline_map import (
+        _centered_text_box,
+        _choose_lr_placement,
+        _rect_overlap,
+    )
+
+    lon_span, lat_span = 1.6, 1.8
+    reserved = [_centered_text_box(116.66, 39.91, "通州区", lon_span, lat_span)]
+    side, _dy, box = _choose_lr_placement(
+        116.68,
+        39.91,
+        prefer_left=False,
+        val_text="0.11",
+        name_text="大稿",
+        bar_width=0.01,
+        lon_span=lon_span,
+        lat_span=lat_span,
+        fontsize=7,
+        occupied=reserved,
+    )
+    assert side in {"left", "right"}
+    assert not _rect_overlap(box, reserved[0], lon_span * 0.0015)
+    side2, _dy2, box2 = _choose_lr_placement(
+        116.68,
+        39.91,
+        prefer_left=False,
+        val_text="-0.03",
+        name_text="永顺",
+        bar_width=0.01,
+        lon_span=lon_span,
+        lat_span=lat_span,
+        fontsize=7,
+        occupied=reserved + [box],
+    )
+    assert not _rect_overlap(box, box2, lon_span * 0.0015)
+
+
+def test_shp_lite_length_and_area() -> None:
+    from app.analysis_agent.renderers.shp_lite import polyline_length_m, ring_area_m2
+
+    # ~111.32 km per degree lat
+    assert polyline_length_m([(116.0, 40.0), (116.0, 40.5)]) == pytest.approx(111320.0 * 0.5, rel=0.02)
+    square = [(0.0, 0.0), (0.01, 0.0), (0.01, 0.01), (0.0, 0.01), (0.0, 0.0)]
+    assert ring_area_m2(square) > 5e5
+
+
 def test_daily_plain_monitoring_has_map_chart() -> None:
     spec = load_report_spec("subsidence_daily")
     assert spec is not None

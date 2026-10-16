@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import struct
 from pathlib import Path
 from typing import Any
@@ -123,3 +124,54 @@ def first_shp(directory: Path) -> Path | None:
         return None
     named = list(directory.glob("*.shp"))
     return named[0] if named else None
+
+
+def iter_shp_features(
+    path: Path,
+    *,
+    want_types: tuple[int, ...] = (3, 5),
+) -> list[tuple[int, list[list[tuple[float, float]]], dict[str, Any]]]:
+    recs = iter_shp_rings(path, want_types=want_types)
+    dbf = path.with_suffix(".dbf")
+    attrs = read_dbf_rows(dbf) if dbf.is_file() else []
+    out: list[tuple[int, list[list[tuple[float, float]]], dict[str, Any]]] = []
+    for i, (stype, rings) in enumerate(recs):
+        attr = attrs[i] if i < len(attrs) else {}
+        out.append((stype, rings, attr if isinstance(attr, dict) else {}))
+    return out
+
+
+def attr_text(attr: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        if key in attr and attr[key] not in (None, ""):
+            return str(attr[key]).strip()
+        low = key.lower()
+        for ak, av in attr.items():
+            if str(ak).lower() == low and av not in (None, ""):
+                return str(av).strip()
+    return ""
+
+
+def polyline_length_m(points: list[tuple[float, float]]) -> float:
+    if len(points) < 2:
+        return 0.0
+    total = 0.0
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        lat = (y0 + y1) / 2.0
+        dx = (x1 - x0) * 111320.0 * math.cos(math.radians(lat))
+        dy = (y1 - y0) * 111320.0
+        total += math.hypot(dx, dy)
+    return total
+
+
+def ring_area_m2(ring: list[tuple[float, float]]) -> float:
+    if len(ring) < 3:
+        return 0.0
+    lat = sum(p[1] for p in ring) / len(ring)
+    scale_x = 111320.0 * math.cos(math.radians(lat))
+    xs = [(p[0] - ring[0][0]) * scale_x for p in ring]
+    ys = [(p[1] - ring[0][1]) * 111320.0 for p in ring]
+    acc = 0.0
+    for i in range(len(xs) - 1):
+        acc += xs[i] * ys[i + 1] - xs[i + 1] * ys[i]
+    return abs(acc) * 0.5

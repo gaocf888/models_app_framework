@@ -676,7 +676,114 @@ def _plot_boundary(ax: Any, geom: Any, color: str, linewidth: float, zorder: flo
             ax.plot(hxs, hys, color=color, linewidth=max(linewidth - 0.3, 0.4), zorder=zorder, linestyle=linestyle)
 
 
-def _draw_stations(ax: Any, stations: list[dict[str, Any]], minx: float, maxx: float, miny: float, maxy: float) -> None:
+def _rect_overlap(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+    pad: float = 0.0,
+) -> bool:
+    return not (a[2] + pad < b[0] or a[0] > b[2] + pad or a[3] + pad < b[1] or a[1] > b[3] + pad)
+
+
+def _centered_text_box(
+    x: float,
+    y: float,
+    text: str,
+    lon_span: float,
+    lat_span: float,
+    *,
+    fontsize: float = 9,
+) -> tuple[float, float, float, float]:
+    n = max(len(str(text)), 1)
+    w = lon_span * 0.012 * (0.55 * n + 1.1) * (fontsize / 9.0)
+    h = lat_span * 0.016 * (fontsize / 9.0)
+    return (x - w / 2.0, y - h / 2.0, x + w / 2.0, y + h / 2.0)
+
+
+def _station_label_rect(
+    x: float,
+    y: float,
+    *,
+    side: str,
+    y_off: float,
+    val_text: str,
+    name_text: str,
+    bar_width: float,
+    lon_span: float,
+    lat_span: float,
+    fontsize: float,
+) -> tuple[float, float, float, float]:
+    n = max(len(val_text), len(name_text), 2)
+    w = lon_span * 0.011 * (0.55 * n + 1.2) * (fontsize / 8.0)
+    h = lat_span * 0.022 * (fontsize / 8.0)
+    cy = y + y_off
+    gap = bar_width * 1.4
+    if side == "left":
+        x1 = x - gap
+        return (x1 - w, cy - h / 2.0, x1, cy + h / 2.0)
+    x0 = x + gap
+    return (x0, cy - h / 2.0, x0 + w, cy + h / 2.0)
+
+
+def _choose_lr_placement(
+    x: float,
+    y: float,
+    *,
+    prefer_left: bool,
+    val_text: str,
+    name_text: str,
+    bar_width: float,
+    lon_span: float,
+    lat_span: float,
+    fontsize: float,
+    occupied: list[tuple[float, float, float, float]],
+) -> tuple[str, float, tuple[float, float, float, float]]:
+    """只在左右两侧避让；同侧用上下微调躲开已占用框（含行政区名）。"""
+    sides = ("left", "right") if prefer_left else ("right", "left")
+    offsets = [0.0]
+    step = lat_span * 0.014
+    for k in range(1, 7):
+        offsets.extend([step * k, -step * k])
+    pad = lon_span * 0.0015
+    fallback = ("right" if not prefer_left else "left", 0.0, _station_label_rect(
+        x, y, side="left" if prefer_left else "right", y_off=0.0,
+        val_text=val_text, name_text=name_text, bar_width=bar_width,
+        lon_span=lon_span, lat_span=lat_span, fontsize=fontsize,
+    ))
+    for dy in offsets:
+        for side in sides:
+            box = _station_label_rect(
+                x, y, side=side, y_off=dy,
+                val_text=val_text, name_text=name_text, bar_width=bar_width,
+                lon_span=lon_span, lat_span=lat_span, fontsize=fontsize,
+            )
+            if not any(_rect_overlap(box, other, pad) for other in occupied):
+                return side, dy, box
+            fallback = (side, dy, box)
+    return fallback
+
+
+def _district_boxes_from_points(
+    points: list[tuple[float, float, str]],
+    lon_span: float,
+    lat_span: float,
+) -> list[tuple[float, float, float, float]]:
+    out: list[tuple[float, float, float, float]] = []
+    for x, y, name in points:
+        if not name:
+            continue
+        out.append(_centered_text_box(x, y, name, lon_span, lat_span, fontsize=9))
+    return out
+
+
+def _draw_stations(
+    ax: Any,
+    stations: list[dict[str, Any]],
+    minx: float,
+    maxx: float,
+    miny: float,
+    maxy: float,
+    reserved: list[tuple[float, float, float, float]] | None = None,
+) -> None:
     import matplotlib.patches as mpatches
     from matplotlib.font_manager import FontProperties
     from matplotlib.offsetbox import AnnotationBbox, DrawingArea, TextArea, VPacker
@@ -715,7 +822,9 @@ def _draw_stations(ax: Any, stations: list[dict[str, Any]], minx: float, maxx: f
         )
         return VPacker(children=[headed, TextArea(name_text, textprops=tp)], align=align, pad=0, sep=2.0)
 
-    for s in stations:
+    occupied: list[tuple[float, float, float, float]] = list(reserved or [])
+    ordered = sorted(stations, key=lambda s: (float(s["lat"]), float(s["lon"])))
+    for s in ordered:
         x, y = float(s["lon"]), float(s["lat"])
         val = float(s["val"])
         color = fill_for_delta(float(s["delta_mm"]))
@@ -733,12 +842,28 @@ def _draw_stations(ax: Any, stations: list[dict[str, Any]], minx: float, maxx: f
                 clip_on=True,
             )
         )
-        if x > minx + lon_span * 0.72:
-            xy, align, box_align = (x - bar_width * 1.4, y), "right", (1.0, 0.5)
+        val_text = f"{float(s['delta_mm']):.2f}"
+        name_text = str(s["id"])
+        prefer_left = x > minx + lon_span * 0.72
+        side, y_off, box = _choose_lr_placement(
+            x,
+            y,
+            prefer_left=prefer_left,
+            val_text=val_text,
+            name_text=name_text,
+            bar_width=bar_width,
+            lon_span=lon_span,
+            lat_span=lat_span,
+            fontsize=float(fontsize),
+            occupied=occupied,
+        )
+        occupied.append(box)
+        if side == "left":
+            xy, align, box_align = (x - bar_width * 1.4, y + y_off), "right", (1.0, 0.5)
         else:
-            xy, align, box_align = (x + bar_width * 1.4, y), "left", (0.0, 0.5)
+            xy, align, box_align = (x + bar_width * 1.4, y + y_off), "left", (0.0, 0.5)
         ab = AnnotationBbox(
-            _label_box(f"{float(s['delta_mm']):.2f}", str(s["id"]), align),
+            _label_box(val_text, name_text, align),
             xy,
             xycoords="data",
             box_alignment=box_align,
@@ -764,8 +889,8 @@ def _draw_legend(ax: Any) -> None:
     pack = VPacker(
         children=[
             title,
-            swatch_row(_COLOR_REBOUND, "地面回弹（Δ<0）"),
-            swatch_row(_COLOR_SINK, "地面沉降（Δ>0）"),
+            swatch_row(_COLOR_REBOUND, "地面回弹"),
+            swatch_row(_COLOR_SINK, "地面沉降"),
             swatch_row("#9dcee8", "河流/水体"),
         ],
         align="left",
@@ -835,9 +960,14 @@ def _render_with_basemap(stations: list[dict[str, Any]], title: str, basemap: di
     _plot_boundary(ax, basemap["city_union"], color="#c026d3", linewidth=1.8, zorder=3)
     text_stroke = [pe.withStroke(linewidth=2.4, foreground="white", alpha=0.75)]
     name_col = basemap.get("name_col")
+    minx, miny, maxx, maxy = beijing.total_bounds
+    lon_span = max(maxx - minx, 1e-6)
+    lat_span = max(maxy - miny, 1e-6)
+    district_pts: list[tuple[float, float, str]] = []
     if name_col:
         for geom, name in zip(beijing.geometry, beijing[name_col]):
             pt = geom.representative_point()
+            district_pts.append((float(pt.x), float(pt.y), str(name)))
             ax.text(
                 pt.x,
                 pt.y,
@@ -851,8 +981,15 @@ def _render_with_basemap(stations: list[dict[str, Any]], title: str, basemap: di
                 path_effects=text_stroke,
                 fontproperties=cjk_font_properties(9, weight="bold"),
             )
-    minx, miny, maxx, maxy = beijing.total_bounds
-    _draw_stations(ax, stations, minx, maxx, miny, maxy)
+    _draw_stations(
+        ax,
+        stations,
+        minx,
+        maxx,
+        miny,
+        maxy,
+        reserved=_district_boxes_from_points(district_pts, lon_span, lat_span),
+    )
     ax.set_title(title, fontsize=16, pad=16, fontproperties=cjk_font_properties(16))
     pad_x = (maxx - minx) * 0.035
     pad_y = (maxy - miny) * 0.035
@@ -916,14 +1053,87 @@ def _load_dem_optional(assets: Path) -> tuple[Any, tuple[float, float, float, fl
     return None, None
 
 
+_WATER_AREA_FCLASS = {"water", "riverbank", "reservoir"}
+_MAJOR_RIVER_MIN_KM = 50.0
+_MIN_WATER_AREA_M2 = 5.0e4
+
+
+def _load_lite_major_water(
+    assets: Path,
+    bounds: tuple[float, float, float, float],
+) -> tuple[list[list[tuple[float, float]]], list[list[tuple[float, float]]]]:
+    """lite 水系对齐 demo：大水面 + 有名主干河（同名总长≥50km）。"""
+    from app.analysis_agent.renderers.shp_lite import (
+        attr_text,
+        bbox_intersects,
+        first_shp,
+        iter_shp_features,
+        polyline_length_m,
+        ring_area_m2,
+        ring_bbox,
+    )
+
+    water_polys: list[list[tuple[float, float]]] = []
+    water_lines: list[list[tuple[float, float]]] = []
+    wa = first_shp(assets / "water_area")
+    ww = first_shp(assets / "waterway")
+    try:
+        if wa is not None:
+            for _st, rings, attr in iter_shp_features(wa, want_types=(5,)):
+                fclass = attr_text(attr, "fclass", "FCLASS").lower()
+                if fclass and fclass not in _WATER_AREA_FCLASS:
+                    continue
+                ring = rings[0] if rings else []
+                bb = ring_bbox(ring)
+                if not bb or not bbox_intersects(bb, bounds) or len(ring) < 4:
+                    continue
+                if ring_area_m2(ring) < _MIN_WATER_AREA_M2:
+                    continue
+                water_polys.append(ring)
+    except Exception:
+        logger.warning("offline_map lite water_area skipped", exc_info=True)
+        water_polys = []
+    try:
+        if ww is not None:
+            named: dict[str, list[tuple[float, list[tuple[float, float]]]]] = {}
+            unnamed_long: list[list[tuple[float, float]]] = []
+            has_attr = False
+            for _st, rings, attr in iter_shp_features(ww, want_types=(3, 5)):
+                if attr:
+                    has_attr = True
+                fclass = attr_text(attr, "fclass", "FCLASS").lower()
+                if fclass and fclass != "river":
+                    continue
+                name = attr_text(attr, "name", "NAME")
+                for ring in rings:
+                    bb = ring_bbox(ring)
+                    if not bb or not bbox_intersects(bb, bounds) or len(ring) < 2:
+                        continue
+                    length = polyline_length_m(ring)
+                    if name:
+                        named.setdefault(name, []).append((length, ring))
+                    elif not has_attr and length >= _MAJOR_RIVER_MIN_KM * 1000.0:
+                        unnamed_long.append(ring)
+            min_m = _MAJOR_RIVER_MIN_KM * 1000.0
+            if named:
+                for _name, segs in named.items():
+                    if sum(item[0] for item in segs) < min_m:
+                        continue
+                    water_lines.extend(item[1] for item in segs)
+            else:
+                water_lines.extend(unnamed_long)
+    except Exception:
+        logger.warning("offline_map lite waterway skipped", exc_info=True)
+        water_lines = []
+    return water_polys, water_lines
+
+
 def _load_basemap_rings(assets: Path) -> dict[str, Any] | None:
     """geopandas 不可用时：原生读取区县 shp（WGS84）+ 可选 DEM/水系。"""
     from app.analysis_agent.renderers.shp_lite import (
-        bbox_intersects,
         first_shp,
         iter_shp_rings,
         read_dbf_rows,
-        ring_bbox,
     )
 
     shp = assets / "shapefile" / "北京市.shp"
@@ -954,42 +1164,7 @@ def _load_basemap_rings(assets: Path) -> dict[str, Any] | None:
         return None
     bounds = (min(xs_all), min(ys_all), max(xs_all), max(ys_all))
     hillshade, dem_extent = _load_dem_optional(assets)
-    water_polys: list[list[tuple[float, float]]] = []
-    water_lines: list[list[tuple[float, float]]] = []
-    wa = first_shp(assets / "water_area")
-    ww = first_shp(assets / "waterway")
-    try:
-        if wa is not None:
-            for _st, rings in iter_shp_rings(wa, want_types=(5,)):
-                for ring in rings:
-                    bb = ring_bbox(ring)
-                    if not bb or not bbox_intersects(bb, bounds) or len(ring) < 4:
-                        continue
-                    if (bb[2] - bb[0]) * (bb[3] - bb[1]) < 2e-5:
-                        continue
-                    water_polys.append(ring)
-                    if len(water_polys) >= 400:
-                        break
-                if len(water_polys) >= 400:
-                    break
-    except Exception:
-        logger.warning("offline_map lite water_area skipped", exc_info=True)
-    try:
-        if ww is not None:
-            for _st, rings in iter_shp_rings(ww, want_types=(3, 5)):
-                for ring in rings:
-                    bb = ring_bbox(ring)
-                    if not bb or not bbox_intersects(bb, bounds):
-                        continue
-                    if (bb[2] - bb[0]) + (bb[3] - bb[1]) < 0.04:
-                        continue
-                    water_lines.append(ring)
-                    if len(water_lines) >= 300:
-                        break
-                if len(water_lines) >= 300:
-                    break
-    except Exception:
-        logger.warning("offline_map lite waterway skipped", exc_info=True)
+    water_polys, water_lines = _load_lite_major_water(assets, bounds)
     logger.info(
         "offline_map lite districts=%s water_poly=%s water_line=%s dem=%s",
         len(districts),
@@ -1048,6 +1223,7 @@ def _render_with_rings(stations: list[dict[str, Any]], title: str, basemap: dict
         xs, ys = [p[0] for p in line], [p[1] for p in line]
         ax.plot(xs, ys, color="#9dcee8", linewidth=0.9, zorder=1.2, solid_capstyle="round")
     text_stroke = [pe.withStroke(linewidth=2.4, foreground="white", alpha=0.75)]
+    district_pts: list[tuple[float, float, str]] = []
     for dist in basemap.get("districts") or []:
         for ring in dist.get("exteriors") or []:
             if len(ring) < 3:
@@ -1059,6 +1235,7 @@ def _render_with_rings(stations: list[dict[str, Any]], title: str, basemap: dict
         if name and ring0:
             cx = sum(p[0] for p in ring0) / len(ring0)
             cy = sum(p[1] for p in ring0) / len(ring0)
+            district_pts.append((cx, cy, name))
             ax.text(
                 cx,
                 cy,
@@ -1072,7 +1249,17 @@ def _render_with_rings(stations: list[dict[str, Any]], title: str, basemap: dict
                 fontproperties=cjk_font_properties(9, weight="bold"),
             )
     minx, miny, maxx, maxy = basemap["bounds"]
-    _draw_stations(ax, stations, minx, maxx, miny, maxy)
+    lon_span = max(maxx - minx, 1e-6)
+    lat_span = max(maxy - miny, 1e-6)
+    _draw_stations(
+        ax,
+        stations,
+        minx,
+        maxx,
+        miny,
+        maxy,
+        reserved=_district_boxes_from_points(district_pts, lon_span, lat_span),
+    )
     ax.set_title(title, fontsize=16, pad=16, fontproperties=cjk_font_properties(16))
     pad_x = (maxx - minx) * 0.035
     pad_y = (maxy - miny) * 0.035
