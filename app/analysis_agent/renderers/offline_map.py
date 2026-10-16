@@ -704,7 +704,7 @@ def _station_label_rect(
     y: float,
     *,
     side: str,
-    y_off: float,
+    extra: float,
     val_text: str,
     name_text: str,
     bar_width: float,
@@ -715,20 +715,45 @@ def _station_label_rect(
     n = max(len(val_text), len(name_text), 2)
     w = lon_span * 0.011 * (0.55 * n + 1.2) * (fontsize / 8.0)
     h = lat_span * 0.022 * (fontsize / 8.0)
-    cy = y + y_off
-    gap = bar_width * 1.4
+    gap_x = bar_width * 1.4
+    gap_y = lat_span * 0.012
     if side == "left":
-        x1 = x - gap
-        return (x1 - w, cy - h / 2.0, x1, cy + h / 2.0)
-    x0 = x + gap
-    return (x0, cy - h / 2.0, x0 + w, cy + h / 2.0)
+        x1 = x - gap_x - extra
+        return (x1 - w, y - h / 2.0, x1, y + h / 2.0)
+    if side == "right":
+        x0 = x + gap_x + extra
+        return (x0, y - h / 2.0, x0 + w, y + h / 2.0)
+    if side == "up":
+        y0 = y + gap_y + extra
+        return (x - w / 2.0, y0, x + w / 2.0, y0 + h)
+    y1 = y - gap_y - extra
+    return (x - w / 2.0, y1 - h, x + w / 2.0, y1)
 
 
-def _choose_lr_placement(
+def _prefer_cardinal_sides(
+    x: float,
+    y: float,
+    minx: float,
+    maxx: float,
+    miny: float,
+    maxy: float,
+    lon_span: float,
+    lat_span: float,
+) -> tuple[str, ...]:
+    ordered: list[str] = []
+    ordered.append("left" if x > minx + lon_span * 0.72 else "right")
+    ordered.append("down" if y > miny + lat_span * 0.78 else "up")
+    for side in ("right", "left", "up", "down"):
+        if side not in ordered:
+            ordered.append(side)
+    return tuple(ordered)
+
+
+def _choose_cardinal_placement(
     x: float,
     y: float,
     *,
-    prefer_left: bool,
+    sides: tuple[str, ...],
     val_text: str,
     name_text: str,
     bar_width: float,
@@ -737,28 +762,64 @@ def _choose_lr_placement(
     fontsize: float,
     occupied: list[tuple[float, float, float, float]],
 ) -> tuple[str, float, tuple[float, float, float, float]]:
-    """只在左右两侧避让；同侧用上下微调躲开已占用框（含行政区名）。"""
-    sides = ("left", "right") if prefer_left else ("right", "left")
-    offsets = [0.0]
-    step = lat_span * 0.014
-    for k in range(1, 7):
-        offsets.extend([step * k, -step * k])
+    """左/右/上/下四向避让，躲开已占用框（站点标注与行政区名）。"""
+    extras = [0.0]
+    step = max(lon_span, lat_span) * 0.012
+    for k in range(1, 6):
+        extras.append(step * k)
     pad = lon_span * 0.0015
-    fallback = ("right" if not prefer_left else "left", 0.0, _station_label_rect(
-        x, y, side="left" if prefer_left else "right", y_off=0.0,
-        val_text=val_text, name_text=name_text, bar_width=bar_width,
-        lon_span=lon_span, lat_span=lat_span, fontsize=fontsize,
-    ))
-    for dy in offsets:
+    fallback = (
+        sides[0],
+        0.0,
+        _station_label_rect(
+            x, y, side=sides[0], extra=0.0,
+            val_text=val_text, name_text=name_text, bar_width=bar_width,
+            lon_span=lon_span, lat_span=lat_span, fontsize=fontsize,
+        ),
+    )
+    for extra in extras:
         for side in sides:
             box = _station_label_rect(
-                x, y, side=side, y_off=dy,
+                x, y, side=side, extra=extra,
                 val_text=val_text, name_text=name_text, bar_width=bar_width,
                 lon_span=lon_span, lat_span=lat_span, fontsize=fontsize,
             )
             if not any(_rect_overlap(box, other, pad) for other in occupied):
-                return side, dy, box
-            fallback = (side, dy, box)
+                return side, extra, box
+            fallback = (side, extra, box)
+    return fallback
+
+
+def _choose_district_center(
+    x: float,
+    y: float,
+    name: str,
+    lon_span: float,
+    lat_span: float,
+    occupied: list[tuple[float, float, float, float]],
+) -> tuple[float, float, tuple[float, float, float, float]]:
+    """行政区名以中心点为基准，向左/右/上/下挪开已占用框。"""
+    base = _centered_text_box(x, y, name, lon_span, lat_span, fontsize=9)
+    w = base[2] - base[0]
+    h = base[3] - base[1]
+    pad = lon_span * 0.0015
+    candidates: list[tuple[float, float]] = [(0.0, 0.0)]
+    for k in (1, 2, 3, 4):
+        candidates.extend(
+            (
+                (-w * k, 0.0),
+                (w * k, 0.0),
+                (0.0, h * k),
+                (0.0, -h * k),
+            )
+        )
+    fallback = (x, y, base)
+    for dx, dy in candidates:
+        cx, cy = x + dx, y + dy
+        box = (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+        if not any(_rect_overlap(box, other, pad) for other in occupied):
+            return cx, cy, box
+        fallback = (cx, cy, box)
     return fallback
 
 
@@ -767,12 +828,74 @@ def _district_boxes_from_points(
     lon_span: float,
     lat_span: float,
 ) -> list[tuple[float, float, float, float]]:
-    out: list[tuple[float, float, float, float]] = []
+    return [item[3] for item in _plan_district_labels(points, lon_span, lat_span)]
+
+
+def _plan_station_labels(
+    stations: list[dict[str, Any]],
+    minx: float,
+    maxx: float,
+    miny: float,
+    maxy: float,
+    reserved: list[tuple[float, float, float, float]] | None = None,
+) -> list[tuple[dict[str, Any], str, float, tuple[float, float, float, float]]]:
+    lon_span = max(maxx - minx, 1e-6)
+    lat_span = max(maxy - miny, 1e-6)
+    bar_width = lon_span * 0.007
+    fontsize = 7.0 if len(stations) > 24 else 8.0
+    occupied = list(reserved or [])
+    planned: list[tuple[dict[str, Any], str, float, tuple[float, float, float, float]]] = []
+    ordered = sorted(stations, key=lambda s: (float(s["lat"]), float(s["lon"])))
+    for s in ordered:
+        x, y = float(s["lon"]), float(s["lat"])
+        val_text = f"{float(s['delta_mm']):.2f}"
+        name_text = str(s["id"])
+        sides = _prefer_cardinal_sides(x, y, minx, maxx, miny, maxy, lon_span, lat_span)
+        side, extra, box = _choose_cardinal_placement(
+            x, y, sides=sides, val_text=val_text, name_text=name_text,
+            bar_width=bar_width, lon_span=lon_span, lat_span=lat_span,
+            fontsize=fontsize, occupied=occupied,
+        )
+        occupied.append(box)
+        planned.append((s, side, extra, box))
+    return planned
+
+
+def _plan_district_labels(
+    points: list[tuple[float, float, str]],
+    lon_span: float,
+    lat_span: float,
+    occupied: list[tuple[float, float, float, float]] | None = None,
+) -> list[tuple[float, float, str, tuple[float, float, float, float]]]:
+    taken = list(occupied or [])
+    placed: list[tuple[float, float, str, tuple[float, float, float, float]]] = []
     for x, y, name in points:
         if not name:
             continue
-        out.append(_centered_text_box(x, y, name, lon_span, lat_span, fontsize=9))
-    return out
+        cx, cy, box = _choose_district_center(x, y, name, lon_span, lat_span, taken)
+        taken.append(box)
+        placed.append((cx, cy, name, box))
+    return placed
+
+
+def _draw_district_labels(ax: Any, placed: list[tuple[float, float, str, tuple[float, float, float, float]]]) -> None:
+    import matplotlib.patheffects as pe
+
+    text_stroke = [pe.withStroke(linewidth=2.4, foreground="white", alpha=0.75)]
+    for cx, cy, name, _box in placed:
+        ax.text(
+            cx,
+            cy,
+            name,
+            fontsize=9,
+            color="#222222",
+            ha="center",
+            va="center",
+            weight="bold",
+            zorder=4,
+            path_effects=text_stroke,
+            fontproperties=cjk_font_properties(9, weight="bold"),
+        )
 
 
 def _draw_stations(
@@ -844,11 +967,11 @@ def _draw_stations(
         )
         val_text = f"{float(s['delta_mm']):.2f}"
         name_text = str(s["id"])
-        prefer_left = x > minx + lon_span * 0.72
-        side, y_off, box = _choose_lr_placement(
+        sides = _prefer_cardinal_sides(x, y, minx, maxx, miny, maxy, lon_span, lat_span)
+        side, extra, box = _choose_cardinal_placement(
             x,
             y,
-            prefer_left=prefer_left,
+            sides=sides,
             val_text=val_text,
             name_text=name_text,
             bar_width=bar_width,
@@ -858,10 +981,15 @@ def _draw_stations(
             occupied=occupied,
         )
         occupied.append(box)
+        gap_y = lat_span * 0.012
         if side == "left":
-            xy, align, box_align = (x - bar_width * 1.4, y + y_off), "right", (1.0, 0.5)
+            xy, align, box_align = (x - bar_width * 1.4 - extra, y), "right", (1.0, 0.5)
+        elif side == "right":
+            xy, align, box_align = (x + bar_width * 1.4 + extra, y), "left", (0.0, 0.5)
+        elif side == "up":
+            xy, align, box_align = (x, y + gap_y + extra), "center", (0.5, 0.0)
         else:
-            xy, align, box_align = (x + bar_width * 1.4, y + y_off), "left", (0.0, 0.5)
+            xy, align, box_align = (x, y - gap_y - extra), "center", (0.5, 1.0)
         ab = AnnotationBbox(
             _label_box(val_text, name_text, align),
             xy,
@@ -927,7 +1055,6 @@ def _fig_to_png(fig: Any) -> bytes:
 
 
 def _render_with_basemap(stations: list[dict[str, Any]], title: str, basemap: dict[str, Any]) -> bytes:
-    import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
     import numpy as np
     from matplotlib.colors import LinearSegmentedColormap
@@ -958,7 +1085,6 @@ def _render_with_basemap(stations: list[dict[str, Any]], title: str, basemap: di
     for geom in beijing.geometry:
         _plot_boundary(ax, geom, color="#5a5a5a", linewidth=0.8, zorder=2, linestyle=(0, (4.0, 2.4)))
     _plot_boundary(ax, basemap["city_union"], color="#c026d3", linewidth=1.8, zorder=3)
-    text_stroke = [pe.withStroke(linewidth=2.4, foreground="white", alpha=0.75)]
     name_col = basemap.get("name_col")
     minx, miny, maxx, maxy = beijing.total_bounds
     lon_span = max(maxx - minx, 1e-6)
@@ -968,19 +1094,11 @@ def _render_with_basemap(stations: list[dict[str, Any]], title: str, basemap: di
         for geom, name in zip(beijing.geometry, beijing[name_col]):
             pt = geom.representative_point()
             district_pts.append((float(pt.x), float(pt.y), str(name)))
-            ax.text(
-                pt.x,
-                pt.y,
-                str(name),
-                fontsize=9,
-                color="#222222",
-                ha="center",
-                va="center",
-                weight="bold",
-                zorder=4,
-                path_effects=text_stroke,
-                fontproperties=cjk_font_properties(9, weight="bold"),
-            )
+    draft = _plan_station_labels(stations, minx, maxx, miny, maxy)
+    placed_districts = _plan_district_labels(
+        district_pts, lon_span, lat_span, occupied=[item[3] for item in draft]
+    )
+    _draw_district_labels(ax, placed_districts)
     _draw_stations(
         ax,
         stations,
@@ -988,7 +1106,7 @@ def _render_with_basemap(stations: list[dict[str, Any]], title: str, basemap: di
         maxx,
         miny,
         maxy,
-        reserved=_district_boxes_from_points(district_pts, lon_span, lat_span),
+        reserved=[item[3] for item in placed_districts],
     )
     ax.set_title(title, fontsize=16, pad=16, fontproperties=cjk_font_properties(16))
     pad_x = (maxx - minx) * 0.035
@@ -1184,7 +1302,6 @@ def _load_basemap_rings(assets: Path) -> dict[str, Any] | None:
 
 
 def _render_with_rings(stations: list[dict[str, Any]], title: str, basemap: dict[str, Any]) -> bytes:
-    import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
     import numpy as np
     from matplotlib.colors import LinearSegmentedColormap
@@ -1222,7 +1339,6 @@ def _render_with_rings(stations: list[dict[str, Any]], title: str, basemap: dict
             continue
         xs, ys = [p[0] for p in line], [p[1] for p in line]
         ax.plot(xs, ys, color="#9dcee8", linewidth=0.9, zorder=1.2, solid_capstyle="round")
-    text_stroke = [pe.withStroke(linewidth=2.4, foreground="white", alpha=0.75)]
     district_pts: list[tuple[float, float, str]] = []
     for dist in basemap.get("districts") or []:
         for ring in dist.get("exteriors") or []:
@@ -1236,21 +1352,14 @@ def _render_with_rings(stations: list[dict[str, Any]], title: str, basemap: dict
             cx = sum(p[0] for p in ring0) / len(ring0)
             cy = sum(p[1] for p in ring0) / len(ring0)
             district_pts.append((cx, cy, name))
-            ax.text(
-                cx,
-                cy,
-                name,
-                fontsize=9,
-                color="#222222",
-                ha="center",
-                va="center",
-                zorder=4,
-                path_effects=text_stroke,
-                fontproperties=cjk_font_properties(9, weight="bold"),
-            )
     minx, miny, maxx, maxy = basemap["bounds"]
     lon_span = max(maxx - minx, 1e-6)
     lat_span = max(maxy - miny, 1e-6)
+    draft = _plan_station_labels(stations, minx, maxx, miny, maxy)
+    placed_districts = _plan_district_labels(
+        district_pts, lon_span, lat_span, occupied=[item[3] for item in draft]
+    )
+    _draw_district_labels(ax, placed_districts)
     _draw_stations(
         ax,
         stations,
@@ -1258,7 +1367,7 @@ def _render_with_rings(stations: list[dict[str, Any]], title: str, basemap: dict
         maxx,
         miny,
         maxy,
-        reserved=_district_boxes_from_points(district_pts, lon_span, lat_span),
+        reserved=[item[3] for item in placed_districts],
     )
     ax.set_title(title, fontsize=16, pad=16, fontproperties=cjk_font_properties(16))
     pad_x = (maxx - minx) * 0.035

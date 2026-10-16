@@ -203,19 +203,21 @@ def test_legend_has_no_delta_parentheses() -> None:
     assert "Δ" not in src
 
 
-def test_choose_lr_avoids_district_and_other_labels() -> None:
+def test_choose_cardinal_avoids_district_and_other_labels() -> None:
     from app.analysis_agent.renderers.offline_map import (
         _centered_text_box,
-        _choose_lr_placement,
+        _choose_cardinal_placement,
+        _choose_district_center,
         _rect_overlap,
+        _station_label_rect,
     )
 
     lon_span, lat_span = 1.6, 1.8
     reserved = [_centered_text_box(116.66, 39.91, "通州区", lon_span, lat_span)]
-    side, _dy, box = _choose_lr_placement(
+    side, _extra, box = _choose_cardinal_placement(
         116.68,
         39.91,
-        prefer_left=False,
+        sides=("right", "left", "up", "down"),
         val_text="0.11",
         name_text="大稿",
         bar_width=0.01,
@@ -224,12 +226,12 @@ def test_choose_lr_avoids_district_and_other_labels() -> None:
         fontsize=7,
         occupied=reserved,
     )
-    assert side in {"left", "right"}
+    assert side in {"left", "right", "up", "down"}
     assert not _rect_overlap(box, reserved[0], lon_span * 0.0015)
-    side2, _dy2, box2 = _choose_lr_placement(
+    side2, _extra2, box2 = _choose_cardinal_placement(
         116.68,
         39.91,
-        prefer_left=False,
+        sides=("right", "left", "up", "down"),
         val_text="-0.03",
         name_text="永顺",
         bar_width=0.01,
@@ -238,7 +240,16 @@ def test_choose_lr_avoids_district_and_other_labels() -> None:
         fontsize=7,
         occupied=reserved + [box],
     )
+    assert side2 in {"left", "right", "up", "down"}
     assert not _rect_overlap(box, box2, lon_span * 0.0015)
+
+    blocker = _station_label_rect(
+        116.5, 40.0, side="right", extra=0.0,
+        val_text="1.00", name_text="占位", bar_width=0.01,
+        lon_span=lon_span, lat_span=lat_span, fontsize=9,
+    )
+    cx, cy, dbox = _choose_district_center(116.5, 40.0, "朝阳区", lon_span, lat_span, [blocker])
+    assert not _rect_overlap(dbox, blocker, lon_span * 0.0015)
 
 
 def test_shp_lite_length_and_area() -> None:
