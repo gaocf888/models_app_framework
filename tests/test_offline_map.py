@@ -203,45 +203,83 @@ def test_legend_has_no_delta_parentheses() -> None:
     assert "Δ" not in src
 
 
-def test_choose_cardinal_avoids_district_and_other_labels() -> None:
+def test_station_group_label_only_lr_then_shift_lonlat() -> None:
     from app.analysis_agent.renderers.offline_map import (
         _centered_text_box,
-        _choose_cardinal_placement,
         _choose_district_center,
+        _choose_station_group,
+        _plan_station_labels,
         _rect_overlap,
         _station_label_rect,
+        _station_plan_boxes,
     )
 
     lon_span, lat_span = 1.6, 1.8
+    bar_width = lon_span * 0.007
+    height_scale = (lat_span * 0.03) / 2.0
+    pad = lon_span * 0.0015
     reserved = [_centered_text_box(116.66, 39.91, "通州区", lon_span, lat_span)]
-    side, _extra, box = _choose_cardinal_placement(
+    px, py, side, label, bar = _choose_station_group(
         116.68,
         39.91,
-        sides=("right", "left", "up", "down"),
+        val=-0.11,
+        sides=("right", "left"),
         val_text="0.11",
         name_text="大稿",
-        bar_width=0.01,
+        bar_width=bar_width,
+        height_scale=height_scale,
         lon_span=lon_span,
         lat_span=lat_span,
         fontsize=7,
         occupied=reserved,
     )
-    assert side in {"left", "right", "up", "down"}
-    assert not _rect_overlap(box, reserved[0], lon_span * 0.0015)
-    side2, _extra2, box2 = _choose_cardinal_placement(
+    assert side in {"left", "right"}
+    assert not any(_rect_overlap(box, reserved[0], pad) for box in (label, bar))
+
+    px2, py2, side2, label2, bar2 = _choose_station_group(
         116.68,
         39.91,
-        sides=("right", "left", "up", "down"),
+        val=0.03,
+        sides=("right", "left"),
         val_text="-0.03",
         name_text="永顺",
-        bar_width=0.01,
+        bar_width=bar_width,
+        height_scale=height_scale,
         lon_span=lon_span,
         lat_span=lat_span,
         fontsize=7,
-        occupied=reserved + [box],
+        occupied=reserved + [label, bar],
     )
-    assert side2 in {"left", "right", "up", "down"}
-    assert not _rect_overlap(box, box2, lon_span * 0.0015)
+    assert side2 in {"left", "right"}
+    assert not any(
+        _rect_overlap(a, b, pad)
+        for a in (label, bar)
+        for b in (label2, bar2)
+    )
+
+    left_block = (116.5 - 0.18, 39.985, 116.5 - 0.008, 40.015)
+    right_block = (116.5 + 0.008, 39.985, 116.5 + 0.18, 40.015)
+    sx, sy, sside, slabel, sbar = _choose_station_group(
+        116.5,
+        40.0,
+        val=0.0,
+        sides=("right", "left"),
+        val_text="0.00",
+        name_text="密站点",
+        bar_width=bar_width,
+        height_scale=height_scale,
+        lon_span=lon_span,
+        lat_span=lat_span,
+        fontsize=7,
+        occupied=[left_block, right_block],
+    )
+    assert sside in {"left", "right"}
+    assert abs(sx - 116.5) > 1e-6 or abs(sy - 40.0) > 1e-6
+    assert not any(
+        _rect_overlap(box, blk, pad)
+        for box in (slabel, sbar)
+        for blk in (left_block, right_block)
+    )
 
     blocker = _station_label_rect(
         116.5, 40.0, side="right", extra=0.0,
@@ -249,7 +287,22 @@ def test_choose_cardinal_avoids_district_and_other_labels() -> None:
         lon_span=lon_span, lat_span=lat_span, fontsize=9,
     )
     cx, cy, dbox = _choose_district_center(116.5, 40.0, "朝阳区", lon_span, lat_span, [blocker])
-    assert not _rect_overlap(dbox, blocker, lon_span * 0.0015)
+    assert not _rect_overlap(dbox, blocker, pad)
+
+    plan = _plan_station_labels(
+        [
+            {"id": "甲", "lon": 116.5, "lat": 40.0, "val": -1.0, "delta_mm": 1.0},
+            {"id": "乙", "lon": 116.5, "lat": 40.0, "val": -2.0, "delta_mm": 2.0},
+        ],
+        115.5,
+        117.1,
+        39.1,
+        40.9,
+    )
+    assert all(item[3] in {"left", "right"} for item in plan)
+    first = _station_plan_boxes(plan[:1])
+    second = _station_plan_boxes(plan[1:])
+    assert not any(_rect_overlap(a, b, pad) for a in first for b in second)
 
 
 def test_shp_lite_length_and_area() -> None:
