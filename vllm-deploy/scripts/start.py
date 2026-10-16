@@ -355,8 +355,12 @@ class VLLMService:
             cmd.extend(["--max-num-seqs", str(perf["max_num_seqs"])])
         if perf.get("max_num_batched_tokens"):
             cmd.extend(["--max-num-batched-tokens", str(perf["max_num_batched_tokens"])])
-        if perf.get("enable_prefix_caching"):
-            cmd.append("--enable-prefix-caching")
+        if "enable_prefix_caching" in perf:
+            if perf.get("enable_prefix_caching"):
+                cmd.append("--enable-prefix-caching")
+            else:
+                # vLLM 0.23 默认开 prefix cache；310P TP>1 须显式关掉，避免 Event 配额被额外占满
+                cmd.append("--no-enable-prefix-caching")
 
         # 多模态配置
         mm = self.vllm_config.get("multimodal", {})
