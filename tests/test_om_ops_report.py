@@ -274,6 +274,37 @@ def test_alert_table_column_keys_include_seq() -> None:
     assert tbl["rows"][0]["序号"] == 1
 
 
+def test_alert_table_truncates_over_100_with_note() -> None:
+    rows = [
+        {
+            "seq": i,
+            "device_name": f"D{i}",
+            "device_type": "GNSS",
+            "area_name": "朝阳区",
+            "ss_value": "1",
+            "content": "超限",
+        }
+        for i in range(1, 106)
+    ]
+    md, tbl = render_configured_table(
+        {
+            "id": "t_device_alert",
+            "title": "设备数据告警情况统计表",
+            "source_item_ids": ["q_alert_list"],
+            "columns": ["序号", "标编号", "设备类型", "位置", "实时值", "告警内容"],
+            "column_keys": ["seq", "device_name", "device_type", "area_name", "ss_value", "content"],
+            "max_rows": 100,
+        },
+        gathered_data={"q_alert_list": rows},
+    )
+    assert tbl is not None
+    assert len(tbl["rows"]) == 100
+    assert tbl.get("truncated") is True
+    assert tbl.get("row_count") == 105
+    assert "仅展示前 100 条" in (tbl.get("note") or "")
+    assert "仅展示前 100 条" in md
+
+
 def test_sql_files_on_disk() -> None:
     sql_dir = (
         Path(__file__).resolve().parents[1]

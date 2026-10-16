@@ -101,6 +101,7 @@ def test_station_ops_section_has_offline_and_multi_rate_chart() -> None:
     assert "q_alert_count_by_type" in alert.source_item_ids
     alert_tbl = next(t for t in spec.tables if t.get("id") == "t_device_alert")
     assert "seq" in (alert_tbl.get("column_keys") or [])
+    assert int(alert_tbl.get("max_rows") or 0) == 100
 
 
 def test_quarterly_compose_districts_and_layers() -> None:

@@ -16,9 +16,11 @@ def emit_table_from_rows(
     table_id: str = "",
     source_item_ids: list[str] | None = None,
     table_kind: str | None = None,
+    max_rows: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """通用表格：返回 markdown 片段与 structured table payload。"""
     _ = style
+    limit = max(1, int(max_rows)) if max_rows is not None else _TABLE_MAX_ROWS
     norm_rows: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -29,7 +31,7 @@ def emit_table_from_rows(
             norm_rows.append(dict(row))
     md, tbl = core.render_markdown_table(
         norm_rows,
-        max_rows=_TABLE_MAX_ROWS,
+        max_rows=limit,
         title=title or table_id or "数据表",
         empty_message="（待补充）",
         subsection=True,
@@ -39,4 +41,6 @@ def emit_table_from_rows(
         tbl["source_item_ids"] = list(source_item_ids)
     if table_kind in ("raw", "classification", "proportion"):
         tbl["table_kind"] = table_kind
+    if tbl.get("truncated"):
+        tbl["note"] = f"共 {tbl.get('row_count')} 条记录，仅展示前 {limit} 条。"
     return md, tbl

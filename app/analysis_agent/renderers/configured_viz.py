@@ -106,11 +106,12 @@ def render_configured_table(
     table_kind = str(spec.get("table_kind") or "raw") or "raw"
     md, tbl = emit_table_from_rows(
         columns=columns,
-        rows=rows[:max_rows],
+        rows=rows,
         title=title,
         table_id=tid,
         source_item_ids=source_ids,
         table_kind=table_kind if table_kind in ("raw", "classification", "proportion") else "raw",
+        max_rows=max_rows,
     )
     tbl["configured"] = True
     tbl["attach_to_chapter"] = str(spec.get("attach_to_chapter") or "")

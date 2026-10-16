@@ -185,6 +185,11 @@
       font-size: 0.75rem;
       text-align: left;
     }
+    .table-note {
+      margin: 0.35rem 0.5rem 0.45rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
     .chart-box {
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -619,6 +624,13 @@
     });
     tbl.appendChild(tbody);
     wrap.appendChild(tbl);
+    if (table.note || table.truncated) {
+      const note = document.createElement("p");
+      note.className = "table-note";
+      const shown = Array.isArray(table.rows) ? table.rows.length : 0;
+      note.textContent = table.note || ("共 " + (table.row_count || shown) + " 条记录，仅展示前 " + shown + " 条。");
+      wrap.appendChild(note);
+    }
     rec.tables.appendChild(wrap);
   }
 

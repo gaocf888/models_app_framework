@@ -707,7 +707,7 @@
     thead.appendChild(hr);
     tbl.appendChild(thead);
     const tbody = document.createElement("tbody");
-    (table.rows || []).slice(0, 50).forEach((row) => {
+    (table.rows || []).forEach((row) => {
       const tr = document.createElement("tr");
       table.columns.forEach((c) => {
         const td = document.createElement("td");
@@ -718,6 +718,15 @@
     });
     tbl.appendChild(tbody);
     wrap.appendChild(tbl);
+    if (table.note || table.truncated) {
+      const note = document.createElement("p");
+      note.style.fontSize = "0.75rem";
+      note.style.color = "#8b9cb3";
+      note.style.margin = "0.35rem 0.5rem 0.45rem";
+      const shown = Array.isArray(table.rows) ? table.rows.length : 0;
+      note.textContent = table.note || ("共 " + (table.row_count || shown) + " 条记录，仅展示前 " + shown + " 条。");
+      wrap.appendChild(note);
+    }
     $("structuredBlocks").appendChild(wrap);
   }
 

@@ -28,7 +28,7 @@
       "placeholder": false,
       "columns": ["序号", "标编号", "设备类型", "位置", "实时值", "告警内容"],
       "column_keys": ["seq", "device_name", "device_type", "area_name", "ss_value", "content"],
-      "max_rows": 50
+      "max_rows": 100
     }
   ],
   "charts": []
