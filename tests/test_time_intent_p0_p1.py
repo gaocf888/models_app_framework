@@ -88,6 +88,19 @@ class TestTimeIntentP0P1(unittest.TestCase):
         assert win is not None
         self.assertEqual("recent_6_months", win[2])
 
+    def test_recent_one_month_with_ge(self) -> None:
+        """「最近一个月」含「个」，须识别为滚动一月，而不是上个月或未解析。"""
+        win = extract_time_window_from_question("请帮我查询F2(望京)的最近一个月的沉降量")
+        assert win is not None
+        self.assertEqual("recent_1_months", win[2])
+        self.assertIn("INTERVAL 1 MONTH", win[0])
+        last = extract_time_window_from_question("上个月沉降量")
+        assert last is not None
+        self.assertEqual("last_month", last[2])
+        three = extract_time_window_from_question("近三个月沉降")
+        assert three is not None
+        self.assertEqual("recent_3_months", three[2])
+
     def test_display_this_quarter(self) -> None:
         ref = datetime(2026, 5, 19, 10, 0, 0)
         out = resolve_statistical_time_range_display("本季度超温统计", now=ref)

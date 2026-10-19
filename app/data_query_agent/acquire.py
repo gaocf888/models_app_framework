@@ -64,12 +64,40 @@ def clear_plan_cache() -> None:
     _plan_cache = None
 
 
+_SNAPSHOT_TIME_TAGS = frozenset(
+    {
+        "",
+        "latest_per_station",
+        "yesterday_fallback",
+        "today",
+        "yesterday",
+        "day_before_yesterday",
+        "three_days_ago",
+    }
+)
+
+
+def _time_tag(scope: ScopeIntentResult) -> str:
+    tag = str((scope.time_snapshot or {}).get("time_window_tag") or "").strip()
+    if tag:
+        return tag
+    return str((scope.annual_window or {}).get("tag") or "").strip()
+
+
+def _is_period_time(scope: ScopeIntentResult) -> bool:
+    tag = _time_tag(scope)
+    if tag in _SNAPSHOT_TIME_TAGS or tag.startswith("day_"):
+        return False
+    return bool(tag)
+
+
 def _scope_block(scope: ScopeIntentResult) -> str:
     """注入 NL2SQL 问句的区/站/时间约束（未指定则由模板约定每站最新）。"""
     cs = scope.confirmed_scope
     district = cs.get("district") or "未指定"
     station = cs.get("station_id") or cs.get("station_name") or "未指定"
-    tw = (scope.time_snapshot.get("time_window_tag") or "").strip() or "未指定则每站取最新 data_time"
+    tag = _time_tag(scope)
+    tw = tag or "未指定则每站取最新 data_time"
     return f"【行政区】{district}；【站点】{station}；【时间】{tw}。"
 
 
@@ -130,7 +158,10 @@ def _render_question(
             tmpl = str(hud or "")
     else:
         block = plan.get("q_list") or {}
-        tmpl = str(block.get(grain) or block.get("station") or "")
+        if grain == "station" and _is_period_time(scope):
+            tmpl = str(block.get("station_period") or block.get("station") or "")
+        else:
+            tmpl = str(block.get(grain) or block.get("station") or "")
     return tmpl.format_map(
         _FormatMap(
             table=library.table,
@@ -142,7 +173,7 @@ def _render_question(
             series_column=library.series_column,
             series_select=_series_select(library, grain),
             scope_block=_scope_block(scope),
-            annual_block=_annual_block(library, scope),
+            annual_block="" if _is_period_time(scope) else _annual_block(library, scope),
             max_rows=max_rows,
         )
     ).strip()
@@ -153,7 +184,7 @@ def _hint(library: LibraryDef, scope: ScopeIntentResult) -> str:
     tmpl = str(plan.get("hint_template") or "")
     cs = scope.confirmed_scope
     station = cs.get("station_id") or cs.get("station_name") or "未指定"
-    tw = (scope.time_snapshot.get("time_window_tag") or "").strip() or "未指定则每站取最新 data_time"
+    tw = _time_tag(scope) or "未指定则每站取最新 data_time"
     return tmpl.format(
         display_name=library.display_name,
         library_id=library.id,
@@ -161,7 +192,7 @@ def _hint(library: LibraryDef, scope: ScopeIntentResult) -> str:
         district=cs.get("district") or "未指定",
         station=station,
         time_note=tw,
-        annual_block=_annual_block(library, scope),
+        annual_block="" if _is_period_time(scope) else _annual_block(library, scope),
     ).strip()
 
 

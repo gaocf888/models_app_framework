@@ -23,6 +23,15 @@ def test_annual_window_uses_intent_when_parsed() -> None:
     assert win["end"]
 
 
+def test_annual_window_recent_one_month() -> None:
+    now = datetime(2026, 10, 19, 8, 0, 0)
+    win = resolve_annual_window("请帮我查询F2(望京)的最近一个月的沉降量", now=now)
+    assert win["source"] == "intent"
+    assert win["tag"] == "recent_1_months"
+    assert win["start"].startswith("2026-09-19")
+    assert win["end"].startswith("2026-10-19")
+
+
 def test_window_delta_last_minus_first() -> None:
     points = [
         {"t": "2025-09-01 00:00:00", "v": -10.0},

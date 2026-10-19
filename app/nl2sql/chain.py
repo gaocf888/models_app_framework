@@ -215,10 +215,12 @@ class NL2SQLChain:
         disable_qa_slot_replay: bool | None = None,
         forced_tables: list[str] | None = None,
     ) -> tuple[str, NL2SQLValidationContext]:
-        if confirmed_scope:
-            time_src = (
-                (scope_intent_text or time_intent_text or question) or ""
-            ).strip()
+        if time_intent_text is not None and str(time_intent_text).strip():
+            time_src = str(time_intent_text).strip()
+        elif original_query and str(original_query).strip():
+            time_src = str(original_query).strip()
+        elif confirmed_scope:
+            time_src = ((scope_intent_text or question) or "").strip()
         else:
             time_src = (
                 time_intent_text.strip()

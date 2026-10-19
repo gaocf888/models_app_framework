@@ -5,9 +5,18 @@ q_list:
   station: |
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。
     查询各监测站点最新一条记录（按 station_id 取 data_time 最大的一行），输出 station_id, station_name, t_station.area AS area, {metric_select}, data_time。
+    分层标必须用监测层位=0 的代表标 station_name，禁止对该场地全部设备、全部时刻展开成多行。
     {annual_block}
     {scope_block}
     时间未指定则每站最新。ORDER BY ABS({core_column}) DESC, station_id。LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
+  station_period: |
+    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。
+    用户问的是时间窗内的周期沉降量，不是「每站最新一行快照」，禁止把该场地全部设备、全部时刻摊成多行。
+    分层标必须用监测层位=0 的代表标 station_name（禁止对同站全部标聚合）。
+    对每个站点取时间窗内最早一条与最晚一条 {core_column}：周期沉降量 = 窗末值 − 窗初值；同时输出窗末值 AS {core_alias}、周期差值、窗末 data_time、station_id、station_name、t_station.area AS area。
+    一行一站。禁止用单日 MAX−MIN 代替周期差，禁止把时间窗收成今天或昨天一天。
+    {scope_block}
+    ORDER BY ABS(周期差值) DESC, station_id。LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
   district: |
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。
     按行政区 t_station.area 汇总，输出 area, AVG({core_column}) AS {core_alias}, COUNT(DISTINCT {table}.station_id) AS station_count。
@@ -22,6 +31,7 @@ q_hud_series:
   station: |
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），输出 station_id, data_time, {series_select}。
     {scope_block}
+    若【时间】已指定窗口，只输出该窗内的时序点，禁止 DISTINCT ON 只留最新一行。分层标用层位 0 代表标。
     按 station_id, data_time 排序。禁止查询其它 t_data_wash_* 表。禁止用其它站的序列冒充本站。
   district: |
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。

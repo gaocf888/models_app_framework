@@ -81,6 +81,28 @@ def test_templates_qxz_dual_series_select() -> None:
     assert "real_time_rain" in q
 
 
+def test_templates_period_station_uses_window_delta_not_latest_row() -> None:
+    clear_plan_cache()
+    cat = get_library_catalog()
+    lib = cat.get("fcb")
+    assert lib is not None
+    scope = resolve_scope_intent("请帮我查询F2(望京)的最近一个月的沉降量", lib)
+    assert scope.time_snapshot.get("time_window_tag") == "recent_1_months"
+    q = _render_question(
+        plan_item_id="q_list",
+        grain="station",
+        library=lib,
+        scope=scope,
+        max_rows=50,
+    )
+    assert "周期沉降量" in q
+    assert "最新一条记录" not in q
+    assert "层位=0" in q or "层位 0" in q
+    assert "F2" in q
+    assert "recent_1_months" in q
+    assert "2025-10-19" not in q
+
+
 def test_templates_city_hud_is_daily_avg() -> None:
     clear_plan_cache()
     cat = get_library_catalog()

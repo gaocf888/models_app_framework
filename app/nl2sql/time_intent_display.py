@@ -186,13 +186,15 @@ def build_anchor_lookback_time_window(
 
 def extract_numeric_window(q: str, unit_keys: tuple[str, ...]) -> int | None:
     pat = re.compile(
-        rf"(?:近|最近|过去|recent|last|past)\s*([0-9]{{1,3}})\s*({'|'.join(unit_keys)})",
+        rf"(?:近|最近|过去|recent|last|past)\s*([0-9]{{1,3}})\s*个?\s*({'|'.join(unit_keys)})",
         re.IGNORECASE,
     )
     m = pat.search(q)
     if m:
         return max(1, int(m.group(1)))
-    zh_pat = re.compile(rf"(?:近|最近|过去)\s*([一二两三四五六七八九十百]+)\s*({'|'.join(unit_keys)})")
+    zh_pat = re.compile(
+        rf"(?:近|最近|过去)\s*([一二两三四五六七八九十百]+)\s*个?\s*({'|'.join(unit_keys)})"
+    )
     m2 = zh_pat.search(q)
     if not m2:
         return None
@@ -417,6 +419,8 @@ def extract_time_window_from_question(question: str) -> tuple[str, str, str] | N
         return ("DATE_SUB(NOW(), INTERVAL 7 DAY)", "NOW()", "recent_7_days")
     if "最近七天" in q or "近七天" in q:
         return ("DATE_SUB(NOW(), INTERVAL 7 DAY)", "NOW()", "recent_7_days")
+    if "最近一个月" in q or "近一个月" in q or "过去一个月" in q:
+        return ("DATE_SUB(NOW(), INTERVAL 1 MONTH)", "NOW()", "recent_1_months")
     if "最近半年" in q or "近半年" in q:
         return ("DATE_SUB(NOW(), INTERVAL 6 MONTH)", "NOW()", "recent_6_months")
 

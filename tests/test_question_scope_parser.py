@@ -178,3 +178,21 @@ def test_device_in_name_does_not_false_match_screen_alias() -> None:
 
 def chain_extract_boiler(question: str) -> str | None:
     return NL2SQLChain._extract_boiler_scope_label_from_question(question)
+
+
+def test_confirmed_scope_time_from_user_not_hint_iso() -> None:
+    hint = (
+        "【时间】未指定则每站取最新 data_time。"
+        "年度变化 data_time 落在 [2025-10-19 07:58:16, 2026-10-19 07:58:16]"
+    )
+    user_q = "请帮我查询F2(望京)的最近一个月的沉降量"
+    intent = resolve_question_intent(
+        "请只查询表 t_data_wash_fcb，查询各监测站点最新一条记录",
+        time_intent_source=user_q,
+        confirmed_scope={"station_id": "F2(望京)", "device_type": "fcb"},
+        scope_intent_text=hint,
+        original_query=user_q,
+    )
+    assert intent.parse_mode == "human_confirmed"
+    assert intent.time_window_tag == "recent_1_months"
+    assert intent.scope.station_id == "F2(望京)"

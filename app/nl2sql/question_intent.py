@@ -72,13 +72,15 @@ def resolve_question_intent(
     if confirmed_scope:
         scope_q = (scope_intent_text or time_intent_source or raw).strip()
         scope = _scope_from_confirmed_dict(confirmed_scope)
-        time_window = _adapt_time_window_tuple(extract_time_window_from_question(scope_q))
-        time_anchor = extract_time_anchor_from_question(scope_q)
-        if not time_window and original_query:
+        # 时间只用用户原句 / time_intent_source，避免 plan hint 里的 ISO 日期或「最新」抢先命中。
+        time_q = (time_intent_source or original_query or raw).strip()
+        time_window = _adapt_time_window_tuple(extract_time_window_from_question(time_q))
+        time_anchor = extract_time_anchor_from_question(time_q)
+        if not time_window and original_query and original_query.strip() != time_q:
             time_window = _adapt_time_window_tuple(
                 extract_time_window_from_question(original_query.strip())
             )
-        if not time_anchor and original_query:
+        if not time_anchor and original_query and original_query.strip() != time_q:
             time_anchor = extract_time_anchor_from_question(original_query.strip())
         return QuestionIntent(
             raw_question=raw,
