@@ -886,13 +886,16 @@ GET
 ### 接口示例
 
 ```http
+# 默认fcb全部
 GET /data-query-agent/browse?page=1&page_size=20
 Authorization: Bearer <service-api-key>
 
-GET /data-query-agent/browse?library_id=jyb&district=朝阳区&page=1&page_size=20
+# 指定库点击行政区
+GET /data-query-agent/browse?library_id=fcb&district=朝阳区&page=1&page_size=20
 Authorization: Bearer <service-api-key>
 
-GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_size=20
+# 指定库点击站点
+GET /data-query-agent/browse?library_id=fcb&station_id=F28(金盏)&page=1&page_size=20
 Authorization: Bearer <service-api-key>
 ```
 

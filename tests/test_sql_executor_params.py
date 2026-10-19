@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from sqlalchemy import DateTime, String
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from app.analysis_agent.deterministics.fcb_endpoints import load_sql_template, resolved_sql_params
 from app.nl2sql.executor import SQLExecutor
@@ -71,3 +73,23 @@ def test_resolved_sql_params_extra_datetime_not_restringified() -> None:
 def test_resolved_sql_params_rejects_empty_window() -> None:
     with pytest.raises(ValueError, match="sql_bind_missing_t_start"):
         resolved_sql_params({"t_start": "", "t_end": "2026-09-18T00:00:00"})
+
+
+def test_statement_binds_datetime_list_as_timestamp_array() -> None:
+    stmt = SQLExecutor._statement(
+        "SELECT 1 WHERE col = ANY(:times)",
+        {"times": [datetime(2026, 10, 15, 23, 0)]},
+    )
+    bp = stmt._bindparams["times"]
+    assert isinstance(bp.type, ARRAY)
+    assert isinstance(bp.type.item_type, DateTime)
+
+
+def test_statement_binds_name_list_as_text_array() -> None:
+    stmt = SQLExecutor._statement(
+        "SELECT 1 WHERE name = ANY(:rep_marks)",
+        {"rep_marks": ["F8-10", "F21-10"]},
+    )
+    bp = stmt._bindparams["rep_marks"]
+    assert isinstance(bp.type, ARRAY)
+    assert isinstance(bp.type.item_type, String)

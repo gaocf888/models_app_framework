@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import date, datetime
 from typing import Any, List
 
-from sqlalchemy import String, bindparam
+from sqlalchemy import DateTime, String, bindparam
 from sqlalchemy.exc import DBAPIError, DisconnectionError, InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.sql import text
@@ -167,15 +168,30 @@ class SQLExecutor:
             self._engine = _create_business_engine(db_cfg)
             logger.info("SQLExecutor engine rebuilt after retryable DB error")
 
-    def _statement(self, sql: str, params: dict[str, Any] | None) -> Any:
-        """可选 params 绑定；list/tuple 按 PG text[] 处理，禁止调用方把值拼进 SQL。"""
+    @staticmethod
+    def _pg_array_bindparam(key: str, values: list | tuple) -> Any:
+        """名称列表走 text[]；datetime 列表走 timestamp[]（点站矩阵 ANY(:times)）。"""
+        from sqlalchemy.dialects.postgresql import ARRAY
+
+        sample = next((x for x in values if x is not None), None)
+        if isinstance(sample, datetime):
+            return bindparam(key, type_=ARRAY(DateTime(timezone=False)))
+        if isinstance(sample, date):
+            from sqlalchemy import Date
+
+            return bindparam(key, type_=ARRAY(Date))
+        return bindparam(key, type_=ARRAY(String))
+
+    @staticmethod
+    def _statement(sql: str, params: dict[str, Any] | None) -> Any:
+        """可选 params 绑定；list/tuple 按元素类型绑 PG 数组，禁止调用方把值拼进 SQL。"""
         stmt = text(sql)
         bind = params or {}
         array_keys = [k for k, v in bind.items() if isinstance(v, (list, tuple))]
         if array_keys:
-            from sqlalchemy.dialects.postgresql import ARRAY
-
-            stmt = stmt.bindparams(*[bindparam(k, type_=ARRAY(String)) for k in array_keys])
+            stmt = stmt.bindparams(
+                *[SQLExecutor._pg_array_bindparam(k, bind[k]) for k in array_keys]
+            )
         return stmt
 
     @staticmethod
