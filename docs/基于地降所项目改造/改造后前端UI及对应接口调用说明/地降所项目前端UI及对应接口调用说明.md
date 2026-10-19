@@ -67,7 +67,7 @@
 | `started` + `stream_id` | 保存；可点停止 |
 | `delta` | 追加到当前助手气泡（Markdown/公式按产品能力） |
 | `citation_ref` / `citation` | 插入可点击角标 `[n]`；点开对应来源 |
-| `finished.meta.rag_citations` | 来源列表（空数组不展示）；项内 `original_content_url` 为稳定引用，`original_preview_url` 为短时预览 URL；`kb_qa` / `hybrid_qa` / `data_query` 均可有 |
+| `finished.meta.rag_citations` | 来源列表（空数组不展示）；用 `original_preview_url` 做预览打开即可（BFF 处理）；勿直连 MinIO、勿单独对接预览接口；`kb_qa` / `hybrid_qa` / `data_query` 均可有 |
 | `finished.meta.suggested_questions` | 推荐问 chips；点击填入输入框并发送；**纯 `data_query` 通常为空** |
 | `finished.meta.nl2sql_sql` | **忽略，禁止渲染** |
 | `finished.meta.intent_label` | 可选角标（知识/查数/混合） |

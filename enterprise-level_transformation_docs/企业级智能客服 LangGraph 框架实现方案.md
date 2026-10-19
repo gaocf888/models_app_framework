@@ -436,10 +436,10 @@
 
 **机制**：
 
-- **`kb_retrieve`** 经 `chunks_to_rag_context` 生成编号 LLM 片段 + `rag_citations`（`ref_index`、`text_preview`、`original_content_url` 稳定引用、`original_preview_url` 短时预览等）；
+- **`kb_retrieve`** 经 `chunks_to_rag_context` 生成编号 LLM 片段 + `rag_citations`（`ref_index`、`text_preview`、`original_content_url` 稳定引用、`original_preview_url` 为 `/chatbot/documents/original/preview?ref=…` 代理路径等）；
 - **`kb_build_messages`** 将编号片段注入 `llm_messages`；
 - 图后流式主答时，若存在引用，`CitationStreamParser` 将正文 `[n]` 映射为 SSE **`{"citation_ref": n, "finished": false}`**（正文 `delta` 不再含该字面量）；
-- 结束帧 `meta.rag_citations` 与 `GET /chatbot/sessions/messages` 中 assistant 的 `rag_citations` **同形**（历史读取时重新签发 preview）；落库只保留稳定 `original_content_url`；
+- 结束帧 `meta.rag_citations` 与 `GET /chatbot/sessions/messages` 中 assistant 的 `rag_citations` **同形**（历史读取时重写代理预览路径）；落库只保留稳定 `original_content_url`；
 - **B/`data_query`**：经 **`data_query_kb_light`** 可写入知识 `rag_citations`（过滤 NL2SQL 三库）；查数主答路径一般**无**流式 `citation_ref`（引用主要在结束帧）；
 - **C/`hybrid_qa`**：流式可下发 `citation_ref`；结束帧含 `rag_citations`；
 - NL2SQL 三库（`nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples`）在检索 `exclude_namespaces`（含 agentic）与 `filter_rag_citation_dicts` 双端剔除。

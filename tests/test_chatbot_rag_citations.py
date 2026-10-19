@@ -72,13 +72,6 @@ def test_chunks_to_rag_citations_original_content_url_from_metadata():
 
 
 def test_chunks_to_rag_citations_minio_ref_keeps_stable_and_attempts_preview(monkeypatch):
-    from app.rag import original_preview as op
-
-    monkeypatch.setattr(
-        op,
-        "resolve_original_preview_url",
-        lambda ref: "https://minio.example/presigned/original.pdf" if ref.startswith("minio://") else None,
-    )
     chunks = [
         RetrievedChunk(
             text="正文片段",
@@ -92,7 +85,8 @@ def test_chunks_to_rag_citations_minio_ref_keeps_stable_and_attempts_preview(mon
     ]
     cites = chunks_to_rag_citations(chunks)
     assert cites[0]["original_content_url"].startswith("minio://")
-    assert cites[0]["original_preview_url"].startswith("https://")
+    assert cites[0]["original_preview_url"].startswith("/chatbot/documents/original/preview?ref=")
+    assert "models-app-minio" not in cites[0]["original_preview_url"]
 
 
 def test_chunks_to_rag_citations_excludes_nl2sql_namespaces():

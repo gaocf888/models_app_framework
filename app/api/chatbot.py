@@ -7,7 +7,8 @@ from __future__ import annotations
     - 提供流式 `/chat/stream`（SSE）对话入口（唯一对话回答接口）；
     - 提供多模态图片上传：`POST /upload`（MinIO 预签名 URL，填入 `image_urls`）；
     - 提供会话目录：`GET /sessions`（按 `user_id` 分页列举会话；方案 B：Redis `conv:index:` + `conv:meta:`，内存模式对齐）；
-    - 提供会话运维：`GET/DELETE /sessions/messages`、`DELETE /sessions/message`（单条/批量消息）、`PATCH /sessions/title`（修改展示标题）。
+    - 提供会话运维：`GET/DELETE /sessions/messages`、`DELETE /sessions/message`（单条/批量消息）、`PATCH /sessions/title`（修改展示标题）；
+    - 提供知识原文预览代理：`GET /documents/original/preview`（内网读 MinIO，外网不直连 `models-app-minio`）。
 
 部署前置条件（运维/开发）：
     1) LLM 服务可用：正确配置模型名称、服务地址与对 vLLM/OpenAI 兼容端的访问参数。
@@ -28,7 +29,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 import json
 
 try:
@@ -105,6 +106,61 @@ def _delete_messages_by_ids(user_id: str, session_id: str, message_ids: list[str
         deleted_ids=deleted_ids,
         not_found_ids=not_found_ids,
         deleted_count=len(deleted_ids),
+    )
+
+
+@router.get(
+    "/documents/original/preview",
+    summary="知识原文预览（经算法服务代理，不直连 MinIO）",
+    response_class=Response,
+)
+async def preview_original_document(
+    ref: Annotated[
+        str,
+        Query(
+            description=(
+                "稳定原文引用：citation.original_content_url，"
+                "如 minio://rag-assets/rag-docs/.../original.pdf"
+            )
+        ),
+    ],
+) -> Response:
+    """
+    按稳定对象引用读取原文并流式返回，供浏览器/iframe 预览。
+
+    **为何需要本接口**：``original_preview_url`` 若直接返回 MinIO 预签名
+    （如 ``http://models-app-minio:9000/...``），外网浏览器无法解析该主机名。
+    本接口由算法服务内网访问 MinIO，对外只暴露 ``/chatbot/...``。
+
+    **鉴权**：与其它业务接口相同，``Authorization: Bearer <SERVICE_API_KEY>``
+    （通常由 BFF 转发；浏览器 iframe 需 BFF 同源代理或前端 fetch+blob）。
+    """
+    from app.rag.original_preview import load_original_bytes_for_preview, looks_like_stable_original_ref
+
+    raw = (ref or "").strip()
+    if not looks_like_stable_original_ref(raw):
+        raise HTTPException(status_code=422, detail="invalid original ref")
+    try:
+        data, media_type, filename = load_original_bytes_for_preview(raw)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"original preview failed: {exc}") from exc
+
+    # RFC 5987：中文文件名
+    from urllib.parse import quote
+
+    safe_ascii = filename.encode("ascii", "ignore").decode("ascii") or "original.bin"
+    disp = f"inline; filename=\"{safe_ascii}\"; filename*=UTF-8''{quote(filename)}"
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": disp,
+            "Cache-Control": "private, max-age=300",
+        },
     )
 
 
@@ -207,8 +263,9 @@ async def chat_stream(req: ChatRequest, request: Request):
        - `doc_name`、`section_path`、`namespace`、`doc_version`、`chunk_id`；
        - `text_preview`：片段摘要；
        - `original_content_url`（可选）：稳定原文引用（常为 `minio://bucket/key`，可落库）；
-       - `original_preview_url`（可选）：短时预签名 HTTPS，前端直接预览；过期可用
-         `GET /rag/documents/original/presign?ref=<original_content_url>` 刷新。
+       - `original_preview_url`（可选）：经本服务代理的预览路径
+         ``/chatbot/documents/original/preview?ref=<urlencoded original_content_url>``
+         （勿直连集群内 MinIO 主机；前端/BFF 带鉴权打开或 fetch 后 blob 预览）。
 
     2. **流式引用事件 `citation_ref`**：RAG 路径下后端从模型输出中识别完整 `[n]` 后单独下发
        `{"citation_ref": n, "finished": false}`；正文 `delta` 不再包含该 `[n]` 字面量。（正文中渲染链接时，需要通过n与结束帧rag_citations中的ref_index进行匹配，来获取知识文档名称和链接）
