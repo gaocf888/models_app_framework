@@ -33,6 +33,7 @@
 | 2026-10-16 | 4.6 摄入任务查询补充 `step` / `status` 中文对照，便于进度页渲染 | — | V1.8 |
 | 2026-10-19 | 问答尾帧/历史 `rag_citations` 补充 `original_preview_url`（短时预览）；`original_content_url` 为稳定引用 | — | V1.9 |
 | 2026-10-19 | `original_preview_url` 改为 `/chatbot/documents/original/preview` 代理路径，避免外网直连 `models-app-minio` | — | V1.10 |
+| 2026-10-19 | 问答尾帧/历史返回字段下补充 `original_preview_url` 调用方使用说明 | — | V1.11 |
 
 ## 通用约定
 
@@ -109,6 +110,15 @@ POST
 | meta.suggested_questions | array | 推荐问；纯查数路径通常为空(前端不渲染)                              |
 | meta.nl2sql_sql | string | **禁止渲染(前端不渲染)**                                   |
 | error | — | 错误提示                                              |
+
+### 调用方使用说明
+
+来源列表有 `rag_citations` 时：角标 `[n]` 用 `ref_index` 对齐；点开预览用项内 `original_preview_url`（相对路径），**不要**用 `original_content_url`（`minio://…`）当浏览器地址，也**不要**直连集群内 MinIO 主机。
+
+| 字段 | 页面怎么用 |
+|------|------------|
+| `original_content_url` | 稳定对象引用，仅展示/落库用；浏览器不可直接打开 |
+| `original_preview_url` | 预览入口。形态为 `/chatbot/documents/original/preview?ref=…`。前端把该相对路径交给 **BFF/网关** 同源打开（iframe / 新窗口 / `fetch` 后转 blob）；由 BFF 转发并注入 `Authorization: Bearer <service-api-key>`。前端**无需**单独对接预览接口文档或自拼 `ref` |
 
 ### 接口示例
 
@@ -338,6 +348,10 @@ GET
 |----------|----------|------|
 | messages | array | 历史消息（role / content / 可选 `rag_citations`） |
 | messages[].rag_citations | array | 与流式 `meta.rag_citations` 同形；含 `original_content_url`（稳定引用）、`original_preview_url`（预览相对路径，由 BFF 打开；前端无需单独对接预览接口） |
+
+### 调用方使用说明
+
+助手消息若带 `rag_citations`，预览用法与 **1.1** 尾帧相同：用 `original_preview_url` 交 BFF 同源打开并带鉴权；历史读取时服务端会按稳定引用重新签发该字段。勿打开 `original_content_url`，勿直连 MinIO，勿单独对接预览接口。
 
 ### 接口示例
 
