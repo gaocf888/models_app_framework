@@ -409,14 +409,14 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 | 列来源 | 规则 |
 |--------|------|
 | 解析 SQL | `data_query_result.columns[].title` 当表头（用户看见的列名）；单元格取 `list[row][columns[i].key]`（这一格的值）；缺 key 显示空，不要自己猜列 |
-| 浏览点库/区（`result_grain=station`） | 用返回的 `columns[].title` 当表头；单元格取 `list[row][columns[i].key]`；与解析路径同一套表格 |
+| 浏览点库/区（`result_grain=station`） | 用返回的 `columns[].title` 当表头；单元格取 `list[row][columns[i].key]`。分层标/基岩标/光纤只有 `total_settle_mm`（表头「沉降量」），**不要**再渲染年沉降量 |
 | 浏览点站（`result_grain=device_time`） | 第一列监测时间，其后每列一个设备 `station_name`；`list[i][设备名]` 为该时刻沉降值 |
 
 站点列表典型度量列（除测位 ID / 站名 / 行政区 / 数据时间外；即表上多出来的「数」）：
 
 | `library_id`（哪类监测） | 度量列（表上的数，界面用中文表头） |
 |--------------|--------|
-| `fcb` / `jyb` / `gq`（分层标/基岩标/光纤） | `annual_settle_mm`（年沉降量）、`total_settle_mm`（累计沉降） |
+| `fcb` / `jyb` / `gq`（分层标/基岩标/光纤） | 解析路径：`annual_settle_mm`（年沉降量）、`total_settle_mm`（累计沉降）；**浏览点库/区**：仅 `total_settle_mm`（沉降量），无年沉降量 |
 | `dxswj`（地下水） | `deep`（埋深）、`annual_deep`、`elevation`（水位标高） |
 | `kxsylj`（孔压） | `pressure`、`annual_pressure` |
 | `gnss` | `displacement_3d`（三维位移）、`annual_displacement_3d`、`displacement_2d` |
@@ -607,7 +607,7 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 | `/browse` | `station_id` 可选 | 点某个站时传树上的 `station_id`（`F9(后芮营)`）；此时右侧改为设备×时间矩阵 |
 | `/browse` | `page` / `page_size` | 页码从 1；默认 20 行，最大 100。点库/区按观测行数；点站按监测时间条数 |
 
-`/browse` 用 `result_grain` 区分布局：`station` 时 `columns`+`list` 与解析路径同一套 key，行上带 `hud_entity_id`，点「详参」再打 `GET /hud`；`device_time` 时列是设备名，不要画详参。树是站点粒度；**列表必须分页**，禁止一次拉全表历史。
+`/browse` 用 `result_grain` 区分布局：`station` 时用返回的 `columns`+`list` 画表（沉降库表头是「沉降量」，没有年沉降量），行上带 `hud_entity_id`，点「详参」再打 `GET /hud`；`device_time` 时列是设备名，不要画详参。树是站点粒度；**列表必须分页**，禁止一次拉全表历史。
 
 ---
 

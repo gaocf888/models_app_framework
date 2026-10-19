@@ -21,7 +21,6 @@ from app.analysis_agent.deterministics.coverage import (
 )
 from app.core.config import get_app_config
 from app.core.logging import get_logger
-from app.data_query_agent.annual import compute_annual_delta, resolve_annual_window
 from app.data_query_agent.catalog import CatalogError, LibraryDef, get_library_catalog
 from app.nl2sql.executor import SQLExecutor
 
@@ -339,12 +338,28 @@ def build_annual_sql(library: LibraryDef, *, by_mark: bool = False) -> str:
     )
 
 
+def _browse_rep_column_title(col_key: str, title: str) -> str:
+    """浏览点库/区：仅展示实测沉降量，不用「历史累计沉降 / 年沉降量」双列口径。"""
+    text = title or ""
+    if col_key == "total_settle_mm" or "历史累计沉降" in text:
+        return "沉降量(mm)" if "(mm)" in text else "沉降量"
+    return text
+
+
+def _browse_rep_columns(library: LibraryDef) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for col in library.columns:
+        if library.annual_key and col.key == library.annual_key:
+            continue
+        out.append({"key": col.key, "title": _browse_rep_column_title(col.key, col.title)})
+    return out
+
+
 def _row_to_list_item(library: LibraryDef, raw: dict[str, Any]) -> dict[str, Any]:
     norm = {str(k).strip(): _cell(v) for k, v in raw.items() if str(k).strip()}
     item: dict[str, Any] = {}
     for col in library.columns:
         if library.annual_key and col.key == library.annual_key:
-            item[col.key] = None
             continue
         val = None
         for alias in col.aliases or (col.key,):
@@ -374,45 +389,6 @@ def _time_key(value: Any) -> str:
     if cell is None:
         return ""
     return str(cell)
-
-
-async def _fetch_annual(
-    executor: SQLExecutor,
-    library: LibraryDef,
-    items: list[dict[str, Any]],
-    *,
-    by_mark: bool = False,
-) -> None:
-    if not library.annual_key or not library.annual_source or not items:
-        return
-    names = [str(x.get("station_id") or "") for x in items if x.get("station_id")]
-    if not names:
-        return
-    win = resolve_annual_window("")
-    marks = [str(x.get("mark_name") or "") for x in items if x.get("mark_name")]
-    use_mark = bool(by_mark and marks)
-    sql = build_annual_sql(library, by_mark=use_mark)
-    params: dict[str, Any] = {"start": win["start"], "end": win["end"]}
-    if use_mark:
-        params["marks"] = marks
-    else:
-        params["names"] = names
-    rows = await executor.execute(sql, params)
-    by_station: dict[str, list[dict[str, Any]]] = {}
-    for raw in rows:
-        sid = str(raw.get("station_id") or "")
-        if not sid:
-            continue
-        by_station.setdefault(normalize_site_key(sid), []).append({"t": raw.get("t"), "v": raw.get("v")})
-    for item in items:
-        sid = str(item.get("station_id") or "")
-        delta = compute_annual_delta(
-            by_station.get(normalize_site_key(sid)) or [],
-            start=win["start"],
-            end=win["end"],
-        )
-        if delta is not None:
-            item[library.annual_key] = _cell(delta)
 
 
 def _in_yaml_coverage(library: LibraryDef, project_name: str) -> str | None:
@@ -490,7 +466,7 @@ async def _fetch_rep_station_list(
 ) -> dict[str, Any]:
     pairs = representative_mark_pairs(library)
     coverage = _coverage_names(library)
-    columns = [{"key": c.key, "title": c.title} for c in library.columns]
+    columns = _browse_rep_columns(library)
     empty = {
         "ok": True,
         "library_id": library.id,
@@ -565,13 +541,6 @@ async def _fetch_rep_station_list(
         project_by_mark=project_by_mark,
     )
     warnings: list[str] = []
-    try:
-        await _fetch_annual(executor, library, page_items, by_mark=bool(marks))
-        if library.annual_key and any(x.get(library.annual_key) is None for x in page_items):
-            warnings.append("annual_metric_uncomputed")
-    except Exception:  # noqa: BLE001
-        logger.warning("data_query_agent browse annual failed library=%s", library.id, exc_info=True)
-        warnings.append("annual_metric_uncomputed")
 
     return {
         "ok": True,

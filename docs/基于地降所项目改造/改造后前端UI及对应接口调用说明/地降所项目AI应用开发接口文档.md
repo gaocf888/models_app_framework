@@ -34,6 +34,7 @@
 | 2026-10-19 | 问答尾帧/历史 `rag_citations` 补充 `original_preview_url`（短时预览）；`original_content_url` 为稳定引用 | — | V1.9 |
 | 2026-10-19 | `original_preview_url` 改为 `/chatbot/documents/original/preview` 代理路径，避免外网直连 `models-app-minio` | — | V1.10 |
 | 2026-10-19 | 问答尾帧/历史返回字段下补充 `original_preview_url` 调用方使用说明 | — | V1.11 |
+| 2026-10-19 | 3.3 点库/区列表去掉年沉降量，累计沉降表头改为沉降量 | — | V1.12 |
 
 ## 通用约定
 
@@ -798,7 +799,7 @@ Authorization: Bearer <service-api-key>
 
 进页默认表、点树刷新右侧表。**两种视图**（看有没有传 `station_id`）：
 
-1. **点树中监测方式 / 行政区**（不传 `station_id`）：查询范围内 **代表标**（分层标=层位 0）的 **全部观测行**，按 `data_time` **倒序**；表头仍是测位/站名/行政区/年沉降/累计沉降/时间，**不要**用设备 `station_name` 当列。  
+1. **点树中监测方式 / 行政区**（不传 `station_id`）：查询范围内 **代表标**（分层标=层位 0）的 **全部观测行**，按 `data_time` **倒序**；表头是测位/站名/行政区/沉降量/时间（**无年沉降量**），**不要**用设备 `station_name` 当列。  
 2. **点树中站点**（传 `station_id`）：该场地 **全部设备** 的监测序列。行= `data_time`（新→旧），列=设备 `station_name`（如 `F9-1`、`F9-1T`），单元格=`total_settle`（其它库用该库核心指标）。
 
 强制分页。不走 `run-stream`。代表标表上点「详参」再调 `GET /hud`；设备矩阵不带详参。
@@ -857,13 +858,13 @@ GET
 
 **A. 点库 / 点行政区**（`result_grain=station`，进页默认也是这种）
 
-范围内代表标的全部观测，按 `data_time` 从新到旧。分层标只取层位 0 代表标，不是该站所有设备。表头与解析路径同一套（测位 ID / 监测站名称 / 行政区 / 年沉降 / 累计沉降 / 数据时间）。同一站会有多行。
+范围内代表标的全部观测，按 `data_time` 从新到旧。分层标只取层位 0 代表标，不是该站所有设备。表头按返回的 `columns` 渲染：测位 ID / 监测站名称 / 行政区 / **沉降量** / 数据时间。**不要**再画年沉降量列（当前只有实测沉降量，没有年沉降量）。同一站会有多行。
 
 | 返回字段 | 表上怎么加载 |
 |----------|--------------|
-| `columns[]` | `title` 当表头，`key` 取格。不要用设备编号当列 |
+| `columns[]` | `title` 当表头，`key` 取格。不要用设备编号当列；`total_settle_mm` 的 `title` 为「沉降量(mm)」 |
 | `list[].station_id` / `station_name` / `area` | 测位、站名（场地名如 `F8(周村)`）、行政区 |
-| `list[].total_settle_mm` / `annual_settle_mm` | 代表标的累计沉降、年沉降 |
+| `list[].total_settle_mm` | 该行代表标的沉降量（即洗数表 `total_settle`）。**无** `annual_settle_mm` |
 | `list[].data_time` | 该行观测时间（整表已按此倒序） |
 | `list[].hud_entity_id` | 点「详参」→ `GET /hud` |
 | `hud_enabled` | `false` 时整表不显示「详参」 |

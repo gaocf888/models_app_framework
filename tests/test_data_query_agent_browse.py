@@ -218,12 +218,17 @@ async def test_browse_list_default_fcb_is_rep_station() -> None:
     by_id = {row["station_id"]: row for row in payload["list"]}
     assert by_id["F28(金盏)"]["hud_entity_id"] == "F28(金盏)"
     assert by_id["F28(金盏)"]["hud_available"] is True
-    assert by_id["F28(金盏)"]["annual_settle_mm"] == pytest.approx(-14.2)
-    assert by_id["F2(望京)"]["annual_settle_mm"] == pytest.approx(-14.2)
-    assert any(c["key"] == "total_settle_mm" for c in payload["columns"])
+    assert by_id["F28(金盏)"]["total_settle_mm"] == pytest.approx(-84.2)
+    assert "annual_settle_mm" not in by_id["F28(金盏)"]
+    assert "annual_settle_mm" not in by_id["F2(望京)"]
+    settle_col = next(c for c in payload["columns"] if c["key"] == "total_settle_mm")
+    assert settle_col["title"] == "沉降量(mm)"
+    assert all(c["key"] != "annual_settle_mm" for c in payload["columns"])
     assert all(c["key"] != "F9-1" for c in payload["columns"])
     assert any("any(:rep_marks)" in sql.lower() for sql, _ in exe.calls)
     assert any("order by w.data_time desc" in sql.lower() for sql, _ in exe.calls)
+    assert all("any(:marks)" not in sql.lower() for sql, _ in exe.calls)
+    assert all("any(:names)" not in sql.lower() for sql, _ in exe.calls)
     assert all("distinct on" not in sql.lower() for sql, _ in exe.calls)
     assert all("t_data_wash_jyb" not in sql.lower() for sql, _ in exe.calls)
 
@@ -276,6 +281,9 @@ async def test_browse_list_district_filters_rep_stations() -> None:
     assert payload["district"] == "朝阳区"
     assert payload["station_id"] is None
     assert payload["result_grain"] == "station"
+    assert all(c["key"] != "annual_settle_mm" for c in payload["columns"])
+    assert any(c["key"] == "total_settle_mm" and c["title"] == "沉降量(mm)" for c in payload["columns"])
+    assert all("annual_settle_mm" not in row for row in payload["list"])
     assert all(row["station_id"] != "F28(金盏)" for row in payload["list"])
     assert payload["list"][0]["station_id"] == "F2(望京)"
     list_sql = next(sql for sql, _ in exe.calls if "order by w.data_time desc" in sql.lower())
