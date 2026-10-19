@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from app.data_query_agent.catalog import get_library_catalog
 from app.data_query_agent.period_sql import build_period_list_sql
 from app.data_query_agent.scope_intent import resolve_scope_intent
@@ -22,7 +24,9 @@ def test_period_sql_fcb_month_window_uses_row_number() -> None:
     assert "any(:projects)" in low
     assert "f2-7" in [str(x).lower() for x in params["rep_marks"]]
     assert any("F2(望京)" in str(p) for p in params["projects"])
-    assert "CAST(:t_start AS timestamp)" in sql
+    assert "f.data_time >= :t_start" in sql
+    assert isinstance(params["t_start"], datetime)
+    assert isinstance(params["t_end"], datetime)
     assert "ORDER BY ABS(" in sql
     assert "ABS(period" not in sql
     assert "ABS(annual_settle_mm)" not in sql

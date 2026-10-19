@@ -252,6 +252,11 @@ async def _query_one(
                 exc,
                 exc_info=True,
             )
+            return AcquireItemResult(
+                plan_item_id=plan_item_id,
+                ok=False,
+                error=str(exc) or "period_list_failed",
+            )
     question = _render_question(
         plan_item_id=plan_item_id,
         grain=grain,

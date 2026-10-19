@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 from app.analysis_agent.deterministics.coverage import canonical_project, normalize_site_key
@@ -28,13 +29,25 @@ def _wash_table(library: LibraryDef) -> str:
     return table
 
 
-def _period_bounds(scope: ScopeIntentResult) -> tuple[str, str]:
-    win = scope.annual_window or {}
-    start = str(win.get("start") or "").strip()
-    end = str(win.get("end") or "").strip()
-    if not start or not end:
+def _parse_bound(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    text = str(value or "").strip()
+    if not text:
         raise ValueError("period_window_missing")
-    return start, end
+    text = text.replace("T", " ").replace("Z", "")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[:26], fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"period_window_invalid:{text}")
+
+
+def _period_bounds(scope: ScopeIntentResult) -> tuple[datetime, datetime]:
+    """asyncpg 绑定 timestamp 必须用 datetime，不能传 '2026-09-19 00:00:00' 字符串。"""
+    win = scope.annual_window or {}
+    return _parse_bound(win.get("start")), _parse_bound(win.get("end"))
 
 
 def _station_projects(library: LibraryDef, scope: ScopeIntentResult) -> list[str]:
@@ -94,8 +107,8 @@ def build_period_list_sql(
 
     inner: list[str] = [
         f"f.{col} IS NOT NULL",
-        "f.data_time >= CAST(:t_start AS timestamp)",
-        "f.data_time <= CAST(:t_end AS timestamp)",
+        "f.data_time >= :t_start",
+        "f.data_time <= :t_end",
     ]
     params: dict[str, Any] = {"t_start": t_start, "t_end": t_end, "limit": limit}
     if projects:
