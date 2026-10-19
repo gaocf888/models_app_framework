@@ -97,8 +97,10 @@ def test_templates_period_station_uses_window_delta_not_latest_row() -> None:
     )
     assert "周期沉降量" in q
     assert "最新一条记录" not in q
+    assert "QUALIFY" in q
+    assert "ROW_NUMBER()" in q
     assert "层位=0" in q or "层位 0" in q
-    assert "F2" in q
+    assert "F2(望京)" in q
     assert "recent_1_months" in q
     assert "2025-10-19" not in q
 

@@ -68,11 +68,16 @@ def resolve_scope_intent(
         lexicon_file=str(_SUBSIDENCE_LEXICON) if _SUBSIDENCE_LEXICON.is_file() else None,
     )
     scope = payload.get("scope") or {}
+    sid = sub.station_id or scope.get("station_id") or None
+    sname = sub.station_name or scope.get("station_name") or None
+    # 词表 id 可能是短码 F2，场地键要用完整 project_name：F2(望京)
+    if sname and (not sid or (str(sid) != str(sname) and str(sid) in str(sname))):
+        sid = sname
     confirmed = {
         "device_type": library.device_type,
         "district": sub.district or scope.get("district") or None,
-        "station_id": sub.station_id or scope.get("station_id") or None,
-        "station_name": sub.station_name or scope.get("station_name") or None,
+        "station_id": sid,
+        "station_name": sname,
     }
     # 库表无岩性/层位列：只记 warning，不 HITL、不编造。
     lithology = bool(re.search(r"岩性|优势层|第[一二三四五六七八九十\d]+层", query or ""))

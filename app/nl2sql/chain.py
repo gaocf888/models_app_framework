@@ -2602,6 +2602,8 @@ class NL2SQLChain:
             re.IGNORECASE,
         ):
             return False, "MySQL-style INTERVAL n UNIT is forbidden in PostgreSQL; use INTERVAL 'n unit'"
+        if re.search(r"\bQUALIFY\b", s, re.IGNORECASE):
+            return False, "QUALIFY is forbidden in PostgreSQL; use ROW_NUMBER() subquery"
         return True, None
 
     def _validate_tidb_dialect(self, sql: str) -> tuple[bool, str | None]:

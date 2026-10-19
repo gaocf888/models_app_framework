@@ -234,6 +234,24 @@ async def _query_one(
     max_rows: int,
 ) -> AcquireItemResult:
     """单路 NL2SQL：analysis_type=data_query，链错表 refuse，SQL 再校验 wash 表。"""
+    if plan_item_id == "q_list" and grain == "station" and _is_period_time(scope):
+        try:
+            from app.data_query_agent.period_sql import fetch_period_list
+
+            sql, rows = await fetch_period_list(library, scope, max_rows=max_rows)
+            logger.info(
+                "data_query_agent period list deterministic library=%s rows=%s",
+                library.id,
+                len(rows),
+            )
+            return AcquireItemResult(plan_item_id=plan_item_id, ok=True, sql=sql, rows=rows)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "data_query_agent period list deterministic failed library=%s err=%s",
+                library.id,
+                exc,
+                exc_info=True,
+            )
     question = _render_question(
         plan_item_id=plan_item_id,
         grain=grain,

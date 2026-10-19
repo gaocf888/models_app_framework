@@ -15,8 +15,10 @@ q_list:
     分层标必须用监测层位=0 的代表标 station_name（禁止对同站全部标聚合）。
     对每个站点取时间窗内最早一条与最晚一条 {core_column}：周期沉降量 = 窗末值 − 窗初值；同时输出窗末值 AS {core_alias}、周期差值、窗末 data_time、station_id、station_name、t_station.area AS area。
     一行一站。禁止用单日 MAX−MIN 代替周期差，禁止把时间窗收成今天或昨天一天。
+    必须用 PostgreSQL：ROW_NUMBER() OVER 子查询取 rn_asc/rn_desc，禁止 QUALIFY（Snowflake/BigQuery 语法），禁止 WINDOW … QUALIFY。
+    ORDER BY 须重复差值表达式，禁止 ORDER BY ABS(别名)。
     {scope_block}
-    ORDER BY ABS(周期差值) DESC, station_id。LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
+    LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
   district: |
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。
     按行政区 t_station.area 汇总，输出 area, AVG({core_column}) AS {core_alias}, COUNT(DISTINCT {table}.station_id) AS station_count。
