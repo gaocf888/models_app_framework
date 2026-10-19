@@ -75,7 +75,10 @@ def _session_message_rag_citations(raw: Any) -> list[dict[str, Any]]:
     for it in raw:
         if isinstance(it, dict):
             out.append(dict(it))
-    return filter_rag_citation_dicts(out)
+    from app.rag.original_preview import enrich_rag_citations_with_preview
+
+    # 历史读取时按稳定 original_content_url 重新签发 short-lived original_preview_url
+    return enrich_rag_citations_with_preview(filter_rag_citation_dicts(out))
 def _delete_messages_by_ids(user_id: str, session_id: str, message_ids: list[str]) -> SessionMessageDeleteResponse:
     mids = [str(x or "").strip().lower() for x in (message_ids or []) if str(x or "").strip()]
     if not mids:
@@ -203,7 +206,9 @@ async def chat_stream(req: ChatRequest, request: Request):
        - `ref_index`（int，从 1 起）：与正文中 `[n]` 标记一一对应；
        - `doc_name`、`section_path`、`namespace`、`doc_version`、`chunk_id`；
        - `text_preview`：片段摘要；
-       - `original_content_url`（可选）：摄入时的原始文档 URL，有则可渲染为外链。
+       - `original_content_url`（可选）：稳定原文引用（常为 `minio://bucket/key`，可落库）；
+       - `original_preview_url`（可选）：短时预签名 HTTPS，前端直接预览；过期可用
+         `GET /rag/documents/original/presign?ref=<original_content_url>` 刷新。
 
     2. **流式引用事件 `citation_ref`**：RAG 路径下后端从模型输出中识别完整 `[n]` 后单独下发
        `{"citation_ref": n, "finished": false}`；正文 `delta` 不再包含该 `[n]` 字面量。（正文中渲染链接时，需要通过n与结束帧rag_citations中的ref_index进行匹配，来获取知识文档名称和链接）
@@ -337,7 +342,8 @@ async def get_session_messages(
 
     Returns:
         SessionMessagesResponse: `title`/`title_source` 与 `GET /sessions` 列表同源；`messages` 按时间顺序；
-        助手消息在 RAG 路径下可含 `rag_citations`（含 `ref_index` 与 `original_content_url` 等，与流式 `finished.meta.rag_citations` 同形）。
+        助手消息在 RAG 路径下可含 `rag_citations`（含 `ref_index`、`original_content_url`、
+        `original_preview_url` 等，与流式 `finished.meta.rag_citations` 同形；历史读取时会重新签发 preview）。
         正文 `content` 中可能出现 `[n]` 内联引用，解析方式同 `/chat/stream` 文档「RAG 内联引用」一节。
 
     Raises:

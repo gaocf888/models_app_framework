@@ -239,7 +239,7 @@
 | 删除文档 | POST | `/rag/documents/delete` | 已有（须级联删对象） |
 | 清空分类 | POST | `/rag/namespaces/{namespace}/purge` | 已有（可选入口） |
 
-后台已有、本页可不做：`GET /rag/jobs`（任务中心）、`GET /rag/knowledge/trends`、`POST /rag/query`、`GET /rag/assets/presign`（figure）、NL2SQL 管理接口。
+后台已有、本页可不做：`GET /rag/jobs`（任务中心）、`GET /rag/knowledge/trends`、`POST /rag/query`、`GET /rag/assets/presign`（figure）、`GET /rag/documents/original/presign`（问答来源预览换签）、NL2SQL 管理接口。
 
 ---
 

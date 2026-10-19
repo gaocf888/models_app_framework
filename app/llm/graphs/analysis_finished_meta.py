@@ -11,6 +11,7 @@ from time import perf_counter
 from typing import Any
 
 from app.llm.graphs.chatbot_rag_citations import filter_rag_citation_dicts
+from app.rag.original_preview import enrich_rag_citations_with_preview
 
 
 def build_analysis_finished_meta(
@@ -40,7 +41,9 @@ def build_analysis_finished_meta(
     stream_id: str | None = None,
 ) -> dict[str, Any]:
     """组装 finished.meta：智能客服同名字段 + 综合分析扩展字段。"""
-    citations = filter_rag_citation_dicts(list(rag_citations or []))
+    citations = enrich_rag_citations_with_preview(
+        filter_rag_citation_dicts(list(rag_citations or []))
+    )
     attempts = retrieval_attempts
     if attempts is None:
         attempts = int(bool(used_plan_rag)) + int(bool(used_business_rag))

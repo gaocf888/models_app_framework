@@ -223,7 +223,10 @@ class AnalysisEvidence(BaseModel):
     rag_sources: List[Dict[str, Any]] = Field(default_factory=list, description="RAG 证据来源（审计简表）")
     rag_citations: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="知识来源引用（与智能客服 finished.meta.rag_citations 同形，含 original_content_url 等）",
+        description=(
+            "知识来源引用（与智能客服 finished.meta.rag_citations 同形，"
+            "含 original_content_url / original_preview_url 等）"
+        ),
     )
     nl2sql_calls: List[AnalysisNL2SQLCall] = Field(default_factory=list, description="NL2SQL 调用明细")
     data_coverage: Dict[str, Any] = Field(default_factory=dict, description="数据覆盖率与质量摘要")

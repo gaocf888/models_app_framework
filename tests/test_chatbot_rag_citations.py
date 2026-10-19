@@ -67,6 +67,32 @@ def test_chunks_to_rag_citations_original_content_url_from_metadata():
     ]
     cites = chunks_to_rag_citations(chunks)
     assert cites[0].get("original_content_url") == "https://cdn.example.com/doc.pdf"
+    # http(s) 稳定 URL 同时作为 preview
+    assert cites[0].get("original_preview_url") == "https://cdn.example.com/doc.pdf"
+
+
+def test_chunks_to_rag_citations_minio_ref_keeps_stable_and_attempts_preview(monkeypatch):
+    from app.rag import original_preview as op
+
+    monkeypatch.setattr(
+        op,
+        "resolve_original_preview_url",
+        lambda ref: "https://minio.example/presigned/original.pdf" if ref.startswith("minio://") else None,
+    )
+    chunks = [
+        RetrievedChunk(
+            text="正文片段",
+            doc_name="规程",
+            namespace="参考规范",
+            chunk_id="x2",
+            metadata={
+                "source_uri": "minio://rag-assets/rag-docs/参考规范/doc/v1.0.1/original.pdf",
+            },
+        )
+    ]
+    cites = chunks_to_rag_citations(chunks)
+    assert cites[0]["original_content_url"].startswith("minio://")
+    assert cites[0]["original_preview_url"].startswith("https://")
 
 
 def test_chunks_to_rag_citations_excludes_nl2sql_namespaces():

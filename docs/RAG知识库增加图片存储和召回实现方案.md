@@ -435,7 +435,8 @@ figure_expand_max_total=max(0, int(os.getenv("RAG_FIGURE_EXPAND_MAX_TOTAL", "6")
   "content_type": "figure",
   "image_url": "https://minio.example/rag-assets/.../fig_003.png",
   "asset_type": "architecture_diagram",
-  "original_content_url": "https://kb.example/source.pdf"
+  "original_content_url": "https://kb.example/source.pdf",
+  "original_preview_url": "https://kb.example/source.pdf"
 }
 ```
 

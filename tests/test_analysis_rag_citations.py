@@ -69,6 +69,7 @@ def test_build_analysis_rag_citations_includes_original_content_url() -> None:
     assert len(cites) == 1
     assert cites[0]["doc_name"] == "overheat_guide.docx"
     assert cites[0]["original_content_url"] == "https://cdn.example.com/overheat_guide.docx"
+    assert cites[0]["original_preview_url"] == "https://cdn.example.com/overheat_guide.docx"
 
 
 def test_build_analysis_rag_citations_merges_plan_and_business() -> None:

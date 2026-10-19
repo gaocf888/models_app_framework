@@ -253,7 +253,7 @@ async def run_analysis_img_diag(data: AnalysisImgDiagRequest) -> AnalysisV2Resul
     - `options`：默认 **`enable_rag=true`**；含 `strict`、`max_nl2sql_calls` 等。
 
     **响应**：`analysis_type` 为 `img_diag_defect_ident` 或 `img_diag_leakage_burst`；
-    `evidence.rag_citations` 与智能客服 `finished.meta.rag_citations` 同形（含 `ref_index`、`doc_name`、`original_content_url` 等）；
+    `evidence.rag_citations` 与智能客服 `finished.meta.rag_citations` 同形（含 `ref_index`、`doc_name`、`original_content_url`、`original_preview_url` 等）；
     trace 含 `parsed_intent` / `parsed_time_intent` / `parsed_scope_intent`。
 
     若 scope HITL 需用户确认，返回 **409**，body 含 `event=img_diag_scope_input_required` 与 `resume_token`。
@@ -312,7 +312,7 @@ async def run_analysis_img_diag_stream(data: AnalysisImgDiagRequest) -> Streamin
     | `finished` | **尾帧**（与 `/chatbot/chat/stream` 同形） | `finished: true`，`meta` 见下表 |
 
     **`finished.meta` 主要字段（200 尾帧，非 HTTP body）**
-    - 与智能客服同形：`used_rag`、`rag_citations[]`（含 `ref_index`、`doc_name`、`text_preview`、`original_content_url` 等）、
+    - 与智能客服同形：`used_rag`、`rag_citations[]`（含 `ref_index`、`doc_name`、`text_preview`、`original_content_url`、`original_preview_url` 等）、
       `duration_ms`、`used_nl2sql`、`nl2sql_sql`（首条成功子查询 SQL）、`processed_image_urls`、`original_image_urls`
     - 分析扩展：`request_id`、`plan_id`、`analysis_type`、`data_mode`、`used_plan_rag`、`used_business_rag`、
       `synthesis_ms`、`intent_label`（如 `analysis_img_diag_defect_ident`）

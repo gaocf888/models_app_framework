@@ -273,6 +273,8 @@ class RAGIngestionConfig:
     figure_expand_max_per_text: int = 2
     figure_expand_max_total: int = 6
     original_object_key_prefix: str = "rag-docs/"
+    # 原文预签名 GET TTL（秒）；供 citation.original_preview_url / documents/original/presign
+    original_presign_ttl_seconds: int = 3600
     # 省略 dataset_id 时的项目级数据集标签（RAG_DEFAULT_DATASET_ID）。
     # 用于 docs 元数据/管理过滤/Graph；非主键、非默认检索硬分区；单项目建议固定 default。
     default_dataset_id: str = "default"
@@ -1249,6 +1251,9 @@ def _load_from_env() -> AppConfig:
         figure_expand_max_per_text=max(0, int(os.getenv("RAG_FIGURE_EXPAND_MAX_PER_TEXT", "2"))),
         figure_expand_max_total=max(0, int(os.getenv("RAG_FIGURE_EXPAND_MAX_TOTAL", "6"))),
         original_object_key_prefix=(os.getenv("RAG_ORIGINAL_OBJECT_KEY_PREFIX") or "rag-docs/").strip() or "rag-docs/",
+        original_presign_ttl_seconds=max(
+            60, int(os.getenv("RAG_ORIGINAL_PRESIGN_TTL_SECONDS", "3600"))
+        ),
         default_dataset_id=(os.getenv("RAG_DEFAULT_DATASET_ID") or "default").strip() or "default",
     )
     agentic_cfg = RAGAgenticConfig(

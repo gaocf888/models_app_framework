@@ -3,7 +3,10 @@
 
 字段与 `RetrievedChunk` 对齐，便于前端展示「知识来源」；列表顺序与传入 chunks 一致（去重后）。
 `ref_index`（从 1 起）与注入 LLM 的 ``[n]`` 编号一致，供正文内联引用解析。
-若向量 metadata 中带有摄入时的原始 URL，则 citation 中会包含 `original_content_url`（由前端挂载链接，不写入 LLM prompt）。
+若向量 metadata 中带有摄入时的原始 URL，则 citation 中会包含：
+- ``original_content_url``：稳定对象引用（``minio://`` / http(s) 等，可落库）；
+- ``original_preview_url``：短时预签名 HTTPS（仅响应下发；前端预览用，过期可再换签）。
+二者均不写入 LLM prompt。
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterator, List, Tuple
 
 from app.rag.models import RetrievedChunk
+from app.rag.original_preview import enrich_citation_with_preview
 
 # 智能客服 finished.meta.rag_citations：不展示 NL2SQL 库表/业务/QA 知识库片段
 RAG_CITATIONS_EXCLUDED_NAMESPACES = frozenset(
@@ -170,6 +174,7 @@ def chunks_to_rag_context(
         orig_url = _original_content_url_from_chunk_metadata(c.metadata)
         if orig_url:
             item["original_content_url"] = orig_url
+            item = enrich_citation_with_preview(item)
         meta = c.metadata if isinstance(c.metadata, dict) else {}
         if meta.get("content_type") == "figure" and meta.get("image_url"):
             item["content_type"] = "figure"
@@ -206,7 +211,8 @@ def chunks_to_rag_citations(
     - 按 (namespace, doc_name, chunk_id, text 前缀) 去重，保留首次出现顺序；
     - `ref_index` 从 1 起，与 LLM 正文中的 ``[n]`` 及 ``chunks_to_numbered_llm_snippets`` 对齐；
     - `text_preview` 为片段摘要，避免 meta 过大；
-    - 若 chunk 的 metadata 中含摄入原始 URL（见 `_original_content_url_from_chunk_metadata`），则增加 `original_content_url`；
+    - 若 chunk 的 metadata 中含摄入原始 URL（见 `_original_content_url_from_chunk_metadata`），则增加
+      ``original_content_url``（稳定引用）与 ``original_preview_url``（短时预签名，若可签发）；
     - 默认排除 ``nl2sql_schema`` / ``nl2sql_biz_knowledge`` / ``nl2sql_qa_examples``（传 ``exclude_namespaces=()`` 可关闭）。
     """
     _, citations = chunks_to_rag_context(

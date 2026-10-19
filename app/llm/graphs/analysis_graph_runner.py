@@ -328,7 +328,7 @@ class AnalysisGraphRunner:
 
         使用 ``chunks_to_rag_context``（与 chatbot kb_retrieve 一致），字段含 ref_index、
         namespace、doc_name、doc_version、chunk_id、section_path、source、score、rerank_score、
-        pipeline_version、text_preview、original_content_url（若有）。
+        pipeline_version、text_preview、original_content_url / original_preview_url（若有）。
 
         排除 nl2sql_schema / nl2sql_biz_knowledge / nl2sql_qa_examples。
         """
@@ -346,11 +346,13 @@ class AnalysisGraphRunner:
     def _rag_citations_for_persist(
         raw: list[dict[str, Any]] | None,
     ) -> list[dict[str, Any]] | None:
-        """会话落盘 rag_citations（与 finished.meta、GET /chatbot/sessions/messages 同形）。"""
+        """会话落盘 rag_citations（稳定引用；preview URL 由 ConversationManager 再剥一次）。"""
         if not raw:
             return None
+        from app.rag.original_preview import strip_rag_citation_preview_urls
+
         cites = filter_rag_citation_dicts([x for x in raw if isinstance(x, dict)])
-        return cites or None
+        return strip_rag_citation_preview_urls(cites) or None
 
     def _persist_assistant_summary(
         self,

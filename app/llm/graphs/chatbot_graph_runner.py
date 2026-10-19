@@ -1673,7 +1673,11 @@ class ChatbotLangGraphRunner:
         suggested = [] if is_pure_data_query else list(state.get("suggested_questions") or [])
         # kb_qa / hybrid_qa / data_query 均可下发知识引用；统一过滤 NL2SQL 三库 namespace。
         # data_query 若图内未做知识检索则仍为空列表。
-        citations = filter_rag_citation_dicts(list(state.get("rag_citations") or []))
+        from app.rag.original_preview import enrich_rag_citations_with_preview
+
+        citations = enrich_rag_citations_with_preview(
+            filter_rag_citation_dicts(list(state.get("rag_citations") or []))
+        )
         used_nl2sql = bool(state.get("used_nl2sql", False))
         nl2sql_failed = bool(state.get("nl2sql_failed", False))
         # nl2sql_sql 是否为空已由 CHATBOT_EXPOSE_NL2SQL_SQL_IN_META 在 nl2sql_answer 写入时决定；

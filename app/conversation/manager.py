@@ -41,8 +41,12 @@ class ConversationManager:
         rag_citations: List[Dict[str, Any]] | None = None,
     ) -> None:
         u, s = validate_pair(user_id, session_id)
-        self._store.append_message(u, s, role="assistant", content=content, rag_citations=rag_citations)
-        self._archive_message(u, s, role="assistant", content=content, rag_citations=rag_citations)
+        # 落库只保留稳定 original_content_url；短时 original_preview_url 在读取/结束帧再签发
+        from app.rag.original_preview import strip_rag_citation_preview_urls
+
+        persist_cites = strip_rag_citation_preview_urls(rag_citations)
+        self._store.append_message(u, s, role="assistant", content=content, rag_citations=persist_cites)
+        self._archive_message(u, s, role="assistant", content=content, rag_citations=persist_cites)
 
     def get_recent_history(self, user_id: str, session_id: str, limit: int = 20) -> List[dict]:
         u, s = validate_pair(user_id, session_id)

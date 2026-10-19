@@ -1229,16 +1229,27 @@ class PresignAssetResponse(BaseModel):
     image_url: str = Field(..., description="新的预签名或可访问 URL")
 
 
+class PresignOriginalResponse(BaseModel):
+    ok: bool = Field(True, description="是否成功")
+    original_content_url: str = Field(..., description="入参稳定引用（原样回显）")
+    original_preview_url: str = Field(..., description="短时可打开的预签名 HTTPS 或本地可访问路径")
+
+
 @router.get(
     "/assets/presign",
     summary="刷新 RAG figure 图片预签名 URL",
     response_model=PresignAssetResponse,
 )
-async def presign_rag_asset(key: Annotated[str, Query(description="MinIO object key 或本地存储路径")]) -> PresignAssetResponse:
+async def presign_rag_asset(
+    key: Annotated[
+        str,
+        Query(description="MinIO object key、minio://bucket/key 或本地存储路径"),
+    ],
+) -> PresignAssetResponse:
     """
-    按 ``image_object_key`` 重新签发 MinIO 预签名 GET URL（预签名过期后前端可调用刷新）。
+    按 ``image_object_key`` / 对象引用重新签发 MinIO 预签名 GET URL（预签名过期后前端可调用刷新）。
 
-    需 MinIO 后端；本地存储模式返回静态路径 URL。
+    需 MinIO 后端；本地存储模式返回静态路径 URL。亦兼容 ``minio://bucket/key``。
     """
     try:
         from app.rag.asset_storage import RagAssetStorage
@@ -1248,6 +1259,43 @@ async def presign_rag_asset(key: Annotated[str, Query(description="MinIO object 
     except Exception as e:  # noqa: BLE001
         logger.exception("rag presign failed: key=%s", key[:120])
         raise HTTPException(status_code=400, detail=f"RAG presign failed: {e}") from e
+
+
+@router.get(
+    "/documents/original/presign",
+    summary="刷新知识原文预签名预览 URL",
+    response_model=PresignOriginalResponse,
+)
+async def presign_original_document(
+    ref: Annotated[
+        str,
+        Query(
+            description=(
+                "稳定原文引用：citation.original_content_url，"
+                "如 minio://rag-assets/rag-docs/.../original.pdf，或裸 object key"
+            )
+        ),
+    ],
+) -> PresignOriginalResponse:
+    """
+    将稳定对象引用签发为短时 ``original_preview_url``（供前端 PDF/原文预览；过期后可再调本接口）。
+
+    与客服/分析 ``rag_citations`` 方案 A 对齐：落库保留 ``minio://``，预览用 HTTPS 预签名。
+    TTL 见 ``RAG_ORIGINAL_PRESIGN_TTL_SECONDS``（默认 3600）。
+    """
+    from app.rag.original_preview import looks_like_stable_original_ref, resolve_original_preview_url
+
+    raw = (ref or "").strip()
+    if not looks_like_stable_original_ref(raw):
+        raise HTTPException(status_code=422, detail="invalid original ref")
+    preview = resolve_original_preview_url(raw)
+    if not preview:
+        raise HTTPException(status_code=400, detail="failed to issue original preview url")
+    return PresignOriginalResponse(
+        ok=True,
+        original_content_url=raw,
+        original_preview_url=preview,
+    )
 
 
 @router.post(
