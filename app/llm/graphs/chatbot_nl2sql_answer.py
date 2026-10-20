@@ -512,6 +512,10 @@ class ChatbotNL2SQLOutcome:
     nl2sql_analysis: dict[str, Any] | None = None
     # 非空时：SQL 已成功，分析待 SSE 流式输出（answer_text 通常为空）
     analysis_stream_plan: Nl2sqlAnalysisStreamPlan | None = None
+    # 沉降查数可观测：锁库来源 / period 短路 / 是否运维分流
+    library_source: str | None = None
+    period_deterministic: str | None = None  # hit | miss | fail_fallback_llm | skipped_ops
+    ops_routed: bool = False
 
 
 @dataclass
@@ -553,6 +557,18 @@ def json_safe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{str(k): json_safe_value(v) for k, v in (_row_to_mapping(r).items())} for r in rows]
 
 
+def _obs_fields(
+    prepare: Any,
+    *,
+    period_deterministic: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "library_source": getattr(prepare, "library_source", None),
+        "period_deterministic": period_deterministic,
+        "ops_routed": bool(getattr(prepare, "ops_routed", False)),
+    }
+
+
 async def run_chatbot_nl2sql_query(
     nl2sql: NL2SQLService,
     llm_client: Any,
@@ -566,13 +582,69 @@ async def run_chatbot_nl2sql_query(
 
     defer_analysis_stream=True：查数成功且需 LLM 分析时不阻塞等待全文，返回 analysis_stream_plan
     供调用方用 stream_chat 推 SSE delta（同步 chat / 关分析时仍返回完整 answer_text）。
+
+    地降沉降路径：运维分流后锁库 + 规则 scope；站点+区间时间优先 period 确定性 SQL，
+    失败回退 LLM（不照搬查询台 HITL）。
     """
-    req = NL2SQLQueryRequest(
-        user_id=user_id,
-        session_id=session_id,
-        question=question,
-        sql_gen_extra_hint=_chatbot_sql_gen_extra_hint(),
+    from app.nl2sql.chatbot_settle_prepare import (
+        prepare_chatbot_settle_query,
+        try_chatbot_period_list,
     )
+
+    prepare = prepare_chatbot_settle_query(question)
+    if prepare.ambiguous_message:
+        return ChatbotNL2SQLOutcome(
+            answer_text=prepare.ambiguous_message,
+            **_obs_fields(prepare, period_deterministic="miss"),
+        )
+
+    period_tag: str | None = "skipped_ops" if prepare.ops_routed else "miss"
+
+    # 站点 + 区间时间：确定性 period SQL；失败则回退下方 LLM。
+    if prepare.period_eligible and not prepare.ops_routed:
+        period_hit = await try_chatbot_period_list(prepare)
+        if period_hit is not None:
+            sql, rows = period_hit
+            period_tag = "hit"
+            summarized = await summarize_nl2sql_with_llm(
+                llm_client,
+                user_query=question,
+                sql=sql,
+                rows=list(rows or []),
+                user_id=user_id,
+                defer_analysis_stream=defer_analysis_stream,
+            )
+            sql_meta = (sql or None) if _chatbot_expose_nl2sql_sql_in_meta() else None
+            return ChatbotNL2SQLOutcome(
+                answer_text=summarized.answer_text,
+                nl2sql_sql=sql_meta,
+                nl2sql_analysis=summarized.analysis_meta,
+                analysis_stream_plan=summarized.stream_plan,
+                **_obs_fields(prepare, period_deterministic=period_tag),
+            )
+        period_tag = "fail_fallback_llm"
+
+    req_kwargs: dict[str, Any] = {
+        "user_id": user_id,
+        "session_id": session_id,
+        "question": question,
+        "sql_gen_extra_hint": _chatbot_sql_gen_extra_hint(),
+    }
+    if prepare.ops_routed:
+        pass  # 运维：不锁沉降表，由链内 om 意图收窄
+    else:
+        if prepare.forced_tables:
+            req_kwargs["forced_tables"] = list(prepare.forced_tables)
+        if prepare.confirmed_scope:
+            req_kwargs["confirmed_scope"] = dict(prepare.confirmed_scope)
+        if prepare.structured_filters:
+            req_kwargs["structured_filters"] = dict(prepare.structured_filters)
+        if prepare.time_intent_text:
+            req_kwargs["time_intent_text"] = prepare.time_intent_text
+        if prepare.original_query:
+            req_kwargs["original_query"] = prepare.original_query
+
+    req = NL2SQLQueryRequest(**req_kwargs)
     try:
         resp = await nl2sql.query(req, record_conversation=False)
         if not (resp.sql or "").strip():
@@ -582,9 +654,12 @@ async def run_chatbot_nl2sql_query(
                 or "empty_sql"
             )
             logger.info(
-                "智能客服 NL2SQL：未生成有效 SQL（仅日志）。用户问题摘要=%s reason=%s",
+                "智能客服 NL2SQL：未生成有效 SQL（仅日志）。用户问题摘要=%s reason=%s "
+                "library_source=%s period=%s",
                 (question or "")[:400],
                 fail_reason,
+                prepare.library_source,
+                period_tag,
             )
             return ChatbotNL2SQLOutcome(
                 answer_text="",
@@ -592,6 +667,7 @@ async def run_chatbot_nl2sql_query(
                 gen_failed=True,
                 gen_fail_reason=fail_reason,
                 terminate_reason="nl2sql_gen_failed",
+                **_obs_fields(prepare, period_deterministic=period_tag),
             )
         summarized = await summarize_nl2sql_with_llm(
             llm_client,
@@ -608,6 +684,7 @@ async def run_chatbot_nl2sql_query(
             nl2sql_sql=sql_meta,
             nl2sql_analysis=summarized.analysis_meta,
             analysis_stream_plan=summarized.stream_plan,
+            **_obs_fields(prepare, period_deterministic=period_tag),
         )
     except NL2SQLExecutionError as exc:
         logger.warning(
@@ -628,6 +705,7 @@ async def run_chatbot_nl2sql_query(
             nl2sql_failed=True,
             nl2sql_error_code=exc.error_code,
             terminate_reason="nl2sql_exec_failed",
+            **_obs_fields(prepare, period_deterministic=period_tag),
         )
     except RuntimeError as exc:
         if "SQL execution failed" not in str(exc):
@@ -642,6 +720,7 @@ async def run_chatbot_nl2sql_query(
             nl2sql_failed=True,
             nl2sql_error_code="sql_exec_failed",
             terminate_reason="nl2sql_exec_failed",
+            **_obs_fields(prepare, period_deterministic=period_tag),
         )
 
 

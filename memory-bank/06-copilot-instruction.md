@@ -708,7 +708,7 @@ e.数据展示逻辑：
 3. 结合上面的业务库三个schema的实现，当前运维数据的schema为om_result，需要把上述实现的运维的占位也完整实现
 ```
 
-## 2026-10-13 运维数据针对整个项目的逻辑补充&自动报告生成中日/周设备运行和预警板块实现(未实现)
+## 2026-10-13 运维数据针对整个项目的逻辑补充&自动报告生成中日/周设备运行和预警板块实现
 ```text
 请根据以下运维数据的逻辑说明，帮我完成运维数据针对整个项目的相关逻辑补充、自动报告生成中 日/周设备运行和预警板块实现 的分析，分析针对这两块的补充或实现的方案（先分析方案，不要直接修改）。
 （包括自动生成运维数据相关目前是占位实现，对照docs/地降所需求及数据相关/报告模版/中的监测日报和周报模版 中第一和第三章节的运行和预警板块）
@@ -732,4 +732,9 @@ e.数据展示逻辑：
 告警情况统计表 查询sql：
 SELECT ROW_NUMBER() OVER (ORDER BY type, device_name) AS 序号,device_name AS 标编号,type AS 设备类型,area_name AS 位置,ss_value AS 实时值,content AS 告警内容 FROM t_om_device_alarm_list WHERE snapshot_time = (SELECT MAX(snapshot_time) FROM t_om_device_alarm_list) ORDER BY type, device_name;
 
+```
+
+## 2026-10-20 NL2SQL能力梳理
+```text
+我理解 当前NL2SQL应该具备 库、行政区、站点和日期时间的解析能力；库（库解析失败时默认走分层标）、行政区、站点，目前都在语义建模配置文件中有映射(configs/nl2sql_business/subsidence/semantic/dimensions中)，当前库、行政区、站点解析时是否应用了这些；当前语义建模，是否应用到NL2SQL 的sql生成；包括当前业务库的schema配置(默认public作为准实时监测数据，另外预留占位了人工清洗数据的schema，同时运维数据的schema是 om_result)；等等不限于这些，我理解这些都会影响到 智能问答、数据查询中sql的准确生成，请帮我完整分析（分析之前可以先完整的梳理整个项目的实现）
 ```

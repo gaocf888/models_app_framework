@@ -71,8 +71,9 @@ def resolve_scope_intent(
     sid = sub.station_id or scope.get("station_id") or None
     sname = sub.station_name or scope.get("station_name") or None
     # 词表 id 可能是短码 F2，场地键要用完整 project_name：F2(望京)
-    if sname and (not sid or (str(sid) != str(sname) and str(sid) in str(sname))):
-        sid = sname
+    from app.nl2sql.scope_station_promote import promote_station_ids
+
+    sid, sname = promote_station_ids(sid, sname)
     confirmed = {
         "device_type": library.device_type,
         "district": sub.district or scope.get("district") or None,

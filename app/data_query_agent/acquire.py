@@ -84,11 +84,16 @@ def _time_tag(scope: ScopeIntentResult) -> str:
     return str((scope.annual_window or {}).get("tag") or "").strip()
 
 
-def _is_period_time(scope: ScopeIntentResult) -> bool:
+def is_period_time(scope: ScopeIntentResult) -> bool:
+    """区间时间窗（本月/本周/近N天等）为 True；今天/昨天/每站最新等快照口径为 False。"""
     tag = _time_tag(scope)
     if tag in _SNAPSHOT_TIME_TAGS or tag.startswith("day_"):
         return False
     return bool(tag)
+
+
+# 兼容旧私有名
+_is_period_time = is_period_time
 
 
 def _scope_block(scope: ScopeIntentResult) -> str:
@@ -234,6 +239,7 @@ async def _query_one(
     max_rows: int,
 ) -> AcquireItemResult:
     """单路 NL2SQL：analysis_type=data_query，链错表 refuse，SQL 再校验 wash 表。"""
+    # 站点 + 区间时间：优先确定性 period SQL；拼/执行失败则回退 LLM（不直接终态失败）。
     if plan_item_id == "q_list" and grain == "station" and _is_period_time(scope):
         try:
             from app.data_query_agent.period_sql import fetch_period_list
@@ -247,16 +253,12 @@ async def _query_one(
             return AcquireItemResult(plan_item_id=plan_item_id, ok=True, sql=sql, rows=rows)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "data_query_agent period list deterministic failed library=%s err=%s",
+                "data_query_agent period_list_fallback_llm library=%s err=%s",
                 library.id,
                 exc,
                 exc_info=True,
             )
-            return AcquireItemResult(
-                plan_item_id=plan_item_id,
-                ok=False,
-                error=str(exc) or "period_list_failed",
-            )
+            # fall through → 下方模板问句 + forced_tables LLM 路径
     question = _render_question(
         plan_item_id=plan_item_id,
         grain=grain,

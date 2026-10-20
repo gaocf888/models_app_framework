@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>知识库 · 地面沉降联调</title>
+  <style>
+    :root {
+      --bg: #0f1419; --panel: #1a2332; --border: #2d3a4d; --text: #e6edf3;
+      --muted: #8b9cb3; --accent: #10b981; --accent-hover: #059669;
+      --warn: #fbbf24; --meta: #22c55e; --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 1.25rem 1rem 2.5rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin: 0 0 1rem; }
+    .banner {
+      margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 8px;
+      border: 1px solid var(--accent); background: rgba(16, 185, 129, 0.08); font-size: 0.8rem;
+    }
+    .banner a { color: var(--accent); }
+    .nav { margin-bottom: 1rem; font-size: 0.8rem; }
+    .nav a { color: var(--muted); margin-right: 0.85rem; text-decoration: none; }
+    .nav a:hover, .nav a.on { color: var(--accent); }
+    fieldset {
+      border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+      margin: 0 0 1rem; padding: 0.75rem 1rem 1rem;
+    }
+    legend { padding: 0 0.35rem; color: var(--muted); font-size: 0.8rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"], input[type="url"], input[type="password"], input[type="file"], select {
+      width: 100%; margin-top: 0.2rem; padding: 0.45rem 0.55rem; border-radius: 6px;
+      border: 1px solid var(--border); background: #0d1117; color: var(--text); font-size: 0.9rem;
+    }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    .hint { font-size: 0.75rem; color: var(--muted); margin-top: 0.35rem; }
+    .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.65rem; align-items: center; }
+    button {
+      padding: 0.5rem 1rem; border-radius: 6px; border: none; font-size: 0.9rem;
+      cursor: pointer; font-weight: 500;
+    }
+    button.primary { background: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.secondary { background: var(--border); color: var(--text); }
+    button.warn { background: rgba(251, 191, 36, 0.2); color: var(--warn); border: 1px solid var(--warn); }
+    button.danger { background: rgba(248, 113, 113, 0.15); color: var(--err); border: 1px solid var(--err); }
+    button.sm { padding: 0.2rem 0.45rem; font-size: 0.72rem; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status { font-size: 0.85rem; color: var(--muted); margin: 0.5rem 0; }
+    .layout {
+      display: grid; grid-template-columns: 240px 1fr; gap: 1rem; min-height: 520px;
+    }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+    .side, .main {
+      border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+      display: flex; flex-direction: column; min-height: 480px;
+    }
+    .side-h, .main-h {
+      padding: 0.65rem 0.85rem; border-bottom: 1px solid var(--border);
+      font-size: 0.8rem; color: var(--muted); display: flex; justify-content: space-between; align-items: center;
+    }
+    .ns-list { flex: 1; overflow: auto; padding: 0.35rem; }
+    .ns {
+      padding: 0.5rem 0.65rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+      border: 1px solid transparent; margin-bottom: 0.25rem;
+    }
+    .ns:hover { background: #0d1117; }
+    .ns.on { border-color: var(--accent); background: rgba(16, 185, 129, 0.1); }
+    .ns .t { color: var(--text); }
+    .ns .m { color: var(--muted); font-size: 0.7rem; margin-top: 0.1rem; }
+    .toolbar { padding: 0.65rem 0.85rem; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; }
+    .toolbar .grow { flex: 1; min-width: 160px; }
+    .table-wrap { flex: 1; overflow: auto; padding: 0.5rem; }
+    table.data { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    table.data th, table.data td {
+      border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: left;
+    }
+    table.data th { background: #0d1117; color: var(--muted); font-weight: 500; position: sticky; top: 0; white-space: nowrap; }
+    table.data td { vertical-align: top; }
+    table.data tr:hover td { background: rgba(16, 185, 129, 0.05); }
+    .pager { display: flex; gap: 0.5rem; align-items: center; padding: 0.5rem 0.85rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--muted); }
+    .badge {
+      display: inline-block; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px;
+      border: 1px solid var(--border); color: var(--muted);
+    }
+    .badge.ok { border-color: var(--accent); color: var(--accent); }
+    .badge.run { border-color: var(--warn); color: var(--warn); }
+    .badge.fail { border-color: var(--err); color: var(--err); }
+    .modal-bg {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      align-items: center; justify-content: center; z-index: 50;
+    }
+    .modal-bg.show { display: flex; }
+    .modal {
+      width: min(440px, 92vw); background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1rem 1.1rem;
+    }
+    .modal h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+    .job-panel {
+      margin-top: 0.75rem; padding: 0.75rem; border: 1px solid var(--border);
+      border-radius: 8px; background: #0d1117; font-size: 0.85rem;
+    }
+    .job-panel h3 { margin: 0 0 0.4rem; font-size: 0.85rem; color: var(--muted); font-weight: 500; }
+    #meta {
+      margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border);
+      font-size: 0.75rem; white-space: pre-wrap; word-break: break-all;
+      font-family: ui-monospace, Consolas, monospace; color: var(--meta);
+      max-height: 140px; overflow: auto;
+    }
+    .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
+    code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav class="nav">
+      <a href="./intelligent-qa.html">智能问答</a>
+      <a href="./auto-report.html">自动报告</a>
+      <a href="./data-query.html">数据查询</a>
+      <a class="on" href="./knowledge-base.html">知识库</a>
+    </nav>
+    <h1>知识库 <span style="color:var(--accent);font-size:0.85em">地面沉降</span></h1>
+    <p class="sub">分类 <code>GET /rag/namespaces</code>；文档表 <code>/rag/documents/overview</code>；上传与摄入分离。对照接口文档 §4。不做分类启用/优先级（4.2）。</p>
+    <div class="banner">
+      地降所 <code>RAG_REQUIRE_NAMESPACE=true</code>，上传/摄入须带 namespace。exclude_nl2sql=true。
+      正式前端参照 <a href="http://localhost:3300" target="_blank" rel="noopener">localhost:3300</a>（admin/123456）。
+    </div>
+
+    <fieldset>
+      <legend>连接</legend>
+      <div class="pair">
+        <div>
+          <label>API 根地址</label>
+          <input type="url" id="baseUrl" value="http://127.0.0.1:8083" autocomplete="off" />
+        </div>
+        <div>
+          <label>Service API Key</label>
+          <input type="password" id="apiKey" placeholder="留空或粘贴密钥" autocomplete="off" />
+        </div>
+      </div>
+    </fieldset>
+
+    <div class="layout">
+      <aside class="side">
+        <div class="side-h">
+          <span>知识分类</span>
+          <button type="button" class="secondary sm" id="btnLoadNs">刷新</button>
+        </div>
+        <div id="nsList" class="ns-list"><div class="hint" style="padding:0.5rem;">点「刷新」加载分类。</div></div>
+      </aside>
+      <section class="main">
+        <div class="toolbar">
+          <div class="grow">
+            <label style="margin:0">文档名包含</label>
+            <input type="text" id="docSearch" placeholder="模糊搜索文档名" />
+          </div>
+          <button type="button" class="secondary" id="btnSearch">搜索</button>
+          <button type="button" class="primary" id="btnUploadOpen">+ 上传</button>
+        </div>
+        <div class="main-h">
+          <span id="tableTitle">所有文献</span>
+          <span class="hint" id="totalHint" style="margin:0"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="data" id="tbl">
+            <thead>
+              <tr>
+                <th>文档名</th><th>分类</th><th>状态</th><th>格式</th><th>切块</th><th>大小</th><th>更新</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button type="button" class="secondary sm" id="btnPrev">上一页</button>
+          <span id="pageInfo">—</span>
+          <button type="button" class="secondary sm" id="btnNext">下一页</button>
+          <span style="margin-left:auto">limit
+            <select id="pageSize" style="width:auto;display:inline-block;margin-left:0.25rem;">
+              <option>20</option><option>50</option>
+            </select>
+          </span>
+        </div>
+      </section>
+    </div>
+
+    <div id="jobPanel" class="job-panel" hidden>
+      <h3>摄入任务进度</h3>
+      <div id="jobBody">—</div>
+      <div class="actions">
+        <button type="button" class="secondary sm" id="btnJobStop">停止轮询</button>
+        <button type="button" class="secondary sm" id="btnJobRefresh">手动刷新</button>
+      </div>
+    </div>
+
+    <div id="status">就绪。</div>
+    <div id="meta">（尚未开始）</div>
+    <div id="err" class="err" hidden></div>
+  </div>
+
+  <div id="uploadBg" class="modal-bg">
+    <div class="modal">
+      <h3>上传文档</h3>
+      <p class="hint" style="margin:0 0 0.5rem">仅登记为已上传，不触发摄入。</p>
+      <label>分类（namespace）</label>
+      <select id="uploadNs"></select>
+      <label>文件</label>
+      <input type="file" id="uploadFile" />
+      <label>文档名（可选，默认去扩展名）</label>
+      <input type="text" id="uploadDocName" placeholder="留空则用文件名" />
+      <div class="actions">
+        <button type="button" class="primary" id="btnUploadDo">上传</button>
+        <button type="button" class="secondary" id="btnUploadCancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="moveBg" class="modal-bg">
+    <div class="modal">
+      <h3>迁移分类</h3>
+      <p class="hint" id="moveHint" style="margin:0 0 0.5rem"></p>
+      <label>目标 namespace</label>
+      <select id="moveNs"></select>
+      <div class="actions">
+        <button type="button" class="primary" id="btnMoveDo">确认迁移</button>
+        <button type="button" class="secondary" id="btnMoveCancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const LS_BASE = "subsidence_knowledge_base_base";
+  const NS_LABEL = {
+    "法规": "政策法规台账",
+    "规程": "技术规程",
+    "报告": "专题报告",
+    "参考规范": "参考规范",
+  };
+  const STATUS_CN = {
+    PENDING: "等待中", RUNNING: "进行中", SUCCESS: "成功", FAILED: "失败", PARTIAL: "部分成功",
+  };
+  const STEP_CN = {
+    created: "已创建", validate_input: "校验入参", content_fetch: "拉取原文",
+    mineru_route: "PDF 解析准备", mineru_parse: "PDF 解析", vision_caption: "图片描述",
+    parse: "解析正文", clean: "清洗文本", chunk: "切块", enrich: "补全元数据",
+    index: "写入索引", quality_check: "质量检查", finalize_alias_version: "版本收尾",
+    finalize: "完成", requeued_after_restart: "服务重启后重试", recovered_stuck: "卡住任务已恢复",
+    error: "处理失败",
+  };
+
+  const state = {
+    namespaces: [],
+    currentNs: null, // null = 所有文献
+    offset: 0, total: 0, docs: [],
+    moveDoc: null,
+    pollTimer: null, jobId: "",
+  };
+
+  function persistBase() {
+    try { localStorage.setItem(LS_BASE, $("baseUrl").value.trim()); } catch (_) {}
+  }
+  (function init() {
+    try {
+      const saved = localStorage.getItem(LS_BASE);
+      if (saved) $("baseUrl").value = saved;
+    } catch (_) {}
+  })();
+  $("baseUrl").addEventListener("change", persistBase);
+
+  const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
+  const authHeaders = (extra) => {
+    const h = Object.assign({ Accept: "application/json" }, extra || {});
+    const k = $("apiKey").value.trim();
+    if (k) h.Authorization = "Bearer " + k;
+    return h;
+  };
+  function showErr(msg) {
+    const el = $("err");
+    if (!msg) { el.hidden = true; el.textContent = ""; return; }
+    el.hidden = false; el.textContent = msg;
+  }
+  function setStatus(t) { $("status").textContent = t; }
+
+  function nsLabel(ns) { return NS_LABEL[ns] || ns; }
+
+  function formatSize(n) {
+    if (n == null || n === "") return "—";
+    const x = Number(n);
+    if (!isFinite(x)) return "—";
+    if (x < 1024) return x + " B";
+    if (x < 1024 * 1024) return (x / 1024).toFixed(1) + " KB";
+    return (x / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function docStatus(doc) {
+    const js = (doc.last_job_status || "").toUpperCase();
+    const st = (doc.status || "").toUpperCase();
+    if (js === "PENDING" || js === "RUNNING") return { key: "running", label: "摄入中", cls: "run" };
+    if (st === "UPLOADED") return { key: "uploaded", label: "已上传", cls: "" };
+    if (js === "SUCCESS" || st === "INDEXED" || st === "READY" || st === "SUCCESS") return { key: "ok", label: "已摄入", cls: "ok" };
+    if (js === "FAILED" || st === "FAILED") return { key: "fail", label: "摄入失败", cls: "fail" };
+    return { key: "other", label: st || js || "未知", cls: "" };
+  }
+
+  function contentKey(doc) {
+    const md = doc.metadata || {};
+    return md.object_key || doc.object_key || md.source_uri || doc.source_uri || "";
+  }
+
+  function fillNsSelect(sel, prefer) {
+    sel.replaceChildren();
+    state.namespaces.forEach((n) => {
+      const opt = document.createElement("option");
+      opt.value = n.namespace;
+      opt.textContent = nsLabel(n.namespace) + " (" + n.namespace + ")";
+      sel.appendChild(opt);
+    });
+    if (prefer) sel.value = prefer;
+    else if (state.currentNs) sel.value = state.currentNs;
+  }
+
+  function renderNamespaces() {
+    const root = $("nsList");
+    root.replaceChildren();
+    const allCount = state.namespaces.reduce((s, n) => s + (n.document_count || 0), 0);
+    const all = document.createElement("div");
+    all.className = "ns" + (state.currentNs == null ? " on" : "");
+    all.innerHTML = '<div class="t">所有文献</div><div class="m">' + allCount + " 篇</div>";
+    all.addEventListener("click", () => {
+      state.currentNs = null;
+      state.offset = 0;
+      renderNamespaces();
+      loadDocs();
+    });
+    root.appendChild(all);
+    state.namespaces.forEach((n) => {
+      const el = document.createElement("div");
+      el.className = "ns" + (state.currentNs === n.namespace ? " on" : "");
+      el.innerHTML = '<div class="t"></div><div class="m"></div>';
+      el.querySelector(".t").textContent = nsLabel(n.namespace);
+      el.querySelector(".m").textContent = n.namespace + " · " + (n.document_count || 0) + " 篇";
+      el.addEventListener("click", () => {
+        state.currentNs = n.namespace;
+        state.offset = 0;
+        renderNamespaces();
+        loadDocs();
+      });
+      root.appendChild(el);
+    });
+  }
+
+  async function loadNamespaces() {
+    showErr("");
+    persistBase();
+    setStatus("加载分类…");
+    try {
+      const res = await fetch(baseUrl() + "/rag/namespaces?exclude_nl2sql=true", { headers: authHeaders() });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
+      if (!res.ok) throw new Error((data && (data.detail || data.message)) || res.statusText);
+      state.namespaces = data.namespaces || data.result || [];
+      renderNamespaces();
+      setStatus("分类已加载 · " + state.namespaces.length);
+      await loadDocs();
+    } catch (e) {
+      showErr(String(e && e.message ? e.message : e));
+      setStatus("加载分类失败。");
+    }
+  }
+
+  function updatePager() {
+    const limit = parseInt($("pageSize").value, 10) || 20;
+    const pages = Math.max(1, Math.ceil((state.total || 0) / limit) || 1);
+    const page = Math.floor(state.offset / limit) + 1;
+    $("pageInfo").textContent = "第 " + page + " / " + pages + " 页 · 共 " + state.total + " 篇";
+    $("btnPrev").disabled = state.offset <= 0;
+    $("btnNext").disabled = state.offset + limit >= state.total;
+  }
+
+  function renderDocs() {
+    const tbody = $("tbl").querySelector("tbody");
+    tbody.replaceChildren();
+    $("tableTitle").textContent = state.currentNs == null ? "所有文献" : nsLabel(state.currentNs);
+    $("totalHint").textContent = "total=" + state.total;
+    state.docs.forEach((doc) => {
+      const st = docStatus(doc);
+      const tr = document.createElement("tr");
+      const td = (t) => { const x = document.createElement("td"); x.textContent = t; return x; };
+      tr.appendChild(td(doc.doc_name || ""));
+      tr.appendChild(td(doc.namespace || ""));
+      const tdSt = document.createElement("td");
+      const badge = document.createElement("span");
+      badge.className = "badge " + st.cls;
+      badge.textContent = st.label;
+      tdSt.appendChild(badge);
+      if (doc.error) {
+        const e = document.createElement("div");
+        e.className = "hint";
+        e.textContent = String(doc.error).slice(0, 120);
+        tdSt.appendChild(e);
+      }
+      tr.appendChild(tdSt);
+      tr.appendChild(td(doc.source_type || ""));
+      tr.appendChild(td(doc.chunk_count != null ? String(doc.chunk_count) : "0"));
+      const md = doc.metadata || {};
+      tr.appendChild(td(formatSize(md.file_size)));
+      tr.appendChild(td(doc.updated_at || doc.created_at || ""));
+      const tdOp = document.createElement("td");
+      const running = st.key === "running";
+      const hasKey = !!contentKey(doc);
+
+      if (running && doc.last_job_id) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "secondary sm"; b.textContent = "查看进度";
+        b.addEventListener("click", () => startPoll(doc.last_job_id));
+        tdOp.appendChild(b);
+      } else if (st.key === "uploaded" || st.key === "fail") {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "primary sm";
+        b.textContent = st.key === "fail" ? "重新摄入" : "摄入";
+        b.disabled = !hasKey;
+        if (!hasKey) b.title = "无 object_key，请重新上传";
+        b.addEventListener("click", () => ingestDoc(doc));
+        tdOp.appendChild(b);
+      }
+      if (!running && (st.key === "uploaded" || st.key === "ok" || st.key === "fail" || st.key === "other")) {
+        const m = document.createElement("button");
+        m.type = "button"; m.className = "secondary sm"; m.textContent = "迁移";
+        m.style.marginLeft = "0.25rem";
+        m.addEventListener("click", () => openMove(doc));
+        tdOp.appendChild(m);
+      }
+      if (!running) {
+        const d = document.createElement("button");
+        d.type = "button"; d.className = "danger sm"; d.textContent = "删除";
+        d.style.marginLeft = "0.25rem";
+        d.addEventListener("click", () => deleteDoc(doc));
+        tdOp.appendChild(d);
+      }
+      tr.appendChild(tdOp);
+      tbody.appendChild(tr);
+    });
+    updatePager();
+  }
+
+  async function loadDocs() {
+    showErr("");
+    persistBase();
+    const limit = parseInt($("pageSize").value, 10) || 20;
+    const q = new URLSearchParams();
+    q.set("limit", String(limit));
+    q.set("offset", String(state.offset));
+    if (state.currentNs) q.set("namespace", state.currentNs);
+    const contains = $("docSearch").value.trim();
+    if (contains) q.set("doc_name_contains", contains);
+    setStatus("加载文档列表…");
+    try {
+      const res = await fetch(baseUrl() + "/rag/documents/overview?" + q.toString(), { headers: authHeaders() });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
+      if (!res.ok) throw new Error((data && (data.detail || data.message)) || res.statusText);
+      state.docs = data.documents || [];
+      state.total = data.total_documents != null ? data.total_documents : state.docs.length;
+      renderDocs();
+      $("meta").textContent = JSON.stringify({
+        namespace: state.currentNs, offset: state.offset, limit, total: state.total,
+      }, null, 2);
+      setStatus("文档列表已加载 · " + state.docs.length + " 行。");
+    } catch (e) {
+      showErr(String(e && e.message ? e.message : e));
+      setStatus("加载文档失败。");
+    }
+  }
+
+  function openUpload() {
+    if (!state.namespaces.length) { showErr("请先加载分类"); return; }
+    fillNsSelect($("uploadNs"), state.currentNs || state.namespaces[0].namespace);
+    $("uploadFile").value = "";
+    $("uploadDocName").value = "";
+    $("uploadBg").classList.add("show");
+  }
+
+  async function doUpload() {
+    showErr("");
+    const file = $("uploadFile").files && $("uploadFile").files[0];
+    const ns = $("uploadNs").value;
+    if (!file) { showErr("请选择文件"); return; }
+    if (!ns) { showErr("namespace 必填"); return; }
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("namespace", ns);
+    const dn = $("uploadDocName").value.trim();
+    if (dn) fd.append("doc_name", dn);
+    setStatus("上传中…");
+    try {
+      const headers = {};
+      const k = $("apiKey").value.trim();
+      if (k) headers.Authorization = "Bearer " + k;
+      const res = await fetch(baseUrl() + "/rag/documents/upload", { method: "POST", headers, body: fd });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
+      if (!res.ok || data.ok === false) throw new Error((data && (data.detail || data.message || data.error)) || res.statusText);
+      $("uploadBg").classList.remove("show");
+      $("meta").textContent = JSON.stringify(data.document || data, null, 2);
+      setStatus("上传成功。");
+      await loadNamespaces();
+    } catch (e) {
+      showErr(String(e && e.message ? e.message : e));
+      setStatus("上传失败。");
+    }
+  }
+
+  async function ingestDoc(doc) {
+    showErr("");
+    const content = contentKey(doc);
+    if (!content) { showErr("无 object_key / source_uri，请重新上传"); return; }
+    const body = {
+      documents: [{
+        namespace: doc.namespace,
+        doc_name: doc.doc_name,
+        source_type: doc.source_type || "pdf",
+        content: content,
+        replace_if_exists: true,
+      }],
+    };
+    setStatus("发起摄入…");
+    try {
+      const res = await fetch(baseUrl() + "/rag/jobs/ingest", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
+      if (!res.ok || data.ok === false) throw new Error((data && (data.detail || data.message || data.error)) || res.statusText);
+      const jobId = data.job_id;
+      setStatus("已受理 job_id=" + jobId);
+      $("meta").textContent = JSON.stringify(data, null, 2);
+      if (jobId) startPoll(jobId);
+      else loadDocs();
+    } catch (e) {
+      showErr(String(e && e.message ? e.message : e));
+      setStatus("摄入失败。");
+    }
+  }
+
+  function stopPoll() {
+    if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
+  }
+
+  async function fetchJob() {
+    if (!state.jobId) return;
+    try {
+      const res = await fetch(baseUrl() + "/rag/jobs/" + encodeURIComponent(state.jobId), { headers: authHeaders() });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
+      if (!res.ok) throw new Error((data && (data.detail || data.message)) || res.statusText);
+      const st = (data.status || "").toUpperCase();
+      const step = data.step || "";
+      $("jobBody").innerHTML =
+        "<div>job_id: <code>" + state.jobId + "</code></div>" +
+        "<div>状态: " + (STATUS_CN[st] || st) + "</div>" +
+        "<div>步骤: " + (STEP_CN[step] || step || "—") + "</div>" +
+        "<div>切块: " + (data.chunks_total != null ? data.chunks_total : "—") + "</div>" +
+        (data.error_message ? '<div style="color:var(--err)">错误: ' + data.error_message + "</div>" : "");
+      $("meta").textContent = JSON.stringify(data, null, 2);
+      if (st === "SUCCESS" || st === "FAILED" || st === "PARTIAL") {
+        stopPoll();
+        setStatus("任务终态：" + (STATUS_CN[st] || st));
+        loadNamespaces();
+      }
+    } catch (e) {
+      showErr("轮询失败：" + (e && e.message ? e.message : e));
+      stopPoll();
+    }
+  }
+
+  function startPoll(jobId) {
+    state.jobId = jobId;
+    $("jobPanel").hidden = false;
+    stopPoll();
+    fetchJob();
+    state.pollTimer = setInterval(fetchJob, 1500);
+    setStatus("轮询任务 " + jobId + " …");
+  }
+
+  function openMove(doc) {
+    state.moveDoc = doc;
+    $("moveHint").textContent = (doc.doc_name || "") + " · 当前 " + (doc.namespace || "");
+    fillNsSelect($("moveNs"), null);
+    if (doc.namespace) {
+      [...$("moveNs").options].forEach((o) => {
+        if (o.value === doc.namespace) o.disabled = true;
+      });
+      const first = [...$("moveNs").options].find((o) => !o.disabled);
+      if (first) $("moveNs").value = first.value;
+    }
+    $("moveBg").classList.add("show");
+  }
+
+  async function doMove() {
+    if (!state.moveDoc) return;
+    const to = $("moveNs").value;
+    if (!to) { showErr("目标分类必填"); return; }
+    showErr("");
+    setStatus("迁移中…");
+    try {
+      const res = await fetch(baseUrl() + "/rag/documents/namespace/move", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          doc_name: state.moveDoc.doc_name,
+          from_namespace: state.moveDoc.namespace,
+          to_namespace: to,
+        }),
+      });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
+      if (!res.ok || data.ok === false) throw new Error((data && (data.detail || data.message || data.error)) || res.statusText);
+      $("moveBg").classList.remove("show");
+      state.moveDoc = null;
+      setStatus("迁移成功 · chunks_updated=" + (data.chunks_updated != null ? data.chunks_updated : "?"));
+      await loadNamespaces();
+    } catch (e) {
+      showErr(String(e && e.message ? e.message : e));
+      setStatus("迁移失败。");
+    }
+  }
+
+  async function deleteDoc(doc) {
+    if (!confirm("确认删除「" + (doc.doc_name || "") + "」？")) return;
+    showErr("");
+    setStatus("删除中…");
+    try {
+      const body = { doc_name: doc.doc_name };
+      if (doc.namespace) body.namespace = doc.namespace;
+      const res = await fetch(baseUrl() + "/rag/documents/delete", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
+      if (!res.ok || data.ok === false) throw new Error((data && (data.detail || data.message || data.error)) || res.statusText);
+      setStatus("已删除。");
+      await loadNamespaces();
+    } catch (e) {
+      showErr(String(e && e.message ? e.message : e));
+      setStatus("删除失败。");
+    }
+  }
+
+  $("btnLoadNs").addEventListener("click", loadNamespaces);
+  $("btnSearch").addEventListener("click", () => { state.offset = 0; loadDocs(); });
+  $("docSearch").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { state.offset = 0; loadDocs(); }
+  });
+  $("btnUploadOpen").addEventListener("click", openUpload);
+  $("btnUploadDo").addEventListener("click", doUpload);
+  $("btnUploadCancel").addEventListener("click", () => $("uploadBg").classList.remove("show"));
+  $("btnMoveDo").addEventListener("click", doMove);
+  $("btnMoveCancel").addEventListener("click", () => { $("moveBg").classList.remove("show"); state.moveDoc = null; });
+  $("btnPrev").addEventListener("click", () => {
+    const limit = parseInt($("pageSize").value, 10) || 20;
+    state.offset = Math.max(0, state.offset - limit);
+    loadDocs();
+  });
+  $("btnNext").addEventListener("click", () => {
+    const limit = parseInt($("pageSize").value, 10) || 20;
+    state.offset += limit;
+    loadDocs();
+  });
+  $("pageSize").addEventListener("change", () => { state.offset = 0; loadDocs(); });
+  $("btnJobStop").addEventListener("click", () => { stopPoll(); setStatus("已停止轮询。"); });
+  $("btnJobRefresh").addEventListener("click", fetchJob);
+})();
+  </script>
+</body>
+</html>

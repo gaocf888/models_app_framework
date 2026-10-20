@@ -1,8 +1,9 @@
 # 企业级 NL2SQL 基座实现方案
 
-> **版本**：2026-09-11（在 2026-08-25 配置包 + 语义链接基础上，增补地降 **P6：分层标三维口径与层位字典运行时注入**）  
-> 本文档描述本仓库 **当前已实现** 的 NL2SQL 基座：与 **RAG** 并列的 **AI 应用基础能力**；接入形态包括 **独立 HTTP**、**智能客服内嵌**、**综合分析 V2（`run-with-nl2sql` / `run-with-nl2sql-stream`）** 与 **综合分析看图诊断（`run-img-diag` / `run-img-diag-stream`，NL2SQL 并行臂）** 等，底层均复用同一 `NL2SQLService`。  
-> **域差异原则**：不设运行时双管线分流；锅炉四管 / 地面沉降共用「意图 →（可选）语义对齐 →（可选）Schema 链接 → RAG/缓存 → Prompt → LLM → 时间·范围改写 → 校验 → 执行」；差异仅在 `NL2SQL_BUSINESS_DOMAIN` + `configs/nl2sql_business/<domain>/` 配置包。  
+> **版本**：2026-10-20（在 2026-09-11 P6 基础上，增补 **§9 优化增强方向**；流程中 **显式拆分 Schema 反射 vs Schema 链接**；并对照现网补齐调用方编排说明）  
+> 本文档描述本仓库 **当前已实现** 的 NL2SQL 基座：与 **RAG** 并列的 **AI 应用基础能力**；接入形态包括 **独立 HTTP**、**智能客服内嵌**、**综合分析 V2（`run-with-nl2sql` / `run-with-nl2sql-stream`）**、**综合分析看图诊断（`run-img-diag` / `run-img-diag-stream`，NL2SQL 并行臂）** 与 **数据查询智能体** 等，底层均复用同一 `NL2SQLService`。  
+> **域差异原则**：不设运行时双管线分流；锅炉四管 / 地面沉降共用「意图 →（可选）语义对齐 → **Schema 反射（连库读真实表列）** → 白名单/forced_tables → RAG →（可选）**Schema 链接（问句↔表列）** → 缓存 → Prompt → LLM → 时间·范围·suggested_filters 改写 → 校验 → 执行」；差异仅在 `NL2SQL_BUSINESS_DOMAIN` + `configs/nl2sql_business/<domain>/` 配置包。调用方编排（锁表 / period 短路 / HITL）在基座外，见 §4.1、§9。  
+> **易混概念**：**Schema 反射** = 程序连接业务库，反射「库里有什么表/列」；**Schema 链接** = 把问句业务绑定对到这些表/列（不是 LLM 连库摸结构）。  
 > 地降改造总方案（设计与验收）：`docs/基于地降所项目改造/NL2SQL基座改造.md`。  
 > **分层标口径专项（P6）**：`docs/基于地降所项目改造/NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`（周期初−末 / 正下沉；层位0与压缩层边界标注入）。  
 > 实现细节与文件映射见 `framework-guide/NL2SQL整体实现技术说明.md`；代码行为明细见 `enterprise-level_transformation_docs/NL2SQL当前完整实现逻辑说明-代码对照版.md`；问句时间/范围详设见 `docs/NL2SQL自然语言时间和范围窗口解析&改写改造落地方案.md`。  
@@ -115,13 +116,13 @@ configs/nl2sql_business/
 | 客服查数成文 | `chatbot_nl2sql_answer.py` | `run_chatbot_nl2sql_query`；消费 `gen_fail_reason` |
 | 服务层 | `app/services/nl2sql_service.py` | Chain + Executor + EXPLAIN/执行 refine；填充 `gen_fail_reason` |
 | 业务配置包 | `nl2sql_business_profile.py` + `intent_config.py` | domain → profile；与 `app/core/config.py` 合并 DB/NL2SQL 默认 |
-| 生成链路 | `app/nl2sql/chain.py` | 意图 → **语义对齐** → **Schema 链接** → Schema/RAG → 缓存 → Prompt → LLM → **时间·范围改写（含 PG 适配）** → 校验/refine |
+| 生成链路 | `app/nl2sql/chain.py` | 意图 → **语义对齐** → **Schema 反射** → 白名单/RAG → **Schema 链接** → 缓存 → Prompt → LLM → **时间·范围改写（含 PG 适配）** → 校验/refine |
 | 语义层 | `semantic_layer.py` | 加载 `semantic/*`（含 **`fcb_layer_map`**）；`align_semantics` → `parsed_intent.semantic`（指标 + **层位0 / 压缩层边界标**） |
-| Schema 链接 | `schema_linker.py` | `link_schema` → LinkedSchema；catalog 收窄；`suggested_filters`（含 `fcb_layer0` / `fcb_compress`）；`refuse`/`best_effort` |
+| Schema 反射 | `schema_service.py` | **连库**反射真实表/列（`refresh_from_db`）；PG/MySQL；地降可含沉降 schema + `om_result`；**不是** Schema 链接 |
+| Schema 链接 | `schema_linker.py` | `link_schema`：问句绑定 → 主表/列/JOIN/`suggested_filters`；再按 catalog mode 收窄；`refuse`/`best_effort` |
 | SQL 方言 | `sql_dialect.py` | MySQL 时间表达式 → PostgreSQL（`adapt_time_window`） |
 | 问句意图 | `question_intent.py`、`time_intent_display.py`、`scope_parser_rule.py`、`scope_parser_llm.py`、`scope_parser_subsidence.py` | 时间 **始终规则**（输出后按方言适配）；范围默认 **rule**；subsidence 走地降解析器；`confirmed_scope` → `human_confirmed` |
 | 意图展示 | `question_intent_display.py` | Prompt 注入时间/范围 + **语义指标 / 优选标 / 压缩层对 / 链接主表与建议过滤** |
-| Schema | `schema_service.py` | DB 反射；PG/MySQL 共用 `_create_business_engine` |
 | 专用 RAG | `rag_service.py` | 三命名空间检索 |
 | 缓存 / QA | `sql_cache.py`、`sql_skeleton.py`、`qa_feedback.py` | L2/L1；`policy_fp` 含 domain / semantic_version |
 | Prompt | `prompt_builder.py` + `configs/prompts.yaml` | `nl2sql`（`v2` / `v2_subsidence`）；`analysis_*_subsidence_*` |
@@ -163,18 +164,26 @@ configs/nl2sql_business/
               ┌───────────────────────────────────┐
               │（可选，地降默认开）语义对齐         │
               │ 问句 → 业务指标/实体绑定            │
+              │ （语义建模资产，不连库摸表结构）    │
+              └───────────────────┬───────────────┘
+                                  ▼
+              ┌───────────────────────────────────┐
+              │ Schema 反射（程序连业务库）         │
+              │ 读出库中真实有哪些表、哪些列         │
+              │ （≠ Schema 链接；≠ LLM 连库）       │
+              └───────────────────┬───────────────┘
+                                  ▼
+              ┌───────────────────────────────────┐
+              │ 表白名单收窄（± 调用方锁表）         │
+              │ + Schema/业务/样例三类 RAG 补说明   │
+              │ → 得到「允许看见的表列目录」         │
               └───────────────────┬───────────────┘
                                   ▼
               ┌───────────────────────────────────┐
               │（可选，地降默认开）Schema 链接      │
-              │ 绑定 → 主表/列/建议过滤；            │
+              │ 业务绑定 → 主表/列/建议过滤；        │
+              │ 再按链接结果收窄 catalog；          │
               │ 链接失败：拒绝生成 或 宽 catalog 降级│
-              └───────────────────┬───────────────┘
-                                  ▼
-              ┌───────────────────────────────────┐
-              │ 认识库表：反射业务库；按链接结果收窄 │
-              │ catalog（或传统宽表白名单）；        │
-              │ Schema/业务/样例三类 RAG 补语义     │
               └───────────────────┬───────────────┘
                                   ▼
               ┌───────────────────────────────────┐
@@ -185,7 +194,8 @@ configs/nl2sql_business/
                                   ▼
               ┌───────────────────────────────────┐
               │ 程序改写：时间窗占位符（按方言适配   │
-              │ MySQL↔PostgreSQL）、范围占位符 →     │
+              │ MySQL↔PostgreSQL）、范围占位符、    │
+              │ suggested_filters 强制写入 →        │
               │ 安全校验（失败可让模型按错误再验）  │
               └───────────────────┬───────────────┘
                                   ▼
@@ -206,7 +216,8 @@ configs/nl2sql_business/
 
 - **时间**始终由基座规则解析；可用 `time_intent_text` 指定抽文本；**不能**靠 `confirmed_scope` 覆盖时间窗。地降执行前会把时间表达式适配为 **PostgreSQL**。  
 - **范围**：默认规则；可开 LLM；看图诊断等可传 **`confirmed_scope`** → `human_confirmed`。地降范围词表/解析器与锅炉不同（行政区、测站等）。  
-- **语义链接**：仅当配置包/`NL2SQL_SEMANTIC_LINK_ENABLED` 开启时生效（地降默认开、锅炉默认关）；链接失败策略见 `on_link_failure`（`refuse` / `best_effort`）。地降语义对齐另含 **P6 层位字典注入**（站点→层位0；压缩层→相邻边界标）。  
+- **Schema 反射**：程序连接业务库，反射真实表/列（「库里有什么」）；与是否开启语义链接无关，生成前通常都会走。  
+- **Schema 链接**（常与「语义链接」开关一并启用）：把问句业务绑定对到反射+白名单后的表/列（「这话该用哪一块」）；失败策略见 `on_link_failure`（`refuse` / `best_effort`）。地降语义对齐另含 **P6 层位字典注入**（站点→层位0；压缩层→相邻边界标）。  
 - **呈现**：基座返回 `sql`/`rows`（及可选意图/失败原因）；客服收紧分析、综合分析报告合成均在**调用方**完成。
 
 ---
@@ -242,44 +253,50 @@ configs/nl2sql_business/
 └───────────────────────────────┬─────────────────────────────────┘
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 【Chain：意图 → 语义对齐 → Schema 链接】                        │
+│ 【Chain：意图 → 语义对齐 → Schema 反射】                        │
 │ file:  app/nl2sql/chain.py · NL2SQLChain                        │
 │ meth:  generate_sql_with_validation_context                     │
 │ ① resolve_question_intent — 时间规则 + 范围 rule/LLM/HITL       │
 │    └─ question_intent.py；地降另走 scope_parser_subsidence      │
 │       · confirmed_scope → parse_mode=human_confirmed（仅范围）  │
-│ ①b align_semantics（semantic_link 开启时）                      │
+│ ② align_semantics（semantic_link 开启时）                       │
 │    └─ semantic_layer.py → parsed_intent.semantic                │
 │       · 地降：metrics + 默认 fcb；P6 注入层位0 / 压缩层边界标  │
-│ ①c link_schema（semantic_link 开启时）                          │
-│    └─ schema_linker.py → linked_schema；catalog 模式收窄        │
-│       · suggested_filters：project_name / station_name（层位） │
-│       refuse → 提前结束（gen_fail_reason=link_failed:…）        │
-│ ② _ensure_schema_refreshed_once — DB 反射（PG/MySQL）           │
-│    └─ schema_service.py                                         │
+│ ③ Schema 反射（程序连库，读真实表列）                           │
+│    └─ _ensure_schema_refreshed_once → schema_service.py         │
+│       · SchemaMetadataService.refresh_from_db（PG/MySQL）       │
+│       · 地降：当前沉降 schema +（若配置）om_result 运维表       │
+│       · 说明: 「库里有什么」；≠ Schema 链接；≠ LLM 连库        │
 └───────────────────────────────┬─────────────────────────────────┘
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 【Chain：规划 → RAG → 缓存 / QA 回放】                          │
-│ ③ _plan（可选；真实库默认跳过 NL2SQL_DISABLE_PLANNER_…）        │
-│ ④ NL2SQLRAGService.retrieve — schema/biz/qa 三命名空间          │
+│ 【Chain：规划 → RAG → 白名单/锁表 → Schema 链接】               │
+│ ④ _plan（可选；真实库反射成功时默认跳过，防虚构表名）           │
+│ ⑤ NL2SQLRAGService.retrieve — schema/biz/qa 三命名空间          │
 │    └─ rag_service.py；地降 biz 含口径 + 层位0 摘要 md           │
-│ ⑤ 可选 QA 槽位严格回放（qa_feedback）                           │
-│ ⑥ 可选 L2 / L1（policy_fp 含 domain、semantic_version、…）     │
-│ 说明: 意图/语义/链接在缓存查找之前；命中后仍走改写+校验         │
+│ ⑥ _resolve_table_scope — 表白名单 ∩ 意图收窄 ∩ forced_tables   │
+│ ⑦ link_schema（semantic_link 开启时；依赖③反射后的 table_columns）│
+│    └─ schema_linker.py → linked_schema；catalog 模式收窄        │
+│       · suggested_filters：project_name / station_name（层位） │
+│       · refuse → 提前结束（gen_fail_reason=link_failed:…）      │
+│       · 说明: 「这话该用哪张表/哪些列」；≠ 反射                 │
+│ ⑧ 可选 QA 槽位严格回放（qa_feedback）                           │
+│ ⑨ 可选 L2 / L1（policy_fp 含 domain、semantic_version、…）     │
+│ 说明: 反射在链接之前；缓存命中后仍走改写+校验                   │
 └───────────────────────────────┬─────────────────────────────────┘
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 【Chain：生成 → 改写 → 校验】（缓存未命中或需重生）             │
-│ ⑦ PromptBuilder + scene=nl2sql（v2 / v2_subsidence）            │
+│ ⑩ PromptBuilder + scene=nl2sql（v2 / v2_subsidence）            │
 │    catalog 来自 linked_only / linked_prefer / legacy_wide       │
 │    可注入 semantic / linked_schema 摘要（INJECT_PARSED_INTENT） │
 │    · 地降意图块可含优选标 / 压缩层对 / 建议 station_name 过滤  │
-│ ⑧ LLM → normalize_sql                                           │
-│ ⑨ _rewrite_* + _rewrite_query_filters                           │
+│ ⑪ LLM → normalize_sql                                           │
+│ ⑫ _rewrite_* + _rewrite_query_filters                           │
 │    · 时间占位符 + sql_dialect.adapt_time_window（PG）           │
 │    · 范围：锅炉 @unit/@device…；地降 @district / @station_*     │
-│ ⑩ SQLValidator + 白名单 + 列–表绑定 + entity_rules；可 refine   │
+│    · suggested_filters 强制写入（覆盖/层位/区县/运维 type 等） │
+│ ⑬ SQLValidator + 白名单 + 列–表绑定 + entity_rules；可 refine   │
 │ 返回 (sql, NL2SQLValidationContext)                             │
 └───────────────────────────────┬─────────────────────────────────┘
                                   ▼
@@ -314,13 +331,15 @@ configs/nl2sql_business/
 | 业务配置包 | `nl2sql_business_profile.py`、`intent_config.py` | domain → profile 合并 |
 | 服务 | `app/services/nl2sql_service.py` | `query` |
 | Chain | `app/nl2sql/chain.py` | `generate_sql_with_validation_context`、改写、refine |
-| 语义 / 链接 | `semantic_layer.py`、`schema_linker.py` | `align_semantics`、`link_schema` |
+| 语义对齐 | `semantic_layer.py` | `align_semantics` |
+| Schema 反射 | `schema_service.py` | `refresh_from_db` / `_ensure_schema_refreshed_once`（库里有什么） |
+| Schema 链接 | `schema_linker.py` | `link_schema`（问句↔表列 + suggested_filters） |
 | 方言 | `sql_dialect.py` | `adapt_time_window` |
 | 意图门面 | `question_intent.py` | `resolve_question_intent` |
 | 时间规则 | `time_intent_display.py` | `extract_time_window_*`、锚点 lookback |
 | 范围规则/LLM/地降 | `scope_parser_rule.py`、`scope_parser_llm.py`、`scope_parser_subsidence.py` | |
 | 范围改写 | `scope_sql_rewrite.py` | 锅炉 + 地降占位符 |
-| Schema / RAG | `schema_service.py`、`rag_service.py` | `refresh_from_db`、`retrieve` |
+| RAG | `rag_service.py` | `retrieve`（说明书，非反射） |
 | 缓存 / QA | `sql_cache.py`、`sql_skeleton.py`、`qa_feedback.py` | L2/L1；`policy_fp` |
 | 校验 / 执行 | `validator.py`、`executor.py` | `validate`、`explain`、`execute` |
 | 客服包装 | `chatbot_nl2sql_answer.py` | `run_chatbot_nl2sql_query` |
@@ -355,13 +374,21 @@ configs/nl2sql_business/
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ file: chatbot_nl2sql_answer.py · run_chatbot_nl2sql_query       │
-│ 说明: 构造 NL2SQLQueryRequest（可带 sql_gen_extra_hint）        │
+│ 前置: chatbot_settle_prepare.prepare_chatbot_settle_query       │
+│       · 运维问句：不锁沉降表（走 om 意图收窄）                  │
+│       · 沉降：forced_tables + 规则 scope（非查询台 HITL）       │
+│       · 站点+区间时间：period_sql 优先；失败回退 LLM            │
+│ 说明: 构造 NL2SQLQueryRequest（可带 sql_gen_extra_hint /        │
+│       forced_tables / confirmed_scope / structured_filters）    │
 │       → NL2SQLService.query(record_conversation=False)          │
 │       → 可读 gen_fail_reason（如 link_failed）决定是否提示重试  │
 │       → summarize_nl2sql_with_llm / analysis_stream_plan        │
+│ meta: nl2sql_library_source / period_deterministic / ops_routed │
 │ 展示列过滤: chatbot_nl2sql_display.filter_chatbot_nl2sql_…    │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+数据查询智能体（`data-query-agent`）在进基座前另有：库锁定 `forced_tables`、`confirmed_scope`、模板问句；站点+区间时间走 `period_sql`，**失败回退 LLM**（`acquire._query_one`）。运维问句在查询台拒答并引导客服（与问答「运维走客服 NL2SQL」分工）。
 
 详述见 **`企业级智能客服 LangGraph 框架实现方案.md`** §4.6 / §4.7。
 
@@ -501,16 +528,17 @@ flowchart TB
     subgraph Chain["NL2SQLChain"]
         QI["resolve_question_intent"]
         SA["align_semantics\n(可选)"]
-        SL["link_schema\n(可选)"]
-        LF{"link refuse?"}
-        R0["_ensure_schema_refreshed_once"]
+        R0["Schema反射\n_ensure_schema_refreshed_once"]
         R1{"需规划?"}
         P["_plan"]
         RG["NL2SQLRAGService.retrieve"]
+        SCOPE["表白名单 /\nforced_tables 收窄"]
+        SL["link_schema\nSchema链接(可选)"]
+        LF{"link refuse?"}
         CACHE["QA回放 / L2 / L1 缓存?"]
         PR["Prompt + catalog\n(linked_only|prefer|wide)"]
         L["LLM → normalize"]
-        RW["_rewrite_query_filters\n时间方言适配 + 范围"]
+        RW["_rewrite_query_filters\n时间+范围+suggested_filters"]
         V{"多层校验"}
         RF1["_refine_sql"]
         OUT["sql + ValidationContext"]
@@ -531,12 +559,14 @@ flowchart TB
     C2 --> Svc
     C3 --> ANA --> Svc
     Svc --> QI
-    QI --> SA --> SL --> LF
-    LF -->|是| FAIL --> RESP
-    LF -->|否| R0 --> R1
+    QI --> SA --> R0
+    R0 --> DB
+    R0 --> R1
     R1 -->|是| P --> RG
     R1 -->|否| RG
-    RG --> CACHE
+    RG --> SCOPE --> SL --> LF
+    LF -->|是| FAIL --> RESP
+    LF -->|否| CACHE
     CACHE -->|未命中| PR --> L --> RW --> V
     CACHE -->|命中| RW
     V -->|失败可修正| RF1 --> RW
@@ -554,28 +584,34 @@ flowchart TB
     RESP --> C3
 ```
 
-### 5.2 Schema、语义链接与 RAG
+### 5.2 Schema 反射、语义对齐、Schema 链接与 RAG
 
 ```mermaid
 flowchart TB
-    subgraph Authoritative["权威标识符"]
+    subgraph Reflect["Schema 反射：库里有什么"]
         DB[(业务库)] --> REF["SchemaMetadataService.refresh_from_db"]
-        REF --> TS["TableSchema + foreign_keys"]
+        REF --> TS["TableSchema + columns + FK"]
     end
-    subgraph Link["可选语义链接"]
+    subgraph Align["语义对齐：问句在说什么业务"]
         SEM["semantic_layer.align_semantics"]
+    end
+    subgraph Scope["允许范围"]
+        AL["表白名单 / forced_tables"]
+        TS --> AL
+    end
+    subgraph Link["Schema 链接：这话该用哪一块"]
         LINK["schema_linker.link_schema"]
         SEM --> LINK
-        LINK --> LS["LinkedSchema"]
+        AL --> LINK
+        LINK --> LS["LinkedSchema +\nsuggested_filters"]
     end
-    subgraph Semantic["语义补充"]
+    subgraph Docs["RAG：说明书（非反射）"]
         RAG["NL2SQLRAGService"]
         RAG --> NS1["nl2sql_schema"]
         RAG --> NS2["nl2sql_biz_knowledge"]
         RAG --> NS3["nl2sql_qa_examples"]
     end
-    TS --> MODE{"catalog mode"}
-    LS --> MODE
+    LS --> MODE{"catalog mode"}
     MODE -->|linked_only| CAT["收窄 catalog"]
     MODE -->|legacy_wide| CATW["表白名单宽 catalog"]
     RAG --> SNIP["RAG 片段"]
@@ -603,7 +639,8 @@ flowchart LR
 | **业务域** | `NL2SQL_BUSINESS_DOMAIN` → `configs/nl2sql_business/<domain>/`；一套进程一个 domain。 |
 | **连接串** | 密码用 `DB_PASSWORD`/`DB_URL`；host/port/库/用户优先显式 `DB_*`，否则 profile `db.*`。PG 需 **asyncpg**。 |
 | **表白名单 / JOIN** | 默认跟配置包文件；显式 `ANALYSIS_NL2SQL_TABLE_SCOPE_*` 仍可覆盖。地降另有 `join_whitelist`。 |
-| **语义链接** | `NL2SQL_SEMANTIC_LINK_ENABLED` + `SCHEMA_LINK_CATALOG_MODE` + `ON_LINK_FAILURE`；地降默认开；P6 层位注入随语义资产加载。 |
+| **Schema 反射** | `schema_service.refresh_from_db`（经 Chain `_ensure_schema_refreshed_once`）；程序连库读真实表/列；与语义开关无关。 |
+| **语义对齐 + Schema 链接** | `NL2SQL_SEMANTIC_LINK_ENABLED` + `SCHEMA_LINK_CATALOG_MODE` + `ON_LINK_FAILURE`；地降默认开；对齐在反射前，链接在反射+白名单之后；P6 层位注入随语义资产加载。 |
 | **外键与 JOIN** | 反射 FK 写入 catalog；无物理 FK 依赖 RAG / join 白名单。 |
 | **列–表绑定** | `schema_ok` 时校验 `alias.column` 是否属于该物理表。 |
 | **实体规则** | 否定规则；路径可来自 profile `entity_rules_file`。 |
@@ -669,6 +706,87 @@ flowchart LR
 | `enterprise-level_transformation_docs/企业级智能客服 LangGraph 框架实现方案.md` | 客服图与 `data_query` |
 | `enterprise-level_transformation_docs/企业级综合分析实现和使用说明.md` | `run-with-nl2sql*`；地降 `subsidence_*` 建议补说明 |
 | `enterprise-level_transformation_docs/企业级综合分析-看图诊断实现和使用说明.md` | `img_diag` 并行臂与 HITL |
+
+---
+
+## 9. 优化增强方向（2026-10-20）
+
+> 本节对照 §4.0 基座主链路与现网代码梳理结论：主链路与文档 **一致**；差异主要在 **调用方编排**（锁表 / period / HITL）与文档早期对客服「裸问句」的简化叙述（§4.1 已同步）。下列方向按优先级排列，指导后续迭代，不改变「LLM 为填空器、程序为权威」的架构原则。
+
+### 9.1 与 §4.0 主链路一致性结论
+
+| 维度 | 文档 §4.0 / §5 | 现网代码 | 结论 |
+|------|----------------|----------|------|
+| 基座顺序 | 意图 → 语义对齐 → **Schema 反射** → 白名单/RAG → **Schema 链接** → 缓存 → Prompt → LLM → 改写 → 校验 → 执行 | `chain.py`：`align` → `_ensure_schema_refreshed_once` → RAG/scope → `link_schema` | **一致**（反射已从「认识库表」中拆出单列） |
+| Schema 反射 vs 链接 | 反射=连库读表列；链接=问句↔表列 | `schema_service.refresh_from_db` vs `schema_linker.link_schema` | **一致**（文首易混概念已写明） |
+| 域差异 | 配置包驱动，无双管线 | `NL2SQL_BUSINESS_DOMAIN` + profile | **一致** |
+| 缓存 / QA | L2 / L1 / QA 回放仍过改写+校验 | `sql_cache` / `sql_skeleton` / `qa_feedback` | **一致** |
+| 后置改写 | 时间·范围·suggested_filters | 另含 `latest_per_station`、运维 `snapshot_time` | **一致** |
+| period / 锁表 | 未写入 §4.0 主框 | 在 **基座外**（查询台 `acquire`、客服 `chatbot_settle_prepare`） | **不矛盾**：属调用方编排，非第二套生 SQL 引擎 |
+| 客服入参 | §4.1 原偏「仅 hint」 | 沉降路径已可 `forced_tables` + 规则 scope + period | **已对齐实现；§4.1 已更新** |
+
+**配置权威（与 `configs/nl2sql_business/subsidence/配置项说明.md` 一致）**：区/站首轮解析以 **`scope_lexicon.json`** 为准；`semantic/dimensions/station.yaml` 当前为空占位；库 id↔表以 **`device_type.yaml` + synonyms + 查询台 catalog** 为准；时间由 **`time_intent_display`** 规则解析，不读 dimensions。
+
+### 9.2 架构判断（优化前提）
+
+1. **LLM 是中段生成器**：表/站/覆盖/层位由语义 + 链接 + 改写兜底，不宜改为「更大更自由的 LLM 主路径」。  
+2. **正确性重心在后置 rewrite**：尤其 `suggested_filters_rewrite`、时间窗、`latest_per_station`、运维最新批。  
+3. **调用方编排决定上限**：`forced_tables` + 结构化 scope ≫ 裸自然语言问句。  
+4. **`linked_only` + `on_link_failure=refuse` 双刃剑**：幻觉少，链接错则空 SQL、不进 LLM。
+
+### 9.3 P0 — 进 LLM 之前的约束（性价比最高）
+
+| 方向 | 内容 |
+|------|------|
+| 编排对齐 | 综合分析 plan 项、裸 `/nl2sql` 在可判定监测类型时传 `forced_tables` / 结构化 scope（复用客服 `chatbot_settle_prepare` 或查询台同类逻辑） |
+| 客服 hint 加厚 | 沉降路径 `sql_gen_extra_hint` 补库表 / 周期 Δ / 层位 0 口径（对齐查询台 hint，不只 SELECT 可读性） |
+| 链接失败策略 | 已锁表场景：可对锁表内 `best_effort`；无锁表仍 `refuse`，避免乱扫 |
+| period 可观测 | 已落地：失败回退 LLM；用 `period_deterministic` / `period_list_fallback_llm` 统计回退率，驱动规则补洞 |
+
+### 9.4 P1 — 提升 LLM 一次成功率
+
+| 方向 | 内容 |
+|------|------|
+| Prompt 减负 | 大覆盖名单只写「系统注入、勿手写 IN」；避免长 preview 截断误导 |
+| 指标→列硬约束 | `metrics.yaml` preferred_columns 在 Prompt 升为「优先/必须」级，减少乱选累计/年沉降列 |
+| 「最新」口径 | Prompt 与 `latest_per_station` rewrite 一致，减少日历窗与 DISTINCT ON 打架 |
+| 站名权威 | 维持 lexicon 解析；`station.yaml` 空则勿假装语义站维生效；补全或与 lexicon 双写/导出脚本 |
+| QA 回放 | 客服/分析在指纹可靠时适度开 strict replay；查询台继续 `disable_qa_slot_replay`（防串库） |
+
+### 9.5 P2 — 链接与语义层
+
+| 方向 | 内容 |
+|------|------|
+| linker 可观测 | primary_table、filters 条数、refuse 原因进 meta/日志，对照空 SQL |
+| device_type 单一真相 | catalog / synonyms / 客服锁库共用，避免第三套别名 |
+| RAG 检索查询 | planner 常关时对沉降问句轻量改写（加表名/指标词）提升 schema 召回 |
+| 校验前移 | 高频 entity_rules 部分前移为 Prompt 硬禁令 + 链接禁表 |
+
+### 9.6 P3 — 生成后与闭环
+
+| 方向 | 内容 |
+|------|------|
+| refine 策略 | 白名单错 / 时间占位未解析 / 执行错：有限次、带结构化错误码的 refine |
+| 黄金集回归 | `nl2sql_subsidence_golden_set` 分桶：period 命中 / LLM / 运维 / 链接 refuse |
+| 缓存指纹 | L1/L2 键纳入 `forced_tables` + scope 哈希，防串结果 |
+| 人工校核 schema | `settlement_calibrated` 就绪后的切换与 Prompt / `search_path` 联调 |
+
+### 9.7 明确不优先
+
+- 再堆「更大更自由」的 LLM 生 SQL 主路径（与现架构相反）。  
+- 把查询台 HITL / 树选库整包迁入智能问答。  
+- 仅补空 `station.yaml` 却不维护 `scope_lexicon.json`（解析权威仍是词表）。  
+- 区/市粒度 period 确定性（查询台未做；先把站点+区间做稳）。
+
+### 9.8 建议落地顺序（摘要）
+
+```text
+短期：调用方「能锁表则锁、能结构化则结构化、能 period 则 period，失败再 LLM」
+中期：Prompt / 链接 / 改写分工更清晰 —— LLM 只管 SELECT 形状与聚合，名单与时间由程序注入
+长期：可观测字段 + 黄金集把 refuse / 回退 / refine 变成可量化迭代
+```
+
+较合适的下一刀：**分析报告项复用沉降准备逻辑（锁库+scope）**；**沉降路径加厚 `sql_gen_extra_hint`**。
 
 ---
 

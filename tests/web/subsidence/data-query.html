@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>数据查询 · 地面沉降联调</title>
+  <style>
+    :root {
+      --bg: #0f1419; --panel: #1a2332; --border: #2d3a4d; --text: #e6edf3;
+      --muted: #8b9cb3; --accent: #10b981; --accent-hover: #059669;
+      --warn: #fbbf24; --meta: #22c55e; --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 1.25rem 1rem 2.5rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin: 0 0 1rem; }
+    .banner {
+      margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 8px;
+      border: 1px solid var(--accent); background: rgba(16, 185, 129, 0.08); font-size: 0.8rem;
+    }
+    .banner a { color: var(--accent); }
+    .nav { margin-bottom: 1rem; font-size: 0.8rem; }
+    .nav a { color: var(--muted); margin-right: 0.85rem; text-decoration: none; }
+    .nav a:hover, .nav a.on { color: var(--accent); }
+    fieldset {
+      border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+      margin: 0 0 1rem; padding: 0.75rem 1rem 1rem;
+    }
+    legend { padding: 0 0.35rem; color: var(--muted); font-size: 0.8rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"], input[type="url"], input[type="password"], textarea, select {
+      width: 100%; margin-top: 0.2rem; padding: 0.45rem 0.55rem; border-radius: 6px;
+      border: 1px solid var(--border); background: #0d1117; color: var(--text); font-size: 0.9rem;
+    }
+    textarea { min-height: 2.8rem; resize: vertical; font-family: inherit; }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    .hint { font-size: 0.75rem; color: var(--muted); margin-top: 0.35rem; }
+    .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.65rem; align-items: center; }
+    button {
+      padding: 0.5rem 1rem; border-radius: 6px; border: none; font-size: 0.9rem;
+      cursor: pointer; font-weight: 500;
+    }
+    button.primary { background: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.secondary { background: var(--border); color: var(--text); }
+    button.warn { background: rgba(251, 191, 36, 0.2); color: var(--warn); border: 1px solid var(--warn); }
+    button.sm { padding: 0.2rem 0.5rem; font-size: 0.75rem; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status { font-size: 0.85rem; color: var(--muted); margin: 0.5rem 0; }
+    .layout {
+      display: grid; grid-template-columns: 280px 1fr; gap: 1rem; min-height: 520px;
+    }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+    .side, .main {
+      border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+      display: flex; flex-direction: column; min-height: 480px;
+    }
+    .side-h, .main-h {
+      padding: 0.65rem 0.85rem; border-bottom: 1px solid var(--border);
+      font-size: 0.8rem; color: var(--muted); display: flex; justify-content: space-between; align-items: center;
+    }
+    .tree { flex: 1; overflow: auto; padding: 0.5rem; font-size: 0.82rem; }
+    .group-title { color: var(--muted); font-size: 0.72rem; margin: 0.45rem 0 0.25rem; padding: 0 0.25rem; }
+    .node {
+      padding: 0.3rem 0.45rem; border-radius: 5px; cursor: pointer;
+      border: 1px solid transparent; margin-bottom: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .node:hover { background: #0d1117; }
+    .node.on { border-color: var(--accent); background: rgba(16, 185, 129, 0.12); color: var(--accent); }
+    .node.dist { padding-left: 1rem; color: var(--text); }
+    .node.st { padding-left: 1.75rem; color: var(--muted); font-size: 0.78rem; }
+    .cnt { color: var(--muted); font-size: 0.7rem; margin-left: 0.25rem; }
+    .toolbar { padding: 0.65rem 0.85rem; border-bottom: 1px solid var(--border); }
+    .table-wrap { flex: 1; overflow: auto; padding: 0.5rem; }
+    table.data { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    table.data th, table.data td {
+      border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: left; white-space: nowrap;
+    }
+    table.data th { background: #0d1117; color: var(--muted); font-weight: 500; position: sticky; top: 0; }
+    table.data tr:hover td { background: rgba(16, 185, 129, 0.05); }
+    .pager { display: flex; gap: 0.5rem; align-items: center; padding: 0.5rem 0.85rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--muted); }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.4rem; }
+    .chip {
+      font-size: 0.72rem; padding: 0.15rem 0.45rem; border-radius: 999px;
+      border: 1px solid var(--border); background: #0d1117; color: var(--muted);
+    }
+    .modal-bg {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      align-items: center; justify-content: center; z-index: 50;
+    }
+    .modal-bg.show { display: flex; }
+    .modal {
+      width: min(420px, 92vw); background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1rem 1.1rem;
+    }
+    .modal h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+    .modal p { margin: 0 0 0.75rem; color: var(--muted); font-size: 0.85rem; }
+    .opt {
+      display: block; width: 100%; text-align: left; margin-bottom: 0.35rem;
+      padding: 0.45rem 0.65rem; border-radius: 6px; border: 1px solid var(--border);
+      background: #0d1117; color: var(--text); cursor: pointer;
+    }
+    .opt:hover, .opt.on { border-color: var(--accent); color: var(--accent); }
+    .drawer-bg {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 40;
+      justify-content: flex-end;
+    }
+    .drawer-bg.show { display: flex; }
+    .drawer {
+      width: min(420px, 92vw); height: 100%; background: var(--panel);
+      border-left: 1px solid var(--border); padding: 1rem; overflow: auto;
+    }
+    .drawer h3 { margin: 0 0 0.75rem; font-size: 1rem; }
+    .metric { margin-bottom: 0.5rem; font-size: 0.85rem; }
+    .metric .k { color: var(--muted); }
+    #eventLog, #meta {
+      margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border);
+      font-size: 0.75rem; white-space: pre-wrap; word-break: break-all;
+      font-family: ui-monospace, Consolas, monospace; color: var(--muted);
+      max-height: 140px; overflow: auto;
+    }
+    #meta { color: var(--meta); }
+    .err { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; white-space: pre-wrap; }
+    code { font-size: 0.8rem; background: #0d1117; padding: 0.1rem 0.35rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav class="nav">
+      <a href="./intelligent-qa.html">智能问答</a>
+      <a href="./auto-report.html">自动报告</a>
+      <a class="on" href="./data-query.html">数据查询</a>
+      <a href="./knowledge-base.html">知识库</a>
+    </nav>
+    <h1>数据查询 <span style="color:var(--accent);font-size:0.85em">地面沉降</span></h1>
+    <p class="sub">浏览：<code>GET /tree</code> + <code>GET /browse</code>；解析：<code>POST /run-stream</code> + HITL <code>/resume-stream</code>。点树不打 run-stream；禁止展示 SQL。对照接口文档 §3。</p>
+    <div class="banner">
+      需 <code>DATA_QUERY_AGENT_ENABLED=true</code>。不调用 <code>/libraries</code>、<code>/hud</code>（解析结果用 <code>hud_by_entity</code>）。
+      正式前端参照 <a href="http://localhost:3300" target="_blank" rel="noopener">localhost:3300</a>（admin/123456）。
+    </div>
+
+    <div class="pair">
+      <fieldset>
+        <legend>连接</legend>
+        <label>API 根地址</label>
+        <input type="url" id="baseUrl" value="http://127.0.0.1:8083" autocomplete="off" />
+        <label>Service API Key</label>
+        <input type="password" id="apiKey" placeholder="留空或粘贴密钥" autocomplete="off" />
+      </fieldset>
+      <fieldset>
+        <legend>会话（解析路径）</legend>
+        <label>user_id</label>
+        <input type="text" id="userId" value="u_web_data_query" autocomplete="off" />
+        <label>session_id</label>
+        <input type="text" id="sessionId" autocomplete="off" />
+        <p class="hint"><button type="button" class="secondary sm" id="btnNewSid">新会话</button></p>
+      </fieldset>
+    </div>
+
+    <div class="layout">
+      <aside class="side">
+        <div class="side-h">
+          <span>感知树</span>
+          <button type="button" class="secondary sm" id="btnLoadTree">刷新</button>
+        </div>
+        <div id="tree" class="tree"><div class="hint">点「刷新」加载 GET /tree。</div></div>
+      </aside>
+      <section class="main">
+        <div class="toolbar">
+          <label style="margin:0">自然语言查询（解析 SQL）</label>
+          <textarea id="query" placeholder="例如：朝阳区分层标近一个月累计沉降"></textarea>
+          <div class="actions">
+            <button type="button" class="primary" id="btnParse">解析 SQL</button>
+            <button type="button" class="warn" id="btnStop" disabled>停止</button>
+            <button type="button" class="secondary" id="btnBrowse">按当前树浏览</button>
+            <label style="margin:0;display:flex;align-items:center;gap:0.35rem;color:var(--text);font-size:0.75rem;">
+              <input type="checkbox" id="debugSse" /> 调试 SSE
+            </label>
+          </div>
+          <div id="scopeChips" class="chips"></div>
+          <div class="hint" id="selHint">当前选择：全量默认 browse（未点树）</div>
+        </div>
+        <div class="main-h">
+          <span id="tableTitle">结果表</span>
+          <span id="grainHint" class="hint" style="margin:0"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="data" id="tbl"><thead></thead><tbody></tbody></table>
+        </div>
+        <div class="pager">
+          <button type="button" class="secondary sm" id="btnPrev">上一页</button>
+          <span id="pageInfo">—</span>
+          <button type="button" class="secondary sm" id="btnNext">下一页</button>
+          <span style="margin-left:auto">page_size
+            <select id="pageSize" style="width:auto;display:inline-block;margin:0 0 0 0.25rem;">
+              <option>20</option><option>50</option><option>100</option>
+            </select>
+          </span>
+        </div>
+      </section>
+    </div>
+
+    <div id="status">就绪。建议先刷新感知树，或直接按默认 browse。</div>
+    <div id="warnBox" class="hint"></div>
+    <h2 style="font-size:0.85rem;color:var(--muted);margin:1rem 0 0.4rem;font-weight:500;">meta / 进度</h2>
+    <div id="meta">（尚未开始）</div>
+    <h2 style="font-size:0.85rem;color:var(--muted);margin:1rem 0 0.4rem;font-weight:500;">事件 trace</h2>
+    <div id="eventLog"></div>
+    <div id="err" class="err" hidden></div>
+  </div>
+
+  <div id="hitlBg" class="modal-bg">
+    <div class="modal">
+      <h3>选择监测库</h3>
+      <p id="hitlPrompt">请选择监测类型</p>
+      <div id="hitlOpts"></div>
+      <div class="actions" style="margin-top:0.75rem">
+        <button type="button" class="primary" id="btnHitlOk" disabled>确认</button>
+        <button type="button" class="secondary" id="btnHitlCancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="hudBg" class="drawer-bg">
+    <div class="drawer">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <h3 id="hudTitle">详参</h3>
+        <button type="button" class="secondary sm" id="btnHudClose">关闭</button>
+      </div>
+      <div id="hudBody"></div>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const LS_BASE = "subsidence_data_query_base";
+  const state = {
+    sel: { library_id: "", district: "", station_id: "" },
+    page: 1, total: 0, mode: "browse",
+    abortCtrl: null, busy: false, streamId: "",
+    resumeToken: "", hitlPick: "",
+    hudByEntity: {}, hudByStation: {},
+    columns: [], list: [],
+  };
+
+  function newSessionId() {
+    try {
+      if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+    } catch (_) {}
+    return "s_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
+  }
+  function persistBase() {
+    try { localStorage.setItem(LS_BASE, $("baseUrl").value.trim()); } catch (_) {}
+  }
+  (function init() {
+    try {
+      $("sessionId").value = newSessionId();
+      const saved = localStorage.getItem(LS_BASE);
+      if (saved) $("baseUrl").value = saved;
+    } catch (_) { $("sessionId").value = "s_" + Date.now(); }
+  })();
+
+  $("baseUrl").addEventListener("change", persistBase);
+  $("btnNewSid").addEventListener("click", () => {
+    $("sessionId").value = newSessionId();
+    setStatus("已换新 session_id。");
+  });
+
+  const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
+  const authHeaders = (extra) => {
+    const h = Object.assign({ Accept: "application/json" }, extra || {});
+    const k = $("apiKey").value.trim();
+    if (k) h.Authorization = "Bearer " + k;
+    return h;
+  };
+  function showErr(msg) {
+    const el = $("err");
+    if (!msg) { el.hidden = true; el.textContent = ""; return; }
+    el.hidden = false; el.textContent = msg;
+  }
+  function setStatus(t) { $("status").textContent = t; }
+  function setBusy(b) {
+    state.busy = b;
+    $("btnParse").disabled = b;
+    $("btnStop").disabled = !b;
+    $("btnParse").textContent = b ? "解析中…" : "解析 SQL";
+  }
+  function logEvent(line) {
+    if (!$("debugSse").checked) return;
+    const el = $("eventLog");
+    const ts = new Date().toISOString().slice(11, 23);
+    el.textContent += "[" + ts + "] " + line + "\n";
+    const parts = el.textContent.split("\n");
+    if (parts.length > 120) el.textContent = parts.slice(-120).join("\n");
+    el.scrollTop = el.scrollHeight;
+  }
+  function updateSelHint() {
+    const s = state.sel;
+    const parts = [];
+    if (s.library_id) parts.push("library_id=" + s.library_id);
+    if (s.district) parts.push("district=" + s.district);
+    if (s.station_id) parts.push("station_id=" + s.station_id);
+    $("selHint").textContent = "当前选择：" + (parts.length ? parts.join(" · ") : "全量默认 browse（未点树）");
+  }
+
+  async function readSse(res, onEvent) {
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() || "";
+      for (const block of parts) {
+        const lines = block.split("\n");
+        let data = "";
+        for (const line of lines) {
+          if (line.startsWith("data:")) data += line.slice(5).trim();
+        }
+        if (!data || data === "[DONE]") continue;
+        try { onEvent(JSON.parse(data)); }
+        catch (_) { logEvent("parse_err " + data.slice(0, 120)); }
+      }
+    }
+  }
+
+  function clearTreeHighlight() {
+    $("tree").querySelectorAll(".node.on").forEach((n) => n.classList.remove("on"));
+  }
+  function highlightLibrary(lid) {
+    clearTreeHighlight();
+    const el = $("tree").querySelector('[data-kind="lib"][data-lid="' + CSS.escape(lid) + '"]');
+    if (el) el.classList.add("on");
+  }
+
+  function renderTree(data) {
+    const root = $("tree");
+    root.replaceChildren();
+    const libs = (data && data.libraries) || [];
+    if (!libs.length) {
+      root.innerHTML = '<div class="hint">树为空。</div>';
+      return;
+    }
+    const byGroup = {};
+    libs.forEach((lib) => {
+      const g = lib.group || "其他";
+      if (!byGroup[g]) byGroup[g] = [];
+      byGroup[g].push(lib);
+    });
+    Object.keys(byGroup).forEach((g) => {
+      const gt = document.createElement("div");
+      gt.className = "group-title";
+      gt.textContent = g;
+      root.appendChild(gt);
+      byGroup[g].forEach((lib) => {
+        const libEl = document.createElement("div");
+        libEl.className = "node";
+        libEl.dataset.kind = "lib";
+        libEl.dataset.lid = lib.library_id || "";
+        libEl.innerHTML = (lib.display_name || lib.library_id) +
+          '<span class="cnt">(' + (lib.station_count != null ? lib.station_count : 0) + ")</span>";
+        libEl.addEventListener("click", (e) => {
+          e.stopPropagation();
+          state.sel = { library_id: lib.library_id || "", district: "", station_id: "" };
+          clearTreeHighlight(); libEl.classList.add("on");
+          updateSelHint();
+          state.page = 1;
+          doBrowse();
+        });
+        root.appendChild(libEl);
+        (lib.districts || []).forEach((d) => {
+          const distEl = document.createElement("div");
+          distEl.className = "node dist";
+          distEl.dataset.kind = "dist";
+          distEl.innerHTML = (d.district || "未分区") +
+            '<span class="cnt">(' + (d.station_count != null ? d.station_count : 0) + ")</span>";
+          distEl.addEventListener("click", (e) => {
+            e.stopPropagation();
+            state.sel = { library_id: lib.library_id || "", district: d.district || "", station_id: "" };
+            clearTreeHighlight(); distEl.classList.add("on");
+            updateSelHint();
+            state.page = 1;
+            doBrowse();
+          });
+          root.appendChild(distEl);
+          (d.stations || []).forEach((st) => {
+            const stEl = document.createElement("div");
+            stEl.className = "node st";
+            stEl.dataset.kind = "st";
+            stEl.textContent = st.station_name || st.station_id || "";
+            stEl.title = st.station_id || "";
+            stEl.addEventListener("click", (e) => {
+              e.stopPropagation();
+              state.sel = {
+                library_id: lib.library_id || "",
+                district: d.district || "",
+                station_id: st.station_id || "",
+              };
+              clearTreeHighlight(); stEl.classList.add("on");
+              updateSelHint();
+              state.page = 1;
+              doBrowse();
+            });
+            root.appendChild(stEl);
+          });
+        });
+      });
+    });
+  }
+
+  async function loadTree() {
+    showErr("");
+    persistBase();
+    setStatus("加载感知树…");
+    try {
+      const res = await fetch(baseUrl() + "/data-query-agent/tree", { headers: authHeaders() });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
+      if (!res.ok) throw new Error((data && (data.detail || data.message)) || res.statusText);
+      renderTree(data);
+      setStatus("感知树已加载。");
+      if (!state.list.length) doBrowse();
+    } catch (e) {
+      showErr(String(e && e.message ? e.message : e));
+      setStatus("加载树失败。");
+    }
+  }
+
+  function cellVal(row, key) {
+    if (row == null) return "";
+    const v = row[key];
+    if (v == null) return "";
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v);
+  }
+
+  function renderTable(columns, list, opts) {
+    opts = opts || {};
+    state.columns = columns || [];
+    state.list = list || [];
+    if (opts.hudByEntity) state.hudByEntity = opts.hudByEntity;
+    if (opts.hudByStation) state.hudByStation = opts.hudByStation;
+    const thead = $("tbl").querySelector("thead");
+    const tbody = $("tbl").querySelector("tbody");
+    thead.replaceChildren();
+    tbody.replaceChildren();
+    const trh = document.createElement("tr");
+    const cols = state.columns.length
+      ? state.columns
+      : (state.list[0] ? Object.keys(state.list[0]).map((k) => ({ key: k, label: k })) : []);
+    cols.forEach((c) => {
+      const th = document.createElement("th");
+      th.textContent = c.label || c.key || c.name || "";
+      trh.appendChild(th);
+    });
+    if (opts.showHud) {
+      const th = document.createElement("th");
+      th.textContent = "操作";
+      trh.appendChild(th);
+    }
+    thead.appendChild(trh);
+    state.list.forEach((row) => {
+      const tr = document.createElement("tr");
+      cols.forEach((c) => {
+        const td = document.createElement("td");
+        const key = c.key || c.name || c;
+        td.textContent = cellVal(row, typeof key === "string" ? key : "");
+        tr.appendChild(td);
+      });
+      if (opts.showHud) {
+        const td = document.createElement("td");
+        const avail = row.hud_available !== false && (opts.hudEnabled !== false);
+        if (avail) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "secondary sm";
+          btn.textContent = "详参";
+          btn.addEventListener("click", () => openHud(row));
+          td.appendChild(btn);
+        } else {
+          td.textContent = "—";
+        }
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    });
+    $("grainHint").textContent = opts.result_grain ? "result_grain=" + opts.result_grain : "";
+    $("tableTitle").textContent = opts.title || (state.mode === "parse" ? "解析结果" : "浏览结果");
+    updatePager();
+  }
+
+  function updatePager() {
+    const size = parseInt($("pageSize").value, 10) || 20;
+    if (state.mode === "browse") {
+      const total = state.total || 0;
+      const pages = Math.max(1, Math.ceil(total / size) || 1);
+      $("pageInfo").textContent = "第 " + state.page + " / " + pages + " 页 · 共 " + total + " 条";
+      $("btnPrev").disabled = state.page <= 1;
+      $("btnNext").disabled = state.page >= pages;
+    } else {
+      $("pageInfo").textContent = "解析结果 · " + (state.list.length || 0) + " 行（不分页）";
+      $("btnPrev").disabled = true;
+      $("btnNext").disabled = true;
+    }
+  }
+
+  async function doBrowse() {
+    showErr("");
+    persistBase();
+    state.mode = "browse";
+    const size = parseInt($("pageSize").value, 10) || 20;
+    const q = new URLSearchParams();
+    q.set("page", String(state.page));
+    q.set("page_size", String(size));
+    if (state.sel.library_id) q.set("library_id", state.sel.library_id);
+    if (state.sel.district) q.set("district", state.sel.district);
+    if (state.sel.station_id) q.set("station_id", state.sel.station_id);
+    setStatus("浏览 GET /browse …");
+    try {
+      const res = await fetch(baseUrl() + "/data-query-agent/browse?" + q.toString(), { headers: authHeaders() });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
+      if (!res.ok) throw new Error((data && (data.detail || data.message)) || res.statusText);
+      state.total = data.total != null ? data.total : (data.total_count != null ? data.total_count : 0);
+      const cols = data.columns || [];
+      const list = data.list || data.items || data.rows || [];
+      state.hudByEntity = {};
+      state.hudByStation = {};
+      renderTable(cols, list, {
+        title: "浏览结果",
+        result_grain: data.result_grain,
+        showHud: false,
+      });
+      $("warnBox").textContent = Array.isArray(data.warnings) && data.warnings.length
+        ? "warnings: " + data.warnings.join(", ")
+        : "";
+      $("meta").textContent = JSON.stringify({
+        result_grain: data.result_grain,
+        page: state.page,
+        total: state.total,
+        library_id: state.sel.library_id || null,
+      }, null, 2);
+      setStatus("浏览完成 · " + list.length + " 行。");
+    } catch (e) {
+      showErr(String(e && e.message ? e.message : e));
+      setStatus("浏览失败。");
+    }
+  }
+
+  function openHud(row) {
+    const eid = row.hud_entity_id || row.station_id || "";
+    let hud = state.hudByEntity[eid] || state.hudByStation[eid] || state.hudByStation[row.station_id];
+    const body = $("hudBody");
+    body.replaceChildren();
+    $("hudTitle").textContent = (hud && hud.title) || eid || "详参";
+    if (!hud) {
+      body.innerHTML = '<div class="hint">无 hud_by_entity 缓存（浏览路径本页不调 /hud）。</div>';
+    } else {
+      (hud.core_metrics || []).forEach((m) => {
+        const div = document.createElement("div");
+        div.className = "metric";
+        div.innerHTML = '<span class="k"></span>：<span class="v"></span>';
+        div.querySelector(".k").textContent = m.label || m.key || "";
+        div.querySelector(".v").textContent = (m.value != null ? m.value : "") + (m.unit ? " " + m.unit : "");
+        body.appendChild(div);
+      });
+      const pts = hud.series && hud.series.points;
+      if (Array.isArray(pts) && pts.length) {
+        const pre = document.createElement("pre");
+        pre.style.fontSize = "0.72rem";
+        pre.style.color = "var(--muted)";
+        pre.textContent = "series points (" + pts.length + "):\n" +
+          pts.slice(0, 12).map((p) => (p.t || "") + " → " + (p.v != null ? p.v : "")).join("\n") +
+          (pts.length > 12 ? "\n…" : "");
+        body.appendChild(pre);
+      }
+      if (hud.identity) {
+        const pre = document.createElement("pre");
+        pre.style.fontSize = "0.72rem";
+        pre.style.color = "var(--muted)";
+        pre.textContent = JSON.stringify(hud.identity, null, 2);
+        body.appendChild(pre);
+      }
+    }
+    $("hudBg").classList.add("show");
+  }
+
+  function showHitl(ev) {
+    state.resumeToken = ev.resume_token || "";
+    state.hitlPick = "";
+    $("hitlPrompt").textContent = ev.prompt || "请选择监测类型";
+    const root = $("hitlOpts");
+    root.replaceChildren();
+    $("btnHitlOk").disabled = true;
+    (ev.library_options || []).forEach((opt) => {
+      const id = opt.library_id || opt.id || "";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "opt";
+      btn.textContent = (opt.display_name || opt.name || id) + (id ? " (" + id + ")" : "");
+      btn.addEventListener("click", () => {
+        root.querySelectorAll(".opt").forEach((x) => x.classList.remove("on"));
+        btn.classList.add("on");
+        state.hitlPick = id;
+        $("btnHitlOk").disabled = !id;
+      });
+      root.appendChild(btn);
+    });
+    $("hitlBg").classList.add("show");
+  }
+
+  function handleParseEvent(ev) {
+    logEvent(JSON.stringify(ev).slice(0, 280));
+    const name = ev.event || "";
+    if (name === "started" || ev.stream_id) {
+      state.streamId = ev.stream_id || state.streamId;
+      if (name === "started") setStatus("已连接 stream_id=" + state.streamId);
+    }
+    if (name === "data_query_library_hit" && ev.library_id) {
+      state.sel.library_id = ev.library_id;
+      highlightLibrary(ev.library_id);
+      updateSelHint();
+    }
+    if (name === "data_query_library_input_required") {
+      showHitl(ev);
+      setStatus("需选库（HITL）。");
+    }
+    if (name === "data_query_scope_parsed") {
+      const chips = $("scopeChips");
+      chips.replaceChildren();
+      ["district", "time_range", "library_id", "station_id"].forEach((k) => {
+        if (ev[k]) {
+          const c = document.createElement("span");
+          c.className = "chip";
+          c.textContent = k + ": " + ev[k];
+          chips.appendChild(c);
+        }
+      });
+    }
+    if (name === "data_query_nl2sql_progress") {
+      $("meta").textContent = (ev.message || ev.step || JSON.stringify(ev)).toString();
+    }
+    if (name === "data_query_result") {
+      state.mode = "parse";
+      renderTable(ev.columns || [], ev.list || [], {
+        title: "解析结果",
+        result_grain: ev.result_grain,
+        showHud: true,
+        hudEnabled: ev.hud_enabled !== false,
+        hudByEntity: ev.hud_by_entity || {},
+        hudByStation: ev.hud_by_station || {},
+      });
+      $("warnBox").textContent = Array.isArray(ev.warnings) && ev.warnings.length
+        ? "warnings: " + ev.warnings.join(", ")
+        : "";
+    }
+    if (name === "data_query_error" || (name !== "finished" && ev.error && !ev.delta)) {
+      const err = ev.message || ev.error || ev;
+      showErr(typeof err === "string" ? err : JSON.stringify(err));
+    }
+    if (name === "data_query_cancelled") setStatus("已取消。");
+    if (name === "finished") {
+      const meta = Object.assign({}, ev.meta || ev);
+      delete meta.sql; delete meta.nl2sql_sql; delete meta.event;
+      $("meta").textContent = JSON.stringify(meta, null, 2);
+      if (!state.resumeToken || !$("hitlBg").classList.contains("show")) {
+        setStatus("解析完成。");
+      }
+    }
+  }
+
+  async function runStream(url, body) {
+    showErr("");
+    persistBase();
+    setBusy(true);
+    state.streamId = "";
+    state.resumeToken = "";
+    $("eventLog").textContent = "";
+    $("scopeChips").replaceChildren();
+    $("meta").textContent = "流式中…";
+    state.abortCtrl = new AbortController();
+    try {
+      const res = await fetch(baseUrl() + url, {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
+        body: JSON.stringify(body),
+        signal: state.abortCtrl.signal,
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(res.status + " " + t.slice(0, 400));
+      }
+      await readSse(res, handleParseEvent);
+    } catch (e) {
+      if (e && e.name === "AbortError") setStatus("已中断。");
+      else {
+        showErr(String(e && e.message ? e.message : e));
+        setStatus("解析失败。");
+      }
+    } finally {
+      setBusy(false);
+      state.abortCtrl = null;
+    }
+  }
+
+  async function parse() {
+    const query = $("query").value.trim();
+    const uid = $("userId").value.trim();
+    const sid = $("sessionId").value.trim();
+    if (!query) { showErr("query 不能为空（空串会 422）"); return; }
+    if (!uid || !sid) { showErr("user_id / session_id 必填"); return; }
+    if (sid.includes(":")) { showErr("session_id 禁止含冒号"); return; }
+    if (state.busy) return;
+    const body = { user_id: uid, session_id: sid, query };
+    if (state.sel.library_id) body.library_id = state.sel.library_id;
+    if (state.sel.district) body.district = state.sel.district;
+    if (state.sel.station_id) body.station_id = state.sel.station_id;
+    setStatus("请求 run-stream…");
+    await runStream("/data-query-agent/run-stream", body);
+  }
+
+  async function resumeHitl() {
+    if (!state.resumeToken || !state.hitlPick) return;
+    $("hitlBg").classList.remove("show");
+    const body = {
+      user_id: $("userId").value.trim(),
+      session_id: $("sessionId").value.trim(),
+      resume_token: state.resumeToken,
+      library_id: state.hitlPick,
+    };
+    setStatus("请求 resume-stream…");
+    await runStream("/data-query-agent/resume-stream", body);
+  }
+
+  async function stopStream() {
+    if (!state.streamId) return;
+    try {
+      await fetch(baseUrl() + "/data-query-agent/stream/stop", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          user_id: $("userId").value.trim(),
+          session_id: $("sessionId").value.trim(),
+          stream_id: state.streamId,
+        }),
+      });
+      setStatus("已请求停止。");
+    } catch (e) {
+      showErr("停止失败：" + e);
+    }
+    if (state.abortCtrl) try { state.abortCtrl.abort(); } catch (_) {}
+  }
+
+  $("btnLoadTree").addEventListener("click", loadTree);
+  $("btnBrowse").addEventListener("click", () => { state.page = 1; doBrowse(); });
+  $("btnParse").addEventListener("click", parse);
+  $("btnStop").addEventListener("click", stopStream);
+  $("btnPrev").addEventListener("click", () => { if (state.page > 1) { state.page--; doBrowse(); } });
+  $("btnNext").addEventListener("click", () => { state.page++; doBrowse(); });
+  $("pageSize").addEventListener("change", () => { state.page = 1; if (state.mode === "browse") doBrowse(); });
+  $("btnHitlOk").addEventListener("click", resumeHitl);
+  $("btnHitlCancel").addEventListener("click", () => {
+    $("hitlBg").classList.remove("show");
+    state.resumeToken = "";
+    setStatus("已取消选库。");
+  });
+  $("btnHudClose").addEventListener("click", () => $("hudBg").classList.remove("show"));
+  $("hudBg").addEventListener("click", (e) => { if (e.target === $("hudBg")) $("hudBg").classList.remove("show"); });
+  updateSelHint();
+})();
+  </script>
+</body>
+</html>

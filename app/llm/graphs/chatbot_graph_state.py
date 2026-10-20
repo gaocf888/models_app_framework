@@ -112,6 +112,10 @@ class ChatbotGraphState(TypedDict, total=False):
     nl2sql_analysis: Optional[Dict[str, Any]]
     # 查数成功待流式分析：含 system/user_content/table_fallback/display_rows 等
     nl2sql_analysis_stream_plan: Optional[Dict[str, Any]]
+    # 沉降查数可观测（锁库来源 / period 短路 / 运维分流）
+    nl2sql_library_source: Optional[str]
+    nl2sql_period_deterministic: Optional[str]
+    nl2sql_ops_routed: bool
 
     # ===== Hybrid（RAG + NL2SQL）=====
     # 单臂失败降级标记："" | "nl2sql" | "rag" | "both"

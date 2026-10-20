@@ -722,6 +722,9 @@ class ChatbotLangGraphRunner:
             "nl2sql_sql": outcome.nl2sql_sql or "",
             "nl2sql_analysis": outcome.nl2sql_analysis,
             "nl2sql_analysis_stream_plan": stream_plan.to_state_dict() if stream_plan else None,
+            "nl2sql_library_source": outcome.library_source,
+            "nl2sql_period_deterministic": outcome.period_deterministic,
+            "nl2sql_ops_routed": bool(outcome.ops_routed),
             "used_rag": False,
             "llm_messages": [],
             "context_snippets": [],
@@ -840,6 +843,9 @@ class ChatbotLangGraphRunner:
             "nl2sql_sql": outcome.nl2sql_sql or "",
             "nl2sql_analysis": outcome.nl2sql_analysis,
             "nl2sql_analysis_stream_plan": None,
+            "nl2sql_library_source": outcome.library_source,
+            "nl2sql_period_deterministic": outcome.period_deterministic,
+            "nl2sql_ops_routed": bool(outcome.ops_routed),
             "hybrid_degraded": hybrid_degraded,
             **rag_patch,
         }
@@ -1714,6 +1720,11 @@ class ChatbotLangGraphRunner:
             "nl2sql_error_code": (state.get("nl2sql_error_code") or None) if nl2sql_failed else None,
             "nl2sql_sql": nl2sql_sql_meta,
             "nl2sql_analysis": (state.get("nl2sql_analysis") if used_nl2sql else None),
+            "nl2sql_library_source": (state.get("nl2sql_library_source") if used_nl2sql else None),
+            "nl2sql_period_deterministic": (
+                state.get("nl2sql_period_deterministic") if used_nl2sql else None
+            ),
+            "nl2sql_ops_routed": (bool(state.get("nl2sql_ops_routed")) if used_nl2sql else None),
             "suggested_questions": suggested,
             "rag_citations": citations,
             "hybrid_degraded": state.get("hybrid_degraded") or None,
