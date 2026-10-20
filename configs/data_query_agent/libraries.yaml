@@ -26,15 +26,18 @@ libraries:
     series_unit: mm
     synonyms: [分层标, 分层, 层位监测, 分层监测点]
     annual_metric: {key: annual_settle_mm, source: total_settle}
+    period_metric: {key: period_settle_mm, source: total_settle}
     columns:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
       - {key: station_name, title: 监测站名称, aliases: [station_name]}
       - {key: area, title: 行政区, aliases: [area]}
+      - {key: period_settle_mm, title: 周期沉降变化(mm), aliases: [period_settle_mm, period_settle]}
       - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}
       - {key: total_settle_mm, title: 历史累计沉降(mm), aliases: [total_settle_mm, total_settle]}
       - {key: data_time, title: 数据时间, aliases: [data_time]}
     core_metrics:
       - {id: total_settle_mm, name: 历史累计沉降, unit: mm, source: total_settle}
+      - {id: period_settle_mm, name: 周期沉降变化, unit: mm, source: period_settle_mm}
       - {id: annual_settle_mm, name: 年沉降量, unit: mm, source: annual_settle_mm}
   - id: jyb
     display_name: 基岩标
@@ -46,15 +49,18 @@ libraries:
     series_unit: mm
     synonyms: [基岩标, 基岩]
     annual_metric: {key: annual_settle_mm, source: total_settle}
+    period_metric: {key: period_settle_mm, source: total_settle}
     columns:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
       - {key: station_name, title: 监测站名称, aliases: [station_name]}
       - {key: area, title: 行政区, aliases: [area]}
+      - {key: period_settle_mm, title: 周期沉降变化(mm), aliases: [period_settle_mm, period_settle]}
       - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}
       - {key: total_settle_mm, title: 历史累计沉降(mm), aliases: [total_settle_mm, total_settle]}
       - {key: data_time, title: 数据时间, aliases: [data_time]}
     core_metrics:
       - {id: total_settle_mm, name: 历史累计沉降, unit: mm, source: total_settle}
+      - {id: period_settle_mm, name: 周期沉降变化, unit: mm, source: period_settle_mm}
       - {id: annual_settle_mm, name: 年沉降量, unit: mm, source: annual_settle_mm}
   - id: dxswj
     display_name: 地下水
@@ -66,16 +72,19 @@ libraries:
     series_unit: m
     synonyms: [地下水, 水位井, 地下水井, 水位]
     annual_metric: {key: annual_deep, source: deep}
+    period_metric: {key: period_deep, source: deep}
     columns:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
       - {key: station_name, title: 监测站名称, aliases: [station_name]}
       - {key: area, title: 行政区, aliases: [area]}
       - {key: deep, title: 埋深(m), aliases: [deep]}
+      - {key: period_deep, title: 周期埋深变化(m), aliases: [period_deep]}
       - {key: annual_deep, title: 年度埋深变化(m), aliases: [annual_deep]}
       - {key: elevation, title: 水位标高, aliases: [elevation]}
       - {key: data_time, title: 数据时间, aliases: [data_time]}
     core_metrics:
       - {id: deep, name: 最新埋深, unit: m, source: deep}
+      - {id: period_deep, name: 周期埋深变化, unit: m, source: period_deep}
       - {id: annual_deep, name: 年度埋深变化, unit: m, source: annual_deep}
   - id: kxsylj
     display_name: 孔隙水压力
@@ -87,15 +96,18 @@ libraries:
     series_unit: kPa
     synonyms: [孔隙水, 孔压, 孔隙水压力]
     annual_metric: {key: annual_pressure, source: pressure}
+    period_metric: {key: period_pressure, source: pressure}
     columns:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
       - {key: station_name, title: 监测站名称, aliases: [station_name]}
       - {key: area, title: 行政区, aliases: [area]}
       - {key: pressure, title: 孔压, aliases: [pressure]}
+      - {key: period_pressure, title: 周期孔压变化, aliases: [period_pressure]}
       - {key: annual_pressure, title: 年度孔压变化, aliases: [annual_pressure]}
       - {key: data_time, title: 数据时间, aliases: [data_time]}
     core_metrics:
       - {id: pressure, name: 最新孔压, unit: kPa, source: pressure}
+      - {id: period_pressure, name: 周期孔压变化, unit: kPa, source: period_pressure}
       - {id: annual_pressure, name: 年度孔压变化, unit: kPa, source: annual_pressure}
   - id: gnss
     display_name: GNSS
@@ -107,16 +119,19 @@ libraries:
     series_unit: mm
     synonyms: [GNSS, gnss, 位移, 三维位移]
     annual_metric: {key: annual_displacement_3d, source: displacement_3d}
+    period_metric: {key: period_displacement_3d, source: displacement_3d}
     columns:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
       - {key: station_name, title: 监测站名称, aliases: [station_name]}
       - {key: area, title: 行政区, aliases: [area]}
       - {key: displacement_3d, title: 三维位移, aliases: [displacement_3d]}
+      - {key: period_displacement_3d, title: 周期位移变化, aliases: [period_displacement_3d]}
       - {key: annual_displacement_3d, title: 年度位移变化, aliases: [annual_displacement_3d]}
       - {key: displacement_2d, title: 二维位移, aliases: [displacement_2d]}
       - {key: data_time, title: 数据时间, aliases: [data_time]}
     core_metrics:
       - {id: displacement_3d, name: 最新三维位移, unit: mm, source: displacement_3d}
+      - {id: period_displacement_3d, name: 周期位移变化, unit: mm, source: period_displacement_3d}
       - {id: annual_displacement_3d, name: 年度位移变化, unit: mm, source: annual_displacement_3d}
   - id: qxz
     display_name: 气象站
@@ -150,13 +165,16 @@ libraries:
     series_unit: mm
     synonyms: [光纤]
     annual_metric: {key: annual_settle_mm, source: total_settle}
+    period_metric: {key: period_settle_mm, source: total_settle}
     columns:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
       - {key: station_name, title: 监测站名称, aliases: [station_name]}
       - {key: area, title: 行政区, aliases: [area]}
+      - {key: period_settle_mm, title: 周期沉降变化(mm), aliases: [period_settle_mm, period_settle]}
       - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}
       - {key: total_settle_mm, title: 历史累计沉降(mm), aliases: [total_settle_mm, total_settle]}
       - {key: data_time, title: 数据时间, aliases: [data_time]}
     core_metrics:
       - {id: total_settle_mm, name: 历史累计沉降, unit: mm, source: total_settle}
+      - {id: period_settle_mm, name: 周期沉降变化, unit: mm, source: period_settle_mm}
       - {id: annual_settle_mm, name: 年沉降量, unit: mm, source: annual_settle_mm}

@@ -30,6 +30,9 @@ def test_period_sql_fcb_month_window_uses_row_number() -> None:
     assert "ORDER BY ABS(" in sql
     assert "ABS(period" not in sql
     assert "ABS(annual_settle_mm)" not in sql
+    assert "AS period_settle_mm" in sql
+    assert "AS annual_settle_mm" not in sql
+    assert lib.period_key == "period_settle_mm"
     assert params["limit"] == 50
 
 

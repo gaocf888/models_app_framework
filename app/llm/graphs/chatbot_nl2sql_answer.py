@@ -17,6 +17,7 @@ from app.core.logging import get_logger
 from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
 from app.llm.graphs.chatbot_nl2sql_display import (
     CHATBOT_NL2SQL_SELECT_DISPLAY_RULES,
+    apply_chatbot_nl2sql_column_titles,
     filter_chatbot_nl2sql_display_rows,
 )
 from app.llm.prompt_registry import PromptTemplateRegistry
@@ -67,6 +68,8 @@ _ANALYSIS_COL_PRIORITY_KEYS_SUBSIDENCE = (
     "监测点",
     "点名",
     "累计沉降",
+    "周期沉降",
+    "period_settle",
     "年沉降",
     "沉降量",
     "沉降速率",
@@ -1045,9 +1048,17 @@ def _build_analysis_user_content(
     if len(analysis_cols) < len(full_cols):
         col_note = f"；分析用表已从 {len(full_cols)} 列收窄为 {len(analysis_cols)} 列关键字段"
     data_source_hint = _subsidence_data_source_analysis_hint(user_query=user_query)
+    period_col_hint = ""
+    joined_cols = " ".join(full_cols)
+    if "周期" in joined_cols or "period_" in joined_cols.lower():
+        period_col_hint = (
+            "【列口径】表中「周期沉降变化」等周期列 = 问句时间窗内（如本月）初末差值，"
+            "不是年沉降；禁止改称「年沉降/年度变化」。\n\n"
+        )
     return _clip_prompt_text(
         f"用户问题：{user_query or ''}\n\n"
         f"{data_source_hint}"
+        f"{period_col_hint}"
         f"结果总行数：{rows_total}；以下提供前 {len(prompt_rows)} 行作为分析事实源"
         f"{col_note}"
         f"（仅基于下列已给出行与列作答，勿臆造未给出的值；"
@@ -1154,8 +1165,10 @@ async def summarize_nl2sql_with_llm(
         )
         return Nl2sqlSummarizeResult(answer_text=answer, analysis_meta=meta)
 
-    display_rows = filter_chatbot_nl2sql_display_rows(
-        [_row_to_mapping(r) for r in slice_rows]
+    display_rows = apply_chatbot_nl2sql_column_titles(
+        filter_chatbot_nl2sql_display_rows(
+            [_row_to_mapping(r) for r in slice_rows]
+        )
     )
     ui_rows = display_rows[:_UI_TABLE_MAX_ROWS]
     table_fallback = _rows_to_markdown_table(ui_rows, total_row_count=len(rows))

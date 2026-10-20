@@ -73,6 +73,9 @@ class LibraryDef:
     group_title: str | None = None
     annual_key: str | None = None
     annual_source: str | None = None
+    # 区间时间窗（本月/本周/近N天等）周期差列；与 annual_* 分离，避免「本月」展示成「年沉降」
+    period_key: str | None = None
+    period_source: str | None = None
     series_metrics: tuple[LibrarySeriesMetric, ...] = ()
     hud_title_template: str = "{entity} · {display_name}"
 
@@ -257,6 +260,9 @@ def load_library_catalog(*, path: str | None = None) -> LibraryCatalog:
         annual_raw = item.get("annual_metric") if isinstance(item.get("annual_metric"), dict) else {}
         annual_key = str(annual_raw.get("key") or "").strip() or None
         annual_source = str(annual_raw.get("source") or "").strip() or None
+        period_raw = item.get("period_metric") if isinstance(item.get("period_metric"), dict) else {}
+        period_key = str(period_raw.get("key") or "").strip() or None
+        period_source = str(period_raw.get("source") or "").strip() or None
         series_col = str(item.get("series_column") or item.get("core_metric") or "").strip()
         series_unit = str(item.get("series_unit") or "")
         series_metrics: list[LibrarySeriesMetric] = []
@@ -296,6 +302,8 @@ def load_library_catalog(*, path: str | None = None) -> LibraryCatalog:
                 group_title=gmeta[1],
                 annual_key=annual_key,
                 annual_source=annual_source,
+                period_key=period_key,
+                period_source=period_source,
                 series_metrics=tuple(series_metrics),
                 hud_title_template=title_tmpl or "{entity} · {display_name}",
             )

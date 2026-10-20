@@ -369,3 +369,48 @@ def test_scope_explicit_district_overrides_nl() -> None:
     scope = resolve_scope_intent("朝阳区最新分层标", lib, district="大兴区")
     assert scope.confirmed_scope.get("district") == "大兴区"
     assert "scope_nl_overridden" in (scope.warnings or [])
+
+
+def test_assemble_period_mode_shows_period_not_annual() -> None:
+    """本月等区间窗：列表展示 period_settle_mm，表头不含年沉降。"""
+    clear_library_catalog_cache()
+    cat = get_library_catalog()
+    lib = cat.get("fcb")
+    assert lib is not None
+    assert lib.period_key == "period_settle_mm"
+    scope = resolve_scope_intent("请帮我查询F2(望京)本月的沉降量", lib)
+    from app.data_query_agent.acquire import is_period_time
+
+    assert is_period_time(scope) is True
+    acquire = AcquireResult(
+        ok=True,
+        list_item=AcquireItemResult(
+            plan_item_id="q_list",
+            ok=True,
+            sql="SELECT period_settle_mm FROM t_data_wash_fcb",
+            rows=[
+                {
+                    "station_id": "F2(望京)",
+                    "station_name": "F2(望京)",
+                    "area": "朝阳区",
+                    "total_settle_mm": -100.0,
+                    "period_settle_mm": -1.5,
+                    "data_time": "2026-10-15",
+                }
+            ],
+        ),
+        series_item=None,
+    )
+    payload = assemble_result(
+        library=lib,
+        scope=scope,
+        acquire=acquire,
+        include_hud=False,
+        expose_sql=False,
+    )
+    col_keys = [c["key"] for c in payload["columns"]]
+    assert "period_settle_mm" in col_keys
+    assert "annual_settle_mm" not in col_keys
+    assert any(c["title"] == "周期沉降变化(mm)" for c in payload["columns"])
+    assert payload["list"][0]["period_settle_mm"] == -1.5
+    assert "annual_settle_mm" not in payload["list"][0]

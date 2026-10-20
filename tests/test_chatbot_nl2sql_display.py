@@ -6,6 +6,7 @@ import pytest
 
 from app.llm.graphs.chatbot_nl2sql_answer import summarize_nl2sql_with_llm
 from app.llm.graphs.chatbot_nl2sql_display import (
+    apply_chatbot_nl2sql_column_titles,
     filter_chatbot_nl2sql_display_rows,
     is_code_dimension_column_name,
     is_force_keep_display_column,
@@ -86,6 +87,66 @@ def test_filter_rows_drops_id_status_level_keeps_names_dates():
     assert out[0]["检修名称"].startswith("2025")
     assert out[0]["检修开始日期"] == "2025-09-11"
     assert out[0]["检修年份"] == 2025
+
+
+def test_apply_period_column_chinese_title_hides_annual():
+    rows = [
+        {
+            "station_name": "F2(望京)",
+            "area": "朝阳区",
+            "total_settle_mm": -100.0,
+            "period_settle_mm": -1.5,
+            "annual_settle_mm": -12.0,
+            "data_time": "2026-10-15",
+        }
+    ]
+    out = apply_chatbot_nl2sql_column_titles(rows)
+    assert out[0].get("周期沉降变化(mm)") == -1.5
+    assert "年沉降量(mm)" not in out[0]
+    assert "annual_settle_mm" not in out[0]
+    assert "period_settle_mm" not in out[0]
+    assert out[0].get("监测站名称") == "F2(望京)"
+
+
+@pytest.mark.asyncio
+async def test_summarize_period_rows_use_chinese_period_header():
+    from unittest.mock import patch
+
+    with patch("app.llm.graphs.chatbot_nl2sql_answer.get_app_config") as gac:
+        gac.return_value = type(
+            "A",
+            (),
+            {
+                "chatbot": type(
+                    "C",
+                    (),
+                    {
+                        "nl2sql_llm_analysis_enabled": False,
+                        "nl2sql_empty_llm_guide_enabled": False,
+                        "nl2sql_analysis_max_rows": 80,
+                        "nl2sql_analysis_max_tokens": 2048,
+                        "nl2sql_analysis_temperature": 0.2,
+                        "nl2sql_analysis_meta_enabled": False,
+                    },
+                )()
+            },
+        )()
+        result = await summarize_nl2sql_with_llm(
+            None,
+            user_query="请帮我查询F2(望京)本月的沉降量",
+            sql="SELECT period_settle_mm FROM t_data_wash_fcb",
+            rows=[
+                {
+                    "station_name": "F2(望京)",
+                    "period_settle_mm": -1.5,
+                    "total_settle_mm": -100.0,
+                }
+            ],
+        )
+    text = result.answer_text
+    assert "周期沉降变化" in text
+    assert "年沉降" not in text
+    assert "period_settle_mm" not in text
 
 
 @pytest.mark.asyncio

@@ -307,3 +307,104 @@ def filter_chatbot_nl2sql_display_rows(rows: list[dict[str, Any]]) -> list[dict[
             continue
         out.append({c: r.get(c) for c in keep})
     return out
+
+
+# 沉降库常见英文字段 → 中文表头（与 libraries.yaml columns[].title 对齐；兜底用）
+_FALLBACK_COLUMN_TITLES: dict[str, str] = {
+    "period_settle_mm": "周期沉降变化(mm)",
+    "period_settle": "周期沉降变化(mm)",
+    "annual_settle_mm": "年沉降量(mm)",
+    "annual_settle": "年沉降量(mm)",
+    "total_settle_mm": "历史累计沉降(mm)",
+    "total_settle": "历史累计沉降(mm)",
+    "station_name": "监测站名称",
+    "station_id": "测位 ID",
+    "area": "行政区",
+    "data_time": "数据时间",
+    "period_deep": "周期埋深变化(m)",
+    "annual_deep": "年度埋深变化(m)",
+    "period_pressure": "周期孔压变化",
+    "annual_pressure": "年度孔压变化",
+    "period_displacement_3d": "周期位移变化",
+    "annual_displacement_3d": "年度位移变化",
+}
+
+
+def _library_column_title_map() -> dict[str, str]:
+    """从监测库 catalog 汇总 key/alias → 中文 title。"""
+    out = dict(_FALLBACK_COLUMN_TITLES)
+    try:
+        from app.data_query_agent.catalog import get_library_catalog
+
+        cat = get_library_catalog()
+        for lib in cat.libraries:
+            if lib.period_key:
+                out.setdefault(lib.period_key, "周期变化")
+            if lib.annual_key:
+                out.setdefault(lib.annual_key, "年变化")
+            for col in lib.columns:
+                title = (col.title or "").strip()
+                if not title:
+                    continue
+                out[col.key] = title
+                for alias in col.aliases or ():
+                    a = str(alias).strip()
+                    if a:
+                        out[a] = title
+    except Exception:  # noqa: BLE001
+        logger.debug("chatbot column title map: catalog unavailable", exc_info=True)
+    return out
+
+
+def apply_chatbot_nl2sql_column_titles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    将英文字段名换成 libraries 中文 title，便于表头/分析 LLM 不再把 period 说成「年沉降」。
+    若同行同时有 period_* 与 annual_*，隐藏 annual_*（区间问句优先周期列）。
+    """
+    if not rows:
+        return rows
+    title_map = _library_column_title_map()
+    col_order: list[str] = []
+    seen: set[str] = set()
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        for k in r.keys():
+            sk = str(k)
+            if sk not in seen:
+                seen.add(sk)
+                col_order.append(sk)
+    if not col_order:
+        return rows
+
+    has_period = any(
+        k.startswith("period_") or "周期" in str(title_map.get(k, ""))
+        for k in col_order
+    )
+    drop: set[str] = set()
+    if has_period:
+        for k in col_order:
+            if k.startswith("annual_") or k in ("annual_settle_mm", "annual_settle"):
+                drop.add(k)
+            title = title_map.get(k, "")
+            if "年沉降" in title or title.startswith("年度"):
+                # 仅当存在 period 列时藏年列，避免误伤独立「年沉降」问句
+                if any(x.startswith("period_") for x in col_order):
+                    drop.add(k)
+
+    keep = [c for c in col_order if c not in drop] or list(col_order)
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            out.append(r)  # type: ignore[arg-type]
+            continue
+        renamed: dict[str, Any] = {}
+        for c in keep:
+            title = title_map.get(c) or c
+            # 避免同 title 覆盖：已有同名则保留原 key
+            if title in renamed and title != c:
+                renamed[c] = r.get(c)
+            else:
+                renamed[title] = r.get(c)
+        out.append(renamed)
+    return out

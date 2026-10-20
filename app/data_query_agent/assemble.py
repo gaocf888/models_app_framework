@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.core.config import get_app_config
-from app.data_query_agent.acquire import AcquireResult
+from app.data_query_agent.acquire import AcquireResult, is_period_time
 from app.data_query_agent.annual import compute_annual_delta
 from app.data_query_agent.catalog import LibraryDef
 from app.data_query_agent.scope_intent import ScopeIntentResult
@@ -249,7 +249,14 @@ def assemble_result(
         and has_entity
     )
 
+    period_mode = is_period_time(scope)
     columns = [{"key": c.key, "title": c.title} for c in library.columns]
+    # 区间窗展示周期差列、隐藏年沉降列；非区间相反（避免本月结果出现「年沉降」表头）
+    if grain in ("station", "station_series"):
+        if period_mode and library.annual_key:
+            columns = [c for c in columns if c["key"] != library.annual_key]
+        elif not period_mode and library.period_key:
+            columns = [c for c in columns if c["key"] != library.period_key]
     if grain == "district":
         columns = [
             {"key": "area", "title": "行政区"},
@@ -277,6 +284,11 @@ def assemble_result(
             item["station_count"] = _pick(row, ("station_count",))
         else:
             for col in library.columns:
+                # 区间模式不拾取年沉降列；非区间不拾取周期差列
+                if period_mode and library.annual_key and col.key == library.annual_key:
+                    continue
+                if not period_mode and library.period_key and col.key == library.period_key:
+                    continue
                 item[col.key] = _pick(row, col.aliases or (col.key,))
         sid = item.get("station_id") or item.get("station_name")
         if sid is not None:
@@ -290,8 +302,13 @@ def assemble_result(
     series_full = _index_series(series_item=acquire.series_item, library=library, grain=grain)
 
     win = scope.annual_window or {}
-    # 列表缺年变化时，用同实体 HUD 序列在窗内算终值−初值。
-    if library.annual_key and grain in ("station", "station_series", "district"):
+    # 非区间：列表缺年变化时，用同实体 HUD 序列在窗内算终值−初值写入 annual_key。
+    # 区间 period：差值已由 period_sql / LLM 写入 period_key，禁止再填 annual_key 造成「本月当成年」。
+    if (
+        not period_mode
+        and library.annual_key
+        and grain in ("station", "station_series", "district")
+    ):
         missing_annual = False
         for item in list_out:
             if grain == "district":
@@ -462,6 +479,7 @@ def assemble_entity_hud(
     expose_sql: bool = False,
     extra_warnings: list[str] | None = None,
     annual_window: dict[str, str] | None = None,
+    period_mode: bool = False,
 ) -> dict[str, Any]:
     """单实体 HUD，结构与 run-stream 的 hud_by_entity[id] 一致；不套用列表行数上限。"""
     cfg = get_app_config().data_query_agent
@@ -480,6 +498,11 @@ def assemble_entity_hud(
                 if sid is None or str(sid) != entity_id:
                     continue
                 for col in library.columns:
+                    # 区间 HUD 不拾取年沉降列；非区间不拾取周期差列
+                    if period_mode and library.annual_key and col.key == library.annual_key:
+                        continue
+                    if not period_mode and library.period_key and col.key == library.period_key:
+                        continue
                     item[col.key] = _pick(nrow, col.aliases or (col.key,))
                 item["station_id"] = str(_pick(nrow, ("station_id",)) or entity_id)
                 item["station_name"] = _pick(nrow, ("station_name",))
@@ -510,7 +533,13 @@ def assemble_entity_hud(
 
     found_series = entity_id in series_full
     win = annual_window or {}
-    if library.annual_key and item and grain in ("station", "station_series", "district"):
+    # 区间窗：差值已在 period_key，禁止再写 annual_key
+    if (
+        not period_mode
+        and library.annual_key
+        and item
+        and grain in ("station", "station_series", "district")
+    ):
         delta = compute_annual_delta(
             _points_for(series_full, entity_id, library.annual_source or library.series_column),
             start=win.get("start") or "",

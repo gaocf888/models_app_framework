@@ -124,6 +124,9 @@ def _physical_selects(library: LibraryDef) -> list[tuple[str, str]]:
             return
         if library.annual_key and (c == library.annual_key or a == library.annual_key):
             return
+        # 周期差列为虚拟列，不入 wash SELECT
+        if library.period_key and (c == library.period_key or a == library.period_key):
+            return
         if not _IDENT_RE.match(c) or not _IDENT_RE.match(a.lower()):
             return
         seen.add(c)
@@ -140,12 +143,16 @@ def _physical_selects(library: LibraryDef) -> list[tuple[str, str]]:
             continue
         if library.annual_key and col.key == library.annual_key:
             continue
+        if library.period_key and col.key == library.period_key:
+            continue
         if col.key in display_ids:
             continue
         picked = None
         for alias in col.aliases or (col.key,):
             low = alias.lower()
             if low in _VIRTUAL_COL_KEYS or (library.annual_key and low == library.annual_key):
+                continue
+            if library.period_key and low == library.period_key:
                 continue
             if low in known or low == col.key.lower():
                 picked = low
@@ -351,6 +358,8 @@ def _browse_rep_columns(library: LibraryDef) -> list[dict[str, str]]:
     for col in library.columns:
         if library.annual_key and col.key == library.annual_key:
             continue
+        if library.period_key and col.key == library.period_key:
+            continue
         out.append({"key": col.key, "title": _browse_rep_column_title(col.key, col.title)})
     return out
 
@@ -360,6 +369,8 @@ def _row_to_list_item(library: LibraryDef, raw: dict[str, Any]) -> dict[str, Any
     item: dict[str, Any] = {}
     for col in library.columns:
         if library.annual_key and col.key == library.annual_key:
+            continue
+        if library.period_key and col.key == library.period_key:
             continue
         val = None
         for alias in col.aliases or (col.key,):

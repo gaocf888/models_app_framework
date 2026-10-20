@@ -125,13 +125,21 @@ def _metric_select(library: LibraryDef, scope: ScopeIntentResult) -> str:
     core = library.core_metric
     alias = library.core_metrics[0].id if library.core_metrics else core
     latest = f"{core} AS {alias}" if alias != core else core
-    if library.annual_key and library.annual_source:
-        win = scope.annual_window or {}
-        start = win.get("start") or ""
-        end = win.get("end") or ""
+    win = scope.annual_window or {}
+    start = win.get("start") or ""
+    end = win.get("end") or ""
+    # 区间窗：周期差列用 period_key；非区间（或年窗展示）仍用 annual_key
+    if is_period_time(scope) and library.period_key and library.period_source:
         return (
             f"{latest}, "
-            f"（窗 {start} 至 {end} 内 {library.annual_source} 末日值减窗内最早值）AS {library.annual_key}"
+            f"（窗 {start} 至 {end} 内 {library.period_source} 末日值减窗内最早值）"
+            f"AS {library.period_key}"
+        )
+    if library.annual_key and library.annual_source:
+        return (
+            f"{latest}, "
+            f"（窗 {start} 至 {end} 内 {library.annual_source} 末日值减窗内最早值）"
+            f"AS {library.annual_key}"
         )
     return latest
 
@@ -175,10 +183,11 @@ def _render_question(
             metric_select=_metric_select(library, scope),
             core_column=library.core_metric,
             core_alias=(library.core_metrics[0].id if library.core_metrics else library.core_metric),
+            period_alias=(library.period_key or "period_settle_mm"),
             series_column=library.series_column,
             series_select=_series_select(library, grain),
             scope_block=_scope_block(scope),
-            annual_block="" if _is_period_time(scope) else _annual_block(library, scope),
+            annual_block="" if is_period_time(scope) else _annual_block(library, scope),
             max_rows=max_rows,
         )
     ).strip()
@@ -197,7 +206,7 @@ def _hint(library: LibraryDef, scope: ScopeIntentResult) -> str:
         district=cs.get("district") or "未指定",
         station=station,
         time_note=tw,
-        annual_block="" if _is_period_time(scope) else _annual_block(library, scope),
+        annual_block="" if is_period_time(scope) else _annual_block(library, scope),
     ).strip()
 
 

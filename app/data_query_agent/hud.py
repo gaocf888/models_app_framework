@@ -168,6 +168,8 @@ async def fetch_entity_hud(
     extra: list[str] = []
     if list_fail:
         extra.append("hud_list_failed")
+    from app.data_query_agent.acquire import is_period_time
+
     payload = assemble_entity_hud(
         library=library,
         grain=scope.grain,
@@ -176,6 +178,7 @@ async def fetch_entity_hud(
         expose_sql=expose_sql,
         extra_warnings=extra,
         annual_window=scope.annual_window,
+        period_mode=is_period_time(scope),
     )
     payload["request_id"] = request_id
     return payload

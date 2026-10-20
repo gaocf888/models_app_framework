@@ -91,14 +91,21 @@ def build_period_list_sql(
     *,
     max_rows: int,
 ) -> tuple[str, dict[str, Any]]:
-    """窗内最早/最晚各一行，周期差 = 窗末 − 窗初。PostgreSQL ROW_NUMBER，不用 QUALIFY。"""
+    """窗内最早/最晚各一行，周期差 = 窗末 − 窗初。PostgreSQL ROW_NUMBER，不用 QUALIFY。
+
+    差值列使用 ``period_key``（如 period_settle_mm），不再复用 annual_key，
+    避免「本月」结果展示成「年沉降」。
+    """
     table = _wash_table(library)
     col = _ident(library.core_metric or "total_settle", kind="列名")
     core_alias = _ident(
         (library.core_metrics[0].id if library.core_metrics else library.core_metric) or col,
         kind="列名",
     )
-    delta_alias = _ident(library.annual_key or "period_settle_mm", kind="列名")
+    delta_alias = _ident(
+        library.period_key or "period_settle_mm",
+        kind="列名",
+    )
     t_start, t_end = _period_bounds(scope)
     projects = _station_projects(library, scope)
     marks = _rep_marks(library, projects)

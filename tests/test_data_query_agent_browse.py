@@ -221,10 +221,13 @@ async def test_browse_list_default_fcb_is_rep_station() -> None:
     assert by_id["F28(金盏)"]["total_settle_mm"] == pytest.approx(-84.2)
     assert "annual_settle_mm" not in by_id["F28(金盏)"]
     assert "annual_settle_mm" not in by_id["F2(望京)"]
+    assert "period_settle_mm" not in by_id["F28(金盏)"]
     settle_col = next(c for c in payload["columns"] if c["key"] == "total_settle_mm")
     assert settle_col["title"] == "沉降量(mm)"
     assert all(c["key"] != "annual_settle_mm" for c in payload["columns"])
+    assert all(c["key"] != "period_settle_mm" for c in payload["columns"])
     assert all(c["key"] != "F9-1" for c in payload["columns"])
+    assert all("period_settle_mm" not in sql.lower() for sql, _ in exe.calls)
     assert any("any(:rep_marks)" in sql.lower() for sql, _ in exe.calls)
     assert any("order by w.data_time desc" in sql.lower() for sql, _ in exe.calls)
     assert all("any(:marks)" not in sql.lower() for sql, _ in exe.calls)
@@ -282,8 +285,10 @@ async def test_browse_list_district_filters_rep_stations() -> None:
     assert payload["station_id"] is None
     assert payload["result_grain"] == "station"
     assert all(c["key"] != "annual_settle_mm" for c in payload["columns"])
+    assert all(c["key"] != "period_settle_mm" for c in payload["columns"])
     assert any(c["key"] == "total_settle_mm" and c["title"] == "沉降量(mm)" for c in payload["columns"])
     assert all("annual_settle_mm" not in row for row in payload["list"])
+    assert all("period_settle_mm" not in row for row in payload["list"])
     assert all(row["station_id"] != "F28(金盏)" for row in payload["list"])
     assert payload["list"][0]["station_id"] == "F2(望京)"
     list_sql = next(sql for sql, _ in exe.calls if "order by w.data_time desc" in sql.lower())
