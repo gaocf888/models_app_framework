@@ -274,13 +274,18 @@ def link_schema(
 
     _append_all_table_columns(linked, primary, table_columns, reason="table_all_columns")
 
-    need_station = (not primary_is_station) and bool(
-        semantic.district_codes
-        or semantic.station_ids
-        or semantic.station_names
-        or getattr(semantic, "project_names", None)
-        or getattr(semantic, "device_coverage_project_names", None)
-        or getattr(semantic, "preferred_station_names", None)
+    # 运维主表不 JOIN t_station（汇总表无 project_name 关联语义）
+    need_station = (
+        (not primary_is_station)
+        and (not primary.startswith("t_om_"))
+        and bool(
+            semantic.district_codes
+            or semantic.station_ids
+            or semantic.station_names
+            or getattr(semantic, "project_names", None)
+            or getattr(semantic, "device_coverage_project_names", None)
+            or getattr(semantic, "preferred_station_names", None)
+        )
     )
     if need_station and _STATION_TABLE in allow:
         if not any(t.name == _STATION_TABLE for t in linked.tables):
@@ -320,84 +325,87 @@ def link_schema(
                 }
             )
 
-    # 站点场地 → project_name / t_station.name；层位0/显式标 → station_name
-    project_names = list(getattr(semantic, "project_names", None) or [])
-    coverage_names = list(getattr(semantic, "device_coverage_project_names", None) or [])
-    preferred_marks = list(getattr(semantic, "preferred_station_names", None) or [])
-    if not project_names and semantic.station_names and not preferred_marks:
-        # 兼容旧 binding：无 preferred 时，station_names 按 project_name 过滤
-        project_names = list(semantic.station_names)
+    primary_is_om = primary.startswith("t_om_")
+    # 运维主表：不写沉降站/场地/层位0 过滤（表上通常无 station_name）；仅保留上方 om type
+    if not primary_is_om:
+        # 站点场地 → project_name / t_station.name；层位0/显式标 → station_name
+        project_names = list(getattr(semantic, "project_names", None) or [])
+        coverage_names = list(getattr(semantic, "device_coverage_project_names", None) or [])
+        preferred_marks = list(getattr(semantic, "preferred_station_names", None) or [])
+        if not project_names and semantic.station_names and not preferred_marks:
+            # 兼容旧 binding：无 preferred 时，station_names 按 project_name 过滤
+            project_names = list(semantic.station_names)
 
-    # 点名站优先；否则用监测方式官方覆盖（P7）
-    if project_names:
-        effective_projects = project_names
-        project_filter_source = (
-            "device_station_map"
-            if any(str(w).startswith("device_station_map_intersect") for w in (semantic.warnings or []))
-            else "semantic"
-        )
-    else:
-        effective_projects = coverage_names
-        project_filter_source = "device_station_map" if coverage_names else "semantic"
-
-    def _append_project_name_filters(table: str, column: str) -> None:
-        if not effective_projects:
-            return
-        if len(effective_projects) == 1:
-            linked.suggested_filters.append(
-                {
-                    "table": table,
-                    "column": column,
-                    "op": "=",
-                    "value": effective_projects[0],
-                    "source": project_filter_source,
-                }
+        # 点名站优先；否则用监测方式官方覆盖（P7）
+        if project_names:
+            effective_projects = project_names
+            project_filter_source = (
+                "device_station_map"
+                if any(str(w).startswith("device_station_map_intersect") for w in (semantic.warnings or []))
+                else "semantic"
             )
         else:
-            linked.suggested_filters.append(
-                {
-                    "table": table,
-                    "column": column,
-                    "op": "in",
-                    "value": list(effective_projects),
-                    "source": project_filter_source,
-                }
-            )
+            effective_projects = coverage_names
+            project_filter_source = "device_station_map" if coverage_names else "semantic"
 
-    if primary_is_station:
-        # 清单问句：覆盖名单落在 t_station.name
-        _append_project_name_filters(_STATION_TABLE, "name")
-    else:
-        # 站点范围只用 project_name；禁止把 station_ids 写成事实表 station_id 过滤
-        # （id/data_id/station_id 为清洗遗留联合主键，不作关联/过滤）
-        _append_project_name_filters(primary, "project_name")
-
-        if preferred_marks:
-            filter_source = (
-                "fcb_compress"
-                if getattr(semantic, "compress_pairs", None)
-                else "fcb_layer0"
-            )
-            if len(preferred_marks) == 1:
+        def _append_project_name_filters(table: str, column: str) -> None:
+            if not effective_projects:
+                return
+            if len(effective_projects) == 1:
                 linked.suggested_filters.append(
                     {
-                        "table": primary,
-                        "column": "station_name",
+                        "table": table,
+                        "column": column,
                         "op": "=",
-                        "value": preferred_marks[0],
-                        "source": filter_source,
+                        "value": effective_projects[0],
+                        "source": project_filter_source,
                     }
                 )
             else:
                 linked.suggested_filters.append(
                     {
-                        "table": primary,
-                        "column": "station_name",
+                        "table": table,
+                        "column": column,
                         "op": "in",
-                        "value": list(preferred_marks),
-                        "source": filter_source,
+                        "value": list(effective_projects),
+                        "source": project_filter_source,
                     }
                 )
+
+        if primary_is_station:
+            # 清单问句：覆盖名单落在 t_station.name
+            _append_project_name_filters(_STATION_TABLE, "name")
+        else:
+            # 站点范围只用 project_name；禁止把 station_ids 写成事实表 station_id 过滤
+            # （id/data_id/station_id 为清洗遗留联合主键，不作关联/过滤）
+            _append_project_name_filters(primary, "project_name")
+
+            if preferred_marks:
+                filter_source = (
+                    "fcb_compress"
+                    if getattr(semantic, "compress_pairs", None)
+                    else "fcb_layer0"
+                )
+                if len(preferred_marks) == 1:
+                    linked.suggested_filters.append(
+                        {
+                            "table": primary,
+                            "column": "station_name",
+                            "op": "=",
+                            "value": preferred_marks[0],
+                            "source": filter_source,
+                        }
+                    )
+                else:
+                    linked.suggested_filters.append(
+                        {
+                            "table": primary,
+                            "column": "station_name",
+                            "op": "in",
+                            "value": list(preferred_marks),
+                            "source": filter_source,
+                        }
+                    )
 
     # auxiliary tables for multi-metric questions（锁表时禁止拉入其它 t_data_wash_*）
     aux_tables: set[str] = set()

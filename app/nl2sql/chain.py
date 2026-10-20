@@ -1648,27 +1648,39 @@ class NL2SQLChain:
             analysis_type=analysis_type,
             rewrite_meta=meta,
         )
+        from app.nl2sql.om_intent import (
+            is_ops_nl2sql_path,
+            ops_safe_suggested_filters,
+            sanitize_ops_sql_settlement_artifacts,
+        )
+
+        ops_mode = is_ops_nl2sql_path(question, rewritten)
+
         if time_window is not None:
             start_expr, end_expr, tag = time_window
             from app.nl2sql.latest_per_station import LATEST_PER_STATION_TAG
 
             if tag == LATEST_PER_STATION_TAG:
-                from app.nl2sql.latest_per_station import (
-                    resolve_latest_grain,
-                    rewrite_sql_for_latest_per_station,
-                )
-                from app.nl2sql.sql_dialect import is_postgres_dialect
-                from app.nl2sql.suggested_filters_rewrite import (
-                    suggested_filters_from_parsed_intent,
-                )
+                if ops_mode:
+                    # 运维表无 station_name/data_time「每站最新」口径；禁止沉降 DISTINCT ON 注入
+                    notes.append("latest_per_station_skipped_ops")
+                else:
+                    from app.nl2sql.latest_per_station import (
+                        resolve_latest_grain,
+                        rewrite_sql_for_latest_per_station,
+                    )
+                    from app.nl2sql.sql_dialect import is_postgres_dialect
+                    from app.nl2sql.suggested_filters_rewrite import (
+                        suggested_filters_from_parsed_intent,
+                    )
 
-                grain = resolve_latest_grain(suggested_filters_from_parsed_intent(parsed_intent))
-                rewritten, latest_notes = rewrite_sql_for_latest_per_station(
-                    rewritten,
-                    grain=grain,
-                    prefer_distinct_on=is_postgres_dialect(),
-                )
-                notes.extend(latest_notes)
+                    grain = resolve_latest_grain(suggested_filters_from_parsed_intent(parsed_intent))
+                    rewritten, latest_notes = rewrite_sql_for_latest_per_station(
+                        rewritten,
+                        grain=grain,
+                        prefer_distinct_on=is_postgres_dialect(),
+                    )
+                    notes.extend(latest_notes)
             else:
                 from app.nl2sql.sql_dialect import adapt_time_window
 
@@ -1721,6 +1733,11 @@ class NL2SQLChain:
         )
 
         sf = suggested_filters_from_parsed_intent(parsed_intent)
+        if ops_mode:
+            # 运维：只保留 type；并清掉缓存/误注入的沉降站名谓词
+            sf = ops_safe_suggested_filters(sf)
+            rewritten, ops_strip_notes = sanitize_ops_sql_settlement_artifacts(rewritten)
+            notes.extend(ops_strip_notes)
         rewritten, sf_notes = rewrite_sql_with_suggested_filters(rewritten, sf)
         notes.extend(sf_notes)
         # om_result：缺 snapshot_time 时注入最新批次（所有 refine 路径共用）

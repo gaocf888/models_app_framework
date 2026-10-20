@@ -188,6 +188,100 @@ def test_suggested_filters_rewrite_om_type() -> None:
     )
 
 
+def test_ops_safe_suggested_filters_keeps_only_om_type() -> None:
+    from app.nl2sql.om_intent import ops_safe_suggested_filters
+
+    filters = [
+        {
+            "column": "station_name",
+            "op": "in",
+            "value": ["F1-7", "F2-7"],
+            "source": "fcb_layer0",
+        },
+        {
+            "column": "type",
+            "op": "=",
+            "value": "GNSS",
+            "source": "om_device_type",
+        },
+        {
+            "column": "project_name",
+            "op": "in",
+            "value": ["F2(望京)"],
+            "source": "device_station_map",
+        },
+    ]
+    safe = ops_safe_suggested_filters(filters)
+    assert len(safe) == 1
+    assert safe[0]["source"] == "om_device_type"
+    assert safe[0]["column"] == "type"
+
+
+def test_sanitize_ops_sql_strips_settlement_station_name() -> None:
+    from app.nl2sql.om_intent import sanitize_ops_sql_settlement_artifacts
+
+    polluted = (
+        "SELECT DISTINCT ON (station_name) type, total, online, offline, online_rate, snapshot_time "
+        "FROM om_result.t_om_device_online_by_type "
+        "WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_device_online_by_type) "
+        "AND station_name IN ('F8-10','F9-6','F2-7') "
+        "ORDER BY station_name, data_time DESC"
+    )
+    out, notes = sanitize_ops_sql_settlement_artifacts(polluted)
+    assert "station_name" not in out.lower()
+    assert "distinct on" not in out.lower()
+    assert "t_om_device_online_by_type" in out.lower()
+    assert "snapshot_time" in out.lower()
+    assert any("ops_strip" in n for n in notes)
+
+
+def test_schema_linker_om_skips_fcb_station_filters(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    from app.core.config import get_app_config
+    from app.nl2sql.nl2sql_business_profile import clear_nl2sql_business_profile_cache
+    from app.nl2sql.question_scope_models import QuestionIntent, QuestionScopeIntent
+    from app.nl2sql.schema_linker import link_schema
+    from app.nl2sql.schema_routing import clear_schema_routing_cache
+    from app.nl2sql.semantic_layer import SemanticBinding
+
+    get_app_config.cache_clear()
+    clear_nl2sql_business_profile_cache()
+    clear_schema_routing_cache()
+
+    table_columns = {
+        "t_om_device_online_by_type": {
+            "type",
+            "total",
+            "online",
+            "offline",
+            "online_rate",
+            "snapshot_time",
+        },
+    }
+    intent = QuestionIntent(
+        raw_question="请帮我查询各类仪器最新的在线情况",
+        scope_question="请帮我查询各类仪器最新的在线情况",
+        time_window=None,
+        scope=QuestionScopeIntent(),
+    )
+    linked = link_schema(
+        "请帮我查询各类仪器最新的在线情况",
+        intent,
+        SemanticBinding(
+            semantic_version="test",
+            preferred_station_names=["F8-10", "F9-6", "F2-7"],
+            project_names=["F2(望京)"],
+            default_table="t_om_device_online_by_type",
+        ),
+        table_columns,
+        allowlist={"t_om_device_online_by_type"},
+    )
+    assert linked.status != "failed", linked.fail_reason
+    assert all(f.get("column") != "station_name" for f in linked.suggested_filters)
+    assert all(f.get("source") != "fcb_layer0" for f in linked.suggested_filters)
+    assert all(f.get("column") != "project_name" for f in linked.suggested_filters)
+
+
 def test_schema_linker_keeps_om_tables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
     from app.core.config import get_app_config

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from typing import Any, Iterable
 
 # 明确运维指标 / 场景短语（避免裸「告警」「预警」误伤沉降阈值类问句）
 _OPS_PHRASES: tuple[str, ...] = (
@@ -186,6 +186,69 @@ def filter_allowlist_for_question(
     if is_ops_question(question) and om:
         return set(om)
     return set(settle) if settle else (settle | om)
+
+
+def is_ops_nl2sql_path(question: str, sql: str | None = None) -> bool:
+    """运维分流判定：问句运维，或 SQL 已落在 t_om_*（用于改写阶段隔离沉降规则）。"""
+    if is_ops_question(question):
+        return True
+    return sql_mentions_om_tables(sql or "")
+
+
+def ops_safe_suggested_filters(filters: Iterable[Any] | None) -> list[Any]:
+    """运维路径仅保留仪器 type 过滤；剥离 fcb_layer0 / 覆盖站名等沉降名单。"""
+    out: list[Any] = []
+    for raw in filters or []:
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("source") or "").strip() == "om_device_type":
+            out.append(raw)
+    return out
+
+
+# 沉降「每站最新」误灌进运维 SQL 的痕迹
+_OPS_STRIP_DISTINCT_ON_RE = re.compile(
+    r"(?is)\bSELECT\s+DISTINCT\s+ON\s*\(\s*(?:[a-zA-Z_][\w]*\.)?(?:station_name|project_name)\s*\)"
+)
+_OPS_STRIP_ORDER_LATEST_RE = re.compile(
+    r"(?is)\bORDER\s+BY\s+(?:[a-zA-Z_][\w]*\.)?(?:station_name|project_name)\s*,\s*"
+    r"(?:[a-zA-Z_][\w]*\.)?data_time\s+DESC\b"
+)
+
+
+def sanitize_ops_sql_settlement_artifacts(sql: str) -> tuple[str, list[str]]:
+    """
+    运维 SQL 清洗：去掉误注入的沉降站名/场地谓词与 DISTINCT ON (station_name) 等。
+
+    不影响沉降问句路径（仅在调用方判定运维后调用）。
+    """
+    from app.nl2sql.suggested_filters_rewrite import _remove_column_predicate
+
+    notes: list[str] = []
+    rewritten = (sql or "").strip()
+    if not rewritten or not sql_mentions_om_tables(rewritten):
+        return rewritten, notes
+
+    if _OPS_STRIP_DISTINCT_ON_RE.search(rewritten):
+        rewritten = _OPS_STRIP_DISTINCT_ON_RE.sub("SELECT", rewritten, count=1)
+        notes.append("ops_strip_distinct_on_settlement_grain")
+    if _OPS_STRIP_ORDER_LATEST_RE.search(rewritten):
+        rewritten = _OPS_STRIP_ORDER_LATEST_RE.sub("", rewritten, count=1)
+        notes.append("ops_strip_order_by_settlement_latest")
+
+    for col in ("station_name", "project_name"):
+        while True:
+            rewritten2, removed = _remove_column_predicate(rewritten, col)
+            if not removed:
+                break
+            rewritten = rewritten2
+            notes.append(f"ops_strip_settlement_pred:{col}")
+
+    rewritten = re.sub(r"(?is)\bWHERE\s+(AND|OR)\b", "WHERE ", rewritten)
+    rewritten = re.sub(r"(?is)\bWHERE\s*(?=(?:GROUP|ORDER|LIMIT)\b|$)", " ", rewritten)
+    rewritten = re.sub(r"[ \t]+", " ", rewritten)
+    rewritten = re.sub(r"\s+\n", "\n", rewritten)
+    return rewritten.strip(), notes
 
 
 def _inject_where_predicate(sql: str, pred: str) -> str | None:

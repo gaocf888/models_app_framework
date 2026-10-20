@@ -985,7 +985,15 @@ def align_semantics(
         if "station_catalog_query" not in binding.warnings:
             binding.warnings.append("station_catalog_query")
     else:
-        _inject_fcb_preferred_station_names(q, binding, assets)
+        # 运维问句不注入层位0/压缩层代表标，避免 SchemaLink 写出 station_name IN (...)
+        try:
+            from app.nl2sql.om_intent import is_ops_question as _ops_q_fcb
+
+            _skip_fcb_marks = _ops_q_fcb(q)
+        except Exception:  # noqa: BLE001
+            _skip_fcb_marks = False
+        if not _skip_fcb_marks:
+            _inject_fcb_preferred_station_names(q, binding, assets)
 
     return binding
 
