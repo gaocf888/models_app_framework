@@ -309,8 +309,10 @@ def filter_chatbot_nl2sql_display_rows(rows: list[dict[str, Any]]) -> list[dict[
     return out
 
 
-# 沉降库常见英文字段 → 中文表头（与 libraries.yaml columns[].title 对齐；兜底用）
+# 英文字段 → 中文表头兜底（沉降 libraries + 运维 om_result 8 表列并集）
+# 运维列对齐：docs/…/统计信息中间库交付使用说明.md
 _FALLBACK_COLUMN_TITLES: dict[str, str] = {
+    # —— 沉降 wash ——
     "period_settle_mm": "周期沉降变化(mm)",
     "period_settle": "周期沉降变化(mm)",
     "annual_settle_mm": "年沉降量(mm)",
@@ -327,11 +329,59 @@ _FALLBACK_COLUMN_TITLES: dict[str, str] = {
     "annual_pressure": "年度孔压变化",
     "period_displacement_3d": "周期位移变化",
     "annual_displacement_3d": "年度位移变化",
+    # —— 运维通用 ——
+    "snapshot_time": "快照时间",
+    "type": "仪器类型",
+    # —— t_om_device_online_by_type ——
+    "total": "总数",
+    "online": "在线数",
+    "offline": "离线数",
+    "online_rate": "在线率(%)",
+    # —— t_om_complete_rate_by_type / t_om_effective_rate_by_type ——
+    "device_count": "设备数",
+    "actual_count": "实际采集数",
+    "invalid_count": "无效数据数",
+    "theory_count": "应采集数",
+    "rate": "比率(%)",
+    "window_start": "窗口开始",
+    "window_end": "窗口结束",
+    # —— t_om_data_alarm_summary ——
+    "total_count": "总仪器数",
+    "alarm_count": "告警仪器数",
+    "normal_count": "正常仪器数",
+    "week_avg": "近7天告警占比(%)",
+    "month_avg": "近30天告警占比(%)",
+    "alarm_ratio_pct": "告警占比(%)",
+    "alarm_ratio": "告警占比(%)",
+    # —— t_om_device_alarm_list ——
+    "device_id": "设备编号",
+    "device_name": "标编号",
+    "data_type": "告警指标",
+    "source": "传感器名",
+    "area_name": "位置",
+    "status": "状态",
+    "ss_value": "实时值",
+    "yj_value": "预警阈值",
+    "content": "告警内容",
+    "off_time": "告警起始时间",
+    "create_time": "创建/建档时间",
+    "alarm_duration": "告警持续时长",
+    "alarm_days": "告警持续天数",
+    # —— t_om_offline_device_list / 月完整·有效列表 ——
+    "device_key": "设备编号",
+    "name": "标编号",
+    "sn": "仪器机身号",
+    "data_collect_time": "最后采集时间",
+    "offline_duration": "离线时长",
+    "offline_days": "离线天数",
+    "project_key": "项目键",
+    "monitor_count": "实际采集数",
+    "complete_rate": "完整率/有效率(%)",
 }
 
 
 def _library_column_title_map() -> dict[str, str]:
-    """从监测库 catalog 汇总 key/alias → 中文 title。"""
+    """从监测库 catalog 汇总 key/alias → 中文 title（再叠运维/沉降兜底）。"""
     out = dict(_FALLBACK_COLUMN_TITLES)
     try:
         from app.data_query_agent.catalog import get_library_catalog
@@ -353,12 +403,27 @@ def _library_column_title_map() -> dict[str, str]:
                         out[a] = title
     except Exception:  # noqa: BLE001
         logger.debug("chatbot column title map: catalog unavailable", exc_info=True)
-    return out
+    # 英文字段统一小写键，便于 PG 返回列名大小写不一致时命中
+    folded: dict[str, str] = {}
+    for k, v in out.items():
+        folded[k] = v
+        if k.isascii() and k.lower() != k:
+            folded.setdefault(k.lower(), v)
+        elif k.isascii():
+            folded.setdefault(k.lower(), v)
+    return folded
+
+
+def _column_display_title(title_map: dict[str, str], key: str) -> str:
+    if key in title_map:
+        return title_map[key]
+    low = key.lower() if key.isascii() else key
+    return title_map.get(low) or key
 
 
 def apply_chatbot_nl2sql_column_titles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    将英文字段名换成 libraries 中文 title，便于表头/分析 LLM 不再把 period 说成「年沉降」。
+    将英文字段名换成中文 title（沉降 libraries + 运维 om 列并集）。
     若同行同时有 period_* 与 annual_*，隐藏 annual_*（区间问句优先周期列）。
     """
     if not rows:
@@ -378,7 +443,7 @@ def apply_chatbot_nl2sql_column_titles(rows: list[dict[str, Any]]) -> list[dict[
         return rows
 
     has_period = any(
-        k.startswith("period_") or "周期" in str(title_map.get(k, ""))
+        k.startswith("period_") or "周期" in str(_column_display_title(title_map, k))
         for k in col_order
     )
     drop: set[str] = set()
@@ -386,7 +451,7 @@ def apply_chatbot_nl2sql_column_titles(rows: list[dict[str, Any]]) -> list[dict[
         for k in col_order:
             if k.startswith("annual_") or k in ("annual_settle_mm", "annual_settle"):
                 drop.add(k)
-            title = title_map.get(k, "")
+            title = _column_display_title(title_map, k)
             if "年沉降" in title or title.startswith("年度"):
                 # 仅当存在 period 列时藏年列，避免误伤独立「年沉降」问句
                 if any(x.startswith("period_") for x in col_order):
@@ -400,7 +465,7 @@ def apply_chatbot_nl2sql_column_titles(rows: list[dict[str, Any]]) -> list[dict[
             continue
         renamed: dict[str, Any] = {}
         for c in keep:
-            title = title_map.get(c) or c
+            title = _column_display_title(title_map, c)
             # 避免同 title 覆盖：已有同名则保留原 key
             if title in renamed and title != c:
                 renamed[c] = r.get(c)

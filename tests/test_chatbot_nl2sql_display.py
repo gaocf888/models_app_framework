@@ -108,6 +108,28 @@ def test_apply_period_column_chinese_title_hides_annual():
     assert out[0].get("监测站名称") == "F2(望京)"
 
 
+def test_apply_om_online_columns_chinese_titles():
+    rows = [
+        {
+            "type": "GNSS",
+            "total": 92,
+            "online": 92,
+            "offline": 0,
+            "online_rate": 100,
+            "snapshot_time": "2026-10-20 09:00:00",
+        }
+    ]
+    out = apply_chatbot_nl2sql_column_titles(rows)
+    assert out[0].get("仪器类型") == "GNSS"
+    assert out[0].get("总数") == 92
+    assert out[0].get("在线数") == 92
+    assert out[0].get("离线数") == 0
+    assert out[0].get("在线率(%)") == 100
+    assert out[0].get("快照时间") == "2026-10-20 09:00:00"
+    assert "online_rate" not in out[0]
+    assert "type" not in out[0]
+
+
 @pytest.mark.asyncio
 async def test_summarize_period_rows_use_chinese_period_header():
     from unittest.mock import patch
