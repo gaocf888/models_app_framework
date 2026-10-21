@@ -566,6 +566,10 @@
       id,
       title: (meta && meta.title) || "",
       buffer: "",
+      pending: "",
+      typing: false,
+      flushHtml: false,
+      typeTimer: null,
       box,
       head,
       md,
@@ -580,10 +584,45 @@
   function appendDelta(text, slotId) {
     if (!text) return;
     const rec = ensureChapter(slotId);
-    rec.buffer += text;
-    rec.md.textContent = rec.buffer;
+    rec.pending = (rec.pending || "") + text;
     state.summaryParts.push(text);
     $("btnExport").disabled = false;
+    pumpTypewriter(rec);
+  }
+
+  function pumpTypewriter(rec) {
+    if (rec.typing) return;
+    rec.typing = true;
+    const step = () => {
+      if (!rec.pending) {
+        rec.typing = false;
+        if (rec.flushHtml && rec.buffer) {
+          rec.md.classList.add("rendered-md");
+          rec.md.innerHTML = simpleMarkdownToHtml(rec.buffer);
+        }
+        return;
+      }
+      const take = rec.pending.slice(0, 1);
+      rec.pending = rec.pending.slice(1);
+      rec.buffer += take;
+      rec.md.textContent = rec.buffer;
+      rec.typeTimer = setTimeout(step, 16);
+    };
+    step();
+  }
+
+  function flushTypewriter(rec) {
+    if (!rec) return;
+    if (rec.typeTimer) {
+      clearTimeout(rec.typeTimer);
+      rec.typeTimer = null;
+    }
+    if (rec.pending) {
+      rec.buffer += rec.pending;
+      rec.pending = "";
+    }
+    rec.typing = false;
+    rec.md.textContent = rec.buffer;
   }
 
   function markChapterDone(slotId) {
@@ -591,6 +630,10 @@
     if (!rec) return;
     rec.head.querySelector(".st").textContent = "已完成";
     rec.head.querySelector(".st").classList.add("ok");
+    rec.flushHtml = true;
+    if (rec.typing || rec.pending) {
+      return;
+    }
     if (rec.buffer) {
       rec.md.classList.add("rendered-md");
       rec.md.innerHTML = simpleMarkdownToHtml(rec.buffer);

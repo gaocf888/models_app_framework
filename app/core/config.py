@@ -764,6 +764,9 @@ class AnalysisAgentConfig:
     slot_synth_max_retries: int = 1
     react_max_iterations: int = 8
     stream_chunk_chars: int = 256
+    # 封面/校验后正文打字机：每包字符数；间隔毫秒（0=只切不睡，前端可再排队）
+    typewriter_chunk_chars: int = 1
+    typewriter_delay_ms: int = 0
     # T1：主路径去掉缺数 HITL；resume API 保留兼容
     enable_human_in_the_loop: bool = False
     rag_top_k: int = 8
@@ -1732,6 +1735,8 @@ def _load_from_env() -> AppConfig:
         slot_synth_max_retries=max(0, int(os.getenv("ANALYSIS_AGENT_SLOT_SYNTH_MAX_RETRIES", "1"))),
         react_max_iterations=max(1, int(os.getenv("ANALYSIS_AGENT_REACT_MAX_ITERATIONS", "8"))),
         stream_chunk_chars=max(1, int(os.getenv("ANALYSIS_AGENT_STREAM_CHUNK_CHARS", "256"))),
+        typewriter_chunk_chars=max(1, int(os.getenv("ANALYSIS_AGENT_TYPEWRITER_CHUNK_CHARS", "1"))),
+        typewriter_delay_ms=max(0, int(os.getenv("ANALYSIS_AGENT_TYPEWRITER_DELAY_MS", "0"))),
         enable_human_in_the_loop=os.getenv("ANALYSIS_AGENT_ENABLE_HUMAN_IN_THE_LOOP", "false").lower()
         == "true",
         rag_top_k=max(1, int(os.getenv("ANALYSIS_AGENT_RAG_TOP_K", "8"))),

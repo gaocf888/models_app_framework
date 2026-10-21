@@ -56,6 +56,10 @@ def build_section_user_prompt(
             "请基于上方数据覆盖说明与事实清单撰写本章正文（Markdown 段落/列表，勿输出 # 标题行）。"
             "勿编造未提供的数值；勿调用工具。"
         )
+        parts.append(
+            "【数字硬约束】正文中每个阿拉伯数字（含小数、百分数里的数字）必须能在上方事实清单中找到"
+            "同一数值；禁止口算、改小数位或写出清单外的数字。没有对应数字时写「待补充」。"
+        )
     if rag_block:
         parts.append(rag_block)
     return "\n\n".join(p for p in parts if p)

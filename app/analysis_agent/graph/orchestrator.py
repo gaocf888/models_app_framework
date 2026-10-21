@@ -17,6 +17,7 @@ from app.analysis_agent.plans.loader import effective_plan_version, plan_tasks_f
 from app.analysis_agent.renderers.charts_extra import chart_from_table
 from app.analysis_agent.renderers.configured_viz import prepare_chapter_viz
 from app.analysis_agent.renderers.slot_renderer import render_deterministic_slot
+from app.analysis_agent.renderers.typewriter import emit_typewriter, typewriter_chunks
 from app.analysis_agent.slots.kinds import AnalysisAgentSlot, SlotOutput
 from app.analysis_agent.slots.serialize import slot_from_dict
 from app.conversation.manager import ConversationManager
@@ -34,13 +35,6 @@ from app.rag.service_registry import get_hybrid_rag_service
 from app.services.nl2sql_service import NL2SQLService
 
 logger = get_logger(__name__)
-
-
-def _chunk_text(text: str, chunk_size: int) -> list[str]:
-    if not text:
-        return []
-    size = max(1, chunk_size)
-    return [text[i : i + size] for i in range(0, len(text), size)]
 
 
 def _append_events(state: AnalysisAgentState, events: list[dict[str, Any]]) -> None:
@@ -1215,7 +1209,7 @@ class SlotOrchestrator:
                 }
             )
             if live and slot.title.strip():
-                await on_delta(f"### {slot.title.strip()}\n\n")
+                await emit_typewriter(on_delta, f"### {slot.title.strip()}\n\n")
 
             static_pre = ""
             static_post = ""
@@ -1224,7 +1218,7 @@ class SlotOrchestrator:
 
                 static_pre, static_post = split_static_narrative(slot.static_body)
             if live and static_pre:
-                await on_delta(static_pre + "\n\n")
+                await emit_typewriter(on_delta, static_pre + "\n\n")
 
             result = await synthesize_section(
                 prompts=self._prompts,
@@ -1244,7 +1238,7 @@ class SlotOrchestrator:
                 period_label=str(((state.get("options") or {}).get("_resolved") or {}).get("period_label") or ""),
             )
             if live and static_post:
-                await on_delta("\n\n" + static_post)
+                await emit_typewriter(on_delta, "\n\n" + static_post)
             out, chunks = section_result_to_slot_output(
                 slot, result, already_streamed=live
             )
@@ -1262,7 +1256,43 @@ class SlotOrchestrator:
         ANALYSIS_AGENT_SLOT_LATENCY.labels(
             slot_kind=slot.kind, analysis_type=analysis_type
         ).observe(time.perf_counter() - t_slot)
-        return out, _chunk_text(out.markdown, self._cfg.stream_chunk_chars), False
+        if narrative_streaming:
+            writer = self._try_get_stream_writer()
+            slot_index = int(state.get("slot_index") or 0)
+
+            def _push_static(ev: dict[str, Any]) -> None:
+                if writer is not None:
+                    try:
+                        writer(ev)
+                        return
+                    except Exception:  # noqa: BLE001
+                        pass
+                _append_events(state, [ev])
+
+            async def on_static_delta(text: str) -> None:
+                if not text:
+                    return
+                _push_static(
+                    {
+                        "event": "analysis_agent_summary_delta",
+                        "text": text,
+                        "slot_id": slot.id,
+                    }
+                )
+
+            _push_static(
+                {
+                    "event": "analysis_agent_chapter_start",
+                    "slot_id": slot.id,
+                    "chapter_id": slot.id,
+                    "slot_index": slot_index,
+                    "chapter_index": slot_index,
+                    "kind": slot.kind,
+                }
+            )
+            await emit_typewriter(on_static_delta, out.markdown or "")
+            return out, [], True
+        return out, typewriter_chunks(out.markdown or ""), False
 
     def _emit_slot_output(
         self,
@@ -1296,7 +1326,7 @@ class SlotOrchestrator:
                 for piece in stream_chunks:
                     events.append({"event": "analysis_agent_summary_delta", "text": piece})
             else:
-                for piece in _chunk_text(out.markdown, self._cfg.stream_chunk_chars):
+                for piece in typewriter_chunks(out.markdown or ""):
                     events.append({"event": "analysis_agent_summary_delta", "text": piece})
 
         if out.table and self._cfg.enable_structured_sse_events:

@@ -161,7 +161,7 @@ async def test_synthesize_slot_live_pushes_pending_without_fake_chunks() -> None
         for e in events
         if e.get("event") == "analysis_agent_summary_delta"
     )
-    assert any("概述" in str(e.get("text") or "") for e in events)
+    assert "概述" in "".join(str(e.get("text") or "") for e in events)
 
     state["_narrative_live_streamed"] = True
     emit_evs = orch._emit_slot_output(state, slot, out, chunks, 0)
