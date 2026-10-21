@@ -267,16 +267,16 @@ LIMIT 1;
 > 口径与报告一致：一律最新 `snapshot_time`；离线列表必须 `status = 0`。
 
 Q: 各仪器类型当前在线率是多少？
-A: 查 om_result.t_om_device_online_by_type，WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_data_alarm_summary)，SELECT type, online_rate, online, offline, total。
+A: 查 om_result.t_om_device_online_by_type，WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_device_online_by_type)，SELECT type, online_rate, online, offline, total。
 
 Q: 当前有哪些告警仪器？
-A: 查 om_result.t_om_device_alarm_list，同样滤最新 snapshot_time；可选算 now()-off_time 为持续时长。
+A: 查 om_result.t_om_device_alarm_list，WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_device_alarm_list)；可选算 now()-off_time 为持续时长。勿为取 max 再引用 t_om_data_alarm_summary。
 
 Q: 当前告警设备占比是多少？
-A: 查 om_result.t_om_data_alarm_summary（最新 snapshot_time），SELECT total_count, alarm_count, ROUND(alarm_count::numeric / NULLIF(total_count, 0) * 100, 2) AS alarm_ratio_pct。勿用 week_avg/month_avg 冒充当前占比。
+A: 查 om_result.t_om_data_alarm_summary（对本表滤最新 snapshot_time），SELECT total_count, alarm_count, ROUND(alarm_count::numeric / NULLIF(total_count, 0) * 100, 2) AS alarm_ratio_pct。勿用 week_avg/month_avg 冒充当前占比。
 
 Q: 现在有哪些离线设备？各自离线多久了？
-A: 查 om_result.t_om_offline_device_list，WHERE status = 0 AND snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_data_alarm_summary)；SELECT type, name, area_name, data_collect_time, now()::timestamp - data_collect_time::timestamp AS offline_duration, FLOOR(EXTRACT(EPOCH FROM (now()::timestamp - data_collect_time::timestamp))/86400)::int AS offline_days。
+A: 查 om_result.t_om_offline_device_list，WHERE status = 0 AND snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_offline_device_list)；SELECT type, name, area_name, data_collect_time, now()::timestamp - data_collect_time::timestamp AS offline_duration, FLOOR(EXTRACT(EPOCH FROM (now()::timestamp - data_collect_time::timestamp))/86400)::int AS offline_days。
 
 Q: GNSS 离线设备有几台、离线天数分别多少？
 A: 同上离线表，加 type = 'GNSS'（或库内等价 type）且 status = 0 + 最新批次；COUNT(*) 与按 name 的 offline_days。

@@ -399,12 +399,15 @@
       let data;
       try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
       if (!res.ok) throw new Error((data && (data.detail || data.message)) || res.statusText);
-      const list = data.sessions || data.result || data || [];
+      // API: SessionListResponse.items（文档写 sessions，实际字段为 items）
+      const list = Array.isArray(data.items) ? data.items
+        : (Array.isArray(data.sessions) ? data.sessions
+          : (Array.isArray(data.result) ? data.result : []));
       const root = $("sessList");
       root.replaceChildren();
-      if (!Array.isArray(list) || !list.length) {
-        root.innerHTML = '<div class="hint" style="padding:0.5rem;">暂无会话。</div>';
-        setStatus("会话列表为空。");
+      if (!list.length) {
+        root.innerHTML = '<div class="hint" style="padding:0.5rem;">暂无会话。发一条消息后会写入目录。</div>';
+        setStatus("会话列表为空（total=" + (data.total != null ? data.total : 0) + "）。");
         return;
       }
       list.forEach((s) => {
@@ -413,7 +416,17 @@
         el.className = "sess" + (sid === $("sessionId").value.trim() ? " on" : "");
         el.innerHTML = '<div class="t"></div><div class="m"></div>';
         el.querySelector(".t").textContent = s.title || sid || "(无标题)";
-        el.querySelector(".m").textContent = sid + (s.updated_at ? " · " + s.updated_at : "");
+        let when = "";
+        if (s.last_activity_at != null) {
+          const ms = Number(s.last_activity_at);
+          when = isFinite(ms) ? new Date(ms).toLocaleString() : String(s.last_activity_at);
+        } else if (s.updated_at) {
+          when = String(s.updated_at);
+        }
+        const cnt = s.message_count != null ? s.message_count + " 条" : "";
+        el.querySelector(".m").textContent = [sid.slice(0, 8) + (sid.length > 8 ? "…" : ""), when, cnt]
+          .filter(Boolean).join(" · ");
+        el.title = sid;
         el.addEventListener("click", () => {
           $("sessionId").value = sid;
           [...root.children].forEach((x) => x.classList.remove("on"));
@@ -422,7 +435,7 @@
         });
         root.appendChild(el);
       });
-      setStatus("已加载 " + list.length + " 个会话。");
+      setStatus("已加载 " + list.length + " 个会话" + (data.total != null ? "（total=" + data.total + "）" : "") + "。");
     } catch (e) {
       showErr(String(e && e.message ? e.message : e));
       setStatus("加载会话失败。");

@@ -2960,7 +2960,7 @@ nl2sql:
       2) 允许合法 JOIN、子查询、聚合、UNION ALL（只读）；跨监测类型列表可用 UNION 对齐列
       3) 禁止臆造 JOIN；优先 catalog 中 FK 提示及 project_name = t_station.name
       4) 沉降表用逻辑名（search_path→当前沉降 schema）；运维表写 om_result.t_om_*；禁止 invent 其它 schema；禁止沉降表与运维表同句混查
-      5) 运维问句（在线/完整/有效/告警/离线）：必须 WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_data_alarm_summary)；仪器类型用列 type
+      5) 运维问句（在线/完整/有效/告警/离线）：必须 WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.<当前主查询 t_om_* 本表>)；勿为取 max 额外引用未选中的表（勿写死 t_om_data_alarm_summary，除非主查询就是该表）；仪器类型用列 type
 
       【列与别名】
       1) 禁止 SELECT *；多表查询须用表别名限定列

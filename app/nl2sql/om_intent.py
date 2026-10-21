@@ -126,12 +126,14 @@ def sql_has_latest_snapshot_filter(sql: str) -> bool:
 def ops_snapshot_prompt_hint() -> str:
     return (
         "【运维库 om_result】查询 t_om_* 时必须过滤最新批次："
-        "WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_data_alarm_summary) "
-        "或 WITH latest AS (SELECT max(snapshot_time) AS snapshot_time FROM …) JOIN latest。"
+        "WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.<当前主查询的 t_om_* 本表>) "
+        "（8 表同批 snapshot_time 相同；禁止为取 max 额外引用未在白名单中的表，"
+        "尤其不要写死 t_om_data_alarm_summary，除非主查询本身就是该表）；"
+        "或 WITH latest AS (SELECT max(snapshot_time) AS snapshot_time FROM 本表) JOIN latest。"
         "表名建议写成 om_result.t_om_*；仪器类型列名为 type（中文，如 GNSS、地下水位井）；"
         "查 t_om_offline_device_list 必须加 status=0（当前离线）；"
         "离线时长=now()-data_collect_time（可再 /86400 得天数）；"
-        "告警占比=alarm_count/total_count*100（t_om_data_alarm_summary）；"
+        "告警占比查 t_om_data_alarm_summary 本表：alarm_count/total_count*100；"
         "告警持续时间用 now()-off_time；月完整/有效列表仅含低于阈值设备。"
         "禁止用沉降 wash 表或观测天数估算三率/在线率。"
     )
@@ -271,32 +273,102 @@ def _inject_where_predicate(sql: str, pred: str) -> str | None:
     return s[:insert_at].rstrip() + " WHERE " + pred + " " + s[insert_at:]
 
 
+_OM_FROM_RE = re.compile(
+    r"(?is)\bFROM\s+(?:([a-zA-Z_][\w]*)\s*\.\s*)?(t_om_[a-z0-9_]+)\b"
+)
+_SNAPSHOT_MAX_FROM_RE = re.compile(
+    r"(?is)(\(\s*SELECT\s+max\s*\(\s*snapshot_time\s*\)\s+FROM\s+)"
+    r"(?:([a-zA-Z_][\w]*)\s*\.\s*)?(t_om_[a-z0-9_]+)"
+)
+_SNAPSHOT_MAX_CTE_FROM_RE = re.compile(
+    r"(?is)(\blatest\s+AS\s*\(\s*SELECT\s+max\s*\(\s*snapshot_time\s*\)"
+    r"(?:\s+AS\s+[a-zA-Z_][\w]*)?\s+FROM\s+)"
+    r"(?:([a-zA-Z_][\w]*)\s*\.\s*)?(t_om_[a-z0-9_]+)"
+)
+_SNAPSHOT_MAX_SUBQUERY_BLANK_RE = re.compile(
+    r"(?is)\(\s*SELECT\s+max\s*\(\s*snapshot_time\s*\)\s+FROM\s+"
+    r"(?:[a-zA-Z_][\w]*\s*\.\s*)?t_om_[a-z0-9_]+\s*\)"
+)
+_LATEST_CTE_BLANK_RE = re.compile(
+    r"(?is)\bWITH\s+latest\s+AS\s*\([^)]*\)"
+)
+
+
+def resolve_om_primary_table(sql: str, *, preferred: str | None = None) -> str | None:
+    """解析运维 SQL 主查询 t_om_*（优先 preferred / SchemaLink primary）。"""
+    pref = (preferred or "").strip().lower()
+    if pref.startswith("t_om_"):
+        return pref
+    s = sql or ""
+    # 屏蔽 max(snapshot_time) 子查询与 latest CTE，避免误把批次表当主表
+    s2 = _SNAPSHOT_MAX_SUBQUERY_BLANK_RE.sub("(SELECT max(snapshot_time) FROM __ops_snap__)", s)
+    s2 = _LATEST_CTE_BLANK_RE.sub("WITH latest AS (__ops_cte__)", s2)
+    m = _OM_FROM_RE.search(s2)
+    if m:
+        return m.group(2).lower()
+    hit = _OM_TABLE_RE.search(s)
+    return hit.group(1).lower() if hit else None
+
+
+def rewrite_snapshot_max_to_primary(
+    sql: str,
+    *,
+    primary: str,
+    om_schema: str = "om_result",
+) -> tuple[str, list[str]]:
+    """将 max(snapshot_time) 子查询/CTE 的 FROM 改写为当前主表。"""
+    notes: list[str] = []
+    primary_l = (primary or "").strip().lower()
+    if not sql or not primary_l.startswith("t_om_"):
+        return sql, notes
+    schema = (om_schema or "om_result").strip() or "om_result"
+    target = f"{schema}.{primary_l}"
+
+    def _repl(m: re.Match[str]) -> str:
+        table = (m.group(3) or "").lower()
+        if table == primary_l:
+            # 统一补 schema 前缀，便于与注入形态一致
+            return f"{m.group(1)}{target}"
+        notes.append(f"ops_snapshot_max_rewritten:{table}->{primary_l}")
+        return f"{m.group(1)}{target}"
+
+    out = _SNAPSHOT_MAX_FROM_RE.sub(_repl, sql)
+    out = _SNAPSHOT_MAX_CTE_FROM_RE.sub(_repl, out)
+    return out, notes
+
+
 def ensure_latest_snapshot_filter(
     sql: str,
     *,
     om_schema: str = "om_result",
+    primary_table: str | None = None,
 ) -> tuple[str, list[str]]:
     """
-    若 SQL 含 t_om_* 且缺少最新批过滤，则注入：
+    运维 t_om_*：保证最新批次过滤，且 max(snapshot_time) 取自**当前主表**。
 
-    ``snapshot_time = (SELECT max(snapshot_time) FROM {om_schema}.t_om_data_alarm_summary)``
+    - 已有过滤但 FROM 指向其它 t_om_*（常见写死 summary）：改写为本表；
+    - 缺少过滤：注入 ``snapshot_time = (SELECT max(snapshot_time) FROM {schema}.{primary})``。
 
-    已具备最新批形态则原样返回。
+    交付口径：8 表同批 snapshot_time 相同，对本表取 max 与对 summary 等价，且不扩大表白名单。
     """
     notes: list[str] = []
     s = (sql or "").strip()
     if not s or not sql_mentions_om_tables(s):
         return s, notes
-    if sql_has_latest_snapshot_filter(s):
-        return s, notes
     schema = (om_schema or "om_result").strip() or "om_result"
-    pred = (
-        f"snapshot_time = (SELECT max(snapshot_time) FROM {schema}.t_om_data_alarm_summary)"
-    )
+    primary = resolve_om_primary_table(s, preferred=primary_table) or "t_om_data_alarm_summary"
+
+    s, rewrite_notes = rewrite_snapshot_max_to_primary(s, primary=primary, om_schema=schema)
+    notes.extend(rewrite_notes)
+
+    if sql_has_latest_snapshot_filter(s):
+        return s.strip(), notes
+
+    pred = f"snapshot_time = (SELECT max(snapshot_time) FROM {schema}.{primary})"
     injected = _inject_where_predicate(s, pred)
     if injected is None:
         return s, notes
-    notes.append("injected_latest_snapshot_filter")
+    notes.append(f"injected_latest_snapshot_filter:{primary}")
     return injected.strip(), notes
 
 

@@ -555,7 +555,7 @@ class SQLValidator:
                 return (
                     False,
                     "ops tables require snapshot_time latest-batch filter "
-                    "(e.g. snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_data_alarm_summary))",
+                    "(e.g. snapshot_time = (SELECT max(snapshot_time) FROM om_result.<current t_om_* primary table>))",
                 )
             if sql_mentions_offline_list(s) and not sql_has_offline_status_filter(s):
                 return (

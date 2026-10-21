@@ -1491,6 +1491,13 @@ class NL2SQLChain:
                 validation_error and "snapshot_time" in str(validation_error).lower()
             ):
                 system += " " + ops_snapshot_prompt_hint()
+            err_l = str(validation_error or "").lower()
+            if need_ops and "t_om_data_alarm_summary" in err_l and "unknown" in err_l:
+                system += (
+                    " 【运维修正】校验指出 t_om_data_alarm_summary 不在白名单时："
+                    "将 max(snapshot_time) 的 FROM 改为当前主查询的 t_om_* 本表，"
+                    "不要再引用 t_om_data_alarm_summary（除非主查询本身就是该表）。"
+                )
         except Exception:  # noqa: BLE001
             pass
         if strict_schema_reminder:
@@ -1529,8 +1536,12 @@ class NL2SQLChain:
         return out
 
     @staticmethod
-    def _rewrite_om_snapshot_filter(sql: str) -> tuple[str, list[str]]:
-        """运维 t_om_*：缺最新 snapshot_time / 离线 status=0 时确定性注入。"""
+    def _rewrite_om_snapshot_filter(
+        sql: str,
+        *,
+        primary_table: str | None = None,
+    ) -> tuple[str, list[str]]:
+        """运维 t_om_*：最新 snapshot_time（对本表 max）/ 离线 status=0 确定性注入或改写。"""
         try:
             from app.nl2sql.om_intent import (
                 ensure_latest_snapshot_filter,
@@ -1540,7 +1551,9 @@ class NL2SQLChain:
 
             notes: list[str] = []
             rewritten, snap_notes = ensure_latest_snapshot_filter(
-                sql, om_schema=get_om_result_schema()
+                sql,
+                om_schema=get_om_result_schema(),
+                primary_table=primary_table,
             )
             notes.extend(snap_notes)
             rewritten, offline_notes = ensure_offline_status_filter(rewritten)
@@ -1740,8 +1753,19 @@ class NL2SQLChain:
             notes.extend(ops_strip_notes)
         rewritten, sf_notes = rewrite_sql_with_suggested_filters(rewritten, sf)
         notes.extend(sf_notes)
-        # om_result：缺 snapshot_time 时注入最新批次（所有 refine 路径共用）
-        rewritten, snap_notes = self._rewrite_om_snapshot_filter(rewritten)
+        # om_result：最新批次 max 钉在当前主表（SchemaLink primary 优先；所有 refine 路径共用）
+        om_primary: str | None = None
+        if isinstance(parsed_intent, dict):
+            linked = parsed_intent.get("linked_schema")
+            if isinstance(linked, dict):
+                tables = linked.get("tables") or []
+                if tables and isinstance(tables[0], dict):
+                    name = str(tables[0].get("name") or "").strip()
+                    if name.lower().startswith("t_om_"):
+                        om_primary = name
+        rewritten, snap_notes = self._rewrite_om_snapshot_filter(
+            rewritten, primary_table=om_primary
+        )
         notes.extend(snap_notes)
         return rewritten, notes
 

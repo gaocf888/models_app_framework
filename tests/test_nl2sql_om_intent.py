@@ -84,8 +84,8 @@ def test_validator_requires_snapshot_for_om(monkeypatch: pytest.MonkeyPatch) -> 
 
     ok2, err2 = v.validate_identifiers(
         "SELECT type, online_rate FROM om_result.t_om_device_online_by_type "
-        "WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_data_alarm_summary)",
-        allowed_tables={"t_om_device_online_by_type", "t_om_data_alarm_summary"},
+        "WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_device_online_by_type)",
+        allowed_tables={"t_om_device_online_by_type"},
     )
     assert ok2 is True, err2
 
@@ -108,22 +108,56 @@ def test_om_allowlist_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "t_data_wash_fcb" in combined
 
 
-def test_ensure_latest_snapshot_filter_injects() -> None:
+def test_ensure_latest_snapshot_filter_injects_on_primary() -> None:
     from app.nl2sql.om_intent import ensure_latest_snapshot_filter, sql_has_latest_snapshot_filter
 
     bare = "SELECT type, online_rate FROM t_om_device_online_by_type"
     out, notes = ensure_latest_snapshot_filter(bare, om_schema="om_result")
-    assert "injected_latest_snapshot_filter" in notes
+    assert any(n.startswith("injected_latest_snapshot_filter") for n in notes)
     assert sql_has_latest_snapshot_filter(out)
-    assert "om_result.t_om_data_alarm_summary" in out
+    assert "om_result.t_om_device_online_by_type" in out
+    assert "t_om_data_alarm_summary" not in out
 
-    already = (
-        "SELECT * FROM t_om_device_online_by_type "
+
+def test_ensure_latest_snapshot_rewrites_summary_to_alarm_list_primary() -> None:
+    """告警列表：LLM/注入写死 summary 时改写为本表，单主表白名单可通过。"""
+    from app.nl2sql.om_intent import ensure_latest_snapshot_filter
+    from app.nl2sql.validator import SQLValidator
+
+    polluted = (
+        "SELECT DISTINCT ON (device_name) device_name, type, content, snapshot_time "
+        "FROM om_result.t_om_device_alarm_list "
+        "WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_data_alarm_summary) "
+        "ORDER BY device_name, snapshot_time DESC"
+    )
+    out, notes = ensure_latest_snapshot_filter(
+        polluted,
+        om_schema="om_result",
+        primary_table="t_om_device_alarm_list",
+    )
+    assert any("ops_snapshot_max_rewritten" in n for n in notes)
+    assert "t_om_data_alarm_summary" not in out
+    assert "FROM om_result.t_om_device_alarm_list)" in out.replace(" ", "") or (
+        "max(snapshot_time) FROM om_result.t_om_device_alarm_list" in out
+    )
+    v = SQLValidator()
+    ok, err = v.validate_identifiers(
+        out,
+        allowed_tables={"t_om_device_alarm_list"},
+    )
+    assert ok is True, err
+
+
+def test_ensure_latest_snapshot_keeps_summary_when_primary_is_summary() -> None:
+    from app.nl2sql.om_intent import ensure_latest_snapshot_filter
+
+    sql = (
+        "SELECT total_count, alarm_count FROM om_result.t_om_data_alarm_summary "
         "WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_data_alarm_summary)"
     )
-    out2, notes2 = ensure_latest_snapshot_filter(already)
-    assert notes2 == []
-    assert out2 == already
+    out, notes = ensure_latest_snapshot_filter(sql, om_schema="om_result")
+    assert notes == [] or all("rewritten" not in n for n in notes)
+    assert "t_om_data_alarm_summary" in out
 
 
 def test_offline_status_filter_required(monkeypatch: pytest.MonkeyPatch) -> None:

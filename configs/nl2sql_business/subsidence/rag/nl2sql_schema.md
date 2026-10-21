@@ -88,9 +88,10 @@
 
 > 与沉降 wash 表不同源；禁止与 `t_data_wash_*` 混在同一条 SQL。仪器类型列 `type` = 监测类型中文（地下水位井、光纤、基岩标/分层标、孔隙水压力井、气象站、GNSS）。
 
-通用列：每表均有 `snapshot_time`（同批 8 表该值相同）。最新批过滤示例：
+通用列：每表均有 `snapshot_time`（同批 8 表该值相同）。最新批过滤应对**当前主查询本表**取 max（与写 summary 等价，且不扩大表白名单），示例：
 
-`snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_data_alarm_summary)`
+`snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_device_online_by_type)`  
+（主表为告警列表时则对本表 `t_om_device_alarm_list` 取 max；查告警总览时才对 `t_om_data_alarm_summary` 取 max）
 
 ### t_om_data_alarm_summary（告警总览，1 行）
 
