@@ -13,7 +13,6 @@ from app.analysis_agent.deterministics.number_guard import (
 )
 from app.analysis_agent.plans.loader import get_synthesis_template
 from app.analysis_agent.renderers import section_data as core
-from app.analysis_agent.renderers.typewriter import emit_typewriter
 from app.analysis_agent.slots.kinds import AnalysisAgentSlot
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -25,7 +24,7 @@ logger = get_logger(__name__)
 CancelChecker = Callable[[], Awaitable[bool]]
 DeltaCallback = Callable[[str], Awaitable[None] | None]
 
-# 数字密的章：先 stream_chat 整章生成并校验，再打字机推送；失败回退硬稿
+# 数字密的章：与告警章一样真流式；整章结束后校验，只打日志，不覆盖、不重推
 _NUMBER_LOCKED_SLOTS = frozenset({"station_ops", "plain_monitoring"})
 
 
@@ -54,7 +53,7 @@ def _log_numbers_result(
     extra: list[str] | None = None,
     reason: str = "",
 ) -> None:
-    """校验结果审计：通过/跳过也打 INFO，方便对照日志确认用了 LLM 还是硬稿。"""
+    """校验结果审计：通过/失败/跳过都打 INFO，不改变已推正文。"""
     ok = "true" if numbers_ok is True else "false" if numbers_ok is False else "skipped"
     parts = [
         f"section numbers result slot={slot_id}",
@@ -66,6 +65,32 @@ def _log_numbers_result(
     if reason:
         parts.append(f"reason={reason}")
     logger.info(" ".join(parts))
+
+
+def _audit_narrative_numbers(
+    slot_id: str,
+    body: str,
+    allowed: set[Any],
+    *,
+    source: str,
+) -> None:
+    """只审计，不改 body。"""
+    if allowed and body and not narrative_numbers_allowed(body, allowed):
+        extras = sorted(str(x) for x in extra_numbers(body, allowed))
+        logger.warning(
+            "section numbers rejected slot=%s extra=%s",
+            slot_id,
+            extras,
+        )
+        _log_numbers_result(slot_id, numbers_ok=False, source=source, extra=extras)
+    elif not body:
+        _log_numbers_result(slot_id, numbers_ok=None, source=source, reason="empty_body")
+    elif not allowed:
+        _log_numbers_result(
+            slot_id, numbers_ok=None, source=source, reason="empty_allowlist"
+        )
+    else:
+        _log_numbers_result(slot_id, numbers_ok=True, source=source)
 
 
 def _deterministic_fallback(
@@ -145,11 +170,11 @@ async def synthesize_section(
     """
     llm_section 合成。
 
-    - 默认 / 非 emit 章：stream_chat，经 on_delta 真流式推送
-    - station_ops / plain_monitoring：先生成并校验数字，再打字机推送；失败回退硬稿
-    - use_react_agent 且 use_emit_tools：ReAct（整章完成后一次 on_delta 正文，避免假切片主路径）
+    - stream_chat：经 on_delta 真流式推送（运行/平原/告警同一条展示链路）
+    - 整章结束后做数字白名单校验，通过与失败都打日志；已推正文不覆盖、不重推
+    - 仅当模型一个字都没出来时，才用硬稿占位
+    - use_react_agent 且 use_emit_tools：ReAct（整章完成后一次 on_delta 正文）
     """
-    locked = slot.id in _NUMBER_LOCKED_SLOTS
     fallback = _deterministic_fallback(slot, gathered_data)
     facts, user_prompt = _build_user_prompt(
         slot=slot,
@@ -178,43 +203,12 @@ async def synthesize_section(
                 include_emit_tools=True,
             )
             body = (result.markdown or "").strip()
-            if body and allowed and not narrative_numbers_allowed(body, allowed):
-                extras = sorted(str(x) for x in extra_numbers(body, allowed))
-                logger.warning(
-                    "section react numbers rejected slot=%s extra=%s",
-                    slot.id,
-                    extras,
-                )
-                used_fallback = bool(fallback)
-                body = fallback or body
+            _audit_narrative_numbers(slot.id, body, allowed, source="react")
+            if not body:
+                body = fallback or "（待补充）"
                 result = SectionSynthesisResult(markdown=body)
-                _log_numbers_result(
-                    slot.id,
-                    numbers_ok=False,
-                    source="deterministic" if used_fallback else "react",
-                    extra=extras,
-                )
-            elif not body:
-                _log_numbers_result(
-                    slot.id,
-                    numbers_ok=None,
-                    source="react",
-                    reason="empty_body",
-                )
-            elif not allowed:
-                _log_numbers_result(
-                    slot.id,
-                    numbers_ok=None,
-                    source="react",
-                    reason="empty_allowlist",
-                )
-            else:
-                _log_numbers_result(slot.id, numbers_ok=True, source="react")
             if body:
-                if locked:
-                    await emit_typewriter(on_delta, body)
-                else:
-                    await _emit_delta(on_delta, body)
+                await _emit_delta(on_delta, body)
             return result
         except Exception as exc:  # noqa: BLE001
             logger.warning("section react failed, fallback stream_chat: %s", exc)
@@ -225,9 +219,8 @@ async def synthesize_section(
         {"role": "system", "content": _system_prompt(analysis_type, prompts)},
         {"role": "user", "content": user_prompt},
     ]
-    live_delta = None if locked else on_delta
     stream_kw: dict[str, Any] = {"max_tokens": cfg.narrative_max_tokens}
-    if locked or (analysis_type or "").startswith("subsidence_"):
+    if slot.id in _NUMBER_LOCKED_SLOTS or (analysis_type or "").startswith("subsidence_"):
         stream_kw["temperature"] = 0.0
     buf = ""
     n = 0
@@ -246,62 +239,34 @@ async def synthesize_section(
             if chunk:
                 buf += chunk
                 n += 1
-                await _emit_delta(live_delta, chunk)
+                await _emit_delta(on_delta, chunk)
     except Exception as exc:  # noqa: BLE001
-        if locked and fallback:
-            logger.warning("section stream_chat failed slot=%s, use deterministic: %s", slot.id, exc)
+        body = buf.strip()
+        if body:
+            logger.warning(
+                "section stream_chat failed slot=%s, keep streamed: %s", slot.id, exc
+            )
+            _audit_narrative_numbers(slot.id, body, allowed, source="llm")
+            return SectionSynthesisResult(markdown=body)
+        if fallback:
+            logger.warning(
+                "section stream_chat failed slot=%s, use deterministic: %s", slot.id, exc
+            )
             _log_numbers_result(
                 slot.id,
                 numbers_ok=None,
                 source="deterministic",
                 reason="stream_chat_failed",
             )
-            await emit_typewriter(on_delta, fallback)
+            await _emit_delta(on_delta, fallback)
             return SectionSynthesisResult(markdown=fallback)
         raise
 
     body = buf.strip()
-    extras: list[str] = []
-    empty_llm = not body
-    if allowed and body and not narrative_numbers_allowed(body, allowed):
-        extras = sorted(str(x) for x in extra_numbers(body, allowed))
-        logger.warning(
-            "section numbers rejected slot=%s extra=%s",
-            slot.id,
-            extras,
-        )
-        if fallback:
-            body = fallback
-        elif not locked:
-            # 已真流式推送，无法撤回；保留模型稿并记审计
-            pass
+    _audit_narrative_numbers(slot.id, body, allowed, source="llm")
     if not body:
         body = fallback or "（待补充）"
-    if extras:
-        _log_numbers_result(
-            slot.id,
-            numbers_ok=False,
-            source="deterministic" if fallback else "llm",
-            extra=extras,
-        )
-    elif empty_llm:
-        _log_numbers_result(
-            slot.id,
-            numbers_ok=None,
-            source="deterministic" if fallback else "empty",
-            reason="empty_body",
-        )
-    elif not allowed:
-        _log_numbers_result(
-            slot.id,
-            numbers_ok=None,
-            source="llm",
-            reason="empty_allowlist",
-        )
-    else:
-        _log_numbers_result(slot.id, numbers_ok=True, source="llm")
-    if locked:
-        await emit_typewriter(on_delta, body)
+        await _emit_delta(on_delta, body)
     return SectionSynthesisResult(markdown=body)
 
 

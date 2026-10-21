@@ -32,11 +32,12 @@ def test_typewriter_chunks_split() -> None:
 
 
 @pytest.mark.asyncio
-async def test_station_ops_rejects_hallucinated_number_and_typewrites_fallback(
+async def test_station_ops_rejects_hallucinated_number_keeps_streamed_text(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     async def _gen(**_kwargs):
-        yield "GNSS共计设备200台，在线率100%。"
+        yield "GNSS共计设备"
+        yield "200台，在线率100%。"
 
     client = MagicMock()
     client.stream_chat = _gen
@@ -87,13 +88,13 @@ async def test_station_ops_rejects_hallucinated_number_and_typewrites_fallback(
             on_delta=on_delta,
         )
     joined = "".join(deltas)
-    assert "200" not in result.markdown
-    assert "92" in result.markdown
-    assert "92" in joined
-    assert "200" not in joined
+    assert result.markdown == "GNSS共计设备200台，在线率100%。"
+    assert joined == result.markdown
+    assert deltas == ["GNSS共计设备", "200台，在线率100%。"]
     messages = [r.getMessage() for r in caplog.records]
+    assert any("section numbers rejected slot=station_ops extra=['200']" in m for m in messages)
     assert any(
-        "section numbers result slot=station_ops numbers_ok=false source=deterministic" in m
+        "section numbers result slot=station_ops numbers_ok=false source=llm" in m
         for m in messages
     )
 
