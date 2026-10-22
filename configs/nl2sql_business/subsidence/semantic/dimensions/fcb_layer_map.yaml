@@ -8,7 +8,7 @@ description: 由上述分层标层位分析.xls转换的分层标监测层位字
 notes:
 - 行政区过滤以 t_station.area 为准；district_raw 为 xls 原文简称，可能无「区」字
 - monitor_layer 为空表示中间辅助标，不参与站点代表与相邻层间压缩计算
-- 周期沉降 Δ = total_settle(窗初) - total_settle(窗末)；Δ>0 下沉倾向，Δ<0 回弹
+- 周期变化 = 窗初累计沉降 − 窗末累计沉降；对外表图负值=沉降、正值=回弹
 entry_count: 380
 layer0_station_count: 42
 entries:

@@ -1,26 +1,37 @@
 {
   "id": "district_results",
   "iterate": "plain_districts",
-  "title": "{item.name}监测成果",
+  "title": "{item.seq}.{item.name}",
   "kind": "llm_section",
   "source_item_ids": ["q_layer0"],
-  "outline": ["只叙述本行政区层位0站点", "区内差异与需关注测点"],
-  "constraints": ["禁止编造", "禁止内部编号", "只写 {item.name} 内站点"],
-  "narrative_instruction": "只叙述 {item.name} 内层位0站点沉降特征；结合已渲染柱图。无本区数据写待补充。",
+  "outline": [
+    "先写本区监测站座数及乡镇/街道分布（其中：××镇N座）",
+    "再写本区沉降/回弹主导方向与极值站"
+  ],
+  "constraints": [
+    "禁止编造",
+    "禁止内部编号",
+    "只写 {item.name} 内站点",
+    "禁止出现计算公式、英文字段名和「层位0」",
+    "负值为沉降、正值为回弹；正文用绝对值并写毫米、回弹"
+  ],
+  "narrative_instruction": "只叙述 {item.name} 内监测站。先写座数与「其中：乡镇/街道分布」，再写主导方向和最大沉降/回弹。结合已渲染柱图。无本区数据写待补充。",
   "allowed_outputs": ["paragraph"],
   "use_emit_tools": false,
   "charts": [
     {
       "id": "c_district_bar",
-      "title": "{item.name}层位0站点沉降",
+      "title": "图{item.figure_no} {item.name}地面沉降{period_label}监测数据统计图",
       "chart_type": "bar",
       "source_item_ids": ["q_layer0"],
       "attach_to_chapter": "@self",
       "filter_field": "area",
       "filter_from_iterate": "name",
-      "x_field": "project_name",
+      "x_field": "annex_label",
       "y_field": "delta_mm",
-      "max_points": 40
+      "round_decimals": 2,
+      "max_points": 40,
+      "skip_iterate_ids": ["haidian"]
     }
   ]
 }

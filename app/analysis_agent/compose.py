@@ -147,8 +147,12 @@ def _normalize_viz_item(
     chapter_id: str,
     id_suffix: str | None,
     iterate_item: dict[str, Any] | None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
+    skip_ids = {str(x).strip() for x in (spec.get("skip_iterate_ids") or []) if str(x).strip()}
+    if id_suffix and id_suffix in skip_ids:
+        return None
     out = copy.deepcopy(spec)
+    out.pop("skip_iterate_ids", None)
     orig_id = str(out.get("id") or "").strip()
     if orig_id:
         out["id"] = _suffix_id(orig_id, id_suffix)
@@ -188,14 +192,22 @@ def _chapter_from_section(
         "stream_live": bool(body.get("stream_live", False)),
     }
     tables = [
-        _normalize_viz_item(t, chapter_id=chapter_id, id_suffix=id_suffix, iterate_item=iterate_item)
-        for t in (body.get("tables") or [])
-        if isinstance(t, dict)
+        item
+        for item in (
+            _normalize_viz_item(t, chapter_id=chapter_id, id_suffix=id_suffix, iterate_item=iterate_item)
+            for t in (body.get("tables") or [])
+            if isinstance(t, dict)
+        )
+        if item is not None
     ]
     charts = [
-        _normalize_viz_item(c, chapter_id=chapter_id, id_suffix=id_suffix, iterate_item=iterate_item)
-        for c in (body.get("charts") or [])
-        if isinstance(c, dict)
+        item
+        for item in (
+            _normalize_viz_item(c, chapter_id=chapter_id, id_suffix=id_suffix, iterate_item=iterate_item)
+            for c in (body.get("charts") or [])
+            if isinstance(c, dict)
+        )
+        if item is not None
     ]
     plan_items = [dict(p) for p in (body.get("plan_items") or []) if isinstance(p, dict) and p.get("item_id")]
     return chapter, tables, charts, plan_items
@@ -215,15 +227,13 @@ def _dedupe_plan(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _build_toc(chapters: list[dict[str, Any]]) -> str:
     lines = ["目录"]
-    n = 0
     for ch in chapters:
         if str(ch.get("id") or "") == "cover":
             continue
         title = str(ch.get("title") or "").strip()
         if not title:
             continue
-        n += 1
-        lines.append(f"{n}. {title} …… {_TOC_PAGE}")
+        lines.append(f"{title} …… {_TOC_PAGE}")
     return "\n".join(lines)
 
 

@@ -34,7 +34,11 @@ def _system_prompt(analysis_type: str, prompts: PromptTemplateRegistry) -> str:
     if analysis_type == "overheat_guidance":
         default_system = "你是电站锅炉超温分析报告撰写专家。"
     elif (analysis_type or "").startswith("subsidence_"):
-        default_system = "你是北京市地面沉降监测报告撰写专家。"
+        default_system = (
+            "你是北京市地面沉降监测报告撰写专家。"
+            "正文禁止出现希腊字母、计算公式、英文字段名和「层位0」；"
+            "表图有符号数中负值为沉降、正值为回弹；正文用绝对值并写「毫米」「回弹」。"
+        )
     return (system_tpl.content if system_tpl else "").strip() or default_system
 
 
@@ -289,6 +293,7 @@ def section_result_to_slot_output(
     result: SectionSynthesisResult,
     *,
     already_streamed: bool = False,
+    include_heading: bool = True,
 ) -> tuple[Any, list[str]]:
     """
     将 SectionSynthesisResult 转为 SlotOutput。
@@ -312,7 +317,11 @@ def section_result_to_slot_output(
             md_parts.append(extra.strip())
     body = "\n\n".join(p for p in md_parts if p)
     title = slot.title.strip()
-    wrapped = wrap_narrative_markdown(title, body) if title else body + "\n\n"
+    wrapped = (
+        wrap_narrative_markdown(title, body, include_heading=include_heading)
+        if title
+        else body + "\n\n"
+    )
     table = result.tables[0] if result.tables else None
     charts = list(result.charts)
     if table and slot.chart_when_table and not charts:

@@ -1214,7 +1214,7 @@ class SlotOrchestrator:
                     "title": slot.title,
                 }
             )
-            if live and slot.title.strip():
+            if live and slot.title.strip() and not analysis_type.startswith("subsidence_"):
                 await emit_typewriter(on_delta, f"### {slot.title.strip()}\n\n")
 
             static_pre = ""
@@ -1246,7 +1246,10 @@ class SlotOrchestrator:
             if live and static_post:
                 await emit_typewriter(on_delta, "\n\n" + static_post)
             out, chunks = section_result_to_slot_output(
-                slot, result, already_streamed=live
+                slot,
+                result,
+                already_streamed=live,
+                include_heading=not analysis_type.startswith("subsidence_"),
             )
             ANALYSIS_AGENT_SLOT_LATENCY.labels(
                 slot_kind=slot.kind, analysis_type=analysis_type

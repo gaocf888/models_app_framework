@@ -3,21 +3,21 @@
 # 注意：shared_plan_items 会全部进入报告 plan（按 item_id 去重），勿放重复 SQL 的别名项。
 
 plain_districts:
-  - { id: chaoyang, name: 朝阳区 }
-  - { id: haidian, name: 海淀区 }
-  - { id: tongzhou, name: 通州区 }
-  - { id: shunyi, name: 顺义区 }
-  - { id: changping, name: 昌平区 }
-  - { id: daxing, name: 大兴区 }
-  - { id: pinggu, name: 平谷区 }
-  - { id: yanqing, name: 延庆区 }
+  - { id: chaoyang, name: 朝阳区, seq: 1, figure_no: "2-2" }
+  - { id: haidian, name: 海淀区, seq: 2 }
+  - { id: tongzhou, name: 通州区, seq: 3, figure_no: "2-3" }
+  - { id: shunyi, name: 顺义区, seq: 4, figure_no: "2-4" }
+  - { id: daxing, name: 大兴区, seq: 5, figure_no: "2-5" }
+  - { id: changping, name: 昌平区, seq: 6, figure_no: "2-6" }
+  - { id: pinggu, name: 平谷区, seq: 7, figure_no: "2-7" }
+  - { id: yanqing, name: 延庆区, seq: 8, figure_no: "2-8" }
 
 compress_groups:
   # annex_no=2..5：附表1 是地面沉降，压缩层组从附表2 起
-  - { id: l01, name: 第一压缩层组, layer_from: 0, layer_to: 1, annex_no: 2 }
-  - { id: l12, name: 第二压缩层组, layer_from: 1, layer_to: 2, annex_no: 3 }
-  - { id: l23, name: 第三压缩层组, layer_from: 2, layer_to: 3, annex_no: 4 }
-  - { id: l34, name: 第四压缩层组, layer_from: 3, layer_to: 4, annex_no: 5 }
+  - { id: l01, name: 第一压缩层组, layer_from: 0, layer_to: 1, annex_no: 2, heading: "（一）", depth: "0—50米", missing_note: "" }
+  - { id: l12, name: 第二压缩层组, layer_from: 1, layer_to: 2, annex_no: 3, heading: "（二）", depth: "50—100米", missing_note: "" }
+  - { id: l23, name: 第三压缩层组, layer_from: 2, layer_to: 3, annex_no: 4, heading: "（三）", depth: "100—180米", missing_note: "位于平谷区东高村镇南宅村的F11监测站无第三压缩层监测。" }
+  - { id: l34, name: 第四压缩层组, layer_from: 3, layer_to: 4, annex_no: 5, heading: "（四）", depth: "180米以深", missing_note: "位于平谷区马昌营镇后芮营村的F9监测站、马坊镇洼里村的F10监测站和东高村镇南宅村的F11监测站无第四压缩层监测。" }
 
 # 所有需要沉降数字的模版共用；叙述章 source 指向 q_layer0，禁止用 nl2sql 生成器当附表真源
 shared_plan_items:

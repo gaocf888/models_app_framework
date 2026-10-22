@@ -1,0 +1,9 @@
+{
+  "id": "district_intro",
+  "title": "（二）分区监测成果",
+  "kind": "static_markdown",
+  "source_item_ids": [],
+  "static_body": "",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false
+}

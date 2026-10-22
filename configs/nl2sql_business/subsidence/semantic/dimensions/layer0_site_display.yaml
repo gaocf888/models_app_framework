@@ -1,0 +1,51 @@
+version: 2026.10.22
+# 层位0站点对外展示名（semantic/dimensions/layer0_site_display.yaml）
+# 来源：监测季报.docx 附表1「地点+站码」
+# project_name 对齐 fcb_layer_map / 覆盖名单；SQL 仍用 project_name = t_station.name
+# 供自动报告附表左列、分区图横轴、正文站名；semantic_layer 不解析
+source: docs/地降所需求及数据相关/报告模版/监测季报.docx
+description: 42 座层位0代表标的地址+站码展示
+station_count: 42
+entries:
+- { project_name: F1(王四营）, station_code: F1, area: 朝阳区, location: 王四营乡孛罗营村, township: 王四营乡, annex_label: 王四营乡孛罗营村F1 }
+- { project_name: F2(望京）, station_code: F2, area: 朝阳区, location: 望京街道望京西园, township: 望京街道, annex_label: 望京街道望京西园F2 }
+- { project_name: F27(大鲁店), station_code: F27, area: 朝阳区, location: 黑庄户乡大鲁店村, township: 黑庄户乡, annex_label: 黑庄户乡大鲁店村F27 }
+- { project_name: F28(金盏), station_code: F28, area: 朝阳区, location: 金盏乡朝阳环境集团, township: 金盏乡, annex_label: 金盏乡朝阳环境集团F28 }
+- { project_name: F29(东窑), station_code: F29, area: 朝阳区, location: 金盏乡东窑村, township: 金盏乡, annex_label: 金盏乡东窑村F29 }
+- { project_name: F36(前沙涧), station_code: F36, area: 海淀区, location: 苏家坨镇前沙涧村, township: 苏家坨镇, annex_label: 苏家坨镇前沙涧村F36 }
+- { project_name: F6(张家湾）, station_code: F6, area: 通州区, location: 张家湾镇张辛庄村, township: 张家湾镇, annex_label: 张家湾镇张辛庄村F6 }
+- { project_name: F17(沟渠庄), station_code: F17, area: 通州区, location: 宋庄镇沟渠庄村, township: 宋庄镇, annex_label: 宋庄镇沟渠庄村F17 }
+- { project_name: F18(草寺), station_code: F18, area: 通州区, location: 宋庄镇草寺村, township: 宋庄镇, annex_label: 宋庄镇草寺村F18 }
+- { project_name: F19(谢楼), station_code: F19, area: 通州区, location: 潞城镇谢楼村, township: 潞城镇, annex_label: 潞城镇谢楼村F19 }
+- { project_name: F20(八各庄), station_code: F20, area: 通州区, location: 潞城镇八各庄村, township: 潞城镇, annex_label: 潞城镇八各庄村F20 }
+- { project_name: F21(西集), station_code: F21, area: 通州区, location: 西集镇地震监测站, township: 西集镇, annex_label: 西集镇地震监测站F21 }
+- { project_name: F22(尹家河), station_code: F22, area: 通州区, location: 西集镇尹家河村, township: 西集镇, annex_label: 西集镇尹家河村F22 }
+- { project_name: F23(前营), station_code: F23, area: 通州区, location: 台湖镇前营村, township: 台湖镇, annex_label: 台湖镇前营村F23 }
+- { project_name: F24(小松垡), station_code: F24, area: 通州区, location: 马驹桥镇小松垡村, township: 马驹桥镇, annex_label: 马驹桥镇小松垡村F24 }
+- { project_name: F25(北堤寺), station_code: F25, area: 通州区, location: 漷县镇北堤寺村, township: 漷县镇, annex_label: 漷县镇北堤寺村F25 }
+- { project_name: F26(应寺), station_code: F26, area: 通州区, location: 永乐店镇应寺村, township: 永乐店镇, annex_label: 永乐店镇应寺村F26 }
+- { project_name: F3（天竺）, station_code: F3, area: 顺义区, location: 空港街道（天竺）, township: 空港街道, annex_label: 空港街道（天竺）F3 }
+- { project_name: F5(平各庄）, station_code: F5, area: 顺义区, location: 仁和镇平各庄村, township: 仁和镇, annex_label: 仁和镇平各庄村F5 }
+- { project_name: F12(东府), station_code: F12, area: 顺义区, location: 北小营镇东府村, township: 北小营镇, annex_label: 北小营镇东府村F12 }
+- { project_name: F13(张辛), station_code: F13, area: 顺义区, location: 李桥镇张辛村, township: 李桥镇, annex_label: 李桥镇张辛村F13 }
+- { project_name: F14(前郝家疃), station_code: F14, area: 顺义区, location: 南彩镇前郝家疃村, township: 南彩镇, annex_label: 南彩镇前郝家疃村F14 }
+- { project_name: F15(闫家营）, station_code: F15, area: 顺义区, location: 高丽营镇闫家营村, township: 高丽营镇, annex_label: 高丽营镇闫家营村F15 }
+- { project_name: F16(三村), station_code: F16, area: 顺义区, location: 高丽营镇三村, township: 高丽营镇, annex_label: 高丽营镇三村F16 }
+- { project_name: F42(牌楼站), station_code: F42, area: 顺义区, location: 李遂镇牌楼村, township: 李遂镇, annex_label: 李遂镇牌楼村F42 }
+- { project_name: F7(榆垡）, station_code: F7, area: 大兴区, location: 榆垡镇西胡林村, township: 榆垡镇, annex_label: 榆垡镇西胡林村F7 }
+- { project_name: F30(孙家营), station_code: F30, area: 大兴区, location: 礼贤镇孙家营村, township: 礼贤镇, annex_label: 礼贤镇孙家营村F30 }
+- { project_name: F31(后辛房), station_code: F31, area: 大兴区, location: 安定镇后辛房村, township: 安定镇, annex_label: 安定镇后辛房村F31 }
+- { project_name: F32(梨花), station_code: F32, area: 大兴区, location: 庞各庄镇梨花村, township: 庞各庄镇, annex_label: 庞各庄镇梨花村F32 }
+- { project_name: F33(留士庄), station_code: F33, area: 大兴区, location: 榆垡镇留士庄村, township: 榆垡镇, annex_label: 榆垡镇留士庄村F33 }
+- { project_name: F34(求贤), station_code: F34, area: 大兴区, location: 榆垡镇求贤村, township: 榆垡镇, annex_label: 榆垡镇求贤村F34 }
+- { project_name: F35(张家务), station_code: F35, area: 大兴区, location: 榆垡镇张家务村, township: 榆垡镇, annex_label: 榆垡镇张家务村F35 }
+- { project_name: F4(八仙庄), station_code: F4, area: 昌平区, location: 北七家镇未来科学城, township: 北七家镇, annex_label: 北七家镇未来科学城F4 }
+- { project_name: F37(沙河), station_code: F37, area: 昌平区, location: 沙河镇地调所, township: 沙河镇, annex_label: 沙河镇地调所F37 }
+- { project_name: F38(南七家庄), station_code: F38, area: 昌平区, location: 北七家镇南七家庄村, township: 北七家镇, annex_label: 北七家镇南七家庄村F38 }
+- { project_name: F8(周村), station_code: F8, area: 平谷区, location: 大兴庄镇周村, township: 大兴庄镇, annex_label: 大兴庄镇周村F8 }
+- { project_name: F9(后芮营), station_code: F9, area: 平谷区, location: 马昌营镇后芮营村, township: 马昌营镇, annex_label: 马昌营镇后芮营村F9 }
+- { project_name: F10(洼里), station_code: F10, area: 平谷区, location: 马坊镇洼里村, township: 马坊镇, annex_label: 马坊镇洼里村F10 }
+- { project_name: F11(南宅), station_code: F11, area: 平谷区, location: 东高村镇南宅村, township: 东高村镇, annex_label: 东高村镇南宅村F11 }
+- { project_name: F39(西白庙), station_code: F39, area: 延庆区, location: 延庆镇西白庙村, township: 延庆镇, annex_label: 延庆镇西白庙村F39 }
+- { project_name: F40(大丰营), station_code: F40, area: 延庆区, location: 康庄镇大丰营村, township: 康庄镇, annex_label: 康庄镇大丰营村F40 }
+- { project_name: F41(王家堡), station_code: F41, area: 延庆区, location: 康庄镇王家堡村, township: 康庄镇, annex_label: 康庄镇王家堡村F41 }

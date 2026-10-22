@@ -4,6 +4,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.analysis_agent.deterministics.settle_text import (
+    format_mm,
+    is_rebound,
+    is_sink,
+    movement_word,
+    strip_formula_text,
+)
+from app.analysis_agent.deterministics.site_display import township_breakdown
+
 _PLAN_ITEM_LABELS: dict[str, str] = {
     "q0": "统一检修优先级",
     "q1": "报告基础信息",
@@ -23,9 +32,10 @@ _PLAN_ITEM_LABELS: dict[str, str] = {
     "q6d": "DCS参数联动趋势",
     "q_ops_rates": "各仪器类型运行三率",
     "q_ops_offline_list": "离线设备明细",
-    "q_layer0": "层位0地面沉降",
+    "q_layer0": "平原区地面沉降",
     "q_area_rank": "各行政区沉降汇总",
     "q_key_area": "重点监测区地面沉降",
+    "q_compress": "压缩层组监测成果",
     # 地降季报等（与 report plan.items 对齐；同号多义时用业务语义覆盖展示）
     "q2": "行政区沉降汇总",
     "q3": "分区站点统计",
@@ -65,7 +75,7 @@ def sanitize_report_narrative(text: str) -> str:
     out = re.sub(r"依据[：:][^\n。；;]+", "", out)
     out = re.sub(r"数据依据[：:][^\n]+", "", out)
     out = re.sub(r"\n{3,}", "\n\n", out)
-    return out.strip()
+    return strip_formula_text(out.strip())
 
 
 def _normalize_heading_text(text: str) -> str:
@@ -110,11 +120,13 @@ def strip_leading_duplicate_heading(md: str, slot_title: str) -> str:
     return "\n".join(lines[idx:]).strip()
 
 
-def wrap_narrative_markdown(title: str, body: str) -> str:
+def wrap_narrative_markdown(title: str, body: str, *, include_heading: bool = True) -> str:
     cleaned = sanitize_report_narrative(strip_leading_duplicate_heading((body or "").strip(), title))
     if not cleaned:
-        return f"### {title}\n\n（待补充）\n\n" if title else "（待补充）\n\n"
-    if title:
+        if include_heading and title:
+            return f"### {title}\n\n（待补充）\n\n"
+        return "（待补充）\n\n"
+    if include_heading and title:
         return f"### {title}\n\n{cleaned}\n\n"
     return f"{cleaned}\n\n"
 
@@ -208,54 +220,69 @@ def _append_q2a_top_points(lines: list[str], rows: list[dict]) -> None:
     lines.append(f"- 尖峰测点(时长排序): {'、'.join(c for _, c in scored[:5])}")
 
 
-def _append_layer0_plain_facts(lines: list[str], rows: list[dict]) -> None:
-    """全市/分区主导方向/最大次之站点；不写 Δ、平均沉降量。"""
-    scored: list[tuple[float, str, str]] = []
-    by_area: dict[str, list[float]] = {}
+def _station_clause_name(row: dict) -> str:
+    clause = str(row.get("display_clause") or "").strip()
+    if clause:
+        return clause
+    annex = str(row.get("annex_label") or "").strip()
+    if annex:
+        return annex
+    return str(row.get("project_name") or row.get("station_name") or "").strip() or "未命名监测站"
+
+
+def _dominate_cn(sink_n: int, rebound_n: int) -> str:
+    if sink_n > rebound_n:
+        return "以沉降为主"
+    if rebound_n > sink_n:
+        return "以回弹为主"
+    if sink_n or rebound_n:
+        return "沉降与回弹基本相当"
+    return "整体基本持平"
+
+
+def _append_layer0_plain_facts(lines: list[str], rows: list[dict], *, area_filter: str = "") -> None:
+    """全市/分区主导方向与极值；正文用中文站名和毫米，不写公式。"""
+    scored: list[tuple[float, str, str, dict]] = []
+    by_area: dict[str, list[dict]] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
         delta = _numeric(row.get("delta_mm"))
         if delta is None:
             continue
-        area = str(row.get("area") or "未知").strip() or "未知"
-        name = str(row.get("project_name") or row.get("station_name") or "").strip() or "未命名站"
-        scored.append((delta, name, area))
-        by_area.setdefault(area, []).append(delta)
+        area = str(row.get("area") or "").strip()
+        if area_filter and area != area_filter:
+            continue
+        if not area or area in {"未知", "未知区"}:
+            continue
+        scored.append((delta, _station_clause_name(row), area, row))
+        by_area.setdefault(area, []).append(row)
     if not scored:
         return
     n = len(scored)
-    sink_n = sum(1 for d, _, _ in scored if d > 0)
-    rise_n = sum(1 for d, _, _ in scored if d < 0)
-    if sink_n > rise_n:
-        dominate = "以沉降为主"
-    elif rise_n > sink_n:
-        dominate = "以上升为主"
-    else:
-        dominate = "沉降与上升基本相当"
-    lines.append(f"- 全市：{n}站，沉降{sink_n}站，上升{rise_n}站，{dominate}")
-    sink_sorted = sorted(scored, key=lambda x: x[0], reverse=True)
-    rise_sorted = sorted(scored, key=lambda x: x[0])
-    top_sink = [x for x in sink_sorted if x[0] > 0][:2]
-    top_rise = [x for x in rise_sorted if x[0] < 0][:2]
+    sink_n = sum(1 for d, *_ in scored if is_sink(d))
+    rebound_n = sum(1 for d, *_ in scored if is_rebound(d))
+    lines.append(f"- 全市：{n}座监测站，沉降{sink_n}座，回弹{rebound_n}座，{_dominate_cn(sink_n, rebound_n)}")
+    top_sink = [x for x in sorted(scored, key=lambda row: row[0]) if is_sink(x[0])][:2]
+    top_rebound = [x for x in sorted(scored, key=lambda row: row[0], reverse=True) if is_rebound(x[0])][:2]
     if top_sink:
-        parts = [f"{name}（{area}）沉降{abs(delta):.2f}mm" for delta, name, area in top_sink]
+        parts = [f"{name}沉降{format_mm(delta)}" for delta, name, _area, _row in top_sink]
         lines.append(f"- 最大/次之沉降站点: {'；'.join(parts)}")
-    if top_rise:
-        parts = [f"{name}（{area}）上升{abs(delta):.2f}mm" for delta, name, area in top_rise]
-        lines.append(f"- 最大/次之上升站点: {'；'.join(parts)}")
+    if top_rebound:
+        parts = [f"{name}回弹{format_mm(delta)}" for delta, name, _area, _row in top_rebound]
+        lines.append(f"- 最大/次之回弹站点: {'；'.join(parts)}")
     area_bits: list[str] = []
     for area in sorted(by_area.keys()):
-        vals = by_area[area]
-        a_sink = sum(1 for v in vals if v > 0)
-        a_rise = sum(1 for v in vals if v < 0)
-        if a_sink > a_rise:
-            lead = "以沉降为主"
-        elif a_rise > a_sink:
-            lead = "以上升为主"
-        else:
-            lead = "沉降与上升基本相当"
-        area_bits.append(f"{area}{len(vals)}站（沉降{a_sink}/上升{a_rise}，{lead}）")
+        items = by_area[area]
+        vals = [_numeric(r.get("delta_mm")) for r in items]
+        known = [v for v in vals if v is not None]
+        a_sink = sum(1 for v in known if is_sink(v))
+        a_rebound = sum(1 for v in known if is_rebound(v))
+        bit = f"{area}{len(items)}座（沉降{a_sink}/回弹{a_rebound}，{_dominate_cn(a_sink, a_rebound)}）"
+        towns = township_breakdown(items)
+        if towns:
+            bit += f"；{towns}"
+        area_bits.append(bit)
     if area_bits:
         lines.append("- 分行政区: " + "；".join(area_bits))
 
@@ -275,24 +302,100 @@ def _append_key_area_facts(lines: list[str], rows: list[dict]) -> None:
         deltas = [_numeric(r.get("total_delta_mm")) for r in items]
         known = [d for d in deltas if d is not None]
         miss = len(deltas) - len(known)
-        sink = sum(1 for d in known if d > 0)
-        rise = sum(1 for d in known if d < 0)
-        bit = f"{area}{len(items)}站（有数{len(known)}"
+        sink = sum(1 for d in known if is_sink(d))
+        rebound = sum(1 for d in known if is_rebound(d))
+        bit = f"{area}{len(items)}座（有数{len(known)}"
         if miss:
             bit += f"/待补充{miss}"
         if known:
-            bit += f"/沉降{sink}/上升{rise}"
+            bit += f"/沉降{sink}/回弹{rebound}"
         area_bits.append(bit + "）")
     lines.append("- 按重点监测区: " + "；".join(area_bits))
     for area, items in by_area.items():
         for row in items:
             code = str(row.get("station_code") or "").strip()
-            name = str(row.get("project_name") or "").strip() or "未命名站"
             loc = str(row.get("location_raw") or "").strip()
+            name = f"位于{loc}的{code}监测站" if loc and code else (code or "未命名监测站")
             delta = _numeric(row.get("total_delta_mm"))
-            delta_txt = f"{delta:.2f}mm" if delta is not None else "待补充"
-            loc_bit = f"，{loc}" if loc else ""
-            lines.append(f"- {area} {code} {name}{loc_bit} 总沉降{delta_txt}")
+            if delta is None:
+                delta_txt = "待补充"
+            else:
+                delta_txt = f"{movement_word(delta)}{format_mm(delta)}"
+            lines.append(f"- {area} {name} {delta_txt}")
+
+
+_DISTRICT_ID_TO_NAME = {
+    "chaoyang": "朝阳区",
+    "haidian": "海淀区",
+    "tongzhou": "通州区",
+    "shunyi": "顺义区",
+    "changping": "昌平区",
+    "daxing": "大兴区",
+    "pinggu": "平谷区",
+    "yanqing": "延庆区",
+}
+
+_LAYER_SLOT_FROM = {
+    "layer_results__l01": 0,
+    "layer_results__l12": 1,
+    "layer_results__l23": 2,
+    "layer_results__l34": 3,
+    "annex_layer__l01": 0,
+    "annex_layer__l12": 1,
+    "annex_layer__l23": 2,
+    "annex_layer__l34": 3,
+}
+
+
+def _district_name_from_slot(slot_id: str) -> str:
+    suffix = (slot_id or "").split("__", 1)[-1]
+    return _DISTRICT_ID_TO_NAME.get(suffix, "")
+
+
+def _append_area_rank_facts(lines: list[str], rows: list[dict]) -> None:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        area = str(row.get("area") or "").strip()
+        if not area:
+            continue
+        avg = _numeric(row.get("avg_delta_mm"))
+        n = int(row.get("station_count") or 0)
+        avg_txt = format_mm(avg, signed=True) + "毫米" if avg is not None else "待补充"
+        lines.append(f"- {area} {n}座，平均沉降量{avg_txt}（负值为沉降，正值为回弹）")
+
+
+def _append_compress_facts(lines: list[str], rows: list[dict], *, slot_id: str = "") -> None:
+    layer_from = _LAYER_SLOT_FROM.get(slot_id)
+    scored: list[tuple[float, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if layer_from is not None and int(row.get("layer_from") or -1) != layer_from:
+            continue
+        val = _numeric(row.get("compress_mm"))
+        if val is None:
+            continue
+        scored.append((val, _station_clause_name(row)))
+    if not scored:
+        return
+    sink_n = sum(1 for v, _ in scored if is_sink(v))
+    rebound_n = sum(1 for v, _ in scored if is_rebound(v))
+    lines.append(
+        f"- 本压缩层组：{len(scored)}座，沉降{sink_n}座，回弹{rebound_n}座，{_dominate_cn(sink_n, rebound_n)}"
+    )
+    top_sink = [x for x in sorted(scored, key=lambda row: row[0]) if is_sink(x[0])][:2]
+    top_rebound = [x for x in sorted(scored, key=lambda row: row[0], reverse=True) if is_rebound(x[0])][:2]
+    if top_sink:
+        lines.append(
+            "- 最大/次之沉降: "
+            + "；".join(f"{name}沉降{format_mm(val)}" for val, name in top_sink)
+        )
+    if top_rebound:
+        lines.append(
+            "- 最大/次之回弹: "
+            + "；".join(f"{name}回弹{format_mm(val)}" for val, name in top_rebound)
+        )
 
 
 def _append_q3b_top_points(lines: list[str], rows: list[dict]) -> None:
@@ -328,6 +431,20 @@ def build_audit_facts(
         if not rows:
             lines.append(f"- [{label}] 无数据行 → 不得编造该部分明细")
             continue
+        if iid in ("q_layer0", "q_area_rank", "q_key_area", "q_compress"):
+            lines.append(f"- [{label}] {len(rows)} 座/行（下列为已写好的中文事实，禁止抄英文字段或公式）")
+            if iid == "q_layer0":
+                area_filter = ""
+                if slot_id.startswith("district_results__"):
+                    area_filter = _district_name_from_slot(slot_id)
+                _append_layer0_plain_facts(lines, rows, area_filter=area_filter)
+            elif iid == "q_area_rank":
+                _append_area_rank_facts(lines, rows)
+            elif iid == "q_key_area":
+                _append_key_area_facts(lines, rows)
+            elif iid == "q_compress":
+                _append_compress_facts(lines, rows, slot_id=slot_id)
+            continue
         preview_n = _audit_preview_row_limit(iid, len(rows), slot_id=slot_id)
         lines.append(f"- [{label}] {len(rows)} 行")
         for row in rows[:preview_n]:
@@ -347,10 +464,6 @@ def build_audit_facts(
             _append_q2a_top_points(lines, rows)
         if iid == "q3b":
             _append_q3b_top_points(lines, rows)
-        if iid == "q_layer0":
-            _append_layer0_plain_facts(lines, rows)
-        if iid == "q_key_area":
-            _append_key_area_facts(lines, rows)
     q = (query or "").strip()
     if q:
         lines.append(f"- 用户问题约束: {q[:500]}")

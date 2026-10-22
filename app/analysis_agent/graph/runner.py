@@ -16,6 +16,7 @@ from app.analysis_agent.period import (
     apply_resolved_period,
     canonical_query,
     fill_template_placeholders,
+    fill_viz_placeholders,
     period_sse_dict,
 )
 from app.analysis_agent.period_probe import apply_period_data_fallback, fallback_degrade_reasons
@@ -428,8 +429,13 @@ class AnalysisAgentGraphRunner:
             )
         state["slot_index"] = 0
         state["slots_total"] = len(slots)
-        state["report_tables"] = list(ctx.report_tables or [])
-        state["report_charts"] = list(ctx.report_charts or [])
+        tables = list(ctx.report_tables or [])
+        charts = list(ctx.report_charts or [])
+        if resolved:
+            tables = fill_viz_placeholders(tables, resolved, title=title)
+            charts = fill_viz_placeholders(charts, resolved, title=title)
+        state["report_tables"] = tables
+        state["report_charts"] = charts
         state.setdefault("gathered_data", {})
         state.setdefault("task_status", {})
         state.setdefault("nl2sql_calls", [])

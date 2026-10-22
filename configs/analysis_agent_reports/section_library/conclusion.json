@@ -1,11 +1,23 @@
 {
   "id": "conclusion",
-  "title": "二、（五）小结",
+  "title": "五、结论",
   "kind": "llm_section",
-  "source_item_ids": ["q_layer0", "q_compress", "q_key_area"],
-  "outline": ["本期沉降总体结论", "重点关注区域与后续监测建议"],
-  "constraints": ["禁止编造", "禁止内部编号", "建议须可执行"],
-  "narrative_instruction": "撰写小结：归纳本期全市平原、压缩层与重点区域结论，给出简要监测建议。",
+  "source_item_ids": ["q_layer0", "q_compress", "q_key_area", "q_ops_rates"],
+  "outline": [
+    "（一）地面沉降监测设施整体运行情况",
+    "（二）全市平原区沉降/回弹总体格局与极值站",
+    "（三）四个压缩层组总体方向",
+    "（四）重点监测区格局"
+  ],
+  "constraints": [
+    "禁止编造",
+    "禁止内部编号",
+    "建议须可执行",
+    "禁止出现计算公式、英文字段名和「层位0」",
+    "负值为沉降、正值为回弹；正文用绝对值并写毫米、回弹",
+    "必须按（一）至（四）四个小节书写"
+  ],
+  "narrative_instruction": "撰写结论，按（一）设施运行（二）平原格局（三）四个压缩层组（四）重点监测区四个小节归纳。数字只来自已取数结果。",
   "allowed_outputs": ["paragraph"],
   "use_emit_tools": false,
   "stream_live": true

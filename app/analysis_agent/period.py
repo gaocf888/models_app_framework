@@ -412,3 +412,22 @@ def fill_template_placeholders(text: str, resolved: dict[str, Any], *, title: st
             continue
         body = body.replace(key, val)
     return body
+
+
+def fill_viz_placeholders(
+    items: list[dict[str, Any]] | None,
+    resolved: dict[str, Any],
+    *,
+    title: str = "",
+) -> list[dict[str, Any]]:
+    """给声明式表/图 title、caption 填 period_label 等。"""
+    out: list[dict[str, Any]] = []
+    for spec in items or []:
+        if not isinstance(spec, dict):
+            continue
+        item = dict(spec)
+        for key in ("title", "caption", "unit_line"):
+            if item.get(key):
+                item[key] = fill_template_placeholders(str(item[key]), resolved, title=title)
+        out.append(item)
+    return out

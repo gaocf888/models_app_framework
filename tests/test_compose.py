@@ -36,8 +36,10 @@ def test_daily_plain_monitoring_asks_districts_and_extremes() -> None:
     assert "行政区" in outline
     assert "最大" in outline and "次之" in outline
     assert "平均Δ" not in outline
-    assert "禁止" in constraints and "平均沉降量" in constraints
-    assert "Δ" in constraints
+    assert "禁止" in constraints
+    assert "回弹" in constraints
+    instruction = ch.narrative_instruction or ""
+    assert "平均沉降量" in instruction
 
 
 def test_weekly_monthly_key_area_uses_q_key_area() -> None:
@@ -121,13 +123,26 @@ def test_quarterly_compose_districts_and_layers() -> None:
     spec = load_report_spec("subsidence_quarterly")
     assert spec is not None
     ids = [c.id for c in spec.chapters]
-    assert "station_ops" in ids
-    assert "device_alert" in ids
+    assert ids[0] == "cover"
+    assert ids[1] == "quarterly_preface"
+    assert "station_ops" not in ids
+    assert "device_alert" not in ids
+    assert "regional_results" in ids
+    assert "district_intro" in ids
+    assert "layer_intro" in ids
     district_ids = [i for i in ids if i.startswith("district_results__")]
     layer_ids = [i for i in ids if i.startswith("layer_results__")]
     annex_ids = [i for i in ids if i.startswith("annex_layer__")]
-    assert len(district_ids) == 8
-    assert "district_results__chaoyang" in district_ids
+    assert district_ids == [
+        "district_results__chaoyang",
+        "district_results__haidian",
+        "district_results__tongzhou",
+        "district_results__shunyi",
+        "district_results__daxing",
+        "district_results__changping",
+        "district_results__pinggu",
+        "district_results__yanqing",
+    ]
     assert len(layer_ids) == 4
     assert "layer_results__l01" in layer_ids
     assert len(annex_ids) == 4
@@ -135,13 +150,18 @@ def test_quarterly_compose_districts_and_layers() -> None:
     assert "q_fcb_endpoints" in plan_ids
     assert "q_compress" in plan_ids
     assert "q_key_area" in plan_ids
-    assert "q_ops_rates" in plan_ids
-    assert "q_ops_offline_list" in plan_ids
-    assert "q_alert_summary" in plan_ids
-    assert "q_alert_count_by_type" in plan_ids
     assert any(t.get("attach_to_chapter") == "city_plain" for t in spec.tables)
+    city_tbl = next(t for t in spec.tables if t.get("id") == "t_city_area_rank")
+    assert "平均沉降量/毫米" in (city_tbl.get("columns") or [])
+    assert "avg_delta_mm" in (city_tbl.get("column_keys") or [])
+    city_bar = next(c for c in spec.charts if c.get("id") == "c_city_area_bar")
+    assert city_bar.get("y_field") == "avg_delta_mm"
     assert any(c.get("chart_type") == "map_placeholder" for c in spec.charts)
     assert any(c.get("row_filter", {}).get("equals") == "朝阳区" for c in spec.charts)
+    assert not any(
+        c.get("id") == "c_district_bar__haidian" or str(c.get("id") or "").endswith("__haidian")
+        for c in spec.charts
+    )
     annex_titles = {c.id: c.title for c in spec.chapters if c.id.startswith("annex_layer__")}
     assert annex_titles["annex_layer__l01"].startswith("附表2")
     assert annex_titles["annex_layer__l12"].startswith("附表3")
@@ -149,6 +169,12 @@ def test_quarterly_compose_districts_and_layers() -> None:
     assert annex_titles["annex_layer__l34"].startswith("附表5")
     ground = next(c for c in spec.chapters if c.id == "annex_ground")
     assert ground.title.startswith("附表1")
+    preface = next(c for c in spec.chapters if c.id == "quarterly_preface")
+    assert preface.title == "一、前言"
+    key = next(c for c in spec.chapters if c.id == "key_area")
+    assert key.title.startswith("四、")
+    conclusion = next(c for c in spec.chapters if c.id == "conclusion")
+    assert conclusion.title == "五、结论"
 
 
 def test_yearly_compose_matches_quarterly_structure() -> None:

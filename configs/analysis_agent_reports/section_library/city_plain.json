@@ -1,11 +1,19 @@
 {
   "id": "city_plain",
-  "title": "二、（一）全市平原沉降成果",
+  "title": "（一）全市平原区监测成果",
   "kind": "llm_section",
   "source_item_ids": ["q_layer0", "q_area_rank"],
-  "outline": ["各行政区周期沉降量对比", "沉降/回弹显著区域", "结合已渲染统计图与沉降分布图做简要解读"],
-  "constraints": ["禁止编造", "禁止内部编号", "禁止 # 标题行", "地图由程序离线出图，禁止当成热力图假数据"],
-  "narrative_instruction": "撰写全市平原沉降成果：按行政区解读层位0沉降格局；关键柱状图与沉降分布图已由程序渲染，勿重复制图。",
+  "static_body": "{{NARRATIVE}}\n\n①图中负值为地面沉降，正值为地面回弹。\n",
+  "outline": ["各行政区周期沉降对比", "沉降/回弹显著区域", "结合已渲染统计图做简要解读"],
+  "constraints": [
+    "禁止编造",
+    "禁止内部编号",
+    "禁止 # 标题行",
+    "禁止出现计算公式、英文字段名和「层位0」",
+    "负值为沉降、正值为回弹；正文用绝对值并写毫米、回弹",
+    "图注已由程序输出，勿再写公式"
+  ],
+  "narrative_instruction": "撰写全市平原区监测成果：按行政区解读沉降/回弹格局；引用图2-1。关键表图已由程序渲染，勿重复制图。",
   "allowed_outputs": ["paragraph"],
   "use_emit_tools": false,
   "tables": [
@@ -14,20 +22,24 @@
       "title": "全市平原各行政区沉降统计表",
       "source_item_ids": ["q_area_rank"],
       "attach_to_chapter": "@self",
-      "columns": ["area", "station_count", "sum_delta_mm", "min_delta_mm", "max_delta_mm"],
+      "columns": ["行政区", "监测站/座", "平均沉降量/毫米", "最小", "最大"],
+      "column_keys": ["area", "station_count", "avg_delta_mm", "min_delta_mm", "max_delta_mm"],
       "table_kind": "classification",
+      "round_decimals": 2,
       "max_rows": 40
     }
   ],
   "charts": [
     {
       "id": "c_city_area_bar",
-      "title": "全市平原各行政区沉降统计图",
+      "title": "图2-1 全市平原区{period_label}平均沉降量统计图",
+      "caption": "①图中负值为地面沉降，正值为地面回弹。",
       "chart_type": "bar",
       "source_item_ids": ["q_area_rank"],
       "attach_to_chapter": "@self",
       "x_field": "area",
-      "y_field": "sum_delta_mm",
+      "y_field": "avg_delta_mm",
+      "round_decimals": 2,
       "max_points": 40
     },
     {

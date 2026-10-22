@@ -1,29 +1,26 @@
 {
   "id": "annex_layer",
   "iterate": "compress_groups",
-  "title": "附表{item.annex_no} {item.name}监测成果",
+  "title": "附表{item.annex_no} {period_label}北京市平原区{item.name}监测数据成果表",
   "kind": "static_markdown",
   "source_item_ids": ["q_compress"],
-  "static_body": "附表{item.annex_no}仅含 {item.name}（层位{item.layer_from}→{item.layer_to}）连续层间差。缺该层对的场地不出现（例如 F11 不出现在附表4/5）。\n",
+  "static_body": "",
   "allowed_outputs": ["paragraph"],
   "use_emit_tools": false,
   "tables": [
     {
       "id": "t_annex_layer",
-      "title": "附表{item.annex_no} {item.name}监测成果",
+      "title": "附表{item.annex_no} {period_label}北京市平原区{item.name}监测数据成果表",
       "source_item_ids": ["q_compress"],
       "attach_to_chapter": "@self",
       "filter_field": "layer_from",
       "filter_from_iterate": "layer_from",
-      "columns": [
-        "area",
-        "project_name",
-        "mark_from",
-        "mark_to",
-        "delta_from",
-        "delta_to",
-        "compress_mm"
-      ],
+      "columns": ["监测点", "压缩量"],
+      "column_keys": ["annex_label", "compress_mm"],
+      "group_field": "area",
+      "group_title_key": "annex_label",
+      "round_decimals": 2,
+      "unit_line": "单位：毫米",
       "max_rows": 80
     }
   ]

@@ -3,9 +3,16 @@
   "title": "重点监测区",
   "kind": "llm_section",
   "source_item_ids": ["q_key_area"],
-  "outline": ["按重点监测区（area_name）逐区解读", "只写事实清单中的站与数值，total_delta_mm 为空的站写待补充"],
-  "constraints": ["禁止编造", "禁止内部编号", "站点集合以重点区 YAML 的13站为准，不用全市层位0或 t_station 全表", "禁止按行政区名代替重点区名"],
-  "narrative_instruction": "按重点监测区（城市副中心、未来科学城、亦庄经济开发区、首都国际机场临空经济区、大兴国际机场临空经济区）解读。事实来自 q_key_area（area_name + 配置站 + total_delta_mm）。某站无总沉降写待补充，不要用其它场的数填。周/月不挂表 4-1。",
+  "outline": ["按重点监测区（area_name）逐区解读", "只写事实清单中的站与数值，总沉降为空的站写待补充"],
+  "constraints": [
+    "禁止编造",
+    "禁止内部编号",
+    "站点集合以重点区配置的13站为准",
+    "禁止按行政区名代替重点区名",
+    "禁止出现计算公式、英文字段名和「层位0」",
+    "负值为沉降、正值为回弹；正文用绝对值并写毫米、回弹"
+  ],
+  "narrative_instruction": "按重点监测区（城市副中心、未来科学城、亦庄经济开发区、首都国际机场临空经济区、大兴国际机场临空经济区）解读。事实来自已取数结果。某站无总沉降写待补充。周/月不挂表4-1。",
   "allowed_outputs": ["paragraph"],
   "use_emit_tools": false,
   "plan_items": [
@@ -23,32 +30,42 @@
       "python_fn": "join_key_areas",
       "mandatory": false,
       "dependency_ids": ["q_layer0", "q_compress"],
-      "purpose": "重点区 5 区 13 站 JOIN 层位0"
+      "purpose": "重点区 5 区 13 站 JOIN"
     }
   ],
   "variants": {
     "with_table": {
-      "title": "二、（四）重点区域",
+      "title": "四、重点监测区成果",
       "source_item_ids": ["q_key_area"],
       "outline": ["解读表4-1 重点监测区地面沉降", "缺压缩层单元格保持空，勿臆造"],
-      "narrative_instruction": "撰写重点区域：解读表4-1。站点集合必须是配置的13站；缺层单元格留空。",
+      "narrative_instruction": "撰写重点监测区成果：解读表4-1。站点集合必须是配置的13站；缺层单元格留空。用「位于××的F××监测站」。",
       "tables": [
         {
           "id": "t_key_area",
-          "title": "表4-1 重点监测区地面沉降监测情况",
+          "title": "表4-1 {period_label}重点监测区地面沉降监测情况",
           "source_item_ids": ["q_key_area"],
           "attach_to_chapter": "@self",
           "columns": [
+            "地区",
+            "监测站总数/座",
+            "监测站编号",
+            "总沉降量",
+            "第一压缩层组",
+            "第二压缩层组",
+            "第三压缩层组",
+            "第四压缩层组"
+          ],
+          "column_keys": [
             "area_name",
             "station_count",
             "station_code",
-            "project_name",
             "total_delta_mm",
             "c01",
             "c12",
             "c23",
             "c34"
           ],
+          "round_decimals": 2,
           "max_rows": 20
         }
       ]

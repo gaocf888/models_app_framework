@@ -8,6 +8,44 @@ from app.analysis_agent.renderers.charts_extra import chart_from_config, chart_f
 from app.analysis_agent.renderers.table_generic import emit_table_from_rows
 
 
+def _round_numeric_rows(rows: list[dict[str, Any]], decimals: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        mapped = dict(row)
+        for key, val in list(mapped.items()):
+            if val is None or isinstance(val, bool) or str(val).strip() == "":
+                continue
+            try:
+                mapped[key] = round(float(val), decimals)
+            except (TypeError, ValueError):
+                continue
+        out.append(mapped)
+    return out
+
+
+def _insert_group_headers(
+    rows: list[dict[str, Any]],
+    *,
+    group_field: str,
+    title_key: str,
+) -> list[dict[str, Any]]:
+    if not group_field or not rows:
+        return rows
+    ordered = sorted(rows, key=lambda r: str(r.get(group_field) or ""))
+    out: list[dict[str, Any]] = []
+    current = object()
+    for row in ordered:
+        group = str(row.get(group_field) or "").strip()
+        if group != current:
+            current = group
+            header = {k: "" for k in row.keys()}
+            header[group_field] = group
+            header[title_key] = group
+            out.append(header)
+        out.append(row)
+    return out
+
+
 def _collect_rows(
     gathered_data: dict[str, list[dict[str, Any]]],
     source_item_ids: list[str] | tuple[str, ...],
@@ -101,7 +139,14 @@ def render_configured_table(
     max_rows = max(1, int(spec.get("max_rows") or 80))
     columns = _resolve_columns(spec.get("columns"), rows)
     col_keys = spec.get("column_keys") if isinstance(spec.get("column_keys"), list) else None
+    group_field = str(spec.get("group_field") or "").strip()
+    if group_field:
+        title_key = str(spec.get("group_title_key") or ((col_keys[0] if col_keys else "") or (columns[0] if columns else ""))).strip()
+        if title_key:
+            rows = _insert_group_headers(rows, group_field=group_field, title_key=title_key)
     rows = _map_rows_by_column_keys(rows, display_columns=columns, column_keys=col_keys)
+    if spec.get("round_decimals") is not None:
+        rows = _round_numeric_rows(rows, int(spec.get("round_decimals") or 2))
     title = str(spec.get("title") or tid)
     table_kind = str(spec.get("table_kind") or "raw") or "raw"
     md, tbl = emit_table_from_rows(
@@ -117,6 +162,10 @@ def render_configured_table(
     tbl["attach_to_chapter"] = str(spec.get("attach_to_chapter") or "")
     if spec.get("placeholder"):
         tbl["placeholder"] = True
+    unit_line = str(spec.get("unit_line") or "").strip()
+    if unit_line:
+        md = f"{unit_line}\n\n{md}"
+        tbl["unit_line"] = unit_line
     return md, tbl
 
 
@@ -156,6 +205,9 @@ def render_configured_chart(
             ch["configured"] = True
             ch["attach_to_chapter"] = str(spec.get("attach_to_chapter") or "")
             ch["source_item_ids"] = source_ids
+            caption = str(spec.get("caption") or "").strip()
+            if caption:
+                ch["caption"] = caption
         return ch
     if chart_type not in ("bar", "pie", "line"):
         chart_type = "bar"
@@ -202,7 +254,45 @@ def render_configured_chart(
         ch["configured"] = True
         ch["attach_to_chapter"] = str(spec.get("attach_to_chapter") or "")
         ch["source_item_ids"] = source_ids
+        caption = str(spec.get("caption") or "").strip()
+        if caption:
+            ch["caption"] = caption
+        if spec.get("round_decimals") is not None:
+            _round_chart_values(ch, int(spec.get("round_decimals") or 2))
     return ch
+
+
+def _round_chart_values(chart: dict[str, Any], decimals: int) -> None:
+    spec = chart.get("spec")
+    if not isinstance(spec, dict):
+        return
+    data = spec.get("data")
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            for key in ("count", "value", "y"):
+                if key in item:
+                    try:
+                        item[key] = round(float(item[key]), decimals)
+                    except (TypeError, ValueError):
+                        continue
+    series = spec.get("series")
+    if isinstance(series, list):
+        for s in series:
+            if not isinstance(s, dict):
+                continue
+            for key in ("data", "values"):
+                vals = s.get(key)
+                if not isinstance(vals, list):
+                    continue
+                rounded: list[Any] = []
+                for val in vals:
+                    try:
+                        rounded.append(round(float(val), decimals))
+                    except (TypeError, ValueError):
+                        rounded.append(val)
+                s[key] = rounded
 
 
 def prepare_chapter_viz(

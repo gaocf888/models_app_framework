@@ -1,0 +1,9 @@
+{
+  "id": "regional_results",
+  "title": "二、区域地面沉降监测成果",
+  "kind": "static_markdown",
+  "source_item_ids": [],
+  "static_body": "",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false
+}

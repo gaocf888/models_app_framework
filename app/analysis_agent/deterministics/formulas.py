@@ -16,7 +16,7 @@ VALID_LAYERS = frozenset({0, 1, 2, 3, 4})
 
 
 def period_delta(settle_start: Any, settle_end: Any) -> float:
-    """窗内周期沉降 Δ；>0 下沉倾向，<0 回弹。"""
+    """窗内周期变化（初−末）。对外：<0 沉降，>0 回弹（与季报模版表图一致）。"""
     return float(settle_start) - float(settle_end)
 
 

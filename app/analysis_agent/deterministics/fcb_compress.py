@@ -11,6 +11,9 @@ from app.analysis_agent.deterministics.coverage import (
     layers_by_canonical_project,
 )
 from app.analysis_agent.deterministics.formulas import consecutive_layer_pairs, period_delta
+from app.analysis_agent.deterministics.site_display import attach_site_display
+
+_UNKNOWN_AREAS = frozenset({"", "未知", "未知区", "None", "null"})
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -55,8 +58,10 @@ def slice_layer0(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[di
         end = _f(row.get("settle_end"))
         if start is None or end is None:
             continue
+        area = row.get("area")
+        display = attach_site_display(project, str(area or ""))
         by_key[(project, mark)] = {
-            "area": row.get("area"),
+            "area": area,
             "project_name": project,
             "station_name": mark,
             "delta_mm": period_delta(start, end),
@@ -64,6 +69,7 @@ def slice_layer0(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[di
             "settle_end": end,
             "lon": row.get("lon"),
             "lat": row.get("lat"),
+            **display,
         }
     rows = list(by_key.values())
     rows.sort(key=lambda r: (str(r.get("area") or ""), str(r.get("project_name") or "")))
@@ -111,6 +117,7 @@ def layer_compress(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[
     out: list[dict[str, Any]] = []
     for project, meta in grouped.items():
         for layer_from, layer_to, d0, d1, cmm in consecutive_layer_pairs(deltas.get(project) or {}):
+            display = attach_site_display(project, str(meta.get("area") or ""))
             out.append(
                 {
                     "area": meta.get("area"),
@@ -122,6 +129,7 @@ def layer_compress(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[
                     "delta_from": d0,
                     "delta_to": d1,
                     "compress_mm": cmm,
+                    **display,
                 }
             )
     out.sort(
@@ -136,17 +144,27 @@ def layer_compress(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[
 
 
 def rank_by_area(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[dict[str, Any]]:
-    """全市平原按行政区汇总层位 0 周期沉降，供柱图（不是 t_station 全表）。"""
+    """全市平原按行政区汇总层位 0；对外主指标为平均，未知区不入表。"""
     rows = list(gathered.get("q_layer0") or [])
     buckets: dict[str, dict[str, Any]] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
-        area = str(row.get("area") or "未知").strip() or "未知"
+        area = str(row.get("area") or "").strip()
+        if area in _UNKNOWN_AREAS:
+            logger.warning("rank_by_area drop unknown area project=%s", row.get("project_name"))
+            continue
         delta = _f(row.get("delta_mm"))
         b = buckets.setdefault(
             area,
-            {"area": area, "station_count": 0, "sum_delta_mm": 0.0, "min_delta_mm": None, "max_delta_mm": None},
+            {
+                "area": area,
+                "station_count": 0,
+                "sum_delta_mm": 0.0,
+                "avg_delta_mm": None,
+                "min_delta_mm": None,
+                "max_delta_mm": None,
+            },
         )
         b["station_count"] += 1
         if delta is None:
@@ -154,6 +172,15 @@ def rank_by_area(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[di
         b["sum_delta_mm"] += delta
         b["min_delta_mm"] = delta if b["min_delta_mm"] is None else min(float(b["min_delta_mm"]), delta)
         b["max_delta_mm"] = delta if b["max_delta_mm"] is None else max(float(b["max_delta_mm"]), delta)
-    out = list(buckets.values())
-    out.sort(key=lambda r: float(r.get("sum_delta_mm") or 0.0))
+    out: list[dict[str, Any]] = []
+    for b in buckets.values():
+        n = int(b.get("station_count") or 0)
+        if n:
+            b["avg_delta_mm"] = round(float(b.get("sum_delta_mm") or 0.0) / n, 2)
+        if b["min_delta_mm"] is not None:
+            b["min_delta_mm"] = round(float(b["min_delta_mm"]), 2)
+        if b["max_delta_mm"] is not None:
+            b["max_delta_mm"] = round(float(b["max_delta_mm"]), 2)
+        out.append(b)
+    out.sort(key=lambda r: float(r.get("avg_delta_mm") or 0.0))
     return out

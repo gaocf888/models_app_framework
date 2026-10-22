@@ -1,12 +1,22 @@
 {
   "id": "layer_results",
   "iterate": "compress_groups",
-  "title": "{item.name}监测成果",
+  "title": "{item.heading}{item.name}",
   "kind": "llm_section",
   "source_item_ids": ["q_compress"],
-  "outline": ["本压缩层组总体特征", "结合程序表图解读；缺层站点不出现在本层附表"],
-  "constraints": ["禁止编造层间差", "禁止把单标 total_settle 当压缩量", "禁止内部编号"],
-  "narrative_instruction": "撰写{item.name}（层位{item.layer_from}→{item.layer_to}）成果。数字只来自连续层间差 compress；无本层组数据写待补充。",
+  "outline": [
+    "本压缩层组埋深约 {item.depth}",
+    "本层组总体沉降/回弹特征与极值站",
+    "缺层说明：{item.missing_note}"
+  ],
+  "constraints": [
+    "禁止编造层间差",
+    "禁止把单标累计沉降当压缩量",
+    "禁止内部编号",
+    "禁止出现计算公式、英文字段名和「层位0」",
+    "负值为沉降、正值为回弹；正文用绝对值并写毫米、回弹"
+  ],
+  "narrative_instruction": "撰写{item.name}成果。先点明埋深约{item.depth}，再写沉降/回弹座数、集中区域和极值站（用「位于××的F××监测站」）。{item.missing_note}有内容则作为脚注写出。数字只来自连续层间差。无本层组数据写待补充。可写「详见附表{item.annex_no}」。",
   "allowed_outputs": ["paragraph"],
   "use_emit_tools": false,
   "charts": [
@@ -20,6 +30,7 @@
       "filter_from_iterate": "layer_from",
       "x_field": "project_name",
       "y_field": "compress_mm",
+      "round_decimals": 2,
       "max_points": 50
     }
   ]
