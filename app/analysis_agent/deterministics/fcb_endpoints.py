@@ -53,11 +53,25 @@ def resolved_sql_params(
         "kxsylj_projects": list(project_names("kxsylj")),
         "gnss_projects": list(project_names("gnss")),
     }
+    sql_name = (sql_file or "").strip()
     # 典型曲线左轴只要层位 0，避免把压缩层边界标日序列混进来
-    if (sql_file or "").strip() == "typical_series_fcb.sql":
+    if sql_name == "typical_series_fcb.sql":
         keys = layer0_mark_keys()
         params["fcb_marks"] = [mark for _project, mark in keys]
         params["fcb_projects"] = list(dict.fromkeys(project for project, _mark in keys))
+    if sql_name in {
+        "typical_series_dxswj.sql",
+        "typical_series_kxsylj.sql",
+        "typical_series_qxz.sql",
+    }:
+        from app.analysis_agent.deterministics.typical_sites import typical_axis_sites
+
+        if sql_name.endswith("dxswj.sql"):
+            params["dxswj_projects"] = list(typical_axis_sites("elevation"))
+        elif sql_name.endswith("kxsylj.sql"):
+            params["kxsylj_projects"] = list(typical_axis_sites("pressure"))
+        else:
+            params["qxz_projects"] = list(typical_axis_sites("rain"))
     if extra:
         params.update(extra)
     # 运维 om_* 模板无时间窗绑定，跳过 t_start/t_end 强制转换

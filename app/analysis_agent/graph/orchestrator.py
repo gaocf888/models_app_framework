@@ -37,6 +37,11 @@ from app.services.nl2sql_service import NL2SQLService
 logger = get_logger(__name__)
 
 
+def _suppress_cover_sse(slot: AnalysisAgentSlot, options: dict[str, Any] | None) -> bool:
+    """默认不把封面推进 SSE；仅 slot.id==cover，锅炉 oh_hdr 不受影响。"""
+    return slot.id == "cover" and not bool((options or {}).get("stream_cover"))
+
+
 def _append_events(state: AnalysisAgentState, events: list[dict[str, Any]]) -> None:
     if not events:
         return
@@ -525,7 +530,7 @@ class SlotOrchestrator:
                         "configured": True,
                     }
                 )
-        if events:
+        if events and not _suppress_cover_sse(slot, options):
             _append_events(state, events)
         return state
 
@@ -1206,6 +1211,7 @@ class SlotOrchestrator:
                     "slot_index": slot_index,
                     "chapter_index": slot_index,
                     "kind": slot.kind,
+                    "title": slot.title,
                 }
             )
             if live and slot.title.strip():
@@ -1257,6 +1263,8 @@ class SlotOrchestrator:
             slot_kind=slot.kind, analysis_type=analysis_type
         ).observe(time.perf_counter() - t_slot)
         if narrative_streaming:
+            if _suppress_cover_sse(slot, options):
+                return out, [], True
             writer = self._try_get_stream_writer()
             slot_index = int(state.get("slot_index") or 0)
 
@@ -1288,6 +1296,7 @@ class SlotOrchestrator:
                     "slot_index": slot_index,
                     "chapter_index": slot_index,
                     "kind": slot.kind,
+                    "title": slot.title,
                 }
             )
             await emit_typewriter(on_static_delta, out.markdown or "")
@@ -1306,9 +1315,10 @@ class SlotOrchestrator:
         options = state.get("options") or {}
         chart_mode = str(options.get("chart_mode") or "auto")
         live = bool(state.get("_narrative_live_streamed"))
+        suppress_cover = _suppress_cover_sse(slot, options)
 
         # 真流式已在 synthesize 推送 chapter_start
-        if not live:
+        if not live and not suppress_cover:
             events.append(
                 {
                     "event": "analysis_agent_chapter_start",
@@ -1317,11 +1327,12 @@ class SlotOrchestrator:
                     "slot_index": slot_index,
                     "chapter_index": slot_index,
                     "kind": slot.kind,
+                    "title": slot.title,
                 }
             )
 
         # 真流式正文已在 synthesize 阶段推送；此处避免整章假切片重复
-        if not live:
+        if not live and not suppress_cover:
             if stream_chunks and slot.kind in ("llm_narrative", "llm_section"):
                 for piece in stream_chunks:
                     events.append({"event": "analysis_agent_summary_delta", "text": piece})
@@ -1329,7 +1340,7 @@ class SlotOrchestrator:
                 for piece in typewriter_chunks(out.markdown or ""):
                     events.append({"event": "analysis_agent_summary_delta", "text": piece})
 
-        if out.table and self._cfg.enable_structured_sse_events:
+        if out.table and self._cfg.enable_structured_sse_events and not suppress_cover:
             prepared_ids = {
                 str(t.get("id"))
                 for t in ((state.get("_prepared_viz") or {}).get("tables") or [])
@@ -1352,17 +1363,18 @@ class SlotOrchestrator:
                     )
                     out.charts = list(out.charts) + [extra]
 
-        prepared_chart_ids = {
-            str(c.get("id"))
-            for c in ((state.get("_prepared_viz") or {}).get("charts") or [])
-            if isinstance(c, dict)
-        }
-        for ch in out.charts:
-            if str(ch.get("id") or "") in prepared_chart_ids:
-                continue
-            events.append(
-                {"event": "analysis_agent_chart_payload", "chart": ch, "slot_id": slot.id}
-            )
+        if not suppress_cover:
+            prepared_chart_ids = {
+                str(c.get("id"))
+                for c in ((state.get("_prepared_viz") or {}).get("charts") or [])
+                if isinstance(c, dict)
+            }
+            for ch in out.charts:
+                if str(ch.get("id") or "") in prepared_chart_ids:
+                    continue
+                events.append(
+                    {"event": "analysis_agent_chart_payload", "chart": ch, "slot_id": slot.id}
+                )
 
         state.setdefault("summary_parts", []).append(out.markdown)
         sections = state.setdefault("structured_report", {}).setdefault("sections", [])
@@ -1397,11 +1409,12 @@ class SlotOrchestrator:
                 "live_streamed": live,
             }
         )
-        events.append(
-            {
-                "event": "analysis_agent_chapter_complete",
-                "slot_id": slot.id,
-                "chapter_id": slot.id,
-            }
-        )
+        if not suppress_cover:
+            events.append(
+                {
+                    "event": "analysis_agent_chapter_complete",
+                    "slot_id": slot.id,
+                    "chapter_id": slot.id,
+                }
+            )
         return events

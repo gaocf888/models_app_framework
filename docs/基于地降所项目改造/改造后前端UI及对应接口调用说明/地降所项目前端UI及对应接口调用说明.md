@@ -140,6 +140,7 @@
 | 开始日期 / 结束日期 | **成对**：都空或都填。只填一端会 **422** | 写入 `options.start_time` / `end_time` |
 | 行政区 | 标准名且带「区」（如 `朝阳区`）；空/`全市`/`北京市` = 不按区过滤 | `options.area` |
 | 期号 | 封面用；空则封面显示 `XX` | `options.issue_no` |
+| 封面 | **默认不接收 cover SSE**。日/周/月本地画红头（内部材料 + 标题 + 第 {issue_no} 期 + 单位 + 落款日）；季/年画封面+目录（标题 + `period.period_label` + 后续章标题 TOC）。年报套季报。需要后端推封面时传 `options.stream_cover=true` | 默认不传；仅 `slot.id==cover` |
 | 补充说明（可选） | 自然语言；可空 | 顶层 `query` |
 | **生成报告** | 文案改「生成中…」并禁用；打开 SSE | `POST /analysis-agent/run-stream` |
 | 生成中再点 | 忽略，不要并行开第二路流 | — |
@@ -161,7 +162,7 @@
 | `started` | 转圈；保存 `stream_id` / `request_id`；地降用 `period.period_label` 展示「正在生成：2025年第二季度」 |
 | `analysis_agent_meta` | 可选：总章节数 `slot_total` |
 | `analysis_agent_nl2sql_done` | 「取数中」进度（按完成项计数即可）；看 `executor`，**不要展示 sql** |
-| `analysis_agent_chapter_start` | 「正在写：第 n 章」；用 `chapter_id` / `slot_id` 对应报告区锚点 |
+| `analysis_agent_chapter_start` | 「正在写：第 n 章」；用 `chapter_id` / `slot_id` 对应报告区锚点。默认无 `cover` 帧，`chapter_index` 仍从封面占位后的 `1` 起，不要重排 |
 | `analysis_agent_cancelled` / `finished` 且 aborted | 按钮恢复；半截报告可留，标「已取消」 |
 | `analysis_agent_error` | toast/横幅；按钮恢复 |
 
@@ -171,8 +172,8 @@
 
 | SSE | 前端处理 |
 |-----|----------|
-| `analysis_agent_chapter_start` | 新开一节容器（可用 `slot_id` 当 key） |
-| `analysis_agent_summary_delta` | **追加** `text` 到当前章（Markdown）；真流式会带章节标题行 |
+| `analysis_agent_chapter_start` | 新开一节容器（可用 `slot_id` 当 key）。`slot_id=cover` 默认不会出现；若出现（`stream_cover=true`）按普通章渲染即可 |
+| `analysis_agent_summary_delta` | **追加** `text` 到当前章（Markdown）；真流式会带章节标题行。封面正文默认不走此事件 |
 | `analysis_agent_table_payload` | 用 `table.columns` + `table.rows` 渲表（优先于再解析 Markdown 表） |
 | `analysis_agent_chart_payload` | 按 `chart.chart_type` 画：**bar / pie / line / dual_axis**；`map_placeholder` 只显示「地图占位」文案，**不要**接 GIS |
 | `analysis_agent_chapter_complete` | 该章完成勾选 |
@@ -225,6 +226,7 @@
 | `options.start_time` / `end_time` | 否 | 成对；ISO8601 或 `YYYY-MM-DD` |
 | `options.area` | 否 | `朝阳区` 等；空=全市 |
 | `options.issue_no` | 否 | 封面期号 |
+| `options.stream_cover` | 否 | 默认 `false`：不推 `chapter_id=cover` 的 SSE；终稿仍含封面，`chapter_index` 不变。官方页按模版本地画红头/目录，或显式传 `true` |
 | `options.chart_mode` | 否 | `auto`（默认）/ `minimal` / `off`（不要图） |
 | `options.strict` | 否 | `true` 时关键数缺失整次失败（产品默认 false：标待补充仍出报告） |
 

@@ -143,6 +143,7 @@ SSE 章事件：`analysis_agent_chapter_start` / `chapter_complete`；配置表�
 | `start_time` / `end_time` | 空 | 成对；空则上一完整周期。半开 `[t_start, t_end)` |
 | `area` | 空 | `t_station.area` 标准名；空/全市=不按区过滤 |
 | `issue_no` | 空 → `XX` | 封面期号 |
+| `stream_cover` | `false` | 是否 SSE 推出 `chapter_id=cover`。默认不推封面帧，终稿仍含封面，章号不变；锅炉 `oh_hdr` 不受影响 |
 | `enable_rag` | `true` | 意图 RAG |
 | `strict` | `false` | mandatory 失败是否整次失败 |
 | `use_react_agent` | 跟 env（默认 false） | 仅 `use_emit_tools=true` 章 |

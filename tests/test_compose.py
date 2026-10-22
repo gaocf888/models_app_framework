@@ -40,6 +40,19 @@ def test_daily_plain_monitoring_asks_districts_and_extremes() -> None:
     assert "Δ" in constraints
 
 
+def test_weekly_monthly_key_area_uses_q_key_area() -> None:
+    for analysis_type in ("subsidence_weekly", "subsidence_monthly"):
+        spec = load_report_spec(analysis_type)
+        assert spec is not None
+        ch = next(c for c in spec.chapters if c.id == "key_area")
+        assert list(ch.source_item_ids) == ["q_key_area"]
+        plan_ids = {t["item_id"] for t in spec.plan_tasks}
+        assert "q_key_area" in plan_ids
+        assert "q_compress" in plan_ids
+        assert "q_layer0" in plan_ids
+        assert not any(t.get("id") == "t_key_area" for t in spec.tables)
+
+
 def test_monthly_compose_includes_ops_and_alert() -> None:
     spec = load_report_spec("subsidence_monthly")
     assert spec is not None

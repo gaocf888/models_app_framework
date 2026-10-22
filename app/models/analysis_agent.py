@@ -57,6 +57,16 @@ class AnalysisAgentOptions(BaseModel):
         description="t_station.area 标准名；空/全市/北京市=不按区过滤",
     )
     issue_no: str = Field("", description="封面期号；空则占位 XX")
+    stream_cover: bool = Field(
+        False,
+        description=(
+            "是否把 chapter_id=cover 的封面以 SSE 真流式推出。"
+            "默认 false：不推 cover 的 chapter_start / summary_delta / chapter_complete，"
+            "终稿 summary 与 structured_report 仍含封面，chapter_index 编号不变。"
+            "仅匹配 slot.id==cover（锅炉红头 oh_hdr 不受影响）。"
+            "官方地降页应按模版本地画红头/目录，或显式传 true。"
+        ),
+    )
 
     @model_validator(mode="after")
     def _pair_start_end(self) -> "AnalysisAgentOptions":

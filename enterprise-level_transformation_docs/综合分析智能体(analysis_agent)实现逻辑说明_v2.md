@@ -242,6 +242,7 @@ flowchart TB
 | 均空 | **上一完整周期**（日报昨天、周报上自然周、月报上月、季报上季、年报上年） |
 | `area` | 空/全市/北京市 = 不按区过滤；否则须为 `district.yaml` 标准名（带「区」） |
 | `issue_no` | 封面期号；空则 `XX` |
+| `stream_cover` | 默认 `false`：不把 `chapter_id=cover` 推进 SSE；终稿仍含封面，`chapter_index` 不变。官方 UI 本地画红头/目录，或传 `true` |
 | 空 `query` | `canonical_query()` 生成规范问句，供 RAG / L1 |
 
 ### 6.5 缺数与质量（无 HITL）

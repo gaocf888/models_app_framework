@@ -532,6 +532,7 @@ POST
 | options.end_time | false | string | 与 start_time 成对；半开区间上界                   |
 | options.area | false | string | 标准行政区名（如 `朝阳区`）；空/`全市`/`北京市`=不按区过滤       |
 | options.issue_no | false | string | 封面期号；空则封面显示 `XX`                         |
+| options.stream_cover | false | boolean | 是否把 `chapter_id=cover` 的封面以 SSE 真流式推出。**默认 `false`（不传即不流式输出封面）**：不推 cover 的 `chapter_start` / `summary_delta` / `chapter_complete`。终稿 `result.summary` 与 `structured_report` **仍含封面**；`chapter_index` / `slot_total` **编号不变**（封面仍占第 0 槽，正文第一章仍为 `1`）。仅匹配 `slot.id==cover`，锅炉红头 `oh_hdr` 不受影响。官方地降页应按日/周/月红头、季/年封面+目录本地绘制，或显式传 `true` |
 
 ### 返回字段（SSE，按出现顺序）
 
@@ -550,9 +551,10 @@ POST
 
 ### 前端调用渲染说明
 调用方接收加载说明：
-    1）监听 analysis_agent_chapter_start 和 analysis_agent_chapter_complete event（这是报告中一个章节的开始和结束），按照analysis_agent_chapter_start 中的 chapter_index（章节序号）数值从小到大即为章节顺序
+    1）监听 analysis_agent_chapter_start 和 analysis_agent_chapter_complete event（这是报告中一个章节的开始和结束），按照analysis_agent_chapter_start 中的 chapter_index（章节序号）数值从小到大即为章节顺序。默认 `options.stream_cover=false` 时 **不会** 收到 `chapter_id=cover` 的起止事件，首个正文事件的 `chapter_index` 仍从 `1` 起（封面占第 0 槽但不推流）；不要因此重排章号
 	2）analysis_agent_chapter_start 和 analysis_agent_chapter_complete event 中间按照SSE **到达顺序**渲染章节的文本信息
 	3）报告中除了文本信息，还包括表格(即表格数据，对应流的event为 analysis_agent_table_payload)和图表(即折线/柱状图和图片，对应流的event为 analysis_agent_chart_payload)，表格和图表使用流中slot_id来分辨所属章节(与章节开始event analysis_agent_chapter_start中的slot_id进行匹配)
+	4）封面：默认需前端按模版本地画红头/目录（日/周/月=内部材料+标题+第 {issue_no} 期+单位+落款日；季/年=标题+（period_label）+目录+单位+落款日，目录可用后续 `chapter_start.title` 累积）。年报套季报封面。若传 `options.stream_cover=true` 则封面与其它章一样走 SSE。终稿 `result.summary` 始终含封面 Markdown，导出可直接用，不要用它回写已画正文
 
 
 正文、表、图渲染说明。
@@ -570,7 +572,7 @@ chapter_start
   → chapter_complete
 ```
 
-其它：`started` 保存 `stream_id`；`nl2sql_done` 只做取数进度、**不展示 sql**；终帧 `result.summary` 给导出/校对，不必用它替换已画内容。
+其它：`started` 保存 `stream_id`；`nl2sql_done` 只做取数进度、**不展示 sql**；终帧 `result.summary` 给导出/校对（含封面），不必用它替换已画正文。默认不流式输出封面时，报告区封面须本地绘制，不要等 cover 的 `summary_delta`。
 
 ### 接口示例
 
@@ -588,6 +590,8 @@ chapter_start
   }
 }
 ```
+
+不传 `options.stream_cover`（或传 `false`）时，上述请求 **不会** 收到 `chapter_id=cover` 的 SSE；终稿 `result.summary` 仍以封面 Markdown 开头。需要后端推封面时在 `options` 加 `"stream_cover": true`。
 
 ---
 

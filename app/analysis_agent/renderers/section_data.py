@@ -25,6 +25,7 @@ _PLAN_ITEM_LABELS: dict[str, str] = {
     "q_ops_offline_list": "离线设备明细",
     "q_layer0": "层位0地面沉降",
     "q_area_rank": "各行政区沉降汇总",
+    "q_key_area": "重点监测区地面沉降",
     # 地降季报等（与 report plan.items 对齐；同号多义时用业务语义覆盖展示）
     "q2": "行政区沉降汇总",
     "q3": "分区站点统计",
@@ -174,7 +175,7 @@ def _audit_preview_row_limit(item_id: str, row_count: int, *, slot_id: str = "")
         return min(3, row_count)
     if item_id in ("q_ops_rates", "q_ops_offline_list"):
         return min(max(row_count, 0), 40)
-    if item_id in ("q_layer0", "q_area_rank"):
+    if item_id in ("q_layer0", "q_area_rank", "q_key_area"):
         return min(max(row_count, 0), 80)
     return min(3, row_count)
 
@@ -259,6 +260,41 @@ def _append_layer0_plain_facts(lines: list[str], rows: list[dict]) -> None:
         lines.append("- 分行政区: " + "；".join(area_bits))
 
 
+def _append_key_area_facts(lines: list[str], rows: list[dict]) -> None:
+    """按 YAML 重点区 area_name 汇总 13 站；空 Δ 标明待补充。"""
+    by_area: dict[str, list[dict]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        area = str(row.get("area_name") or "").strip() or "未分区"
+        by_area.setdefault(area, []).append(row)
+    if not by_area:
+        return
+    area_bits: list[str] = []
+    for area, items in by_area.items():
+        deltas = [_numeric(r.get("total_delta_mm")) for r in items]
+        known = [d for d in deltas if d is not None]
+        miss = len(deltas) - len(known)
+        sink = sum(1 for d in known if d > 0)
+        rise = sum(1 for d in known if d < 0)
+        bit = f"{area}{len(items)}站（有数{len(known)}"
+        if miss:
+            bit += f"/待补充{miss}"
+        if known:
+            bit += f"/沉降{sink}/上升{rise}"
+        area_bits.append(bit + "）")
+    lines.append("- 按重点监测区: " + "；".join(area_bits))
+    for area, items in by_area.items():
+        for row in items:
+            code = str(row.get("station_code") or "").strip()
+            name = str(row.get("project_name") or "").strip() or "未命名站"
+            loc = str(row.get("location_raw") or "").strip()
+            delta = _numeric(row.get("total_delta_mm"))
+            delta_txt = f"{delta:.2f}mm" if delta is not None else "待补充"
+            loc_bit = f"，{loc}" if loc else ""
+            lines.append(f"- {area} {code} {name}{loc_bit} 总沉降{delta_txt}")
+
+
 def _append_q3b_top_points(lines: list[str], rows: list[dict]) -> None:
     scored: list[tuple[float, str]] = []
     for row in rows:
@@ -313,6 +349,8 @@ def build_audit_facts(
             _append_q3b_top_points(lines, rows)
         if iid == "q_layer0":
             _append_layer0_plain_facts(lines, rows)
+        if iid == "q_key_area":
+            _append_key_area_facts(lines, rows)
     q = (query or "").strip()
     if q:
         lines.append(f"- 用户问题约束: {q[:500]}")

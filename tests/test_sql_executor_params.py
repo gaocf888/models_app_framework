@@ -38,6 +38,18 @@ def test_typical_fcb_sql_casts_null_area() -> None:
     assert "CAST(:area AS text) IS NULL" in sql
 
 
+def test_typical_dxswj_sql_picks_one_well() -> None:
+    sql = load_sql_template("typical_series_dxswj.sql")
+    assert "MAX(station_name)" in sql
+    assert "w.station_name" in sql
+    params = resolved_sql_params(
+        {"t_start": "2026-10-01T00:00:00", "t_end": "2026-10-22T00:00:00"},
+        sql_file="typical_series_dxswj.sql",
+    )
+    assert "F42(牌楼站)" not in params["dxswj_projects"]
+    assert "F10(洼里)" in params["dxswj_projects"]
+
+
 def test_resolved_sql_params_do_not_format_sql() -> None:
     params = resolved_sql_params(
         {"t_start": "2026-04-01T00:00:00", "t_end": "2026-07-01T00:00:00", "area": "朝阳区"}

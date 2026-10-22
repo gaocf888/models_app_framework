@@ -1,4 +1,8 @@
-"""月报典型曲线：覆盖名单内选站 + 配对辅助序列 + 择优。禁止 LLM 选站。GNSS 一期关闭。"""
+"""月报典型曲线：覆盖名单内选站 + 配对辅助序列 + 择优。禁止 LLM 选站。
+
+定场地必须有地下水；气象、孔压只在站定了之后加分。
+右轴仅地下水 / 孔隙水 / 气象。GNSS、光纤不参与。
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,11 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
-from app.analysis_agent.deterministics.coverage import canonical_project, in_coverage, project_names
+from app.analysis_agent.deterministics.coverage import canonical_project
+from app.analysis_agent.deterministics.typical_sites import (
+    in_typical_axis_sites,
+    in_typical_pick_sites,
+)
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -16,6 +24,12 @@ _W_COMPLETE = 0.4
 _W_CORR = 0.3
 _W_DELTA = 0.3
 _SECOND_COMPLETE_MIN = 0.5
+
+_AXIS_META = {
+    "elevation": {"aux_name": "地下水标高", "legend_suffix": "地下水", "unit": "m"},
+    "rain": {"aux_name": "降水", "legend_suffix": "气象", "unit": "mm"},
+    "pressure": {"aux_name": "孔隙水压力", "legend_suffix": "孔隙水", "unit": ""},
+}
 
 
 def _f(val: Any) -> float | None:
@@ -73,11 +87,14 @@ def _series_by_project(
     return out
 
 
-def _best_aux_series(by_station: dict[str, list[tuple[str, float]]]) -> list[tuple[str, float]]:
+def _desc_station_series(
+    by_station: dict[str, list[tuple[str, float]]],
+) -> tuple[str, list[tuple[str, float]]]:
+    """对比方式：station_name 倒序第一口；该口无点则空（不扫下一台）。"""
     if not by_station:
-        return []
-    ranked = sorted(by_station.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-    return list(ranked[0][1])
+        return "", []
+    name = sorted(by_station.keys(), reverse=True)[0]
+    return name, list(by_station.get(name) or [])
 
 
 def _align(left: list[tuple[str, float]], right: list[tuple[str, float]]) -> list[dict[str, Any]]:
@@ -93,13 +110,59 @@ def _score(*, complete: float, corr: float, delta_norm: float) -> float:
     return _W_COMPLETE * complete + _W_CORR * corr + _W_DELTA * delta_norm
 
 
+def _annotate_axis(
+    aligned: list[dict[str, Any]],
+    *,
+    project: str,
+    kind: str,
+    settle_station: str,
+    aux_station: str,
+    complete: float,
+    corr: float,
+    delta_norm: float,
+) -> dict[str, Any]:
+    meta = _AXIS_META[kind]
+    left_legend = f"{settle_station}分层标" if settle_station else "分层标"
+    right_legend = f"{aux_station}{meta['legend_suffix']}" if aux_station else meta["legend_suffix"]
+    score = _score(complete=complete, corr=corr, delta_norm=delta_norm)
+    for p in aligned:
+        p.update(
+            {
+                "project_name": project,
+                "aux_kind": kind,
+                "aux_name": meta["aux_name"],
+                "aux_unit": meta["unit"],
+                "settle_station_name": settle_station,
+                "aux_station_name": aux_station,
+                "left_legend": left_legend,
+                "right_legend": right_legend,
+                "score": score,
+                "complete_rate": complete,
+            }
+        )
+    return {
+        "kind": kind,
+        "complete": complete,
+        "corr": corr,
+        "delta_norm": delta_norm,
+        "score": score,
+        "settle_station": settle_station,
+        "aux_station": aux_station,
+        "rows": aligned,
+    }
+
+
 def typical_curve(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[dict[str, Any]]:
     """
-    选 |delta_mm| 最大且 ∈ dxswj 覆盖、水位窗内有序列的层位 0 站。
-    候选双轴：水位 elevation（主路径） / 降水 / 孔压×第一压缩层；GNSS 名单空则关闭。
+    选 |delta_mm| 最大且 ∈ 分层标∩地下水公共集、水位窗内有序列的层位 0 站。
+    候选双轴：水位 elevation（主路径） / 降水 / 孔压×第一压缩层。
     月报默认 Top1。
     """
-    layer0 = [r for r in (gathered.get("q_layer0") or []) if isinstance(r, dict)]
+    layer0 = [
+        r
+        for r in (gathered.get("q_layer0") or [])
+        if isinstance(r, dict) and in_typical_pick_sites(str(r.get("project_name") or ""))
+    ]
     ranked = sorted(layer0, key=lambda r: abs(_f(r.get("delta_mm")) or 0.0), reverse=True)
     max_abs = abs(_f(ranked[0].get("delta_mm")) or 0.0) if ranked else 0.0
 
@@ -114,30 +177,26 @@ def typical_curve(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[d
     ]
     compress_by = {str(r.get("project_name") or ""): r for r in compress}
 
-    gnss_names = project_names("gnss")
-    if gnss_names:
-        logger.info("typical_curve gnss coverage non-empty n=%s (direction still unused until compose)", len(gnss_names))
-    else:
-        logger.info("typical_curve gnss direction closed: empty coverage")
-
     candidates: list[dict[str, Any]] = []
     picked_station: dict[str, Any] | None = None
     settle_pts: list[tuple[str, float]] = []
+    settle_station = ""
 
     for row in ranked:
         project = str(row.get("project_name") or "").strip()
-        if not project or not in_coverage(project, "dxswj"):
+        if not project:
             continue
-        water = _best_aux_series(dxswj_series.get(project) or {})
+        aux_station, water = _desc_station_series(dxswj_series.get(project) or {})
         if not water:
             continue
         mark = str(row.get("station_name") or "").strip()
         by_mark = fcb_series.get(project) or {}
-        settle = list(by_mark.get(mark) or []) or _best_aux_series(by_mark)
+        settle = list(by_mark.get(mark) or [])
         if not settle:
             continue
         picked_station = row
         settle_pts = settle
+        settle_station = mark
         aligned = _align(settle, water)
         complete = (len(aligned) / max(len(settle), 1)) if settle else 0.0
         corr = _pearson(
@@ -145,26 +204,17 @@ def typical_curve(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[d
             [p["aux_value"] for p in aligned],
         )
         delta_norm = (abs(_f(row.get("delta_mm")) or 0.0) / max_abs) if max_abs else 0.0
-        for p in aligned:
-            p.update(
-                {
-                    "project_name": project,
-                    "aux_kind": "elevation",
-                    "aux_name": "地下水位",
-                    "aux_unit": "m",
-                    "score": _score(complete=complete, corr=corr, delta_norm=delta_norm),
-                    "complete_rate": complete,
-                }
-            )
         candidates.append(
-            {
-                "kind": "elevation",
-                "complete": complete,
-                "corr": corr,
-                "delta_norm": delta_norm,
-                "score": _score(complete=complete, corr=corr, delta_norm=delta_norm),
-                "rows": aligned,
-            }
+            _annotate_axis(
+                aligned,
+                project=project,
+                kind="elevation",
+                settle_station=settle_station,
+                aux_station=aux_station,
+                complete=complete,
+                corr=corr,
+                delta_norm=delta_norm,
+            )
         )
         break
 
@@ -175,56 +225,42 @@ def typical_curve(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[d
     project = str(picked_station.get("project_name") or "")
     delta_norm = (abs(_f(picked_station.get("delta_mm")) or 0.0) / max_abs) if max_abs else 0.0
 
-    if in_coverage(project, "qxz"):
-        rain = _best_aux_series(qxz_series.get(project) or {})
-        aligned = _align(settle_pts, rain)
+    if in_typical_axis_sites(project, "rain"):
+        rain_st, rain = _desc_station_series(qxz_series.get(project) or {})
+        aligned = _align(settle_pts, rain) if rain else []
         if aligned:
             complete = len(aligned) / max(len(settle_pts), 1)
             corr = _pearson([p["settle_mm"] for p in aligned], [p["aux_value"] for p in aligned])
-            for p in aligned:
-                p.update(
-                    {
-                        "project_name": project,
-                        "aux_kind": "rain",
-                        "aux_name": "降水量",
-                        "aux_unit": "mm",
-                    }
-                )
             candidates.append(
-                {
-                    "kind": "rain",
-                    "complete": complete,
-                    "corr": corr,
-                    "delta_norm": delta_norm,
-                    "score": _score(complete=complete, corr=corr, delta_norm=delta_norm),
-                    "rows": aligned,
-                }
+                _annotate_axis(
+                    aligned,
+                    project=project,
+                    kind="rain",
+                    settle_station=settle_station,
+                    aux_station=rain_st,
+                    complete=complete,
+                    corr=corr,
+                    delta_norm=delta_norm,
+                )
             )
 
-    if in_coverage(project, "kxsylj") and project in compress_by:
-        pressure = _best_aux_series(kxs_series.get(project) or {})
-        aligned = _align(settle_pts, pressure)
+    if in_typical_axis_sites(project, "pressure") and project in compress_by:
+        pres_st, pressure = _desc_station_series(kxs_series.get(project) or {})
+        aligned = _align(settle_pts, pressure) if pressure else []
         if aligned:
             complete = len(aligned) / max(len(settle_pts), 1)
             corr = _pearson([p["settle_mm"] for p in aligned], [p["aux_value"] for p in aligned])
-            for p in aligned:
-                p.update(
-                    {
-                        "project_name": project,
-                        "aux_kind": "pressure",
-                        "aux_name": "孔隙水压力",
-                        "aux_unit": "",
-                    }
-                )
             candidates.append(
-                {
-                    "kind": "pressure",
-                    "complete": complete,
-                    "corr": corr,
-                    "delta_norm": delta_norm,
-                    "score": _score(complete=complete, corr=corr, delta_norm=delta_norm),
-                    "rows": aligned,
-                }
+                _annotate_axis(
+                    aligned,
+                    project=project,
+                    kind="pressure",
+                    settle_station=settle_station,
+                    aux_station=pres_st,
+                    complete=complete,
+                    corr=corr,
+                    delta_norm=delta_norm,
+                )
             )
 
     candidates.sort(key=lambda c: float(c.get("score") or 0.0), reverse=True)
@@ -235,14 +271,19 @@ def typical_curve(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[d
     if len(candidates) > 1:
         second = candidates[1]
         if float(second.get("complete") or 0.0) >= _SECOND_COMPLETE_MIN:
-            logger.info("typical_curve second axis below default Top1 policy, skipped kind=%s", second.get("kind"))
+            logger.info(
+                "typical_curve second axis below default Top1 policy, skipped kind=%s",
+                second.get("kind"),
+            )
     for row in chosen:
         row["winner_kind"] = top["kind"]
         row["score"] = top["score"]
     logger.info(
-        "typical_curve picked project=%s kind=%s points=%s score=%s",
+        "typical_curve picked project=%s kind=%s settle=%s aux=%s points=%s score=%s",
         project,
         top.get("kind"),
+        top.get("settle_station"),
+        top.get("aux_station"),
         len(chosen),
         top.get("score"),
     )

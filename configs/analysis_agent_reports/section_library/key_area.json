@@ -2,12 +2,30 @@
   "id": "key_area",
   "title": "重点监测区",
   "kind": "llm_section",
-  "source_item_ids": ["q_layer0"],
-  "outline": ["按重点区概述层位0沉降", "无数据写待补充"],
-  "constraints": ["禁止编造", "禁止内部编号", "站点集合以重点区 YAML 为准，不用 t_station 全表"],
-  "narrative_instruction": "按重点监测区（城市副中心、未来科学城、亦庄、首都机场临空、大兴机场临空）解读层位0沉降。周/月不挂表 4-1。",
+  "source_item_ids": ["q_key_area"],
+  "outline": ["按重点监测区（area_name）逐区解读", "只写事实清单中的站与数值，total_delta_mm 为空的站写待补充"],
+  "constraints": ["禁止编造", "禁止内部编号", "站点集合以重点区 YAML 的13站为准，不用全市层位0或 t_station 全表", "禁止按行政区名代替重点区名"],
+  "narrative_instruction": "按重点监测区（城市副中心、未来科学城、亦庄经济开发区、首都国际机场临空经济区、大兴国际机场临空经济区）解读。事实来自 q_key_area（area_name + 配置站 + total_delta_mm）。某站无总沉降写待补充，不要用其它场的数填。周/月不挂表 4-1。",
   "allowed_outputs": ["paragraph"],
   "use_emit_tools": false,
+  "plan_items": [
+    {
+      "item_id": "q_compress",
+      "executor": "python",
+      "python_fn": "layer_compress",
+      "mandatory": false,
+      "dependency_ids": ["q_fcb_endpoints"],
+      "purpose": "压缩层对，供重点区 join"
+    },
+    {
+      "item_id": "q_key_area",
+      "executor": "python",
+      "python_fn": "join_key_areas",
+      "mandatory": false,
+      "dependency_ids": ["q_layer0", "q_compress"],
+      "purpose": "重点区 5 区 13 站 JOIN 层位0"
+    }
+  ],
   "variants": {
     "with_table": {
       "title": "二、（四）重点区域",

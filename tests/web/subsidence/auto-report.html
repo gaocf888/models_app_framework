@@ -141,6 +141,36 @@
       padding: 0.75rem;
       margin-bottom: 0.75rem;
     }
+    .local-cover {
+      text-align: center;
+      padding: 1.35rem 1.1rem 1.6rem;
+      border-color: rgba(16, 185, 129, 0.35);
+    }
+    .local-cover .cover-mark {
+      letter-spacing: 0.45em;
+      color: var(--warn);
+      font-size: 0.95rem;
+    }
+    .local-cover .cover-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin: 0.9rem 0 0.4rem;
+    }
+    .local-cover .cover-issue,
+    .local-cover .cover-period,
+    .local-cover .cover-unit,
+    .local-cover .cover-date {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .local-cover .cover-toc {
+      text-align: left;
+      max-width: 28rem;
+      margin: 1rem auto 0.4rem;
+      color: var(--answer);
+      font-size: 0.9rem;
+      white-space: pre-wrap;
+    }
     .chapter-head {
       display: flex;
       justify-content: space-between;
@@ -239,7 +269,7 @@
     <p class="sub">选模版出报告。主接口 <code>POST /analysis-agent/run-stream</code>，停止 <code>POST /analysis-agent/stream/stop</code>。不展示 SQL，不做 HITL / resume，地图仅占位。</p>
     <div class="banner">
       进程须 <code>ANALYSIS_AGENT_ENABLED=true</code>、<code>NL2SQL_BUSINESS_DOMAIN=subsidence</code>。
-      日期成对；都空则上一完整周期。行政区空 = 全市。
+      日期成对；都空则上一完整周期。行政区空 = 全市。默认不流式输出封面（<code>stream_cover=false</code>），本页按模版本地画红头/目录。
       对照契约：<code>docs/基于地降所项目改造/改造后前端UI及对应接口调用说明/地降所项目前端UI及对应接口调用说明.md</code> §二。
       锅炉通用联调页：<a href="../analysis-agent-stream.html">analysis-agent-stream.html</a>
     </div>
@@ -309,6 +339,7 @@
           <div>
             <label>期号（封面；空则 XX）</label>
             <input type="text" id="issueNo" placeholder="03" autocomplete="off" />
+            <div class="hint">默认不传 stream_cover：封面按日/周/月红头、季/年目录本地绘制，SSE 不推 cover。</div>
           </div>
         </div>
         <label>补充说明（可选，对应 query）</label>
@@ -366,6 +397,15 @@
     subsidence_yearly: "章节结构与季报相同，时间窗为上年。",
   };
 
+  const REPORT_TITLES = {
+    subsidence_daily: "北京市地面沉降监测日报",
+    subsidence_weekly: "北京市地面沉降监测周报",
+    subsidence_monthly: "北京市地面沉降监测月报",
+    subsidence_quarterly: "北京市地面沉降监测季度报告",
+    subsidence_yearly: "北京市地面沉降监测年报",
+  };
+  const COVER_UNIT = "北京市地质矿产勘查院 地质环境监测所";
+
   const EXECUTOR_LABEL = {
     sql_template: "模板 SQL",
     python: "确定性计算",
@@ -387,6 +427,9 @@
     chapters: new Map(),
     currentSlot: "",
     summaryParts: [],
+    localCover: null,
+    coverTocItems: [],
+    coverPeriod: null,
   };
 
   function newSessionId() {
@@ -533,6 +576,96 @@
     const root = $("report");
     if (root.textContent === "（尚未开始）") root.replaceChildren();
     return root;
+  }
+
+  function isCoverSlot(id) {
+    return String(id || "") === "cover";
+  }
+
+  function isLongCover(type) {
+    return type === "subsidence_quarterly" || type === "subsidence_yearly";
+  }
+
+  function formatCnDate(d) {
+    return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日";
+  }
+
+  function coverMarkdown() {
+    const type = $("analysisType").value;
+    const title = REPORT_TITLES[type] || "";
+    const issue = ($("issueNo").value.trim() || "XX");
+    const periodLabel = (state.coverPeriod && state.coverPeriod.period_label) || "";
+    const date = formatCnDate(new Date());
+    if (isLongCover(type)) {
+      const toc = ["目录"].concat(
+        (state.coverTocItems || []).map((t, i) => (i + 1) + ". " + t + " …… —")
+      ).join("\n");
+      return title + "\n（" + periodLabel + "）\n\n" + toc + "\n\n" + COVER_UNIT + "\n" + date + "\n";
+    }
+    return "内部材料\n\n" + title + "\n\n第 " + issue + " 期\n\n" + COVER_UNIT + "\n" + date + "\n";
+  }
+
+  function paintLocalCover() {
+    const rec = state.localCover;
+    if (!rec) return;
+    const type = $("analysisType").value;
+    const title = REPORT_TITLES[type] || "";
+    const issue = ($("issueNo").value.trim() || "XX");
+    const periodLabel = (state.coverPeriod && state.coverPeriod.period_label) || "";
+    const date = formatCnDate(new Date());
+    const longCover = isLongCover(type);
+    const toc = ["目录"].concat(
+      (state.coverTocItems || []).map((t, i) => (i + 1) + ". " + t + " …… —")
+    ).join("\n");
+    rec.md.innerHTML =
+      (longCover ? "" : "<div class='cover-mark'>内部材料</div>") +
+      "<div class='cover-title'></div>" +
+      (longCover
+        ? "<div class='cover-period'></div><div class='cover-toc'></div>"
+        : "<div class='cover-issue'></div>") +
+      "<div class='cover-unit'></div><div class='cover-date'></div>";
+    rec.md.querySelector(".cover-title").textContent = title;
+    if (longCover) {
+      rec.md.querySelector(".cover-period").textContent = periodLabel ? "（" + periodLabel + "）" : "";
+      rec.md.querySelector(".cover-toc").textContent = toc;
+    } else {
+      rec.md.querySelector(".cover-issue").textContent = "第 " + issue + " 期";
+    }
+    rec.md.querySelector(".cover-unit").textContent = COVER_UNIT;
+    rec.md.querySelector(".cover-date").textContent = date;
+    rec.box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    $("btnExport").disabled = false;
+  }
+
+  function ensureLocalCover(period) {
+    if (period && typeof period === "object") state.coverPeriod = period;
+    if (state.localCover) {
+      paintLocalCover();
+      return state.localCover;
+    }
+    const root = ensureReportRoot();
+    const box = document.createElement("div");
+    box.className = "chapter local-cover";
+    box.dataset.slot = "cover";
+    const head = document.createElement("div");
+    head.className = "chapter-head";
+    head.innerHTML = "<span><span class='ttl'>封面</span></span><span class='st ok'>本地模版</span>";
+    const md = document.createElement("div");
+    md.className = "chapter-md rendered-md";
+    box.appendChild(head);
+    box.appendChild(md);
+    root.insertBefore(box, root.firstChild);
+    state.localCover = { box, head, md };
+    paintLocalCover();
+    return state.localCover;
+  }
+
+  function appendCoverToc(title) {
+    const t = String(title || "").trim();
+    if (!t || !isLongCover($("analysisType").value)) return;
+    if (state.coverTocItems.indexOf(t) >= 0) return;
+    state.coverTocItems.push(t);
+    paintLocalCover();
   }
 
   function ensureChapter(slotId, meta) {
@@ -830,17 +963,20 @@
     } else if (ct === "dual_axis") {
       const left = spec.yLeft || {};
       const right = spec.yRight || {};
+      const leftLegend = left.legend || left.name || "分层标";
+      const rightLegend = right.legend || right.name || "对比";
       inst.setOption({
         ...base,
-        legend: { textStyle: { color: "#8b9cb3" } },
+        legend: { bottom: 0, textStyle: { color: "#8b9cb3" } },
+        grid: { top: 48, right: 56, bottom: 56, left: 56 },
         xAxis: { type: "category", data: series.map((d) => d.x), axisLabel: { ...axis, rotate: 30 } },
         yAxis: [
-          { type: "value", name: left.name || "左轴", axisLabel: axis, splitLine: { lineStyle: { color: "#2d3a4d" } } },
+          { type: "value", name: left.name || "累计沉降", axisLabel: axis, splitLine: { lineStyle: { color: "#2d3a4d" } } },
           { type: "value", name: right.name || "右轴", axisLabel: axis, splitLine: { show: false } },
         ],
         series: [
-          { type: "line", name: left.name || "左轴", data: series.map((d) => d.left), smooth: true },
-          { type: "line", name: right.name || "右轴", yAxisIndex: 1, data: series.map((d) => d.right), smooth: true },
+          { type: "line", name: leftLegend, data: series.map((d) => d.left), smooth: true },
+          { type: "line", name: rightLegend, yAxisIndex: 1, data: series.map((d) => d.right), smooth: true },
         ],
       });
     } else if (ct === "line" && hasSeries && series[0] && Array.isArray(series[0].data)) {
@@ -895,6 +1031,9 @@
     state.chapters = new Map();
     state.currentSlot = "";
     state.summaryParts = [];
+    state.localCover = null;
+    state.coverTocItems = [];
+    state.coverPeriod = null;
     $("report").textContent = "（尚未开始）";
     $("fetchLog").textContent = "（尚未开始）";
     $("meta").textContent = "（尚未开始）";
@@ -935,6 +1074,7 @@
       setProgress(periodLine(ev.period) || "已连接，取数中…", 0.05);
       setStatus("已连接 · stream_id=" + state.streamId);
       $("btnStop").disabled = !state.streamId;
+      ensureLocalCover(ev.period);
       return;
     }
     if (kind === "analysis_agent_meta") {
@@ -947,6 +1087,7 @@
         "\nanalysis_type: " + (ev.analysis_type || "") +
         (ev.period ? "\nperiod: " + JSON.stringify(ev.period) : "");
       if (ev.period) setProgress(periodLine(ev.period) || "取数中…", 0.08);
+      ensureLocalCover(ev.period);
       return;
     }
     if (kind === "analysis_agent_nl2sql_done") {
@@ -968,11 +1109,13 @@
     }
     if (kind === "analysis_agent_chapter_start" || kind === "analysis_agent_slot_start") {
       state.currentSlot = ev.slot_id || ev.chapter_id || "";
+      if (isCoverSlot(state.currentSlot)) return;
       const idx = ev.chapter_index != null ? ev.chapter_index : ev.slot_index;
       ensureChapter(state.currentSlot, {
         title: ev.title || ev.slot_id || ev.chapter_id,
         chapter_index: idx,
       });
+      appendCoverToc(ev.title || ev.slot_id || ev.chapter_id);
       const n = idx != null ? idx : state.chapters.size;
       const total = state.slotTotal || "?";
       setProgress("正在写：第 " + n + " 章 / 共 " + total + " 章 · " + (ev.slot_id || ""), 0.5);
@@ -980,18 +1123,22 @@
       return;
     }
     if (kind === "analysis_agent_summary_delta") {
+      if (isCoverSlot(ev.slot_id || state.currentSlot)) return;
       appendDelta(ev.text || "", ev.slot_id);
       return;
     }
     if (kind === "analysis_agent_table_payload") {
+      if (isCoverSlot(ev.slot_id)) return;
       renderTable(ev.table, ev.slot_id);
       return;
     }
     if (kind === "analysis_agent_chart_payload") {
+      if (isCoverSlot(ev.slot_id)) return;
       renderChart(ev.chart, ev.slot_id);
       return;
     }
     if (kind === "analysis_agent_chapter_complete" || kind === "analysis_agent_slot_complete") {
+      if (isCoverSlot(ev.slot_id)) return;
       markChapterDone(ev.slot_id);
       setStatus("章节完成: " + (ev.slot_id || ""));
       return;
@@ -1132,7 +1279,7 @@
     setStatus("已清空");
   });
   $("btnExport").addEventListener("click", () => {
-    const md = state.summaryParts.join("");
+    const md = (coverMarkdown() + "\n" + state.summaryParts.join("")).trim();
     if (!md) return;
     const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
     const a = document.createElement("a");

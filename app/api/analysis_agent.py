@@ -49,7 +49,8 @@ async def run_analysis_agent_stream(data: AnalysisAgentRunRequest) -> StreamingR
     参数说明（见 `AnalysisAgentRunRequest`）：
     - 必传：user_id、session_id、analysis_type
     - query：可选；地降自动报告可空，由周期/区划生成规范问句
-    - 可选：options（start_time/end_time/area/issue_no、enable_rag、strict、chart_mode 等）
+    - 可选：options（start_time/end_time/area/issue_no、stream_cover、enable_rag、strict、chart_mode 等）
+      stream_cover 默认 false：不推 chapter_id=cover 的 SSE，终稿仍含封面，章号不变
     - 首帧 `started` 含 `stream_id`；地降另含 `period`（t_start/t_end/period_label/area）
     - 缺数 HITL 已从主路径移除；`enable_human_in_the_loop` 默认 false 且编排忽略
     """

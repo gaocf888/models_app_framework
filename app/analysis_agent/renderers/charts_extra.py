@@ -184,6 +184,7 @@ def chart_from_config(
         lf = str(left.get("field") or "settle_mm")
         rf = str(right.get("field") or "aux_value")
         data: list[dict[str, Any]] = []
+        sample: dict[str, Any] = {}
         for row in rows[:limit]:
             if not isinstance(row, dict):
                 continue
@@ -192,7 +193,15 @@ def chart_from_config(
                 rv = float(row.get(rf))
             except (TypeError, ValueError):
                 continue
+            if not sample:
+                sample = row
             data.append({"x": str(row.get(xf, "")), "left": lv, "right": rv})
+        right_name = str(sample.get("aux_name") or right.get("name") or "右轴")
+        right_unit = str(sample.get("aux_unit") or right.get("unit") or "")
+        left_legend = str(sample.get("left_legend") or left.get("legend") or left.get("name") or "分层标")
+        right_legend = str(
+            sample.get("right_legend") or right.get("legend") or right_name or "对比"
+        )
         return {
             "id": chart_id,
             "chart_type": "dual_axis",
@@ -202,13 +211,15 @@ def chart_from_config(
                 "xField": "x",
                 "yLeft": {
                     "field": "left",
-                    "name": str(left.get("name") or "左轴"),
-                    "unit": str(left.get("unit") or ""),
+                    "name": str(left.get("name") or "累计沉降"),
+                    "unit": str(left.get("unit") or "mm"),
+                    "legend": left_legend,
                 },
                 "yRight": {
                     "field": "right",
-                    "name": str(right.get("name") or "右轴"),
-                    "unit": str(right.get("unit") or ""),
+                    "name": right_name,
+                    "unit": right_unit,
+                    "legend": right_legend,
                 },
                 "series": data,
             },

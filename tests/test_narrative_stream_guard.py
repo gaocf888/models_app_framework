@@ -18,6 +18,8 @@ from app.analysis_agent.graph.orchestrator import SlotOrchestrator
 from app.analysis_agent.graph.state import AnalysisAgentState
 from app.analysis_agent.renderers.typewriter import typewriter_chunks
 from app.analysis_agent.slots.kinds import AnalysisAgentSlot
+from app.analysis_agent.slots.serialize import slot_to_dict
+from app.models.analysis_agent import AnalysisAgentOptions
 
 
 def test_number_guard_accepts_same_value_different_decimals() -> None:
@@ -176,7 +178,7 @@ async def test_cover_static_markdown_typewrites_live() -> None:
         "request_id": "aa_cover",
         "query": "q",
         "analysis_type": "subsidence_daily",
-        "options": {"narrative_streaming": True},
+        "options": {"narrative_streaming": True, "stream_cover": True},
         "gathered_data": {},
         "task_status": {},
         "intent_context": [],
@@ -197,3 +199,103 @@ async def test_cover_static_markdown_typewrites_live() -> None:
     ]
     assert "".join(texts) == (out.markdown or "")
     assert len(texts) > 1
+
+
+def _cover_state(**options: object) -> AnalysisAgentState:
+    return {
+        "request_id": "aa_cover_opt",
+        "query": "q",
+        "analysis_type": "subsidence_daily",
+        "options": {"narrative_streaming": True, **options},
+        "gathered_data": {},
+        "task_status": {},
+        "intent_context": [],
+        "pending_events": [],
+        "slot_index": 0,
+        "summary_parts": [],
+        "structured_report": {"sections": [], "tables": [], "charts": []},
+        "slot_trace": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_cover_sse_skipped_by_default() -> None:
+    orch = SlotOrchestrator(hybrid_rag=MagicMock(), nl2sql_service=MagicMock())
+    slot = AnalysisAgentSlot(
+        id="cover",
+        kind="static_markdown",
+        title="",
+        static_body="内部材料\n\n日报\n",
+    )
+    state = _cover_state()
+    out, chunks, live = await orch._synthesize_slot(state, slot)
+    assert live is True
+    assert chunks == []
+    assert "内部材料" in (out.markdown or "")
+    events = state.get("pending_events") or []
+    assert not any(
+        e.get("event")
+        in {
+            "analysis_agent_chapter_start",
+            "analysis_agent_summary_delta",
+            "analysis_agent_chapter_complete",
+        }
+        for e in events
+    )
+    state["_narrative_live_streamed"] = live
+    state["_last_slot_output"] = {
+        "slot_id": slot.id,
+        "kind": slot.kind,
+        "title": slot.title,
+        "markdown": out.markdown,
+        "table": None,
+        "chart": None,
+        "charts": [],
+        "error": None,
+    }
+    state["_last_stream_chunks"] = chunks
+    state["ordered_slots"] = [slot_to_dict(slot)]
+    emit_state = orch.run_slot_emit(state)
+    emit_evs = [
+        e
+        for e in (emit_state.get("pending_events") or [])
+        if e.get("event")
+        in {
+            "analysis_agent_chapter_start",
+            "analysis_agent_summary_delta",
+            "analysis_agent_chapter_complete",
+        }
+    ]
+    assert emit_evs == []
+    assert (emit_state.get("summary_parts") or [""])[0] == out.markdown
+    assert emit_state.get("slot_index") == 1
+
+
+def test_stream_cover_defaults_false() -> None:
+    assert AnalysisAgentOptions().stream_cover is False
+
+
+@pytest.mark.asyncio
+async def test_boiler_header_still_streams_without_stream_cover() -> None:
+    orch = SlotOrchestrator(hybrid_rag=MagicMock(), nl2sql_service=MagicMock())
+    slot = AnalysisAgentSlot(
+        id="oh_hdr",
+        kind="static_markdown",
+        title="",
+        static_body="超温导则\n内部材料\n",
+    )
+    state = _cover_state()
+    state["analysis_type"] = "overheat_guidance"
+    out, chunks, live = await orch._synthesize_slot(state, slot)
+    assert live is True
+    assert chunks == []
+    texts = [
+        str(e.get("text") or "")
+        for e in (state.get("pending_events") or [])
+        if e.get("event") == "analysis_agent_summary_delta"
+    ]
+    assert "".join(texts) == (out.markdown or "")
+    assert any(
+        e.get("event") == "analysis_agent_chapter_start"
+        for e in (state.get("pending_events") or [])
+    )

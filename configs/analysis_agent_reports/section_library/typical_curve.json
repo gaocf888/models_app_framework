@@ -17,7 +17,7 @@
       "attach_to_chapter": "@self",
       "x_field": "x",
       "y_left": { "field": "settle_mm", "name": "累计沉降", "unit": "mm" },
-      "y_right": { "field": "aux_value", "name": "辅助序列", "unit": "" },
+      "y_right": { "field": "aux_value", "name": "地下水标高", "unit": "m" },
       "max_points": 120
     }
   ]
