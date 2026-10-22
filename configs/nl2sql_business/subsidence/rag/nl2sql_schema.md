@@ -37,7 +37,7 @@
 - **用途**：地面沉降主分析数据（默认主表）
 - **关键列**：`project_name`、`station_name`、`data_time`（观测时间）、`total_settle`（累计沉降 mm，主指标）
 - **遗留列（勿过滤/JOIN）**：`id`、`data_id`、`station_id`
-- **口径**：周期沉降量 `Δ = total_settle(窗初) − total_settle(窗末)`（初−末）；**Δ>0 下沉倾向，Δ<0 回弹**。站点沉降须用监测层位=0 的 `station_name`（见 `fcb_layer_map.yaml` / `nl2sql_biz_knowledge_fcb_layer0_stations.md`），禁止对同站全部标聚合。
+- **口径**：周期沉降量 `Δ = total_settle(窗初) − total_settle(窗末)`（初−末）；**Δ<0 沉降，Δ>0 回弹**。站点沉降须用监测层位=0 的 `station_name`（见 `fcb_layer_map.yaml` / `nl2sql_biz_knowledge_fcb_layer0_stations.md`），禁止对同站全部标聚合。
 
 ## t_data_wash_jyb（基岩标）
 

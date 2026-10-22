@@ -16,11 +16,12 @@ from app.analysis_agent.slots.registry import clear_slot_cache
 
 
 SAMPLE_ROWS = [
-    {"project_name": "F42(东坝)", "lon": 116.55, "lat": 39.95, "delta_mm": 12.5},
-    {"project_name": "回龙观", "lon": 116.35, "lat": 40.08, "delta_mm": -3.2},
+    # 负=沉降、正=回弹（与 settle_text / 季报表图一致）
+    {"project_name": "F42(东坝)", "lon": 116.55, "lat": 39.95, "delta_mm": -12.5},
+    {"project_name": "回龙观", "lon": 116.35, "lat": 40.08, "delta_mm": 3.2},
     {"project_name": "零变", "lon": 116.40, "lat": 39.90, "delta_mm": 0.0},
-    {"project_name": "越界", "lon": 1.0, "lat": 1.0, "delta_mm": 9.0},
-    {"project_name": "缺坐标", "delta_mm": 1.0},
+    {"project_name": "越界", "lon": 1.0, "lat": 1.0, "delta_mm": -9.0},
+    {"project_name": "缺坐标", "delta_mm": -1.0},
 ]
 
 
@@ -35,19 +36,21 @@ def test_display_station_name_inner_parens() -> None:
 
 
 def test_fill_for_delta_sign_matches_report() -> None:
-    assert fill_for_delta(12.5) == "#e74c3c"
-    assert fill_for_delta(-3.2) == "#2ecc71"
+    # 负值=沉降（红），正值=回弹（绿），与 settle_text / 季报表图一致
+    assert fill_for_delta(-12.5) == "#e74c3c"
+    assert fill_for_delta(3.2) == "#2ecc71"
     assert fill_for_delta(0.0) == "#95a5a6"
 
 
-def test_stations_from_layer0_rows_plot_val_negates_delta() -> None:
+def test_stations_from_layer0_rows_plot_val_equals_delta() -> None:
+    """val 与 delta_mm 同号：负沉降柱向下，正回弹柱向上。"""
     stations = stations_from_layer0_rows(SAMPLE_ROWS)
     assert [s["id"] for s in stations] == ["东坝", "回龙观", "零变"]
     by_id = {s["id"]: s for s in stations}
     assert by_id["东坝"]["val"] == pytest.approx(-12.5)
     assert by_id["回龙观"]["val"] == pytest.approx(3.2)
     assert by_id["零变"]["val"] == pytest.approx(0.0)
-    assert by_id["东坝"]["delta_mm"] == pytest.approx(12.5)
+    assert by_id["东坝"]["delta_mm"] == pytest.approx(-12.5)
 
 
 def test_chart_from_config_map_png_or_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -291,8 +294,8 @@ def test_station_group_label_only_lr_then_shift_lonlat() -> None:
 
     plan = _plan_station_labels(
         [
-            {"id": "甲", "lon": 116.5, "lat": 40.0, "val": -1.0, "delta_mm": 1.0},
-            {"id": "乙", "lon": 116.5, "lat": 40.0, "val": -2.0, "delta_mm": 2.0},
+            {"id": "甲", "lon": 116.5, "lat": 40.0, "val": -1.0, "delta_mm": -1.0},
+            {"id": "乙", "lon": 116.5, "lat": 40.0, "val": -2.0, "delta_mm": -2.0},
         ],
         115.5,
         117.1,

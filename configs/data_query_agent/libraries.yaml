@@ -31,13 +31,13 @@ libraries:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
       - {key: station_name, title: 监测站名称, aliases: [station_name]}
       - {key: area, title: 行政区, aliases: [area]}
-      - {key: period_settle_mm, title: 周期沉降变化(mm), aliases: [period_settle_mm, period_settle]}
+      - {key: period_settle_mm, title: 周期沉降变化(mm，负沉正弹), aliases: [period_settle_mm, period_settle]}
       - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}
       - {key: total_settle_mm, title: 历史累计沉降(mm), aliases: [total_settle_mm, total_settle]}
       - {key: data_time, title: 数据时间, aliases: [data_time]}
     core_metrics:
       - {id: total_settle_mm, name: 历史累计沉降, unit: mm, source: total_settle}
-      - {id: period_settle_mm, name: 周期沉降变化, unit: mm, source: period_settle_mm}
+      - {id: period_settle_mm, name: 周期沉降变化(负沉正弹), unit: mm, source: period_settle_mm}
       - {id: annual_settle_mm, name: 年沉降量, unit: mm, source: annual_settle_mm}
   - id: jyb
     display_name: 基岩标
@@ -54,13 +54,13 @@ libraries:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
       - {key: station_name, title: 监测站名称, aliases: [station_name]}
       - {key: area, title: 行政区, aliases: [area]}
-      - {key: period_settle_mm, title: 周期沉降变化(mm), aliases: [period_settle_mm, period_settle]}
+      - {key: period_settle_mm, title: 周期沉降变化(mm，负沉正弹), aliases: [period_settle_mm, period_settle]}
       - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}
       - {key: total_settle_mm, title: 历史累计沉降(mm), aliases: [total_settle_mm, total_settle]}
       - {key: data_time, title: 数据时间, aliases: [data_time]}
     core_metrics:
       - {id: total_settle_mm, name: 历史累计沉降, unit: mm, source: total_settle}
-      - {id: period_settle_mm, name: 周期沉降变化, unit: mm, source: period_settle_mm}
+      - {id: period_settle_mm, name: 周期沉降变化(负沉正弹), unit: mm, source: period_settle_mm}
       - {id: annual_settle_mm, name: 年沉降量, unit: mm, source: annual_settle_mm}
   - id: dxswj
     display_name: 地下水
@@ -170,11 +170,11 @@ libraries:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
       - {key: station_name, title: 监测站名称, aliases: [station_name]}
       - {key: area, title: 行政区, aliases: [area]}
-      - {key: period_settle_mm, title: 周期沉降变化(mm), aliases: [period_settle_mm, period_settle]}
+      - {key: period_settle_mm, title: 周期沉降变化(mm，负沉正弹), aliases: [period_settle_mm, period_settle]}
       - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}
       - {key: total_settle_mm, title: 历史累计沉降(mm), aliases: [total_settle_mm, total_settle]}
       - {key: data_time, title: 数据时间, aliases: [data_time]}
     core_metrics:
       - {id: total_settle_mm, name: 历史累计沉降, unit: mm, source: total_settle}
-      - {id: period_settle_mm, name: 周期沉降变化, unit: mm, source: period_settle_mm}
+      - {id: period_settle_mm, name: 周期沉降变化(负沉正弹), unit: mm, source: period_settle_mm}
       - {id: annual_settle_mm, name: 年沉降量, unit: mm, source: annual_settle_mm}

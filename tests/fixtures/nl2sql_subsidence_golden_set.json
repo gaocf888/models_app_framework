@@ -12,7 +12,7 @@
       "area"
     ],
     "expect_metric": "period_subsidence_mm",
-    "notes": "行政区 JOIN + 周期沉降 Δ=初−末（正下沉）；站点用层位0标；按 Δ DESC 取 Top5"
+    "notes": "行政区 JOIN + 周期沉降 Δ=初−末（负沉正弹）；站点用层位0标；按 Δ ASC 取 Top5（最负=沉降最大）"
   },
   {
     "id": "g02",
@@ -261,7 +261,7 @@
       "t_station"
     ],
     "expect_metric": "period_subsidence_mm",
-    "notes": "沉降量最大=Δ最大（下沉最多）；层位0"
+    "notes": "沉降量最大=Δ最负（ORDER BY ASC）；层位0；负沉正弹"
   },
   {
     "id": "g23",

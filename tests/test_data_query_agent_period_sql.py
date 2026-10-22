@@ -32,6 +32,15 @@ def test_period_sql_fcb_month_window_uses_row_number() -> None:
     assert "ABS(annual_settle_mm)" not in sql
     assert "AS period_settle_mm" in sql
     assert "AS annual_settle_mm" not in sql
+    # Δ = 窗初(rn_asc) − 窗末(rn_desc)；负沉正弹
+    assert (
+        "MAX(CASE WHEN w.rn_asc = 1 THEN w.v END) - MAX(CASE WHEN w.rn_desc = 1 THEN w.v END)"
+        in sql
+    )
+    assert (
+        "MAX(CASE WHEN w.rn_desc = 1 THEN w.v END) - MAX(CASE WHEN w.rn_asc = 1 THEN w.v END)"
+        not in sql
+    )
     assert lib.period_key == "period_settle_mm"
     assert params["limit"] == 50
 

@@ -106,7 +106,7 @@
 | 辅助 | 地下水 / 孔压 / GNSS / 光纤 / 气象 + 维表 `t_station` |
 | 范围维 | **行政区 + 监测站点 + 时间**（非锅炉「号炉/受热面」） |
 | 周期沉降 | 窗内 `total_settle` 终值 − 初值 |
-| 符号 | 周期差 Δ=初−末时 Δ>0 表示下沉倾向，解读时勿擅自取绝对值或反号 |
+| 符号 | 周期差 Δ=初−末时 Δ<0 表示沉降、Δ>0 表示回弹，解读时勿擅自取绝对值或反号 |
 
 对话内查数 **默认可不做** 数据查询页的「库 HITL」；问不清监测类型时可：澄清（`clarify`）、或规则默认分层标（`fcb`，与查询台/语义层对齐），**禁止**让基座无约束扫全库乱答。
 
@@ -185,7 +185,7 @@ SSE：delta / citation_ref / finished.meta
 
 | ID | 改造项 | 说明 | 主要落点 |
 |----|--------|------|----------|
-| **P2-1** | **收紧分析 Prompt 地降化** | 去掉「号炉」等锅炉约束；强调行政区/站点/`total_settle`/负值下沉；专业解读结构 | `prompts.yaml` `chatbot_nl2sql_analysis`/`empty` 的 `subsidence_v1` + `chatbot_nl2sql_answer.py`（**已完成**） |
+| **P2-1** | **收紧分析 Prompt 地降化** | 去掉「号炉」等锅炉约束；强调行政区/站点/`total_settle`/负沉正弹；专业解读结构 | `prompts.yaml` `chatbot_nl2sql_analysis`/`empty` 的 `subsidence_v1` + `chatbot_nl2sql_answer.py`（**已完成**） |
 | **P2-2** | **查数默认监测类型** | 未指明库时默认 `fcb`（或产品确认 fcb+jyb 策略）；与语义层一致 | `semantic_layer.py` 默认 fcb + 客服 SQL gen hint（**已完成**） |
 | **P2-3** | **Hybrid 综合约束** | 已有「数值以查询结果为准、机理以知识库为准」；文案改为沉降术语；失败降级文案专业化 | domain `clarify_texts.yaml` + `_node_hybrid_synthesize`（**已完成**） |
 | **P2-4** | **错误文案** | NL2SQL 失败用户文案去掉锅炉「台账/缺陷」口吻 | `format_nl2sql_user_error` 域化（**已完成**） |

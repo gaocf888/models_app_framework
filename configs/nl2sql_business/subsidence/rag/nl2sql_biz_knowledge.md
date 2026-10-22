@@ -27,11 +27,11 @@
 ## 沉降口径（对齐季报脚本，2026-09 起）
 
 - **周期变化量**：`Δ = total_settle(窗初) − total_settle(窗末)`（mm），即时间窗内**最早有效点减去最晚有效点**（**初 − 末**）。
-- **符号**：`Δ > 0` → **下沉倾向**；`Δ < 0` → **回弹/抬升倾向**（与 `季度报告分层标处理.py` 一致）。
+- **符号**：`Δ < 0` → **沉降**；`Δ > 0` → **回弹/抬升**（与季报表图及 settle_text 一致）。
 - **单点累计**：某时刻 `total_settle` 快照（不是周期差）。
 - 问「沉降了多少」未指明监测类型时 → 分层标 `t_data_wash_fcb`。
 - 问 GNSS/位移 → `t_data_wash_gnss`，禁止用 fcb.total_settle 代替。
-- **口径变更说明**：旧文档曾写「终−初、负值下沉」；现网以本初−末为准。相对旧口径：`Δ_新 = −Δ_旧`。
+- **口径变更说明**：公式固定为初−末；对外表图 **负值=沉降、正值=回弹**。曾误写「初−末且正下沉」或「末−初」须纠正；「沉降最大」按有符号 Δ **升序**（越负越严重）。
 
 ## 公共表字段说明
 
@@ -129,14 +129,15 @@
 1. 主表：`t_data_wash_fcb`；行政区经 `t_station`：`f.project_name = s.name`，`s.area = '朝阳区'`（标准全名优先，`LIKE` 仅兜底）。
 2. 站点粒度：仅层位 0 代表标（`station_name IN (...)`，清单见 `nl2sql_biz_knowledge_fcb_layer0_stations.md`，按区裁剪）。
 3. 同一 `project_name + station_name` 在时间窗内取**最早一条**为窗初、**最晚一条**为窗末（可用 `ROW_NUMBER` 双排序，或等价 `MIN/MAX(data_time)` 再回表）。
-4. `period_settle_mm = settle_start − settle_end`（**初 − 末**）；「沉降最大」= `ORDER BY period_settle_mm DESC`（Δ 越大下沉越多）。
+4. `period_settle_mm = settle_start − settle_end`（**初 − 末**）；「沉降最大」= `ORDER BY period_settle_mm ASC`（越负沉降越多）。
 5. 窗内缺初或缺末观测的站点：**不参与**最大/排行（或结果中显式排除），禁止用单点 `total_settle` 冒充周期差。
 
 ### 明确禁止
 
 | 禁止写法 | 原因 |
 |----------|------|
-| `settle_end − settle_start`（末−初） | 符号与现网口径相反；`DESC` 会误选回弹最大 |
+| `settle_end − settle_start`（末−初） | 符号与现网口径相反（负沉正弹会整体翻转） |
+| `ORDER BY period_settle_mm DESC` 当作「沉降最大」 | 会误选回弹最大；应 `ASC`（最负在前） |
 | 只取 `MIN(data_time)` 作初值、**不**取窗内 `MAX(data_time)` 作末值 | 末值未钉死，结果不可复现 |
 | 自连接/子查询仅按 `project_name` 对齐、**不对齐** `station_name` | 同站多标会错配初末 |
 | 对同 `project_name` 下全部 `station_name` 做 `AVG/SUM` | 站点沉降必须用层位 0 代表标 |

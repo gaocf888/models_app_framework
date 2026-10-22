@@ -313,10 +313,10 @@ def filter_chatbot_nl2sql_display_rows(rows: list[dict[str, Any]]) -> list[dict[
 # 运维列对齐：docs/…/统计信息中间库交付使用说明.md
 _FALLBACK_COLUMN_TITLES: dict[str, str] = {
     # —— 沉降 wash ——
-    "period_settle_mm": "周期沉降变化(mm)",
-    "period_settle": "周期沉降变化(mm)",
-    "annual_settle_mm": "年沉降量(mm)",
-    "annual_settle": "年沉降量(mm)",
+    "period_settle_mm": "周期沉降变化(mm，负沉正弹)",
+    "period_settle": "周期沉降变化(mm，负沉正弹)",
+    "annual_settle_mm": "年沉降量(mm，负沉正弹)",
+    "annual_settle": "年沉降量(mm，负沉正弹)",
     "total_settle_mm": "历史累计沉降(mm)",
     "total_settle": "历史累计沉降(mm)",
     "station_name": "监测站名称",

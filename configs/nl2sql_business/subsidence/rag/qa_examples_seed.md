@@ -4,7 +4,7 @@
 
 > 摄入命名空间：`nl2sql_qa_examples`  
 > 方言：PostgreSQL · 表白名单 8 表  
-> **周期口径**：`Δ = total_settle(窗初) − total_settle(窗末)`；**Δ>0 下沉**；站点沉降用监测层位=0 的 `station_name`  
+> **周期口径**：`Δ = total_settle(窗初) − total_settle(窗末)`；**Δ<0 沉降、Δ>0 回弹**；站点沉降用监测层位=0 的 `station_name`  
 > 灌库时 metadata 须带 `analysis_type`、`plan_item_id`、`plan_template_version=v1`
 
 ---
@@ -50,7 +50,7 @@ ORDER BY s.area
 **问句**：本周各站点 total_settle 周期沉降量（初值减末值，mm）。
 
 > 站点维度：每个 `project_name` 仅用监测层位=0 的标（示例：`F8(周村)`→`F8-10`）。  
-> `period_settle_mm = settle_start − settle_end`；**数值越大表示下沉越多**，排序用 `ORDER BY period_settle_mm DESC`。
+> `period_settle_mm = settle_start − settle_end`；**数值越负表示沉降越多**，排序用 `ORDER BY period_settle_mm ASC`。
 
 ```sql
 WITH ranked AS (
@@ -71,7 +71,7 @@ SELECT project_name, station_name,
          - MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS period_settle_mm
 FROM ranked
 GROUP BY project_name, station_name
-ORDER BY period_settle_mm DESC
+ORDER BY period_settle_mm ASC
 ```
 
 ---
@@ -95,7 +95,7 @@ SELECT project_name, station_name, area,
          - MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS period_settle_mm
 FROM ranked
 GROUP BY project_name, station_name, area
-ORDER BY period_settle_mm DESC
+ORDER BY period_settle_mm ASC
 ```
 
 ---
@@ -193,7 +193,7 @@ ORDER BY g.data_time DESC
 
 **问句**：朝阳区最近一周分层标沉降最大的 5 个站点。
 
-> 「沉降最大」= 周期 `Δ=初−末` **最大**（下沉最多）；按 `project_name` 取层位 0 标后再排序 LIMIT 5。  
+> 「沉降最大」= 周期 `Δ=初−末` **最负**（沉降最多）；按 `project_name` 取层位 0 标后再排序 LIMIT 5。  
 > 「最近一周」= **滚动**近 7 天（可用 `NOW() - INTERVAL '7 days'`），**不是**自然「本周」。
 
 ---
@@ -204,7 +204,7 @@ ORDER BY g.data_time DESC
 
 > - **本周** = 自然周：`date_trunc('week', CURRENT_DATE)::date` ～ `+ INTERVAL '7 days'`（**禁止**写成 `CURRENT_DATE - INTERVAL '7 days'`）。  
 > - 站点沉降用朝阳区层位 0 代表标：`F1-7,F2-7,F27-8,F28-10,F29-10`（见 `nl2sql_biz_knowledge_fcb_layer0_stations.md`）。  
-> - `period_settle_mm = settle_start − settle_end`（初−末）；最大沉降 = `ORDER BY period_settle_mm DESC LIMIT 1`。  
+> - `period_settle_mm = settle_start − settle_end`（初−末）；最大沉降 = `ORDER BY period_settle_mm ASC LIMIT 1`。  
 > - 同一 `project_name + station_name` 取窗内最早/最晚各一条；缺初或缺末的站不参与。
 
 ```sql
@@ -258,7 +258,7 @@ SELECT
   settle_end,
   period_settle_mm
 FROM period
-ORDER BY period_settle_mm DESC
+ORDER BY period_settle_mm ASC
 LIMIT 1;
 ```
 

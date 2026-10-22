@@ -1,6 +1,6 @@
 """地降自动报告：离线矢量/栅格底图 + 层位 0 站点柱，输出 PNG。
 
-Δ=初−末：Δ>0 下沉（红、柱向下），Δ<0 回弹（绿、柱向上），与 formulas.period_delta 一致。
+Δ=初−末：Δ<0 沉降（红、柱向下），Δ>0 回弹（绿、柱向上），与 formulas.period_delta / settle_text 一致。
 有 geopandas/rasterio 且市界 shp 齐全时走 DEM+区县+水系；否则退化为经纬度散点图。
 """
 
@@ -73,15 +73,16 @@ def display_station_name(project_name: str) -> str:
 
 
 def fill_for_delta(delta_mm: float) -> str:
-    if delta_mm > 0:
-        return _COLOR_SINK
+    """有符号周期变化：负=沉降（红），正=回弹（绿）。"""
     if delta_mm < 0:
+        return _COLOR_SINK
+    if delta_mm > 0:
         return _COLOR_REBOUND
     return _COLOR_ZERO
 
 
 def stations_from_layer0_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """只保留有 lon/lat/delta 的层位 0 行；val 为绘图用 −Δ（下沉向下）。"""
+    """只保留有 lon/lat/delta 的层位 0 行；val=Δ（负沉降柱向下，正回弹柱向上）。"""
     out: list[dict[str, Any]] = []
     for row in rows or []:
         if not isinstance(row, dict):
@@ -103,7 +104,7 @@ def stations_from_layer0_rows(rows: list[dict[str, Any]] | None) -> list[dict[st
                 "lon": lon,
                 "lat": lat,
                 "delta_mm": delta,
-                "val": -delta,
+                "val": delta,
                 "project_name": str(row.get("project_name") or ""),
             }
         )

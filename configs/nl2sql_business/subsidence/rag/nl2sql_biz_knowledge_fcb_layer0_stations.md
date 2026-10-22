@@ -4,7 +4,7 @@
 
 > 权威映射：configs/nl2sql_business/subsidence/semantic/dimensions/fcb_layer_map.yaml
 > 问「站点/地面沉降」时，应对该站使用下列 station_name（浅部代表标），禁止对同 project_name 下全部标聚合。
-> 周期沉降 Δ = total_settle(窗初) − total_settle(窗末)；Δ>0 下沉倾向，Δ<0 回弹。
+> 周期沉降 Δ = total_settle(窗初) − total_settle(窗末)；Δ<0 沉降，Δ>0 回弹。
 
 | project_name | station_name(层位0) | depth_m | district_raw |
 |--------------|---------------------|---------|--------------|

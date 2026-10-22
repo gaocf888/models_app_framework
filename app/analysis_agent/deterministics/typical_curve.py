@@ -155,6 +155,7 @@ def _annotate_axis(
 def typical_curve(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[dict[str, Any]]:
     """
     选 |delta_mm| 最大且 ∈ 分层标∩地下水公共集、水位窗内有序列的层位 0 站。
+    用绝对值选站：沉/弹同等对待（符号约定仍为负沉正弹，仅择优不看符号）。
     候选双轴：水位 elevation（主路径） / 降水 / 孔压×第一压缩层。
     月报默认 Top1。
     """

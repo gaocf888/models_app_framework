@@ -13,11 +13,11 @@ q_list:
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。
     用户问的是时间窗内的周期沉降量，不是「每站最新一行快照」，禁止把该场地全部设备、全部时刻摊成多行。
     分层标必须用监测层位=0 的代表标 station_name（禁止对同站全部标聚合）。
-    对每个站点取时间窗内最早一条与最晚一条 {core_column}：周期沉降变化 = 窗末值 − 窗初值；
+    对每个站点取时间窗内最早一条与最晚一条 {core_column}：周期沉降变化 Δ = 窗初值 − 窗末值（初−末）；Δ<0 沉降，Δ>0 回弹；禁止写成末−初。
     同时输出窗末值 AS {core_alias}、周期差值 AS {period_alias}（禁止用 annual_settle_mm / 年沉降 作别名）、窗末 data_time、station_id、station_name、t_station.area AS area。
     一行一站。禁止用单日 MAX−MIN 代替周期差，禁止把时间窗收成今天或昨天一天。
     必须用 PostgreSQL：ROW_NUMBER() OVER 子查询取 rn_asc/rn_desc，禁止 QUALIFY（Snowflake/BigQuery 语法），禁止 WINDOW … QUALIFY。
-    ORDER BY 须重复差值表达式，禁止 ORDER BY ABS(别名)。
+    「沉降最大/最严重」按有符号 Δ 升序（越负越严重）；一般列表可用 ABS(差值表达式) DESC。ORDER BY 须重复差值表达式，禁止 ORDER BY ABS(别名)。
     {scope_block}
     LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
   district: |

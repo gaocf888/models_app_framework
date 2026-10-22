@@ -1,7 +1,7 @@
 # NL2SQL 基座改造方案（锅炉四管 / 地面沉降）
 
 > **版本**：2026-09-17（P0–P5 已落地；P6 分层标三维口径 + 层位字典；增补 **P7 监测方式站点覆盖配置**）  
-> **实施进度**：P0–P5 主能力已落地；**配置包驱动分业务默认值（含 DB 连接默认、方言、白名单、Prompt）已补齐**。`.env` 中显式 `DB_*`/`NL2SQL_*` 仍优先于 profile。剩余联调：PG 连通、RAG 摄入、黄金集可执行率、锅炉回归。**P6 配置侧已落地**（口径对齐季报脚本：初−末、正下沉；`fcb_layer_map`；知识库/Prompt/QA 已同步）；**待运维**：RAG re-ingest 与抽测——详见专项 [`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md)。**P7 已落地**（`device_station_map.yaml` + semantic/schema 注入；GNSS 占位空；与 `t_station` 匹配）；**待运维**：biz/schema re-ingest。运维极简见企业级简版 §4.4。  
+> **实施进度**：P0–P5 主能力已落地；**配置包驱动分业务默认值（含 DB 连接默认、方言、白名单、Prompt）已补齐**。`.env` 中显式 `DB_*`/`NL2SQL_*` 仍优先于 profile。剩余联调：PG 连通、RAG 摄入、黄金集可执行率、锅炉回归。**P6 配置侧已落地**（口径对齐季报脚本：初−末、负沉正弹；`fcb_layer_map`；知识库/Prompt/QA 已同步）；**待运维**：RAG re-ingest 与抽测——详见专项 [`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md)。**P7 已落地**（`device_station_map.yaml` + semantic/schema 注入；GNSS 占位空；与 `t_station` 匹配）；**待运维**：biz/schema re-ingest。运维极简见企业级简版 §4.4。  
 > **分支/项目**：`dev_djs`（地降所地面沉降）  
 > **范围**：`app/nl2sql/*`、`NL2SQLService`、相关配置与契约；不含 chatbot/报告前端 UI 实现细节。  
 > **原则**：**基座主链路不变**；范围默认 **rule**；时间 **始终规则**；通过 **部署级全局业务配置** 区分锅炉四管与地面沉降；语义建模 + 显式 Schema 链接为准确率核心增量。  
@@ -29,7 +29,7 @@
 | **① 基座适配 + 全局业务配置** | 换库/白名单/RAG/Prompt/词表等；`NL2SQL_BUSINESS_DOMAIN` + `configs/nl2sql_business/` | §2、§3、§7 |
 | **② 业务侧覆盖范围** | `confirmed_scope` → `human_confirmed`（**已具备，保持**）；时间用 `time_intent_text` | §4 |
 | **③ 语义建模 + Schema 链接** | 意图后插管；地降 8 表事实模型；指标/链接资产 | §5、§6 |
-| **④ 分层标三维口径 + 层位字典（P6）** | 周期=初−末、正下沉；站点=层位0；压缩层=相邻Δ差；`fcb_layer_map` + 知识库/Prompt/QA | 专项文档；§7.4、§8.1 |
+| **④ 分层标三维口径 + 层位字典（P6）** | 周期=初−末、负沉正弹；站点=层位0；压缩层=相邻Δ差；`fcb_layer_map` + 知识库/Prompt/QA | 专项文档；§7.4、§8.1 |
 | **⑤ 监测方式站点覆盖（P7）** | 统一 `device_type → project_name[]` allowlist；与 `t_station` 匹配取区县；GNSS 占位空；fcb 层位仍走 P6 | **§7.5**、§8.1 |
 
 ### 0.2 基座主链路（改造后仍保持）
@@ -651,7 +651,7 @@ SemanticBinding:
 
 | metric_id | 名称 | 单位 | 主表 | 主列 | 公式/口径 |
 |-----------|------|------|------|------|-----------|
-| `period_subsidence_mm` | 周期沉降量 | mm | `t_data_wash_fcb`（默认） | `total_settle` | 周期初 `total_settle` − 周期末 `total_settle`；**Δ>0 下沉**；站点用层位0 |
+| `period_subsidence_mm` | 周期沉降量 | mm | `t_data_wash_fcb`（默认） | `total_settle` | 周期初 `total_settle` − 周期末 `total_settle`；**Δ<0 沉降、Δ>0 回弹**；站点用层位0 |
 | `period_rebound_mm` | 周期回弹量 | mm | `t_data_wash_fcb` / `jyb` | `total_settle` | 同上，语义为上升；可与沉降共用计算，展示取符号 |
 | `point_subsidence_mm` | 测点累计沉降 | mm | `t_data_wash_fcb` | `total_settle` | 问句指明某时刻/最新一条的 `total_settle`（非差值） |
 | `gnss_displacement_2d` | GNSS 水平位移 | mm | `t_data_wash_gnss` | `displacement_2d` | 专题问 GNSS 时用 |
@@ -682,7 +682,7 @@ metrics:
     synonyms: [沉降量, 下沉量, 累计沉降, 地面沉降, 沉降了多少]
     unit: mm
     grain: station_period
-    formula_note: "窗口内 total_settle 初值减末值；Δ>0 下沉；主表默认 t_data_wash_fcb；站点用层位0"
+    formula_note: "窗口内 total_settle 初值减末值；Δ<0 沉降；主表默认 t_data_wash_fcb；站点用层位0"
     forbidden_confusions: [groundwater_depth, gnss_displacement_3d, pore_pressure]
     preferred_tables: [t_data_wash_fcb, t_data_wash_jyb]
     preferred_columns: [total_settle]
@@ -880,7 +880,7 @@ t_data_wash_qxz.project_name=t_station.name
 - 行政区：**JOIN `t_station`**，`area` 过滤  
 - 允许聚合、子查询、UNION（只读）  
 - 禁止 TiDB 专属写法  
-- **（P6）周期沉降**：`Δ = 窗内初值 − 末值`；**Δ>0 下沉倾向，Δ<0 回弹**；站点沉降用监测层位 0 对应 `station_name`  
+- **（P6）周期沉降**：`Δ = 窗内初值 − 末值`；**Δ<0 沉降，Δ>0 回弹**；站点沉降用监测层位 0 对应 `station_name`  
 
 版本建议：`NL2SQL_PROMPT_DEFAULT_VERSION=v2_subsidence`（在 `prompts.yaml` 或 `prompts_subsidence.yaml` 中定义）。
 
@@ -892,7 +892,7 @@ t_data_wash_qxz.project_name=t_station.name
 
 > **专项全文**：[`NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md`](./NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案.md)。
 
-业务已确认口径对齐 `沉降数据获取计算逻辑/季度报告分层标处理.py`（**初−末、正下沉**），并采用 **知识库 + 配置文件**（`fcb_layer_map`），一期不做 DB 维表。
+业务已确认口径对齐 `沉降数据获取计算逻辑/季度报告分层标处理.py`（**初−末、负沉正弹**），并采用 **知识库 + 配置文件**（`fcb_layer_map`），一期不做 DB 维表。
 
 | 维度 | 口径摘要 |
 |------|----------|
@@ -1169,11 +1169,11 @@ devices:
 - [x] 8 表白名单与 JOIN 配置落地（反射/执行需服务器验证）  
 - [x] 语义+链接：泛化沉降 → `fcb`；GNSS → `gnss`（单测 + 黄金集链接测）  
 - [x] 行政区/站点 rule 解析与 `@district`/`@station_*` 改写  
-- [x] 周期沉降口径曾写入语义资产与 Prompt（**旧表述为终−初/负下沉；P6 须改为初−末/正下沉**）  
+- [x] 周期沉降口径曾写入语义资产与 Prompt（**旧表述为终−初/负下沉；P6 须改为初−末/负沉正弹**）  
 - [x] `confirmed_scope` / `time_intent_text` / `structured_filters` 契约保留  
 - [x] 五类 `analysis_type` 的 plan/synthesis/report 模板  
 - [x] `boiler_four_tube` profile：`semantic_link_enabled=false` + 表白名单文件  
-- [x] **P6（配置）**：`fcb_layer_map` 已落地；biz/schema/metrics/QA/Prompt 口径统一为初−末、正下沉；三维 grain 入知识库（**RAG re-ingest 与抽测待运维**）  
+- [x] **P6（配置）**：`fcb_layer_map` 已落地；biz/schema/metrics/QA/Prompt 口径统一为初−末、负沉正弹；三维 grain 入知识库（**RAG re-ingest 与抽测待运维**）  
 - [ ] **P6**：RAG re-ingest；站点层位 0 / 压缩层差 / 符号方向手测通过  
 - [x] **P7（方案）**：§7.5 已定稿（统一覆盖策略 + `t_station` 匹配 + GNSS 占位）  
 - [x] **P7（实现）**：`device_station_map.yaml` + semantic/schema 注入；孔隙水区县清单 / 默认 fcb 排名 / 光纤名单 / gnss 空名单单测通过（**知识库已改；RAG re-ingest 待运维**）  
