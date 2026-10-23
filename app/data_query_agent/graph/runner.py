@@ -1,10 +1,9 @@
-"""数据查询智能体 sequential runner：SSE 事件字典生成器。"""
+"""数据查询智能体 sequential runner：一次请求返回一份 JSON。"""
 
 from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
 
@@ -32,8 +31,20 @@ from app.services.nl2sql_service import NL2SQLService
 logger = get_logger(__name__)
 
 
-def _event(name: str, request_id: str, **payload: Any) -> dict[str, Any]:
-    out = {"event": name, "request_id": request_id}
+def _response(
+    *,
+    status: str,
+    event: str,
+    request_id: str,
+    **payload: Any,
+) -> dict[str, Any]:
+    """一次性 JSON：status=success|interrupted|error|cancelled。"""
+    out: dict[str, Any] = {
+        "ok": status in {"success", "interrupted", "cancelled"},
+        "status": status,
+        "event": event,
+        "request_id": request_id,
+    }
     out.update(payload)
     return out
 
@@ -64,7 +75,8 @@ def _save_run_trace(state: DataQueryAgentState, *, status: str, extra: dict[str,
 
 
 class DataQueryAgentGraphRunner:
-    """P0 sequential 主图：意图1 → HITL? → 意图2 → 锁表 NL2SQL → assemble → SSE。"""
+    """P0 sequential 主图：意图1 → HITL? → 意图2 → 锁表 NL2SQL → assemble → JSON。"""
+
     def __init__(
         self,
         *,
@@ -81,11 +93,15 @@ class DataQueryAgentGraphRunner:
             self._nl2sql = NL2SQLService()
         return self._nl2sql
 
-    async def run_stream(self, req: DataQueryAgentRunRequest) -> AsyncIterator[dict[str, Any]]:
-        """主入口：新 request_id；未锁库则本轮只推 HITL 后断流。"""
+    async def _clear(self, user_id: str, session_id: str, stream_id: str | None) -> None:
+        if stream_id:
+            await self._stream_ctrl.clear_stream(user_id, session_id, stream_id)
+
+    async def run_stream(self, req: DataQueryAgentRunRequest) -> dict[str, Any]:
+        """主入口：新 request_id；未锁库则本轮只返回 HITL 选库。"""
         request_id = uuid.uuid4().hex
         stream_id = self._stream_ctrl.begin_stream(req.user_id, req.session_id)
-        async for ev in self._run(
+        return await self._run(
             state=DataQueryAgentState(
                 request_id=request_id,
                 stream_id=stream_id,
@@ -100,40 +116,33 @@ class DataQueryAgentGraphRunner:
                 station_id=req.station_id,
                 started_at=time.time(),
             ),
-            emit_started=True,
-        ):
-            yield ev
+        )
 
-    async def resume_stream(self, req: DataQueryAgentResumeRequest) -> AsyncIterator[dict[str, Any]]:
-        """选库后续流：合法 library_id 跳过意图1；非法再 interrupt（上限 hitl_max_retries）。"""
+    async def resume_stream(self, req: DataQueryAgentResumeRequest) -> dict[str, Any]:
+        """选库后续：合法 library_id 跳过意图1；非法再 interrupt（上限 hitl_max_retries）。"""
         session = get_resume_session(req.resume_token)
         if session is None:
-            yield _event(
-                "data_query_error",
-                req.resume_token,
+            return _response(
+                status="error",
+                event="data_query_error",
+                request_id=req.resume_token,
                 error="invalid_resume_token",
                 message="resume_token 无效或已过期",
             )
-            yield _event("finished", req.resume_token, status="error", trace_id=req.resume_token)
-            return
         if session.user_id != req.user_id or session.session_id != req.session_id:
-            yield _event(
-                "data_query_error",
-                session.request_id,
+            return _response(
+                status="error",
+                event="data_query_error",
+                request_id=session.request_id,
                 error="resume_identity_mismatch",
                 message="user_id/session_id 与 resume 会话不匹配",
             )
-            yield _event("finished", session.request_id, status="error")
-            return
 
         stream_id = self._stream_ctrl.begin_stream(req.user_id, req.session_id)
         opts = session.options or {}
-        # 用户放弃选库：不进 NL2SQL，与 stop 一样 cancelled。
+        # 用户放弃选库：不进 NL2SQL，与 cancelled 一样。
         if req.abort:
             delete_resume_session(req.resume_token)
-            yield _event("started", session.request_id, stream_id=stream_id)
-            yield _event("data_query_cancelled", session.request_id, reason="abort")
-            yield _event("finished", session.request_id, status="cancelled", stream_id=stream_id)
             DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="cancelled", hitl="true").inc()
             _save_run_trace(
                 DataQueryAgentState(
@@ -147,8 +156,13 @@ class DataQueryAgentGraphRunner:
                 status="cancelled",
                 extra={"reason": "abort"},
             )
-            await self._stream_ctrl.clear_stream(req.user_id, req.session_id, stream_id)
-            return
+            await self._clear(req.user_id, req.session_id, stream_id)
+            return _response(
+                status="cancelled",
+                event="data_query_cancelled",
+                request_id=session.request_id,
+                reason="abort",
+            )
 
         catalog = get_library_catalog()
         lib = catalog.get(req.library_id)
@@ -157,22 +171,22 @@ class DataQueryAgentGraphRunner:
             max_n = int(self._cfg.hitl_max_retries)
             if session.hitl_attempts >= max_n:
                 delete_resume_session(req.resume_token)
-                yield _event("started", session.request_id, stream_id=stream_id)
-                yield _event(
-                    "data_query_error",
-                    session.request_id,
+                DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="error", hitl="true").inc()
+                await self._clear(req.user_id, req.session_id, stream_id)
+                return _response(
+                    status="error",
+                    event="data_query_error",
+                    request_id=session.request_id,
                     error="hitl_retry_exhausted",
                     message="选库次数已达上限",
                 )
-                yield _event("finished", session.request_id, status="error", stream_id=stream_id)
-                DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="error", hitl="true").inc()
-                await self._stream_ctrl.clear_stream(req.user_id, req.session_id, stream_id)
-                return
             update_resume_session(session)
-            yield _event("started", session.request_id, stream_id=stream_id)
-            yield _event(
-                "data_query_library_input_required",
-                session.request_id,
+            DATA_QUERY_AGENT_LIBRARY_HITL_TOTAL.labels(reason="library_id_invalid").inc()
+            await self._clear(req.user_id, req.session_id, stream_id)
+            return _response(
+                status="interrupted",
+                event="data_query_library_input_required",
+                request_id=session.request_id,
                 resume_token=req.resume_token,
                 interrupt_reason="library_id_invalid",
                 prompt=catalog.hitl_prompt,
@@ -181,9 +195,6 @@ class DataQueryAgentGraphRunner:
                 query=session.query,
                 suggested_actions=["select_library", "abort"],
             )
-            DATA_QUERY_AGENT_LIBRARY_HITL_TOTAL.labels(reason="library_id_invalid").inc()
-            await self._stream_ctrl.clear_stream(req.user_id, req.session_id, stream_id)
-            return
 
         delete_resume_session(req.resume_token)
         state = DataQueryAgentState(
@@ -203,8 +214,7 @@ class DataQueryAgentGraphRunner:
             hitl=True,
             started_at=time.time(),
         )
-        async for ev in self._run(state=state, emit_started=True, skip_library_intent=True):
-            yield ev
+        return await self._run(state=state, skip_library_intent=True)
 
     async def _cancelled(self, state: DataQueryAgentState) -> bool:
         return await self._stream_ctrl.is_cancelled(state.user_id, state.session_id, state.stream_id)
@@ -213,30 +223,31 @@ class DataQueryAgentGraphRunner:
         self,
         *,
         state: DataQueryAgentState,
-        emit_started: bool,
         skip_library_intent: bool = False,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> dict[str, Any]:
         hitl_used = "true" if state.hitl else "false"
         try:
             catalog = get_library_catalog()
         except CatalogError as exc:
-            if emit_started:
-                yield _event("started", state.request_id, stream_id=state.stream_id)
-            yield _event("data_query_error", state.request_id, error="catalog_invalid", message=str(exc))
-            yield _event("finished", state.request_id, status="error", stream_id=state.stream_id)
             DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="error", hitl=hitl_used).inc()
-            await self._stream_ctrl.clear_stream(state.user_id, state.session_id, state.stream_id)
-            return
-
-        if emit_started:
-            yield _event("started", state.request_id, stream_id=state.stream_id)
+            await self._clear(state.user_id, state.session_id, state.stream_id)
+            return _response(
+                status="error",
+                event="data_query_error",
+                request_id=state.request_id,
+                error="catalog_invalid",
+                message=str(exc),
+            )
 
         if await self._cancelled(state):
-            yield _event("data_query_cancelled", state.request_id, reason="user_cancelled")
-            yield _event("finished", state.request_id, status="cancelled", stream_id=state.stream_id)
             DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="cancelled", hitl=hitl_used).inc()
-            await self._stream_ctrl.clear_stream(state.user_id, state.session_id, state.stream_id)
-            return
+            await self._clear(state.user_id, state.session_id, state.stream_id)
+            return _response(
+                status="cancelled",
+                event="data_query_cancelled",
+                request_id=state.request_id,
+                reason="user_cancelled",
+            )
 
         # 运维问句：方案 A 无 om library，直接错误提示走客服（不进入选库 HITL）。
         from app.data_query_agent.library_intent import (
@@ -251,25 +262,20 @@ class DataQueryAgentGraphRunner:
         except Exception:  # noqa: BLE001
             ops_q = False
         if ops_q:
-            yield _event(
-                "data_query_error",
-                state.request_id,
-                error=OPS_USE_CHATBOT_REASON,
-                message=OPS_USE_CHATBOT_MESSAGE,
-            )
-            yield _event(
-                "finished", state.request_id, status="error", stream_id=state.stream_id
-            )
             DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="error", hitl=hitl_used).inc()
             _save_run_trace(
                 state,
                 status="error",
                 extra={"interrupt_reason": OPS_USE_CHATBOT_REASON},
             )
-            await self._stream_ctrl.clear_stream(
-                state.user_id, state.session_id, state.stream_id
+            await self._clear(state.user_id, state.session_id, state.stream_id)
+            return _response(
+                status="error",
+                event="data_query_error",
+                request_id=state.request_id,
+                error=OPS_USE_CHATBOT_REASON,
+                message=OPS_USE_CHATBOT_MESSAGE,
             )
-            return
 
         # resume 已带合法库时跳过意图1，直接 library_hit。
         if not skip_library_intent:
@@ -280,31 +286,23 @@ class DataQueryAgentGraphRunner:
                 if llm_hit is not None and llm_hit.library is not None:
                     intent = llm_hit
             if not intent.ok or intent.library is None:
-                # 未锁库：interrupt + 断流，前端选库后 POST resume-stream。
+                # 未锁库：interrupt，前端选库后 POST resume-stream。
                 reason = intent.interrupt_reason or "library_unresolved"
                 if reason == OPS_USE_CHATBOT_REASON:
-                    yield _event(
-                        "data_query_error",
-                        state.request_id,
-                        error=OPS_USE_CHATBOT_REASON,
-                        message=OPS_USE_CHATBOT_MESSAGE,
-                    )
-                    yield _event(
-                        "finished",
-                        state.request_id,
-                        status="error",
-                        stream_id=state.stream_id,
-                    )
                     DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="error", hitl=hitl_used).inc()
                     _save_run_trace(
                         state,
                         status="error",
                         extra={"interrupt_reason": OPS_USE_CHATBOT_REASON},
                     )
-                    await self._stream_ctrl.clear_stream(
-                        state.user_id, state.session_id, state.stream_id
+                    await self._clear(state.user_id, state.session_id, state.stream_id)
+                    return _response(
+                        status="error",
+                        event="data_query_error",
+                        request_id=state.request_id,
+                        error=OPS_USE_CHATBOT_REASON,
+                        message=OPS_USE_CHATBOT_MESSAGE,
                     )
-                    return
                 token = create_resume_token(
                     request_id=state.request_id,
                     user_id=state.user_id,
@@ -322,17 +320,6 @@ class DataQueryAgentGraphRunner:
                     library_id=state.library_id,
                     hitl_attempts=0,
                 )
-                yield _event(
-                    "data_query_library_input_required",
-                    state.request_id,
-                    resume_token=token,
-                    interrupt_reason=reason,
-                    prompt=catalog.hitl_prompt,
-                    candidates=intent.candidates,
-                    library_options=catalog.library_options(candidates=intent.candidates),
-                    query=state.query,
-                    suggested_actions=["select_library", "abort"],
-                )
                 DATA_QUERY_AGENT_LIBRARY_HITL_TOTAL.labels(reason=reason).inc()
                 DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="interrupted", hitl="true").inc()
                 logger.info(
@@ -342,22 +329,24 @@ class DataQueryAgentGraphRunner:
                     token[:8],
                 )
                 _save_run_trace(state, status="interrupted", extra={"interrupt_reason": reason})
-                await self._stream_ctrl.clear_stream(state.user_id, state.session_id, state.stream_id)
-                return
+                await self._clear(state.user_id, state.session_id, state.stream_id)
+                return _response(
+                    status="interrupted",
+                    event="data_query_library_input_required",
+                    request_id=state.request_id,
+                    resume_token=token,
+                    interrupt_reason=reason,
+                    prompt=catalog.hitl_prompt,
+                    candidates=intent.candidates,
+                    library_options=catalog.library_options(candidates=intent.candidates),
+                    query=state.query,
+                    suggested_actions=["select_library", "abort"],
+                )
             state.library = intent.library
             state.library_source = intent.source
             state.library_id = intent.library.id
 
         assert state.library is not None
-        yield _event(
-            "data_query_library_hit",
-            state.request_id,
-            library_id=state.library.id,
-            display_name=state.library.display_name,
-            table=state.library.table,
-            source=state.library_source,
-            warnings=list(state.warnings),
-        )
         logger.info(
             "data_query_agent library_hit request_id=%s library=%s table=%s source=%s",
             state.request_id,
@@ -367,11 +356,14 @@ class DataQueryAgentGraphRunner:
         )
 
         if await self._cancelled(state):
-            yield _event("data_query_cancelled", state.request_id, reason="user_cancelled")
-            yield _event("finished", state.request_id, status="cancelled", stream_id=state.stream_id)
             DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="cancelled", hitl=hitl_used).inc()
-            await self._stream_ctrl.clear_stream(state.user_id, state.session_id, state.stream_id)
-            return
+            await self._clear(state.user_id, state.session_id, state.stream_id)
+            return _response(
+                status="cancelled",
+                event="data_query_cancelled",
+                request_id=state.request_id,
+                reason="user_cancelled",
+            )
 
         # 意图 2 不改写 library；device_type 只来自已锁定的库。
         scope = resolve_scope_intent(
@@ -381,16 +373,6 @@ class DataQueryAgentGraphRunner:
             station_id=state.station_id,
         )
         state.scope = scope
-        yield _event(
-            "data_query_scope_parsed",
-            state.request_id,
-            library_id=state.library.id,
-            table=state.library.table,
-            scope=scope.scope_snapshot,
-            time=scope.time_snapshot,
-            parse_mode=scope.parse_mode,
-            result_grain=scope.grain,
-        )
         cs = scope.confirmed_scope or {}
         tw = scope.time_snapshot or {}
         logger.info(
@@ -408,27 +390,17 @@ class DataQueryAgentGraphRunner:
         )
 
         if await self._cancelled(state):
-            yield _event("data_query_cancelled", state.request_id, reason="user_cancelled")
-            yield _event("finished", state.request_id, status="cancelled", stream_id=state.stream_id)
             DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="cancelled", hitl=hitl_used).inc()
-            await self._stream_ctrl.clear_stream(state.user_id, state.session_id, state.stream_id)
-            return
+            await self._clear(state.user_id, state.session_id, state.stream_id)
+            return _response(
+                status="cancelled",
+                event="data_query_cancelled",
+                request_id=state.request_id,
+                reason="user_cancelled",
+            )
 
         async def _cancelled_check() -> bool:
             return await self._cancelled(state)
-
-        hud_plan = "skipped"
-        city_ok = bool(getattr(self._cfg, "hud_city_enabled", True))
-        if state.include_hud and state.library.hud_supported and scope.grain in (
-            {"station", "station_series", "district"} | ({"city"} if city_ok else set())
-        ):
-            hud_plan = "running"
-        yield _event(
-            "data_query_nl2sql_progress",
-            state.request_id,
-            q_list="running",
-            q_hud_series=hud_plan,
-        )
 
         # 锁表 NL2SQL：q_list 必跑；HUD 时并行 q_hud_series。
         acquire = await acquire_data(
@@ -444,34 +416,17 @@ class DataQueryAgentGraphRunner:
             cancelled_check=_cancelled_check,
         )
         if acquire.error == "cancelled" or await self._cancelled(state):
-            yield _event("data_query_cancelled", state.request_id, reason="user_cancelled")
-            yield _event("finished", state.request_id, status="cancelled", stream_id=state.stream_id)
             DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="cancelled", hitl=hitl_used).inc()
-            await self._stream_ctrl.clear_stream(state.user_id, state.session_id, state.stream_id)
-            return
-
-        yield _event(
-            "data_query_nl2sql_progress",
-            state.request_id,
-            q_list="done" if acquire.list_item.ok else "failed",
-            q_hud_series=(
-                "skipped"
-                if acquire.series_item is None
-                else ("done" if acquire.series_item.ok else "failed")
-            ),
-        )
+            await self._clear(state.user_id, state.session_id, state.stream_id)
+            return _response(
+                status="cancelled",
+                event="data_query_cancelled",
+                request_id=state.request_id,
+                reason="user_cancelled",
+            )
 
         if not acquire.ok:
             # 取数失败不再为库 HITL；前端展示 error 即可。
-            yield _event(
-                "data_query_error",
-                state.request_id,
-                error=acquire.error or "nl2sql_failed",
-                message=acquire.list_item.error or acquire.error,
-                sql=acquire.list_item.sql or None,
-                gen_fail_reason=acquire.list_item.gen_fail_reason,
-            )
-            yield _event("finished", state.request_id, status="error", stream_id=state.stream_id, trace_id=state.request_id)
             DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="error", hitl=hitl_used).inc()
             logger.warning(
                 "data_query_agent nl2sql error request_id=%s library=%s err=%s",
@@ -484,8 +439,16 @@ class DataQueryAgentGraphRunner:
                 status="error",
                 extra={"error": acquire.error, "sql": acquire.list_item.sql},
             )
-            await self._stream_ctrl.clear_stream(state.user_id, state.session_id, state.stream_id)
-            return
+            await self._clear(state.user_id, state.session_id, state.stream_id)
+            return _response(
+                status="error",
+                event="data_query_error",
+                request_id=state.request_id,
+                error=acquire.error or "nl2sql_failed",
+                message=acquire.list_item.error or acquire.error,
+                sql=acquire.list_item.sql or None,
+                gen_fail_reason=acquire.list_item.gen_fail_reason,
+            )
 
         payload = assemble_result(
             library=state.library,
@@ -494,18 +457,6 @@ class DataQueryAgentGraphRunner:
             include_hud=state.include_hud,
             expose_sql=state.expose_sql,
             extra_warnings=list(state.warnings),
-        )
-        result_event = _event("data_query_result", state.request_id, **payload)
-        yield result_event
-        yield _event(
-            "finished",
-            state.request_id,
-            status="success",
-            stream_id=state.stream_id,
-            library_id=state.library.id,
-            result_grain=payload.get("result_grain"),
-            hud_enabled=payload.get("hud_enabled"),
-            trace_id=state.request_id,
         )
         DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="success", hitl=hitl_used).inc()
         logger.info(
@@ -527,4 +478,16 @@ class DataQueryAgentGraphRunner:
                 "sql": payload.get("sql"),
             },
         )
-        await self._stream_ctrl.clear_stream(state.user_id, state.session_id, state.stream_id)
+        await self._clear(state.user_id, state.session_id, state.stream_id)
+        return _response(
+            status="success",
+            event="data_query_result",
+            request_id=state.request_id,
+            display_name=state.library.display_name,
+            table=state.library.table,
+            source=state.library_source,
+            scope=scope.scope_snapshot,
+            time=scope.time_snapshot,
+            parse_mode=scope.parse_mode,
+            **payload,
+        )

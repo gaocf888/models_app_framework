@@ -19,7 +19,7 @@ class DataQueryAgentOptions(BaseModel):
 
 
 class DataQueryAgentRunRequest(BaseModel):
-    """run-stream：query 必填；library_id 为树当前库，可空。"""
+    """解析 SQL：query 必填；library_id 为树当前库，可空。"""
 
     user_id: str = Field(..., description="用户唯一标识")
     session_id: str = Field(..., description="会话唯一标识")
@@ -65,7 +65,7 @@ class DataQueryAgentRunRequest(BaseModel):
 
 
 class DataQueryAgentResumeRequest(BaseModel):
-    """resume-stream：须带 HITL 的 resume_token；abort=true 取消。"""
+    """选库后续：须带 HITL 的 resume_token；abort=true 取消。"""
     user_id: str = Field(..., description="用户唯一标识")
     session_id: str = Field(..., description="会话唯一标识")
     resume_token: str = Field(..., description="中断事件返回的 resume_token")
@@ -91,10 +91,27 @@ class DataQueryAgentResumeRequest(BaseModel):
         return s
 
 
+class DataQueryAgentRunResponse(BaseModel):
+    """解析 / 选库恢复一次性 JSON。业务结果看 status / event，HTTP 仍为 200。"""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    ok: bool = True
+    status: str = Field(..., description="success | interrupted | error | cancelled")
+    event: str = Field(
+        ...,
+        description=(
+            "data_query_result / data_query_library_input_required / "
+            "data_query_error / data_query_cancelled"
+        ),
+    )
+    request_id: str = ""
+
+
 class DataQueryAgentStreamStopRequest(BaseModel):
     user_id: str = Field(..., description="用户唯一标识")
     session_id: str = Field(..., description="会话唯一标识")
-    stream_id: str = Field(..., description="started 事件返回的 stream_id")
+    stream_id: str = Field(..., description="兼容字段；解析/恢复 JSON 路径不再下发 stream_id")
 
     @field_validator("user_id")
     @classmethod
@@ -159,7 +176,7 @@ class DataQueryAgentTraceStatsResponse(BaseModel):
 
 
 class DataQueryAgentHudResponse(BaseModel):
-    """GET /hud：单实体面板，字段与 data_query_result.hud_by_entity[id] 对齐。"""
+    """GET /hud：单实体面板，字段与解析结果 hud_by_entity[id] 对齐。"""
 
     ok: bool = True
     request_id: str = ""

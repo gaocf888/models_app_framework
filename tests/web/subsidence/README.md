@@ -11,7 +11,7 @@ python -m http.server 8765
 |------|------|--------|
 | [intelligent-qa.html](intelligent-qa.html) | **智能问答** | `POST /chatbot/chat/stream` + stop / sessions |
 | [auto-report.html](auto-report.html) | **自动报告生成** | `POST /analysis-agent/run-stream` + stream/stop |
-| [data-query.html](data-query.html) | **数据查询** | `GET /data-query-agent/tree` + browse；`POST /run-stream` + resume HITL |
+| [data-query.html](data-query.html) | **数据查询** | `GET /data-query-agent/tree` + browse；`POST /run-stream` + resume HITL（一次性 JSON） |
 | [knowledge-base.html](knowledge-base.html) | **知识库** | `GET /rag/namespaces` + overview；upload / ingest / jobs |
 
 打开示例：

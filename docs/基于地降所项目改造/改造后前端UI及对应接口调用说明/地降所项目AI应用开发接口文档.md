@@ -35,11 +35,12 @@
 | 2026-10-19 | `original_preview_url` 改为 `/chatbot/documents/original/preview` 代理路径，避免外网直连 `models-app-minio` | — | V1.10 |
 | 2026-10-19 | 问答尾帧/历史返回字段下补充 `original_preview_url` 调用方使用说明 | — | V1.11 |
 | 2026-10-19 | 3.3 点库/区列表去掉年沉降量，累计沉降表头改为沉降量 | — | V1.12 |
+| 2026-10-23 | 3.4 / 3.5 解析 SQL 与人机协同恢复改为一次性 JSON（不再 SSE） | — | V1.13 |
 
 ## 通用约定
 
 1. **鉴权**：请求头携带 `Authorization: Bearer <service-api-key>`（密钥由算法侧提供）。  
-2. **SSE**：流式接口响应 `Content-Type: text/event-stream`，每帧 `data: {JSON}\n\n`；消息种类看 JSON 的 `event` / 约定字段。  
+2. **SSE**：智能问答、自动报告等流式接口响应 `Content-Type: text/event-stream`，每帧 `data: {JSON}\n\n`；消息种类看 JSON 的 `event` / 约定字段。数据查询 **解析 SQL / 人机协同恢复**（3.4、3.5）为一次性 JSON，不是 SSE。  
 3. **会话 ID**：`user_id`、`session_id` 由调用方生成并维持；`session_id` 建议 UUID，禁止含 `:`。  
 4. **禁止展示**：智能问答 / 报告 / 数据查询路径均**不得**把 SQL 渲染给终端用户（联调字段可忽略）。  
 5. **Java 侧**：数据查询感知树、进页默认表、点树刷新列表由算法端 `GET /data-query-agent/tree`、`GET /data-query-agent/browse` 提供；Java 转发调用，不再自建监测表读库。点树 **不要** 打 `run-stream`。
@@ -654,7 +655,7 @@ POST
 
 侧栏「数据查询」。算法端前缀：`/data-query-agent/*`。  
 进程须：`DATA_QUERY_AGENT_ENABLED=true`、`NL2SQL_BUSINESS_DOMAIN=subsidence`。  
-浏览路径（进页树 / 默认表 / 点树刷新）走 `GET /tree`、`GET /browse`；解析 SQL 走 `run-stream`。开关关闭时本组接口 **503**（不是 404）。
+浏览路径（进页树 / 默认表 / 点树刷新）走 `GET /tree`、`GET /browse`；解析 SQL 走 `POST /run-stream`（一次性 JSON）。开关关闭时本组接口 **503**（不是 404）。
 
 **监测库 `library_id`（请求用英文代号）：** `fcb` / `jyb` / `dxswj` / `kxsylj` / `gnss` / `qxz` / `gq`。  
 站点稳定键 `station_id` = 场地 `project_name`（如 `F28(金盏)`），与 `t_station.name`、`GET /hud` 的 `entity_id` 同源。进页默认表不传 `library_id` 即分层标 `fcb`（一库一表，不做 fcb+jyb UNION）。
@@ -908,15 +909,17 @@ Authorization: Bearer <service-api-key>
 
 ---
 
-## 3.4 数据查询解析流式接口
+## 3.4 数据查询解析接口
 
 ### 接口功能
 
-自然语言「解析 SQL」：锁定监测库、生成并执行查询，流式推送进度与结果表（含行详情 HUD）。
+自然语言「解析 SQL」：锁定监测库、生成并执行查询，**一次性 JSON** 返回结果表（含行详情 HUD）或选库人机协同。耗时主要在服务端生成 SQL，不再边算边推 SSE。
 
 ### URL
 
 `http://[ip]:8083/data-query-agent/run-stream`
+
+路径名保留 `run-stream`（Java / 网关不用改地址）。响应是普通 JSON，`Content-Type: application/json`，**不是** `text/event-stream`。
 
 ### 鉴权方式
 
@@ -953,63 +956,68 @@ library_id(监测类型库) -- 传入左侧树当前选中监测类型节点(一
 district(行政区) -- 传入左侧树当前选中行政区的 district
 station_id(监测站点) -- 传入左侧树当前选中站点的 station_id
 
-上述三级均未选中时，检测类型库、行政区、监测站点由算法端自动解析，library_id(监测类型库)算法端解析失败时会进入HITL模式
-HITL人机交互说明：
-1. 触发HITL后，此时当前接口返回流中会返回data_query_library_input_required event
-2. 前端需要弹出监测方式库列表(data_query_library_input_required)供用户选择
-3. 用户选择确定后，需要调用 3.5 数据查询人机协同恢复接口 进行续跑
+上述三级均未选中时，监测类型库、行政区、监测站点由算法端自动解析，library_id(监测类型库)算法端解析失败时会进入 HITL 模式。
+HITL 人机交互说明：
+1. 触发 HITL 后，本接口 **同一份 JSON** 里 `status=interrupted`，`event=data_query_library_input_required`
+2. 前端弹出监测方式库列表（`library_options`）供用户选择
+3. 用户选择确定后，调用 3.5 数据查询人机协同恢复接口继续
 
-### 返回字段（SSE）
+业务结果（成功 / 需选库 / 失败 / 取消）HTTP 均为 **200**，用 `status` / `event` 区分；参数不合法仍 **422**，开关关闭 **503**。
 
-| 事件 | 说明 |
-|------|------|
-| started | `request_id`、`stream_id` |
-| data_query_library_hit | 锁定库；前端高亮对应树节点 |
-| data_query_library_input_required | 需选库；含 `prompt`、`library_options`、`resume_token`；本轮结束 |
-| data_query_result | `columns`、`list`、`hud_by_entity`（解析路径勿再调 GET /hud） |
-| data_query_cancelled / data_query_error | 取消或失败 |
-| finished | 结束 |
+### 返回字段
 
-### 调用方使用说明
+公共字段：
 
-仅顶栏点「解析 SQL」时调用。空 `query` 会 422，应拦在按钮上。记下首帧 `started.stream_id` 供停止使用。页面按 SSE **到达顺序**处理，不要自己重排。
+| 返回字段 | 字段类型 | 说明 |
+|----------|----------|------|
+| ok | boolean | `success` / `interrupted` / `cancelled` 为 true；`error` 为 false |
+| status | string | `success` / `interrupted` / `error` / `cancelled` |
+| event | string | 见下表，便于按一种结果分支渲染 |
+| request_id | string | 本次解析编号；选库后续仍用同一编号 |
 
-| 事件 | 页面怎么加载 |
-|------|--------------|
-| `started` | 按钮变「解析中…」；保存 `stream_id` |
-| `data_query_library_hit` | 用 `library_id` 高亮左侧树对应库节点（即使用户没先点树） |
-| `data_query_library_input_required` | 弹出选库窗；本轮到此结束，右侧 **还没有新表**。见下方衔接 |
-| `data_query_result` | 换右侧表：`columns` 当表头，`list` 当行，单元格取 `list[i][columns[j].key]` |
-| `data_query_result.hud_by_entity` | 点「详参」时用 `hud_by_entity[该行 hud_entity_id]` 打开详情；站点找不到再用 `hud_by_station`。**不要**再调 `GET /hud` |
-| `data_query_result.hud_enabled` / 行上 `hud_available` | 控制「详参」按钮显隐 |
-| `data_query_cancelled` / `data_query_error` | 按钮恢复；提示失败，不要清空上一张表除非产品要求 |
-| `finished` | 按钮恢复「解析 SQL」 |
+按 `status` / `event`：
 
-可选帧（有则用、无则忽略）：`data_query_scope_parsed` 可做「朝阳区 / 近一年」芯片（本页不做过滤器也可忽略）；`data_query_nl2sql_progress` 可做底部「正在查列表 / 正在查曲线」，**禁止展示 sql**。
+| status | event | 页面怎么加载 |
+|--------|-------|--------------|
+| `success` | `data_query_result` | 换右侧表：`columns` 当表头，`list` 当行，单元格取 `list[i][columns[j].key]`。用 `library_id` 高亮左侧树。点「详参」读 `hud_by_entity[该行 hud_entity_id]`，站点找不到再用 `hud_by_station`。**不要**再调 `GET /hud` |
+| `interrupted` | `data_query_library_input_required` | 弹出选库窗；右侧 **还没有新表**。见下方衔接 |
+| `error` | `data_query_error` | 按钮恢复；提示 `message` / `error`，不要清空上一张表除非产品要求 |
+| `cancelled` | `data_query_cancelled` | 按钮恢复；不要出表 |
+
+`success` 时还有：`library_id`、`display_name`、`table`、`source`（`request` / `parsed` / `default` / `llm` / `hitl`）、`scope`、`time`、`parse_mode`、`result_grain`、`hud_enabled`、`warnings`。`scope` / `time` 可做「朝阳区 / 近一年」芯片（本页不做过滤器也可忽略）。**禁止展示 sql**。
+
+`interrupted` 时还有：`prompt`、`library_options`、`resume_token`、`interrupt_reason`、`candidates`、`query`、`suggested_actions`。
+
+`hud_enabled` / 行上 `hud_available` 控制「详参」按钮显隐。
 
 `warnings` 常见值做成表下小字即可：`library_defaulted`（已默认分层标）、`library_conflict_nl_ignored`（问句里的库被树覆盖）、`hud_series_truncated`（后面的行没有详参）、`hud_series_failed`（表有了但曲线没有）。
 
+### 调用方使用说明
+
+仅顶栏点「解析 SQL」时调用。空 `query` 会 422，应拦在按钮上。请求发出后按钮保持「解析中…」直到 JSON 返回（可能要等 LLM 生成 SQL）。不要按 SSE 拆帧，也不再保存 `stream_id`。离开页可中断本次 HTTP 请求。
+
 ### 与人机协同恢复接口的衔接
 
-多数问句会直接 `library_hit` → `data_query_result`，**不必**再调恢复接口。
+多数问句会直接 `status=success`（`event=data_query_result`），**不必**再调恢复接口。
 
-只有监听到 **`data_query_library_input_required`**（问不清查哪类监测、要用户选库）时：
+只有返回 **`status=interrupted`**（`event=data_query_library_input_required`，问不清查哪类监测、要用户选库）时：
 
-(同上方 HITL人机交互说明)
-1. 本轮 SSE **到此结束**（随后会有 `finished`），不要继续等结果表。  
-2. 用该事件里的 `prompt`、`library_options` 弹出选库（选项不要写死）。  
+1. 本请求已经结束，不要再等结果表。  
+2. 用返回里的 `prompt`、`library_options` 弹出选库（选项不要写死）。  
 3. 用户选定后，再 `POST /data-query-agent/resume-stream`，带上：
 
 | 恢复接口入参 | 从哪来 |
 |--------------|--------|
 | `user_id` / `session_id` | 与本次 `run-stream` **相同** |
-| `resume_token` | 本事件返回的 `resume_token`（必传） |
+| `resume_token` | 本响应返回的 `resume_token`（必传） |
 | `library_id` | 用户从 `library_options[].id` 里点的那一项（如 `dxswj`） |
 | `abort` | 用户取消选库时传 `true`（可不传 `library_id`） |
 
-恢复接口是 **新开一条 SSE**，不是接着原连接推。选完后听 `data_query_library_hit` → `data_query_result`。树已经点了库、请求里带了合法 `library_id` 时，一般不会出这个事件。
+恢复接口同样是一次性 JSON，不是接着原连接推。选完后看 `status=success` 出表。树已经点了库、请求里带了合法 `library_id` 时，一般不会出选库结果。
 
 ### 接口示例
+
+请求：
 
 ```json
 {
@@ -1020,17 +1028,51 @@ HITL人机交互说明：
 }
 ```
 
+成功响应（节选）：
+
+```json
+{
+  "ok": true,
+  "status": "success",
+  "event": "data_query_result",
+  "request_id": "<id>",
+  "library_id": "fcb",
+  "source": "request",
+  "result_grain": "station",
+  "hud_enabled": true,
+  "columns": [{ "key": "station_id", "title": "测位 ID" }],
+  "list": [{ "station_id": "JZGZ", "hud_entity_id": "JZGZ", "hud_available": true }],
+  "hud_by_entity": {}
+}
+```
+
+需选库响应（节选）：
+
+```json
+{
+  "ok": true,
+  "status": "interrupted",
+  "event": "data_query_library_input_required",
+  "request_id": "<id>",
+  "resume_token": "<token>",
+  "prompt": "请选择要查询的监测类型",
+  "library_options": [{ "id": "fcb", "display_name": "分层标" }]
+}
+```
+
 ---
 
 ## 3.5 数据查询人机协同恢复接口
 
 ### 接口功能
 
-选库弹窗确认（或放弃）后继续出表。仅在数据查询解析流式接口出现 `data_query_library_input_required` 之后调用；未出现该事件不要打本接口。
+选库弹窗确认（或放弃）后继续出表。仅在 3.4 返回 `status=interrupted`（`event=data_query_library_input_required`）之后调用；未出现该结果不要打本接口。
 
 ### URL
 
 `http://[ip]:8083/data-query-agent/resume-stream`
+
+路径名保留 `resume-stream`。响应同样是一次性 JSON，不是 SSE。
 
 ### 鉴权方式
 
@@ -1057,38 +1099,36 @@ POST
 |------|------|------|----------------------------------------------------|
 | user_id | true | string | 须与 run-stream 相同                                   |
 | session_id | true | string | 须与 run-stream 相同                                   |
-| resume_token | true | string | 来自3.4接口中 `data_query_library_input_required` event |
+| resume_token | true | string | 来自 3.4 选库响应的 `resume_token` |
 | library_id | true* | string | 用户选中的库；`abort=true` 时可省略                           |
 | abort | false | boolean | `true` 表示放弃选库                                      |
 
-\*确认选库时必填。`resume_token`、`user_id`、`session_id` 必须来自上一轮 `run-stream` 的选库事件，不能新造。
+\*确认选库时必填。`resume_token`、`user_id`、`session_id` 必须来自上一轮 `run-stream` 的选库结果，不能新造。
 
-### 返回字段（SSE）
+### 返回字段
 
-新开 SSE（会再推一帧 `started`，新的 `stream_id`）。后续同解析流：`data_query_library_hit` → `data_query_result` → `finished`。停止用本轮新的 `started.stream_id`。
+与 3.4 同一套 JSON：`ok` / `status` / `event` / `request_id`，再按 `status` 带表或带选库字段。
 
-若 `library_id` 非法，可能再次推送 `data_query_library_input_required`（同一 `resume_token`），继续弹窗即可。
+若 `library_id` 非法，可能再次 `status=interrupted`（同一 `resume_token`），继续弹窗即可。`abort=true` 时 `status=cancelled`。
 
 ### 调用方使用说明
 
-本接口是 **新开一条 SSE**，不是接着原 `run-stream` 连接推。未收到选库事件不要调用。选库窗选项必须用上一轮 `library_options`，不要写死七个类型。
+本接口是 **另一次 HTTP JSON 请求**，不是接着 3.4 的连接推。未收到选库结果不要调用。选库窗选项必须用上一轮 `library_options`，不要写死七个类型。
 
-| 事件 / 字段 | 页面怎么加载 |
-|-------------|--------------|
-| 新的 `started.stream_id` | 覆盖保存，停止/离开页用这一轮的 id |
-| `data_query_library_hit` | 高亮用户刚选的库节点 |
-| `data_query_result` | 与 3.4 相同：换表 + `hud_by_entity` 点详参，勿再调 `GET /hud` |
-| 再次 `data_query_library_input_required` | `library_id` 非法；同一 `resume_token` 继续弹窗 |
-| `data_query_cancelled` | 用户 `abort=true`；关弹窗、按钮恢复，不要出表 |
-| `finished` | 按钮恢复 |
+| status / event | 页面怎么加载 |
+|----------------|--------------|
+| `success` / `data_query_result` | 与 3.4 相同：高亮刚选的库、换表 + `hud_by_entity` 点详参，勿再调 `GET /hud` |
+| `interrupted` / `data_query_library_input_required` | `library_id` 非法；同一 `resume_token` 继续弹窗 |
+| `cancelled` / `data_query_cancelled` | 用户 `abort=true`；关弹窗、按钮恢复，不要出表 |
+| `error` / `data_query_error` | 提示失败，按钮恢复 |
 
-### 与解析流式接口的衔接
+### 与解析接口的衔接
 
 | 步骤 | 做什么 |
 |------|--------|
-| 1 | 解析流收到 `data_query_library_input_required`，保存 `resume_token`，用 `library_options` 画下拉 |
+| 1 | 3.4 返回 `status=interrupted`，保存 `resume_token`，用 `library_options` 画下拉 |
 | 2 | 用户点确定：本接口 Body 传同一 `user_id`、`session_id`、`resume_token`，以及所选 `library_id` |
-| 3 | 用户点取消：同上，但 `abort=true`，本轮以 `data_query_cancelled` 结束 |
+| 3 | 用户点取消：同上，但 `abort=true`，本轮 `status=cancelled` |
 
 ### 接口示例
 
@@ -1103,11 +1143,11 @@ POST
 
 ---
 
-## 3.6 数据查询停止接口
+## 3.6 数据查询停止接口（解析主路径不再使用）
 
 ### 接口功能
 
-取消进行中的解析流。
+兼容保留。3.4 / 3.5 已改为一次性 JSON，响应里 **不再下发 `stream_id`**，前端主路径 **不要再调本接口**。离开页或用户点取消：中断进行中的 HTTP 请求即可。选库放弃走 3.5 `abort=true`。
 
 ### URL
 
@@ -1138,7 +1178,7 @@ POST
 |------|------|------|------|
 | user_id | true | string | 用户标识 |
 | session_id | true | string | 会话标识 |
-| stream_id | true | string | 来自 `started.stream_id` |
+| stream_id | true | string | 旧版 SSE `started.stream_id`；现行解析 JSON 无此字段 |
 
 ### 返回字段
 
@@ -1148,9 +1188,7 @@ POST
 
 ### 调用方使用说明
 
-离开页、点取消、或新开解析前，用当前流的 `started.stream_id` 调本接口。`ok=true` 只表示受理停止，随后原 SSE 会推 `data_query_cancelled` / `finished`。按钮恢复可点即可；不要用本接口清表。
-
-`stream_id` 必须来自 **正在进行的那一轮**（`run-stream` 或 `resume-stream` 各自有新的 `started`）。选库等待期间原轮已结束，一般不必再 stop。
+新接入不要依赖本接口。解析按钮在 JSON 返回前保持「解析中…」；用户取消选库用 3.5 `abort=true`。
 
 ### 接口示例
 
@@ -1158,7 +1196,7 @@ POST
 {
   "user_id": "u1",
   "session_id": "s1",
-  "stream_id": "<started.stream_id>"
+  "stream_id": "<legacy stream_id>"
 }
 ```
 
@@ -1942,9 +1980,8 @@ Body：
 | 七库名单 | GET | `/data-query-agent/libraries` |
 | 感知树 | GET | `/data-query-agent/tree` |
 | 浏览列表（进页默认 / 点树） | GET | `/data-query-agent/browse` |
-| 解析 SQL | POST | `/data-query-agent/run-stream` |
-| 选库后继续 | POST | `/data-query-agent/resume-stream` |
-| 停止 | POST | `/data-query-agent/stream/stop` |
+| 解析 SQL | POST | `/data-query-agent/run-stream`（一次性 JSON） |
+| 选库后继续 | POST | `/data-query-agent/resume-stream`（一次性 JSON） |
 | 浏览表详参 | GET | `/data-query-agent/hud` |
 
 ### A.4 知识库

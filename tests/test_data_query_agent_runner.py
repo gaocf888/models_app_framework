@@ -107,13 +107,6 @@ def _reset_hitl(monkeypatch: pytest.MonkeyPatch) -> None:
     get_app_config.cache_clear()
 
 
-async def _collect(aiter):
-    events = []
-    async for ev in aiter:
-        events.append(ev)
-    return events
-
-
 @pytest.mark.asyncio
 async def test_run_stream_success_path1() -> None:
     fake = _FakeNL2SQL()
@@ -124,20 +117,13 @@ async def test_run_stream_success_path1() -> None:
         query="朝阳区年沉降比较大的监测点",
         library_id="fcb",
     )
-    events = await _collect(runner.run_stream(req))
-    names = [e.get("event") for e in events]
-    assert names[0] == "started"
-    assert "data_query_library_hit" in names
-    assert "data_query_scope_parsed" in names
-    assert "data_query_result" in names
-    assert names[-1] == "finished"
-    hit = next(e for e in events if e["event"] == "data_query_library_hit")
-    assert hit["library_id"] == "fcb"
-    assert hit["source"] == "request"
-    assert hit["table"] == "t_data_wash_fcb"
-    scope_ev = next(e for e in events if e["event"] == "data_query_scope_parsed")
-    assert (scope_ev.get("scope") or {}).get("district") == "朝阳区"
-    result = next(e for e in events if e["event"] == "data_query_result")
+    result = await runner.run_stream(req)
+    assert result["status"] == "success"
+    assert result["event"] == "data_query_result"
+    assert result["library_id"] == "fcb"
+    assert result["source"] == "request"
+    assert result["table"] == "t_data_wash_fcb"
+    assert (result.get("scope") or {}).get("district") == "朝阳区"
     assert result["hud_enabled"] is True
     assert all(c.forced_tables == ["t_data_wash_fcb"] for c in fake.calls)
     assert all(c.analysis_type == "data_query" for c in fake.calls)
@@ -154,12 +140,11 @@ async def test_path2_parsed_daxing() -> None:
         session_id="sess1",
         query="大兴区有哪些分层监测点？",
     )
-    events = await _collect(runner.run_stream(req))
-    hit = next(e for e in events if e["event"] == "data_query_library_hit")
-    assert hit["source"] == "parsed"
-    assert hit["library_id"] == "fcb"
-    scope_ev = next(e for e in events if e["event"] == "data_query_scope_parsed")
-    assert (scope_ev.get("scope") or {}).get("district") == "大兴区"
+    result = await runner.run_stream(req)
+    assert result["source"] == "parsed"
+    assert result["library_id"] == "fcb"
+    assert result["event"] == "data_query_result"
+    assert (result.get("scope") or {}).get("district") == "大兴区"
     assert all(c.forced_tables == ["t_data_wash_fcb"] for c in fake.calls)
 
 
@@ -174,8 +159,8 @@ async def test_include_hud_false_only_q_list() -> None:
         library_id="fcb",
         options=DataQueryAgentOptions(include_hud=False),
     )
-    events = await _collect(runner.run_stream(req))
-    result = next(e for e in events if e["event"] == "data_query_result")
+    result = await runner.run_stream(req)
+    assert result["event"] == "data_query_result"
     assert result["hud_enabled"] is False
     assert "hud_by_station" not in result
     assert "hud_by_entity" not in result
@@ -192,19 +177,15 @@ async def test_district_grain_entity_hud() -> None:
         query="各区平均沉降",
         library_id="fcb",
     )
-    events = await _collect(runner.run_stream(req))
-    result = next(e for e in events if e["event"] == "data_query_result")
+    result = await runner.run_stream(req)
+    assert result["event"] == "data_query_result"
     assert result["result_grain"] == "district"
     assert result["hud_enabled"] is True
     assert result["list"][0]["hud_entity_type"] == "district"
     assert "朝阳区" in result["hud_by_entity"]
     assert result["hud_by_entity"]["朝阳区"]["series"]["agg"] == "avg"
     assert {c.plan_item_id for c in fake.calls} == {"q_list", "q_hud_series"}
-    progresses = [e for e in events if e["event"] == "data_query_nl2sql_progress"]
-    assert progresses[0]["q_list"] == "running"
-    assert progresses[-1]["q_list"] == "done"
-    finished = next(e for e in events if e["event"] == "finished")
-    assert finished.get("trace_id")
+    assert result.get("request_id")
 
 
 @pytest.mark.asyncio
@@ -218,10 +199,9 @@ async def test_explicit_district_overrides_query() -> None:
         library_id="fcb",
         district="大兴区",
     )
-    events = await _collect(runner.run_stream(req))
-    scope_ev = next(e for e in events if e["event"] == "data_query_scope_parsed")
-    assert (scope_ev.get("scope") or {}).get("district") == "大兴区"
-    result = next(e for e in events if e["event"] == "data_query_result")
+    result = await runner.run_stream(req)
+    assert result["event"] == "data_query_result"
+    assert (result.get("scope") or {}).get("district") == "大兴区"
     assert "scope_nl_overridden" in (result.get("warnings") or [])
 
 
@@ -235,8 +215,8 @@ async def test_city_grain_entity_hud() -> None:
         query="全市平均沉降",
         library_id="fcb",
     )
-    events = await _collect(runner.run_stream(req))
-    result = next(e for e in events if e["event"] == "data_query_result")
+    result = await runner.run_stream(req)
+    assert result["event"] == "data_query_result"
     assert result["result_grain"] == "city"
     assert result["hud_enabled"] is True
     assert result["list"][0]["hud_entity_id"] == "beijing"
@@ -254,8 +234,8 @@ async def test_jyb_forced_tables_not_fcb() -> None:
         query="朝阳区沉降大的点",
         library_id="jyb",
     )
-    events = await _collect(runner.run_stream(req))
-    assert any(e.get("event") == "data_query_result" for e in events)
+    result = await runner.run_stream(req)
+    assert result.get("event") == "data_query_result"
     assert fake.calls
     assert all(c.forced_tables == ["t_data_wash_jyb"] for c in fake.calls)
 
@@ -270,8 +250,8 @@ async def test_gnss_not_total_settle() -> None:
         query="朝阳区位移比较大的点",
         library_id="gnss",
     )
-    events = await _collect(runner.run_stream(req))
-    assert any(e.get("event") == "data_query_result" for e in events)
+    result = await runner.run_stream(req)
+    assert result.get("event") == "data_query_result"
     assert all(c.forced_tables == ["t_data_wash_gnss"] for c in fake.calls)
     assert all("t_data_wash_gnss" in (c.question or "") for c in fake.calls)
     assert all("total_settle" not in (c.question or "") for c in fake.calls)
@@ -282,11 +262,9 @@ async def test_hitl_then_resume() -> None:
     fake = _FakeNL2SQL()
     runner = DataQueryAgentGraphRunner(nl2sql=fake, stream_control=DataQueryAgentStreamControl())
     req = DataQueryAgentRunRequest(user_id="user1", session_id="sess1", query="查数据")
-    events = await _collect(runner.run_stream(req))
-    names = [e.get("event") for e in events]
-    assert "data_query_library_input_required" in names
-    assert "data_query_result" not in names
-    interrupt = next(e for e in events if e["event"] == "data_query_library_input_required")
+    interrupt = await runner.run_stream(req)
+    assert interrupt["event"] == "data_query_library_input_required"
+    assert interrupt["status"] == "interrupted"
     token = interrupt["resume_token"]
     assert token.startswith("dq_")
     resume = DataQueryAgentResumeRequest(
@@ -295,36 +273,31 @@ async def test_hitl_then_resume() -> None:
         resume_token=token,
         library_id="fcb",
     )
-    resumed = await _collect(runner.resume_stream(resume))
-    rnames = [e.get("event") for e in resumed]
-    assert "data_query_library_hit" in rnames
-    hit = next(e for e in resumed if e["event"] == "data_query_library_hit")
-    assert hit["source"] == "hitl"
-    assert "data_query_result" in rnames
-    assert rnames[-1] == "finished"
+    resumed = await runner.resume_stream(resume)
+    assert resumed["event"] == "data_query_result"
+    assert resumed["source"] == "hitl"
+    assert resumed["status"] == "success"
 
 
 @pytest.mark.asyncio
 async def test_resume_jyb_forced_tables() -> None:
     fake = _FakeNL2SQL()
     runner = DataQueryAgentGraphRunner(nl2sql=fake, stream_control=DataQueryAgentStreamControl())
-    events = await _collect(
-        runner.run_stream(DataQueryAgentRunRequest(user_id="user1", session_id="sess1", query="查数据"))
+    interrupt = await runner.run_stream(
+        DataQueryAgentRunRequest(user_id="user1", session_id="sess1", query="查数据")
     )
-    token = next(e["resume_token"] for e in events if e["event"] == "data_query_library_input_required")
-    resumed = await _collect(
-        runner.resume_stream(
-            DataQueryAgentResumeRequest(
-                user_id="user1",
-                session_id="sess1",
-                resume_token=token,
-                library_id="jyb",
-            )
+    token = interrupt["resume_token"]
+    resumed = await runner.resume_stream(
+        DataQueryAgentResumeRequest(
+            user_id="user1",
+            session_id="sess1",
+            resume_token=token,
+            library_id="jyb",
         )
     )
-    hit = next(e for e in resumed if e["event"] == "data_query_library_hit")
-    assert hit["library_id"] == "jyb"
-    assert hit["source"] == "hitl"
+    assert resumed["library_id"] == "jyb"
+    assert resumed["source"] == "hitl"
+    assert resumed["event"] == "data_query_result"
     assert fake.calls
     assert all(c.forced_tables == ["t_data_wash_jyb"] for c in fake.calls)
 
@@ -333,22 +306,20 @@ async def test_resume_jyb_forced_tables() -> None:
 async def test_resume_from_checkpoint_after_session_cleared() -> None:
     fake = _FakeNL2SQL()
     runner = DataQueryAgentGraphRunner(nl2sql=fake, stream_control=DataQueryAgentStreamControl())
-    events = await _collect(
-        runner.run_stream(DataQueryAgentRunRequest(user_id="user1", session_id="sess1", query="查数据"))
+    interrupt = await runner.run_stream(
+        DataQueryAgentRunRequest(user_id="user1", session_id="sess1", query="查数据")
     )
-    token = next(e["resume_token"] for e in events if e["event"] == "data_query_library_input_required")
+    token = interrupt["resume_token"]
     clear_memory_sessions_for_tests()
-    resumed = await _collect(
-        runner.resume_stream(
-            DataQueryAgentResumeRequest(
-                user_id="user1",
-                session_id="sess1",
-                resume_token=token,
-                library_id="jyb",
-            )
+    resumed = await runner.resume_stream(
+        DataQueryAgentResumeRequest(
+            user_id="user1",
+            session_id="sess1",
+            resume_token=token,
+            library_id="jyb",
         )
     )
-    assert any(e.get("event") == "data_query_result" for e in resumed)
+    assert resumed.get("event") == "data_query_result"
     assert all(c.forced_tables == ["t_data_wash_jyb"] for c in fake.calls)
 
 
@@ -357,21 +328,18 @@ async def test_resume_abort_cancelled() -> None:
     fake = _FakeNL2SQL()
     runner = DataQueryAgentGraphRunner(nl2sql=fake, stream_control=DataQueryAgentStreamControl())
     req = DataQueryAgentRunRequest(user_id="user1", session_id="sess1", query="查数据")
-    events = await _collect(runner.run_stream(req))
-    token = next(e["resume_token"] for e in events if e["event"] == "data_query_library_input_required")
-    resumed = await _collect(
-        runner.resume_stream(
-            DataQueryAgentResumeRequest(
-                user_id="user1",
-                session_id="sess1",
-                resume_token=token,
-                abort=True,
-            )
+    interrupt = await runner.run_stream(req)
+    token = interrupt["resume_token"]
+    resumed = await runner.resume_stream(
+        DataQueryAgentResumeRequest(
+            user_id="user1",
+            session_id="sess1",
+            resume_token=token,
+            abort=True,
         )
     )
-    names = [e.get("event") for e in resumed]
-    assert "data_query_cancelled" in names
-    assert names[-1] == "finished"
+    assert resumed["event"] == "data_query_cancelled"
+    assert resumed["status"] == "cancelled"
     assert not fake.calls
 
 
@@ -385,11 +353,10 @@ async def test_stop_before_acquire_no_result() -> None:
         query="朝阳区沉降",
         library_id="fcb",
     )
-    events = await _collect(runner.run_stream(req))
-    names = [e.get("event") for e in events]
-    assert names[0] == "started"
-    assert "data_query_cancelled" in names
-    assert "data_query_result" not in names
+    result = await runner.run_stream(req)
+    assert result["event"] == "data_query_cancelled"
+    assert result["status"] == "cancelled"
+    assert result.get("list") is None
     assert not fake.calls
 
 

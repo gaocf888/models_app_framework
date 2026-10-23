@@ -319,12 +319,12 @@ analysis_agent_finished         { result }                         # 按钮恢�
 | 路径 | 何时 | 谁提供列表 | HUD（行详情） |
 |------|------|------------|-----|
 | **浏览**（点树看表，不说人话） | 进页默认表、点树刷新 | `GET /data-query-agent/tree` 画树；`GET /data-query-agent/browse` 出表（默认全北京最新分层标 `fcb`，强制分页） | 浏览表无曲线：点行再请求 `GET /data-query-agent/hud`（按这一行补拉详情） |
-| **解析 SQL**（用一句话查） | 顶栏有问句并点「解析 SQL」 | `POST /data-query-agent/run-stream`（开始解析）推来的 `data_query_result`（最终结果：表+详情） | **同一包结果里**就有 `hud_by_entity`（按行找详情的字典；站点找不到时再用 `hud_by_station`），**不要**再请求 `GET /hud` |
+| **解析 SQL**（用一句话查） | 顶栏有问句并点「解析 SQL」 | `POST /data-query-agent/run-stream`（一次性 JSON；`event=data_query_result` 即表+详情） | **同一包结果里**就有 `hud_by_entity`（按行找详情的字典；站点找不到时再用 `hud_by_station`），**不要**再请求 `GET /hud` |
 
 鉴权：请求头带 `Authorization: Bearer <SERVICE_API_KEY>`（访问算法接口的口令）。算法端接口都在 `/data-query-agent/*`（数据查询智能体）。开关：`DATA_QUERY_AGENT_ENABLED`（总闸；关掉时返回 **503**「服务未开」，不是 **404**「没有这个地址」）。  
 进程须 `NL2SQL_BUSINESS_DOMAIN=subsidence`（告诉系统按地降所监测库工作，不要当成锅炉等其它业务）。`library_id`（监测库编号，如分层标=`fcb`）必须与 `GET /tree` 节点、`GET /libraries`（七库名单）、解析请求 **写成一样**。Java 网关只转发本仓接口，不再自己读监测表出树/默认表。
 
-SSE（服务端边算边往浏览器推消息，像直播，不用等全部算完才一次性返回）：类型是 `text/event-stream`，每一帧是 `data: {JSON}\n\n`，消息种类写在 JSON 的 **`event`** 字段（和综合分析、看图诊断同一套写法，方便网关转发）。不要把报告类的 `summary_delta`（逐字吐报告）当成查询结果表。
+解析 SQL / 选库恢复是 **一次性 JSON**（`Content-Type: application/json`），看返回体里的 **`status`** / **`event`**。不要按问答、报告那套 `text/event-stream` 去拆帧。不要把报告类的 `summary_delta`（逐字吐报告）当成查询结果表。
 
 ---
 
@@ -338,7 +338,7 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 | 感知树只读、不可点 | 树 **可点**：点库/区/站刷新列表走 `GET /data-query-agent/browse`（算法端直接读库，强制分页），**不要**再调 `run-stream`（解析 SQL） |
 | 进页固定 16 条演示站 | 默认表：`GET /browse` 不传 `library_id` 即分层标 `fcb` 代表标全部观测（`data_time` 倒序）；一请求一库，不做 fcb+jyb UNION |
 | 列「年滑速 mm/yr」、岩性、InSAR ID | **不造列**（库里没有就不要编一列出来）。年变化用「这一年最后一次读数减去最早一次」（`annual_settle_mm` 等）；岩性/层位在 HUD 里标记 `unavailable`（没有这块数据，别画空卡片）；**不弹选库** |
-| 解析即出表，无选库 | 问不清查哪类监测数据时 **HITL 选库**（人机协同：先暂停，弹出「请选择分层标/地下水/…」，选完再继续；技术上是中断 SSE → 调 `resume-stream`） |
+| 解析即出表，无选库 | 问不清查哪类监测数据时 **HITL 选库**（人机协同：先暂停，弹出「请选择分层标/地下水/…」，选完再继续；技术上是 3.4 返回 `status=interrupted` → 调 `resume-stream`） |
 | HUD 固定「监测站」模板，可编造策略/岩性 | HUD（行详情）跟 **这一行代表谁**（一个站 / 一个区 / 全市），不是跟「当前点了哪个库」死绑；`blocks` 不是 `ok` 就 **不画**（没有岩性/策略就留空，不要写假的）；解析一次把列表和详情 **同一包数据** 给齐 |
 | 服务端 CSV | 导出可由前端对 **当前表格** 做（浏览器里另存为）；不是算法必须提供的下载接口 |
 
@@ -368,10 +368,10 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 | UI | 行为 | 接口 |
 |----|------|------|
 | 输入框 | 自然语言（「朝阳区沉降比较大的点」这种）；有字才点得了按钮 | 不单独请求（还没点解析，不必调接口） |
-| 「解析 SQL」 | 文案改「解析中…」并禁用（防连点）；打开 SSE（页面边等边收进度） | `POST /data-query-agent/run-stream`（开始解析） |
-| 解析中再次点击 | 忽略或保持禁用 | 不要并行开第二路流（不要同时跑两次解析） |
+| 「解析 SQL」 | 文案改「解析中…」并禁用（防连点）；等这一次 JSON 返回 | `POST /data-query-agent/run-stream`（开始解析） |
+| 解析中再次点击 | 忽略或保持禁用 | 不要并行打第二次解析 |
 | 热点标签（通州… / 昌平…） | **只把文案填进输入框**（跟用户手打一样） | **不另做接口** |
-| 离开页 / 取消解析 | 协作取消（告诉后台别再算了） | `POST /data-query-agent/stream/stop` |
+| 离开页 / 取消解析 | 中断进行中的 HTTP 请求 | 不要再调 `stream/stop`（解析 JSON 不再下发 `stream_id`） |
 | 导出 CSV（可选） | 导 **当前表格** 行，非全库 | 前端本地另存；不打算法 |
 
 空 `query`（输入框没字）发请求会 **422**（参数不合法），应拦在按钮上，不要弹出系统报错。
@@ -399,7 +399,7 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 | 点 **库** 节点（如「分层标」） | 该节点高亮；右侧换成该监测方式 **代表标全部观测**（层位 0，按监测时间倒序；不是全部设备） | `GET /browse?library_id=fcb&page=1&page_size=20` |
 | 点 **区** 节点 | 右侧只显示该区代表标全部观测（时间倒序） | `GET /browse?library_id=&district=`；不打 `run-stream` |
 | 点 **站** 节点 | 右侧换成该场地 **全部设备 × 时间** 矩阵（行=监测时间，列=设备名如 `F9-1`，格=`total_settle`） | `GET /browse?library_id=&station_id=`；不打 `run-stream` |
-| 收到 `data_query_library_hit`（解析已经锁定哪一类库） | 高亮/选中对应 **库** 节点（即使用户没先点树，解析出「地下水」也要把树点到地下水） | SSE，见 §3.2 |
+| 解析成功返回里的 `library_id`（已经锁定哪一类库） | 高亮/选中对应 **库** 节点（即使用户没先点树，解析出「地下水」也要把树点到地下水） | 见 §3.2 |
 | 树选库后再点「解析 SQL」 | 请求带上该 `library_id`（告诉算法：按树上这种类型查） | `run-stream` |
 
 解析时树选的库和问句说的库不一致（例如树点了基岩标，问句却写「查 GNSS」）：**仍以树为准**，`warnings` 含 `library_conflict_nl_ignored`（后台记一笔「问句里的库被忽略了」），**不弹选库窗**（不要打断用户）。
@@ -447,7 +447,7 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 
 仅「锁定监测类型」失败时出现（例如只打「查数据」、一句里对比分层标和 GNSS、树上传来的库编号非法）。问句没写区/站/时间 **不要弹窗**（空 = 不限制，直接查）。
 
-收到 `data_query_library_input_required`（需要用户选库）后 **这一轮推送结束**（右侧还没有新表）。弹出选库窗：
+3.4 返回 `status=interrupted`（`event=data_query_library_input_required`，需要用户选库）后 **这一次请求已经结束**（右侧还没有新表）。弹出选库窗：
 
 | 字段 | 说明（界面） |
 |------|------|
@@ -455,7 +455,7 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 | 选项 | 事件 `library_options`（窗里的卡片/下拉：分层标、地下水…按分组排列）；**不要在代码里写死七个名字**，以后加库只改配置 |
 | 建议高亮 | `candidates` 对应项 `suggested=true`（系统觉得比较像的那几个可以描边） |
 | 确认 | 用户点某一种类型后 `POST /resume-stream`（带着刚才的 `resume_token` 和选中的库，继续出表） |
-| 放弃 | 点取消：`abort=true` 或离开页走 `stream/stop`（按钮恢复成「解析 SQL」，表保持点选库之前的样子） |
+| 放弃 | 点取消：`abort=true`（按钮恢复成「解析 SQL」，表保持点选库之前的样子） |
 
 `user_id` / `session_id` 必须与点「解析 SQL」时同一套（同一人、同一会话）。查数失败（SQL 出错）走 `data_query_error`（页面提示失败即可），**不要再弹选库**（库已经定了，是取数失败不是类型不清）。
 
@@ -482,9 +482,8 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 | 方法 | 路径 | 谁调用（界面） | 说明 |
 |------|------|--------|------|
 | GET | `/data-query-agent/libraries` | 选库弹窗 / 联调 | 七种监测类型名单；和弹窗选项同一份 |
-| POST | `/data-query-agent/run-stream` | 点「解析 SQL」 | 主入口，边解析边推消息 |
+| POST | `/data-query-agent/run-stream` | 点「解析 SQL」 | 主入口，一次性 JSON |
 | POST | `/data-query-agent/resume-stream` | 选库弹窗点确定之后 | 接着出表；用同一次查询的编号把前后两段连起来 |
-| POST | `/data-query-agent/stream/stop` | 离开本页 / 点取消 | 带上开始解析时记下的 `stream_id`（这一路解析的编号） |
 | GET | `/data-query-agent/hud` | **仅点树出来的表**上点「详参」 | 按这一行补拉详情；解析出的表不要用 |
 | GET | `/data-query-agent/traces` | 运维后台，用户页不做 | 查询记录 |
 | GET | `/data-query-agent/traces/stats` | 运维 | 汇总 |
@@ -514,25 +513,20 @@ SSE（服务端边算边往浏览器推消息，像直播，不用等全部算�
 | `options.expose_sql` | 否 | 默认不展示 SQL；联调打开才在结果里带出语句 |
 | `options.max_rows` | 否 | 表最多多少行，默认 500 |
 
-`resume-stream`：必须带选库弹窗里记下的 `resume_token`（这一次暂停的凭证）；`library_id` 是用户点中的那种监测类型；`abort=true` 表示点了「放弃」。  
-`stream/stop`：`{ "user_id", "session_id", "stream_id" }` → 按钮恢复可点。
+`resume-stream`：必须带选库弹窗里记下的 `resume_token`（这一次暂停的凭证）；`library_id` 是用户点中的那种监测类型；`abort=true` 表示点了「放弃」。
 
-#### 3.2.2 SSE 事件序（解析过程中页面依次收到的消息）
+#### 3.2.2 解析 JSON 结果（一次请求一份）
 
-每一帧都有 `event`（这是哪一种消息）、`request_id`（这一次点「解析 SQL」的编号，选库前后相同）。需要选库时这一轮连接先结束；用户选完再开一条新连接（和看图诊断选范围的体验一样：先弹窗，再继续转圈）。
+响应是普通 JSON，含 `status`、`event`、`request_id`（这一次点「解析 SQL」的编号，选库前后相同）。需要选库时这一次请求先返回 `interrupted`；用户选完再打 `resume-stream`（同样一次性 JSON）。
 
-不需要选库（树已点库，或问句已经能判断是分层标/地下水等）时，用户看到的顺序大约是：按钮变「解析中…」→ 左侧树跳到对应库 →（可选）出表前的等待 → 右侧换表 → 按钮恢复。对应消息：
+不需要选库（树已点库，或问句已经能判断是分层标/地下水等）时，用户看到的顺序大约是：按钮变「解析中…」→ 等返回 → 左侧树跳到对应库、右侧换表 → 按钮恢复。对应结果：
 
 ```text
-started                         { request_id, stream_id }          # 开始转圈，记下 stream_id 以便取消
-data_query_library_hit          { library_id, display_name, ... } # 树高亮「分层标」等
-data_query_scope_parsed         { scope, time, result_grain }     # 可选：芯片展示「朝阳区 / 近一年」（不做过滤器也可忽略）
-data_query_nl2sql_progress      { q_list, q_hud_series }          # 可选：底部「正在查列表 / 正在查曲线」
-data_query_result               { columns, list, hud_by_entity }  # 换表 + 详情已在包里
-finished                        { status=success }                # 按钮恢复「解析 SQL」
+status=success, event=data_query_result
+  { request_id, library_id, source, scope, time, columns, list, hud_by_entity }
 ```
 
-记下 `started.stream_id` 供取消。`library_hit.source`（库是怎么定下来的，界面上都是高亮树）：
+`source`（库是怎么定下来的，界面上都是高亮树）：
 
 | `source` | 含义 | 界面 |
 |----------|------|------|
@@ -542,12 +536,12 @@ finished                        { status=success }                # 按钮恢复
 | `llm` | 口语（如「水位井」）由模型补上 | 同 parsed，高亮对应库 |
 | `hitl` | 用户刚在弹窗里选的 | 高亮所选 |
 
-需要选库时：`started` → `data_query_library_input_required`（弹出「请选择数据类型」，含选项和 `resume_token`）→ 本轮结束、表还没换 → 用户点一种类型 → `resume-stream` → 再走高亮树 → 出表 → 结束。
+需要选库时：3.4 返回 `status=interrupted`（`event=data_query_library_input_required`，弹出「请选择数据类型」，含选项和 `resume_token`）→ 表还没换 → 用户点一种类型 → `resume-stream` → 高亮树并出表。
 
 `interrupt_reason`（为何弹窗，可用来换提示语）：`library_unresolved`（完全看不出查哪类，如「查数据」）/ `library_ambiguous`（一句里两类，如「对比分层标和 GNSS」）/ `library_id_invalid`（树上传来的代号系统不认识）。
 
-取消：`data_query_cancelled` + 结束状态 cancelled（按钮恢复；**不要**把转圈时闪过的半截表当成查成功）。  
-失败：`data_query_error`（页面 toast/横幅展示失败原因即可）+ 结束状态 error。
+取消选库：`status=cancelled`（`event=data_query_cancelled`；按钮恢复；**不要**把上一张浏览表清掉）。  
+失败：`status=error`（`event=data_query_error`，页面 toast/横幅展示失败原因即可）。
 
 #### 3.2.3 `data_query_result` 示例（右侧表 + 点行详情的数据都在这里）
 
@@ -561,6 +555,8 @@ HUD 面板与 `GET /hud` 返回的 `hud` 同一套结构。区行：钥匙是「
 
 ```json
 {
+  "ok": true,
+  "status": "success",
   "event": "data_query_result",
   "library_id": "fcb",
   "result_grain": "station",
@@ -620,11 +616,10 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 | 刚进页看到的表 / 点左侧树刷新右侧表 | GET | `/data-query-agent/browse`（分页；默认 `library_id=fcb`） |
 | 左侧感知树有哪些库、区、站 | GET | `/data-query-agent/tree`；库代号用 `fcb` 等，不要传「分层标」 |
 | 选库弹窗里的选项 / 核对七种监测类型 | GET | `/data-query-agent/libraries` |
-| 顶栏点「解析 SQL」 | POST | `/data-query-agent/run-stream`（边解析边推消息） |
-| 选库弹窗点确定后继续出表 | POST | `/data-query-agent/resume-stream` |
-| 离开页或取消「解析中」 | POST | `/data-query-agent/stream/stop` |
+| 顶栏点「解析 SQL」 | POST | `/data-query-agent/run-stream`（一次性 JSON） |
+| 选库弹窗点确定后继续出表 | POST | `/data-query-agent/resume-stream`（一次性 JSON） |
 | 点树出来的表上点「详参」 | GET | `/data-query-agent/hud` |
-| 解析完成后的表和详参数据 | SSE | 事件 `data_query_result`（同一次解析里就带齐） |
+| 解析完成后的表和详参数据 | JSON | `event=data_query_result`（同一次响应里就带齐） |
 | 运维看历史解析记录 | GET | `/data-query-agent/traces` 等（用户页不做） |
 
 本页可不做（界面上也不要做）：多维过滤器、点地图筛点、向算法要 CSV 文件、第 N 层详情、把 `POST /nl2sql/query` 当「解析 SQL」、跳去综合分析报告、走智能客服查数。
@@ -639,7 +634,7 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 - 用户只说「沉降」、树上也没点库时，解析 **只查分层标**（树会亮到分层标）；进页默认表也是分层标（`GET /browse` 不传 `library_id`），不是 fcb+jyb 拼表。  
 - 选库弹窗的选项必须用推送过来的名单（或 `GET /libraries`），不要在页面里写死七个类型。  
 - 「各区平均 / 全市平均」的折线是该区或全市的日平均；**不要拿某一个站的曲线**画成朝阳区或全市。  
-- 输入框没字不要点解析（会 422）；取消解析要带上开始时记下的流编号。
+- 输入框没字不要点解析（会 422）；解析中取消可中断 HTTP，不要再调 `stream/stop`。
 
 ---
 

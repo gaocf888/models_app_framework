@@ -139,7 +139,7 @@
       <a href="./knowledge-base.html">知识库</a>
     </nav>
     <h1>数据查询 <span style="color:var(--accent);font-size:0.85em">地面沉降</span></h1>
-    <p class="sub">浏览：<code>GET /tree</code> + <code>GET /browse</code>；解析：<code>POST /run-stream</code> + HITL <code>/resume-stream</code>。点树不打 run-stream；禁止展示 SQL。对照接口文档 §3。</p>
+    <p class="sub">浏览：<code>GET /tree</code> + <code>GET /browse</code>；解析：<code>POST /run-stream</code> + HITL <code>/resume-stream</code>（一次性 JSON）。点树不打 run-stream；禁止展示 SQL。对照接口文档 §3。</p>
     <div class="banner">
       需 <code>DATA_QUERY_AGENT_ENABLED=true</code>。不调用 <code>/libraries</code>、<code>/hud</code>（解析结果用 <code>hud_by_entity</code>）。
       正式前端参照 <a href="http://localhost:3300" target="_blank" rel="noopener">localhost:3300</a>（admin/123456）。
@@ -180,7 +180,7 @@
             <button type="button" class="warn" id="btnStop" disabled>停止</button>
             <button type="button" class="secondary" id="btnBrowse">按当前树浏览</button>
             <label style="margin:0;display:flex;align-items:center;gap:0.35rem;color:var(--text);font-size:0.75rem;">
-              <input type="checkbox" id="debugSse" /> 调试 SSE
+              <input type="checkbox" id="debugJson" /> 调试 JSON
             </label>
           </div>
           <div id="scopeChips" class="chips"></div>
@@ -244,7 +244,7 @@
   const state = {
     sel: { library_id: "", district: "", station_id: "" },
     page: 1, total: 0, mode: "browse",
-    abortCtrl: null, busy: false, streamId: "",
+    abortCtrl: null, busy: false,
     resumeToken: "", hitlPick: "",
     hudByEntity: {}, hudByStation: {},
     columns: [], list: [],
@@ -293,7 +293,7 @@
     $("btnParse").textContent = b ? "解析中…" : "解析 SQL";
   }
   function logEvent(line) {
-    if (!$("debugSse").checked) return;
+    if (!$("debugJson").checked) return;
     const el = $("eventLog");
     const ts = new Date().toISOString().slice(11, 23);
     el.textContent += "[" + ts + "] " + line + "\n";
@@ -308,29 +308,6 @@
     if (s.district) parts.push("district=" + s.district);
     if (s.station_id) parts.push("station_id=" + s.station_id);
     $("selHint").textContent = "当前选择：" + (parts.length ? parts.join(" · ") : "全量默认 browse（未点树）");
-  }
-
-  async function readSse(res, onEvent) {
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const parts = buf.split("\n\n");
-      buf = parts.pop() || "";
-      for (const block of parts) {
-        const lines = block.split("\n");
-        let data = "";
-        for (const line of lines) {
-          if (line.startsWith("data:")) data += line.slice(5).trim();
-        }
-        if (!data || data === "[DONE]") continue;
-        try { onEvent(JSON.parse(data)); }
-        catch (_) { logEvent("parse_err " + data.slice(0, 120)); }
-      }
-    }
   }
 
   function clearTreeHighlight() {
@@ -460,7 +437,7 @@
       : (state.list[0] ? Object.keys(state.list[0]).map((k) => ({ key: k, label: k })) : []);
     cols.forEach((c) => {
       const th = document.createElement("th");
-      th.textContent = c.label || c.key || c.name || "";
+      th.textContent = c.title || c.label || c.key || c.name || "";
       trh.appendChild(th);
     });
     if (opts.showHud) {
@@ -620,38 +597,47 @@
     $("hitlBg").classList.add("show");
   }
 
-  function handleParseEvent(ev) {
+  function renderScopeChips(ev) {
+    const chips = $("scopeChips");
+    chips.replaceChildren();
+    const scope = ev.scope || {};
+    const time = ev.time || {};
+    const items = [
+      ["library_id", ev.library_id],
+      ["district", scope.district],
+      ["station_id", scope.station_id],
+      ["time_tag", time.time_window_tag],
+    ];
+    items.forEach(([k, v]) => {
+      if (!v) return;
+      const c = document.createElement("span");
+      c.className = "chip";
+      c.textContent = k + ": " + v;
+      chips.appendChild(c);
+    });
+  }
+
+  function handleParseResult(ev) {
     logEvent(JSON.stringify(ev).slice(0, 280));
     const name = ev.event || "";
-    if (name === "started" || ev.stream_id) {
-      state.streamId = ev.stream_id || state.streamId;
-      if (name === "started") setStatus("已连接 stream_id=" + state.streamId);
-    }
-    if (name === "data_query_library_hit" && ev.library_id) {
+    if (ev.library_id && name !== "data_query_library_input_required") {
       state.sel.library_id = ev.library_id;
       highlightLibrary(ev.library_id);
       updateSelHint();
     }
-    if (name === "data_query_library_input_required") {
+    if (name === "data_query_library_input_required" || ev.status === "interrupted") {
       showHitl(ev);
       setStatus("需选库（HITL）。");
+      $("meta").textContent = JSON.stringify({
+        status: ev.status,
+        event: name,
+        request_id: ev.request_id,
+        interrupt_reason: ev.interrupt_reason,
+      }, null, 2);
+      return;
     }
-    if (name === "data_query_scope_parsed") {
-      const chips = $("scopeChips");
-      chips.replaceChildren();
-      ["district", "time_range", "library_id", "station_id"].forEach((k) => {
-        if (ev[k]) {
-          const c = document.createElement("span");
-          c.className = "chip";
-          c.textContent = k + ": " + ev[k];
-          chips.appendChild(c);
-        }
-      });
-    }
-    if (name === "data_query_nl2sql_progress") {
-      $("meta").textContent = (ev.message || ev.step || JSON.stringify(ev)).toString();
-    }
-    if (name === "data_query_result") {
+    renderScopeChips(ev);
+    if (name === "data_query_result" || ev.status === "success") {
       state.mode = "parse";
       renderTable(ev.columns || [], ev.list || [], {
         title: "解析结果",
@@ -664,44 +650,47 @@
       $("warnBox").textContent = Array.isArray(ev.warnings) && ev.warnings.length
         ? "warnings: " + ev.warnings.join(", ")
         : "";
+      const meta = {
+        status: ev.status,
+        event: name,
+        request_id: ev.request_id,
+        library_id: ev.library_id,
+        result_grain: ev.result_grain,
+        hud_enabled: ev.hud_enabled,
+        rows: (ev.list || []).length,
+      };
+      $("meta").textContent = JSON.stringify(meta, null, 2);
+      setStatus("解析完成。");
     }
-    if (name === "data_query_error" || (name !== "finished" && ev.error && !ev.delta)) {
+    if (name === "data_query_error" || ev.status === "error") {
       const err = ev.message || ev.error || ev;
       showErr(typeof err === "string" ? err : JSON.stringify(err));
+      $("meta").textContent = JSON.stringify({ status: ev.status, event: name, error: ev.error }, null, 2);
     }
-    if (name === "data_query_cancelled") setStatus("已取消。");
-    if (name === "finished") {
-      const meta = Object.assign({}, ev.meta || ev);
-      delete meta.sql; delete meta.nl2sql_sql; delete meta.event;
-      $("meta").textContent = JSON.stringify(meta, null, 2);
-      if (!state.resumeToken || !$("hitlBg").classList.contains("show")) {
-        setStatus("解析完成。");
-      }
-    }
+    if (name === "data_query_cancelled" || ev.status === "cancelled") setStatus("已取消。");
   }
 
-  async function runStream(url, body) {
+  async function runParse(url, body) {
     showErr("");
     persistBase();
     setBusy(true);
-    state.streamId = "";
     state.resumeToken = "";
     $("eventLog").textContent = "";
     $("scopeChips").replaceChildren();
-    $("meta").textContent = "流式中…";
+    $("meta").textContent = "请求中…";
     state.abortCtrl = new AbortController();
     try {
       const res = await fetch(baseUrl() + url, {
         method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
+        headers: authHeaders({ "Content-Type": "application/json", Accept: "application/json" }),
         body: JSON.stringify(body),
         signal: state.abortCtrl.signal,
       });
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(res.status + " " + t.slice(0, 400));
-      }
-      await readSse(res, handleParseEvent);
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { throw new Error(res.status + " " + text.slice(0, 400)); }
+      if (!res.ok) throw new Error((data && (data.detail || data.message)) || (res.status + " " + text.slice(0, 400)));
+      handleParseResult(data);
     } catch (e) {
       if (e && e.name === "AbortError") setStatus("已中断。");
       else {
@@ -727,7 +716,7 @@
     if (state.sel.district) body.district = state.sel.district;
     if (state.sel.station_id) body.station_id = state.sel.station_id;
     setStatus("请求 run-stream…");
-    await runStream("/data-query-agent/run-stream", body);
+    await runParse("/data-query-agent/run-stream", body);
   }
 
   async function resumeHitl() {
@@ -740,40 +729,33 @@
       library_id: state.hitlPick,
     };
     setStatus("请求 resume-stream…");
-    await runStream("/data-query-agent/resume-stream", body);
+    await runParse("/data-query-agent/resume-stream", body);
   }
 
-  async function stopStream() {
-    if (!state.streamId) return;
-    try {
-      await fetch(baseUrl() + "/data-query-agent/stream/stop", {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          user_id: $("userId").value.trim(),
-          session_id: $("sessionId").value.trim(),
-          stream_id: state.streamId,
-        }),
-      });
-      setStatus("已请求停止。");
-    } catch (e) {
-      showErr("停止失败：" + e);
-    }
+  async function stopParse() {
     if (state.abortCtrl) try { state.abortCtrl.abort(); } catch (_) {}
+    else setStatus("当前没有进行中的解析。");
   }
 
   $("btnLoadTree").addEventListener("click", loadTree);
   $("btnBrowse").addEventListener("click", () => { state.page = 1; doBrowse(); });
   $("btnParse").addEventListener("click", parse);
-  $("btnStop").addEventListener("click", stopStream);
+  $("btnStop").addEventListener("click", stopParse);
   $("btnPrev").addEventListener("click", () => { if (state.page > 1) { state.page--; doBrowse(); } });
   $("btnNext").addEventListener("click", () => { state.page++; doBrowse(); });
   $("pageSize").addEventListener("change", () => { state.page = 1; if (state.mode === "browse") doBrowse(); });
   $("btnHitlOk").addEventListener("click", resumeHitl);
   $("btnHitlCancel").addEventListener("click", () => {
+    const token = state.resumeToken;
     $("hitlBg").classList.remove("show");
     state.resumeToken = "";
-    setStatus("已取消选库。");
+    if (!token) { setStatus("已取消选库。"); return; }
+    runParse("/data-query-agent/resume-stream", {
+      user_id: $("userId").value.trim(),
+      session_id: $("sessionId").value.trim(),
+      resume_token: token,
+      abort: true,
+    });
   });
   $("btnHudClose").addEventListener("click", () => $("hudBg").classList.remove("show"));
   $("hudBg").addEventListener("click", (e) => { if (e.target === $("hudBg")) $("hudBg").classList.remove("show"); });

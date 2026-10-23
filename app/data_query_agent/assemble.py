@@ -481,7 +481,7 @@ def assemble_entity_hud(
     annual_window: dict[str, str] | None = None,
     period_mode: bool = False,
 ) -> dict[str, Any]:
-    """单实体 HUD，结构与 run-stream 的 hud_by_entity[id] 一致；不套用列表行数上限。"""
+    """单实体 HUD，结构与解析结果 hud_by_entity[id] 一致；不套用列表行数上限。"""
     cfg = get_app_config().data_query_agent
     warnings = list(extra_warnings or [])
     entity_type = "station" if grain in ("station", "station_series") else grain

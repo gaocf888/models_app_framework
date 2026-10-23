@@ -8,7 +8,7 @@ from __future__ import annotations
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse
 from typing import Annotated, Any
 
 from app.core.config import get_app_config
@@ -21,6 +21,7 @@ from app.models.data_query_agent import (
     DataQueryAgentLibrariesResponse,
     DataQueryAgentResumeRequest,
     DataQueryAgentRunRequest,
+    DataQueryAgentRunResponse,
     DataQueryAgentStreamStopRequest,
     DataQueryAgentStreamStopResponse,
     DataQueryAgentTraceListResponse,
@@ -59,26 +60,28 @@ async def list_libraries() -> DataQueryAgentLibrariesResponse:
 
 @router.post(
     "/run-stream",
-    summary="数据查询智能体流式执行",
-    response_description="SSE：started → data_query_* → finished / HITL 中断",
+    response_model=DataQueryAgentRunResponse,
+    summary="数据查询智能体解析执行（一次性 JSON）",
+    response_description="JSON：success 出表 / interrupted 选库 / error / cancelled",
 )
-async def run_data_query_stream(data: DataQueryAgentRunRequest) -> StreamingResponse:
+async def run_data_query_stream(data: DataQueryAgentRunRequest) -> JSONResponse:
     return await service.run_stream(data)
 
 
 @router.post(
     "/resume-stream",
-    summary="选库后续流（SSE）",
-    response_description="从 library HITL 断点继续：library_hit → scope → result",
+    response_model=DataQueryAgentRunResponse,
+    summary="选库后续（一次性 JSON）",
+    response_description="从 library HITL 断点继续：出表或再次选库",
 )
-async def resume_data_query_stream(data: DataQueryAgentResumeRequest) -> StreamingResponse:
+async def resume_data_query_stream(data: DataQueryAgentResumeRequest) -> JSONResponse:
     return await service.resume_stream(data)
 
 
 @router.post(
     "/stream/stop",
     response_model=DataQueryAgentStreamStopResponse,
-    summary="中断指定数据查询流式任务",
+    summary="中断指定数据查询任务（解析/恢复 JSON 路径不再下发 stream_id）",
 )
 async def stop_data_query_stream(
     data: DataQueryAgentStreamStopRequest,
@@ -135,7 +138,7 @@ async def get_data_query_trace_alias(request_id: str) -> dict[str, Any]:
 @router.get(
     "/hud",
     response_model=DataQueryAgentHudResponse,
-    summary="按实体补拉 HUD（浏览表点行；解析路径仍用 run-stream 一组 payload）",
+    summary="按实体补拉 HUD（浏览表点行；解析路径用同一包 payload 的 hud_by_entity）",
 )
 async def get_data_query_hud(
     entity_type: Annotated[str, Query(description="station | district | city")],

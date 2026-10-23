@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-"""数据查询智能体 HTTP 门面：SSE 编码，不承载业务编排。"""
+"""数据查询智能体 HTTP 门面：解析/恢复返回一次性 JSON，不承载业务编排。"""
 
-import json
-from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi.responses import StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 
 from app.core.logging import get_logger
 from app.data_query_agent.graph.runner import DataQueryAgentGraphRunner
@@ -28,16 +27,8 @@ from app.services.data_query_agent_trace_store import get_data_query_agent_trace
 logger = get_logger(__name__)
 
 
-def _sse_json_default(value: Any) -> Any:
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    return str(value)
-
-
-def _encode_sse(event: dict[str, Any]) -> bytes:
-    return f"data: {json.dumps(event, ensure_ascii=False, default=_sse_json_default)}\n\n".encode("utf-8")
+def _json_response(payload: dict[str, Any]) -> JSONResponse:
+    return JSONResponse(content=jsonable_encoder(payload, custom_encoder={Decimal: str}))
 
 
 class DataQueryAgentService:
@@ -66,23 +57,13 @@ class DataQueryAgentService:
         await self._stream_ctrl.cancel_stream(user_id, session_id, stream_id)
         return DataQueryAgentStreamStopResponse(ok=True, stream_id=stream_id)
 
-    async def run_stream(self, data: DataQueryAgentRunRequest) -> StreamingResponse:
-        runner = self._runner_or_create
+    async def run_stream(self, data: DataQueryAgentRunRequest) -> JSONResponse:
+        payload = await self._runner_or_create.run_stream(data)
+        return _json_response(payload)
 
-        async def gen():
-            async for event in runner.run_stream(data):
-                yield _encode_sse(event)
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
-
-    async def resume_stream(self, data: DataQueryAgentResumeRequest) -> StreamingResponse:
-        runner = self._runner_or_create
-
-        async def gen():
-            async for event in runner.resume_stream(data):
-                yield _encode_sse(event)
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
+    async def resume_stream(self, data: DataQueryAgentResumeRequest) -> JSONResponse:
+        payload = await self._runner_or_create.resume_stream(data)
+        return _json_response(payload)
 
     def get_trace(self, request_id: str) -> dict[str, Any] | None:
         return self._trace_store.get(request_id)
