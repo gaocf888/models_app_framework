@@ -515,3 +515,10 @@ def test_analysis_prompt_version_and_col_priority_subsidence(monkeypatch: pytest
     assert "t_data_wash_fcb" not in hint
     assert "suggested_filters" not in hint
     assert "DISTINCT ON" not in hint
+    # 区级问句追加周期区均聚合约束
+    district_hint = _chatbot_sql_gen_extra_hint(
+        "哪些行政区近期沉降相对偏大？", grain="district"
+    )
+    assert "GROUP BY" in district_hint or "行政区" in district_hint
+    assert "AVG" in district_hint or "区均" in district_hint
+    assert "DISTINCT ON" not in district_hint

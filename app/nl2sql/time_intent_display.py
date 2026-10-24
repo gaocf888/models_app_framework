@@ -547,6 +547,12 @@ def extract_time_window_from_question(question: str) -> tuple[str, str, str] | N
     # 显式「最新」优先于默认昨天回落：走每站最新模板，不注入日历日窗
     if is_latest_per_station_question(q):
         return latest_per_station_sql_window()
+
+    # 裸「近期 / 最近」（无 N 天/周/月）：默认滚动近 7 天（与「近一周」同 tag）
+    # 「近一周 / 最近一个月」等已在上文命中，不会落到此处。
+    if "近期" in q or "最近" in q:
+        return ("DATE_SUB(NOW(), INTERVAL 7 DAY)", "NOW()", "recent_7_days")
+
     return None
 
 

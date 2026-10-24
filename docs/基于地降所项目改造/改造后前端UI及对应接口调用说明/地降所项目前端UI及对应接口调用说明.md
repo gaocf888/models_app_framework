@@ -662,18 +662,19 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 
 ![改造后知识管理主页面](kb-page-redesign.png)
 
-布局：顶栏搜索 +「+ 上传」｜左侧分类 ｜右侧文档表。
+布局：顶栏搜索 +「+ 上传」｜流水线状态芯片 ｜左侧分类 ｜右侧文档表。
 
 #### 进入页面
 
 `GET /rag/namespaces` → 画左侧分类（丢掉 NL2SQL 三库）。  
-默认选中「所有文献」，再 `GET /rag/documents/overview?limit=20&offset=0`（不传 `namespace`）。
+默认选中「所有文献」，再 `GET /rag/documents/overview?limit=20&offset=0`（不传 `namespace`）。overview 不含 `nl2sql_schema` / `nl2sql_biz_knowledge` / `nl2sql_qa_examples`；不要调 `overview_all`。
 
 #### 顶栏
 
 | UI | 行为 | 接口 |
 |----|------|------|
-| 搜索框 +「搜索」 | 当前分类下文档名**包含**；「全部」不传 ns | `GET /rag/documents/overview?doc_name_contains={q}&namespace={可选}&limit=&offset=` |
+| 搜索框 +「搜索」 | 当前分类下文档名**包含**；「全部」不传 ns | `GET /rag/documents/overview?doc_name_contains={q}&namespace={可选}&limit=&offset=&pipeline_status={可选}` |
+| 流水线状态芯片 | 全部文献 / 已上传 / 摄入中 / 已摄入 / 摄入失败；可点击过滤右侧表 | 数量用 `pipeline_counts`；点芯片带 `pipeline_status=` |
 | + 上传 | 打开上传对话框，成功后留在本页刷新列表 | 见下方「上传对话框」 |
 
 占位符改为「搜索文档名称…」，不要做成语义检索。
@@ -734,7 +735,8 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 
 #### 右侧表格
 
-主列表只用 overview(/rag/documents/overview?limit=20&offset=0接口)，不必再调 `GET /rag/documents/meta`。分页：`limit` / `offset` / `total_documents`。
+主列表只用 overview（`GET /rag/documents/overview`），不必再调 `GET /rag/documents/meta`。分页：`limit` / `offset` / `total_documents`。  
+流水线芯片数量用同一次响应的 `pipeline_counts`（`all` / `uploaded` / `ingesting` / `ingested` / `failed`）。点芯片只给列表加 `pipeline_status`，不要让计数再被当前芯片滤成 0。
 
 | 列 | 字段 |
 |----|------|
@@ -752,10 +754,10 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 
 | 判定 | 展示 |
 |------|------|
-| `last_job_status` 为 `PENDING` / `RUNNING` | 摄入中 |
-| `status=UPLOADED` | 已上传 |
-| `status=SUCCESS` | 已摄入 |
-| `status=FAILED` | 摄入失败 |
+| `last_job_status=PENDING`，或 `RUNNING` 且 `status` 尚非 SUCCESS/FAILED | 摄入中 |
+| `status=UPLOADED`（且非摄入中） | 已上传 |
+| `status=SUCCESS`（含历史残留 `last_job_status=RUNNING`） | 已摄入 |
+| `status=FAILED`（且非摄入中） | 摄入失败 |
 
 **行操作：**
 
@@ -805,7 +807,7 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 |------|------|------|
 | 侧栏分类 / 启用 / 优先级 / 文档数 | GET | `/rag/namespaces` |
 | 改启用与优先级 | PATCH | `/rag/namespaces/{namespace}/kb-config` |
-| 文档列表 / 分页 / 按分类 | GET | `/rag/documents/overview` |
+| 文档列表 / 分页 / 按分类 / 流水线芯片 | GET | `/rag/documents/overview`（`pipeline_counts`；点芯片加 `pipeline_status=`） |
 | 顶栏名称模糊 | GET | `/rag/documents/overview?doc_name_contains=` |
 | 上传（不摄入） | POST | `/rag/documents/upload` |
 | 摄入 / 失败后重灌 | POST | `/rag/jobs/ingest`（`content`=对象键） |
@@ -815,7 +817,7 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 | 删除文档 | POST | `/rag/documents/delete` |
 | 清空分类 | POST | `/rag/namespaces/{namespace}/purge` |
 
-本页可不做：`GET /rag/jobs`（任务中心）、`GET /rag/knowledge/trends`、`POST /rag/query`、`GET /rag/assets/presign`（figure）、`GET /rag/documents/original/presign`（问答来源预览换签，属问答侧）、NL2SQL 管理接口。
+本页可不做：`GET /rag/jobs`（任务中心）、`GET /rag/knowledge/trends`、`GET /rag/documents/overview_all`、`POST /rag/query`、`GET /rag/assets/presign`（figure）、`GET /rag/documents/original/presign`（问答来源预览换签，属问答侧）、NL2SQL 管理接口。
 
 ### 4.4 联调注意
 

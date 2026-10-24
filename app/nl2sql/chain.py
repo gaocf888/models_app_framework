@@ -1751,7 +1751,11 @@ class NL2SQLChain:
             sf = ops_safe_suggested_filters(sf)
             rewritten, ops_strip_notes = sanitize_ops_sql_settlement_artifacts(rewritten)
             notes.extend(ops_strip_notes)
-        rewritten, sf_notes = rewrite_sql_with_suggested_filters(rewritten, sf)
+        rewritten, sf_notes = rewrite_sql_with_suggested_filters(
+            rewritten,
+            sf,
+            question=question,
+        )
         notes.extend(sf_notes)
         # om_result：最新批次 max 钉在当前主表（SchemaLink primary 优先；所有 refine 路径共用）
         om_primary: str | None = None

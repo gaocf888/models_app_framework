@@ -37,14 +37,19 @@ RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
 """
 
 from functools import lru_cache
-from typing import Annotated, Any, List
+from typing import Annotated, Any, List, Literal
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Path, Query, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import get_app_config
 from app.rag.ingestion import RAGDatasetMeta, RAGIngestionService
-from app.rag.document_repository import DocumentRepository
+from app.rag.document_repository import (
+    DocumentRepository,
+    empty_pipeline_counts,
+    is_pipeline_ingesting,
+    normalize_pipeline_status,
+)
 from app.rag.document_pipeline import ChunkingConfig, DocumentPipeline
 from app.rag.ingestion_orchestrator import IngestionOrchestrator
 from app.rag.job_repository import JobRepository
@@ -54,6 +59,7 @@ from app.rag.mineru_ingest import prepare_pdf_document_for_pipeline
 from app.rag.models import DocumentSource
 from app.rag.namespace_kb import (
     DEFAULT_NAMESPACE_PATH,
+    NL2SQL_KB_ADMIN_SIDEBAR_EXCLUDED_NAMESPACES,
     build_chunk_metadatas,
     namespace_from_path_param,
 )
@@ -1889,8 +1895,7 @@ async def upload_document(
         tenant_id_fallback=default_tenant_id(),
     )
     existing = repo.get(doc_key) or {}
-    last_job_status = str(existing.get("last_job_status") or "")
-    if last_job_status in {"PENDING", "RUNNING"}:
+    if is_pipeline_ingesting(existing):
         raise HTTPException(status_code=409, detail="document has an in-progress ingestion job")
 
     source_type = guess_source_type(filename, file.content_type)
@@ -2403,6 +2408,19 @@ class OverviewBucketItem(BaseModel):
     count: int = Field(0, description="该桶内文档数")
 
 
+class PipelineCounts(BaseModel):
+    """知识管理台流水线状态芯片计数；五态互斥，ingesting 优先于 docs.status。"""
+
+    all: int = Field(0, description="当前分类/搜索范围内全部文档数")
+    uploaded: int = Field(0, description="已上传且未在摄入中")
+    ingesting: int = Field(
+        0,
+        description="真正摄入中：PENDING，或 RUNNING 且 status 尚未 SUCCESS/FAILED（不含历史残留 RUNNING）",
+    )
+    ingested: int = Field(0, description="已摄入且未在摄入中")
+    failed: int = Field(0, description="摄入失败且未在摄入中")
+
+
 class KnowledgeOverviewResponse(BaseModel):
     """知识库总览：聚合统计 + 当前过滤条件下的分页文档明细。"""
 
@@ -2412,11 +2430,22 @@ class KnowledgeOverviewResponse(BaseModel):
     dataset_id: str | None = Field(
         None, description="查询过滤：数据集标签（docs 元数据，非检索硬分区）"
     )
-    total_documents: int = Field(0, description="文档记录总数（当前过滤条件下）")
+    pipeline_status: str | None = Field(
+        None,
+        description="列表过滤的流水线状态；all/省略为不过滤。不影响 pipeline_counts",
+    )
+    total_documents: int = Field(
+        0,
+        description="当前列表过滤下的文档总数（含 pipeline_status），用于分页",
+    )
     total_doc_names: int = Field(0, description="唯一 doc_name 数（若统计可用）")
     by_namespace: List[OverviewBucketItem] = Field(default_factory=list, description="按 namespace 分桶")
     by_tenant: List[OverviewBucketItem] = Field(default_factory=list, description="按 tenant 分桶")
     by_status: List[OverviewBucketItem] = Field(default_factory=list, description="按状态分桶")
+    pipeline_counts: PipelineCounts = Field(
+        default_factory=PipelineCounts,
+        description="流水线芯片计数；只跟 namespace/搜索走，不被 pipeline_status 再过滤",
+    )
     documents: List[DocumentMetaItem] = Field(default_factory=list, description="分页文档明细")
 
 
@@ -2434,39 +2463,29 @@ class KnowledgeTrendsResponse(BaseModel):
     points: List[KnowledgeTrendPoint] = Field(default_factory=list)
 
 
-@router.get(
-    "/documents/overview",
-    summary="查询知识库整体情况（元数据总览）",
-    response_model=KnowledgeOverviewResponse,
-    response_description="聚合桶 + documents 分页列表。",
-)
-async def get_documents_overview(
-    limit: Annotated[int, Query(description="明细每页条数", ge=1, le=500)] = 20,
-    offset: Annotated[int, Query(description="明细分页偏移", ge=0)] = 0,
-    namespace: Annotated[str | None, Query(description="过滤命名空间")] = None,
-    tenant_id: Annotated[str | None, Query(description="过滤租户")] = None,
-    dataset_id: Annotated[
-        str | None,
-        Query(description="过滤数据集标签（docs 元数据；非默认检索硬分区）"),
-    ] = None,
-    doc_name: Annotated[str | None, Query(description="过滤文档名（精确）")] = None,
-    doc_name_contains: Annotated[str | None, Query(description="按文档名包含匹配（管理台顶栏模糊搜索）")] = None,
+def _nl2sql_exclude_namespaces(exclude_nl2sql: bool) -> list[str] | None:
+    if not exclude_nl2sql:
+        return None
+    return list(NL2SQL_KB_ADMIN_SIDEBAR_EXCLUDED_NAMESPACES)
+
+
+async def _build_documents_overview(
+    *,
+    limit: int,
+    offset: int,
+    namespace: str | None,
+    tenant_id: str | None,
+    dataset_id: str | None,
+    doc_name: str | None,
+    doc_name_contains: str | None,
+    pipeline_status: str | None,
+    exclude_nl2sql: bool,
 ) -> KnowledgeOverviewResponse:
-    """
-    知识库总览：当前过滤条件下的聚合统计 + 文档明细分页。
-
-    **Query**
-    - `limit`：可选，默认 20，明细每页条数（1～500）。
-    - `offset`：可选，默认 0。
-    - `namespace`、`tenant_id`、`dataset_id`、`doc_name`：可选过滤条件。
-
-    **响应体 `KnowledgeOverviewResponse`（200）**
-    - `ok`、回显过滤字段、`total_documents`、`total_doc_names`、
-      `by_namespace` / `by_tenant` / `by_status`（分桶）、`documents`（`DocumentMetaItem` 分页列表）。
-    - 各 namespace 的 kb 启用/优先级汇总请用 ``GET /rag/namespaces``；单篇明细见 `documents[].metadata`。
-
-    失败时 HTTP 5xx，`detail` 为错误信息。
-    """
+    try:
+        status_filter = normalize_pipeline_status(pipeline_status)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    excluded = _nl2sql_exclude_namespaces(exclude_nl2sql)
     try:
         repo = _get_doc_repo()
         try:
@@ -2475,6 +2494,7 @@ async def get_documents_overview(
                 tenant_id=tenant_id,
                 dataset_id=dataset_id,
                 doc_name_contains=doc_name_contains,
+                exclude_namespaces=excluded,
             )
         except TypeError:
             stats = repo.overview(namespace=namespace)
@@ -2487,6 +2507,8 @@ async def get_documents_overview(
                 dataset_id=dataset_id,
                 doc_name=doc_name,
                 doc_name_contains=doc_name_contains,
+                pipeline_status=status_filter,
+                exclude_namespaces=excluded,
             )
         except TypeError:
             docs = repo.list(limit=limit, offset=offset, namespace=namespace)
@@ -2513,21 +2535,131 @@ async def get_documents_overview(
             )
             for d in docs
         ]
+        raw_counts = stats.get("pipeline_counts") if isinstance(stats, dict) else None
+        if not isinstance(raw_counts, dict):
+            raw_counts = empty_pipeline_counts()
+            raw_counts["all"] = int((stats or {}).get("total_documents", 0) or 0)
+        pipeline_counts = PipelineCounts(
+            all=int(raw_counts.get("all") or 0),
+            uploaded=int(raw_counts.get("uploaded") or 0),
+            ingesting=int(raw_counts.get("ingesting") or 0),
+            ingested=int(raw_counts.get("ingested") or 0),
+            failed=int(raw_counts.get("failed") or 0),
+        )
+        if status_filter:
+            total_documents = int(getattr(pipeline_counts, status_filter) or 0)
+        else:
+            total_documents = int(pipeline_counts.all or stats.get("total_documents", 0) or 0)
         return KnowledgeOverviewResponse(
             ok=True,
             namespace=namespace,
             tenant_id=tenant_id,
             dataset_id=dataset_id,
-            total_documents=int(stats.get("total_documents", 0)),
+            pipeline_status=status_filter,
+            total_documents=total_documents,
             total_doc_names=int(stats.get("total_doc_names", 0)),
             by_namespace=[OverviewBucketItem(**it) for it in (stats.get("by_namespace") or [])],
             by_tenant=[OverviewBucketItem(**it) for it in (stats.get("by_tenant") or [])],
             by_status=[OverviewBucketItem(**it) for it in (stats.get("by_status") or [])],
+            pipeline_counts=pipeline_counts,
             documents=items,
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("rag get_documents_overview failed")
         raise HTTPException(status_code=500, detail=f"RAG get_documents_overview failed: {e}") from e
+
+
+@router.get(
+    "/documents/overview",
+    summary="查询知识库整体情况（元数据总览，排除 NL2SQL 内置三库）",
+    response_model=KnowledgeOverviewResponse,
+    response_description="聚合桶 + documents 分页列表；不含 nl2sql_schema / nl2sql_biz_knowledge / nl2sql_qa_examples。",
+)
+async def get_documents_overview(
+    limit: Annotated[int, Query(description="明细每页条数", ge=1, le=500)] = 20,
+    offset: Annotated[int, Query(description="明细分页偏移", ge=0)] = 0,
+    namespace: Annotated[str | None, Query(description="过滤命名空间")] = None,
+    tenant_id: Annotated[str | None, Query(description="过滤租户")] = None,
+    dataset_id: Annotated[
+        str | None,
+        Query(description="过滤数据集标签（docs 元数据；非默认检索硬分区）"),
+    ] = None,
+    doc_name: Annotated[str | None, Query(description="过滤文档名（精确）")] = None,
+    doc_name_contains: Annotated[str | None, Query(description="按文档名包含匹配（管理台顶栏模糊搜索）")] = None,
+    pipeline_status: Annotated[
+        Literal["all", "uploaded", "ingesting", "ingested", "failed"] | None,
+        Query(
+            description=(
+                "流水线状态过滤（芯片可点）：all/省略=不过滤列表；"
+                "uploaded / ingesting / ingested / failed。"
+                "只过滤 documents 与 total_documents，不影响 pipeline_counts。"
+            )
+        ),
+    ] = None,
+) -> KnowledgeOverviewResponse:
+    """
+    知识库总览（管理台）：排除 NL2SQL 内置三库后的聚合统计 + 文档明细分页。
+
+    排除 ``nl2sql_schema`` / ``nl2sql_biz_knowledge`` / ``nl2sql_qa_examples``。
+    需要含内置库的完整视图请用 ``GET /rag/documents/overview_all``。
+    """
+    return await _build_documents_overview(
+        limit=limit,
+        offset=offset,
+        namespace=namespace,
+        tenant_id=tenant_id,
+        dataset_id=dataset_id,
+        doc_name=doc_name,
+        doc_name_contains=doc_name_contains,
+        pipeline_status=pipeline_status,
+        exclude_nl2sql=True,
+    )
+
+
+@router.get(
+    "/documents/overview_all",
+    summary="查询知识库完整总览（含 NL2SQL 内置三库）",
+    response_model=KnowledgeOverviewResponse,
+    response_description="与 overview 相同结构，不排除 nl2sql_* 内置库。",
+)
+async def get_documents_overview_all(
+    limit: Annotated[int, Query(description="明细每页条数", ge=1, le=500)] = 20,
+    offset: Annotated[int, Query(description="明细分页偏移", ge=0)] = 0,
+    namespace: Annotated[str | None, Query(description="过滤命名空间")] = None,
+    tenant_id: Annotated[str | None, Query(description="过滤租户")] = None,
+    dataset_id: Annotated[
+        str | None,
+        Query(description="过滤数据集标签（docs 元数据；非默认检索硬分区）"),
+    ] = None,
+    doc_name: Annotated[str | None, Query(description="过滤文档名（精确）")] = None,
+    doc_name_contains: Annotated[str | None, Query(description="按文档名包含匹配（管理台顶栏模糊搜索）")] = None,
+    pipeline_status: Annotated[
+        Literal["all", "uploaded", "ingesting", "ingested", "failed"] | None,
+        Query(
+            description=(
+                "流水线状态过滤：all/省略=不过滤列表；"
+                "uploaded / ingesting / ingested / failed。"
+                "只过滤 documents 与 total_documents，不影响 pipeline_counts。"
+            )
+        ),
+    ] = None,
+) -> KnowledgeOverviewResponse:
+    """
+    知识库完整总览：含 NL2SQL 内置三库，参数与响应与 ``GET /rag/documents/overview`` 相同。
+
+    知识管理台前端请用 overview，不要用本接口。
+    """
+    return await _build_documents_overview(
+        limit=limit,
+        offset=offset,
+        namespace=namespace,
+        tenant_id=tenant_id,
+        dataset_id=dataset_id,
+        doc_name=doc_name,
+        doc_name_contains=doc_name_contains,
+        pipeline_status=pipeline_status,
+        exclude_nl2sql=False,
+    )
 
 
 @router.get(

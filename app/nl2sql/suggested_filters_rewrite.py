@@ -289,9 +289,50 @@ def _excise_predicate_span(sql: str, start: int, end: int) -> str:
     return left.rstrip() + ((" " + right.lstrip()) if right.lstrip() else right)
 
 
+def prefer_layer0_over_coverage_for_district(
+    question: str | None,
+    sql: str | None = None,
+) -> bool:
+    """区级汇总/对比：保留层位0名单即可，避免再灌全网 project_name IN。"""
+    q = (question or "").strip()
+    if q:
+        try:
+            from app.data_query_agent.scope_intent import infer_result_grain
+
+            if infer_result_grain(q) == "district":
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        if re.search(r"哪些行政区|各区平均|按行政区", q):
+            return True
+    if sql and re.search(r"(?is)GROUP\s+BY\b[\s\S]{0,160}\barea\b", sql):
+        return True
+    return False
+
+
+def _drop_coverage_when_layer0(filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """有 fcb_layer0.station_name 时去掉 device_station_map 的 project_name/name。"""
+    has_layer0 = any(
+        f.get("source") == "fcb_layer0" and f.get("column") == "station_name" for f in filters
+    )
+    if not has_layer0:
+        return filters
+    return [
+        f
+        for f in filters
+        if not (
+            f.get("source") == "device_station_map"
+            and f.get("column") in {"project_name", "name"}
+        )
+    ]
+
+
 def rewrite_sql_with_suggested_filters(
     sql: str,
     suggested_filters: list[Any] | None,
+    *,
+    question: str | None = None,
+    prefer_layer0_over_coverage: bool | None = None,
 ) -> tuple[str, list[str]]:
     """
     用 SchemaLink.suggested_filters 强制对齐 SQL 中的范围谓词。
@@ -300,12 +341,21 @@ def rewrite_sql_with_suggested_filters(
     - 缺失：在 WHERE 中追加；
     - 空 IN（如 gnss 占位）：跳过，不生成 ``IN ()``；
     - 始终剥掉事实表遗留主键 ``station_id`` / ``data_id`` 过滤谓词。
+    - 区级汇总：有层位0 时跳过全网 coverage project_name（避免冗余大 IN）。
     """
     notes: list[str] = []
     rewritten = sql or ""
 
     if rewritten and suggested_filters:
         picked = _pick_filters(list(suggested_filters))
+        drop_cov = prefer_layer0_over_coverage
+        if drop_cov is None:
+            drop_cov = prefer_layer0_over_coverage_for_district(question, rewritten)
+        if drop_cov:
+            before_n = len(picked)
+            picked = _drop_coverage_when_layer0(picked)
+            if len(picked) < before_n:
+                notes.append("suggested_filter_skip:device_station_map:prefer_layer0_district")
         for item in picked:
             rewritten2, replaced = _replace_column_predicate(rewritten, item)
             if replaced:

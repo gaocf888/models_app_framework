@@ -1275,7 +1275,8 @@ Authorization: Bearer <service-api-key>
 
 侧栏「知识库」。分类为扁平 `namespace`（如 `法规`）；侧栏排除 NL2SQL 三库。  
 地降所：`RAG_REQUIRE_NAMESPACE=true`，上传与摄入 **namespace 必填**。  
-上传与摄入分离：先 `upload`，再 `jobs/ingest`。
+文档主键为 `tenant_id::namespace::doc_name::doc_version`：上传与摄入的 **`doc_name`、`doc_version` 均必填**（无版本概念时显式传 `v1`）；省略 Form/JSON 字段会 **422**，不会自动补默认值。  
+上传与摄入分离：先 `upload`，再 `jobs/ingest`，两边身份字段必须一致。
 
 ---
 
@@ -1411,7 +1412,8 @@ Body：
 
 ### 接口功能
 
-右侧文档表主数据源：分页、按分类过滤、按文档名包含搜索。
+右侧文档表主数据源：分页、按分类过滤、按文档名包含搜索、流水线状态芯片计数与点击过滤。  
+默认排除 NL2SQL 内置三库：`nl2sql_schema`、`nl2sql_biz_knowledge`、`nl2sql_qa_examples`（与侧栏 `exclude_nl2sql=true` 一致）。完整数据（含三库）用 `GET /rag/documents/overview_all`，知识管理台前端不要调。
 
 ### URL
 
@@ -1437,27 +1439,37 @@ GET
 
 ### 请求参数（Query）
 
-| 参数 | 必填 | 类型 | 说明 |
-|------|------|------|------|
-| limit | false | int | 页大小，如 20 |
-| offset | false | int | 偏移 |
-| namespace | false | string | 分类；「所有文献」不传 |
-| doc_name_contains | false | string | 文档名包含（顶栏搜索，非语义检索） |
+| 参数 | 必填 | 类型 | 说明                                                                                                        |
+|------|------|------|-----------------------------------------------------------------------------------------------------------|
+| limit | false | int | 页大小，如 20                                                                                                  |
+| offset | false | int | 偏移                                                                                                        |
+| namespace | false | string | 分类；「所有文献」不传                                                                                               |
+| doc_name_contains | false | string | 文档名包含（顶栏搜索，非语义检索）                                                                                         |
+| pipeline_status | false | string | 流水线标签过滤：`all`（或不传）/ `uploaded` / `ingesting` / `ingested` / `failed`。只过滤列表与分页总数，**不**改变 `pipeline_counts` |
 
 ### 返回字段
 
 | 返回字段 | 字段类型 | 说明 |
 |----------|----------|------|
 | documents | array | 文档行（doc_name、status、chunk_count、namespace、last_job_* 等） |
-| total_documents | int | 总数（分页） |
+| total_documents | int | 当前列表过滤下的总数（含 `pipeline_status`），用于分页 |
+| pipeline_counts | object | 流水线芯片数量：`all` / `uploaded` / `ingesting` / `ingested` / `failed`（互斥；仅真正进行中的任务算 ingesting，`status=SUCCESS` 且残留 `last_job_status=RUNNING` 算已摄入） |
+| pipeline_status | string \| null | 回显当前列表过滤；`all`/省略时为 null |
 
 ### 调用方使用说明
 
-本接口是右侧文档表的 **唯一主数据源**。顶栏搜索是文档名包含模糊检索。
+本接口是右侧文档表的 **唯一主数据源**，也是顶栏「流水线状态」芯片的数据源。顶栏搜索是文档名包含模糊检索。列表、分页总数、`pipeline_counts`、`by_namespace` 都不含上述 NL2SQL 三库。
+
+点芯片：同一接口加 `pipeline_status=`，用返回的 `pipeline_counts` 画五个数字（不要自己扫分页列表去数）。`pipeline_counts` 只跟当前分类、`doc_name_contains` 走，点某个芯片时其它芯片数字保持不变。分页用 `total_documents`（点芯片后等于该态数量）。
 
 | 返回字段 | 表上怎么加载 |
 |----------|--------------|
 | `total_documents` | 分页总数；配合请求的 `limit` / `offset` |
+| `pipeline_counts.all` | 「全部文献」数量 |
+| `pipeline_counts.uploaded` | 「已上传」数量 |
+| `pipeline_counts.ingesting` | 「摄入中」数量 |
+| `pipeline_counts.ingested` | 「已摄入」数量 |
+| `pipeline_counts.failed` | 「摄入失败」数量 |
 | `documents[].doc_name` | 文档名称列 |
 | `documents[].metadata.file_size` | 文件大小（字节，前端格式化；无则 —） |
 | `documents[].source_type` | 格式（pdf/docx…） |
@@ -1469,12 +1481,22 @@ GET
 | `documents[].last_job_id` | 「查看进度」跳转 `/kb/ingest-jobs/{jobId}` |
 | `documents[].metadata.object_key` / `source_uri` | 点「摄入」时作为 `content`；没有则禁用摄入、提示重新上传 |
 
-**状态判定（不要用原型「已录入 / 已向量化」）：** `last_job_status` 为 `PENDING`/`RUNNING` → 摄入中；`status=UPLOADED` → 已上传；`SUCCESS` → 已摄入；`FAILED` → 摄入失败。行按钮：已上传「摄入」、摄入中「查看进度」、失败「重新摄入」、非进行中可删、已上传/已摄入可迁移。
+**状态判定（不要用原型「已录入 / 已向量化」）：** `last_job_status=PENDING`，或 `RUNNING` 且 `status` 尚非 SUCCESS/FAILED → 摄入中；`status=UPLOADED` → 已上传；`SUCCESS` → 已摄入（含历史残留 `last_job_status=RUNNING`）；`FAILED` → 摄入失败。行按钮：已上传「摄入」、摄入中「查看进度」、失败「重新摄入」、非进行中可删、已上传/已摄入可迁移。
 
 ### 接口示例
 
 ```http
 GET /rag/documents/overview?limit=20&offset=0&namespace=法规&doc_name_contains=规范
+Authorization: Bearer <service-api-key>
+
+GET /rag/documents/overview?limit=20&offset=0&namespace=法规&pipeline_status=uploaded
+Authorization: Bearer <service-api-key>
+```
+
+运维看含内置库的全量(当前地降所无需，内置排查用)：
+
+```http
+GET /rag/documents/overview_all?limit=20&offset=0
 Authorization: Bearer <service-api-key>
 ```
 
@@ -1515,7 +1537,9 @@ POST
 |------|------|------|------|
 | file | true | file | 知识文档文件 |
 | namespace | true | string | 知识分类（地降必填） |
-| doc_name | false | string | 文档名；默认文件名去扩展名 |
+| doc_name | true | string | 文档逻辑名（主键之一）；须与后续 `jobs/ingest` 的 `doc_name` 一致 |
+| doc_version | true | string | 文档版本（主键之一）；无版本概念时传 `v1`。不传该字段会 **422**，不会默认补 `v1` |
+
 
 ### 返回字段
 
@@ -1527,6 +1551,8 @@ POST
 ### 调用方使用说明
 
 「+ 上传」只落对象存储，**不触发摄入、不跳转进度页**。成功后关掉对话框，刷新右侧列表（再调 4.3）。记住 `document` 里的对象键，供稍后点「摄入」使用。
+
+multipart 必填：`file`、`namespace`、`doc_name`、`doc_version`。缺任一字段（含未出现在 Form 里）由 FastAPI 返回 **422**，不会进入上传逻辑。不要用 JSON body。`doc_version` 不要省略，没有版本就传 `v1`。
 
 | 返回字段 | 页面怎么用 |
 |----------|------------|
@@ -1547,6 +1573,7 @@ Content-Type: multipart/form-data
 file=<文件>
 namespace=法规
 doc_name=堤防工程设计规范
+doc_version=v1
 ```
 
 ---
@@ -1586,7 +1613,8 @@ POST
 |------|------|------|------|
 | documents | true | array | 待摄入文档列表 |
 | documents[].namespace | true | string | 分类 |
-| documents[].doc_name | true | string | 文档名 |
+| documents[].doc_name | true | string | 文档名（须与上传时一致） |
+| documents[].doc_version | true | string | 文档版本（须与上传时一致；无版本概念时传 `v1`） |
 | documents[].source_type | true | string | pdf/docx/doc/text/txt/markdown/html/xlsx 等 |
 | documents[].content | true | string | 上传返回的 object_key（如 `minio://bucket/key`）；禁止预签名 URL |
 
@@ -1599,7 +1627,7 @@ POST
 
 ### 调用方使用说明
 
-行内「摄入 / 重新摄入」都调本接口（失败重来也走这里，**不要**调 `jobs/retry`）。`content` = 列表行上的 `object_key` / `source_uri`。受理后 **立即跳转进度页**（`/kb/ingest-jobs/{job_id}`），本页不要转圈。
+行内「摄入 / 重新摄入」都调本接口（失败重来也走这里，**不要**调 `jobs/retry`）。`content` = 列表行上的 `object_key` / `source_uri`。`doc_name` / `doc_version` / `namespace` 必须与上传登记一致，否则 overview 会裂成两条文档。受理后 **立即跳转进度页**（`/kb/ingest-jobs/{job_id}`），本页不要转圈。
 
 | 返回字段 | 页面怎么用 |
 |----------|------------|
@@ -1615,6 +1643,7 @@ POST
   "documents": [{
     "namespace": "法规",
     "doc_name": "堤防工程设计规范",
+    "doc_version": "v1",
     "source_type": "pdf",
     "content": "minio://<bucket>/<key>",
     "replace_if_exists": true
@@ -1990,7 +2019,7 @@ Body：
 |------|------|------|
 | 分类列表 | GET | `/rag/namespaces` |
 | 启用/优先级 | PATCH | `/rag/namespaces/{namespace}/kb-config` |
-| 文档列表/搜索 | GET | `/rag/documents/overview` |
+| 文档列表/搜索/流水线状态 | GET | `/rag/documents/overview`（不含 NL2SQL 三库） |
 | 上传 | POST | `/rag/documents/upload` |
 | 摄入 | POST | `/rag/jobs/ingest` |
 | 任务进度 | GET | `/rag/jobs/{job_id}` |
@@ -2008,7 +2037,7 @@ Body：
 | 问答 | 渲染 `meta.nl2sql_sql`；勿将 `original_preview_url` 当独立业务接口对接（由 BFF 打开预览路径即可） |
 | 报告 | `/analysis/*`、`/nl2sql/query`、`/data-query-agent/run-stream`、`/analysis-agent/resume-stream`；展示取数 SQL；接 GIS |
 | 数据查询 | `/nl2sql/query` 当主入口、`/analysis-agent/*`、客服内 `data_query`、解析后再 `GET /hud` |
-| 知识库 | `/rag/kb-tree`、废弃 `/rag/ingest/*`、`POST /rag/query`（顶栏非语义搜）、`POST /rag/jobs/{id}/retry` |
+| 知识库 | `/rag/kb-tree`、废弃 `/rag/ingest/*`、`POST /rag/query`（顶栏非语义搜）、`POST /rag/jobs/{id}/retry`、`GET /rag/documents/overview_all`（含 NL2SQL 内置库，仅运维） |
 
 ---
 

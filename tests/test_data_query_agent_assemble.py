@@ -10,6 +10,8 @@ from app.data_query_agent.scope_intent import infer_result_grain, resolve_scope_
 
 def test_infer_district_grain() -> None:
     assert infer_result_grain("各区平均沉降") == "district"
+    assert infer_result_grain("哪些行政区近期沉降相对偏大？") == "district"
+    assert infer_result_grain("哪些区沉降偏大") == "district"
     assert infer_result_grain("朝阳区最新分层标") == "station"
 
 

@@ -76,6 +76,17 @@
     .ns .m { color: var(--muted); font-size: 0.7rem; margin-top: 0.1rem; }
     .toolbar { padding: 0.65rem 0.85rem; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; }
     .toolbar .grow { flex: 1; min-width: 160px; }
+    .chips {
+      display: flex; flex-wrap: wrap; gap: 0.4rem;
+      padding: 0.55rem 0.85rem; border-bottom: 1px solid var(--border);
+    }
+    .chip {
+      padding: 0.22rem 0.65rem; border-radius: 999px; border: 1px solid var(--border);
+      background: #0d1117; color: var(--muted); font-size: 0.78rem; cursor: pointer;
+    }
+    .chip:hover { border-color: var(--accent); color: var(--text); }
+    .chip.on { border-color: var(--accent); color: var(--accent); background: rgba(16, 185, 129, 0.12); }
+    .chip .n { font-weight: 600; margin-left: 0.15rem; }
     .table-wrap { flex: 1; overflow: auto; padding: 0.5rem; }
     table.data { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
     table.data th, table.data td {
@@ -126,9 +137,9 @@
       <a class="on" href="./knowledge-base.html">知识库</a>
     </nav>
     <h1>知识库 <span style="color:var(--accent);font-size:0.85em">地面沉降</span></h1>
-    <p class="sub">分类 <code>GET /rag/namespaces</code>；文档表 <code>/rag/documents/overview</code>；上传与摄入分离。对照接口文档 §4。不做分类启用/优先级（4.2）。</p>
+    <p class="sub">分类 <code>GET /rag/namespaces</code>；文档表与流水线芯片可在下方切换 <code>/rag/documents/overview</code>（不含 NL2SQL 三库）或 <code>/rag/documents/overview_all</code>（全量）。上传与摄入分离。对照接口文档 §4。不做分类启用/优先级（4.2）。</p>
     <div class="banner">
-      地降所 <code>RAG_REQUIRE_NAMESPACE=true</code>，上传/摄入须带 namespace。exclude_nl2sql=true。
+      地降所 <code>RAG_REQUIRE_NAMESPACE=true</code>，上传/摄入须带 namespace。文档列表接口可在连接区切换。
       正式前端参照 <a href="http://localhost:3300" target="_blank" rel="noopener">localhost:3300</a>（admin/123456）。
     </div>
 
@@ -144,6 +155,12 @@
           <input type="password" id="apiKey" placeholder="留空或粘贴密钥" autocomplete="off" />
         </div>
       </div>
+      <label>文档列表接口（仅测试页）</label>
+      <select id="listSource">
+        <option value="overview">overview — 业务知识库（排除 NL2SQL 三库）</option>
+        <option value="overview_all">overview_all — 全量（含 nl2sql_schema / biz / qa）</option>
+      </select>
+      <p class="hint">写死在测试页：切换后重拉分类与文档表。正式前端只用 overview。</p>
     </fieldset>
 
     <div class="layout">
@@ -163,6 +180,7 @@
           <button type="button" class="secondary" id="btnSearch">搜索</button>
           <button type="button" class="primary" id="btnUploadOpen">+ 上传</button>
         </div>
+        <div class="chips" id="pipelineChips"></div>
         <div class="main-h">
           <span id="tableTitle">所有文献</span>
           <span class="hint" id="totalHint" style="margin:0"></span>
@@ -207,13 +225,17 @@
   <div id="uploadBg" class="modal-bg">
     <div class="modal">
       <h3>上传文档</h3>
-      <p class="hint" style="margin:0 0 0.5rem">仅登记为已上传，不触发摄入。</p>
+      <p class="hint" style="margin:0 0 0.5rem">仅登记为已上传，不触发摄入。<code>doc_name</code> / <code>doc_version</code> 必填。</p>
       <label>分类（namespace）</label>
-      <select id="uploadNs"></select>
+      <input type="text" id="uploadNs" list="uploadNsList" placeholder="选择已有分类，或输入新分类" autocomplete="off" />
+      <datalist id="uploadNsList"></datalist>
+      <p class="hint" style="margin:0.25rem 0 0">可下拉选已有分类，也可手动输入新 namespace（首次上传后侧栏会出现）。</p>
       <label>文件</label>
       <input type="file" id="uploadFile" />
-      <label>文档名（可选，默认去扩展名）</label>
-      <input type="text" id="uploadDocName" placeholder="留空则用文件名" />
+      <label>文档名（必填，默认可从文件名带出）</label>
+      <input type="text" id="uploadDocName" placeholder="与后续摄入一致" />
+      <label>文档版本（必填）</label>
+      <input type="text" id="uploadDocVersion" value="v1" />
       <div class="actions">
         <button type="button" class="primary" id="btnUploadDo">上传</button>
         <button type="button" class="secondary" id="btnUploadCancel">取消</button>
@@ -238,6 +260,7 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const LS_BASE = "subsidence_knowledge_base_base";
+  const LS_LIST = "subsidence_knowledge_base_list_source";
   const NS_LABEL = {
     "法规": "政策法规台账",
     "规程": "技术规程",
@@ -256,9 +279,20 @@
     error: "处理失败",
   };
 
+  const PIPELINE_CHIPS = [
+    { key: null, countKey: "all", label: "全部文献" },
+    { key: "ingesting", countKey: "ingesting", label: "摄入中" },
+    { key: "ingested", countKey: "ingested", label: "已摄入" },
+    { key: "uploaded", countKey: "uploaded", label: "已上传" },
+    { key: "failed", countKey: "failed", label: "摄入失败" },
+  ];
+  const EMPTY_PIPELINE_COUNTS = { all: 0, uploaded: 0, ingesting: 0, ingested: 0, failed: 0 };
+
   const state = {
     namespaces: [],
     currentNs: null, // null = 所有文献
+    pipelineStatus: null, // null = all
+    pipelineCounts: Object.assign({}, EMPTY_PIPELINE_COUNTS),
     offset: 0, total: 0, docs: [],
     moveDoc: null,
     pollTimer: null, jobId: "",
@@ -267,13 +301,29 @@
   function persistBase() {
     try { localStorage.setItem(LS_BASE, $("baseUrl").value.trim()); } catch (_) {}
   }
+  function persistListSource() {
+    try { localStorage.setItem(LS_LIST, $("listSource").value); } catch (_) {}
+  }
+  function useOverviewAll() {
+    return $("listSource").value === "overview_all";
+  }
+  function overviewPath() {
+    return useOverviewAll() ? "/rag/documents/overview_all" : "/rag/documents/overview";
+  }
   (function init() {
     try {
       const saved = localStorage.getItem(LS_BASE);
       if (saved) $("baseUrl").value = saved;
+      const src = localStorage.getItem(LS_LIST);
+      if (src === "overview" || src === "overview_all") $("listSource").value = src;
     } catch (_) {}
   })();
   $("baseUrl").addEventListener("change", persistBase);
+  $("listSource").addEventListener("change", () => {
+    persistListSource();
+    state.offset = 0;
+    loadNamespaces();
+  });
 
   const baseUrl = () => $("baseUrl").value.replace(/\/+$/, "");
   const authHeaders = (extra) => {
@@ -303,11 +353,36 @@
   function docStatus(doc) {
     const js = (doc.last_job_status || "").toUpperCase();
     const st = (doc.status || "").toUpperCase();
-    if (js === "PENDING" || js === "RUNNING") return { key: "running", label: "摄入中", cls: "run" };
+    const terminal = st === "SUCCESS" || st === "FAILED";
+    // PENDING 为进行中；RUNNING 仅在文档尚未 SUCCESS/FAILED 时算摄入中（历史残留 RUNNING 不算）。
+    if (js === "PENDING" || (js === "RUNNING" && !terminal)) {
+      return { key: "running", label: "摄入中", cls: "run" };
+    }
     if (st === "UPLOADED") return { key: "uploaded", label: "已上传", cls: "" };
-    if (js === "SUCCESS" || st === "INDEXED" || st === "READY" || st === "SUCCESS") return { key: "ok", label: "已摄入", cls: "ok" };
-    if (js === "FAILED" || st === "FAILED") return { key: "fail", label: "摄入失败", cls: "fail" };
+    if (st === "SUCCESS" || st === "INDEXED" || st === "READY") return { key: "ok", label: "已摄入", cls: "ok" };
+    if (st === "FAILED") return { key: "fail", label: "摄入失败", cls: "fail" };
     return { key: "other", label: st || js || "未知", cls: "" };
+  }
+
+  function renderPipelineChips() {
+    const root = $("pipelineChips");
+    root.replaceChildren();
+    const counts = state.pipelineCounts || EMPTY_PIPELINE_COUNTS;
+    PIPELINE_CHIPS.forEach((chip) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip" + (state.pipelineStatus === chip.key ? " on" : "");
+      const n = counts[chip.countKey];
+      btn.innerHTML = chip.label + ' <span class="n">' + (n != null ? n : 0) + "</span>";
+      btn.addEventListener("click", () => {
+        if (state.pipelineStatus === chip.key) return;
+        state.pipelineStatus = chip.key;
+        state.offset = 0;
+        renderPipelineChips();
+        loadDocs();
+      });
+      root.appendChild(btn);
+    });
   }
 
   function contentKey(doc) {
@@ -325,6 +400,19 @@
     });
     if (prefer) sel.value = prefer;
     else if (state.currentNs) sel.value = state.currentNs;
+  }
+
+  function fillUploadNs(prefer) {
+    const list = $("uploadNsList");
+    const input = $("uploadNs");
+    list.replaceChildren();
+    state.namespaces.forEach((n) => {
+      const opt = document.createElement("option");
+      opt.value = n.namespace;
+      opt.label = nsLabel(n.namespace) + " (" + n.namespace + ")";
+      list.appendChild(opt);
+    });
+    input.value = prefer || "";
   }
 
   function renderNamespaces() {
@@ -362,12 +450,17 @@
     persistBase();
     setStatus("加载分类…");
     try {
-      const res = await fetch(baseUrl() + "/rag/namespaces?exclude_nl2sql=true", { headers: authHeaders() });
+      const nsQ = useOverviewAll() ? "exclude_nl2sql=false" : "exclude_nl2sql=true";
+      const res = await fetch(baseUrl() + "/rag/namespaces?" + nsQ, { headers: authHeaders() });
       const text = await res.text();
       let data;
       try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
       if (!res.ok) throw new Error((data && (data.detail || data.message)) || res.statusText);
       state.namespaces = data.namespaces || data.result || [];
+      if (state.currentNs && !state.namespaces.some((n) => n.namespace === state.currentNs)) {
+        state.currentNs = null;
+        state.offset = 0;
+      }
       renderNamespaces();
       setStatus("分类已加载 · " + state.namespaces.length);
       await loadDocs();
@@ -389,8 +482,10 @@
   function renderDocs() {
     const tbody = $("tbl").querySelector("tbody");
     tbody.replaceChildren();
-    $("tableTitle").textContent = state.currentNs == null ? "所有文献" : nsLabel(state.currentNs);
-    $("totalHint").textContent = "total=" + state.total;
+    $("tableTitle").textContent =
+      (state.currentNs == null ? "所有文献" : nsLabel(state.currentNs)) +
+      (useOverviewAll() ? " · overview_all" : " · overview");
+    $("totalHint").textContent = "total=" + state.total + (state.pipelineStatus ? " · " + state.pipelineStatus : "");
     state.docs.forEach((doc) => {
       const st = docStatus(doc);
       const tr = document.createElement("tr");
@@ -462,18 +557,27 @@
     if (state.currentNs) q.set("namespace", state.currentNs);
     const contains = $("docSearch").value.trim();
     if (contains) q.set("doc_name_contains", contains);
+    if (state.pipelineStatus) q.set("pipeline_status", state.pipelineStatus);
     setStatus("加载文档列表…");
     try {
-      const res = await fetch(baseUrl() + "/rag/documents/overview?" + q.toString(), { headers: authHeaders() });
+      const res = await fetch(baseUrl() + overviewPath() + "?" + q.toString(), { headers: authHeaders() });
       const text = await res.text();
       let data;
       try { data = JSON.parse(text); } catch (_) { throw new Error(text.slice(0, 300)); }
       if (!res.ok) throw new Error((data && (data.detail || data.message)) || res.statusText);
       state.docs = data.documents || [];
       state.total = data.total_documents != null ? data.total_documents : state.docs.length;
+      state.pipelineCounts = Object.assign({}, EMPTY_PIPELINE_COUNTS, data.pipeline_counts || {});
+      renderPipelineChips();
       renderDocs();
       $("meta").textContent = JSON.stringify({
-        namespace: state.currentNs, offset: state.offset, limit, total: state.total,
+        list_api: overviewPath(),
+        namespace: state.currentNs,
+        pipeline_status: state.pipelineStatus,
+        pipeline_counts: state.pipelineCounts,
+        offset: state.offset,
+        limit,
+        total: state.total,
       }, null, 2);
       setStatus("文档列表已加载 · " + state.docs.length + " 行。");
     } catch (e) {
@@ -483,24 +587,27 @@
   }
 
   function openUpload() {
-    if (!state.namespaces.length) { showErr("请先加载分类"); return; }
-    fillNsSelect($("uploadNs"), state.currentNs || state.namespaces[0].namespace);
+    fillUploadNs(state.currentNs || "");
     $("uploadFile").value = "";
     $("uploadDocName").value = "";
+    $("uploadDocVersion").value = "v1";
     $("uploadBg").classList.add("show");
   }
 
   async function doUpload() {
     showErr("");
     const file = $("uploadFile").files && $("uploadFile").files[0];
-    const ns = $("uploadNs").value;
+    const ns = $("uploadNs").value.trim();
     if (!file) { showErr("请选择文件"); return; }
-    if (!ns) { showErr("namespace 必填"); return; }
+    if (!ns) { showErr("请选择或输入分类（namespace）"); return; }
     const fd = new FormData();
+    const dn = $("uploadDocName").value.trim() || (file.name || "").replace(/\.[^.]+$/, "");
+    const ver = $("uploadDocVersion").value.trim() || "v1";
+    if (!dn) { showErr("doc_name 必填"); return; }
     fd.append("file", file);
     fd.append("namespace", ns);
-    const dn = $("uploadDocName").value.trim();
-    if (dn) fd.append("doc_name", dn);
+    fd.append("doc_name", dn);
+    fd.append("doc_version", ver);
     setStatus("上传中…");
     try {
       const headers = {};
@@ -529,6 +636,7 @@
       documents: [{
         namespace: doc.namespace,
         doc_name: doc.doc_name,
+        doc_version: doc.doc_version || "v1",
         source_type: doc.source_type || "pdf",
         content: content,
         replace_if_exists: true,
@@ -665,6 +773,12 @@
     }
   }
 
+  $("uploadFile").addEventListener("change", () => {
+    const f = $("uploadFile").files && $("uploadFile").files[0];
+    if (!f || $("uploadDocName").value.trim()) return;
+    $("uploadDocName").value = (f.name || "").replace(/\.[^.]+$/, "");
+  });
+  renderPipelineChips();
   $("btnLoadNs").addEventListener("click", loadNamespaces);
   $("btnSearch").addEventListener("click", () => { state.offset = 0; loadDocs(); });
   $("docSearch").addEventListener("keydown", (e) => {

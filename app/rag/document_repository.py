@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, Sequence
 
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -27,9 +27,205 @@ def _escape_es_wildcard(value: str) -> str:
     return value.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
 
 
+def _normalize_exclude_namespaces(exclude_namespaces: Iterable[str] | None) -> frozenset[str]:
+    if not exclude_namespaces:
+        return frozenset()
+    return frozenset(str(x).strip() for x in exclude_namespaces if str(x or "").strip())
+
+
+def _namespace_excluded(payload: Dict[str, Any] | None, excluded: frozenset[str]) -> bool:
+    if not excluded:
+        return False
+    return str((payload or {}).get("namespace") or "").strip() in excluded
+
+
+def _es_docs_query(
+    filters: list[Dict[str, Any]],
+    excluded: frozenset[str],
+) -> Dict[str, Any]:
+    must_not: list[Dict[str, Any]] = []
+    if excluded:
+        must_not.append({"terms": {"namespace": sorted(excluded)}})
+    if not filters and not must_not:
+        return {"match_all": {}}
+    bool_q: Dict[str, Any] = {}
+    if filters:
+        bool_q["filter"] = filters
+    if must_not:
+        bool_q["must_not"] = must_not
+    return {"bool": bool_q}
+
+
 def _doc_name_contains_match(doc_name: Any, needle: str) -> bool:
     hay = str(doc_name or "")
     return needle.lower() in hay.lower()
+
+
+PIPELINE_STATUS_ALL = "all"
+PIPELINE_STATUS_UPLOADED = "uploaded"
+PIPELINE_STATUS_INGESTING = "ingesting"
+PIPELINE_STATUS_INGESTED = "ingested"
+PIPELINE_STATUS_FAILED = "failed"
+PIPELINE_STATUS_VALUES = frozenset(
+    {
+        PIPELINE_STATUS_ALL,
+        PIPELINE_STATUS_UPLOADED,
+        PIPELINE_STATUS_INGESTING,
+        PIPELINE_STATUS_INGESTED,
+        PIPELINE_STATUS_FAILED,
+    }
+)
+_TERMINAL_DOC_STATUSES = frozenset({"SUCCESS", "FAILED"})
+_PIPELINE_STATUS_TO_DOC_STATUS = {
+    PIPELINE_STATUS_UPLOADED: "UPLOADED",
+    PIPELINE_STATUS_INGESTED: "SUCCESS",
+    PIPELINE_STATUS_FAILED: "FAILED",
+}
+
+
+def empty_pipeline_counts() -> Dict[str, int]:
+    return {
+        PIPELINE_STATUS_ALL: 0,
+        PIPELINE_STATUS_UPLOADED: 0,
+        PIPELINE_STATUS_INGESTING: 0,
+        PIPELINE_STATUS_INGESTED: 0,
+        PIPELINE_STATUS_FAILED: 0,
+    }
+
+
+def normalize_pipeline_status(value: str | None) -> str | None:
+    """``all`` / 空 → None（不过滤）；非法值抛 ValueError。"""
+    raw = (value or "").strip().lower()
+    if not raw or raw == PIPELINE_STATUS_ALL:
+        return None
+    if raw not in PIPELINE_STATUS_VALUES:
+        raise ValueError(
+            "pipeline_status must be one of: all, uploaded, ingesting, ingested, failed"
+        )
+    return raw
+
+
+def is_pipeline_ingesting(payload: Dict[str, Any] | None) -> bool:
+    """
+    真正进行中的摄入：提交后为 PENDING；RUNNING 仅在文档尚未终态时算摄入中。
+
+    旧写入会在任务仍 RUNNING 时把已 SUCCESS/FAILED 的 last_job_status 写成 RUNNING，
+    那些记录应按 docs.status 算已摄入/失败，不能算 ingesting。
+    """
+    row = payload or {}
+    last = str(row.get("last_job_status") or "").upper()
+    st = str(row.get("status") or "").upper()
+    if last == "PENDING":
+        return True
+    return last == "RUNNING" and st not in _TERMINAL_DOC_STATUSES
+
+
+def classify_pipeline_status(payload: Dict[str, Any] | None) -> str:
+    """与知识管理台芯片口径一致：真正进行中的摄入优先于 docs.status。"""
+    row = payload or {}
+    if is_pipeline_ingesting(row):
+        return PIPELINE_STATUS_INGESTING
+    st = str(row.get("status") or "").upper()
+    if st == "UPLOADED":
+        return PIPELINE_STATUS_UPLOADED
+    if st == "SUCCESS":
+        return PIPELINE_STATUS_INGESTED
+    if st == "FAILED":
+        return PIPELINE_STATUS_FAILED
+    return "other"
+
+
+def _ingesting_es_clause() -> Dict[str, Any]:
+    return {
+        "bool": {
+            "should": [
+                {"term": {"last_job_status": "PENDING"}},
+                {
+                    "bool": {
+                        "filter": [
+                            {"term": {"last_job_status": "RUNNING"}},
+                            {
+                                "bool": {
+                                    "must_not": [
+                                        {"terms": {"status": list(_TERMINAL_DOC_STATUSES)}}
+                                    ]
+                                }
+                            },
+                        ]
+                    }
+                },
+            ],
+            "minimum_should_match": 1,
+        }
+    }
+
+
+def pipeline_status_es_clause(pipeline_status: str) -> Dict[str, Any]:
+    if pipeline_status == PIPELINE_STATUS_INGESTING:
+        return _ingesting_es_clause()
+    doc_status = _PIPELINE_STATUS_TO_DOC_STATUS.get(pipeline_status)
+    if not doc_status:
+        raise ValueError(f"unsupported pipeline_status: {pipeline_status}")
+    return {
+        "bool": {
+            "filter": [{"term": {"status": doc_status}}],
+            "must_not": [_ingesting_es_clause()],
+        }
+    }
+
+
+def _pipeline_counts_from_items(items: list[Dict[str, Any]]) -> Dict[str, int]:
+    counts = empty_pipeline_counts()
+    for item in items:
+        counts[PIPELINE_STATUS_ALL] += 1
+        key = classify_pipeline_status(item)
+        if key in counts:
+            counts[key] += 1
+    return counts
+
+
+def _pipeline_counts_from_es_aggs(total_documents: int, aggs: Dict[str, Any]) -> Dict[str, int]:
+    counts = empty_pipeline_counts()
+    counts[PIPELINE_STATUS_ALL] = int(total_documents)
+    buckets = (aggs.get("pipeline_counts") or {}).get("buckets") or {}
+    for key in (
+        PIPELINE_STATUS_UPLOADED,
+        PIPELINE_STATUS_INGESTING,
+        PIPELINE_STATUS_INGESTED,
+        PIPELINE_STATUS_FAILED,
+    ):
+        bucket = buckets.get(key) if isinstance(buckets, dict) else None
+        counts[key] = int((bucket or {}).get("doc_count", 0))
+    return counts
+
+
+def _pipeline_counts_es_aggs() -> Dict[str, Any]:
+    ingesting = _ingesting_es_clause()
+    return {
+        "filters": {
+            "filters": {
+                PIPELINE_STATUS_UPLOADED: {
+                    "bool": {
+                        "filter": [{"term": {"status": "UPLOADED"}}],
+                        "must_not": [ingesting],
+                    }
+                },
+                PIPELINE_STATUS_INGESTING: ingesting,
+                PIPELINE_STATUS_INGESTED: {
+                    "bool": {
+                        "filter": [{"term": {"status": "SUCCESS"}}],
+                        "must_not": [ingesting],
+                    }
+                },
+                PIPELINE_STATUS_FAILED: {
+                    "bool": {
+                        "filter": [{"term": {"status": "FAILED"}}],
+                        "must_not": [ingesting],
+                    }
+                },
+            }
+        }
+    }
 
 
 def make_document_storage_key(
@@ -163,8 +359,12 @@ class DocumentRepository:
         doc_name: str | None = None,
         doc_version: str | None = None,
         doc_name_contains: str | None = None,
+        pipeline_status: str | None = None,
+        exclude_namespaces: Sequence[str] | None = None,
     ) -> list[Dict[str, Any]]:
         needle = (doc_name_contains or "").strip() or None
+        status_filter = normalize_pipeline_status(pipeline_status)
+        excluded = _normalize_exclude_namespaces(exclude_namespaces)
         if self._use_es and self._client is not None:
             filters: list[Dict[str, Any]] = []
             if namespace is not None:
@@ -179,7 +379,9 @@ class DocumentRepository:
                 filters.append({"term": {"doc_version": doc_version}})
             if needle:
                 filters.append({"wildcard": {"doc_name": f"*{_escape_es_wildcard(needle)}*"}})
-            query: Dict[str, Any] = {"match_all": {}} if not filters else {"bool": {"filter": filters}}
+            if status_filter:
+                filters.append(pipeline_status_es_clause(status_filter))
+            query: Dict[str, Any] = _es_docs_query(filters, excluded)
             from_ = max(int(offset), 0)
             size = max(int(limit), 1)
             if from_ >= _ES_MAX_RESULT_WINDOW:
@@ -221,6 +423,10 @@ class DocumentRepository:
             values = [v for v in values if str(v.get("doc_version") or "v1") == str(doc_version)]
         if needle:
             values = [v for v in values if _doc_name_contains_match(v.get("doc_name"), needle)]
+        if status_filter:
+            values = [v for v in values if classify_pipeline_status(v) == status_filter]
+        if excluded:
+            values = [v for v in values if not _namespace_excluded(v, excluded)]
         values.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
         start = max(offset, 0)
         end = start + max(limit, 1)
@@ -482,11 +688,13 @@ class DocumentRepository:
         tenant_id: str | None = None,
         dataset_id: str | None = None,
         doc_name_contains: str | None = None,
+        exclude_namespaces: Sequence[str] | None = None,
     ) -> Dict[str, Any]:
         """
         返回知识库总览统计，便于管理面做“当前知识库整体情况”展示。
         """
         needle = (doc_name_contains or "").strip() or None
+        excluded = _normalize_exclude_namespaces(exclude_namespaces)
         if self._use_es and self._client is not None:
             filters: list[Dict[str, Any]] = []
             if namespace is not None:
@@ -497,7 +705,7 @@ class DocumentRepository:
                 filters.append({"term": {"dataset_id": dataset_id}})
             if needle:
                 filters.append({"wildcard": {"doc_name": f"*{_escape_es_wildcard(needle)}*"}})
-            query: Dict[str, Any] = {"match_all": {}} if not filters else {"bool": {"filter": filters}}
+            query: Dict[str, Any] = _es_docs_query(filters, excluded)
             body = {
                 "size": 0,
                 "query": query,
@@ -506,12 +714,14 @@ class DocumentRepository:
                     "by_tenant": {"terms": {"field": "tenant_id", "size": 100}},
                     "by_status": {"terms": {"field": "status", "size": 20}},
                     "doc_name_count": {"cardinality": {"field": "doc_name"}},
+                    "pipeline_counts": _pipeline_counts_es_aggs(),
                 },
             }
             res = self._client.search(index=self._alias, body=body)
             aggs = res.get("aggregations", {})
+            total_documents = int(res.get("hits", {}).get("total", {}).get("value", 0))
             return {
-                "total_documents": int(res.get("hits", {}).get("total", {}).get("value", 0)),
+                "total_documents": total_documents,
                 "total_doc_names": int(aggs.get("doc_name_count", {}).get("value", 0)),
                 "by_namespace": [
                     {"key": b.get("key"), "count": int(b.get("doc_count", 0))}
@@ -525,6 +735,7 @@ class DocumentRepository:
                     {"key": b.get("key"), "count": int(b.get("doc_count", 0))}
                     for b in (aggs.get("by_status", {}).get("buckets") or [])
                 ],
+                "pipeline_counts": _pipeline_counts_from_es_aggs(total_documents, aggs),
             }
 
         values = self.list(
@@ -534,6 +745,7 @@ class DocumentRepository:
             tenant_id=tenant_id,
             dataset_id=dataset_id,
             doc_name_contains=needle,
+            exclude_namespaces=list(excluded) if excluded else None,
         )
         by_namespace: Dict[str, int] = {}
         by_tenant: Dict[str, int] = {}
@@ -555,6 +767,7 @@ class DocumentRepository:
             "by_namespace": [{"key": k, "count": v} for k, v in by_namespace.items()],
             "by_tenant": [{"key": k, "count": v} for k, v in by_tenant.items()],
             "by_status": [{"key": k, "count": v} for k, v in by_status.items()],
+            "pipeline_counts": _pipeline_counts_from_items(values),
         }
 
     def update_namespace_kb_config(

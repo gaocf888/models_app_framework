@@ -804,7 +804,8 @@ class IngestionOrchestrator:
             "updated_at": utcnow_iso(),
             "last_job_id": job.job_id,
             "last_job_type": job.job_type.value,
-            "last_job_status": job.status.value,
+            # 按文档终态写 last_job_status，避免任务仍为 RUNNING 时把已成功/失败文档算成「摄入中」。
+            "last_job_status": status if status in {"SUCCESS", "FAILED"} else job.status.value,
             "metadata": merge_doc_metadata_for_record(doc),
             "error": error,
         }

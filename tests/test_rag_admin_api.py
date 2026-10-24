@@ -238,6 +238,139 @@ class TestRagAdminMetaApi(unittest.TestCase):
         self.assertEqual(bt.add_task.call_args[0][0].__name__, "run_graph_resync_after_namespace_move")
         self.assertTrue(body.get("graph_repair_scheduled"))
 
+    def test_overview_pipeline_counts_not_filtered_by_chip(self):
+        mock_docs = [
+            {
+                "doc_name": "only_uploaded",
+                "doc_version": "v1",
+                "dataset_id": "default",
+                "namespace": "法规",
+                "source_type": "pdf",
+                "status": "UPLOADED",
+                "last_job_status": "UPLOADED",
+                "chunk_count": 0,
+                "metadata": {},
+            }
+        ]
+
+        class _DocRepo:
+            def overview(self, **kwargs):
+                self.overview_kwargs = kwargs
+                return {
+                    "total_documents": 5,
+                    "total_doc_names": 5,
+                    "by_namespace": [{"key": "法规", "count": 5}],
+                    "by_tenant": [],
+                    "by_status": [{"key": "UPLOADED", "count": 2}],
+                    "pipeline_counts": {
+                        "all": 5,
+                        "uploaded": 1,
+                        "ingesting": 2,
+                        "ingested": 1,
+                        "failed": 1,
+                    },
+                }
+
+            def list(self, **kwargs):
+                self.list_kwargs = kwargs
+                return mock_docs
+
+        repo = _DocRepo()
+        with patch("app.api.rag_admin._get_doc_repo", return_value=repo):
+            body = _to_dict(
+                asyncio.run(
+                    rag_admin.get_documents_overview(
+                        limit=20,
+                        offset=0,
+                        namespace="法规",
+                        pipeline_status="uploaded",
+                    )
+                )
+            )
+        self.assertTrue(body.get("ok"))
+        self.assertEqual("uploaded", body.get("pipeline_status"))
+        self.assertEqual(1, body.get("total_documents"))
+        self.assertEqual(
+            {"all": 5, "uploaded": 1, "ingesting": 2, "ingested": 1, "failed": 1},
+            body.get("pipeline_counts"),
+        )
+        self.assertEqual(["only_uploaded"], [d["doc_name"] for d in body.get("documents") or []])
+        self.assertEqual("法规", repo.overview_kwargs.get("namespace"))
+        self.assertIsNone(repo.overview_kwargs.get("pipeline_status"))
+        self.assertEqual("uploaded", repo.list_kwargs.get("pipeline_status"))
+        self.assertIn("nl2sql_schema", repo.overview_kwargs.get("exclude_namespaces") or [])
+        self.assertIn("nl2sql_qa_examples", repo.list_kwargs.get("exclude_namespaces") or [])
+
+    def test_overview_all_uses_pipeline_counts_all(self):
+        class _DocRepo:
+            def overview(self, **kwargs):
+                return {
+                    "total_documents": 9,
+                    "total_doc_names": 9,
+                    "by_namespace": [],
+                    "by_tenant": [],
+                    "by_status": [],
+                    "pipeline_counts": {
+                        "all": 9,
+                        "uploaded": 0,
+                        "ingesting": 0,
+                        "ingested": 9,
+                        "failed": 0,
+                    },
+                }
+
+            def list(self, **kwargs):
+                return []
+
+        with patch("app.api.rag_admin._get_doc_repo", return_value=_DocRepo()):
+            body = _to_dict(asyncio.run(rag_admin.get_documents_overview(limit=20, offset=0)))
+        self.assertIsNone(body.get("pipeline_status"))
+        self.assertEqual(9, body.get("total_documents"))
+        self.assertEqual(9, body["pipeline_counts"]["all"])
+        self.assertEqual(9, body["pipeline_counts"]["ingested"])
+
+    def test_overview_all_does_not_exclude_nl2sql(self):
+        class _DocRepo:
+            def overview(self, **kwargs):
+                self.overview_kwargs = kwargs
+                return {
+                    "total_documents": 13,
+                    "total_doc_names": 12,
+                    "by_namespace": [{"key": "nl2sql_schema", "count": 1}],
+                    "by_tenant": [],
+                    "by_status": [],
+                    "pipeline_counts": {
+                        "all": 13,
+                        "uploaded": 0,
+                        "ingesting": 0,
+                        "ingested": 13,
+                        "failed": 0,
+                    },
+                }
+
+            def list(self, **kwargs):
+                self.list_kwargs = kwargs
+                return [
+                    {
+                        "doc_name": "nl2sql_schema",
+                        "doc_version": "v1",
+                        "dataset_id": "default",
+                        "namespace": "nl2sql_schema",
+                        "source_type": "markdown",
+                        "status": "SUCCESS",
+                        "chunk_count": 1,
+                        "metadata": {},
+                    }
+                ]
+
+        repo = _DocRepo()
+        with patch("app.api.rag_admin._get_doc_repo", return_value=repo):
+            body = _to_dict(asyncio.run(rag_admin.get_documents_overview_all(limit=20, offset=0)))
+        self.assertEqual(13, body.get("total_documents"))
+        self.assertEqual("nl2sql_schema", body["documents"][0]["namespace"])
+        self.assertFalse(repo.overview_kwargs.get("exclude_namespaces"))
+        self.assertFalse(repo.list_kwargs.get("exclude_namespaces"))
+
 
 if __name__ == "__main__":
     unittest.main()

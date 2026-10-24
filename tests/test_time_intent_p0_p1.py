@@ -88,6 +88,21 @@ class TestTimeIntentP0P1(unittest.TestCase):
         assert win is not None
         self.assertEqual("recent_6_months", win[2])
 
+    def test_bare_recent_maps_to_7_days(self) -> None:
+        """裸「近期/最近」默认滚动近 7 天，避免落成 yesterday_fallback。"""
+        for q in (
+            "哪些行政区近期沉降相对偏大？",
+            "最近沉降情况如何",
+        ):
+            win = extract_time_window_from_question(q)
+            assert win is not None, q
+            self.assertEqual("recent_7_days", win[2], q)
+            self.assertIn("INTERVAL 7 DAY", win[0], q)
+        # 更具体的「最近一个月」仍优先
+        mon = extract_time_window_from_question("最近一个月沉降")
+        assert mon is not None
+        self.assertEqual("recent_1_months", mon[2])
+
     def test_recent_one_month_with_ge(self) -> None:
         """「最近一个月」含「个」，须识别为滚动一月，而不是上个月或未解析。"""
         win = extract_time_window_from_question("请帮我查询F2(望京)的最近一个月的沉降量")

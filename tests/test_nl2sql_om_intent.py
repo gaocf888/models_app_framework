@@ -222,6 +222,41 @@ def test_suggested_filters_rewrite_om_type() -> None:
     )
 
 
+def test_suggested_filters_district_prefers_layer0_skips_coverage() -> None:
+    """区级问句：有层位0 时不强制灌全网 project_name IN。"""
+    from app.nl2sql.suggested_filters_rewrite import rewrite_sql_with_suggested_filters
+
+    sql = (
+        "SELECT s.area, AVG(f.total_settle) AS avg_settle "
+        "FROM t_data_wash_fcb f JOIN t_station s ON f.project_name = s.name "
+        "WHERE f.data_time >= NOW() - INTERVAL '7 days' "
+        "GROUP BY s.area ORDER BY avg_settle ASC"
+    )
+    filters = [
+        {
+            "column": "project_name",
+            "op": "in",
+            "value": ["F1(王四营)", "F2(望京)"],
+            "source": "device_station_map",
+        },
+        {
+            "column": "station_name",
+            "op": "in",
+            "value": ["F1-7", "F2-7"],
+            "source": "fcb_layer0",
+        },
+    ]
+    out, notes = rewrite_sql_with_suggested_filters(
+        sql,
+        filters,
+        question="哪些行政区近期沉降相对偏大？",
+    )
+    assert any("prefer_layer0_district" in n for n in notes)
+    assert "project_name IN" not in out
+    assert "station_name IN" in out
+    assert "F1-7" in out
+
+
 def test_ops_safe_suggested_filters_keeps_only_om_type() -> None:
     from app.nl2sql.om_intent import ops_safe_suggested_filters
 

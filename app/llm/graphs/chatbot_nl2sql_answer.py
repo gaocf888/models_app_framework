@@ -16,6 +16,7 @@ from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
 from app.llm.graphs.chatbot_nl2sql_display import (
+    CHATBOT_NL2SQL_DISTRICT_PERIOD_AGG_HINT,
     CHATBOT_NL2SQL_SELECT_DISPLAY_RULES,
     apply_chatbot_nl2sql_column_titles,
     filter_chatbot_nl2sql_display_rows,
@@ -300,9 +301,24 @@ def _empty_prompt_default_version() -> str:
     return "subsidence_v1" if _is_subsidence_domain() else "v1"
 
 
-def _chatbot_sql_gen_extra_hint() -> str:
-    """客服 NL2SQL 生成附加提示：仅 SELECT 用户可读性（域规则已在基座 v2_subsidence）。"""
-    return CHATBOT_NL2SQL_SELECT_DISPLAY_RULES
+def _chatbot_sql_gen_extra_hint(
+    question: str = "",
+    *,
+    grain: str | None = None,
+) -> str:
+    """客服 NL2SQL 生成附加提示：SELECT 可读性 + 区级周期聚合（按 grain/问句）。"""
+    parts = [CHATBOT_NL2SQL_SELECT_DISPLAY_RULES]
+    g = (grain or "").strip().lower()
+    if not g and (question or "").strip():
+        try:
+            from app.data_query_agent.scope_intent import infer_result_grain
+
+            g = infer_result_grain(question)
+        except Exception:  # noqa: BLE001
+            g = ""
+    if g == "district":
+        parts.append(CHATBOT_NL2SQL_DISTRICT_PERIOD_AGG_HINT)
+    return "\n\n".join(parts)
 
 
 def _chatbot_expose_nl2sql_sql_in_meta() -> bool:
@@ -629,11 +645,16 @@ async def run_chatbot_nl2sql_query(
             )
         period_tag = "fail_fallback_llm"
 
+    settle_grain = None
+    if prepare.scope is not None:
+        settle_grain = str(getattr(prepare.scope, "grain", "") or "") or None
     req_kwargs: dict[str, Any] = {
         "user_id": user_id,
         "session_id": session_id,
         "question": question,
-        "sql_gen_extra_hint": _chatbot_sql_gen_extra_hint(),
+        "sql_gen_extra_hint": _chatbot_sql_gen_extra_hint(
+            question, grain=settle_grain
+        ),
     }
     if prepare.ops_routed:
         pass  # 运维：不锁沉降表，由链内 om 意图收窄

@@ -20,6 +20,16 @@ CHATBOT_NL2SQL_SELECT_DISPLAY_RULES = """
 3) 优先输出业务可读列：名称、时间、描述、类型名称等；列别名用简短中文便于展示。
 """.strip()
 
+# 区级对比/排行：先站级层位0周期Δ，再按行政区聚合（与 nl2sql_biz_knowledge / qa 金样对齐）
+CHATBOT_NL2SQL_DISTRICT_PERIOD_AGG_HINT = """
+【智能客服·行政区周期沉降对比（本问强制）】
+1) 结果粒度是行政区，不是站点列表：最终 SELECT 必须 GROUP BY s.area（或等价区字段），输出区名、站点数、区均周期沉降等。
+2) 计算顺序：每个 project_name 只用监测层位=0 的 station_name 算 period_settle_mm=窗初 total_settle−窗末 total_settle；再对区内各站 AVG(period_settle_mm)。禁止对同一 project_name 下全部 station_name 做 AVG。
+3) 「偏大/较大/最大」= 沉降更多 = ORDER BY 区均 period ASC（越负越前）；禁止用 DESC 当沉降最大。
+4) 时间窗用问句解析结果（「近期/最近」=滚动近7天）；禁止相关子查询逐站算初末；用 WITH + ROW_NUMBER（或窗内 MIN/MAX(data_time) 回表）一次算完再聚合。
+5) JOIN t_station：f.project_name = s.name；层位0 用 station_name IN（权威名单）；禁止输出站级去重列表冒充区汇总，必须 GROUP BY 行政区后再排序。
+""".strip()
+
 _EXACT_HIDE_NAMES = frozenset(
     {
         "id",

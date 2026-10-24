@@ -14,7 +14,12 @@ from app.nl2sql.question_intent_display import question_intent_to_dict
 from app.nl2sql.scope_parser_subsidence import parse_scope_subsidence
 
 
-_DISTRICT_GRAIN_RE = re.compile(r"各区|按区|按行政区|行政区.{0,8}平均")
+# 区级对比/排行口语：「哪些行政区…偏大」等无「各区/平均」也要进 district
+_DISTRICT_GRAIN_RE = re.compile(
+    r"各区|按区|按行政区|行政区.{0,8}平均|"
+    r"哪些行政区|哪些区|哪几个区|哪几个行政区|"
+    r"行政区.{0,16}(偏大|偏小|较大|较小|最大|最小|排行|排名|对比|均)"
+)
 _CITY_GRAIN_RE = re.compile(r"全市|全北京")
 _AGG_RE = re.compile(r"平均|汇总|合计")
 _SUBSIDENCE_LEXICON = (

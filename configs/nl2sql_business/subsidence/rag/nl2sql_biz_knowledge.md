@@ -82,6 +82,11 @@
 - 事实表 **`project_name`** 与 **`t_station.name`** 等值关联。
 - 行政区过滤：`t_station.area`（标准名如「朝阳区」「通州区」）；层位字典中的 `district_raw` 可能是简称，**不以之为 SQL 过滤真源**。
 - **监测方式官方站点覆盖**：`semantic/dimensions/device_station_map.yaml`（`device_type → project_name[]`）。查询某监测方式站点时，先取覆盖名单再与 `t_station` 匹配；**不以**事实表「当前有数据」代替官方覆盖。GNSS 一期名单为空占位。
+- **行政区对比 / 「哪些区沉降偏大」**（与「禁止同站多标 AVG」不冲突）：
+  1. 每个 `project_name` 先用层位 0 代表标算 `period_settle_mm`（初−末）；
+  2. 再 `GROUP BY s.area`，对区内各站 `AVG(period_settle_mm)`（可附 `COUNT(DISTINCT project_name)`）；
+  3. 「偏大/较大」→ `ORDER BY avg_period_settle_mm ASC`（越负沉降越多）；
+  4. **禁止**输出站级 `DISTINCT ON (project_name)` 列表冒充区对比；**禁止**对同站全部 `station_name` 先 AVG 再当站沉降。
 - 北京市 16 区：东城、西城、朝阳、丰台、石景山、海淀、门头沟、房山、通州、顺义、昌平、大兴、怀柔、平谷、密云、延庆。
 
 ## 层位字典（配置文件）
@@ -112,13 +117,14 @@
 | **本季度 / 这个季度** | 自然季度 | 季初 ～ 季初 + 3 months |
 | **近 N 天 / 最近 N 天** | **滚动**近 N 天 | `NOW() - INTERVAL 'N days'` ～ `NOW()` |
 | **近一周 / 最近一周 / 近7天** | **滚动**近 7 天（≠本周） | `NOW() - INTERVAL '7 days'` ～ `NOW()` |
+| **近期 / 最近**（无 N 天/周/月） | **默认滚动近 7 天**（与近一周同口径） | `NOW() - INTERVAL '7 days'` ～ `NOW()` |
 | **近3天** | 滚动近 3 天 | `NOW() - INTERVAL '3 days'` ～ `NOW()` |
 
 ### 硬性区分
 
 - **「本周」≠「近一周」**：本周必须用自然周起止；**禁止**用 `CURRENT_DATE - INTERVAL '7 days'`（或等价滚动 7 天）代替「本周」。
-- `INTERVAL '7 days'` 仅适用于「近一周 / 最近一周 / 近7天」等**滚动窗**说法，或作为方言语法示例，**不得**默认映射到「本周」。
-- 程序侧若已解析出 `this_week` / `last_week` / `this_month` 等 tag，生成 SQL 须与 tag 一致，勿自行改写成滚动窗。
+- `INTERVAL '7 days'` 仅适用于「近一周 / 最近一周 / 近7天 / 近期 / 最近」等**滚动窗**说法，或作为方言语法示例，**不得**默认映射到「本周」。
+- 程序侧若已解析出 `this_week` / `last_week` / `this_month` / `recent_7_days` 等 tag，生成 SQL 须与 tag 一致，勿自行改写成昨日快照。
 
 ## 周期沉降 SQL 禁令
 
@@ -146,7 +152,7 @@
 | 把层位 0 的 `station_name`（如 `F1-7`）写进 `t_station.name` 过滤 | 标编号 ≠ 站点名；站点名是 `project_name` / `t_station.name` |
 | 事实表 `WHERE station_id = 'F22'`（或 `id`/`data_id` 过滤/JOIN） | 遗留主键列，不是现行站点身份；站点用 `project_name` |
 
-推荐完整正例见 `qa_examples_seed.md`「朝阳区本周沉降最大站点」。
+推荐完整正例见 `qa_examples_seed.md`「朝阳区本周沉降最大站点」「哪些行政区近期沉降相对偏大」。
 
 ## SQL 方言
 

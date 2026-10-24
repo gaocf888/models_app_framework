@@ -12,7 +12,7 @@ python -m http.server 8765
 | [intelligent-qa.html](intelligent-qa.html) | **智能问答** | `POST /chatbot/chat/stream` + stop / sessions |
 | [auto-report.html](auto-report.html) | **自动报告生成** | `POST /analysis-agent/run-stream` + stream/stop |
 | [data-query.html](data-query.html) | **数据查询** | `GET /data-query-agent/tree` + browse；`POST /run-stream` + resume HITL（一次性 JSON） |
-| [knowledge-base.html](knowledge-base.html) | **知识库** | `GET /rag/namespaces` + overview；upload / ingest / jobs |
+| [knowledge-base.html](knowledge-base.html) | **知识库** | `GET /rag/namespaces` + 可切换 overview / overview_all；upload / ingest / jobs |
 
 打开示例：
 
@@ -36,7 +36,7 @@ python -m http.server 8765
 
 - 智能问答 / 数据查询 / 自动报告：**禁止展示 SQL**（不渲染 `nl2sql_sql`）
 - 数据查询：点树只走 browse，不要打 run-stream；不调 `/libraries`；解析路径详参用 `hud_by_entity`，不调 `GET /hud`
-- 知识库：上传与摄入分离；不做分类启用/优先级（文档 §4.2）
+- 知识库：上传与摄入分离（`doc_name` / `doc_version` 必填）；流水线芯片点选走 `pipeline_status`，数量用 `pipeline_counts`；测试页可切换 `overview` / `overview_all`；不做分类启用/优先级（文档 §4.2）
 - 自动报告页只覆盖五种 `subsidence_*` 模版；沉降分布图由后端离线 PNG，不接交互 GIS
 
 锅炉通用智能体页仍用上级 [analysis-agent-stream.html](../analysis-agent-stream.html)。

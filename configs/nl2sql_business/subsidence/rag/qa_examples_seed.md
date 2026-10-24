@@ -262,6 +262,73 @@ ORDER BY period_settle_mm ASC
 LIMIT 1;
 ```
 
+## nl2sql_direct · 哪些行政区近期沉降相对偏大（区均周期Δ）
+
+**问句**：哪些行政区近期沉降相对偏大？
+
+> - **近期** = 滚动近 7 天（`NOW() - INTERVAL '7 days'` ～ `NOW()`；≠ 昨日快照，≠ 自然周「本周」）。  
+> - 先对每个 `project_name` 用层位 0 代表标算 `period_settle_mm = 初 − 末`；再按 `s.area` 对站求 `AVG`。  
+> - 「偏大」= 沉降更多 = `ORDER BY avg_period_settle_mm ASC`（越负越前）。  
+> - **禁止** `DISTINCT ON (project_name)` 站级列表；**禁止**相关子查询逐站算初末；**禁止**对同站全部 `station_name` 做 AVG。
+
+```sql
+WITH bounds AS (
+  SELECT
+    (NOW() - INTERVAL '7 days') AS t_start,
+    NOW() AS t_end
+),
+ranked AS (
+  SELECT
+    f.project_name,
+    f.station_name,
+    s.area,
+    f.total_settle,
+    f.data_time,
+    ROW_NUMBER() OVER (
+      PARTITION BY f.project_name, f.station_name
+      ORDER BY f.data_time ASC
+    ) AS rn_asc,
+    ROW_NUMBER() OVER (
+      PARTITION BY f.project_name, f.station_name
+      ORDER BY f.data_time DESC
+    ) AS rn_desc
+  FROM t_data_wash_fcb AS f
+  JOIN t_station AS s ON f.project_name = s.name
+  CROSS JOIN bounds AS b
+  WHERE f.data_time >= b.t_start
+    AND f.data_time < b.t_end
+    AND f.station_name IN (
+      'F8-10','F9-6','F10-7','F11-4','F3-10','F5-7','F12-7','F13-10','F14-9','F15-10',
+      'F16-10','F42-5','F6-7','F17-8','F18-10','F19-10','F20-10','F21-10','F22-10','F23-8',
+      'F24-8','F25-7','F26-9','F1-7','F2-7','F27-8','F28-10','F29-10','F7-7','F30-9',
+      'F31-9','F32-9','F33-9','F34-10','F35-10','F36-8','F4-10','F37-9','F38-10','F39-10',
+      'F40-10','F41-10'
+      /* 完整清单见 nl2sql_biz_knowledge_fcb_layer0_stations.md */
+    )
+),
+period AS (
+  SELECT
+    project_name,
+    station_name,
+    area,
+    MAX(CASE WHEN rn_asc = 1 THEN total_settle END)
+      - MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS period_settle_mm
+  FROM ranked
+  GROUP BY project_name, station_name, area
+  HAVING MAX(CASE WHEN rn_asc = 1 THEN total_settle END) IS NOT NULL
+     AND MAX(CASE WHEN rn_desc = 1 THEN total_settle END) IS NOT NULL
+)
+SELECT
+  area,
+  COUNT(DISTINCT project_name) AS station_cnt,
+  AVG(period_settle_mm) AS avg_period_settle_mm
+FROM period
+GROUP BY area
+ORDER BY avg_period_settle_mm ASC;
+```
+
+---
+
 ## 运维中间库示例（om_result）
 
 > 口径与报告一致：一律最新 `snapshot_time`；离线列表必须 `status = 0`。
