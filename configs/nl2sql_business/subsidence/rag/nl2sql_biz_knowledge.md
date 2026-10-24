@@ -86,7 +86,8 @@
   1. 每个 `project_name` 先用层位 0 代表标算 `period_settle_mm`（初−末）；
   2. 再 `GROUP BY s.area`，对区内各站 `AVG(period_settle_mm)`（可附 `COUNT(DISTINCT project_name)`）；
   3. 「偏大/较大」→ `ORDER BY avg_period_settle_mm ASC`（越负沉降越多）；
-  4. **禁止**输出站级 `DISTINCT ON (project_name)` 列表冒充区对比；**禁止**对同站全部 `station_name` 先 AVG 再当站沉降。
+  4. SQL 形态：`WITH ranked`（仅窗口、**无 GROUP BY**）→ `period`（`MAX(CASE WHEN rn_*=1)`）→ 按 `area` 聚合；
+  5. **禁止**站级去重列表冒充区对比；**禁止**窗口层 `GROUP BY` 却选 `data_time`；**禁止**短码 `project_name IN ('F1')`；**禁止**对同站全部 `station_name` 先 AVG 再当站沉降。
 - 北京市 16 区：东城、西城、朝阳、丰台、石景山、海淀、门头沟、房山、通州、顺义、昌平、大兴、怀柔、平谷、密云、延庆。
 
 ## 层位字典（配置文件）

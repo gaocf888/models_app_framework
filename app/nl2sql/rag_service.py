@@ -223,6 +223,34 @@ class NL2SQLRAGService:
                 continue
             seen.add(key)
             unique_results.append(c)
+
+        # 节点 ③a：区级周期对比问句强制前置金样（不依赖 ES 是否已 re-ingest）
+        try:
+            from app.nl2sql.district_period_agg import (
+                district_period_rag_snippet,
+                is_district_grain_question,
+            )
+
+            if is_district_grain_question(question or ""):
+                inj_text = district_period_rag_snippet()
+                inj = RetrievedChunk(
+                    text=inj_text,
+                    doc_name="district_period_agg_inject",
+                    namespace=self.NS_QA,
+                    chunk_id="inject:district_period_agg",
+                    score=1.0,
+                    metadata={"source": "district_period_agg_inject"},
+                )
+                unique_results = [inj] + [
+                    c for c in unique_results if (c.chunk_id or "") != inj.chunk_id
+                ]
+                logger.info(
+                    "NL2SQLRAG.retrieve_chunks district_period_inject=1 query_len=%d",
+                    len(question or ""),
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning("NL2SQLRAG.retrieve_chunks district_period_inject failed", exc_info=True)
+
         logger.info(
             "NL2SQLRAG.retrieve_chunks mode=%s top_k=%s schema_raw_top=%s caps(schema,biz,qa)=(%s,%s,%s) "
             "effective(schema,biz,qa)=(%s,%s,%s) graph_enabled=%s qa_slot_lookup=%s raw_total=%d unique=%d "

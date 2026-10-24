@@ -264,12 +264,12 @@ LIMIT 1;
 
 ## nl2sql_direct · 哪些行政区近期沉降相对偏大（区均周期Δ）
 
-**问句**：哪些行政区近期沉降相对偏大？
+**问句**：哪些行政区近期沉降相对偏大？ / 哪些区近期沉降偏大？ / 各行政区近期沉降对比
 
 > - **近期** = 滚动近 7 天（`NOW() - INTERVAL '7 days'` ～ `NOW()`；≠ 昨日快照，≠ 自然周「本周」）。  
 > - 先对每个 `project_name` 用层位 0 代表标算 `period_settle_mm = 初 − 末`；再按 `s.area` 对站求 `AVG`。  
 > - 「偏大」= 沉降更多 = `ORDER BY avg_period_settle_mm ASC`（越负越前）。  
-> - **禁止** `DISTINCT ON (project_name)` 站级列表；**禁止**相关子查询逐站算初末；**禁止**对同站全部 `station_name` 做 AVG。
+> - **禁止** 站级去重列表冒充区汇总；**禁止**在含 `ROW_NUMBER` 的同一 SELECT 再 `GROUP BY`；**禁止**虚构 `settle_start_time`；**禁止** `project_name IN ('F1','F2')` 短码；**禁止**相关子查询逐站算初末；**禁止**对同站全部 `station_name` 做 AVG。
 
 ```sql
 WITH bounds AS (

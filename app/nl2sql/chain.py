@@ -1500,6 +1500,32 @@ class NL2SQLChain:
                 )
         except Exception:  # noqa: BLE001
             pass
+        # 节点 ⑥：GroupingError / 区级坏骨架 → 禁止补 GROUP BY 列，强制 CTE 重写
+        try:
+            from app.nl2sql.district_period_agg import (
+                DISTRICT_PERIOD_AGG_REFINE_EXTRA,
+                district_period_prompt_block,
+                needs_district_period_refine,
+            )
+
+            if needs_district_period_refine(
+                question, original_sql or "", validation_error
+            ):
+                system += (
+                    " "
+                    + DISTRICT_PERIOD_AGG_REFINE_EXTRA
+                    + " "
+                    + district_period_prompt_block(include_skeleton=True)
+                )
+                logger.info(
+                    "NL2SQLChain._refine_sql district_period_cte_guidance=1 q_len=%d",
+                    len(question or ""),
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "NL2SQLChain._refine_sql district_period_guidance failed",
+                exc_info=True,
+            )
         if strict_schema_reminder:
             system += (
                 " 【校验修正·强制】你必须严格消除「校验失败原因」中列出的违规项："
