@@ -36,6 +36,8 @@
 | 2026-10-19 | 问答尾帧/历史返回字段下补充 `original_preview_url` 调用方使用说明 | — | V1.11 |
 | 2026-10-19 | 3.3 点库/区列表去掉年沉降量，累计沉降表头改为沉降量 | — | V1.12 |
 | 2026-10-23 | 3.4 / 3.5 解析 SQL 与人机协同恢复改为一次性 JSON（不再 SSE） | — | V1.13 |
+| 2026-10-26 | 3.4 补充 SQL 生成/查询失败时的 JSON 字段、常见 `error` 码与前端渲染说明 | — | V1.14 |
+| 2026-10-26 | 3.4 明确可用 `ok=false` 统一友好提示；补充推荐文案 | — | V1.15 |
 
 ## 通用约定
 
@@ -981,7 +983,7 @@ HITL 人机交互说明：
 |--------|-------|--------------|
 | `success` | `data_query_result` | 换右侧表：`columns` 当表头，`list` 当行，单元格取 `list[i][columns[j].key]`。用 `library_id` 高亮左侧树。点「详参」读 `hud_by_entity[该行 hud_entity_id]`，站点找不到再用 `hud_by_station`。**不要**再调 `GET /hud` |
 | `interrupted` | `data_query_library_input_required` | 弹出选库窗；右侧 **还没有新表**。见下方衔接 |
-| `error` | `data_query_error` | 按钮恢复；提示 `message` / `error`，不要清空上一张表除非产品要求 |
+| `error` | `data_query_error` | **SQL 生成或查询失败**等同此分支。按钮恢复；提示 `message` / `error`；字段与渲染见下文「失败返回」。不要清空上一张表除非产品要求 |
 | `cancelled` | `data_query_cancelled` | 按钮恢复；不要出表 |
 
 `success` 时还有：`library_id`、`display_name`、`table`、`source`（`request` / `parsed` / `default` / `llm` / `hitl`）、`scope`、`time`、`parse_mode`、`result_grain`、`hud_enabled`、`warnings`。`scope` / `time` 可做「朝阳区 / 近一年」芯片（本页不做过滤器也可忽略）。**禁止展示 sql**。
@@ -992,9 +994,57 @@ HITL 人机交互说明：
 
 `warnings` 常见值做成表下小字即可：`library_defaulted`（已默认分层标）、`library_conflict_nl_ignored`（问句里的库被树覆盖）、`hud_series_truncated`（后面的行没有详参）、`hud_series_failed`（表有了但曲线没有）。
 
+### 失败返回（SQL 生成失败 / 查询执行失败）— 前端必读
+
+业务失败（含 **NL2SQL 生成失败**、**SQL 执行失败**、库目录异常、运维问句拒答等）HTTP 仍为 **200**，体为：
+
+| 返回字段 | 字段类型 | 说明 |
+|----------|----------|------|
+| ok | boolean | 固定 `false` |
+| status | string | 固定 `error` |
+| event | string | 固定 `data_query_error` |
+| request_id | string | 本次解析编号（联调/日志） |
+| error | string | **机读错误码**（分支、埋点用；见下表） |
+| message | string | **给人看的说明**（优先展示给用户；可能与 `error` 同文或更具体） |
+| gen_fail_reason | string \| null | 生成阶段机读原因（如 `link_failed:…`）；执行阶段失败时常为 `null` |
+| sql | string \| null | 失败时可能带上已生成/已尝试的 SQL；**禁止展示给终端用户**（仅联调/网关日志） |
+
+**不要**用 HTTP 4xx/5xx 判断「解析没出表」：参数问题才是 422，开关关闭才是 503；其余解析失败都看 `ok=false`（等价于 `status=error`）。
+
+**`ok` 怎么用（推荐前端主路径）**：
+
+| ok | status | 前端怎么做 |
+|----|--------|------------|
+| `true` | `success` | 出表 |
+| `true` | `interrupted` | **不是失败**，弹选库（见 HITL） |
+| `true` | `cancelled` | 用户取消，可静默或轻提示「已取消」 |
+| `false` | `error` | **生成或执行失败**（含拒答、配置异常等），出统一友好提示即可 |
+
+主路径只需判断 **`ok === false`**，不必解析 `error` / `gen_fail_reason`（那些留给埋点、联调）。推荐 **统一用户提示**（文案可原样使用）：
+
+> 暂时无法完成这次数据查询。请换个说法，或先在左侧选择监测类型、行政区或站点后再试。
+
+前端渲染建议：
+
+1. 按钮从「解析中…」恢复可点。  
+2. Toast / 顶栏展示上列统一文案（或产品定稿的等价句）；**不要**把 `message` / `error` 原文直接给用户（多为机读串）。  
+3. **不要清空**上一张浏览/解析表（除非产品明确要求）。  
+4. **不要**打开选库窗（那是 `ok=true` 且 `interrupted`）；也不要调 3.5。  
+5. **不要**渲染 `sql`。  
+6. 详参 HUD、芯片、warnings 本轮都没有，忽略即可。  
+7. `error` / `message` / `gen_fail_reason` 可打到控制台或上报，便于排查。
+
+可选：若产品要区分运维拒答，可在 `ok=false` 且 `error=ops_use_chatbot` 时改提示为「运维类问题请改用智能问答」；其余失败仍用统一文案。
+
+说明：
+
+- **生成失败**：`gen_fail_reason` 往往有值；`sql` 可能为空串或半成品。  
+- **执行失败**：`gen_fail_reason` 多为 `null`；`sql` 常有完整语句（仍勿展示）。  
+- 列表失败即整轮 `ok=false`；HUD 时序单独失败不会把整轮打成失败（可能只在成功表上出 `hud_series_failed` 等 warning）。
+
 ### 调用方使用说明
 
-仅顶栏点「解析 SQL」时调用。空 `query` 会 422，应拦在按钮上。请求发出后按钮保持「解析中…」直到 JSON 返回（可能要等 LLM 生成 SQL）。不要按 SSE 拆帧，也不再保存 `stream_id`。离开页可中断本次 HTTP 请求。
+仅顶栏点「解析 SQL」时调用。空 `query` 会 422，应拦在按钮上。请求发出后按钮保持「解析中…」直到 JSON 返回（可能要等 LLM 生成 SQL）。不要按 SSE 拆帧，也不再保存 `stream_id`。离开页可中断本次 HTTP 请求。收到 `status=error` 按上一节渲染，不要当成网络错误重试死循环（可提示用户改问句后再点一次）。
 
 ### 与人机协同恢复接口的衔接
 
@@ -1060,6 +1110,38 @@ HITL 人机交互说明：
 }
 ```
 
+SQL 生成失败响应（节选）：
+
+```json
+{
+  "ok": false,
+  "status": "error",
+  "event": "data_query_error",
+  "request_id": "<id>",
+  "error": "link_failed:forced_table_not_in_allowlist",
+  "message": "link_failed:forced_table_not_in_allowlist",
+  "gen_fail_reason": "link_failed:forced_table_not_in_allowlist",
+  "sql": null
+}
+```
+
+SQL 查询执行失败响应（节选）：
+
+```json
+{
+  "ok": false,
+  "status": "error",
+  "event": "data_query_error",
+  "request_id": "<id>",
+  "error": "column \"foo\" does not exist",
+  "message": "column \"foo\" does not exist",
+  "gen_fail_reason": null,
+  "sql": "SELECT ..."
+}
+```
+
+> 上两例中的 `sql` 仅供联调；正式前端**不得**展示。用户提示用 `message`（或按上表对 `error` 做兜底文案）。
+
 ---
 
 ## 3.5 数据查询人机协同恢复接口
@@ -1107,9 +1189,9 @@ POST
 
 ### 返回字段
 
-与 3.4 同一套 JSON：`ok` / `status` / `event` / `request_id`，再按 `status` 带表或带选库字段。
+与 3.4 同一套 JSON：`ok` / `status` / `event` / `request_id`，再按 `status` 带表或带选库字段。恢复后 NL2SQL 生成/执行失败时同样 `status=error`、`event=data_query_error`，字段与渲染同 3.4「失败返回」（含 `error` / `message` / `gen_fail_reason` / `sql`）。
 
-若 `library_id` 非法，可能再次 `status=interrupted`（同一 `resume_token`），继续弹窗即可。`abort=true` 时 `status=cancelled`。
+若 `library_id` 非法，可能再次 `status=interrupted`（同一 `resume_token`），继续弹窗即可。`abort=true` 时 `status=cancelled`。选库次数用尽可能 `error=hitl_retry_exhausted`；`resume_token` 无效为 `invalid_resume_token`（均 HTTP 200 + `data_query_error`）。
 
 ### 调用方使用说明
 
