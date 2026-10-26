@@ -22,6 +22,56 @@ def test_validate_cte_select_sql() -> None:
     assert validator.validate(sql)
 
 
+def test_extract_cte_names_multi() -> None:
+    v = SQLValidator()
+    sql = (
+        "WITH ranked AS (SELECT 1 AS a FROM t_data_wash_fcb), "
+        "period AS (SELECT a FROM ranked) "
+        "SELECT a FROM period"
+    )
+    assert v.extract_cte_names(sql) == {"ranked", "period"}
+
+
+def test_validate_identifiers_skips_cte_aliases() -> None:
+    """CTE 名不当物理表做白名单；体内真实基表仍校验。"""
+    v = SQLValidator()
+    sql = (
+        "WITH ranked AS ("
+        " SELECT f.project_name, f.station_name, s.area, f.total_settle, f.data_time,"
+        " ROW_NUMBER() OVER (PARTITION BY f.project_name, f.station_name ORDER BY f.data_time ASC) AS rn_asc,"
+        " ROW_NUMBER() OVER (PARTITION BY f.project_name, f.station_name ORDER BY f.data_time DESC) AS rn_desc"
+        " FROM t_data_wash_fcb f JOIN t_station s ON f.project_name = s.name"
+        " WHERE f.data_time >= (NOW() - INTERVAL '7 days') AND f.data_time < NOW()"
+        "), period AS ("
+        " SELECT project_name, station_name, area,"
+        " MAX(CASE WHEN rn_asc = 1 THEN total_settle END)"
+        "  - MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS period_settle_mm"
+        " FROM ranked"
+        " GROUP BY project_name, station_name, area"
+        ") SELECT area, COUNT(DISTINCT project_name) AS station_cnt,"
+        " AVG(period_settle_mm) AS avg_period_settle_mm"
+        " FROM period GROUP BY area ORDER BY avg_period_settle_mm ASC"
+    )
+    ok, reason = v.validate_identifiers(
+        sql,
+        allowed_tables={"t_data_wash_fcb", "t_station"},
+        allowed_columns=None,
+    )
+    assert ok, reason
+
+    # 体内未知物理表仍应拒绝
+    bad = "WITH ranked AS (SELECT 1 FROM secret_table) SELECT * FROM ranked"
+    ok2, reason2 = v.validate_identifiers(
+        bad,
+        allowed_tables={"t_data_wash_fcb", "t_station"},
+        allowed_columns=None,
+    )
+    assert not ok2
+    assert reason2 is not None
+    assert "secret_table" in reason2
+    assert "ranked" not in reason2
+
+
 def test_normalize_sql_collapses_whitespace_outside_strings() -> None:
     v = SQLValidator()
     raw = """SELECT *

@@ -566,8 +566,10 @@ class SQLValidator:
         except Exception:  # noqa: BLE001
             pass
 
+        # CTE 别名（WITH name AS (...)）不是物理表：跳过 unknown tables，只校验真实基表
+        cte_names = self.extract_cte_names(s)
         tables = {self._canonical_identifier(t) for t in raw_table_refs}
-        tables = {t for t in tables if t}
+        tables = {t for t in tables if t and t not in cte_names}
         allowed_tables_lower = {t.lower() for t in allowed_tables} if allowed_tables else set()
         if allowed_tables and tables:
             unknown_tables = sorted(t for t in tables if t.lower() not in allowed_tables_lower)
@@ -695,6 +697,62 @@ class SQLValidator:
         if "." in t:
             t = t.split(".")[-1]
         return t.lower()
+
+    @classmethod
+    def extract_cte_names(cls, sql: str) -> set[str]:
+        """
+        解析 ``WITH [RECURSIVE] name AS (...), name2 AS (...)`` 中的 CTE 名（小写）。
+
+        仅识别 WITH 列表中的定义名；主查询与 CTE 体内对 CTE 的 FROM/JOIN 引用
+        在 ``validate_identifiers`` 中据此跳过物理表白名单。
+        """
+        s = cls.normalize_sql(sql)
+        if not s or not s.lower().startswith("with"):
+            return set()
+        i = 4
+        n = len(s)
+        while i < n and s[i].isspace():
+            i += 1
+        if _starts_sql_word(s, i, "recursive"):
+            i += len("recursive")
+            while i < n and s[i].isspace():
+                i += 1
+        names: set[str] = set()
+        ident_re = re.compile(r'[`"\[]?[A-Za-z_][\w]*[`"\]]?')
+        while i < n:
+            while i < n and (s[i].isspace() or s[i] == ","):
+                i += 1
+            if i >= n:
+                break
+            if _starts_sql_word(s, i, "select"):
+                break
+            m = ident_re.match(s, i)
+            if not m:
+                break
+            raw_name = m.group(0)
+            i = m.end()
+            while i < n and s[i].isspace():
+                i += 1
+            if _starts_sql_word(s, i, "as"):
+                i += 2
+                while i < n and s[i].isspace():
+                    i += 1
+            if i >= n or s[i] != "(":
+                break
+            end = _find_matching_paren(s, i)
+            if end < 0:
+                break
+            name = cls._canonical_identifier(raw_name)
+            if name and name not in cls._keyword_blocklist:
+                names.add(name)
+            i = end + 1
+            while i < n and s[i].isspace():
+                i += 1
+            if i < n and s[i] == ",":
+                i += 1
+                continue
+            break
+        return names
 
     @classmethod
     def _validate_schema_table_refs(cls, raw_table_refs: Iterable[str]) -> str | None:
