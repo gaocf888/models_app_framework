@@ -34,6 +34,14 @@ def test_om_sql_templates_exist_and_bind_snapshot() -> None:
         assert "now()" not in sql.lower()
 
 
+def test_om_rates_sql_aliases_rate_columns() -> None:
+    sql = load_sql_template("om_ops_rates_by_type.sql")
+    assert "c.rate AS complete_rate" in sql
+    assert "e.rate AS effective_rate" in sql
+    assert "c.complete_rate" not in sql
+    assert "e.effective_rate" not in sql
+
+
 def test_om_offline_sql_filters_status_and_days() -> None:
     sql = load_sql_template("om_ops_offline_list.sql")
     assert "status = 0" in sql
