@@ -254,8 +254,10 @@ analysis_agent_finished         { result }                         # 按钮恢�
 | 字段 | 界面 |
 |------|------|
 | `period_label` | 「2025年第二季度」等，作副标题 |
-| `t_start` / `t_end` | 可选展示实际数据窗（半开上界） |
+| `t_start` / `t_end` | 可选展示实际数据窗（半开上界；可能已按沉降配对回退） |
 | `area` | 空表示全市 |
+| `ops_snapshot_time` / `ops_snap_day` | 运维/预警实际批次；可作小字 |
+| `ops_fallback` | `true` 表示窗末日无运维批次、已退全局最新 |
 
 `nl2sql_done.executor`：`sql_template` / `python` / `placeholder` / `nl2sql`。地降附表真源是前三者；界面统一写成「取数完成」即可。
 

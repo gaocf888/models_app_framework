@@ -541,7 +541,7 @@ POST
 
 | 事件 | 说明 |
 |------|------|
-| started | `stream_id`、`request_id`；地降可含 `period.period_label` |
+| started | `stream_id`、`request_id`；地降可含 `period.period_label`；运维批次为 `period.ops_snapshot_time`（窗末日无批次时 `period.ops_fallback=true`） |
 | analysis_agent_meta | 章节总数等 |
 | analysis_agent_nl2sql_done | 取数进度；**忽略 sql** |
 | analysis_agent_chapter_start | 新章节开始 |

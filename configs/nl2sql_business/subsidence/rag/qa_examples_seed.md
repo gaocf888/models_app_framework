@@ -331,7 +331,7 @@ ORDER BY avg_period_settle_mm ASC;
 
 ## 运维中间库示例（om_result）
 
-> 口径与报告一致：一律最新 `snapshot_time`；离线列表必须 `status = 0`。
+> 聊天口径：一律最新 `snapshot_time`；离线列表必须 `status = 0`。自动报告另绑窗末日批次，勿按报告窗改写本页示例。
 
 Q: 各仪器类型当前在线率是多少？
 A: 查 om_result.t_om_device_online_by_type，WHERE snapshot_time = (SELECT max(snapshot_time) FROM om_result.t_om_device_online_by_type)，SELECT type, online_rate, online, offline, total。

@@ -19,7 +19,7 @@ from app.analysis_agent.renderers.static_narrative import (
 )
 
 
-def test_om_sql_templates_exist_and_have_latest_batch() -> None:
+def test_om_sql_templates_exist_and_bind_snapshot() -> None:
     for name in (
         "om_ops_rates_by_type.sql",
         "om_ops_offline_list.sql",
@@ -29,8 +29,9 @@ def test_om_sql_templates_exist_and_have_latest_batch() -> None:
     ):
         sql = load_sql_template(name)
         assert "om_result." in sql
-        assert "snapshot_time" in sql
-        assert "max(snapshot_time)" in sql.replace(" ", "").lower() or "max(snapshot_time)" in sql
+        assert ":snapshot_time" in sql
+        assert "max(snapshot_time)" not in sql
+        assert "now()" not in sql.lower()
 
 
 def test_om_offline_sql_filters_status_and_days() -> None:
@@ -38,6 +39,7 @@ def test_om_offline_sql_filters_status_and_days() -> None:
     assert "status = 0" in sql
     assert "offline_days" in sql
     assert "t_om_offline_device_list" in sql
+    assert "CAST(:snapshot_time AS timestamp) - o.data_collect_time" in sql
 
 
 def test_om_alert_list_has_seq_and_type_order() -> None:
@@ -314,3 +316,4 @@ def test_sql_files_on_disk() -> None:
     )
     assert (sql_dir / "om_ops_offline_list.sql").is_file()
     assert (sql_dir / "om_alert_count_by_type.sql").is_file()
+    assert (sql_dir / "om_snapshot_pick.sql").is_file()

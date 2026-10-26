@@ -150,3 +150,29 @@ def test_apply_resolved_period_keeps_fallback_extra() -> None:
     assert resolved["t_start"] == "2026-10-10T00:00:00"
     assert resolved["fallback"] is True
     assert resolved["requested_t_start"] == "2026-10-11T00:00:00"
+
+
+def test_apply_resolved_period_keeps_ops_snapshot_extra() -> None:
+    opts = apply_resolved_period(
+        "subsidence_daily",
+        {
+            "start_time": "2026-10-25",
+            "end_time": "2026-10-25",
+            "_resolved": {
+                "t_start": "2026-10-25T00:00:00",
+                "t_end": "2026-10-26T00:00:00",
+                "area": None,
+                "period_label": "2026年10月25日",
+                "report_date": "2026年10月26日",
+                "issue_no": "XX",
+                "report_kind": "日报",
+                "ops_snapshot_time": "2026-10-25T08:20:00",
+                "ops_snap_day": "2026-10-25",
+                "ops_fallback": False,
+            },
+        },
+        today=date(2026, 10, 26),
+    )
+    resolved = opts["_resolved"]
+    assert resolved["ops_snapshot_time"] == "2026-10-25T08:20:00"
+    assert resolved["ops_fallback"] is False

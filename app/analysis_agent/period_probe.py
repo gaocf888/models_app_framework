@@ -34,6 +34,8 @@ def fallback_degrade_reasons(resolved: dict[str, Any] | None) -> list[str]:
         out.append("period_fallback_exhausted")
     if data.get("fallback_reason") == REASON_PROBE_ERROR:
         out.append("period_fallback_probe_error")
+    if data.get("ops_fallback"):
+        out.append("ops_snapshot_fallback")
     return out
 
 

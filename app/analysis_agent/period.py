@@ -387,6 +387,15 @@ def period_sse_dict(resolved: dict[str, Any] | None) -> dict[str, Any]:
     elif data.get("fallback_reason"):
         out["fallback"] = False
         out["fallback_reason"] = data.get("fallback_reason")
+    if data.get("ops_snapshot_time"):
+        out["ops_snapshot_time"] = data.get("ops_snapshot_time")
+    if data.get("ops_snap_day"):
+        out["ops_snap_day"] = data.get("ops_snap_day")
+    if data.get("ops_fallback"):
+        out["ops_fallback"] = True
+        out["ops_fallback_reason"] = data.get("ops_fallback_reason") or "no_ops_snapshot_on_window_end_day"
+    elif "ops_fallback" in data:
+        out["ops_fallback"] = False
     return out
 
 

@@ -19,6 +19,7 @@ from app.analysis_agent.period import (
     fill_viz_placeholders,
     period_sse_dict,
 )
+from app.analysis_agent.ops_snapshot import apply_ops_snapshot_bind
 from app.analysis_agent.period_probe import apply_period_data_fallback, fallback_degrade_reasons
 from app.analysis_agent.plans.loader import effective_plan_version
 from app.analysis_agent.session_store import create_resume_token, delete_resume_session, get_resume_session
@@ -213,6 +214,7 @@ class AnalysisAgentGraphRunner:
             opts = apply_resolved_period(analysis_type, opts)
             executor = getattr(self._orch._nl2sql, "_executor", None) or SQLExecutor()
             opts = await apply_period_data_fallback(analysis_type, opts, executor=executor)
+            opts = await apply_ops_snapshot_bind(analysis_type, opts, executor=executor)
             resolved = opts.get("_resolved") if isinstance(opts.get("_resolved"), dict) else {}
             if not (query or "").strip() and resolved:
                 query = canonical_query(analysis_type, resolved)

@@ -72,13 +72,20 @@ def resolved_sql_params(
             params["kxsylj_projects"] = list(typical_axis_sites("pressure"))
         else:
             params["qxz_projects"] = list(typical_axis_sites("rain"))
+    params["snapshot_time"] = resolved.get("ops_snapshot_time")
     if extra:
         params.update(extra)
-    # 运维 om_* 模板无时间窗绑定，跳过 t_start/t_end 强制转换
+    # 运维 om_*：绑 snapshot_time，不强制 t_start/t_end
     sql_name = (sql_file or "").strip().lower()
-    if not sql_name.startswith("om_"):
-        params["t_start"] = _bind_timestamp(params.get("t_start"), key="t_start")
-        params["t_end"] = _bind_timestamp(params.get("t_end"), key="t_end")
+    if sql_name == "om_snapshot_pick.sql":
+        params["snap_day_start"] = _bind_timestamp(params.get("snap_day_start"), key="snap_day_start")
+        params["snap_day_end"] = _bind_timestamp(params.get("snap_day_end"), key="snap_day_end")
+        return params
+    if sql_name.startswith("om_"):
+        params["snapshot_time"] = _bind_timestamp(params.get("snapshot_time"), key="snapshot_time")
+        return params
+    params["t_start"] = _bind_timestamp(params.get("t_start"), key="t_start")
+    params["t_end"] = _bind_timestamp(params.get("t_end"), key="t_end")
     return params
 
 
@@ -113,11 +120,12 @@ async def run_sql_template(
 
         rows = apply_om_type_display(rows)
     logger.info(
-        "sql_template done file=%s rows=%s t_start=%s t_end=%s area=%s",
+        "sql_template done file=%s rows=%s t_start=%s t_end=%s snapshot_time=%s area=%s",
         sql_file,
         len(rows),
         params.get("t_start"),
         params.get("t_end"),
+        params.get("snapshot_time"),
         params.get("area"),
     )
     return rows, sql

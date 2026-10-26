@@ -95,6 +95,8 @@ app/
     ├── report_spec.py                    # 加载 JSON；≥3 先 compose
     ├── context_loader.py                 # AnalysisRunContext
     ├── period.py                         # 上一完整周期 / 区划 / 占位符
+    ├── period_probe.py                   # 沉降无配对时回退同粒度完整周期
+    ├── ops_snapshot.py                   # 运维：窗末日 snapshot，无则全局最新
     ├── nl2sql_executor.py                # 生成器路径：run_nl2sql_for_plan_item
     ├── quality.py                        # L1 锚点
     ├── deterministics/                   # python_fn 注册表 + 覆盖/公式/压缩/重点区/典型曲线
@@ -108,7 +110,7 @@ app/
 
 configs/analysis_agent_reports/
 ├── section_library/                      # 可复用板块 JSON + _index.yaml
-├── sql/                                  # fcb_period_endpoints.sql、typical_series_*.sql
+├── sql/                                  # fcb_period_endpoints.sql、typical_series_*.sql、om_*.sql
 ├── subsidence_{daily,weekly,monthly,quarterly,yearly}.analysis_agent.json
 └── 锅炉四类 *.analysis_agent.json         # 无 compose，V1 原样
 ```
@@ -218,7 +220,8 @@ flowchart TD
 | L0/L1 | `run_data_quality` / `check_l1_anchors` | `orchestrator.py` / `quality.py` |
 | 质量后路由 | `_route_after_quality` | `graph/builder.py`：retry → `acquire_data`；abort → `finalize`；否则 `chapter_pipeline` |
 
-`_resolved` 字段：`t_start`、`t_end`、`area`、`period_label`、`report_date`、`issue_no`、`report_kind`。确定性计划项 **禁止**再从 `query` 猜时间。
+`_resolved` 核心字段：`t_start`、`t_end`、`area`、`period_label`、`report_date`、`issue_no`、`report_kind`。  
+`runner` 在进图前：`apply_resolved_period` → `apply_period_data_fallback`（沉降配对回退）→ `apply_ops_snapshot_bind`（运维批次，跟回退后的 `t_end`）。额外字段：`fallback*`、`ops_snapshot_time` / `ops_snap_day` / `ops_fallback*`。确定性计划项 **禁止**再从 `query` 猜时间。
 
 ---
 
@@ -250,7 +253,7 @@ nl2sql       → run_nl2sql_for_plan_item → NL2SQLService.query
 ### 7.2 sql_template 绑定
 
 `resolved_sql_params()`（`fcb_endpoints.py`）：`t_start`/`t_end`/`area` + `endpoint_bind_lists()`（覆盖 ∩ 层位字典的标号/场地 allowlist）。  
-`typical_series_fcb.sql` 额外把 marks 裁到层位 0。列表经 `SQLExecutor` 绑定，**不**把未校验 area 拼进 SQL 字符串。
+`typical_series_fcb.sql` 额外把 marks 裁到层位 0。`om_*.sql` 绑 `_resolved.ops_snapshot_time`（窗末日最后一批，无则全局最新）；离线/告警时长相对该时刻，不用 `now()`。列表经 `SQLExecutor` 绑定，**不**把未校验 area 拼进 SQL 字符串。
 
 覆盖对齐：`coverage.canonical_project` 先 `normalize_site_key`（全角括号），再 F/J 码唯一回退（`F42(牌楼）` → `F42(牌楼站)`）。`layer0_mark_keys()` 固定 42 站。
 
@@ -340,8 +343,12 @@ nl2sql       → run_nl2sql_for_plan_item → NL2SQLService.query
 POST /analysis-agent/run-stream
   load_report_spec
     └─ schema3：compose_report_dict（板块库 iterate / variant）
-initialize
+runner（进图前）
     ├─ apply_resolved_period → options._resolved
+    ├─ apply_period_data_fallback（无配对则回退同粒度完整周期）
+    └─ apply_ops_snapshot_bind（运维窗末日 snapshot，无则全局最新）
+initialize
+    ├─ 保留 _resolved 额外字段
     ├─ 空 query → canonical_query
     └─ 装 ordered_slots / plan_tasks；替换封面占位
 intent_rag → HybridRAG（不算数）
@@ -386,3 +393,4 @@ q_fcb_endpoints ──► q_layer0 ──► q_area_rank
 | 2026-05-28 | 初稿：按章取数时代码对照 |
 | 2026-08-25 | 回写 T1～T7：acquire_data 前置、stop/流式、replay、配置图、地降占位、Trace |
 | 2026-09-20 | 回写 V2 落地：compose 在 `load_report_spec`；`acquire_data` executor 分流；period._resolved；deterministics；五类模版；附表 2–5 / F42 对齐；删除已移除的 session_context |
+| 2026-10-26 | 运维/预警跟沉降回退后窗末日绑 `snapshot_time`，无则退全局最新；时长不用 `now()` |
