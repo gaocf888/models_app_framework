@@ -13,6 +13,7 @@ from app.core.logging import setup_logging
 from app.core.metrics import REQUEST_COUNT, REQUEST_LATENCY
 from app.core.metrics_path import metrics_path_label
 from app.auth.dependencies import require_service_api_key
+from app.auth.docs_basic import register_protected_docs
 from app.api import healthcheck
 from app.api.request_logging import register_api_request_logging
 from app.conversation.ids import ConversationIdValidationError
@@ -109,7 +110,15 @@ def create_app() -> FastAPI:
         },
     ]
 
-    app = FastAPI(title="AI App Platform", version="1.0.0", openapi_tags=tags_metadata)
+    # 关闭默认无鉴权 /docs、/redoc、/openapi.json；由 register_protected_docs 挂 Basic
+    app = FastAPI(
+        title="AI App Platform",
+        version="1.0.0",
+        openapi_tags=tags_metadata,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     cfg = get_app_config()
     media_path = cfg.chatbot.image_public_path.strip() or "/chatbot/media"
     if not media_path.startswith("/"):
@@ -305,6 +314,8 @@ def create_app() -> FastAPI:
         return app.openapi_schema
 
     app.openapi = custom_openapi  # type: ignore[method-assign]
+
+    register_protected_docs(app)
 
     return app
 

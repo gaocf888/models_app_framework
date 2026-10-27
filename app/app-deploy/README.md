@@ -163,6 +163,17 @@ docker compose -f docker-nvidia/docker-compose-nvidia.yml --profile small-model-
 - **校验**：`app/auth/dependencies.py` 将 Bearer 与配置密钥做常量时间比对；未配置任何密钥时业务路由返回 **503**。
 - **安全与行为总述**：`docs/Service-API-Key-认证与安全说明.md`（仓库根目录下 `docs`）。
 
+### OpenAPI 文档页（`/docs` · `/redoc` · `/openapi.json`）
+
+默认 **HTTP Basic** 保护（应对安全扫描暴露接口文档）。与业务 Bearer **无关**。
+
+| 变量 | 说明 |
+|------|------|
+| `DOCS_BASIC_AUTH_ENABLED` | 默认 `true`；本地可 `false` 关闭 |
+| `DOCS_USERNAME` / `DOCS_PASSWORD` | 文档页账号密码（勿用弱口令；亦兼容 `DOCS_USER` / `DOCS_PASS`） |
+
+未配置账号密码且鉴权开启时，访问文档恒为 **401**。浏览器打开 `/docs` 会弹窗要求输入上述凭据。
+
 ---
 
 ## 前置条件
