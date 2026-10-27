@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.core.config import get_app_config
 from app.data_query_agent.checkpoint import clear_memory_checkpoints_for_tests
+from app.data_query_agent.export_store import clear_memory_exports_for_tests
 from app.data_query_agent.graph.runner import DataQueryAgentGraphRunner
 from app.data_query_agent.hitl import clear_memory_sessions_for_tests
 from app.models.data_query_agent import (
@@ -100,10 +101,12 @@ def _reset_hitl(monkeypatch: pytest.MonkeyPatch) -> None:
     get_app_config.cache_clear()
     clear_memory_sessions_for_tests()
     clear_memory_checkpoints_for_tests()
+    clear_memory_exports_for_tests()
     reset_data_query_agent_trace_store_for_tests()
     yield
     clear_memory_sessions_for_tests()
     clear_memory_checkpoints_for_tests()
+    clear_memory_exports_for_tests()
     get_app_config.cache_clear()
 
 
@@ -125,6 +128,7 @@ async def test_run_stream_success_path1() -> None:
     assert result["table"] == "t_data_wash_fcb"
     assert (result.get("scope") or {}).get("district") == "朝阳区"
     assert result["hud_enabled"] is True
+    assert str(result.get("export_token") or "").startswith("dqx_")
     assert all(c.forced_tables == ["t_data_wash_fcb"] for c in fake.calls)
     assert all(c.analysis_type == "data_query" for c in fake.calls)
     assert all(c.disable_qa_slot_replay is True for c in fake.calls)
@@ -265,6 +269,7 @@ async def test_hitl_then_resume() -> None:
     interrupt = await runner.run_stream(req)
     assert interrupt["event"] == "data_query_library_input_required"
     assert interrupt["status"] == "interrupted"
+    assert not interrupt.get("export_token")
     token = interrupt["resume_token"]
     assert token.startswith("dq_")
     resume = DataQueryAgentResumeRequest(
@@ -277,6 +282,7 @@ async def test_hitl_then_resume() -> None:
     assert resumed["event"] == "data_query_result"
     assert resumed["source"] == "hitl"
     assert resumed["status"] == "success"
+    assert str(resumed.get("export_token") or "").startswith("dqx_")
 
 
 @pytest.mark.asyncio

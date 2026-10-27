@@ -14,6 +14,7 @@ from app.data_query_agent.acquire import acquire_data
 from app.data_query_agent.assemble import assemble_result
 from app.data_query_agent.catalog import CatalogError, get_library_catalog
 from app.data_query_agent.graph.state import DataQueryAgentState
+from app.data_query_agent.export_store import save_parse_export_snapshot
 from app.data_query_agent.hitl import (
     create_resume_token,
     delete_resume_session,
@@ -479,6 +480,16 @@ class DataQueryAgentGraphRunner:
             },
         )
         await self._clear(state.user_id, state.session_id, state.stream_id)
+        export_token = save_parse_export_snapshot(
+            request_id=state.request_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            columns=list(payload.get("columns") or []),
+            rows=list(payload.get("list") or []),
+            library_id=state.library.id,
+            display_name=state.library.display_name,
+            result_grain=str(payload.get("result_grain") or ""),
+        )
         return _response(
             status="success",
             event="data_query_result",
@@ -490,4 +501,5 @@ class DataQueryAgentGraphRunner:
             time=scope.time_snapshot,
             parse_mode=scope.parse_mode,
             **payload,
+            export_token=export_token,
         )

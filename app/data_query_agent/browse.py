@@ -42,11 +42,18 @@ MAX_BROWSE_PAGE_SIZE = 100
 class BrowseRequestError(ValueError):
     """GET /tree、GET /browse 入参或库配置不合法。"""
 
-    def __init__(self, status_code: int, code: str, message: str) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
+        self.extra = extra or {}
 
 
 def _cell(value: Any) -> Any:
@@ -663,10 +670,17 @@ async def fetch_browse_list(
     page: int | None = None,
     page_size: int | None = None,
     executor: SQLExecutor | None = None,
+    ignore_page_cap: bool = False,
 ) -> dict[str, Any]:
     """点库/区：代表标全部观测（data_time 倒序）；点站：该场地全部设备 × 时间矩阵。强制分页。"""
     library = resolve_browse_library(library_id, required=False)
-    page_n, size, offset = normalize_page(page, page_size)
+    if ignore_page_cap:
+        size = int(page_size or 0)
+        if size < 1:
+            raise BrowseRequestError(422, "invalid_page_size", "page_size 须 ≥ 1")
+        page_n, offset = 1, 0
+    else:
+        page_n, size, offset = normalize_page(page, page_size)
     d = (district or "").strip() or None
     sid = (station_id or "").strip() or None
     exe = executor or SQLExecutor()
@@ -687,6 +701,36 @@ async def fetch_browse_list(
         offset=offset,
         executor=exe,
     )
+
+
+async def fetch_browse_export(
+    *,
+    library_id: str | None = None,
+    district: str | None = None,
+    station_id: str | None = None,
+    executor: SQLExecutor | None = None,
+) -> dict[str, Any]:
+    """浏览导出：与 browse 同一套过滤和 SQL，不分页；超过 export_max_rows 则 413。"""
+    cfg = get_app_config().data_query_agent
+    max_rows = max(1, int(getattr(cfg, "export_max_rows", 10000)))
+    payload = await fetch_browse_list(
+        library_id=library_id,
+        district=district,
+        station_id=station_id,
+        page=1,
+        page_size=max_rows,
+        executor=executor,
+        ignore_page_cap=True,
+    )
+    total = int(payload.get("total") or 0)
+    if total > max_rows:
+        raise BrowseRequestError(
+            413,
+            "export_too_large",
+            f"命中 {total} 行，超过导出上限 {max_rows}",
+            extra={"total": total, "max_rows": max_rows},
+        )
+    return payload
 
 
 def _district_label(area: Any) -> str:

@@ -180,3 +180,42 @@ class DataQueryAgentService:
             page_size=page_size,
         )
         return DataQueryAgentBrowseResponse(**payload)
+
+    async def browse_export(
+        self,
+        *,
+        library_id: str | None = None,
+        district: str | None = None,
+        station_id: str | None = None,
+    ):
+        from app.data_query_agent.browse import fetch_browse_export
+        from app.data_query_agent.csv_export import csv_attachment_response, csv_filename, table_to_csv_bytes
+
+        payload = await fetch_browse_export(
+            library_id=library_id,
+            district=district,
+            station_id=station_id,
+        )
+        body = table_to_csv_bytes(payload.get("columns"), payload.get("list"))
+        filename = csv_filename(
+            "browse",
+            payload.get("library_id"),
+            payload.get("district"),
+            payload.get("station_id"),
+        )
+        return csv_attachment_response(body, filename)
+
+    def parse_export(self, *, export_token: str, user_id: str, session_id: str):
+        from app.data_query_agent.csv_export import csv_attachment_response, csv_filename, table_to_csv_bytes
+        from app.data_query_agent.export_store import get_parse_export_snapshot
+
+        snap = get_parse_export_snapshot(
+            export_token, user_id=user_id, session_id=session_id
+        )
+        body = table_to_csv_bytes(snap.get("columns"), snap.get("list"))
+        filename = csv_filename(
+            "parse",
+            snap.get("library_id"),
+            str(snap.get("request_id") or "")[:8],
+        )
+        return csv_attachment_response(body, filename)

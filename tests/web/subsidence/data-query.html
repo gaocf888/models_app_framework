@@ -139,7 +139,7 @@
       <a href="./knowledge-base.html">知识库</a>
     </nav>
     <h1>数据查询 <span style="color:var(--accent);font-size:0.85em">地面沉降</span></h1>
-    <p class="sub">浏览：<code>GET /tree</code> + <code>GET /browse</code>；解析：<code>POST /run-stream</code> + HITL <code>/resume-stream</code>（一次性 JSON）。点树不打 run-stream；禁止展示 SQL。对照接口文档 §3。</p>
+    <p class="sub">浏览：<code>GET /tree</code> + <code>GET /browse</code> + 导出 <code>GET /browse/export</code>；解析：<code>POST /run-stream</code> + HITL <code>/resume-stream</code>（一次性 JSON）+ 成功后 <code>GET /export</code>。点树不打 run-stream；禁止展示 SQL。对照接口文档 §3。</p>
     <div class="banner">
       需 <code>DATA_QUERY_AGENT_ENABLED=true</code>。不调用 <code>/libraries</code>、<code>/hud</code>（解析结果用 <code>hud_by_entity</code>）。
       正式前端参照 <a href="http://localhost:3300" target="_blank" rel="noopener">localhost:3300</a>（admin/123456）。
@@ -179,6 +179,7 @@
             <button type="button" class="primary" id="btnParse">解析 SQL</button>
             <button type="button" class="warn" id="btnStop" disabled>停止</button>
             <button type="button" class="secondary" id="btnBrowse">按当前树浏览</button>
+            <button type="button" class="secondary" id="btnExport">导出 CSV</button>
             <label style="margin:0;display:flex;align-items:center;gap:0.35rem;color:var(--text);font-size:0.75rem;">
               <input type="checkbox" id="debugJson" /> 调试 JSON
             </label>
@@ -248,6 +249,7 @@
     resumeToken: "", hitlPick: "",
     hudByEntity: {}, hudByStation: {},
     columns: [], list: [],
+    exportToken: "",
   };
 
   function newSessionId() {
@@ -495,6 +497,7 @@
     showErr("");
     persistBase();
     state.mode = "browse";
+    state.exportToken = "";
     const size = parseInt($("pageSize").value, 10) || 20;
     const q = new URLSearchParams();
     q.set("page", String(state.page));
@@ -626,6 +629,7 @@
       updateSelHint();
     }
     if (name === "data_query_library_input_required" || ev.status === "interrupted") {
+      state.exportToken = "";
       showHitl(ev);
       setStatus("需选库（HITL）。");
       $("meta").textContent = JSON.stringify({
@@ -639,6 +643,7 @@
     renderScopeChips(ev);
     if (name === "data_query_result" || ev.status === "success") {
       state.mode = "parse";
+      state.exportToken = ev.export_token || "";
       renderTable(ev.columns || [], ev.list || [], {
         title: "解析结果",
         result_grain: ev.result_grain,
@@ -658,16 +663,21 @@
         result_grain: ev.result_grain,
         hud_enabled: ev.hud_enabled,
         rows: (ev.list || []).length,
+        export_token: state.exportToken ? "dqx_…" : "",
       };
       $("meta").textContent = JSON.stringify(meta, null, 2);
       setStatus("解析完成。");
     }
     if (name === "data_query_error" || ev.status === "error") {
+      state.exportToken = "";
       const err = ev.message || ev.error || ev;
       showErr(typeof err === "string" ? err : JSON.stringify(err));
       $("meta").textContent = JSON.stringify({ status: ev.status, event: name, error: ev.error }, null, 2);
     }
-    if (name === "data_query_cancelled" || ev.status === "cancelled") setStatus("已取消。");
+    if (name === "data_query_cancelled" || ev.status === "cancelled") {
+      state.exportToken = "";
+      setStatus("已取消。");
+    }
   }
 
   async function runParse(url, body) {
@@ -737,8 +747,73 @@
     else setStatus("当前没有进行中的解析。");
   }
 
+  function filenameFromDisposition(cd, fallback) {
+    const text = cd || "";
+    const star = /filename\*=UTF-8''([^;]+)/i.exec(text);
+    if (star) {
+      try { return decodeURIComponent(star[1]); } catch (_) { return star[1]; }
+    }
+    const plain = /filename="([^"]+)"/i.exec(text);
+    return plain ? plain[1] : fallback;
+  }
+
+  async function doExport() {
+    showErr("");
+    persistBase();
+    let url;
+    if (state.mode === "parse") {
+      const token = state.exportToken;
+      const uid = $("userId").value.trim();
+      const sid = $("sessionId").value.trim();
+      if (!token) {
+        showErr("当前解析结果不能导出（需要 3.4/3.5 status=success 的 export_token）");
+        return;
+      }
+      if (!uid || !sid) { showErr("user_id / session_id 必填"); return; }
+      const q = new URLSearchParams({ export_token: token, user_id: uid, session_id: sid });
+      url = baseUrl() + "/data-query-agent/export?" + q.toString();
+    } else {
+      const q = new URLSearchParams();
+      if (state.sel.library_id) q.set("library_id", state.sel.library_id);
+      if (state.sel.district) q.set("district", state.sel.district);
+      if (state.sel.station_id) q.set("station_id", state.sel.station_id);
+      url = baseUrl() + "/data-query-agent/browse/export?" + q.toString();
+    }
+    setStatus("导出 CSV …");
+    try {
+      const res = await fetch(url, { headers: authHeaders() });
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = res.status + " " + text.slice(0, 400);
+        try {
+          const data = JSON.parse(text);
+          const d = data.detail || data;
+          msg = (d && (d.message || d.code)) || msg;
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      const name = filenameFromDisposition(
+        res.headers.get("Content-Disposition"),
+        state.mode === "parse" ? "parse.csv" : "browse.csv"
+      );
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+      setStatus("已导出 " + name);
+    } catch (e) {
+      showErr(String(e && e.message ? e.message : e));
+      setStatus("导出失败。");
+    }
+  }
+
   $("btnLoadTree").addEventListener("click", loadTree);
   $("btnBrowse").addEventListener("click", () => { state.page = 1; doBrowse(); });
+  $("btnExport").addEventListener("click", doExport);
   $("btnParse").addEventListener("click", parse);
   $("btnStop").addEventListener("click", stopParse);
   $("btnPrev").addEventListener("click", () => { if (state.page > 1) { state.page--; doBrowse(); } });

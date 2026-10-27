@@ -342,7 +342,7 @@ analysis_agent_finished         { result }                         # 按钮恢�
 | 列「年滑速 mm/yr」、岩性、InSAR ID | **不造列**（库里没有就不要编一列出来）。年变化用「这一年最后一次读数减去最早一次」（`annual_settle_mm` 等）；岩性/层位在 HUD 里标记 `unavailable`（没有这块数据，别画空卡片）；**不弹选库** |
 | 解析即出表，无选库 | 问不清查哪类监测数据时 **HITL 选库**（人机协同：先暂停，弹出「请选择分层标/地下水/…」，选完再继续；技术上是 3.4 返回 `status=interrupted` → 调 `resume-stream`） |
 | HUD 固定「监测站」模板，可编造策略/岩性 | HUD（行详情）跟 **这一行代表谁**（一个站 / 一个区 / 全市），不是跟「当前点了哪个库」死绑；`blocks` 不是 `ok` 就 **不画**（没有岩性/策略就留空，不要写假的）；解析一次把列表和详情 **同一包数据** 给齐 |
-| 服务端 CSV | 导出可由前端对 **当前表格** 做（浏览器里另存为）；不是算法必须提供的下载接口 |
+| 服务端 CSV | **已落地**：浏览表 `GET /browse/export`（与当时 3.3 同一套过滤，不分页，有行数上限）；解析表用 3.4/3.5 `status=success` 的 `export_token` 调 `GET /export`（只回放，不重跑 NL2SQL）。选库中 / 失败不要导 |
 
 不要调用：`POST /nl2sql/query` 当查询台主入口（那是给其它模块直接问数用的，会绕过「锁死只查一张监测表」和选库弹窗）、`/analysis-agent/*`（综合分析出报告）、智能客服里的 `data_query`（对话答疑，不是这张表）、已砍的过滤器专用接口、`/rag/kb-tree`（知识库目录树）。
 
@@ -374,7 +374,7 @@ analysis_agent_finished         { result }                         # 按钮恢�
 | 解析中再次点击 | 忽略或保持禁用 | 不要并行打第二次解析 |
 | 热点标签（通州… / 昌平…） | **只把文案填进输入框**（跟用户手打一样） | **不另做接口** |
 | 离开页 / 取消解析 | 中断进行中的 HTTP 请求 | 不要再调 `stream/stop`（解析 JSON 不再下发 `stream_id`） |
-| 导出 CSV（可选） | 导 **当前表格** 行，非全库 | 前端本地另存；不打算法 |
+| 导出 CSV | 浏览表导当前范围全部行（有上限）；解析表导本次成功结果 | 浏览：`GET /data-query-agent/browse/export`（过滤条件与当时 3.3 相同）。解析：3.4/3.5 `status=success` 后用返回的 `export_token` 调 `GET /data-query-agent/export` |
 
 空 `query`（输入框没字）发请求会 **422**（参数不合法），应拦在按钮上，不要弹出系统报错。
 
@@ -621,10 +621,12 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 | 顶栏点「解析 SQL」 | POST | `/data-query-agent/run-stream`（一次性 JSON） |
 | 选库弹窗点确定后继续出表 | POST | `/data-query-agent/resume-stream`（一次性 JSON） |
 | 点树出来的表上点「详参」 | GET | `/data-query-agent/hud` |
-| 解析完成后的表和详参数据 | JSON | `event=data_query_result`（同一次响应里就带齐） |
+| 解析完成后的表和详参数据 | JSON | `event=data_query_result`（同一次响应里就带齐；保存 `export_token`） |
+| 导出当前浏览表 | GET | `/data-query-agent/browse/export`（与当时 browse 同一套 library/区/站） |
+| 导出本次解析表 | GET | `/data-query-agent/export?export_token=&user_id=&session_id=`（仅 success） |
 | 运维看历史解析记录 | GET | `/data-query-agent/traces` 等（用户页不做） |
 
-本页可不做（界面上也不要做）：多维过滤器、点地图筛点、向算法要 CSV 文件、第 N 层详情、把 `POST /nl2sql/query` 当「解析 SQL」、跳去综合分析报告、走智能客服查数。
+本页可不做（界面上也不要做）：多维过滤器、点地图筛点、第 N 层详情、把 `POST /nl2sql/query` 当「解析 SQL」、跳去综合分析报告、走智能客服查数。选库中 / 解析失败不要调导出。
 
 ---
 
@@ -636,7 +638,8 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 - 用户只说「沉降」、树上也没点库时，解析 **只查分层标**（树会亮到分层标）；进页默认表也是分层标（`GET /browse` 不传 `library_id`），不是 fcb+jyb 拼表。  
 - 选库弹窗的选项必须用推送过来的名单（或 `GET /libraries`），不要在页面里写死七个类型。  
 - 「各区平均 / 全市平均」的折线是该区或全市的日平均；**不要拿某一个站的曲线**画成朝阳区或全市。  
-- 输入框没字不要点解析（会 422）；解析中取消可中断 HTTP，不要再调 `stream/stop`。
+- 输入框没字不要点解析（会 422）；解析中取消可中断 HTTP，不要再调 `stream/stop`。  
+- 导出：浏览表把当时 `browse` 的 `library_id` / `district` / `station_id` 原样带给 `GET /browse/export`；解析表只在 `status=success` 时用返回的 `export_token` 调 `GET /export`（还要带同一 `user_id` / `session_id`）。需要鉴权头，用 blob 下载，不要 `window.open`。选库弹窗未完成或解析失败不要调导出。
 
 ---
 

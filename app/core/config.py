@@ -811,6 +811,7 @@ class DataQueryAgentConfig:
     default_max_rows: int = 500
     browse_default_page_size: int = 20
     browse_max_page_size: int = 100
+    export_max_rows: int = 10000
     hitl_max_retries: int = 5
     libraries_file: str = "configs/data_query_agent/libraries.yaml"
     plan_file: str = "configs/data_query_agent/plan.yaml"
@@ -1814,6 +1815,9 @@ def _load_from_env() -> AppConfig:
         ),
         browse_max_page_size=max(
             1, int(os.getenv("DATA_QUERY_AGENT_BROWSE_MAX_PAGE_SIZE", "100"))
+        ),
+        export_max_rows=max(
+            1, int(os.getenv("DATA_QUERY_AGENT_EXPORT_MAX_ROWS", "10000"))
         ),
         hitl_max_retries=max(1, int(os.getenv("DATA_QUERY_AGENT_HITL_MAX_RETRIES", "5"))),
         libraries_file=(

@@ -36,6 +36,7 @@
 | 2026-10-19 | 问答尾帧/历史返回字段下补充 `original_preview_url` 调用方使用说明 | — | V1.11 |
 | 2026-10-19 | 3.3 点库/区列表去掉年沉降量，累计沉降表头改为沉降量 | — | V1.12 |
 | 2026-10-23 | 3.4 / 3.5 解析 SQL 与人机协同恢复改为一次性 JSON（不再 SSE） | — | V1.13 |
+| 2026-10-27 | 新增浏览/解析 CSV 导出：`GET /browse/export`、`GET /export`；3.4/3.5 成功下发 `export_token` | — | V1.14 |
 | 2026-10-26 | 3.4 补充 SQL 生成/查询失败时的 JSON 字段、常见 `error` 码与前端渲染说明 | — | V1.14 |
 | 2026-10-26 | 3.4 明确可用 `ok=false` 统一友好提示；补充推荐文案 | — | V1.15 |
 
@@ -986,7 +987,7 @@ HITL 人机交互说明：
 | `error` | `data_query_error` | **SQL 生成或查询失败**等同此分支。按钮恢复；提示 `message` / `error`；字段与渲染见下文「失败返回」。不要清空上一张表除非产品要求 |
 | `cancelled` | `data_query_cancelled` | 按钮恢复；不要出表 |
 
-`success` 时还有：`library_id`、`display_name`、`table`、`source`（`request` / `parsed` / `default` / `llm` / `hitl`）、`scope`、`time`、`parse_mode`、`result_grain`、`hud_enabled`、`warnings`。`scope` / `time` 可做「朝阳区 / 近一年」芯片（本页不做过滤器也可忽略）。**禁止展示 sql**。
+`success` 时还有：`library_id`、`display_name`、`table`、`source`（`request` / `parsed` / `default` / `llm` / `hitl`）、`scope`、`time`、`parse_mode`、`result_grain`、`hud_enabled`、`warnings`、**`export_token`**（导出 CSV 用，见 3.9；未成功不要调导出）。`scope` / `time` 可做「朝阳区 / 近一年」芯片（本页不做过滤器也可忽略）。**禁止展示 sql**。
 
 `interrupted` 时还有：`prompt`、`library_options`、`resume_token`、`interrupt_reason`、`candidates`、`query`、`suggested_actions`。
 
@@ -1044,7 +1045,7 @@ HITL 人机交互说明：
 
 ### 调用方使用说明
 
-仅顶栏点「解析 SQL」时调用。空 `query` 会 422，应拦在按钮上。请求发出后按钮保持「解析中…」直到 JSON 返回（可能要等 LLM 生成 SQL）。不要按 SSE 拆帧，也不再保存 `stream_id`。离开页可中断本次 HTTP 请求。收到 `status=error` 按上一节渲染，不要当成网络错误重试死循环（可提示用户改问句后再点一次）。
+仅顶栏点「解析 SQL」时调用。空 `query` 会 422，应拦在按钮上。请求发出后按钮保持「解析中…」直到 JSON 返回（可能要等 LLM 生成 SQL）。不要按 SSE 拆帧，也不再保存 `stream_id`。离开页可中断本次 HTTP 请求。收到 `status=error` 按上一节渲染，不要当成网络错误重试死循环（可提示用户改问句后再点一次）。`status=success` 时保存 `export_token`，导出走 3.9；`interrupted` / `error` / `cancelled` 都不要调导出。
 
 ### 与人机协同恢复接口的衔接
 
@@ -1090,6 +1091,7 @@ HITL 人机交互说明：
   "source": "request",
   "result_grain": "station",
   "hud_enabled": true,
+  "export_token": "dqx_<token>",
   "columns": [{ "key": "station_id", "title": "测位 ID" }],
   "list": [{ "station_id": "JZGZ", "hud_entity_id": "JZGZ", "hud_available": true }],
   "hud_by_entity": {}
@@ -1199,7 +1201,7 @@ POST
 
 | status / event | 页面怎么加载 |
 |----------------|--------------|
-| `success` / `data_query_result` | 与 3.4 相同：高亮刚选的库、换表 + `hud_by_entity` 点详参，勿再调 `GET /hud` |
+| `success` / `data_query_result` | 与 3.4 相同：高亮刚选的库、换表 + `hud_by_entity` 点详参，勿再调 `GET /hud`。保存 `export_token` 供 3.9 导出 |
 | `interrupted` / `data_query_library_input_required` | `library_id` 非法；同一 `resume_token` 继续弹窗 |
 | `cancelled` / `data_query_cancelled` | 用户 `abort=true`；关弹窗、按钮恢复，不要出表 |
 | `error` / `data_query_error` | 提示失败，按钮恢复 |
@@ -1348,6 +1350,135 @@ GET
 
 ```http
 GET /data-query-agent/hud?library_id=fcb&entity_type=station&entity_id=F28(金盏)
+Authorization: Bearer <service-api-key>
+```
+
+---
+
+## 3.8 浏览列表导出接口
+
+### 接口功能
+
+把当前浏览范围（进页默认 / 点树）导出为 CSV。过滤条件与 **3.3 浏览列表** 相同，**不分页**，一次导出该范围内全部命中行（有上限）。不走 NL2SQL。
+
+### URL
+
+`http://[ip]:8083/data-query-agent/browse/export`
+
+### 鉴权方式
+
+`Authorization: Bearer <service-api-key>`
+
+### 支持格式
+
+CSV（成功）；JSON（失败）
+
+### HTTP 请求方式
+
+GET
+
+### 请求头
+
+| 请求头 | 必填 | 说明 |
+|--------|------|------|
+| Authorization | true | `Bearer <service-api-key>` |
+
+### 请求参数（Query）
+
+与 3.3 相同（不要传 `page` / `page_size`）：
+
+| 参数 | 必填 | 类型 | 说明 |
+|------|------|------|------|
+| library_id | false | string | 监测库；空=默认分层标 `fcb` |
+| district | false | string | 点行政区时传标准名；与 `station_id` 同时传时忽略 |
+| station_id | false | string | 点站点时传树上 `station_id`，导出设备×时间矩阵 |
+
+### 返回字段
+
+成功：HTTP 200，`Content-Type: text/csv; charset=utf-8`，`Content-Disposition: attachment`。UTF-8 BOM。表头为 `columns[].title`，行按 `list[i][columns[j].key]`，不含 HUD 字段。
+
+命中行数超过 `DATA_QUERY_AGENT_EXPORT_MAX_ROWS`（默认 10000）时 HTTP **413**：
+
+| 返回字段 | 字段类型 | 说明 |
+|----------|----------|------|
+| detail.code | string | `export_too_large` |
+| detail.message | string | 给人看的说明 |
+| detail.total | int | 实际命中行数 |
+| detail.max_rows | int | 当前上限 |
+
+其它失败与 3.3 相同（未知库 404、查询失败 502 等）。
+
+### 调用方使用说明
+
+导出按钮应对准**当前浏览表**（点树后的那张），把当时传给 3.3 的 `library_id` / `district` / `station_id` 原样带上。需要 `Authorization`，用 fetch 拿 blob 再触发下载，不要直接 `window.open`（会丢鉴权）。
+
+解析 SQL 出的表 **不要** 打本接口，改走 3.9。
+
+### 接口示例
+
+```http
+GET /data-query-agent/browse/export?library_id=fcb&district=朝阳区
+Authorization: Bearer <service-api-key>
+```
+
+---
+
+## 3.9 解析结果导出接口
+
+### 接口功能
+
+把一次 **已成功** 的解析 SQL 结果导出为 CSV。只回放 3.4 / 3.5 成功时签发的快照，**不重跑 NL2SQL**。
+
+### URL
+
+`http://[ip]:8083/data-query-agent/export`
+
+### 鉴权方式
+
+`Authorization: Bearer <service-api-key>`
+
+### 支持格式
+
+CSV（成功）；JSON（失败）
+
+### HTTP 请求方式
+
+GET
+
+### 请求头
+
+| 请求头 | 必填 | 说明 |
+|--------|------|------|
+| Authorization | true | `Bearer <service-api-key>` |
+
+### 请求参数（Query）
+
+| 参数 | 必填 | 类型 | 说明 |
+|------|------|------|------|
+| export_token | true | string | 3.4 或 3.5 **`status=success`** 返回的 `export_token`（`dqx_` 开头） |
+| user_id | true | string | 须与那次解析相同 |
+| session_id | true | string | 须与那次解析相同 |
+
+### 返回字段
+
+成功：与 3.8 相同的 CSV 文件流（表头/行来自那次解析的 `columns` + `list`）。
+
+| HTTP | detail.code | 说明 |
+|------|-------------|------|
+| 422 | `export_token_required` | 未传 token |
+| 404 | `export_token_invalid` | token 无效或已过期（默认与 session TTL 相同，1 小时） |
+| 403 | `export_identity_mismatch` | `user_id` / `session_id` 对不上 |
+
+### 调用方使用说明
+
+只有 3.4 或 3.5 返回 `status=success` 才启用「导出」：保存 `export_token`，再调本接口。`interrupted`（选库中）、`error`、`cancelled` **都没有** `export_token`，不要调用。选库成功后用 **3.5 成功包**里的新 `export_token`，不要用 3.4 中断包里的任何字段去导出。
+
+凭证过期后请用户重新点「解析 SQL」。浏览表导出走 3.8，不要混用。
+
+### 接口示例
+
+```http
+GET /data-query-agent/export?export_token=dqx_<token>&user_id=u1&session_id=s1
 Authorization: Bearer <service-api-key>
 ```
 
@@ -2093,6 +2224,8 @@ Body：
 | 浏览列表（进页默认 / 点树） | GET | `/data-query-agent/browse` |
 | 解析 SQL | POST | `/data-query-agent/run-stream`（一次性 JSON） |
 | 选库后继续 | POST | `/data-query-agent/resume-stream`（一次性 JSON） |
+| 浏览表导出 CSV | GET | `/data-query-agent/browse/export` |
+| 解析结果导出 CSV | GET | `/data-query-agent/export` |
 | 浏览表详参 | GET | `/data-query-agent/hud` |
 
 ### A.4 知识库
@@ -2118,7 +2251,7 @@ Body：
 |------|--------|
 | 问答 | 渲染 `meta.nl2sql_sql`；勿将 `original_preview_url` 当独立业务接口对接（由 BFF 打开预览路径即可） |
 | 报告 | `/analysis/*`、`/nl2sql/query`、`/data-query-agent/run-stream`、`/analysis-agent/resume-stream`；展示取数 SQL；接 GIS |
-| 数据查询 | `/nl2sql/query` 当主入口、`/analysis-agent/*`、客服内 `data_query`、解析后再 `GET /hud` |
+| 数据查询 | `/nl2sql/query` 当主入口、`/analysis-agent/*`、客服内 `data_query`、解析后再 `GET /hud`；选库中 / 解析失败调 `GET /export` |
 | 知识库 | `/rag/kb-tree`、废弃 `/rag/ingest/*`、`POST /rag/query`（顶栏非语义搜）、`POST /rag/jobs/{id}/retry`、`GET /rag/documents/overview_all`（含 NL2SQL 内置库，仅运维） |
 
 ---

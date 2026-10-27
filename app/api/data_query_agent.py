@@ -8,12 +8,13 @@ from __future__ import annotations
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from typing import Annotated, Any
 
 from app.core.config import get_app_config
 from app.data_query_agent.browse import BrowseRequestError
 from app.data_query_agent.catalog import CatalogError, get_library_catalog
+from app.data_query_agent.export_store import ExportRequestError
 from app.data_query_agent.hud import HudRequestError
 from app.models.data_query_agent import (
     DataQueryAgentBrowseResponse,
@@ -165,10 +166,17 @@ async def get_data_query_hud(
 
 
 def _browse_http_error(exc: BrowseRequestError) -> HTTPException:
-    return HTTPException(
-        status_code=exc.status_code,
-        detail={"code": exc.code, "message": exc.message},
-    )
+    detail: dict[str, Any] = {"code": exc.code, "message": exc.message}
+    if getattr(exc, "extra", None):
+        detail.update(exc.extra)
+    return HTTPException(status_code=exc.status_code, detail=detail)
+
+
+def _export_http_error(exc: ExportRequestError) -> HTTPException:
+    detail: dict[str, Any] = {"code": exc.code, "message": exc.message}
+    if getattr(exc, "extra", None):
+        detail.update(exc.extra)
+    return HTTPException(status_code=exc.status_code, detail=detail)
 
 
 @router.get(
@@ -213,3 +221,49 @@ async def browse_data_query_list(
         )
     except BrowseRequestError as exc:
         raise _browse_http_error(exc) from exc
+
+
+@router.get(
+    "/browse/export",
+    summary="浏览列表导出 CSV（与 3.3 同一套过滤，不分页）",
+    response_class=Response,
+)
+async def browse_data_query_export(
+    library_id: Annotated[
+        str | None,
+        Query(description="监测库；空=默认分层标 fcb。点库节点时传该 id"),
+    ] = None,
+    district: Annotated[str | None, Query(description="点行政区时传标准名，如 朝阳区；与 station_id 同时传时忽略")] = None,
+    station_id: Annotated[
+        str | None,
+        Query(description="点站点时传树上 project_name；导出设备×时间矩阵"),
+    ] = None,
+) -> Response:
+    try:
+        return await service.browse_export(
+            library_id=library_id,
+            district=district,
+            station_id=station_id,
+        )
+    except BrowseRequestError as exc:
+        raise _browse_http_error(exc) from exc
+
+
+@router.get(
+    "/export",
+    summary="解析结果导出 CSV（凭 3.4/3.5 成功返回的 export_token 回放，不重跑 NL2SQL）",
+    response_class=Response,
+)
+async def parse_data_query_export(
+    export_token: Annotated[str, Query(description="3.4/3.5 status=success 返回的 export_token")],
+    user_id: Annotated[str, Query(description="须与解析请求相同")],
+    session_id: Annotated[str, Query(description="须与解析请求相同")],
+) -> Response:
+    try:
+        return service.parse_export(
+            export_token=export_token,
+            user_id=user_id,
+            session_id=session_id,
+        )
+    except ExportRequestError as exc:
+        raise _export_http_error(exc) from exc
