@@ -11,6 +11,8 @@ services:
         VLLM_REQUIREMENTS_PROFILE: ${VLLM_REQUIREMENTS_PROFILE:-full}
     container_name: vllm-service
     restart: unless-stopped
+    # vLLM TP>=2 用 /dev/shm 做进程间广播；Docker 默认 64MB 不够（会报 160 MiB required）
+    shm_size: ${VLLM_SHM_SIZE:-8gb}
     command: ["python3", "/workspace/scripts/start.py", "start"]
     ports:
       - "${VLLM_PORT:-8000}:8000"

@@ -2,8 +2,18 @@ version: '3.8'
 
 services:
   vllm:
+    # Docker 默认关 NUMA；NCCL 2.24+ 的 cuMem host 分配在容器/消费级卡上会 cuMemCreate 段错误
+    cap_add:
+      - SYS_NICE
     environment:
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      # RTX 4090 + NCCL 2.29：ncclCuMemHostEnable / cuMemCreate segfault（TP>=2）
+      - NCCL_CUMEM_HOST_ENABLE=0
+      - NCCL_CUMEM_ENABLE=0
+      - NCCL_NVLS_ENABLE=0
+      - NCCL_IB_DISABLE=1
+      # runtime 镜像无 nvcc；enforce_eager=false 后 JIT warmup 会编 FlashInfer sampling 并炸掉
+      - VLLM_USE_FLASHINFER_SAMPLER=0
     deploy:
       resources:
         reservations:

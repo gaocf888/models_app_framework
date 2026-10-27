@@ -94,7 +94,8 @@ services:
       - face-galleries-data:/workspace/data/face_galleries
       - ${INSIGHTFACE_MODELS_HOST_PATH:-insightface-models-dummy}:/workspace/app/small_models/pretrained/insightface
       - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
+      # 麒麟/RHEL 上 /etc/timezone 常为目录或不存在；挂到 Debian 镜像里的文件会报 not a directory
+      # 时区以环境变量 TZ 为准（Asia/Shanghai）
     environment:
       TZ: Asia/Shanghai
       NVIDIA_VISIBLE_DEVICES: ${APP_NVIDIA_VISIBLE_DEVICES:-all}
