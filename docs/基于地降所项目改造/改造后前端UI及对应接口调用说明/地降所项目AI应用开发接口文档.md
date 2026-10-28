@@ -1355,7 +1355,7 @@ Authorization: Bearer <service-api-key>
 
 ---
 
-## 3.8 浏览列表导出接口
+## 3.8 浏览列表(左侧树数据查询)导出接口
 
 ### 接口功能
 
@@ -1423,7 +1423,7 @@ Authorization: Bearer <service-api-key>
 
 ---
 
-## 3.9 解析结果导出接口
+## 3.9 解析结果(自然语言数据查询)导出接口
 
 ### 接口功能
 
