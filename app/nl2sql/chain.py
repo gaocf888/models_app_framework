@@ -1413,7 +1413,28 @@ class NL2SQLChain:
         notes.extend(scope_notes)
         rewritten, region_notes = self._rewrite_relaxed_region_match(rewritten, question=question)
         notes.extend(region_notes)
+        rewritten, q5_notes = self._rewrite_overheat_q5_dim_drive(
+            rewritten,
+            plan_item_id=plan_item_id,
+            analysis_type=analysis_type,
+        )
+        notes.extend(q5_notes)
         return rewritten, notes
+
+    @staticmethod
+    def _rewrite_overheat_q5_dim_drive(
+        sql: str,
+        *,
+        plan_item_id: str | None,
+        analysis_type: str | None,
+    ) -> tuple[str, list[str]]:
+        from app.nl2sql.overheat_q5_rewrite import rewrite_overheat_q5_dim_drive
+
+        return rewrite_overheat_q5_dim_drive(
+            sql,
+            plan_item_id=plan_item_id,
+            analysis_type=analysis_type,
+        )
 
     @staticmethod
     def _sql_has_time_placeholders(sql: str) -> bool:

@@ -488,7 +488,7 @@ analysis_synthesis_overheat_guidance:
       - 分布特征：集中式/分散式/混合型
       - 共性原因：烟气侧/介质侧/运行操作/设备本体
       - 分区域专属原因（多机组分段）
-      - q5 为六类 **SIS/DCS 关联参数汇总**（减温水/烟温/排烟/总风量/氧量/炉膛负压；tag 编码 CASE 为主，base_dev_pi_b.pi_name_ch 兜底；超温事件 MIN(start)-30min～MAX(end)+30min 包络）；HAC/HAH+CT 等壁温须排除；机组负荷/总给煤量归 q4/q7；某类无测点则写「待补充」
+      - q5 为六类 **SIS/DCS 关联参数汇总**（减温水/烟温/排烟/总风量/氧量/炉膛负压；先在 base_dev_pi_b 上 CASE 分类再等值 JOIN sis_pi_data.tag，禁止对事实表 tag 做 LIKE 扫窗；超温事件 MIN(start)-30min～MAX(end)+30min 包络）；HAC/HAH+CT 等壁温须排除；机组负荷/总给煤量归 q4/q7；某类无测点则写「待补充」
       - q6 为按机组+受热面吹灰**汇总**（次数/时长），用于「吹灰频次不足」等运行侧归因，非逐条吹灰明细
       - q7 为按机组+磨煤机**汇总**（给煤/风量/负荷），用于「启停磨、煤质波动、局部燃料堆积」等运行侧归因，非逐条采样明细
       
@@ -949,7 +949,7 @@ analysis_plan_overheat_guidance:
         {
           "item_id": "q5",
           "purpose": "超温原因剖析-SIS/DCS关联参数汇总",
-          "question": "在用户指定时间窗内，按测点汇总 sis_pi_data 中六类 SIS/DCS 关联参数：减温水、烟温、排烟、总风量、氧量、炉膛负压（勿查壁温，壁温由 q1 承担；机组负荷、总给煤量分别由 q4/q7 承担，禁止纳入 q5）。须 sis_pi_data 聚合输出：禁止 correlated EXISTS、禁止 REGEXP、禁止 JOIN base_temp_point、禁止逐事件 CROSS JOIN。时间范围：monitor_hotarea_temp 有效超温事件（highest_temp>limit_temp）取 MIN(DATE_SUB(start_time,INTERVAL 30 MINUTE)) 至 MAX(DATE_ADD(IFNULL(end_time,start_time),INTERVAL 30 MINUTE)) 的单行子查询包络。允许 LEFT JOIN base_dev_pi_b ON pi_code=tag 取 pi_name_ch 作为测点名称与兜底筛选。排除壁温 tag：含 CT 且含 HAD/HAC/HAH 之一。纳入条件：tag 编码匹配六类之一（FW/CWF/DSW=减温水，FGT/FLUE=烟温，EXH/STACK=排烟，PAF/SAF/TAF=总风量，O2/OXY=氧量，DRFT/FURNP=炉膛负压），或 pi_name_ch 含减温水/炉膛烟温/烟温/排烟/炉膛负压，或 pi_name_ch 为炉膛出口氧量/总风量。用 CASE 输出参数类型（tag 优先、pi_name_ch 兜底），HAVING 排除其他关联参数；按参数类型+测点编码 GROUP BY，返回参数类型、测点编码、测点名称、采样点数、采样天数、最小/最大/平均值、首次/末次采样时间；禁止返回逐时刻明细行。按参数类型、采样点数降序排序。",
+          "question": "在用户指定时间窗内，按测点汇总 sis_pi_data 中六类 SIS/DCS 关联参数：减温水、烟温、排烟、总风量、氧量、炉膛负压（勿查壁温，壁温由 q1 承担；机组负荷、总给煤量分别由 q4/q7 承担，禁止纳入 q5）。须 sis_pi_data 聚合输出：禁止 correlated EXISTS、禁止 REGEXP、禁止 JOIN base_temp_point、禁止逐事件 CROSS JOIN、禁止 WITH/CTE。时间范围：monitor_hotarea_temp 有效超温事件（highest_temp>limit_temp）取 MIN(DATE_SUB(start_time,INTERVAL 30 MINUTE)) 至 MAX(DATE_ADD(IFNULL(end_time,start_time),INTERVAL 30 MINUTE)) 的单行子查询包络。访问路径强制：先从 base_dev_pi_b 用 CASE 分类筛出六类测点得到 tags（LIKE/UPPER 仅允许作用于 pi.pi_code 与 pi.pi_name_ch），再 INNER JOIN sis_pi_data ON spd.tag=tags.pi_code；FROM 以 tags 子查询为驱动表；禁止对 spd.tag 做 UPPER LIKE，禁止 LEFT JOIN base_dev_pi_b 后再扫 sis_pi_data 全窗。排除壁温测点：pi_code 含 CT 且含 HAD/HAC/HAH 之一。纳入条件：pi_code 匹配六类之一（FW/CWF/DSW/DESUP=减温水，FGT/FLUE/GGT=烟温，EXH/STACK/ESP=排烟，PAF/SAF/TAF=总风量，O2/OXY=氧量，DRFT/FURNP=炉膛负压），或 pi_name_ch 含减温水/炉膛烟温/烟温/排烟/炉膛负压，或 pi_name_ch 为炉膛出口氧量/总风量。参数类型取自 tags 子查询 CASE（pi_code 优先、pi_name_ch 兜底），WHERE tags.参数类型<>其他关联参数；按参数类型+测点编码 GROUP BY，返回参数类型、测点编码、测点名称、采样点数、采样天数、最小/最大/平均值、首次/末次采样时间；禁止返回逐时刻明细行。按参数类型、采样点数降序排序。参考 reference SQL q5。",
           "mandatory": false,
           "dependency_ids": ["q1"]
         },

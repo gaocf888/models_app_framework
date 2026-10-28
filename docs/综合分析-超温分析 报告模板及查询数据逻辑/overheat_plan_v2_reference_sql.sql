@@ -136,46 +136,15 @@ GROUP BY ab.boiler_id, ab.boiler_name;
 -- 说明：
 --   - 时间窗：超温事件 MIN(start)-30min ~ MAX(end)+30min（对齐业务「超温前后30min」）
 --   - 壁温 tag 常见 HAD/HAC/HAH + CT（如 10HAH11CT101），须全部排除，勿只排除 HAD+CT
---   - tag 编码为主；LEFT JOIN base_dev_pi_b 用 pi_name_ch 兜底（炉膛烟温/减温水/氧量/总风量）
+--   - 访问路径：先在 base_dev_pi_b 上 CASE/LIKE 筛出六类测点（维表很小），再等值 JOIN
+--     sis_pi_data.tag；禁止对 spd.tag 做 UPPER LIKE（会扫时间包络内全厂测点）
 --   - 机组负荷、总给煤量由 q4/q7 承担，不在 q5 纳入
 --   - 烟温/排烟/总风量/氧量/炉膛负压若库中无对应测点 → 报告写「待补充」
 -- =============================================================================
 SELECT
-  CASE
-    WHEN UPPER(spd.tag) LIKE '%FW%'
-      OR UPPER(spd.tag) LIKE '%CWF%'
-      OR UPPER(spd.tag) LIKE '%DSW%'
-      OR UPPER(spd.tag) LIKE '%DESUP%'
-      OR IFNULL(pi.pi_name_ch, '') LIKE '%减温水%' THEN '减温水'
-    WHEN UPPER(spd.tag) LIKE '%FGT%'
-      OR UPPER(spd.tag) LIKE '%FLUE%'
-      OR UPPER(spd.tag) LIKE '%GAS%TEMP%'
-      OR UPPER(spd.tag) LIKE '%GGT%'
-      OR IFNULL(pi.pi_name_ch, '') LIKE '%炉膛烟温%'
-      OR IFNULL(pi.pi_name_ch, '') LIKE '%烟温%' THEN '烟温'
-    WHEN UPPER(spd.tag) LIKE '%EXH%'
-      OR UPPER(spd.tag) LIKE '%STACK%'
-      OR UPPER(spd.tag) LIKE '%ESP%'
-      OR IFNULL(pi.pi_name_ch, '') LIKE '%排烟%' THEN '排烟'
-    WHEN UPPER(spd.tag) LIKE '%TAF%'
-      OR UPPER(spd.tag) LIKE '%PAF%'
-      OR UPPER(spd.tag) LIKE '%SAF%'
-      OR UPPER(spd.tag) LIKE '%AIR%FLOW%'
-      OR UPPER(spd.tag) LIKE '%TOTAL%AIR%'
-      OR pi.pi_name_ch = '总风量' THEN '总风量'
-    WHEN UPPER(spd.tag) LIKE '%O2%'
-      OR UPPER(spd.tag) LIKE '%OXY%'
-      OR UPPER(spd.tag) LIKE '%OXYGEN%'
-      OR pi.pi_name_ch = '炉膛出口氧量' THEN '氧量'
-    WHEN UPPER(spd.tag) LIKE '%DRFT%'
-      OR UPPER(spd.tag) LIKE '%FDRAFT%'
-      OR UPPER(spd.tag) LIKE '%FURN%P%'
-      OR UPPER(spd.tag) LIKE '%FURNACE%PRESS%'
-      OR IFNULL(pi.pi_name_ch, '') LIKE '%炉膛负压%' THEN '炉膛负压'
-    ELSE '其他关联参数'
-  END AS 参数类型,
+  tags.参数类型,
   spd.tag AS 测点编码,
-  MAX(IFNULL(pi.pi_name_ch, spd.tag)) AS 测点名称,
+  MAX(IFNULL(tags.pi_name_ch, spd.tag)) AS 测点名称,
   COUNT(*) AS 采样点数,
   COUNT(DISTINCT DATE(spd.data_time)) AS 采样天数,
   ROUND(MIN(spd.value), 2) AS 最小值,
@@ -183,8 +152,85 @@ SELECT
   ROUND(AVG(spd.value), 2) AS 平均值,
   DATE_FORMAT(MIN(spd.data_time), '%Y.%m.%d %H:%i:%s') AS 首次采样时间,
   DATE_FORMAT(MAX(spd.data_time), '%Y.%m.%d %H:%i:%s') AS 末次采样时间
-FROM sis_pi_data spd
-LEFT JOIN base_dev_pi_b pi ON pi.pi_code = spd.tag
+FROM (
+  SELECT
+    pi.pi_code,
+    pi.pi_name_ch,
+    CASE
+      WHEN UPPER(pi.pi_code) LIKE '%FW%'
+        OR UPPER(pi.pi_code) LIKE '%CWF%'
+        OR UPPER(pi.pi_code) LIKE '%DSW%'
+        OR UPPER(pi.pi_code) LIKE '%DESUP%'
+        OR IFNULL(pi.pi_name_ch, '') LIKE '%减温水%' THEN '减温水'
+      WHEN UPPER(pi.pi_code) LIKE '%FGT%'
+        OR UPPER(pi.pi_code) LIKE '%FLUE%'
+        OR UPPER(pi.pi_code) LIKE '%GAS%TEMP%'
+        OR UPPER(pi.pi_code) LIKE '%GGT%'
+        OR IFNULL(pi.pi_name_ch, '') LIKE '%炉膛烟温%'
+        OR IFNULL(pi.pi_name_ch, '') LIKE '%烟温%' THEN '烟温'
+      WHEN UPPER(pi.pi_code) LIKE '%EXH%'
+        OR UPPER(pi.pi_code) LIKE '%STACK%'
+        OR UPPER(pi.pi_code) LIKE '%ESP%'
+        OR IFNULL(pi.pi_name_ch, '') LIKE '%排烟%' THEN '排烟'
+      WHEN UPPER(pi.pi_code) LIKE '%TAF%'
+        OR UPPER(pi.pi_code) LIKE '%PAF%'
+        OR UPPER(pi.pi_code) LIKE '%SAF%'
+        OR UPPER(pi.pi_code) LIKE '%AIR%FLOW%'
+        OR UPPER(pi.pi_code) LIKE '%TOTAL%AIR%'
+        OR pi.pi_name_ch = '总风量' THEN '总风量'
+      WHEN UPPER(pi.pi_code) LIKE '%O2%'
+        OR UPPER(pi.pi_code) LIKE '%OXY%'
+        OR UPPER(pi.pi_code) LIKE '%OXYGEN%'
+        OR pi.pi_name_ch = '炉膛出口氧量' THEN '氧量'
+      WHEN UPPER(pi.pi_code) LIKE '%DRFT%'
+        OR UPPER(pi.pi_code) LIKE '%FDRAFT%'
+        OR UPPER(pi.pi_code) LIKE '%FURN%P%'
+        OR UPPER(pi.pi_code) LIKE '%FURNACE%PRESS%'
+        OR IFNULL(pi.pi_name_ch, '') LIKE '%炉膛负压%' THEN '炉膛负压'
+      ELSE '其他关联参数'
+    END AS 参数类型
+  FROM base_dev_pi_b pi
+  WHERE NOT (
+    UPPER(pi.pi_code) LIKE '%CT%'
+    AND (
+      UPPER(pi.pi_code) LIKE '%HAD%'
+      OR UPPER(pi.pi_code) LIKE '%HAC%'
+      OR UPPER(pi.pi_code) LIKE '%HAH%'
+    )
+  )
+  AND (
+    UPPER(pi.pi_code) LIKE '%FW%'
+    OR UPPER(pi.pi_code) LIKE '%CWF%'
+    OR UPPER(pi.pi_code) LIKE '%DSW%'
+    OR UPPER(pi.pi_code) LIKE '%DESUP%'
+    OR UPPER(pi.pi_code) LIKE '%FGT%'
+    OR UPPER(pi.pi_code) LIKE '%FLUE%'
+    OR UPPER(pi.pi_code) LIKE '%GAS%TEMP%'
+    OR UPPER(pi.pi_code) LIKE '%GGT%'
+    OR UPPER(pi.pi_code) LIKE '%EXH%'
+    OR UPPER(pi.pi_code) LIKE '%STACK%'
+    OR UPPER(pi.pi_code) LIKE '%ESP%'
+    OR UPPER(pi.pi_code) LIKE '%TAF%'
+    OR UPPER(pi.pi_code) LIKE '%PAF%'
+    OR UPPER(pi.pi_code) LIKE '%SAF%'
+    OR UPPER(pi.pi_code) LIKE '%AIR%FLOW%'
+    OR UPPER(pi.pi_code) LIKE '%TOTAL%AIR%'
+    OR UPPER(pi.pi_code) LIKE '%O2%'
+    OR UPPER(pi.pi_code) LIKE '%OXY%'
+    OR UPPER(pi.pi_code) LIKE '%OXYGEN%'
+    OR UPPER(pi.pi_code) LIKE '%DRFT%'
+    OR UPPER(pi.pi_code) LIKE '%FDRAFT%'
+    OR UPPER(pi.pi_code) LIKE '%FURN%P%'
+    OR UPPER(pi.pi_code) LIKE '%FURNACE%PRESS%'
+    OR IFNULL(pi.pi_name_ch, '') LIKE '%减温水%'
+    OR IFNULL(pi.pi_name_ch, '') LIKE '%炉膛烟温%'
+    OR IFNULL(pi.pi_name_ch, '') LIKE '%烟温%'
+    OR IFNULL(pi.pi_name_ch, '') LIKE '%排烟%'
+    OR IFNULL(pi.pi_name_ch, '') LIKE '%炉膛负压%'
+    OR pi.pi_name_ch IN ('炉膛出口氧量', '总风量')
+  )
+) tags
+INNER JOIN sis_pi_data spd ON spd.tag = tags.pi_code
 INNER JOIN (
   SELECT
     MIN(DATE_SUB(t.start_time, INTERVAL 30 MINUTE)) AS evt_min,
@@ -196,48 +242,10 @@ INNER JOIN (
     AND t.highest_temp > t.limit_temp
     AND (@unit_keyword IS NULL OR @unit_keyword = '' OR ab.boiler_name LIKE CONCAT('%', @unit_keyword, '%'))
 ) evt ON spd.data_time >= evt.evt_min AND spd.data_time <= evt.evt_max
-WHERE NOT (
-  UPPER(spd.tag) LIKE '%CT%'
-  AND (
-    UPPER(spd.tag) LIKE '%HAD%'
-    OR UPPER(spd.tag) LIKE '%HAC%'
-    OR UPPER(spd.tag) LIKE '%HAH%'
-  )
-)
-AND (
-  UPPER(spd.tag) LIKE '%FW%'
-  OR UPPER(spd.tag) LIKE '%CWF%'
-  OR UPPER(spd.tag) LIKE '%DSW%'
-  OR UPPER(spd.tag) LIKE '%DESUP%'
-  OR UPPER(spd.tag) LIKE '%FGT%'
-  OR UPPER(spd.tag) LIKE '%FLUE%'
-  OR UPPER(spd.tag) LIKE '%GAS%TEMP%'
-  OR UPPER(spd.tag) LIKE '%GGT%'
-  OR UPPER(spd.tag) LIKE '%EXH%'
-  OR UPPER(spd.tag) LIKE '%STACK%'
-  OR UPPER(spd.tag) LIKE '%ESP%'
-  OR UPPER(spd.tag) LIKE '%TAF%'
-  OR UPPER(spd.tag) LIKE '%PAF%'
-  OR UPPER(spd.tag) LIKE '%SAF%'
-  OR UPPER(spd.tag) LIKE '%AIR%FLOW%'
-  OR UPPER(spd.tag) LIKE '%TOTAL%AIR%'
-  OR UPPER(spd.tag) LIKE '%O2%'
-  OR UPPER(spd.tag) LIKE '%OXY%'
-  OR UPPER(spd.tag) LIKE '%OXYGEN%'
-  OR UPPER(spd.tag) LIKE '%DRFT%'
-  OR UPPER(spd.tag) LIKE '%FDRAFT%'
-  OR UPPER(spd.tag) LIKE '%FURN%P%'
-  OR UPPER(spd.tag) LIKE '%FURNACE%PRESS%'
-  OR IFNULL(pi.pi_name_ch, '') LIKE '%减温水%'
-  OR IFNULL(pi.pi_name_ch, '') LIKE '%炉膛烟温%'
-  OR IFNULL(pi.pi_name_ch, '') LIKE '%烟温%'
-  OR IFNULL(pi.pi_name_ch, '') LIKE '%排烟%'
-  OR IFNULL(pi.pi_name_ch, '') LIKE '%炉膛负压%'
-  OR pi.pi_name_ch IN ('炉膛出口氧量', '总风量')
-)
-GROUP BY 参数类型, spd.tag
-HAVING 参数类型 <> '其他关联参数'
-ORDER BY 参数类型, 采样点数 DESC, 测点编码;
+WHERE tags.参数类型 <> '其他关联参数'
+  AND spd.data_time >= DATE_SUB((@t_start), INTERVAL 30 MINUTE)
+GROUP BY tags.参数类型, spd.tag
+ORDER BY tags.参数类型, 采样点数 DESC, 测点编码;
 
 -- =============================================================================
 -- q6 超温原因剖析-吹灰区域汇总（按机组+受热面聚合，非逐条明细）
