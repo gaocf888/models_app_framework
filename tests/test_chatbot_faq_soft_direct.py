@@ -133,6 +133,7 @@ def test_soft_direct_authority_block_allows_brief_analysis():
     assert "权威片段" in body
     assert "以该条片段的事实与结论为准" in body
     assert "可补充 2～3 句机理说明或现场注意" in body
+    assert "不要加「分析/通用经验」" in body
     assert "不得推翻" in body
     assert "必须优先逐条复述" not in body
     assert "不得改写成泛化" not in body

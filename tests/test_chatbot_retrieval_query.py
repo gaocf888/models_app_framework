@@ -39,7 +39,7 @@ def test_format_rag_block_contains_short_confirm_rule():
     assert "片段A" in block
     assert "片段引用标注" in block
     assert "宽泛问题" in block
-    assert "分析/通用经验" in block
+    assert "禁止输出「分析/通用经验」" in block
     assert "禁止输出「知识库本轮未检索到相关条文」" in block
     assert "仅依据下列片段" not in block
 
@@ -47,7 +47,7 @@ def test_format_rag_block_contains_short_confirm_rule():
 def test_format_empty_rag_system_block_forbids_retrieval_meta():
     block = format_empty_rag_system_block()
     assert "未向你注入检索知识片段" in block
-    assert "通用经验，非本厂知识库条文" in block
+    assert "禁止输出「分析/通用经验」" in block
     assert "没有检索到" in block  # 作为禁止输出的话术出现
     assert format_rag_snippets_system_block([]) == block
     assert format_rag_snippets_system_block(["", "  "]) == block
