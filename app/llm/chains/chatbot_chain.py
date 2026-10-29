@@ -161,8 +161,7 @@ class ChatbotChain:
                 "以下是对当前轮用户意图与建议处理策略的内部规划，请在回答时参考但不要直接暴露给用户：\n"
                 f"{intent_summary}"
             )
-        if ctx_snippets:
-            system_chunks.append(format_rag_snippets_system_block(ctx_snippets))
+        system_chunks.append(format_rag_snippets_system_block(ctx_snippets))
 
         messages: List[object] = [SystemMessage(content="\n\n".join(system_chunks))]
 

@@ -1457,14 +1457,13 @@ class ChatbotLangGraphRunner:
                 )
                 if anchor:
                     chunks.append(anchor)
-            if snippets:
-                chunks.append(
-                    format_rag_snippets_for_generation(
-                        snippets,
-                        soft_direct=faq_decision.active,
-                        base_formatter=format_rag_snippets_system_block,
-                    )
+            chunks.append(
+                format_rag_snippets_for_generation(
+                    snippets,
+                    soft_direct=faq_decision.active,
+                    base_formatter=format_rag_snippets_system_block,
                 )
+            )
             return assemble_chatbot_llm_messages(
                 system_chunks=chunks,
                 history=hist,

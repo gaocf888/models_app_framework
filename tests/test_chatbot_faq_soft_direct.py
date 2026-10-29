@@ -2,6 +2,7 @@
 
 from app.llm.graphs.chatbot_faq_soft_direct import (
     evaluate_faq_soft_direct,
+    format_rag_snippets_for_generation,
     query_starts_with_anaphora_marker,
     snippets_for_llm_generation,
 )
@@ -121,3 +122,18 @@ def test_snippets_for_llm_top_n_when_soft_direct():
     items = ["a", "b", "c"]
     assert snippets_for_llm_generation(items, soft_direct=True, snippet_top_n=1) == ["a"]
     assert snippets_for_llm_generation(items, soft_direct=False, snippet_top_n=1) == ["a", "b", "c"]
+
+
+def test_soft_direct_authority_block_allows_brief_analysis():
+    body = format_rag_snippets_for_generation(
+        ["[1] 《1000问》\n问：燃烧管理系统有哪些功能\n答：..."],
+        soft_direct=True,
+        base_formatter=lambda snippets: "BODY:" + ";".join(snippets),
+    )
+    assert "权威片段" in body
+    assert "以该条片段的事实与结论为准" in body
+    assert "可补充 2～3 句机理说明或现场注意" in body
+    assert "不得推翻" in body
+    assert "必须优先逐条复述" not in body
+    assert "不得改写成泛化" not in body
+    assert "BODY:" in body

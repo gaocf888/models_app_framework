@@ -20,7 +20,7 @@
 ----------
 - ``kb_build_messages`` / legacy ``_build_llm_messages``：**不注入** history_messages；
 - 注入 LLM 的片段数裁为 ``CHATBOT_FAQ_SOFT_DIRECT_SNIPPET_TOP_N``（默认 1）；
-- system 追加「权威片段」说明；``rag_citations`` 展示条数不变。
+- system 追加「权威片段」说明：以该片段为准，可补 2～3 句机理/注意，不得推翻片段事实；``rag_citations`` 展示条数不变。
 """
 
 from __future__ import annotations
@@ -38,8 +38,9 @@ _ANAPHORA_QUERY_PREFIX_RE = re.compile(
 
 _FAQ_SOFT_DIRECT_AUTHORITY_BLOCK = (
     "【高分 FAQ 软直通·权威片段】下列第一条知识片段与本轮用户问题高度匹配（检索分达到软直通阈值）。"
-    "回答时必须优先逐条复述该条片段中的问答内容，不得采用对话历史中关于同一问题的旧结论，"
-    "不得改写成泛化的「燃烧优化/安全监控」等宏观框架，除非该片段本身如此表述。"
+    "回答时须以该条片段的事实与结论为准，不得采用对话历史中关于同一问题的旧结论，不得推翻或淡化该片段中的问答要点；"
+    "在忠实覆盖片段要点之后，可补充 2～3 句机理说明或现场注意，且须标明为分析/经验，不得伪装成该片段原文或额外规程条文。"
+    "不得把回答改写成与片段无关的「燃烧优化/安全监控」等宏观框架，除非该片段本身如此表述。"
 )
 
 

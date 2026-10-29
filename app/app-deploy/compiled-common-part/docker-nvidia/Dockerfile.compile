@@ -20,10 +20,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 USER root
 WORKDIR /workspace
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    patchelf \
-    ccache \
+# 现场常无法直连 deb.debian.org；与 pip 一样默认走阿里云 Debian 源。
+ARG DEBIAN_MIRROR=http://mirrors.aliyun.com
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i "s|https\\?://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    if [ -f /etc/apt/sources.list ]; then \
+      sed -i "s|https\\?://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      patchelf \
+      ccache \
     && rm -rf /var/lib/apt/lists/*
 
 ARG PIP_INDEX_URL
