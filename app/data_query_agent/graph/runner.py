@@ -278,6 +278,35 @@ class DataQueryAgentGraphRunner:
                 message=OPS_USE_CHATBOT_MESSAGE,
             )
 
+        from app.data_query_agent.query_kind import (
+            NOT_DATA_QUERY_MESSAGE,
+            NOT_DATA_QUERY_REASON,
+            classify_data_query_kind,
+        )
+
+        kind = classify_data_query_kind(state.query or "")
+        if not kind.looks_like_data_query:
+            DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="error", hitl=hitl_used).inc()
+            logger.info(
+                "data_query_agent not_data_query request_id=%s kind=%s query_preview=%r",
+                state.request_id,
+                kind.kind,
+                (state.query or "")[:80],
+            )
+            _save_run_trace(
+                state,
+                status="error",
+                extra={"interrupt_reason": NOT_DATA_QUERY_REASON, "query_kind": kind.kind},
+            )
+            await self._clear(state.user_id, state.session_id, state.stream_id)
+            return _response(
+                status="error",
+                event="data_query_error",
+                request_id=state.request_id,
+                error=NOT_DATA_QUERY_REASON,
+                message=NOT_DATA_QUERY_MESSAGE,
+            )
+
         # resume 已带合法库时跳过意图1，直接 library_hit。
         if not skip_library_intent:
             intent = resolve_library_intent(state.query, state.library_id, catalog=catalog)

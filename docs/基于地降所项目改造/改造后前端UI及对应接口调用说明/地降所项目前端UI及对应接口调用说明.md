@@ -639,6 +639,7 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 - 选库弹窗的选项必须用推送过来的名单（或 `GET /libraries`），不要在页面里写死七个类型。  
 - 「各区平均 / 全市平均」的折线是该区或全市的日平均；**不要拿某一个站的曲线**画成朝阳区或全市。  
 - 输入框没字不要点解析（会 422）；解析中取消可中断 HTTP，不要再调 `stream/stop`。  
+- 「你是谁 / 什么是分层标」等闲聊或知识问答会 `status=error`、`error=not_data_query`（即使树上已选库），应提示去智能问答，不要当查出表。  
 - 导出：浏览表把当时 `browse` 的 `library_id` / `district` / `station_id` 原样带给 `GET /browse/export`；解析表只在 `status=success` 时用返回的 `export_token` 调 `GET /export`（还要带同一 `user_id` / `session_id`）。需要鉴权头，用 blob 下载，不要 `window.open`。选库弹窗未完成或解析失败不要调导出。
 
 ---

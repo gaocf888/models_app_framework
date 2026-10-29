@@ -39,6 +39,7 @@
 | 2026-10-27 | 新增浏览/解析 CSV 导出：`GET /browse/export`、`GET /export`；3.4/3.5 成功下发 `export_token` | — | V1.14 |
 | 2026-10-26 | 3.4 补充 SQL 生成/查询失败时的 JSON 字段、常见 `error` 码与前端渲染说明 | — | V1.14 |
 | 2026-10-26 | 3.4 明确可用 `ok=false` 统一友好提示；补充推荐文案 | — | V1.15 |
+| 2026-10-29 | 3.4 锁库前拦截闲聊/身份/知识问答：`error=not_data_query`，不调 NL2SQL | — | V1.16 |
 
 ## 通用约定
 
@@ -1005,7 +1006,7 @@ HITL 人机交互说明：
 | status | string | 固定 `error` |
 | event | string | 固定 `data_query_error` |
 | request_id | string | 本次解析编号（联调/日志） |
-| error | string | **机读错误码**（分支、埋点用；见下表） |
+| error | string | **机读错误码**（分支、埋点用；如 `ops_use_chatbot`、`not_data_query`、`catalog_invalid`、链/执行失败原文） |
 | message | string | **给人看的说明**（优先展示给用户；可能与 `error` 同文或更具体） |
 | gen_fail_reason | string \| null | 生成阶段机读原因（如 `link_failed:…`）；执行阶段失败时常为 `null` |
 | sql | string \| null | 失败时可能带上已生成/已尝试的 SQL；**禁止展示给终端用户**（仅联调/网关日志） |
@@ -1035,7 +1036,7 @@ HITL 人机交互说明：
 6. 详参 HUD、芯片、warnings 本轮都没有，忽略即可。  
 7. `error` / `message` / `gen_fail_reason` 可打到控制台或上报，便于排查。
 
-可选：若产品要区分运维拒答，可在 `ok=false` 且 `error=ops_use_chatbot` 时改提示为「运维类问题请改用智能问答」；其余失败仍用统一文案。
+可选：若产品要区分拒答，可在 `ok=false` 且 `error=ops_use_chatbot` 时提示「运维类问题请改用智能问答」；`error=not_data_query` 时提示「闲聊 / 身份 / 知识问答请改用智能问答，本页只查监测数据」。其余失败仍用统一文案。
 
 说明：
 
@@ -1139,6 +1140,19 @@ SQL 查询执行失败响应（节选）：
   "message": "column \"foo\" does not exist",
   "gen_fail_reason": null,
   "sql": "SELECT ..."
+}
+```
+
+非查数拒答（闲聊 / 身份 / 知识问答，节选；即使请求带了 `library_id` 也不出表、不调 NL2SQL）：
+
+```json
+{
+  "ok": false,
+  "status": "error",
+  "event": "data_query_error",
+  "request_id": "<id>",
+  "error": "not_data_query",
+  "message": "当前问题不是监测数据查询（闲聊、身份介绍或知识问答）。请改用智能客服问答；数据查询请说明要查的监测类型、行政区、站点或时间范围。"
 }
 ```
 
