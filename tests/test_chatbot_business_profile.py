@@ -240,8 +240,12 @@ def test_chatbot_retrieve_excludes_nl2sql_and_generation_texts(monkeypatch):
     p = get_chatbot_business_profile()
     assert "nl2sql_schema" in get_chatbot_retrieve_exclude_namespaces()
     assert "nl2sql_qa_examples" in get_chatbot_retrieve_exclude_namespaces()
-    assert "知识库暂无足够依据" in p.insufficient_evidence_hint
+    assert "未注入检索知识片段" in p.insufficient_evidence_hint
+    assert "知识库暂无足够依据" not in p.insufficient_evidence_hint
+    assert "通用专业知识" in p.insufficient_evidence_hint
     assert "燃烧优化" not in p.faq_soft_direct_authority
+    assert "简短解读" in p.faq_soft_direct_authority or "专业延伸" in p.faq_soft_direct_authority
+    assert "测点读数" in p.rag_snippet_granularity_forbid
 
 
 def test_faq_soft_direct_authority_domainized(monkeypatch):
@@ -286,9 +290,27 @@ def test_rag_snippet_block_insufficient_evidence_wording(monkeypatch):
     monkeypatch.setenv("CHATBOT_DOMAIN", "subsidence")
     clear_chatbot_business_profile_cache()
     text = format_rag_snippets_system_block(["[1] 分层标说明\n正文"])
-    assert "知识库暂无足够依据" in text
-    assert "监测指标" in text or "规范条款" in text
+    assert "知识库暂无足够依据" not in text
+    assert "适度机理" in text or "专业延伸" in text
+    assert "勿在正文声明" in text
+    assert "测点读数" in text or "规范条款" in text
     assert "故障类型" not in text
+
+
+def test_rag_snippet_block_boiler_loosened_wording(monkeypatch):
+    from app.llm.graphs.chatbot_retrieval_query import format_rag_snippets_system_block
+
+    monkeypatch.setenv("CHATBOT_DOMAIN", "boiler")
+    clear_chatbot_business_profile_cache()
+    p = get_chatbot_business_profile()
+    assert "未注入检索知识片段" in p.insufficient_evidence_hint
+    assert "知识库暂无足够依据" not in p.insufficient_evidence_hint
+    assert "简短解读" in p.faq_soft_direct_authority or "专业延伸" in p.faq_soft_direct_authority
+    text = format_rag_snippets_system_block(["[1] 过热器\n正文"])
+    assert "知识库暂无足够依据" not in text
+    assert "勿在正文声明" in text
+    assert "排查/检修" in text or "专业延伸" in text
+    assert "故障类型" in text
 
 
 def test_hybrid_texts_subsidence_domain(monkeypatch):

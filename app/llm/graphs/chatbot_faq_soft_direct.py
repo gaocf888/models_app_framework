@@ -37,10 +37,12 @@ _ANAPHORA_QUERY_PREFIX_RE = re.compile(
 )
 
 _FAQ_SOFT_DIRECT_AUTHORITY_BLOCK = (
-    # 锅炉内置权威块；地降文案以 clarify_texts.yaml faq_soft_direct_authority 为准（见 _active_faq_authority_block）。
-    "【高分 FAQ 软直通·权威片段】下列第一条知识片段与本轮用户问题高度匹配（检索分达到软直通阈值）。"
-    "回答时必须优先逐条复述该条片段中的问答内容，不得采用对话历史中关于同一问题的旧结论，"
-    "不得改写成泛化的「燃烧优化/安全监控」等宏观框架，除非该片段本身如此表述。"
+    # 缺省回退块；各域以 clarify_texts.yaml faq_soft_direct_authority 为准（见 _active_faq_authority_block）。
+    "【高分 FAQ 软直通·权威片段】下列第一条知识片段与本轮用户问题高度匹配。"
+    "请以该条片段事实为准作答，可补充简短解读与必要专业延伸，但不得偏离或推翻该片段中的核心结论与表述；"
+    "不要采用对话历史中关于同一问题的冲突旧结论；"
+    "勿改写成泛化的「燃烧优化/安全监控」等宏观框架（除非该片段本身如此表述）；"
+    "勿在正文说明「本回答来自知识库/FAQ」或对比通用分析。"
 )
 
 

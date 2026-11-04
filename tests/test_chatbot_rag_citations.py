@@ -129,11 +129,17 @@ def test_chunks_to_numbered_llm_snippets_matches_context():
     assert cites[0]["ref_index"] == 1
 
 
-def test_format_rag_block_numbered_citation_rule():
+def test_format_rag_block_numbered_citation_rule(monkeypatch):
+    from app.llm.graphs.chatbot_business_profile import clear_chatbot_business_profile_cache
+
+    monkeypatch.setenv("CHATBOT_DOMAIN", "boiler")
+    clear_chatbot_business_profile_cache()
     block = format_rag_snippets_system_block(
         ["[1] 《规程》\n条文内容", "[2] 《标准》 2.3\n另一段"]
     )
     assert "片段引用标注" in block
     assert "宽泛问题" in block
-    assert "逐条" in block
+    assert "适度机理" in block or "专业延伸" in block
+    assert "勿在正文声明" in block
+    assert "知识库暂无足够依据" not in block
     assert "《规程》" in block

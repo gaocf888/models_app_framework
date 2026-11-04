@@ -268,20 +268,22 @@ chatbot:
     weight: 1.0
     description: 北京市地面沉降监测 — 分析专家（地降所默认）
     content: |
-      【角色】你是面向北京市地面沉降监测与防控业务的分析专家，熟悉分层标/基岩标、地下水与孔压、GNSS/光纤/气象等监测手段，
-      以及相关技术标准、监测规范、政策制度与运维流程。回答使用专业、克制、可核查的中文，避免口语空话。
+      【角色】你是面向北京市地面沉降监测与防控业务的分析专家……回答使用专业、清晰、可核查的中文。
 
-      【知识使用】有知识片段时：区分事实与推断；须按系统编号做 [n] 引用。无足够依据时须先明确说明「知识库暂无足够依据」，
-      再基于通用专业知识做**收紧、克制**的分析与建议；禁止把通用推断写成「依据某规范/某文档」或编造测点数据、条文编号；
-      并提示以现行制度与业务方确认为准。
+      【知识使用】
+        - 有知识片段时：以片段事实为主并标 [n]；允许适度机理归纳、防控建议与专业延伸。
+        - 无知识片段注入时：直接基于通用专业知识作答；禁止在正文提及「知识库暂无足够依据」「未检索到」等元叙述。
+        - 禁止编造测点读数、未给出的规范条款编号或行政区/站点清单。
 
       【结构化数据】若系统已提供查询结果，只能基于给定结果归纳；禁止编造测点读数、SQL、表名或未给出的统计值。
-      沉降量符号：负值通常表示下沉，解读时保持符号语义，勿擅自改为绝对值。
+      沉降量符号（地降周期口径）：Δ=初值−末值时 Δ<0 沉降、Δ>0 回弹；解读须与结果列符号一致。
       禁止在回答中输出 SQL 语句或「底层查询语句」区块。
 
-      【回答结构】先给直接结论 → 再给依据（引用或数据）→ 必要时补充机理/关注建议；宽泛列举题仅按检索片段作答。
+      【回答结构】先给直接结论 → 再给依据（有片段则引用 [n]，并可补充机理）→ 必要时给出关注建议。
       【边界】不替代正式行政结论与盖章报告；重大防控决策须提示以监测单位审核与现行规范为准。
 ```
+
+（完整条文以 `configs/prompts.yaml` 中 `subsidence_v1` 为准；无召回文案见 `configs/chatbot_business/subsidence/clarify_texts.yaml` 的 `insufficient_evidence_hint`。）
 
 部署：
 
@@ -291,10 +293,11 @@ CHATBOT_PROMPT_DEFAULT_VERSION=subsidence_v1
 
 保留 `boiler_v1` 供锅炉环境；地降部署不得默认锅炉模板。
 
-### 4.2 收紧分析 / Hybrid 同步改写
+### 4.2 知识作答口径 / Hybrid 同步改写
 
+- 地降 `kb_qa`：有召回允许适度分析并保留 `[n]`；无召回不声明「暂无足够依据」，直接通用专业作答（见 `clarify_texts.yaml` / `format_rag_snippets_system_block` 域分支）。  
 - `chatbot_nl2sql_answer` 中分析 system / 用户错误文案：去锅炉「号炉」规则，改地降口径。  
-- Hybrid 综合块标题可改为「【监测查询结果】」「【规范与知识依据】」。
+- Hybrid 综合块标题：「【监测查询结果】」「【规范与知识依据】」。
 
 ---
 
@@ -551,8 +554,8 @@ CONV_MAX_HISTORY_MESSAGES=50
 | P0-8 `CHATBOT_DOMAIN` 骨架 | **已完成** | | `chatbot_business_profile.py` + `configs/chatbot_business/{boiler,subsidence}/` |
 | P0-9 `data_query` 放开 `rag_citations` | **协议已改+单测** | | runner `_build_finished_meta`；`test_build_finished_meta_data_query_keeps_filtered_citations` |
 | P1-1 知识 namespaces 规划 | **已收缩** | | 取消无运行时作用的规划清单；保留问答检索排除三库加固；侧栏排除迁 RAG 基座 |
-| P1-2 引用/无据先声明 | **已完成** | | `subsidence_v1` + `kb_build_messages`/`format_rag_snippets_system_block` |
-| P1-3 FAQ 软直通保留 | **已完成** | | 仍限 `kb_qa`；权威块域化；`.env.example` 可开 |
+| P1-2 引用/无据作答 | **已完成（地降+锅炉同方案）** | | 有片段：`[n]`+适度分析；无片段：通用专业知识直答、正文不声明检索成败 |
+| P1-3 FAQ 软直通保留 | **已完成** | | 仍限 `kb_qa`；权威块允许简短解读/延伸；`.env.example` 可开 |
 | P1-4 关联推荐问地降化 | **已完成** | | `follow_up.yaml` → `chatbot_follow_up.py` |
 | P1-5 前端 §一补齐 | **契约+联调页已完成** | | `地降所…前端UI…md` §一；`tests/web/chatbot-stream.html`；**生产 UI 在前端仓**（本仓不另列「前端 UI §一待办」） |
 | P2-1 收紧分析 Prompt 地降化 | **已完成** | | `prompts.yaml` `subsidence_v1` + 列优先级/fallback 域化 |

@@ -147,15 +147,29 @@ def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
     """
     与 `ChatbotLangGraphRunner._node_kb_build_messages` / legacy `_build_llm_messages` 对齐的
     「知识片段」system 段全文（含对「确定吗」类短句的硬性说明）。
+
+    各业务域统一：以片段为主并可适度分析；正文不声明检索成败；禁止编造项由 domain 的
+    ``rag_snippet_granularity_forbid`` 约束。
     """
     from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
 
+    profile = get_chatbot_business_profile()
+    is_subsidence = str(getattr(profile, "domain", "") or "").strip().lower() == "subsidence"
     blocks = [str(c).strip() for c in (context_snippets or []) if str(c).strip()]
     numbered = _snippets_use_numbered_ref_format(blocks)
     forbid = (
-        get_chatbot_business_profile().rag_snippet_granularity_forbid
-        or "故障类型、设备条目或规程内容"
+        profile.rag_snippet_granularity_forbid
+        or (
+            "测点读数、行政区或站点清单、未给出的规范条款编号"
+            if is_subsidence
+            else "未列出的故障类型、设备条目、未给出的规程条款编号或厂内测点数据"
+        )
     ).strip()
+    extend_hint = (
+        "适度机理归纳、防控建议与专业延伸"
+        if is_subsidence
+        else "适度机理归纳、排查/检修建议与专业延伸"
+    )
     if numbered:
         ctx = "\n\n".join(blocks)
         intro = (
@@ -170,12 +184,11 @@ def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
             "禁止编造未列出的文档名或 http 链接；链接由系统另行提供，正文中只需标注 [n]。"
         )
         granularity_rule = (
-            "【宽泛问题作答粒度】若用户问题较宽（如「常见…有哪些」「概述」「列举」「分别说明」等），且下列有多条编号片段："
-            "须**仅依据下列片段逐条组织回答**——每条被使用的片段单独成节（标题可取该片段主题或《文档名》），"
-            f"节内来自该片段的现象/原因/措施句末标对应 [n]；禁止用模型自带知识扩写片段未覆盖的{forbid}；"
-            "片段未涉及的主题可集中一句说明「知识库本轮未检索到相关条文」。"
-            "若用户问题较窄且只命中单条片段，针对该问作答并标好 [n] 即可。"
-            "若整体依据仍不足：须先明确说明「知识库暂无足够依据」，再做收紧的通用分析，且不得伪装成规范/文档依据。"
+            f"【宽泛问题作答粒度】以下列编号片段为主组织回答；可在片段事实之上做{extend_hint}，"
+            "勿仅机械复述。每条被使用的片段可单独成节（标题可取该片段主题或《文档名》），"
+            f"节内与片段一一对应的表述句末标 [n]。禁止编造或冒充库内依据的：{forbid}。"
+            "勿在正文声明「是否检索到知识库 / 是否通用分析 / 本轮未检索到」等元叙述。"
+            "若用户问题较窄且只命中单条片段，针对该问作答并标好 [n]，亦可补充简短解读。"
         )
     else:
         ctx = "\n".join(f"- {c}" for c in blocks)
@@ -185,8 +198,9 @@ def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
         )
         cite_rule = ""
         granularity_rule = (
-            "若片段依据不足：须先明确说明「知识库暂无足够依据」，再做收紧的通用分析；"
-            "禁止把通用推断写成「依据某规范/某文档」。"
+            "以片段为主作答，可做适度专业延伸；"
+            f"禁止编造或冒充库内依据的：{forbid}。"
+            "勿在正文声明检索成败或知识库有无；禁止把无片段支撑的推断写成「依据某规范/某文档」。"
         )
     common = (
         "用户泛指上文（如「上述现场排查/检修建议」）时，"
