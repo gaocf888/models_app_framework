@@ -43,14 +43,14 @@ def test_fill_for_delta_sign_matches_report() -> None:
 
 
 def test_stations_from_layer0_rows_plot_val_equals_delta() -> None:
-    """val 与 delta_mm 同号：负沉降柱向下，正回弹柱向上。"""
+    """val 与 delta_mm 同号：负沉降柱向下，正回弹柱向上；标注用站码。"""
     stations = stations_from_layer0_rows(SAMPLE_ROWS)
-    assert [s["id"] for s in stations] == ["东坝", "回龙观", "零变"]
+    assert [s["id"] for s in stations] == ["F42", "回龙观", "零变"]
     by_id = {s["id"]: s for s in stations}
-    assert by_id["东坝"]["val"] == pytest.approx(-12.5)
+    assert by_id["F42"]["val"] == pytest.approx(-12.5)
     assert by_id["回龙观"]["val"] == pytest.approx(3.2)
     assert by_id["零变"]["val"] == pytest.approx(0.0)
-    assert by_id["东坝"]["delta_mm"] == pytest.approx(-12.5)
+    assert by_id["F42"]["delta_mm"] == pytest.approx(-12.5)
 
 
 def test_chart_from_config_map_png_or_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:

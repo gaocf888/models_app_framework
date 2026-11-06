@@ -263,7 +263,11 @@ def _append_layer0_plain_facts(lines: list[str], rows: list[dict], *, area_filte
     n = len(scored)
     sink_n = sum(1 for d, *_ in scored if is_sink(d))
     rebound_n = sum(1 for d, *_ in scored if is_rebound(d))
-    lines.append(f"- 全市：{n}座监测站，沉降{sink_n}座，回弹{rebound_n}座，{_dominate_cn(sink_n, rebound_n)}")
+    flat_n = n - sink_n - rebound_n
+    city_bits = f"沉降{sink_n}座，回弹{rebound_n}座"
+    if flat_n:
+        city_bits += f"，无垂向形变{flat_n}座"
+    lines.append(f"- 全市：{n}座监测站，{city_bits}，{_dominate_cn(sink_n, rebound_n)}")
     top_sink = [x for x in sorted(scored, key=lambda row: row[0]) if is_sink(x[0])][:2]
     top_rebound = [x for x in sorted(scored, key=lambda row: row[0], reverse=True) if is_rebound(x[0])][:2]
     if top_sink:

@@ -81,6 +81,24 @@ def fill_for_delta(delta_mm: float) -> str:
     return _COLOR_ZERO
 
 
+def _station_code_label(row: dict[str, Any]) -> str:
+    """地图标注优先站点编号（F30），无码再回落中文名。"""
+    code = str(row.get("station_code") or "").strip()
+    if code:
+        return code
+    project = str(row.get("project_name") or row.get("station_name") or "").strip()
+    if not project:
+        return ""
+    try:
+        from app.analysis_agent.deterministics.coverage import site_code
+        from app.analysis_agent.deterministics.site_display import attach_site_display
+
+        code = str(attach_site_display(project).get("station_code") or "").strip() or site_code(project)
+    except Exception:  # noqa: BLE001
+        code = ""
+    return code or display_station_name(project) or project
+
+
 def stations_from_layer0_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """只保留有 lon/lat/delta 的层位 0 行；val=Δ（负沉降柱向下，正回弹柱向上）。"""
     out: list[dict[str, Any]] = []
@@ -95,12 +113,12 @@ def stations_from_layer0_rows(rows: list[dict[str, Any]] | None) -> list[dict[st
             continue
         if not (70.0 < lon < 140.0 and 15.0 < lat < 55.0):
             continue
-        name = display_station_name(str(row.get("project_name") or row.get("station_name") or ""))
-        if not name:
+        label = _station_code_label(row)
+        if not label:
             continue
         out.append(
             {
-                "id": name,
+                "id": label,
                 "lon": lon,
                 "lat": lat,
                 "delta_mm": delta,
@@ -1044,19 +1062,62 @@ def _draw_legend(ax: Any) -> None:
     import matplotlib.patches as mpatches
     from matplotlib.offsetbox import AnnotationBbox, DrawingArea, HPacker, TextArea, VPacker
 
-    title = TextArea("图例", textprops=dict(size=11, color="#111111", fontweight="bold", fontproperties=cjk_font_properties(11, weight="bold")))
+    title = TextArea(
+        "图例",
+        textprops=dict(
+            size=11,
+            color="#111111",
+            fontweight="bold",
+            fontproperties=cjk_font_properties(11, weight="bold"),
+        ),
+    )
+    tp = dict(size=10, color="#111111", fontproperties=cjk_font_properties(10))
 
     def swatch_row(color: str, label: str):
         da = DrawingArea(20, 13, 0, 0)
-        da.add_artist(mpatches.Rectangle((1, 2), 16, 9, facecolor=color, edgecolor="#333333", linewidth=0.4))
-        return HPacker(children=[da, TextArea(label, textprops=dict(size=10, color="#111111", fontproperties=cjk_font_properties(10)))], align="center", pad=0, sep=6)
+        da.add_artist(
+            mpatches.Rectangle((1, 2), 16, 9, facecolor=color, edgecolor="#333333", linewidth=0.4)
+        )
+        return HPacker(
+            children=[da, TextArea(label, textprops=tp)],
+            align="center",
+            pad=0,
+            sep=6,
+        )
+
+    def example_marker_row():
+        """与模版一致：数值 / 站码示意 + 沉降/上升(mm)、监测站说明。"""
+        line_da = DrawingArea(28, 1.2, 0, 0)
+        line_da.add_artist(
+            mpatches.Rectangle((0, 0.2), 28, 0.8, facecolor="#222222", edgecolor="none")
+        )
+        marker = VPacker(
+            children=[
+                TextArea("4.00", textprops=tp),
+                line_da,
+                TextArea("F30", textprops=tp),
+            ],
+            align="center",
+            pad=0,
+            sep=1.5,
+        )
+        labels = VPacker(
+            children=[
+                TextArea("沉降/上升 (mm)", textprops=tp),
+                TextArea("地面沉降监测站", textprops=tp),
+            ],
+            align="left",
+            pad=0,
+            sep=6,
+        )
+        return HPacker(children=[marker, labels], align="center", pad=0, sep=8)
 
     pack = VPacker(
         children=[
             title,
             swatch_row(_COLOR_REBOUND, "地面回弹"),
             swatch_row(_COLOR_SINK, "地面沉降"),
-            swatch_row("#9dcee8", "河流/水体"),
+            example_marker_row(),
         ],
         align="left",
         pad=3,
@@ -1121,7 +1182,7 @@ def _render_with_basemap(stations: list[dict[str, Any]], title: str, basemap: di
         _plot_waterways(ax, waterways, 1.2)
     for geom in beijing.geometry:
         _plot_boundary(ax, geom, color="#5a5a5a", linewidth=0.8, zorder=2, linestyle=(0, (4.0, 2.4)))
-    _plot_boundary(ax, basemap["city_union"], color="#c026d3", linewidth=1.8, zorder=3)
+    _plot_boundary(ax, basemap["city_union"], color="#f472b6", linewidth=1.0, zorder=3)
     name_col = basemap.get("name_col")
     minx, miny, maxx, maxy = beijing.total_bounds
     lon_span = max(maxx - minx, 1e-6)
@@ -1283,6 +1344,43 @@ def _load_lite_major_water(
     return water_polys, water_lines
 
 
+def _city_outline_rings_from_districts(
+    districts: list[dict[str, Any]],
+) -> list[list[tuple[float, float]]]:
+    """lite 底图：区县面合并为全市外轮廓（粉红市界）。"""
+    exteriors: list[list[tuple[float, float]]] = []
+    for dist in districts:
+        for ring in dist.get("exteriors") or []:
+            if isinstance(ring, list) and len(ring) >= 3:
+                exteriors.append([(float(p[0]), float(p[1])) for p in ring])
+    if not exteriors:
+        return []
+    try:
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
+
+        polys = []
+        for ring in exteriors:
+            try:
+                poly = Polygon(ring)
+                if poly.is_valid and not poly.is_empty:
+                    polys.append(poly)
+            except Exception:  # noqa: BLE001
+                continue
+        if not polys:
+            return exteriors
+        merged = unary_union(polys)
+        rings: list[list[tuple[float, float]]] = []
+        geoms = list(merged.geoms) if merged.geom_type == "MultiPolygon" else [merged]
+        for geom in geoms:
+            if geom.geom_type != "Polygon":
+                continue
+            rings.append([(float(x), float(y)) for x, y in geom.exterior.coords])
+        return rings or exteriors
+    except Exception:  # noqa: BLE001
+        return exteriors
+
+
 def _load_basemap_rings(assets: Path) -> dict[str, Any] | None:
     """geopandas 不可用时：原生读取区县 shp（WGS84）+ 可选 DEM/水系。"""
     from app.analysis_agent.renderers.shp_lite import (
@@ -1320,12 +1418,14 @@ def _load_basemap_rings(assets: Path) -> dict[str, Any] | None:
     bounds = (min(xs_all), min(ys_all), max(xs_all), max(ys_all))
     hillshade, dem_extent = _load_dem_optional(assets)
     water_polys, water_lines = _load_lite_major_water(assets, bounds)
+    city_rings = _city_outline_rings_from_districts(districts)
     logger.info(
-        "offline_map lite districts=%s water_poly=%s water_line=%s dem=%s",
+        "offline_map lite districts=%s water_poly=%s water_line=%s dem=%s city_rings=%s",
         len(districts),
         len(water_polys),
         len(water_lines),
         hillshade is not None,
+        len(city_rings),
     )
     return {
         "mode": "rings",
@@ -1335,6 +1435,7 @@ def _load_basemap_rings(assets: Path) -> dict[str, Any] | None:
         "dem_extent": dem_extent,
         "water_polys": water_polys,
         "water_lines": water_lines,
+        "city_rings": city_rings,
     }
 
 
@@ -1389,6 +1490,11 @@ def _render_with_rings(stations: list[dict[str, Any]], title: str, basemap: dict
             cx = sum(p[0] for p in ring0) / len(ring0)
             cy = sum(p[1] for p in ring0) / len(ring0)
             district_pts.append((cx, cy, name))
+    for ring in basemap.get("city_rings") or []:
+        if len(ring) < 3:
+            continue
+        xs, ys = [p[0] for p in ring], [p[1] for p in ring]
+        ax.plot(xs, ys, color="#f472b6", linewidth=1.0, zorder=3, solid_capstyle="round")
     minx, miny, maxx, maxy = basemap["bounds"]
     lon_span = max(maxx - minx, 1e-6)
     lat_span = max(maxy - miny, 1e-6)

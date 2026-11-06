@@ -100,6 +100,8 @@ def _audit_narrative_numbers(
 def _deterministic_fallback(
     slot: AnalysisAgentSlot,
     gathered_data: dict[str, list[dict]],
+    *,
+    period_label: str = "",
 ) -> str:
     if slot.id == "station_ops":
         from app.analysis_agent.deterministics.ops_narrative import render_station_ops_narrative
@@ -110,7 +112,9 @@ def _deterministic_fallback(
             render_plain_monitoring_narrative,
         )
 
-        return (render_plain_monitoring_narrative(gathered_data) or "").strip()
+        return (
+            render_plain_monitoring_narrative(gathered_data, period_label=period_label) or ""
+        ).strip()
     return ""
 
 
@@ -179,7 +183,7 @@ async def synthesize_section(
     - 仅当模型一个字都没出来时，才用硬稿占位
     - use_react_agent 且 use_emit_tools：ReAct（整章完成后一次 on_delta 正文）
     """
-    fallback = _deterministic_fallback(slot, gathered_data)
+    fallback = _deterministic_fallback(slot, gathered_data, period_label=period_label)
     facts, user_prompt = _build_user_prompt(
         slot=slot,
         query=query,

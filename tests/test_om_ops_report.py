@@ -65,10 +65,23 @@ def test_om_report_display_map() -> None:
     assert mapping.get("光纤") == "光纤自动解调仪"
     assert map_om_type_display("GNSS") == "GNSS"
     rows = apply_om_type_display(
-        [{"device_type": "基岩标/分层标", "online_rate": 100}, {"type": "光纤", "x": 1}]
+        [
+            {"device_type": "光纤", "x": 1},
+            {"device_type": "GNSS", "x": 2},
+            {"device_type": "基岩标/分层标", "online_rate": 100},
+            {"device_type": "气象站", "x": 3},
+            {"device_type": "地下水位井", "x": 4},
+            {"device_type": "孔隙水压力井", "x": 5},
+        ]
     )
-    assert rows[0]["device_type"] == "静力水准仪"
-    assert rows[1]["type"] == "光纤自动解调仪"
+    assert [r["device_type"] for r in rows] == [
+        "静力水准仪",
+        "地下水位计",
+        "孔隙水压力计",
+        "光纤自动解调仪",
+        "气象站",
+        "GNSS",
+    ]
 
 
 def test_static_narrative_marker() -> None:
@@ -126,14 +139,19 @@ def test_plain_monitoring_narrative_no_delta_no_mean() -> None:
                 {"area": "朝阳区", "project_name": "F17(沟渠庄)", "delta_mm": -8.1},
                 {"area": "海淀区", "project_name": "回龙观", "delta_mm": 3.2},
                 {"area": "通州区", "project_name": "张家湾", "delta_mm": 1.1},
+                {"area": "大兴区", "project_name": "F10(亦庄)", "delta_mm": 0.0},
             ]
-        }
+        },
+        period_label="2026年11月5日",
     )
     assert "Δ" not in md
+    assert "本期" not in md
+    assert "2026年11月5日" in md
     assert "初−末" not in md and "初-末" not in md
     assert "平均沉降" not in md
     assert "朝阳区" in md and "以沉降为主" in md
     assert "海淀区" in md and "以回弹为主" in md
+    assert "无垂向形变" in md
     assert "12.50毫米" in md
     assert "8.10毫米" in md
     assert "3.20毫米" in md
@@ -210,6 +228,16 @@ def test_ops_narrative_covers_every_rate_type() -> None:
     assert "气象站共计设备34套" in md
     assert "其他仪器类型本批暂无运维汇总" not in md
     assert md.count("具体情况详见图1") == 6
+    # 固定仪器顺序 + 有效率口径质量评价
+    order_pos = [md.find(n) for n in (
+        "静力水准仪", "地下水位计", "孔隙水压力计", "光纤自动解调仪", "气象站", "GNSS"
+    )]
+    assert all(p >= 0 for p in order_pos)
+    assert order_pos == sorted(order_pos)
+    assert "数据质量较差" in md  # 静力水准仪有效率 88.62
+    assert "数据质量较好" in md  # 地下水位计/孔隙水/气象
+    assert "质量评价较好" not in md
+    assert "偏低" not in md
 
 
 def test_grouped_bar_y_fields() -> None:
@@ -286,11 +314,13 @@ def test_alert_table_column_keys_include_seq() -> None:
             "source_item_ids": ["q_alert_list"],
             "columns": ["序号", "标编号", "设备类型", "位置", "实时值", "告警内容"],
             "column_keys": ["seq", "device_name", "device_type", "area_name", "ss_value", "content"],
+            "round_fields": {"ss_value": 3},
         },
         gathered_data={"q_alert_list": rows},
     )
     assert "序号" in md
     assert tbl["rows"][0]["序号"] == 1
+    assert tbl["rows"][0]["实时值"] == "1.200"
 
 
 def test_alert_table_truncates_over_100_with_note() -> None:

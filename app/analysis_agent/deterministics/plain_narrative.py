@@ -50,10 +50,20 @@ def _rank_side(
     return picked[:limit]
 
 
-def _station_clause(items: list[tuple[float, str, str]], *, sink: bool) -> str:
+def _period_prefix(period_label: str) -> str:
+    label = (period_label or "").strip()
+    return label or "本监测时段"
+
+
+def _station_clause(
+    items: list[tuple[float, str, str]],
+    *,
+    sink: bool,
+    period_label: str = "",
+) -> str:
     kind = "沉降" if sink else "回弹"
     if not items:
-        return f"本期未见{kind}测站。"
+        return f"{_period_prefix(period_label)}未见{kind}测站。"
     parts: list[str] = []
     labels = ("最大", "次之")
     for i, (delta, name, _area) in enumerate(items):
@@ -66,8 +76,13 @@ def _station_clause(items: list[tuple[float, str, str]], *, sink: bool) -> str:
     return "；".join(parts) + "。"
 
 
-def render_plain_monitoring_narrative(gathered_data: dict[str, list[dict[str, Any]]] | None) -> str:
+def render_plain_monitoring_narrative(
+    gathered_data: dict[str, list[dict[str, Any]]] | None,
+    *,
+    period_label: str = "",
+) -> str:
     """全市格局 + 各区沉降/回弹主导 + 最大/次之站点。"""
+    period = _period_prefix(period_label)
     rows = [r for r in ((gathered_data or {}).get("q_layer0") or []) if isinstance(r, dict)]
     scored: list[tuple[float, str, str]] = []
     by_area: dict[str, list[float]] = {}
@@ -82,17 +97,17 @@ def render_plain_monitoring_narrative(gathered_data: dict[str, list[dict[str, An
         scored.append((delta, name, area))
         by_area.setdefault(area, []).append(delta)
     if not scored:
-        return "本期平原区暂无可用的监测站沉降数据，待补充。"
+        return f"{period}平原区暂无可用的监测站沉降数据，待补充。"
 
     n = len(scored)
     sink_n = sum(1 for d, _, _ in scored if is_sink(d))
     rebound_n = sum(1 for d, _, _ in scored if is_rebound(d))
     flat_n = n - sink_n - rebound_n
     overall = _dominate_phrase(sink_n, rebound_n)
-    bits = [f"其中发生沉降的{sink_n}座、发生回弹的{rebound_n}座"]
+    bits = [f"其中{sink_n}座发生沉降，{rebound_n}座出现回弹"]
     if flat_n:
-        bits.append(f"基本持平的{flat_n}座")
-    overall_line = f"本期平原区共有监测站{n}座，{'、'.join(bits)}。{overall}。"
+        bits.append(f"{flat_n}座无垂向形变")
+    overall_line = f"{period}全市平原区共设置{n}座监测站，{'，'.join(bits)}，{overall}。"
 
     area_lines: list[str] = []
     area_order = sorted(
@@ -106,13 +121,17 @@ def render_plain_monitoring_narrative(gathered_data: dict[str, list[dict[str, An
         vals = by_area[area]
         a_sink = sum(1 for v in vals if is_sink(v))
         a_rebound = sum(1 for v in vals if is_rebound(v))
-        area_lines.append(
-            f"{area}{len(vals)}座测站中{a_sink}座沉降、{a_rebound}座回弹，{_dominate_phrase(a_sink, a_rebound)}。"
-        )
+        a_flat = len(vals) - a_sink - a_rebound
+        bit = f"{area}{len(vals)}座测站中{a_sink}座沉降、{a_rebound}座回弹"
+        if a_flat:
+            bit += f"、{a_flat}座无垂向形变"
+        area_lines.append(f"{bit}，{_dominate_phrase(a_sink, a_rebound)}。")
     district_line = "分行政区看：" + "".join(area_lines) if area_lines else ""
 
-    sink_clause = _station_clause(_rank_side(scored, sink=True), sink=True)
-    rebound_clause = _station_clause(_rank_side(scored, sink=False), sink=False)
+    sink_clause = _station_clause(_rank_side(scored, sink=True), sink=True, period_label=period_label)
+    rebound_clause = _station_clause(
+        _rank_side(scored, sink=False), sink=False, period_label=period_label
+    )
     station_line = "站点方面：" + sink_clause + rebound_clause
 
     return "\n\n".join(p for p in (overall_line, district_line, station_line) if p)

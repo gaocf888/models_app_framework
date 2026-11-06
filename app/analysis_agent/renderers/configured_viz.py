@@ -23,6 +23,30 @@ def _round_numeric_rows(rows: list[dict[str, Any]], decimals: int) -> list[dict[
     return out
 
 
+def _round_selected_fields(
+    rows: list[dict[str, Any]],
+    field_decimals: dict[str, int],
+) -> list[dict[str, Any]]:
+    """按字段保留固定小数位（如预警实时值三位）。"""
+    if not rows or not field_decimals:
+        return rows
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        mapped = dict(row)
+        for key, decimals in field_decimals.items():
+            if key not in mapped:
+                continue
+            val = mapped.get(key)
+            if val is None or isinstance(val, bool) or str(val).strip() == "":
+                continue
+            try:
+                mapped[key] = f"{float(val):.{int(decimals)}f}"
+            except (TypeError, ValueError):
+                continue
+        out.append(mapped)
+    return out
+
+
 def _insert_group_headers(
     rows: list[dict[str, Any]],
     *,
@@ -139,6 +163,14 @@ def render_configured_table(
     max_rows = max(1, int(spec.get("max_rows") or 80))
     columns = _resolve_columns(spec.get("columns"), rows)
     col_keys = spec.get("column_keys") if isinstance(spec.get("column_keys"), list) else None
+    round_fields = spec.get("round_fields") if isinstance(spec.get("round_fields"), dict) else None
+    if round_fields:
+        field_decimals = {
+            str(k): int(v)
+            for k, v in round_fields.items()
+            if str(k).strip() and v is not None
+        }
+        rows = _round_selected_fields(rows, field_decimals)
     group_field = str(spec.get("group_field") or "").strip()
     if group_field:
         title_key = str(spec.get("group_title_key") or ((col_keys[0] if col_keys else "") or (columns[0] if columns else ""))).strip()
