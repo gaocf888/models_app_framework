@@ -107,7 +107,10 @@ def test_prepare_chapter_viz_emits_configured() -> None:
     assert len(out["tables"]) == 1
     assert len(out["charts"]) == 1
     assert out["charts"][0]["configured"] is True
-    assert "t1" in out["note"]
+    assert "区域表" in out["note"]
+    assert "区域柱图" in out["note"]
+    assert "t1" not in out["note"]
+    assert "c1" not in out["note"]
     assert out["table_markdowns"]
 
 

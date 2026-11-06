@@ -373,17 +373,19 @@ def prepare_chapter_viz(
 
     note_lines: list[str] = []
     for t in tables_out:
-        note_lines.append(
-            f"- 表 `{t.get('id')}`：{t.get('title') or t.get('id')}（{len(t.get('rows') or [])} 行，已 SSE 推送）"
-        )
+        title = str(t.get("title") or t.get("id") or "").strip() or "未命名表"
+        note_lines.append(f"- 表「{title}」（{len(t.get('rows') or [])} 行，已推送）")
     for c in charts_out:
-        note_lines.append(
-            f"- 图 `{c.get('id')}`：{c.get('title') or c.get('id')}（{c.get('chart_type')}，已 SSE 推送）"
-        )
+        title = str(c.get("title") or c.get("id") or "").strip() or "未命名图"
+        ctype = str(c.get("chart_type") or "").strip()
+        type_bit = f"，类型 {ctype}" if ctype else ""
+        note_lines.append(f"- 图「{title}」{type_bit}（已推送）")
     note = ""
     if note_lines:
-        note = "本章已由程序按报告配置渲染以下表/图，请勿再用工具重复 emit：\n" + "\n".join(
-            note_lines
+        note = (
+            "本章已由程序按报告配置渲染以下表/图，请勿再用工具重复 emit。"
+            "正文引用时只用下面的中文标题（如「图『××』所示」），禁止写出配置 id（如 c_typical_dual、t_xxx）：\n"
+            + "\n".join(note_lines)
         )
 
     return {

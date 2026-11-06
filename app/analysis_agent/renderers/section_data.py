@@ -65,10 +65,35 @@ def data_source_label(item_id: str) -> str:
     return _PLAN_ITEM_LABELS.get(item_id, "业务数据")
 
 
-def sanitize_report_narrative(text: str) -> str:
-    if not (text or "").strip():
+def replace_viz_config_ids(
+    text: str,
+    id_to_title: dict[str, str] | None,
+) -> str:
+    """把正文里的表/图配置 id（如 c_typical_dual）替换为中文标题。"""
+    if not (text or "").strip() or not id_to_title:
         return text or ""
     out = text
+    # 长 id 优先，避免前缀误伤
+    for cid, title in sorted(id_to_title.items(), key=lambda kv: len(kv[0]), reverse=True):
+        key = (cid or "").strip()
+        name = (title or "").strip()
+        if not key or not name or key == name:
+            continue
+        out = re.sub(rf"`{re.escape(key)}`", name, out)
+        out = re.sub(rf"「{re.escape(key)}」", f"「{name}」", out)
+        out = re.sub(rf"『{re.escape(key)}』", f"『{name}』", out)
+        out = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])", name, out)
+    return out
+
+
+def sanitize_report_narrative(
+    text: str,
+    *,
+    viz_id_titles: dict[str, str] | None = None,
+) -> str:
+    if not (text or "").strip():
+        return text or ""
+    out = replace_viz_config_ids(text, viz_id_titles)
     out = re.sub(r"\bq[0-9][a-z]?\b", "", out, flags=re.IGNORECASE)
     out = re.sub(r"\[q[0-9][a-z]?\]", "", out, flags=re.IGNORECASE)
     out = re.sub(r"[\[（(]?置信度[：:\s]*[高中低][）)\]]?", "", out)

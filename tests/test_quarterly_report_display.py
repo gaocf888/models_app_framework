@@ -30,6 +30,16 @@ def test_strip_formula_from_narrative() -> None:
     assert "Δ" not in sanitize_report_narrative(raw)
 
 
+def test_sanitize_replaces_chart_config_id_with_title() -> None:
+    raw = "根据图 `c_typical_dual` 的显示，F10-7 分层标与 K10-5 孔隙水同步变化。"
+    out = sanitize_report_narrative(
+        raw,
+        viz_id_titles={"c_typical_dual": "典型监测曲线（沉降-辅助）"},
+    )
+    assert "c_typical_dual" not in out
+    assert "典型监测曲线（沉降-辅助）" in out
+
+
 def test_site_display_forty_two() -> None:
     rows = load_site_displays()
     assert len(rows) == 42

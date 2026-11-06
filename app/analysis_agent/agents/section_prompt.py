@@ -41,8 +41,10 @@ def build_section_user_prompt(
         parts.append(f"【本章写作任务】\n{task}")
     if prepared_viz_note.strip():
         parts.append(
-            "本章关键表/图已由报告配置程序渲染并推送 SSE，请只写文字解读，"
+            "本章关联表/图已由报告配置程序渲染并推送 SSE，请只写文字解读，"
             "不要再调用 emit_markdown_table / emit_chart 重复生成同类表图。"
+            "引用图表时必须用中文标题（如「典型监测曲线（沉降-辅助）」），"
+            "禁止写出英文配置 id（如 c_typical_dual、c_plain_map、t_station_ops）。"
         )
     if slot.use_emit_tools and slot.allowed_outputs:
         allowed = "、".join(slot.allowed_outputs)

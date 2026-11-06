@@ -298,6 +298,7 @@ def section_result_to_slot_output(
     *,
     already_streamed: bool = False,
     include_heading: bool = True,
+    viz_id_titles: dict[str, str] | None = None,
 ) -> tuple[Any, list[str]]:
     """
     将 SectionSynthesisResult 转为 SlotOutput。
@@ -310,7 +311,7 @@ def section_result_to_slot_output(
     )
     from app.analysis_agent.slots.kinds import SlotOutput
 
-    md = sanitize_report_narrative(result.markdown)
+    md = sanitize_report_narrative(result.markdown, viz_id_titles=viz_id_titles)
     if slot.kind == "llm_section" and (slot.static_body or "").strip():
         from app.analysis_agent.renderers.static_narrative import apply_static_narrative
 

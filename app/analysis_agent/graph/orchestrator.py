@@ -1252,11 +1252,22 @@ class SlotOrchestrator:
                 # 同段后缀紧接叙述；分段后缀仍空行隔开（脚注①等）
                 sep = "" if static_post_inline else "\n\n"
                 await emit_typewriter(on_delta, sep + static_post)
+            viz_id_titles: dict[str, str] = {}
+            for item in list((state.get("_prepared_viz") or {}).get("tables") or []) + list(
+                (state.get("_prepared_viz") or {}).get("charts") or []
+            ):
+                if not isinstance(item, dict):
+                    continue
+                iid = str(item.get("id") or "").strip()
+                title = str(item.get("title") or "").strip()
+                if iid and title:
+                    viz_id_titles[iid] = title
             out, chunks = section_result_to_slot_output(
                 slot,
                 result,
                 already_streamed=live,
                 include_heading=not analysis_type.startswith("subsidence_"),
+                viz_id_titles=viz_id_titles or None,
             )
             ANALYSIS_AGENT_SLOT_LATENCY.labels(
                 slot_kind=slot.kind, analysis_type=analysis_type
