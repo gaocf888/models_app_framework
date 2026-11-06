@@ -166,6 +166,9 @@ def test_quarterly_compose_districts_and_layers() -> None:
     ]
     assert len(layer_ids) == 4
     assert "layer_results__l01" in layer_ids
+    l34 = next(c for c in spec.chapters if c.id == "layer_results__l34")
+    assert "埋深180米以深" in (l34.narrative_instruction or "")
+    assert "埋深约180米以深" not in (l34.narrative_instruction or "")
     assert len(annex_ids) == 4
     plan_ids = {t["item_id"] for t in spec.plan_tasks}
     assert "q_fcb_endpoints" in plan_ids
@@ -204,7 +207,10 @@ def test_quarterly_compose_districts_and_layers() -> None:
     assert any(c.get("id") == "c_city_map" for c in spec.charts)
     key = next(c for c in spec.chapters if c.id == "key_area")
     assert key.title.startswith("四、")
-    assert "压缩层" in (key.narrative_instruction or "")
+    key_inst = key.narrative_instruction or ""
+    assert "最大" in key_inst and "次之" in key_inst
+    assert "分层监测结果" in key_inst
+    assert "严禁逐站罗列" in key_inst or "禁止逐站罗列" in key_inst
     conclusion = next(c for c in spec.chapters if c.id == "conclusion")
     assert conclusion.title == "五、结论"
     cons = " ".join(conclusion.constraints or [])

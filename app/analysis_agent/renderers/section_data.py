@@ -309,8 +309,16 @@ def _format_signed_mm(val: float | None) -> str:
     return f"{movement_word(val)}{format_mm(val)}"
 
 
+def _key_area_station_phrase(row: dict) -> str:
+    code = str(row.get("station_code") or "").strip()
+    loc = str(row.get("location_raw") or "").strip()
+    if loc and code:
+        return f"位于{loc}的{code}监测站"
+    return code or "未命名监测站"
+
+
 def _append_key_area_facts(lines: list[str], rows: list[dict]) -> None:
-    """按 YAML 重点区 area_name 汇总 13 站；含总沉降与压缩层；空 Δ 标明待补充。"""
+    """按重点区写整体/极值/分层概况；禁止诱导逐站罗列四层数值。"""
     by_area: dict[str, list[dict]] = {}
     for row in rows:
         if not isinstance(row, dict):
@@ -319,31 +327,78 @@ def _append_key_area_facts(lines: list[str], rows: list[dict]) -> None:
         by_area.setdefault(area, []).append(row)
     if not by_area:
         return
-    area_bits: list[str] = []
+    lines.append(
+        "- 撰写口径：每个重点监测区一段——"
+        "①整体沉降/回弹座数与主导方向；②最大/次之地面沉降与回弹站；"
+        "③四个压缩层组整体概况+少数例外；禁止逐站罗列第一至第四压缩层数值"
+    )
     for area, items in by_area.items():
-        deltas = [_numeric(r.get("total_delta_mm")) for r in items]
-        known = [d for d in deltas if d is not None]
-        miss = len(deltas) - len(known)
-        sink = sum(1 for d in known if is_sink(d))
-        rebound = sum(1 for d in known if is_rebound(d))
-        bit = f"{area}{len(items)}座（有数{len(known)}"
-        if miss:
-            bit += f"/待补充{miss}"
-        if known:
-            bit += f"/沉降{sink}/回弹{rebound}"
-        area_bits.append(bit + "）")
-    lines.append("- 按重点监测区: " + "；".join(area_bits))
-    for area, items in by_area.items():
+        scored: list[tuple[float, dict]] = []
         for row in items:
-            code = str(row.get("station_code") or "").strip()
-            loc = str(row.get("location_raw") or "").strip()
-            name = f"位于{loc}的{code}监测站" if loc and code else (code or "未命名监测站")
-            delta_txt = _format_signed_mm(_numeric(row.get("total_delta_mm")))
-            layer_bits = [
-                f"{label}{_format_signed_mm(_numeric(row.get(col)))}"
-                for col, label in _COMPRESS_COL_LABELS
-            ]
-            lines.append(f"- {area} {name} 总沉降{delta_txt}；" + "；".join(layer_bits))
+            delta = _numeric(row.get("total_delta_mm"))
+            if delta is None:
+                continue
+            scored.append((delta, row))
+        n = len(items)
+        known_n = len(scored)
+        miss = n - known_n
+        sink_n = sum(1 for d, _ in scored if is_sink(d))
+        rebound_n = sum(1 for d, _ in scored if is_rebound(d))
+        head = f"- 【{area}】共{n}座监测站"
+        if miss:
+            head += f"（有数{known_n}/待补充{miss}）"
+        head += f"，沉降{sink_n}座、回弹{rebound_n}座，{_dominate_cn(sink_n, rebound_n)}"
+        lines.append(head)
+
+        top_sink = [x for x in sorted(scored, key=lambda t: t[0]) if is_sink(x[0])][:2]
+        top_rebound = [
+            x for x in sorted(scored, key=lambda t: t[0], reverse=True) if is_rebound(x[0])
+        ][:2]
+        if top_sink:
+            lines.append(
+                "  - 最大/次之地面沉降: "
+                + "；".join(
+                    f"{_key_area_station_phrase(r)}沉降{format_mm(d)}" for d, r in top_sink
+                )
+            )
+        if top_rebound:
+            lines.append(
+                "  - 最大/次之地面回弹: "
+                + "；".join(
+                    f"{_key_area_station_phrase(r)}回弹{format_mm(d)}" for d, r in top_rebound
+                )
+            )
+        if not scored:
+            lines.append("  - 地面总沉降：待补充")
+
+        layer_bits: list[str] = []
+        exceptions: list[str] = []
+        ground_dominate_sink = sink_n >= rebound_n and sink_n > 0
+        ground_dominate_rebound = rebound_n > sink_n
+        for col, label in _COMPRESS_COL_LABELS:
+            vals: list[tuple[float, dict]] = []
+            for row in items:
+                val = _numeric(row.get(col))
+                if val is None:
+                    continue
+                vals.append((val, row))
+            if not vals:
+                layer_bits.append(f"{label}待补充")
+                continue
+            l_sink = sum(1 for v, _ in vals if is_sink(v))
+            l_rebound = sum(1 for v, _ in vals if is_rebound(v))
+            layer_bits.append(f"{label}沉降{l_sink}座/回弹{l_rebound}座")
+            for val, row in vals:
+                phrase = _key_area_station_phrase(row)
+                if ground_dominate_sink and is_rebound(val):
+                    exceptions.append(f"{phrase}的{label}发生回弹")
+                elif ground_dominate_rebound and is_sink(val):
+                    exceptions.append(f"{phrase}的{label}发生沉降")
+        lines.append("  - 分层监测概况: " + "；".join(layer_bits))
+        if exceptions:
+            lines.append("  - 分层例外: " + "；".join(exceptions[:10]))
+        else:
+            lines.append("  - 分层例外: 有数层组方向与本区地面主导方向大体一致（或本层无数）")
 
 
 _DISTRICT_ID_TO_NAME = {

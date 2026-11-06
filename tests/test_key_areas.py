@@ -44,25 +44,42 @@ def test_join_keeps_first_compress_layer_zero() -> None:
     assert f17["c12"] == -0.4
 
 
-def test_key_area_facts_list_all_thirteen_stations() -> None:
+def test_key_area_facts_area_summary_not_per_station_layers() -> None:
     rows = join_key_areas(
         {
             "q_layer0": [
                 {"project_name": "F17(沟渠庄)", "delta_mm": 1.2},
                 {"project_name": "F21(西集)", "delta_mm": 0.5},
+                {"project_name": "F4(东坝)", "delta_mm": -4.74},
+                {"project_name": "F38(东七仙)", "delta_mm": -7.94},
             ],
-            "q_compress": [],
+            "q_compress": [
+                {
+                    "project_name": "F4(东坝)",
+                    "layer_from": 0,
+                    "layer_to": 1,
+                    "compress_mm": 0.5,
+                },
+                {
+                    "project_name": "F38(东七仙)",
+                    "layer_from": 0,
+                    "layer_to": 1,
+                    "compress_mm": -1.0,
+                },
+            ],
         }
     )
-    facts = build_audit_facts({"q_key_area": rows}, "月报", slot_id="key_area")
+    facts = build_audit_facts({"q_key_area": rows}, "季报", slot_id="key_area")
     assert "重点监测区地面沉降" in facts
-    assert "城市副中心" in facts
-    assert "F17" in facts
-    assert "回弹1.20毫米" in facts
-    assert "第一压缩层组" in facts
+    assert "禁止逐站罗列" in facts
+    assert "【城市副中心】" in facts or "城市副中心" in facts
+    assert "最大/次之地面" in facts
+    assert "分层监测概况" in facts
+    assert "第一压缩层组沉降" in facts or "第一压缩层组" in facts
+    # 不应再出现「总沉降回弹…；第一压缩层组…；第二压缩层组…」的逐站串
+    assert "总沉降回弹" not in facts
     assert "待补充" in facts
-    assert "F3" in facts
-    assert facts.count("待补充") >= 1
+    assert "F3" in facts or "首都国际机场" in facts
 
 
 def test_compress_facts_filter_by_layer_not_total_rows() -> None:
