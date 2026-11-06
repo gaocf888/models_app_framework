@@ -77,6 +77,10 @@ def test_monthly_compose_basics_no_plain_no_alert() -> None:
     assert "device_alert" not in ids
     basics = next(c for c in spec.chapters if c.id == "monthly_basics")
     assert list(basics.source_item_ids) == ["q_ops_month_offline_alarm"]
+    assert "{{NARRATIVE}}" in (basics.static_body or "")
+    assert "同步完成各类监测数据的采集、清洗、校核及分析工作" in (basics.static_body or "")
+    assert "月内各类监测设施运行稳定，监测数据真实可靠" in (basics.static_body or "")
+    assert "本月发生设备离线告警" in (basics.narrative_instruction or "")
     assert not any(t.get("attach_to_chapter") == "monthly_basics" for t in spec.tables)
     assert not any(c.get("attach_to_chapter") == "monthly_basics" for c in spec.charts)
     overview = next(c for c in spec.chapters if c.id == "monthly_overview")

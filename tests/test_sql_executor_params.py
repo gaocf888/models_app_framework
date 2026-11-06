@@ -104,7 +104,7 @@ def test_om_month_offline_alarm_binds_window_not_snapshot() -> None:
     assert not isinstance(params.get("snapshot_time"), datetime)
 
 
-def test_month_offline_alarm_facts_mark_fallback() -> None:
+def test_month_offline_alarm_facts_unified_wording() -> None:
     from app.analysis_agent.renderers.section_data import build_audit_facts
 
     month = build_audit_facts(
@@ -120,15 +120,16 @@ def test_month_offline_alarm_facts_mark_fallback() -> None:
         "月报",
         slot_id="monthly_basics",
     )
-    assert "本月累计设备离线告警7次" in month
-    assert "涉及地面沉降监测站5座" in month
+    assert "本月发生设备离线告警7次，涉及地面沉降监测站5座" in month
+    assert "累计" not in month
+    assert "回退" not in month
 
     fallback = build_audit_facts(
         {
             "q_ops_month_offline_alarm": [
                 {
-                    "offline_alarm_count": 3,
-                    "station_count": 2,
+                    "offline_alarm_count": 21,
+                    "station_count": 3,
                     "month_offline_fallback": True,
                     "fallback_snapshot_time": "2026-10-26 14:20:00",
                 }
@@ -137,10 +138,9 @@ def test_month_offline_alarm_facts_mark_fallback() -> None:
         "月报",
         slot_id="monthly_basics",
     )
-    assert "已回退最新批次" in fallback
-    assert "2026-10-26" in fallback
-    assert "设备离线告警3次" in fallback
-    assert "涉及地面沉降监测站2座" in fallback
+    assert "本月发生设备离线告警21次，涉及地面沉降监测站3座" in fallback
+    assert "最新批次" not in fallback
+    assert "回退" not in fallback
 
 
 def test_statement_binds_datetime_list_as_timestamp_array() -> None:

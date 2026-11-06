@@ -520,17 +520,10 @@ def build_audit_facts(
                 row0 = rows[0] if isinstance(rows[0], dict) else {}
                 alarm_n = int(_numeric(row0.get("offline_alarm_count")) or 0)
                 station_n = int(_numeric(row0.get("station_count")) or 0)
-                fallback = bool(row0.get("month_offline_fallback"))
-                if fallback:
-                    snap = str(row0.get("fallback_snapshot_time") or "").strip() or "最新批次"
-                    lines.append(
-                        f"- 本月窗内离线告警无数，已回退最新批次（{snap}）："
-                        f"设备离线告警{alarm_n}次，涉及地面沉降监测站{station_n}座"
-                    )
-                else:
-                    lines.append(
-                        f"- 本月累计设备离线告警{alarm_n}次，涉及地面沉降监测站{station_n}座"
-                    )
+                # 对外统一句式，不向叙述暴露月窗/最新批次回退来源
+                lines.append(
+                    f"- 本月发生设备离线告警{alarm_n}次，涉及地面沉降监测站{station_n}座"
+                )
             else:
                 lines.append(
                     f"- [{label}] {len(rows)} 座/行（下列为已写好的中文事实，禁止抄英文字段或公式）"
