@@ -20,6 +20,11 @@ logger = get_logger(__name__)
 _COLOR_SINK = "#e74c3c"
 _COLOR_REBOUND = "#2ecc71"
 _COLOR_ZERO = "#95a5a6"
+_COLOR_CITY_OUTLINE = "#c026d3"  # 全市外轮廓：品红细实线（相对区县灰虚线更醒目）
+_CITY_OUTLINE_LW = 1.15
+_BASEMAP_CACHE_VER = "v5-multipoly-exteriors"
+# 区县 shp 多 part 时，过小环多为飞地/噪点；主面通常 >1km²
+_MIN_DISTRICT_EXTERIOR_M2 = 1.0e6
 
 _basemap_lock = threading.Lock()
 _basemap_cache: dict[str, Any] | None = None
@@ -375,7 +380,7 @@ def _try_gis_imports() -> bool:
 def _load_basemap(assets: Path) -> dict[str, Any] | None:
     """缓存区县界 / DEM 阴影 / 水系。缺 GIS 库或市界则 None。"""
     global _basemap_cache
-    key = str(assets.resolve()) if assets.exists() else ""
+    key = f"{_BASEMAP_CACHE_VER}|{assets.resolve()}" if assets.exists() else _BASEMAP_CACHE_VER
     with _basemap_lock:
         if _basemap_cache is not None and _basemap_cache.get("key") == key:
             return _basemap_cache.get("data")
@@ -519,13 +524,12 @@ def _load_basemap_uncached(assets: Path) -> dict[str, Any] | None:
         logger.info("offline_map skip GIS basemap shp_ok=%s gis=%s", _shapefile_complete(shp), _try_gis_imports())
         return None
     import geopandas as gpd
-    from shapely.ops import unary_union
 
     try:
         beijing = gpd.read_file(shp, encoding="gbk").to_crs(epsg=4326)
     except TypeError:
         beijing = gpd.read_file(shp).to_crs(epsg=4326)
-    city_union = unary_union(beijing.geometry)
+    city_union = _dissolve_city_outline(list(beijing.geometry))
     hillshade = None
     dem_extent = None
     dem_path = assets / "dem" / "beijing.tif"
@@ -681,6 +685,8 @@ def _plot_waterways(ax: Any, gdf: Any, zorder: float) -> None:
 
 
 def _plot_boundary(ax: Any, geom: Any, color: str, linewidth: float, zorder: float, linestyle: Any = "-") -> None:
+    if geom is None or getattr(geom, "is_empty", False):
+        return
     if geom.geom_type == "Polygon":
         polys = [geom]
     elif geom.geom_type == "MultiPolygon":
@@ -693,6 +699,258 @@ def _plot_boundary(ax: Any, geom: Any, color: str, linewidth: float, zorder: flo
         for hole in poly.interiors:
             hxs, hys = hole.xy
             ax.plot(hxs, hys, color=color, linewidth=max(linewidth - 0.3, 0.4), zorder=zorder, linestyle=linestyle)
+
+
+def _dissolve_city_outline(geoms: list[Any]) -> Any | None:
+    """区县面合并为全市外轮廓；缝合拓扑缝隙，避免粉红线落在区界上。"""
+    try:
+        from shapely.ops import unary_union
+    except Exception:  # noqa: BLE001
+        return None
+    polys = [g for g in geoms if g is not None and not getattr(g, "is_empty", True)]
+    if not polys:
+        return None
+    try:
+        merged = unary_union(polys)
+        merged = merged.buffer(0)
+        # ~50m 缝合相邻区县缝隙，再缩回，得到单一市界
+        fused = merged.buffer(5e-4).buffer(-5e-4)
+        if fused is None or getattr(fused, "is_empty", True):
+            fused = merged
+        return fused
+    except Exception:  # noqa: BLE001
+        logger.warning("offline_map city outline dissolve failed", exc_info=True)
+        return None
+
+
+def _plot_city_outline(
+    ax: Any,
+    geom: Any,
+    *,
+    color: str = _COLOR_CITY_OUTLINE,
+    linewidth: float = _CITY_OUTLINE_LW,
+    zorder: float = 3,
+) -> None:
+    """仅画全市外轮廓（粉红细实线），不画孔洞/区内部分界。"""
+    if geom is None or getattr(geom, "is_empty", False):
+        return
+    if geom.geom_type == "Polygon":
+        polys = [geom]
+    elif geom.geom_type == "MultiPolygon":
+        polys = list(geom.geoms)
+    else:
+        return
+    for poly in polys:
+        if poly is None or poly.is_empty:
+            continue
+        xs, ys = poly.exterior.xy
+        ax.plot(
+            xs,
+            ys,
+            color=color,
+            linewidth=linewidth,
+            zorder=zorder,
+            linestyle="-",
+            solid_capstyle="round",
+        )
+
+
+def _draw_scale_bar(
+    ax: Any,
+    x: float,
+    y: float,
+    *,
+    length_km: float = 30.0,
+    n_segments: int = 3,
+    zorder: float = 6,
+) -> None:
+    """左下角黑白分段比例尺（公里），带浅底以免压住底图。"""
+    import matplotlib.patches as mpatches
+    import numpy as np
+
+    km_per_deg_lon = 111.32 * np.cos(np.deg2rad(y))
+    km_per_deg_lat = 111.32
+    total_deg = length_km / max(km_per_deg_lon, 1e-6)
+    seg_deg = total_deg / max(n_segments, 1)
+    seg_km = length_km / max(n_segments, 1)
+    bar_h = 1.3 / km_per_deg_lat
+    box_pad_x = total_deg * 0.10
+    box_pad_bottom = bar_h * 2.4
+    box_pad_top = bar_h * 3.2
+    ax.add_patch(
+        mpatches.Rectangle(
+            (x - box_pad_x, y - box_pad_bottom),
+            total_deg + box_pad_x * 2.8,
+            bar_h + box_pad_bottom + box_pad_top,
+            facecolor="white",
+            edgecolor="#777777",
+            linewidth=0.7,
+            alpha=0.92,
+            zorder=zorder,
+        )
+    )
+    ax.text(
+        x + total_deg / 2.0,
+        y + bar_h * 2.15,
+        "比例尺",
+        ha="center",
+        va="bottom",
+        fontsize=8,
+        color="#111111",
+        fontproperties=cjk_font_properties(8),
+        zorder=zorder + 0.2,
+    )
+    for i in range(n_segments):
+        ax.add_patch(
+            mpatches.Rectangle(
+                (x + i * seg_deg, y),
+                seg_deg,
+                bar_h,
+                facecolor="#111111" if i % 2 == 0 else "white",
+                edgecolor="#111111",
+                linewidth=0.7,
+                zorder=zorder + 0.1,
+            )
+        )
+        tick_x = x + i * seg_deg
+        ax.plot(
+            [tick_x, tick_x],
+            [y, y + bar_h * 1.55],
+            color="#111111",
+            linewidth=0.7,
+            zorder=zorder + 0.2,
+        )
+        ax.text(
+            tick_x,
+            y - bar_h * 0.7,
+            f"{int(i * seg_km)}",
+            ha="center",
+            va="top",
+            fontsize=8,
+            color="#111111",
+            zorder=zorder + 0.2,
+        )
+    ax.plot(
+        [x + total_deg, x + total_deg],
+        [y, y + bar_h * 1.55],
+        color="#111111",
+        linewidth=0.7,
+        zorder=zorder + 0.2,
+    )
+    ax.text(
+        x + total_deg,
+        y - bar_h * 0.7,
+        f"{int(length_km)}",
+        ha="center",
+        va="top",
+        fontsize=8,
+        color="#111111",
+        zorder=zorder + 0.2,
+    )
+    ax.text(
+        x + total_deg + box_pad_x * 0.35,
+        y + bar_h * 0.5,
+        "km",
+        ha="left",
+        va="center",
+        fontsize=8,
+        color="#111111",
+        zorder=zorder + 0.2,
+    )
+
+
+def _draw_north_arrow(ax: Any, x: float, y: float, *, size: float = 0.025, zorder: float = 6) -> None:
+    """右上角黑白对半四角星指北针。"""
+    import matplotlib.patches as mpatches
+
+    badge_r = size * 1.88
+    ax.add_patch(
+        mpatches.Circle(
+            (x, y),
+            badge_r,
+            facecolor="white",
+            edgecolor="#555555",
+            linewidth=0.7,
+            alpha=0.94,
+            zorder=zorder,
+        )
+    )
+    ax.add_patch(
+        mpatches.Circle(
+            (x, y),
+            size * 1.32,
+            facecolor="none",
+            edgecolor="#333333",
+            linewidth=0.4,
+            zorder=zorder + 0.05,
+        )
+    )
+
+    def _poly(points: list[tuple[float, float]], facecolor: str, z: float) -> None:
+        ax.add_patch(
+            mpatches.Polygon(
+                points,
+                closed=True,
+                facecolor=facecolor,
+                edgecolor="#111111",
+                linewidth=0.3,
+                zorder=z,
+            )
+        )
+
+    w = size * 0.30
+    ns = size * 1.08
+    ew = size * 0.90
+    _poly([(x, y + ns), (x, y), (x - w, y)], "#1a1a1a", zorder + 0.25)
+    _poly([(x, y + ns), (x, y), (x + w, y)], "white", zorder + 0.25)
+    _poly([(x, y - ns), (x, y), (x - w, y)], "white", zorder + 0.20)
+    _poly([(x, y - ns), (x, y), (x + w, y)], "#1a1a1a", zorder + 0.20)
+    _poly([(x + ew, y), (x, y), (x, y + w)], "#1a1a1a", zorder + 0.22)
+    _poly([(x + ew, y), (x, y), (x, y - w)], "white", zorder + 0.22)
+    _poly([(x - ew, y), (x, y), (x, y + w)], "white", zorder + 0.22)
+    _poly([(x - ew, y), (x, y), (x, y - w)], "#1a1a1a", zorder + 0.22)
+    ax.add_patch(
+        mpatches.Circle(
+            (x, y),
+            size * 0.10,
+            facecolor="white",
+            edgecolor="#111111",
+            linewidth=0.45,
+            zorder=zorder + 0.35,
+        )
+    )
+    ax.text(
+        x,
+        y + size * 1.52,
+        "N",
+        ha="center",
+        va="center",
+        fontsize=12,
+        fontweight="bold",
+        color="#111111",
+        zorder=zorder + 0.4,
+    )
+    ax.text(x, y - size * 1.48, "S", ha="center", va="center", fontsize=9, color="#333333", zorder=zorder + 0.4)
+    ax.text(x + size * 1.50, y, "E", ha="center", va="center", fontsize=9, color="#333333", zorder=zorder + 0.4)
+    ax.text(x - size * 1.50, y, "W", ha="center", va="center", fontsize=9, color="#333333", zorder=zorder + 0.4)
+
+
+def _draw_map_chrome(ax: Any, minx: float, maxx: float, miny: float, maxy: float) -> None:
+    """左下比例尺 + 右上指北针；避开图例（右下）与主要平原测站区。"""
+    import numpy as np
+
+    lon_span = max(maxx - minx, 1e-6)
+    lat_span = max(maxy - miny, 1e-6)
+    # 西南角偏山区空白，减少遮挡平原测站
+    scale_x = minx + lon_span * 0.03
+    scale_y = miny + lat_span * 0.05
+    _draw_scale_bar(ax, scale_x, scale_y, length_km=30.0, n_segments=3)
+    km_per_deg_lon = 111.32 * np.cos(np.deg2rad(scale_y))
+    scale_len_deg = 30.0 / max(km_per_deg_lon, 1e-6)
+    north_size = max(scale_len_deg * 0.28 / (1.88 * 2.0), lon_span * 0.012)
+    n_x = maxx - lon_span * 0.07
+    n_y = maxy - lat_span * 0.09
+    _draw_north_arrow(ax, n_x, n_y, size=north_size)
 
 
 def _rect_overlap(
@@ -718,6 +976,43 @@ def _centered_text_box(
     return (x - w / 2.0, y - h / 2.0, x + w / 2.0, y + h / 2.0)
 
 
+def _robust_bar_ref_mm(stations: list[dict[str, Any]]) -> float:
+    """柱高参照量（mm）：用偏高分位，避免单站极值把多数柱压成细线。"""
+    abs_vals = sorted(abs(float(s["val"])) for s in stations)
+    if not abs_vals:
+        return 1.0
+    if len(abs_vals) == 1:
+        return max(abs_vals[0], 1.0)
+    # P75：代表多数测站；若 max 超过其 2.5 倍则视为离群，不再用 max 做分母
+    idx = max(0, min(len(abs_vals) - 1, int((len(abs_vals) - 1) * 0.75)))
+    pref = max(float(abs_vals[idx]), 1.0)
+    vmax = float(abs_vals[-1])
+    if vmax <= pref * 2.5:
+        return vmax
+    return pref
+
+
+def _scaled_bar_height(
+    val: float,
+    height_scale: float,
+    lat_span: float,
+    *,
+    max_frac: float = 0.065,
+    min_frac: float = 0.003,
+) -> float:
+    """按稳健比例换算柱高，极值封顶、非零值保底可见。"""
+    import math
+
+    v = float(val)
+    h = v * height_scale
+    cap = lat_span * max_frac
+    if abs(h) > cap:
+        h = math.copysign(cap, h if h != 0 else v)
+    if abs(v) > 1e-9 and abs(h) < lat_span * min_frac:
+        h = math.copysign(lat_span * min_frac, v)
+    return h
+
+
 def _station_layout_metrics(
     stations: list[dict[str, Any]],
     minx: float,
@@ -727,9 +1022,10 @@ def _station_layout_metrics(
 ) -> tuple[float, float, float, float, float]:
     lon_span = max(maxx - minx, 1e-6)
     lat_span = max(maxy - miny, 1e-6)
-    max_abs = max((abs(float(s["val"])) for s in stations), default=1.0) or 1.0
-    height_scale = (lat_span * 0.03) / max_abs
-    bar_width = lon_span * 0.007
+    # 参照量约占图幅纬度 3.6%（介于旧 3% 与过大的 5% 之间）；柱宽略收
+    ref_mm = _robust_bar_ref_mm(stations)
+    height_scale = (lat_span * 0.036) / ref_mm
+    bar_width = lon_span * 0.006
     fontsize = 7.0 if len(stations) > 24 else 8.0
     return lon_span, lat_span, height_scale, bar_width, fontsize
 
@@ -742,7 +1038,7 @@ def _station_bar_rect(
     height_scale: float,
     lat_span: float,
 ) -> tuple[float, float, float, float]:
-    bar_height = float(val) * height_scale
+    bar_height = _scaled_bar_height(val, height_scale, lat_span)
     bar_bottom = y if bar_height >= 0 else y + bar_height
     h = abs(bar_height) or lat_span * 0.002
     half = bar_width / 2.0
@@ -1008,11 +1304,12 @@ def _draw_stations(
     def _hline(width_pt: float):
         width_pt = max(float(width_pt), 0.8)
         da = DrawingArea(width_pt, 0.72, 0, 0)
-        da.add_artist(mpatches.Rectangle((0, 0), width_pt, 0.72, facecolor="#222222", edgecolor="none", linewidth=0))
+        da.add_artist(mpatches.Rectangle((0, 0), width_pt, 0.72, facecolor="#000000", edgecolor="none", linewidth=0))
         return da
 
     def _label_box(val_text: str, name_text: str, align: str):
-        tp = dict(size=fontsize, color="#111111", fontproperties=_font())
+        # 沉降量/站码用纯黑，避免灰字在浅色底图上发虚
+        tp = dict(size=fontsize, color="#000000", fontproperties=_font())
         line_w = max(_text_width(val_text), _text_width(name_text))
         headed = VPacker(
             children=[TextArea(val_text, textprops=tp), _hline(line_w)],
@@ -1025,8 +1322,8 @@ def _draw_stations(
     for s, x, y, side, _label, _bar in plan:
         val = float(s["val"])
         color = fill_for_delta(float(s["delta_mm"]))
-        bar_height = val * height_scale
-        bar_bottom = y if val >= 0 else y + bar_height
+        bar_height = _scaled_bar_height(val, height_scale, lat_span)
+        bar_bottom = y if bar_height >= 0 else y + bar_height
         ax.add_patch(
             mpatches.Rectangle(
                 (x - bar_width / 2.0, bar_bottom),
@@ -1182,7 +1479,7 @@ def _render_with_basemap(stations: list[dict[str, Any]], title: str, basemap: di
         _plot_waterways(ax, waterways, 1.2)
     for geom in beijing.geometry:
         _plot_boundary(ax, geom, color="#5a5a5a", linewidth=0.8, zorder=2, linestyle=(0, (4.0, 2.4)))
-    _plot_boundary(ax, basemap["city_union"], color="#f472b6", linewidth=1.0, zorder=3)
+    _plot_city_outline(ax, basemap.get("city_union"))
     name_col = basemap.get("name_col")
     minx, miny, maxx, maxy = beijing.total_bounds
     lon_span = max(maxx - minx, 1e-6)
@@ -1209,12 +1506,15 @@ def _render_with_basemap(stations: list[dict[str, Any]], title: str, basemap: di
     ax.set_title(title, fontsize=16, pad=16, fontproperties=cjk_font_properties(16))
     pad_x = (maxx - minx) * 0.035
     pad_y = (maxy - miny) * 0.035
-    ax.set_xlim(minx - pad_x, maxx + pad_x)
-    ax.set_ylim(miny - pad_y, maxy + pad_y)
+    view_minx, view_maxx = minx - pad_x, maxx + pad_x
+    view_miny, view_maxy = miny - pad_y, maxy + pad_y
+    ax.set_xlim(view_minx, view_maxx)
+    ax.set_ylim(view_miny, view_maxy)
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
     _draw_legend(ax)
+    _draw_map_chrome(ax, view_minx, view_maxx, view_miny, view_maxy)
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_color("#333333")
@@ -1236,12 +1536,15 @@ def _render_points_only(stations: list[dict[str, Any]], title: str) -> bytes:
     ax.set_facecolor("white")
     ax.set_title(title, fontsize=16, pad=16, fontproperties=cjk_font_properties(16))
     _draw_stations(ax, stations, minx - span_x * 0.1, maxx + span_x * 0.1, miny - span_y * 0.1, maxy + span_y * 0.1)
-    ax.set_xlim(minx - span_x * 0.25, maxx + span_x * 0.25)
-    ax.set_ylim(miny - span_y * 0.25, maxy + span_y * 0.25)
+    view_minx, view_maxx = minx - span_x * 0.25, maxx + span_x * 0.25
+    view_miny, view_maxy = miny - span_y * 0.25, maxy + span_y * 0.25
+    ax.set_xlim(view_minx, view_maxx)
+    ax.set_ylim(view_miny, view_maxy)
     ax.set_aspect("equal", adjustable="box")
     ax.set_xticks([])
     ax.set_yticks([])
     _draw_legend(ax)
+    _draw_map_chrome(ax, view_minx, view_maxx, view_miny, view_maxy)
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_color("#333333")
@@ -1344,10 +1647,103 @@ def _load_lite_major_water(
     return water_polys, water_lines
 
 
+def _city_outline_rings_by_raster(
+    exteriors: list[list[tuple[float, float]]],
+    *,
+    res_deg: float = 0.003,
+) -> list[list[tuple[float, float]]]:
+    """无 shapely：PIL 栅格填充区县后取等值线，得到真正全市外轮廓。"""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    xs = [float(p[0]) for ring in exteriors for p in ring]
+    ys = [float(p[1]) for ring in exteriors for p in ring]
+    if not xs or not ys:
+        return []
+    pad = res_deg * 3.0
+    minx, maxx = min(xs) - pad, max(xs) + pad
+    miny, maxy = min(ys) - pad, max(ys) + pad
+    width = max(int(round((maxx - minx) / res_deg)) + 1, 8)
+    height = max(int(round((maxy - miny) / res_deg)) + 1, 8)
+    while width * height > 900_000 and res_deg < 0.02:
+        res_deg *= 1.25
+        width = max(int(round((maxx - minx) / res_deg)) + 1, 8)
+        height = max(int(round((maxy - miny) / res_deg)) + 1, 8)
+
+    img = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(img)
+    for ring in exteriors:
+        if len(ring) < 3:
+            continue
+        pix = [
+            (
+                (float(p[0]) - minx) / res_deg,
+                (maxy - float(p[1])) / res_deg,  # 图像 y 向下
+            )
+            for p in ring
+        ]
+        try:
+            draw.polygon(pix, outline=1, fill=1)
+        except Exception:  # noqa: BLE001
+            continue
+    grid = np.asarray(img, dtype=float)
+    if not bool(grid.any()):
+        return []
+    # 图像行 0 对应 maxy，转成南→北供 contour
+    grid = np.flipud(grid)
+    lons = minx + (np.arange(width) + 0.5) * res_deg
+    lats = miny + (np.arange(height) + 0.5) * res_deg
+
+    import matplotlib
+
+    matplotlib.use("Agg", force=False)
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(1, 1))
+    try:
+        ax = fig.add_subplot(111)
+        cs = ax.contour(lons, lats, grid, levels=[0.5])
+        rings: list[list[tuple[float, float]]] = []
+        try:
+            all_segs = cs.allsegs[0] if cs.allsegs else []
+        except Exception:  # noqa: BLE001
+            all_segs = []
+        for seg in all_segs:
+            if seg is None or len(seg) < 8:
+                continue
+            ring = [(float(x), float(y)) for x, y in seg]
+            if ring[0] != ring[-1]:
+                ring.append(ring[0])
+            rings.append(ring)
+        if not rings:
+            return []
+        rings.sort(key=lambda r: abs(_ring_area(r)), reverse=True)
+        main_area = abs(_ring_area(rings[0])) or 1.0
+        kept = [rings[0]]
+        for ring in rings[1:]:
+            if abs(_ring_area(ring)) >= main_area * 0.05:
+                kept.append(ring)
+        return kept
+    finally:
+        plt.close(fig)
+
+
+def _ring_area(ring: list[tuple[float, float]]) -> float:
+    """平面鞋带公式（经纬度近似，只用于比较大小）。"""
+    if len(ring) < 3:
+        return 0.0
+    area = 0.0
+    for i in range(len(ring) - 1):
+        x1, y1 = ring[i]
+        x2, y2 = ring[i + 1]
+        area += x1 * y2 - x2 * y1
+    return area * 0.5
+
+
 def _city_outline_rings_from_districts(
     districts: list[dict[str, Any]],
 ) -> list[list[tuple[float, float]]]:
-    """lite 底图：区县面合并为全市外轮廓（粉红市界）。"""
+    """lite 底图：区县面合并为全市外轮廓（粉红市界）。优先 shapely；否则栅格溶解。"""
     exteriors: list[list[tuple[float, float]]] = []
     for dist in districts:
         for ring in dist.get("exteriors") or []:
@@ -1355,30 +1751,67 @@ def _city_outline_rings_from_districts(
                 exteriors.append([(float(p[0]), float(p[1])) for p in ring])
     if not exteriors:
         return []
+    # 1) shapely 溶解（若可用）
     try:
         from shapely.geometry import Polygon
-        from shapely.ops import unary_union
 
         polys = []
         for ring in exteriors:
             try:
                 poly = Polygon(ring)
+                if not poly.is_valid:
+                    poly = poly.buffer(0)
                 if poly.is_valid and not poly.is_empty:
                     polys.append(poly)
             except Exception:  # noqa: BLE001
                 continue
-        if not polys:
-            return exteriors
-        merged = unary_union(polys)
-        rings: list[list[tuple[float, float]]] = []
-        geoms = list(merged.geoms) if merged.geom_type == "MultiPolygon" else [merged]
-        for geom in geoms:
-            if geom.geom_type != "Polygon":
-                continue
-            rings.append([(float(x), float(y)) for x, y in geom.exterior.coords])
-        return rings or exteriors
+        if polys:
+            merged = _dissolve_city_outline(polys)
+            if merged is not None and not getattr(merged, "is_empty", True):
+                rings: list[list[tuple[float, float]]] = []
+                geoms = list(merged.geoms) if merged.geom_type == "MultiPolygon" else [merged]
+                for geom in geoms:
+                    if geom.geom_type != "Polygon":
+                        continue
+                    rings.append([(float(x), float(y)) for x, y in geom.exterior.coords])
+                if rings and not (len(rings) >= max(len(polys) - 1, 3) and len(polys) > 3):
+                    return rings
     except Exception:  # noqa: BLE001
-        return exteriors
+        logger.info("offline_map city outline: shapely unavailable, use raster dissolve")
+
+    # 2) 无依赖：栅格填充后取外轮廓（不受区界顶点不对齐影响）
+    try:
+        rings = _city_outline_rings_by_raster(exteriors)
+        if rings:
+            logger.info(
+                "offline_map city outline via raster rings=%s pts=%s",
+                len(rings),
+                len(rings[0]),
+            )
+            return rings
+    except Exception:  # noqa: BLE001
+        logger.warning("offline_map raster city outline failed", exc_info=True)
+    logger.warning("offline_map city outline empty exteriors=%s", len(exteriors))
+    return []
+
+
+def _split_district_rings(
+    rings: list[list[tuple[float, float]]],
+) -> tuple[list[list[tuple[float, float]]], list[list[tuple[float, float]]]]:
+    """shp Polygon 多 part：按面积区分主外环与小环，避免密云等只取到小岛环。"""
+    from app.analysis_agent.renderers.shp_lite import ring_area_m2
+
+    valid = [r for r in rings if isinstance(r, list) and len(r) >= 3]
+    if not valid:
+        return [], []
+    scored = [(ring_area_m2(r), r) for r in valid]
+    scored.sort(key=lambda item: item[0], reverse=True)
+    exteriors = [r for area, r in scored if area >= _MIN_DISTRICT_EXTERIOR_M2]
+    if not exteriors:
+        exteriors = [scored[0][1]]
+    exterior_ids = {id(r) for r in exteriors}
+    interiors = [r for _area, r in scored if id(r) not in exterior_ids]
+    return exteriors, interiors
 
 
 def _load_basemap_rings(assets: Path) -> dict[str, Any] | None:
@@ -1395,7 +1828,7 @@ def _load_basemap_rings(assets: Path) -> dict[str, Any] | None:
         if alt is None:
             return None
         shp = alt
-    records = iter_shp_rings(shp, want_types=(5,))
+    records = iter_shp_rings(shp, want_types=(5, 15, 25))
     if not records:
         logger.info("offline_map lite shapefile empty path=%s", shp)
         return None
@@ -1407,9 +1840,8 @@ def _load_basemap_rings(assets: Path) -> dict[str, Any] | None:
     for i, (_stype, rings) in enumerate(records):
         attr = attrs[i] if i < len(attrs) else {}
         name = str(attr.get("district") or attr.get("NAME") or attr.get("name") or attr.get("区县") or "")
-        exteriors = [rings[0]] if rings else []
-        interiors = rings[1:] if len(rings) > 1 else []
-        for ring in rings:
+        exteriors, interiors = _split_district_rings(rings)
+        for ring in exteriors:
             xs_all.extend(p[0] for p in ring)
             ys_all.extend(p[1] for p in ring)
         districts.append({"name": name, "exteriors": exteriors, "interiors": interiors})
@@ -1494,7 +1926,14 @@ def _render_with_rings(stations: list[dict[str, Any]], title: str, basemap: dict
         if len(ring) < 3:
             continue
         xs, ys = [p[0] for p in ring], [p[1] for p in ring]
-        ax.plot(xs, ys, color="#f472b6", linewidth=1.0, zorder=3, solid_capstyle="round")
+        ax.plot(
+            xs,
+            ys,
+            color=_COLOR_CITY_OUTLINE,
+            linewidth=_CITY_OUTLINE_LW,
+            zorder=3,
+            solid_capstyle="round",
+        )
     minx, miny, maxx, maxy = basemap["bounds"]
     lon_span = max(maxx - minx, 1e-6)
     lat_span = max(maxy - miny, 1e-6)
@@ -1515,12 +1954,15 @@ def _render_with_rings(stations: list[dict[str, Any]], title: str, basemap: dict
     ax.set_title(title, fontsize=16, pad=16, fontproperties=cjk_font_properties(16))
     pad_x = (maxx - minx) * 0.035
     pad_y = (maxy - miny) * 0.035
-    ax.set_xlim(minx - pad_x, maxx + pad_x)
-    ax.set_ylim(miny - pad_y, maxy + pad_y)
+    view_minx, view_maxx = minx - pad_x, maxx + pad_x
+    view_miny, view_maxy = miny - pad_y, maxy + pad_y
+    ax.set_xlim(view_minx, view_maxx)
+    ax.set_ylim(view_miny, view_maxy)
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
     _draw_legend(ax)
+    _draw_map_chrome(ax, view_minx, view_maxx, view_miny, view_maxy)
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_color("#333333")

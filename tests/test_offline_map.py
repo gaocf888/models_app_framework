@@ -42,6 +42,104 @@ def test_fill_for_delta_sign_matches_report() -> None:
     assert fill_for_delta(0.0) == "#95a5a6"
 
 
+def test_dissolve_city_outline_merges_adjacent_districts() -> None:
+    shapely = pytest.importorskip("shapely")
+    from shapely.geometry import box
+
+    from app.analysis_agent.renderers.offline_map import _dissolve_city_outline
+
+    a = box(116.0, 39.5, 116.5, 40.0)
+    b = box(116.5, 39.5, 117.0, 40.0)
+    merged = _dissolve_city_outline([a, b])
+    assert merged is not None
+    assert merged.geom_type == "Polygon"
+    assert merged.area == pytest.approx(a.area + b.area, rel=1e-3)
+
+
+def test_city_outline_rings_without_shapely() -> None:
+    pytest.importorskip("matplotlib")
+    from app.analysis_agent.renderers.offline_map import _city_outline_rings_by_raster
+
+    # 两个相接矩形：栅格溶解后外轮廓应覆盖 [0,2]x[0,1]
+    left = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]
+    right = [(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 0.0)]
+    rings = _city_outline_rings_by_raster([left, right], res_deg=0.05)
+    assert rings
+    xs = [p[0] for p in rings[0]]
+    ys = [p[1] for p in rings[0]]
+    assert min(xs) <= 0.15 and max(xs) >= 1.85
+    assert min(ys) <= 0.15 and max(ys) >= 0.85
+    # 外轮廓点数应明显少于两区边界之和，且不是简单两区各自外环
+    assert len(rings) == 1
+
+
+def test_basemap_rings_include_pink_city_outline() -> None:
+    from app.analysis_agent.renderers import offline_map as om
+
+    assets = om.default_map_assets_dir()
+    if not list((assets / "shapefile").glob("*.shp")):
+        pytest.skip("map shapefile missing")
+    om._basemap_cache = None
+    bm = om._load_basemap(assets)
+    assert bm is not None
+    if bm.get("mode") == "rings":
+        assert bm.get("city_rings"), "city_rings must be non-empty for pink outline"
+        assert len(bm["city_rings"][0]) >= 20
+        by_name = {str(d.get("name") or ""): d for d in (bm.get("districts") or [])}
+        miyun = by_name.get("密云区")
+        assert miyun is not None
+        xs = [p[0] for r in (miyun.get("exteriors") or []) for p in r]
+        ys = [p[1] for r in (miyun.get("exteriors") or []) for p in r]
+        assert xs and max(xs) - min(xs) > 0.3, "密云主面不得被小岛环替换"
+        assert max(ys) > 40.5
+        city = bm["city_rings"][0]
+        assert max(p[0] for p in city) >= 117.3, "市界应覆盖密云东部"
+    elif bm.get("mode") == "gpd":
+        assert bm.get("city_union") is not None
+
+
+def test_bar_scale_not_crushed_by_outlier() -> None:
+    from app.analysis_agent.renderers.offline_map import (
+        _robust_bar_ref_mm,
+        _scaled_bar_height,
+        _station_layout_metrics,
+    )
+
+    stations = [
+        {"val": -10.0},
+        {"val": -8.0},
+        {"val": 3.0},
+        {"val": 58.62},  # 离群回弹
+    ]
+    ref = _robust_bar_ref_mm(stations)
+    assert ref < 30.0
+    assert ref >= 8.0
+    _lon, lat_span, hs, _bw, _fs = _station_layout_metrics(
+        stations, 115.4, 117.5, 39.4, 41.1
+    )
+    h10 = abs(_scaled_bar_height(-10.0, hs, lat_span))
+    h58 = abs(_scaled_bar_height(58.62, hs, lat_span))
+    # 10mm 柱应接近参照可视高度，且明显高于旧逻辑下的「几个像素」
+    assert h10 >= lat_span * 0.025
+    # 极值封顶，不能无限拉长
+    assert h58 <= lat_span * 0.065 + 1e-9
+
+
+def test_map_chrome_helpers_callable() -> None:
+    pytest.importorskip("matplotlib")
+    import matplotlib.pyplot as plt
+
+    from app.analysis_agent.renderers.offline_map import _draw_map_chrome, _ensure_mpl
+
+    assert _ensure_mpl() is True
+    fig, ax = plt.subplots(1, 1, figsize=(4, 4))
+    ax.set_xlim(116.0, 117.0)
+    ax.set_ylim(39.5, 40.5)
+    _draw_map_chrome(ax, 116.0, 117.0, 39.5, 40.5)
+    assert len(ax.patches) > 0
+    plt.close(fig)
+
+
 def test_stations_from_layer0_rows_plot_val_equals_delta() -> None:
     """val 与 delta_mm 同号：负沉降柱向下，正回弹柱向上；标注用站码。"""
     stations = stations_from_layer0_rows(SAMPLE_ROWS)
