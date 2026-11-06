@@ -118,5 +118,6 @@ def test_format_rag_block_numbered_citation_rule():
     assert "逐条" in block
     assert "《规程》" in block
     assert "禁止输出「分析/通用经验」" in block
-    assert "禁止输出「知识库本轮未检索到相关条文」" in block
+    assert "问句全覆盖" in block
+    assert "本轮未检索到" in block  # 作为禁止话术出现
     assert "仅依据下列片段" not in block
