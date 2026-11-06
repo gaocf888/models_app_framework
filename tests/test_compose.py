@@ -192,8 +192,12 @@ def test_quarterly_compose_districts_and_layers() -> None:
     assert ground.title.startswith("附表1")
     preface = next(c for c in spec.chapters if c.id == "quarterly_preface")
     assert preface.title == "一、前言"
-    assert "京地〔2026〕16号" in (preface.static_body or "")
-    assert "{{NARRATIVE}}" in (preface.static_body or "")
+    body = preface.static_body or ""
+    assert "京地〔2026〕16号" in body
+    assert "北京市地质矿产勘查院向北京市地质环境监测所下达" in body
+    assert "掌握北京市地面沉降发育现状和变化趋势" in body
+    assert "为全市地面沉降防控及城市规划建设提供技术支撑" in body
+    assert "{{NARRATIVE}}" in body
     assert "巡查" in (preface.narrative_instruction or "")
     city = next(c for c in spec.chapters if c.id == "city_plain")
     assert "最大" in " ".join(city.outline or [])
