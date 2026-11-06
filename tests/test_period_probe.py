@@ -70,7 +70,7 @@ async def test_fallback_snaps_to_day_with_pair() -> None:
 async def test_fallback_quarter_previous() -> None:
     opts = apply_resolved_period(
         "subsidence_quarterly",
-        {"start_time": "2026-07-01", "end_time": "2026-10-01"},
+        {"start_time": "2026-07-01", "end_time": "2026-09-30"},
         today=datetime(2026, 10, 15).date(),
     )
     # 显式 Q3 无配对；6 月有点 → 对齐到 Q2

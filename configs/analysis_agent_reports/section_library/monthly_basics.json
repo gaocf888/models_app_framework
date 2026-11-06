@@ -1,0 +1,32 @@
+{
+  "id": "monthly_basics",
+  "title": "基本情况",
+  "kind": "llm_section",
+  "source_item_ids": ["q_ops_month_offline_alarm"],
+  "static_body": "北京市地面沉降监测站网由42座地面沉降监测站构成，分别位于朝阳区、海淀区、通州区、顺义区、昌平区、大兴区、平谷区和延庆区等8个行政区。站内埋设基岩标、分层标、地下水位动态监测井等监测设施。\n\n{{NARRATIVE}}\n",
+  "outline": [
+    "本月设备离线告警次数与涉及监测站数量（一句）",
+    "勿展开三率、勿挂运行/离线明细表"
+  ],
+  "constraints": [
+    "禁止编造离线告警次数或站数",
+    "禁止输出三率、在线率、完整率、有效率",
+    "禁止挂表或描述柱图",
+    "禁止 q 编号",
+    "禁止 # 标题行",
+    "勿重复 static 开篇站网说明"
+  ],
+  "narrative_instruction": "仅写一段。若事实为「本月累计…」：写「本月累计发生设备离线告警X次，涉及地面沉降监测站Y座」。若事实标明「本月窗内…已回退最新批次」：写「本月暂无离线告警汇总，按最新运维批次统计发生设备离线告警X次，涉及地面沉降监测站Y座」（可带批次时刻）。X/Y 必须来自取数结果；月窗与最新批次均为 0 则写待补充。不要写各仪器类型三率，不要列举离线设备明细，不要提图/表。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "plan_items": [
+    {
+      "item_id": "q_ops_month_offline_alarm",
+      "executor": "sql_template",
+      "sql_file": "om_month_offline_alarm.sql",
+      "mandatory": false,
+      "dependency_ids": [],
+      "purpose": "本月离线告警次数(COUNT*)与涉及站数"
+    }
+  ]
+}

@@ -394,3 +394,4 @@ q_fcb_endpoints ──► q_layer0 ──► q_area_rank
 | 2026-08-25 | 回写 T1～T7：acquire_data 前置、stop/流式、replay、配置图、地降占位、Trace |
 | 2026-09-20 | 回写 V2 落地：compose 在 `load_report_spec`；`acquire_data` executor 分流；period._resolved；deterministics；五类模版；附表 2–5 / F42 对齐；删除已移除的 session_context |
 | 2026-10-26 | 运维/预警跟沉降回退后窗末日绑 `snapshot_time`，无则退全局最新；时长不用 `now()` |
+| 2026-11-06 | 日/周平原去分布图；月报基本情况+离线告警、去平原/预警章；季报前言 static 文号、季度窗校验；压缩层事实按层计座；站点 area 回填 |

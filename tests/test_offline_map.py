@@ -317,9 +317,13 @@ def test_shp_lite_length_and_area() -> None:
     assert ring_area_m2(square) > 5e5
 
 
-def test_daily_plain_monitoring_has_map_chart() -> None:
+def test_daily_plain_monitoring_has_no_map_chart() -> None:
     spec = load_report_spec("subsidence_daily")
     assert spec is not None
-    maps = [c for c in spec.charts if c.get("chart_type") == "map_placeholder"]
-    assert any(c.get("id") == "c_plain_map" for c in maps)
-    assert any(c.get("attach_to_chapter") == "plain_monitoring" for c in maps)
+    assert not any(str(c.get("id") or "").startswith("c_plain_map") for c in spec.charts)
+
+
+def test_quarterly_city_plain_keeps_map_chart() -> None:
+    spec = load_report_spec("subsidence_quarterly")
+    assert spec is not None
+    assert any(c.get("id") == "c_city_map" for c in spec.charts)

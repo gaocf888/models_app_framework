@@ -533,8 +533,8 @@ POST
 | user_id | true | string | 用户标识                                     |
 | session_id | true | string | 会话标识（前端生成，禁止含 `:`）                       |
 | analysis_type | true | string | 上述地降报告模版，五种 `subsidence_*` 之一            |
-| options.start_time | false | string | 与 end_time **成对**；`YYYY-MM-DD`；都空=上一完整周期 |
-| options.end_time | false | string | 与 start_time 成对；半开区间上界                   |
+| options.start_time | false | string | 与 end_time **成对**；`YYYY-MM-DD`；都空=上一完整周期。季报须为标准 Q1~Q4 完整窗起点（如三季度 `2026-07-01`） |
+| options.end_time | false | string | 与 start_time 成对；日期-only 按**含当日**半开上界（次日 0 点）。季报传该季**最后一日**（如三季度 `2026-09-30` → `t_end=10-01`）；非完整季度校验失败 |
 | options.area | false | string | 标准行政区名（如 `朝阳区`）；空/`全市`/`北京市`=不按区过滤       |
 | options.issue_no | false | string | 封面期号；空则封面显示 `XX`                         |
 | options.stream_cover | false | boolean | 是否把 `chapter_id=cover` 的封面以 SSE 真流式推出。**默认 `false`（不传即不流式输出封面）**：不推 cover 的 `chapter_start` / `summary_delta` / `chapter_complete`。终稿 `result.summary` 与 `structured_report` **仍含封面**；`chapter_index` / `slot_total` **编号不变**（封面仍占第 0 槽，正文第一章仍为 `1`）。仅匹配 `slot.id==cover`，锅炉红头 `oh_hdr` 不受影响。官方地降页应按日/周/月红头、季/年封面+目录本地绘制，或显式传 `true` |

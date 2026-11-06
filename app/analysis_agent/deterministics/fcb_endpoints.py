@@ -75,11 +75,15 @@ def resolved_sql_params(
     params["snapshot_time"] = resolved.get("ops_snapshot_time")
     if extra:
         params.update(extra)
-    # 运维 om_*：绑 snapshot_time，不强制 t_start/t_end
+    # 运维 om_*：批次绑 snapshot_time；月窗汇总绑 t_start/t_end
     sql_name = (sql_file or "").strip().lower()
     if sql_name == "om_snapshot_pick.sql":
         params["snap_day_start"] = _bind_timestamp(params.get("snap_day_start"), key="snap_day_start")
         params["snap_day_end"] = _bind_timestamp(params.get("snap_day_end"), key="snap_day_end")
+        return params
+    if sql_name == "om_month_offline_alarm.sql":
+        params["t_start"] = _bind_timestamp(params.get("t_start"), key="t_start")
+        params["t_end"] = _bind_timestamp(params.get("t_end"), key="t_end")
         return params
     if sql_name.startswith("om_"):
         params["snapshot_time"] = _bind_timestamp(params.get("snapshot_time"), key="snapshot_time")

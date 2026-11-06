@@ -51,6 +51,27 @@ def test_daily_yesterday() -> None:
     assert end.date() == date(2026, 9, 15)
 
 
+def test_quarterly_rejects_non_complete_window() -> None:
+    with pytest.raises(PeriodValidationError, match="quarter_window_must_be_complete"):
+        resolve_period(
+            "subsidence_quarterly",
+            {"start_time": "2026-07-01", "end_time": "2026-10-01"},
+            today=date(2026, 10, 15),
+        )
+
+
+def test_quarterly_accepts_complete_q3_window() -> None:
+    # 日期-only 上界按半开：传月末日 09-30 → t_end=10-01
+    resolved = resolve_period(
+        "subsidence_quarterly",
+        {"start_time": "2026-07-01", "end_time": "2026-09-30"},
+        today=date(2026, 10, 15),
+    )
+    assert resolved.t_start == "2026-07-01T00:00:00"
+    assert resolved.t_end == "2026-10-01T00:00:00"
+    assert "第三季度" in resolved.period_label
+
+
 def test_end_date_only_is_next_midnight() -> None:
     # 闭区间日期 8/1～8/1：end 日期-only 视为次日 0 点
     resolved = resolve_period(

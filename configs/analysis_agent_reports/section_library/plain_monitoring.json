@@ -28,5 +28,10 @@
       "source_item_ids": ["q_layer0"],
       "attach_to_chapter": "@self"
     }
-  ]
+  ],
+  "variants": {
+    "no_map": {
+      "charts": []
+    }
+  }
 }

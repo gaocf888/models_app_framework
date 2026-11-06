@@ -19,10 +19,19 @@ def test_daily_compose_four_chapters() -> None:
     assert "q_fcb_endpoints" in plan_ids
     assert "q_layer0" in plan_ids
     assert "q_area_rank" in plan_ids
-    assert any(
+    assert not any(
         c.get("id") == "c_plain_map" and c.get("attach_to_chapter") == "plain_monitoring"
         for c in spec.charts
     )
+
+
+def test_daily_weekly_plain_monitoring_no_map_variant() -> None:
+    for analysis_type in ("subsidence_daily", "subsidence_weekly"):
+        spec = load_report_spec(analysis_type)
+        assert spec is not None
+        assert not any(
+            str(c.get("id") or "").startswith("c_plain_map") for c in spec.charts
+        )
 
 
 def test_daily_plain_monitoring_asks_districts_and_extremes() -> None:
@@ -55,20 +64,28 @@ def test_weekly_monthly_key_area_uses_q_key_area() -> None:
         assert not any(t.get("id") == "t_key_area" for t in spec.tables)
 
 
-def test_monthly_compose_includes_ops_and_alert() -> None:
+def test_monthly_compose_basics_no_plain_no_alert() -> None:
     spec = load_report_spec("subsidence_monthly")
     assert spec is not None
     ids = [c.id for c in spec.chapters]
     assert ids[0] == "cover"
-    assert "station_ops" in ids
-    assert "device_alert" in ids
+    assert ids[1] == "monthly_basics"
     assert "monthly_overview" in ids
     assert "typical_curve" in ids
+    assert "station_ops" not in ids
+    assert "plain_monitoring" not in ids
+    assert "device_alert" not in ids
+    basics = next(c for c in spec.chapters if c.id == "monthly_basics")
+    assert list(basics.source_item_ids) == ["q_ops_month_offline_alarm"]
+    assert not any(t.get("attach_to_chapter") == "monthly_basics" for t in spec.tables)
+    assert not any(c.get("attach_to_chapter") == "monthly_basics" for c in spec.charts)
+    overview = next(c for c in spec.chapters if c.id == "monthly_overview")
+    assert overview.title == "本月监测情况"
     plan_ids = {t["item_id"] for t in spec.plan_tasks}
-    assert "q_ops_rates" in plan_ids
-    assert "q_ops_offline_list" in plan_ids
-    assert "q_alert_list" in plan_ids
-    assert "q_alert_count_by_type" in plan_ids
+    assert "q_ops_month_offline_alarm" in plan_ids
+    month_sql = next(t for t in spec.plan_tasks if t["item_id"] == "q_ops_month_offline_alarm")
+    assert month_sql["sql_file"] == "om_month_offline_alarm.sql"
+    assert month_sql["executor"] == "sql_template"
 
 
 def test_om_plan_items_forced_sql_template() -> None:
@@ -171,10 +188,19 @@ def test_quarterly_compose_districts_and_layers() -> None:
     assert ground.title.startswith("附表1")
     preface = next(c for c in spec.chapters if c.id == "quarterly_preface")
     assert preface.title == "一、前言"
+    assert "京地〔2026〕16号" in (preface.static_body or "")
+    assert "{{NARRATIVE}}" in (preface.static_body or "")
+    assert "巡查" in (preface.narrative_instruction or "")
+    city = next(c for c in spec.chapters if c.id == "city_plain")
+    assert "最大" in " ".join(city.outline or [])
+    assert any(c.get("id") == "c_city_map" for c in spec.charts)
     key = next(c for c in spec.chapters if c.id == "key_area")
     assert key.title.startswith("四、")
+    assert "压缩层" in (key.narrative_instruction or "")
     conclusion = next(c for c in spec.chapters if c.id == "conclusion")
     assert conclusion.title == "五、结论"
+    cons = " ".join(conclusion.constraints or [])
+    assert "禁止把各层站点数相加" in cons
 
 
 def test_yearly_compose_matches_quarterly_structure() -> None:

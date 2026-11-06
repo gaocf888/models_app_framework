@@ -310,7 +310,21 @@ def resolve_period(
         end_dt = _parse_datetime(end_raw, as_end_date=len(end_raw) == 10)
         if end_dt <= start_dt:
             raise PeriodValidationError("end_must_be_after_start")
-        label = f"{start_dt.year}年{start_dt.month}月{start_dt.day}日—{end_dt.year}年{end_dt.month}月{end_dt.day}日"
+        if analysis_type == "subsidence_quarterly":
+            # 季报起止须为标准 Q1~Q4 完整半开窗（如三季度 07-01～10-01）
+            expected_start, expected_end = complete_window_containing(analysis_type, start_dt)
+            if start_dt != expected_start or end_dt != expected_end:
+                raise PeriodValidationError(
+                    "quarter_window_must_be_complete_q1_q4:"
+                    f"got=[{_fmt(start_dt)},{_fmt(end_dt)}) "
+                    f"expected_for_start=[{_fmt(expected_start)},{_fmt(expected_end)})"
+                )
+            label = label_for_complete_window(analysis_type, start_dt, end_dt)
+        else:
+            label = (
+                f"{start_dt.year}年{start_dt.month}月{start_dt.day}日—"
+                f"{end_dt.year}年{end_dt.month}月{end_dt.day}日"
+            )
     else:
         start_dt, end_dt, label = default_window(analysis_type, today=day)
 

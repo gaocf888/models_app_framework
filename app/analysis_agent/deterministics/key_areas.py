@@ -80,7 +80,15 @@ def join_key_areas(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[
         if not isinstance(row, dict):
             continue
         project = str(row.get("project_name") or "")
-        pair = (int(row.get("layer_from") or -1), int(row.get("layer_to") or -1))
+        # layer_from=0 合法，禁止 `or -1`（否则第一压缩层 c01 永远对不上）
+        raw_from, raw_to = row.get("layer_from"), row.get("layer_to")
+        try:
+            pair = (
+                -1 if raw_from is None or raw_from == "" else int(raw_from),
+                -1 if raw_to is None or raw_to == "" else int(raw_to),
+            )
+        except (TypeError, ValueError):
+            continue
         col = _COMPRESS_COLS.get(pair)
         if not project or not col:
             continue

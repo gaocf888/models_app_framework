@@ -87,6 +87,62 @@ def test_resolved_sql_params_rejects_empty_window() -> None:
         resolved_sql_params({"t_start": "", "t_end": "2026-09-18T00:00:00"})
 
 
+def test_om_month_offline_alarm_binds_window_not_snapshot() -> None:
+    sql = load_sql_template("om_month_offline_alarm.sql")
+    assert ":t_start" in sql and ":t_end" in sql
+    assert "COUNT(*)" in sql
+    assert "split_part" in sql
+    assert "month_offline_fallback" in sql
+    assert "fallback_snapshot_time" in sql
+    assert "latest" in sql.lower()
+    params = resolved_sql_params(
+        {"t_start": "2026-09-01T00:00:00", "t_end": "2026-10-01T00:00:00"},
+        sql_file="om_month_offline_alarm.sql",
+    )
+    assert params["t_start"] == datetime(2026, 9, 1, 0, 0, 0)
+    assert params["t_end"] == datetime(2026, 10, 1, 0, 0, 0)
+    assert not isinstance(params.get("snapshot_time"), datetime)
+
+
+def test_month_offline_alarm_facts_mark_fallback() -> None:
+    from app.analysis_agent.renderers.section_data import build_audit_facts
+
+    month = build_audit_facts(
+        {
+            "q_ops_month_offline_alarm": [
+                {
+                    "offline_alarm_count": 7,
+                    "station_count": 5,
+                    "month_offline_fallback": False,
+                }
+            ]
+        },
+        "月报",
+        slot_id="monthly_basics",
+    )
+    assert "本月累计设备离线告警7次" in month
+    assert "涉及地面沉降监测站5座" in month
+
+    fallback = build_audit_facts(
+        {
+            "q_ops_month_offline_alarm": [
+                {
+                    "offline_alarm_count": 3,
+                    "station_count": 2,
+                    "month_offline_fallback": True,
+                    "fallback_snapshot_time": "2026-10-26 14:20:00",
+                }
+            ]
+        },
+        "月报",
+        slot_id="monthly_basics",
+    )
+    assert "已回退最新批次" in fallback
+    assert "2026-10-26" in fallback
+    assert "设备离线告警3次" in fallback
+    assert "涉及地面沉降监测站2座" in fallback
+
+
 def test_statement_binds_datetime_list_as_timestamp_array() -> None:
     stmt = SQLExecutor._statement(
         "SELECT 1 WHERE col = ANY(:times)",

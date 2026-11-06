@@ -74,6 +74,41 @@ def test_f11_no_third_fourth_from_dict() -> None:
     assert (3, 4) not in pairs
 
 
+def test_slice_layer0_backfills_area_from_site_display(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.analysis_agent.deterministics import fcb_compress as mod
+    from app.analysis_agent.deterministics.site_display import SiteDisplay
+
+    monkeypatch.setattr(mod, "layer0_mark_keys", lambda: frozenset({("F15(闫家营)", "F15-10")}))
+    monkeypatch.setattr(
+        mod,
+        "lookup_site_display",
+        lambda _p: SiteDisplay(
+            project_name="F15(闫家营)",
+            station_code="F15",
+            area="顺义区",
+            location="高丽营镇闫家营村",
+            township="高丽营镇",
+            annex_label="高丽营镇闫家营村F15",
+        ),
+    )
+    rows = slice_layer0(
+        {
+            "q_fcb_endpoints": [
+                {
+                    "project_name": "F15(闫家营)",
+                    "station_name": "F15-10",
+                    "settle_start": 10,
+                    "settle_end": 8,
+                    "area": None,
+                }
+            ]
+        }
+    )
+    assert len(rows) == 1
+    assert rows[0]["area"] == "顺义区"
+    assert "顺义区" in rows[0]["display_clause"]
+
+
 def test_slice_layer0_drops_out_of_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.analysis_agent.deterministics import fcb_compress as mod
 

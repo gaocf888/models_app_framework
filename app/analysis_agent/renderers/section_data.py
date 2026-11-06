@@ -32,6 +32,7 @@ _PLAN_ITEM_LABELS: dict[str, str] = {
     "q6d": "DCS参数联动趋势",
     "q_ops_rates": "各仪器类型运行三率",
     "q_ops_offline_list": "离线设备明细",
+    "q_ops_month_offline_alarm": "本月设备离线告警汇总",
     "q_layer0": "平原区地面沉降",
     "q_area_rank": "各行政区沉降汇总",
     "q_key_area": "重点监测区地面沉降",
@@ -287,8 +288,29 @@ def _append_layer0_plain_facts(lines: list[str], rows: list[dict], *, area_filte
         lines.append("- 分行政区: " + "；".join(area_bits))
 
 
+_COMPRESS_COL_LABELS = (
+    ("c01", "第一压缩层组"),
+    ("c12", "第二压缩层组"),
+    ("c23", "第三压缩层组"),
+    ("c34", "第四压缩层组"),
+)
+
+_COMPRESS_LAYER_NAMES = (
+    (0, "第一压缩层组"),
+    (1, "第二压缩层组"),
+    (2, "第三压缩层组"),
+    (3, "第四压缩层组"),
+)
+
+
+def _format_signed_mm(val: float | None) -> str:
+    if val is None:
+        return "待补充"
+    return f"{movement_word(val)}{format_mm(val)}"
+
+
 def _append_key_area_facts(lines: list[str], rows: list[dict]) -> None:
-    """按 YAML 重点区 area_name 汇总 13 站；空 Δ 标明待补充。"""
+    """按 YAML 重点区 area_name 汇总 13 站；含总沉降与压缩层；空 Δ 标明待补充。"""
     by_area: dict[str, list[dict]] = {}
     for row in rows:
         if not isinstance(row, dict):
@@ -316,12 +338,12 @@ def _append_key_area_facts(lines: list[str], rows: list[dict]) -> None:
             code = str(row.get("station_code") or "").strip()
             loc = str(row.get("location_raw") or "").strip()
             name = f"位于{loc}的{code}监测站" if loc and code else (code or "未命名监测站")
-            delta = _numeric(row.get("total_delta_mm"))
-            if delta is None:
-                delta_txt = "待补充"
-            else:
-                delta_txt = f"{movement_word(delta)}{format_mm(delta)}"
-            lines.append(f"- {area} {name} {delta_txt}")
+            delta_txt = _format_signed_mm(_numeric(row.get("total_delta_mm")))
+            layer_bits = [
+                f"{label}{_format_signed_mm(_numeric(row.get(col)))}"
+                for col, label in _COMPRESS_COL_LABELS
+            ]
+            lines.append(f"- {area} {name} 总沉降{delta_txt}；" + "；".join(layer_bits))
 
 
 _DISTRICT_ID_TO_NAME = {
@@ -365,24 +387,56 @@ def _append_area_rank_facts(lines: list[str], rows: list[dict]) -> None:
         lines.append(f"- {area} {n}座，平均沉降量{avg_txt}（负值为沉降，正值为回弹）")
 
 
-def _append_compress_facts(lines: list[str], rows: list[dict], *, slot_id: str = "") -> None:
-    layer_from = _LAYER_SLOT_FROM.get(slot_id)
-    scored: list[tuple[float, str]] = []
+def _row_layer_from(row: dict) -> int:
+    """layer_from=0 合法，禁止用 `or -1`（0 会被当成缺省）。"""
+    raw = row.get("layer_from")
+    if raw is None or raw == "":
+        return -1
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return -1
+
+
+def _filter_compress_rows(rows: list[dict], *, layer_from: int | None) -> list[dict]:
+    out: list[dict] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if layer_from is not None and int(row.get("layer_from") or -1) != layer_from:
+        if layer_from is not None and _row_layer_from(row) != layer_from:
             continue
+        if _numeric(row.get("compress_mm")) is None:
+            continue
+        out.append(row)
+    return out
+
+
+def _compress_scored(rows: list[dict]) -> list[tuple[float, str]]:
+    scored: list[tuple[float, str]] = []
+    for row in rows:
         val = _numeric(row.get("compress_mm"))
         if val is None:
             continue
         scored.append((val, _station_clause_name(row)))
+    return scored
+
+
+def _append_one_compress_layer_facts(
+    lines: list[str],
+    rows: list[dict],
+    *,
+    title: str,
+) -> None:
+    scored = _compress_scored(rows)
     if not scored:
+        lines.append(f"- {title}：本层组暂无有效压缩量，写待补充")
         return
+    # 按监测站去重计座，禁止把多行压缩对累加成「总站点数」
+    station_n = len({name for _val, name in scored})
     sink_n = sum(1 for v, _ in scored if is_sink(v))
     rebound_n = sum(1 for v, _ in scored if is_rebound(v))
     lines.append(
-        f"- 本压缩层组：{len(scored)}座，沉降{sink_n}座，回弹{rebound_n}座，{_dominate_cn(sink_n, rebound_n)}"
+        f"- {title}：{station_n}座，沉降{sink_n}座，回弹{rebound_n}座，{_dominate_cn(sink_n, rebound_n)}"
     )
     top_sink = [x for x in sorted(scored, key=lambda row: row[0]) if is_sink(x[0])][:2]
     top_rebound = [x for x in sorted(scored, key=lambda row: row[0], reverse=True) if is_rebound(x[0])][:2]
@@ -396,6 +450,23 @@ def _append_compress_facts(lines: list[str], rows: list[dict], *, slot_id: str =
             "- 最大/次之回弹: "
             + "；".join(f"{name}回弹{format_mm(val)}" for val, name in top_rebound)
         )
+
+
+def _append_compress_facts(lines: list[str], rows: list[dict], *, slot_id: str = "") -> None:
+    if slot_id == "conclusion":
+        lines.append("- 压缩层组须按层分别计座，禁止把四个层组行数相加当总站点数（全市地面站约42座）")
+        for layer_from, name in _COMPRESS_LAYER_NAMES:
+            subset = _filter_compress_rows(rows, layer_from=layer_from)
+            _append_one_compress_layer_facts(lines, subset, title=name)
+        return
+    layer_from = _LAYER_SLOT_FROM.get(slot_id)
+    subset = _filter_compress_rows(rows, layer_from=layer_from)
+    title = "本压缩层组"
+    for lf, name in _COMPRESS_LAYER_NAMES:
+        if layer_from is not None and lf == layer_from:
+            title = name
+            break
+    _append_one_compress_layer_facts(lines, subset, title=title)
 
 
 def _append_q3b_top_points(lines: list[str], rows: list[dict]) -> None:
@@ -431,8 +502,39 @@ def build_audit_facts(
         if not rows:
             lines.append(f"- [{label}] 无数据行 → 不得编造该部分明细")
             continue
-        if iid in ("q_layer0", "q_area_rank", "q_key_area", "q_compress"):
-            lines.append(f"- [{label}] {len(rows)} 座/行（下列为已写好的中文事实，禁止抄英文字段或公式）")
+        if iid in ("q_layer0", "q_area_rank", "q_key_area", "q_compress", "q_ops_month_offline_alarm"):
+            if iid == "q_compress":
+                layer_from = _LAYER_SLOT_FROM.get(slot_id)
+                if slot_id == "conclusion":
+                    n_show = len({str(r.get("project_name") or "") for r in rows if isinstance(r, dict)})
+                    lines.append(
+                        f"- [{label}] 涉及约{n_show}座监测站的压缩层对（下列按层汇总，禁止抄未过滤总行数）"
+                    )
+                else:
+                    n_show = len(_filter_compress_rows(rows, layer_from=layer_from))
+                    lines.append(
+                        f"- [{label}] 本层组{n_show}座（下列为已写好的中文事实，禁止抄英文字段或公式）"
+                    )
+            elif iid == "q_ops_month_offline_alarm":
+                lines.append(f"- [{label}] {len(rows)} 行（下列为已写好的中文事实，禁止抄英文字段或公式）")
+                row0 = rows[0] if isinstance(rows[0], dict) else {}
+                alarm_n = int(_numeric(row0.get("offline_alarm_count")) or 0)
+                station_n = int(_numeric(row0.get("station_count")) or 0)
+                fallback = bool(row0.get("month_offline_fallback"))
+                if fallback:
+                    snap = str(row0.get("fallback_snapshot_time") or "").strip() or "最新批次"
+                    lines.append(
+                        f"- 本月窗内离线告警无数，已回退最新批次（{snap}）："
+                        f"设备离线告警{alarm_n}次，涉及地面沉降监测站{station_n}座"
+                    )
+                else:
+                    lines.append(
+                        f"- 本月累计设备离线告警{alarm_n}次，涉及地面沉降监测站{station_n}座"
+                    )
+            else:
+                lines.append(
+                    f"- [{label}] {len(rows)} 座/行（下列为已写好的中文事实，禁止抄英文字段或公式）"
+                )
             if iid == "q_layer0":
                 area_filter = ""
                 if slot_id.startswith("district_results__"):

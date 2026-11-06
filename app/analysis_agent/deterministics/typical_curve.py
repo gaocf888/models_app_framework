@@ -171,10 +171,19 @@ def typical_curve(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[d
     dxswj_series = _series_by_project(list(gathered.get("q_typical_dxswj") or []), "elevation")
     qxz_series = _series_by_project(list(gathered.get("q_typical_qxz") or []), "real_time_rain")
     kxs_series = _series_by_project(list(gathered.get("q_typical_kxsylj") or []), "pressure")
+    def _layer_i(row: dict[str, Any], key: str) -> int:
+        raw = row.get(key)
+        if raw is None or raw == "":
+            return -1
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return -1
+
     compress = [
         r
         for r in (gathered.get("q_compress") or [])
-        if isinstance(r, dict) and int(r.get("layer_from") or -1) == 0 and int(r.get("layer_to") or -1) == 1
+        if isinstance(r, dict) and _layer_i(r, "layer_from") == 0 and _layer_i(r, "layer_to") == 1
     ]
     compress_by = {str(r.get("project_name") or ""): r for r in compress}
 

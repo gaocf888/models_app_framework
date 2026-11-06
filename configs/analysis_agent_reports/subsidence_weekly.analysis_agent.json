@@ -1,11 +1,11 @@
 {
   "schema_version": 3,
   "title": "北京市地面沉降监测周报",
-  "description": "V2 拼装：封面/运行/平原/重点区叙述/告警（om_result）。重点区周报不挂表4-1。",
+  "description": "V2 拼装：封面/运行/平原/重点区叙述/告警（om_result）。平原章不挂分布图；重点区周报不挂表4-1。",
   "compose": [
     { "section": "cover", "params": { "cover_kind": "short" } },
     { "section": "station_ops" },
-    { "section": "plain_monitoring" },
+    { "section": "plain_monitoring", "variant": "no_map" },
     { "section": "key_area" },
     { "section": "device_alert" }
   ]

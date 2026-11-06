@@ -11,12 +11,23 @@ from app.analysis_agent.deterministics.coverage import (
     layers_by_canonical_project,
 )
 from app.analysis_agent.deterministics.formulas import consecutive_layer_pairs, period_delta
-from app.analysis_agent.deterministics.site_display import attach_site_display
+from app.analysis_agent.deterministics.site_display import attach_site_display, lookup_site_display
 
 _UNKNOWN_AREAS = frozenset({"", "未知", "未知区", "None", "null"})
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _resolve_area(project: str, sql_area: Any) -> str | None:
+    """SQL JOIN 失败时用 layer0_site_display 回填行政区，避免附表无区、排名丢站。"""
+    area = str(sql_area or "").strip()
+    if area and area not in _UNKNOWN_AREAS:
+        return area
+    info = lookup_site_display(project)
+    if info and info.area:
+        return info.area
+    return area or None
 
 
 def _f(val: Any) -> float | None:
@@ -58,7 +69,7 @@ def slice_layer0(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[di
         end = _f(row.get("settle_end"))
         if start is None or end is None:
             continue
-        area = row.get("area")
+        area = _resolve_area(project, row.get("area"))
         display = attach_site_display(project, str(area or ""))
         by_key[(project, mark)] = {
             "area": area,
@@ -107,8 +118,11 @@ def layer_compress(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[
         end = _f(row.get("settle_end"))
         if start is None or end is None:
             continue
+        # 同站多标：优先保留已回填的行政区
+        prev_area = (grouped.get(project) or {}).get("area")
+        area = _resolve_area(project, row.get("area") or prev_area)
         grouped[project] = {
-            "area": row.get("area"),
+            "area": area,
             "project_name": project,
         }
         deltas[project][layer] = period_delta(start, end)
