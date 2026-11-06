@@ -1219,10 +1219,15 @@ class SlotOrchestrator:
 
             static_pre = ""
             static_post = ""
+            static_post_inline = False
             if slot.kind == "llm_section" and (slot.static_body or "").strip():
-                from app.analysis_agent.renderers.static_narrative import split_static_narrative
+                from app.analysis_agent.renderers.static_narrative import (
+                    narrative_post_inline,
+                    split_static_narrative,
+                )
 
                 static_pre, static_post = split_static_narrative(slot.static_body)
+                static_post_inline = narrative_post_inline(slot.static_body)
             if live and static_pre:
                 await emit_typewriter(on_delta, static_pre + "\n\n")
 
@@ -1244,7 +1249,9 @@ class SlotOrchestrator:
                 period_label=str(((state.get("options") or {}).get("_resolved") or {}).get("period_label") or ""),
             )
             if live and static_post:
-                await emit_typewriter(on_delta, "\n\n" + static_post)
+                # 同段后缀紧接叙述；分段后缀仍空行隔开（脚注①等）
+                sep = "" if static_post_inline else "\n\n"
+                await emit_typewriter(on_delta, sep + static_post)
             out, chunks = section_result_to_slot_output(
                 slot,
                 result,

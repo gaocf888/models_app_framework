@@ -72,6 +72,8 @@ def test_om_report_display_map() -> None:
 
 
 def test_static_narrative_marker() -> None:
+    from app.analysis_agent.renderers.static_narrative import narrative_post_inline
+
     pre, post = split_static_narrative(f"开篇\n\n{NARRATIVE_MARKER}\n\n①脚注")
     assert pre == "开篇"
     assert post == "①脚注"
@@ -79,6 +81,13 @@ def test_static_narrative_marker() -> None:
         "开篇\n\n类型段\n\n①脚注"
     )
     assert apply_static_narrative("仅前缀", "中段") == "仅前缀\n\n中段"
+    inline_body = (
+        f"开篇\n\n{NARRATIVE_MARKER}同步完成采集清洗。"
+    )
+    assert narrative_post_inline(inline_body) is True
+    assert apply_static_narrative(inline_body, "本月发生设备离线告警21次，涉及地面沉降监测站3座。") == (
+        "开篇\n\n本月发生设备离线告警21次，涉及地面沉降监测站3座。同步完成采集清洗。"
+    )
 
 
 def test_layer0_audit_facts_include_districts_and_extremes() -> None:
