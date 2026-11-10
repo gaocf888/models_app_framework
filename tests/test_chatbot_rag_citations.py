@@ -39,6 +39,8 @@ def test_chunks_to_rag_citations_shape():
     assert cites[0]["source"] == "vector_store"
     assert "text_preview" in cites[0]
     assert cites[0]["score"] == 0.91
+    assert cites[0]["preview_url"].startswith("/chatbot/citation-preview?")
+    assert "chunk_id=c1" in cites[0]["preview_url"]
 
 
 def test_chunks_to_rag_citations_includes_rerank_score():

@@ -264,7 +264,7 @@
 
     <div class="out" style="margin-top: 1rem;">
       <div id="status">就绪</div>
-      <h2>回答（delta 拼接正文；citation_ref 渲染为可点引用；流结束后再 KaTeX）</h2>
+      <h2>回答（delta 拼接；citation_ref 角标优先打开 preview_url 预览页并高亮；流结束后再 KaTeX）</h2>
       <div id="answer"></div>
       <div id="err" class="err" hidden></div>
       <h2 style="margin-top:1rem;">结束帧 meta</h2>
@@ -357,6 +357,22 @@
     return lastRagCitations.find((c) => Number(c.ref_index) === Number(refIndex)) || null;
   }
 
+  function resolveCitationHref(cite) {
+    // 优先本系统预览页（片段高亮）；原文档 URL 仍在预览页内提供
+    let path = (cite && cite.preview_url ? String(cite.preview_url) : "").trim();
+    if (path) {
+      if (path.startsWith("/")) {
+        path = baseUrl() + path;
+      }
+      const key = $("apiKey").value.trim();
+      if (key) {
+        path += (path.indexOf("?") >= 0 ? "&" : "?") + "api_key=" + encodeURIComponent(key);
+      }
+      return path;
+    }
+    return (cite && cite.original_content_url ? String(cite.original_content_url) : "").trim();
+  }
+
   function citationSupHtml(refIndex, cite) {
     const label = "[" + refIndex + "]";
     if (!cite) {
@@ -369,13 +385,14 @@
       );
     }
     const title = [cite.doc_name, cite.section_path].filter(Boolean).join(" · ");
-    const url = (cite.original_content_url || "").trim();
+    const url = resolveCitationHref(cite);
     if (url) {
+      const tip = title || (cite.preview_url ? "打开知识引用预览" : "打开原文档");
       return (
         '<sup class="cite"><a href="' +
         escapeAttr(url) +
         '" target="_blank" rel="noopener noreferrer" title="' +
-        escapeAttr(title) +
+        escapeAttr(tip) +
         '">' +
         escapeHtml(label) +
         "</a></sup>"

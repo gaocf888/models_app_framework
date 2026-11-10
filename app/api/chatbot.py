@@ -22,13 +22,16 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
+import hmac
 import io
+import os
 import uuid
 from datetime import timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import json
 
 try:
@@ -59,16 +62,59 @@ from app.models.chatbot import (
     SessionTitlePatchRequest,
     SessionTitlePatchResponse,
 )
+from app.llm.graphs.chatbot_citation_preview import (
+    load_citation_preview,
+    preview_model_to_dict,
+    render_citation_preview_html,
+)
 from app.llm.graphs.chatbot_rag_citations import filter_rag_citation_dicts
 from app.llm.graphs.chatbot_hitl_display import normalize_persisted_hitl
 from app.services.chatbot_service import ChatbotService
 from app.services.chatbot_image_utils import split_message_content_and_images
 
 router = APIRouter()
+# 预览深链单独挂载（main 中不带全局 Bearer），接口内支持 Bearer 或 query api_key。
+preview_router = APIRouter()
 # 与 ChatbotService 共用同一 ConversationManager，保证对话写入与 GET /sessions、GET/DELETE .../messages 读写一致。
 _shared_conv = ConversationManager()
 service = ChatbotService(conv_manager=_shared_conv)
 _conv_admin = _shared_conv
+_preview_bearer = HTTPBearer(auto_error=False)
+
+
+def _configured_service_api_keys() -> frozenset[str]:
+    raw = os.getenv("SERVICE_API_KEYS") or os.getenv("SERVICE_API_KEY") or ""
+    return frozenset(k.strip() for k in raw.split(",") if k.strip())
+
+
+def _token_is_valid_service_key(token: str) -> bool:
+    keys = _configured_service_api_keys()
+    if not keys or not token:
+        return False
+    for k in keys:
+        if len(token) == len(k) and hmac.compare_digest(token, k):
+            return True
+    return False
+
+
+def _require_service_api_key_for_preview(
+    creds: HTTPAuthorizationCredentials | None,
+    api_key: str | None,
+) -> None:
+    """预览深链：Bearer 或 query ``api_key``（新标签无法带 Authorization）。"""
+    keys = _configured_service_api_keys()
+    if not keys:
+        raise HTTPException(status_code=503, detail="SERVICE_API_KEYS is not configured")
+    token = ""
+    if creds is not None and (creds.scheme or "").lower() == "bearer":
+        token = creds.credentials or ""
+    if not token:
+        token = (api_key or "").strip()
+    if not _token_is_valid_service_key(token):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid API key (Bearer or api_key query)",
+        )
 
 
 def _session_message_rag_citations(raw: Any) -> list[dict[str, Any]]:
@@ -113,6 +159,68 @@ def _delete_messages_by_ids(user_id: str, session_id: str, message_ids: list[str
         not_found_ids=not_found_ids,
         deleted_count=len(deleted_ids),
     )
+
+
+@preview_router.get(
+    "/citation-preview",
+    summary="知识引用预览页（解析正文 + 分片高亮定位）",
+    response_class=HTMLResponse,
+)
+async def citation_preview_page(
+    chunk_id: Annotated[str | None, Query(description="目标 chunk_id（向量 ext_id）")] = None,
+    namespace: Annotated[str | None, Query(description="命名空间；空表示默认分区")] = None,
+    doc_name: Annotated[str | None, Query(description="文档名，用于拉取同文档邻近分片")] = None,
+    doc_version: Annotated[str | None, Query(description="文档版本（可选）")] = None,
+    ref_index: Annotated[int | None, Query(description="回答中的引用编号 [n]（展示用）", ge=1)] = None,
+    api_key: Annotated[
+        str | None,
+        Query(description="新标签深链鉴权（推荐）；也可用 Authorization Bearer"),
+    ] = None,
+    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_preview_bearer)] = None,
+) -> HTMLResponse:
+    """
+    自建预览页：展示知识库**解析后**的文本分片，并滚动高亮目标引用。
+
+    - 保留结束帧 ``rag_citations`` 既有字段；角标链接使用新增的 ``preview_url``。
+    - 原件请用条目中的 ``original_content_url``（页内提供按钮）。
+    """
+    _require_service_api_key_for_preview(creds, api_key)
+    if not (chunk_id or "").strip() and not (doc_name or "").strip():
+        raise HTTPException(status_code=422, detail="chunk_id or doc_name is required")
+    model = load_citation_preview(
+        chunk_id=chunk_id,
+        namespace=namespace,
+        doc_name=doc_name,
+        doc_version=doc_version,
+        ref_index=ref_index,
+    )
+    return HTMLResponse(content=render_citation_preview_html(model))
+
+
+@preview_router.get(
+    "/citation-preview/data",
+    summary="知识引用预览数据（JSON）",
+)
+async def citation_preview_data(
+    chunk_id: Annotated[str | None, Query()] = None,
+    namespace: Annotated[str | None, Query()] = None,
+    doc_name: Annotated[str | None, Query()] = None,
+    doc_version: Annotated[str | None, Query()] = None,
+    ref_index: Annotated[int | None, Query(ge=1)] = None,
+    api_key: Annotated[str | None, Query()] = None,
+    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_preview_bearer)] = None,
+) -> JSONResponse:
+    _require_service_api_key_for_preview(creds, api_key)
+    if not (chunk_id or "").strip() and not (doc_name or "").strip():
+        raise HTTPException(status_code=422, detail="chunk_id or doc_name is required")
+    model = load_citation_preview(
+        chunk_id=chunk_id,
+        namespace=namespace,
+        doc_name=doc_name,
+        doc_version=doc_version,
+        ref_index=ref_index,
+    )
+    return JSONResponse(content=preview_model_to_dict(model))
 
 
 @router.post(
@@ -235,7 +343,8 @@ async def chat_stream(req: ChatRequest, request: Request):
        - `ref_index`（int，从 1 起）：与正文中 `[n]` 标记一一对应；
        - `doc_name`、`section_path`、`namespace`、`doc_version`、`chunk_id`；
        - `text_preview`：片段摘要；
-       - `original_content_url`（可选）：摄入时的原始文档 URL，有则可渲染为外链。
+       - `original_content_url`（可选）：摄入时的原始文档 URL，有则可渲染为外链；
+       - `preview_url`（新增）：本系统知识引用预览页相对路径（`/chatbot/citation-preview?...`），用于打开解析后正文并高亮定位；与 `original_content_url` 并存。
 
     2. **流式引用事件 `citation_ref`**：RAG 路径下后端从模型输出中识别完整 `[n]` 后单独下发
        `{"citation_ref": n, "finished": false}`；正文 `delta` 不再包含该 `[n]` 字面量。（正文中渲染链接时，需要通过n与结束帧rag_citations中的ref_index进行匹配，来获取知识文档名称和链接）
@@ -243,6 +352,7 @@ async def chat_stream(req: ChatRequest, request: Request):
 
     3. **前端渲染建议**：
        - 流式：收到 `citation_ref` 即渲染角标/链接，用 `ref_index === n` 在 `finished.meta.rag_citations` 中查找；
+       - 角标优先打开 `preview_url`（可附加 `api_key` 查询参数以便新标签鉴权）；`original_content_url` 可在预览页内作为「打开原文档」；
        - 历史/非流式：解析 `answer` 中的 `\\[(\d+)\\]` 或与 `rag_citations` 对齐；
        - 保留回答下方 `rag_citations` 来源列表；
        - FAQ 软直通时以 `ref_index` 为准，且 `n` 不超过本轮注入 prompt 的编号上限。

@@ -167,6 +167,12 @@ def create_app() -> FastAPI:
         tags=["llm"],
         dependencies=_auth,
     )
+    # 引用预览深链：内部自校验 Bearer/api_key，不能挂全局 Bearer（新标签无法带请求头）
+    app.include_router(
+        chatbot.preview_router,
+        prefix="/chatbot",
+        tags=["chatbot"],
+    )
     app.include_router(
         chatbot.router,
         prefix="/chatbot",
