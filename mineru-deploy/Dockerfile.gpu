@@ -1,4 +1,7 @@
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+# 现场常拉不到 docker.io；可用镜像前缀覆盖，例如：
+#   docker.m.daocloud.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+ARG CUDA_BASE_IMAGE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM ${CUDA_BASE_IMAGE}
 
 ARG MINERU_PIP_SPEC=mineru[core]
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple

@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile.gpu
       args:
+        CUDA_BASE_IMAGE: ${CUDA_BASE_IMAGE:-nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04}
         MINERU_PIP_SPEC: ${MINERU_GPU_PIP_SPEC:-mineru[core]}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         INSTALL_CUDA_TORCH: ${INSTALL_CUDA_TORCH:-1}
@@ -38,7 +39,14 @@ services:
       retries: 5
     networks:
       - mineru-net
-    gpus: all
+    # Compose 规范不支持顶层 gpus；与现网 nvidia 栈一致用 deploy.devices
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     mem_limit: ${MINERU_MEM_LIMIT:-16g}
 
 networks:
