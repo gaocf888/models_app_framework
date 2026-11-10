@@ -268,6 +268,14 @@ class RAGIngestionConfig:
     figure_neighbor_text_before_ratio: float = 0.7
     figure_expand_max_per_text: int = 2
     figure_expand_max_total: int = 6
+    # RAG 原始文档上传（长期 URL，供 source_uri / 引用预览原件）
+    doc_minio_bucket: str = "rag-docs"
+    doc_object_key_prefix: str = "docs/"
+    # 对外可访问前缀，例如 http://192.168.90.62:9000/rag-docs ；空则用 MinIO endpoint 直拼
+    doc_public_base_url: str = ""
+    # 上传时为 bucket 配置匿名 GetObject（长期 URL 无需签名）；请使用独立 bucket
+    doc_ensure_public_read: bool = True
+    doc_upload_max_mb: int = 200
 
 
 @dataclass
@@ -1162,6 +1170,11 @@ def _load_from_env() -> AppConfig:
         ),
         figure_expand_max_per_text=max(0, int(os.getenv("RAG_FIGURE_EXPAND_MAX_PER_TEXT", "2"))),
         figure_expand_max_total=max(0, int(os.getenv("RAG_FIGURE_EXPAND_MAX_TOTAL", "6"))),
+        doc_minio_bucket=(os.getenv("RAG_DOC_MINIO_BUCKET") or "rag-docs").strip(),
+        doc_object_key_prefix=(os.getenv("RAG_DOC_OBJECT_KEY_PREFIX") or "docs/").strip(),
+        doc_public_base_url=(os.getenv("RAG_DOC_PUBLIC_BASE_URL") or "").strip(),
+        doc_ensure_public_read=os.getenv("RAG_DOC_ENSURE_PUBLIC_READ", "true").lower() == "true",
+        doc_upload_max_mb=max(1, int(os.getenv("RAG_DOC_UPLOAD_MAX_MB", "200"))),
     )
     agentic_cfg = RAGAgenticConfig(
         enabled=os.getenv("RAG_AGENTIC_ENABLED", "true").lower() == "true",

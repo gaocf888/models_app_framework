@@ -6,6 +6,7 @@ RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
 说明：
 - 提供文本摄入、批量摄入、按文档删除、按 namespace 整库清空、namespace 启用/优先级管理、
   单篇文档 namespace 迁移、检索查询、数据集列表查询等管理能力；
+- 提供 ``POST /rag/documents/upload``：原始文档上传 MinIO，返回长期有效 URL（供 content/source_uri）；
 - 摄入支持 doc_name + replace_if_exists，实现同名文档更新（先删后灌）；
 - 摄入支持 namespace 级 ``namespace_kb_enabled`` / ``namespace_kb_priority``（写入 doc/chunk 元数据，召回时生效）；
 - 同时支持“原始文档内容”摄入（自动执行清洗与切块）；
@@ -29,7 +30,7 @@ RAG 管理接口（对应《下一阶段工作清单》中的 TODO-P6）。
 from functools import lru_cache
 from typing import Annotated, Any, List
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Path, Query
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Path, Query, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import get_app_config
@@ -40,6 +41,7 @@ from app.rag.ingestion_orchestrator import IngestionOrchestrator
 from app.rag.job_repository import JobRepository
 from app.rag.migrations import IndexMigrator
 from app.rag.content_url_fetch import materialize_document_content_from_url
+from app.rag.doc_upload import upload_rag_document
 from app.rag.mineru_ingest import prepare_pdf_document_for_pipeline
 from app.rag.models import DocumentSource
 from app.rag.namespace_kb import (
@@ -546,6 +548,82 @@ class ChunksMigrationRollbackResponse(BaseModel):
     ok: bool = Field(True, description="是否成功")
     rolled_back_to: str = Field(..., description="回滚目标物理索引名")
     alias: str = Field(..., description="当前 alias 名称")
+
+
+class RagDocumentUploadResponse(BaseModel):
+    """RAG 原始文档上传结果（MinIO，长期有效 URL）。"""
+
+    ok: bool = Field(True, description="是否成功")
+    file_name: str = Field(..., description="规范化后的原始文件名")
+    object_name: str = Field(..., description="MinIO 对象键")
+    bucket: str = Field(..., description="MinIO bucket")
+    url: str = Field(
+        ...,
+        description="长期有效的可访问 URL（无预签名过期参数；可作摄入 content / source_uri）",
+    )
+    content_type: str = Field(..., description="写入对象的 Content-Type")
+    source_type: str = Field(..., description="推断的摄入 source_type，如 pdf/docx/markdown")
+    size_bytes: int = Field(..., description="文件字节数")
+
+
+@router.post(
+    "/documents/upload",
+    summary="上传原始文档到 MinIO（返回长期有效 URL）",
+    response_model=RagDocumentUploadResponse,
+    response_description="返回可长期访问的 url，可填入后续摄入的 content 或 source_uri。",
+)
+async def upload_rag_document_endpoint(
+    file: Annotated[UploadFile, File(description="原始文档文件（pdf/docx/xlsx/md/txt/html 等）")],
+    namespace: Annotated[
+        str | None,
+        Form(description="可选命名空间，写入对象路径便于归档"),
+    ] = None,
+    doc_name: Annotated[
+        str | None,
+        Form(description="可选文档逻辑名，写入对象路径；默认取文件名（不含扩展名）"),
+    ] = None,
+) -> RagDocumentUploadResponse:
+    """
+    将知识库原始文档上传到 MinIO，并返回**长期有效**的 HTTP URL（非预签名、不会短期过期）。
+
+    **用法建议**
+    1. 调用本接口拿到 ``url``；
+    2. 异步摄入 ``POST /rag/jobs/ingest`` 时：
+       - ``content`` 填该 ``url``（需开启 ``RAG_CONTENT_FETCH_ENABLED``），和/或
+       - ``source_uri`` 填该 ``url``（溯源 / 引用预览「打开原文档」）。
+
+    **配置**
+    - 连接复用 ``CHATBOT_IMAGE_MINIO_*``；
+    - bucket / 前缀：``RAG_DOC_MINIO_BUCKET``、``RAG_DOC_OBJECT_KEY_PREFIX``；
+    - 对外访问根：``RAG_DOC_PUBLIC_BASE_URL``（内网 MinIO 建议必配，避免返回 docker 内部 hostname）；
+    - ``RAG_DOC_ENSURE_PUBLIC_READ=true`` 时会为该 bucket 配置匿名 GetObject（请使用独立 bucket）。
+    """
+    data = await file.read()
+    try:
+        result = upload_rag_document(
+            file_name=file.filename or "document.bin",
+            content=data,
+            content_type=file.content_type,
+            namespace=namespace,
+            doc_name=doc_name,
+        )
+        return RagDocumentUploadResponse(
+            ok=True,
+            file_name=result.file_name,
+            object_name=result.object_name,
+            bucket=result.bucket,
+            url=result.url,
+            content_type=result.content_type,
+            source_type=result.source_type,
+            size_bytes=result.size_bytes,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("rag document upload failed")
+        raise HTTPException(status_code=500, detail=f"RAG document upload failed: {e}") from e
 
 
 @router.post(
