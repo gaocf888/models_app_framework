@@ -15,7 +15,8 @@ services:
     ports:
       - "${MINERU_PORT:-8009}:8000"
     environment:
-      - MINERU_DEVICE_MODE=gpu
+      # PyTorch 设备名必须是 cuda（不是 gpu）；传 gpu 会在 UnimernetModel 里 torch.device('gpu') 直接报错
+      - MINERU_DEVICE_MODE=cuda
       - NVIDIA_VISIBLE_DEVICES=${MINERU_NVIDIA_VISIBLE_DEVICES:-0}
       - MINERU_MODEL_SOURCE=${MINERU_MODEL_SOURCE:-huggingface}
       - MINERU_API_OUTPUT_ROOT=/io/mineru-output
