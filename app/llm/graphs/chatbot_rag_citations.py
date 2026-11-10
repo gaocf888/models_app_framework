@@ -24,11 +24,13 @@ def build_citation_preview_url(
     doc_name: str | None = None,
     doc_version: str | None = None,
     ref_index: int | None = None,
+    highlight: str | None = None,
 ) -> str | None:
     """
     组装本系统「知识引用预览页」相对 URL。
 
     至少需要 ``chunk_id`` 或 ``doc_name`` 之一；保留 ``original_content_url`` 等原字段，本字段为新增。
+    ``highlight`` 为可选正文线索（通常取 text_preview 前缀），用于 chunk_id 对不上时的兜底定位。
     """
     cid = (chunk_id or "").strip()
     dname = (doc_name or "").strip()
@@ -52,6 +54,10 @@ def build_citation_preview_url(
                 q["ref_index"] = str(ri)
         except (TypeError, ValueError):
             pass
+    hl = (highlight or "").strip()
+    if hl:
+        # 控制 URL 长度；足够区分 FAQ 题干
+        q["highlight"] = hl if len(hl) <= 180 else hl[:177] + "..."
     return f"{CITATION_PREVIEW_PATH}?{urlencode(q)}"
 
 # 智能客服 finished.meta.rag_citations：不展示 NL2SQL 库表/业务/QA 知识库片段
@@ -218,6 +224,7 @@ def chunks_to_rag_context(
             doc_name=c.doc_name,
             doc_version=c.doc_version,
             ref_index=ref_index,
+            highlight=preview,
         )
         if preview_url:
             item["preview_url"] = preview_url

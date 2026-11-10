@@ -172,6 +172,10 @@ async def citation_preview_page(
     doc_name: Annotated[str | None, Query(description="文档名，用于拉取同文档邻近分片")] = None,
     doc_version: Annotated[str | None, Query(description="文档版本（可选）")] = None,
     ref_index: Annotated[int | None, Query(description="回答中的引用编号 [n]（展示用）", ge=1)] = None,
+    highlight: Annotated[
+        str | None,
+        Query(description="可选正文线索（通常来自 text_preview），chunk_id 对不上时兜底定位"),
+    ] = None,
     api_key: Annotated[
         str | None,
         Query(description="新标签深链鉴权（推荐）；也可用 Authorization Bearer"),
@@ -193,6 +197,7 @@ async def citation_preview_page(
         doc_name=doc_name,
         doc_version=doc_version,
         ref_index=ref_index,
+        highlight=highlight,
     )
     return HTMLResponse(content=render_citation_preview_html(model))
 
@@ -207,6 +212,7 @@ async def citation_preview_data(
     doc_name: Annotated[str | None, Query()] = None,
     doc_version: Annotated[str | None, Query()] = None,
     ref_index: Annotated[int | None, Query(ge=1)] = None,
+    highlight: Annotated[str | None, Query()] = None,
     api_key: Annotated[str | None, Query()] = None,
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_preview_bearer)] = None,
 ) -> JSONResponse:
@@ -219,6 +225,7 @@ async def citation_preview_data(
         doc_name=doc_name,
         doc_version=doc_version,
         ref_index=ref_index,
+        highlight=highlight,
     )
     return JSONResponse(content=preview_model_to_dict(model))
 

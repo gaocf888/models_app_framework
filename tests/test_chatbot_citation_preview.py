@@ -41,12 +41,14 @@ def test_build_citation_preview_url_shape():
         doc_name="手册.pdf",
         doc_version="v1",
         ref_index=2,
+        highlight="# 807. 燃烧管理系统（BMS）主要功能有哪些？",
     )
     assert url is not None
     assert url.startswith("/chatbot/citation-preview?")
     assert "chunk_id=c-1" in url
     assert "namespace=boiler" in url
     assert "ref_index=2" in url
+    assert "highlight=" in url
     assert build_citation_preview_url() is None
 
 
@@ -68,6 +70,7 @@ def test_chunks_to_rag_citations_includes_preview_url():
     assert cites[0]["preview_url"].startswith("/chatbot/citation-preview?")
     assert "chunk_id=cid-9" in cites[0]["preview_url"]
     assert "ref_index=1" in cites[0]["preview_url"]
+    assert "highlight=" in cites[0]["preview_url"]
 
 
 def test_load_and_render_highlights_target_chunk():
@@ -114,3 +117,108 @@ def test_load_and_render_highlights_target_chunk():
     assert "本轮引用" in html
     assert "低压低温再热器布置" in html
     assert "打开原文档" in html
+
+
+def test_no_silent_fallback_to_preface_when_id_missing():
+    """旧逻辑在未命中时高亮第 0 条「前言」；现应明确未定位且不高亮前言。"""
+    rows = [
+        {
+            "text": "前言",
+            "ext_id": "preface",
+            "namespace": "boiler_knowledge",
+            "doc_name": "锅炉运行与检修1000问",
+            "metadata": {"chunk_index": 0},
+        },
+        {
+            "text": "第一章 基础知识 ...... 1",
+            "ext_id": "toc",
+            "namespace": "boiler_knowledge",
+            "doc_name": "锅炉运行与检修1000问",
+            "metadata": {"chunk_index": 1},
+        },
+    ]
+    store = _FakeStore({"锅炉运行与检修1000问": rows}, {})
+    model = load_citation_preview(
+        chunk_id="ba691b28-7782-4b11-92ad-ee4faa600345",
+        namespace="boiler_knowledge",
+        doc_name="锅炉运行与检修1000问",
+        doc_version="v1",
+        ref_index=1,
+        store=store,
+    )
+    assert not any(c.is_target for c in model.chunks)
+    assert model.message and "未能精确定位" in model.message
+    html = render_citation_preview_html(model)
+    assert 'id="cite-target"' not in html
+
+
+def test_locate_by_highlight_when_chunk_id_not_in_window():
+    """模拟 400 窗口截断：列表无目标 id，但 highlight/text_preview 可命中正文。"""
+    bms = (
+        "# 807. 燃烧管理系统（BMS）主要功能有哪些？ 答：燃烧管理系统（BMS）主要功能如下：\n\n"
+        "(1) 点火前炉膛吹扫。(2) 油燃烧器自动控制。"
+    )
+    rows = [
+        {
+            "text": "前言",
+            "ext_id": "preface",
+            "namespace": "boiler_knowledge",
+            "doc_name": "锅炉运行与检修1000问",
+            "metadata": {"chunk_index": 0},
+        },
+        {
+            "text": bms,
+            "ext_id": "other-id-not-matching-url",
+            "namespace": "boiler_knowledge",
+            "doc_name": "锅炉运行与检修1000问",
+            "metadata": {"chunk_index": 807},
+        },
+    ]
+    store = _FakeStore({"锅炉运行与检修1000问": rows}, {})
+    model = load_citation_preview(
+        chunk_id="ba691b28-7782-4b11-92ad-ee4faa600345",
+        namespace="boiler_knowledge",
+        doc_name="锅炉运行与检修1000问",
+        ref_index=1,
+        highlight=bms[:120],
+        store=store,
+    )
+    assert any(c.is_target and "燃烧管理系统" in c.text for c in model.chunks)
+    assert not any(c.is_target and c.text.strip() == "前言" for c in model.chunks)
+    html = render_citation_preview_html(model)
+    assert "本轮引用" in html
+    assert "燃烧管理系统" in html
+
+
+def test_prepend_target_row_when_list_window_misses_id():
+    """mget/回查能拿到目标，但 list 窗口不含该 id 时，应插入并高亮目标而非前言。"""
+    bms = "# 807. 燃烧管理系统（BMS）主要功能有哪些？ 答：……"
+    target = {
+        "text": bms,
+        "ext_id": "ba691b28-7782-4b11-92ad-ee4faa600345",
+        "namespace": "boiler_knowledge",
+        "doc_name": "锅炉运行与检修1000问",
+        "metadata": {"chunk_index": 807},
+    }
+    rows = [
+        {
+            "text": "前言",
+            "ext_id": "preface",
+            "namespace": "boiler_knowledge",
+            "doc_name": "锅炉运行与检修1000问",
+            "metadata": {"chunk_index": 0},
+        },
+    ]
+    store = _FakeStore(
+        {"锅炉运行与检修1000问": rows},
+        {target["ext_id"]: target},
+    )
+    model = load_citation_preview(
+        chunk_id=target["ext_id"],
+        namespace="boiler_knowledge",
+        doc_name="锅炉运行与检修1000问",
+        ref_index=1,
+        store=store,
+    )
+    assert any(c.is_target and "BMS" in c.text for c in model.chunks)
+    assert not any(c.is_target and c.text.strip() == "前言" for c in model.chunks)

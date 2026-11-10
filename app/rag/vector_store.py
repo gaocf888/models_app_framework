@@ -1513,20 +1513,24 @@ class ElasticsearchVectorStore(VectorStore):
         def _mget():
             return self._client.mget(index=self._alias, ids=ids)
 
+        out: list[dict[str, Any]] = []
+        found_ids: set[str] = set()
         try:
             resp = self._with_retry(_mget)
         except Exception as exc:  # noqa: BLE001
             logger.warning("get_chunks_by_ext_ids mget failed: %s", exc)
-            return []
+            resp = {}
 
         docs = resp.get("docs") if isinstance(resp, dict) else []
-        out: list[dict[str, Any]] = []
         for doc in docs or []:
             if not doc or not doc.get("found"):
                 continue
             src = doc.get("_source") or {}
             if namespace is not None and src.get("namespace") != namespace:
                 continue
+            eid = str(src.get("ext_id") or doc.get("_id") or "").strip()
+            if eid:
+                found_ids.add(eid)
             out.append(
                 {
                     "text": src.get("text", ""),
@@ -1537,6 +1541,40 @@ class ElasticsearchVectorStore(VectorStore):
                     "score": 0.0,
                 }
             )
+
+        # 兼容历史数据：_id != ext_id 时 mget 会 miss，再按 ext_id 字段 terms 回查
+        missing = [i for i in ids if i not in found_ids]
+        if missing:
+            must: list[dict[str, Any]] = [{"terms": {"ext_id": missing}}]
+            if namespace is not None:
+                must.append({"term": {"namespace": namespace}})
+            body: dict[str, Any] = {
+                "size": min(len(missing) * 2, 100),
+                "query": {"bool": {"must": must}},
+                "_source": ["text", "ext_id", "metadata", "namespace", "doc_name"],
+            }
+            try:
+                sresp = self._with_retry(lambda: self._client.search(index=self._alias, body=body))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("get_chunks_by_ext_ids terms fallback failed: %s", exc)
+                sresp = {}
+            for hit in (sresp.get("hits") or {}).get("hits") or []:
+                src = hit.get("_source") or {}
+                eid = str(src.get("ext_id") or hit.get("_id") or "").strip()
+                if eid and eid in found_ids:
+                    continue
+                if eid:
+                    found_ids.add(eid)
+                out.append(
+                    {
+                        "text": src.get("text", ""),
+                        "ext_id": src.get("ext_id") or hit.get("_id"),
+                        "namespace": src.get("namespace"),
+                        "doc_name": src.get("doc_name"),
+                        "metadata": src.get("metadata") or {},
+                        "score": 0.0,
+                    }
+                )
         return out
 
     def update_namespace_kb_config(

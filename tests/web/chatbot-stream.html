@@ -364,6 +364,14 @@
       if (path.startsWith("/")) {
         path = baseUrl() + path;
       }
+      // 旧 preview_url 无 highlight 时，用 text_preview 补一条正文线索，避免只能落到文档开头
+      if (path.indexOf("highlight=") < 0) {
+        const hl = (cite && cite.text_preview ? String(cite.text_preview) : "").trim();
+        if (hl) {
+          const clipped = hl.length <= 180 ? hl : hl.slice(0, 177) + "...";
+          path += (path.indexOf("?") >= 0 ? "&" : "?") + "highlight=" + encodeURIComponent(clipped);
+        }
+      }
       const key = $("apiKey").value.trim();
       if (key) {
         path += (path.indexOf("?") >= 0 ? "&" : "?") + "api_key=" + encodeURIComponent(key);
