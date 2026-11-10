@@ -4,6 +4,10 @@ from app.llm.graphs.chatbot_citation_preview import (
     load_citation_preview,
     render_citation_preview_html,
 )
+from app.llm.graphs.chatbot_citation_preview_pdf import (
+    build_pdf_search_queries,
+    looks_like_pdf_url,
+)
 from app.llm.graphs.chatbot_rag_citations import (
     build_citation_preview_url,
     chunks_to_rag_citations,
@@ -112,11 +116,18 @@ def test_load_and_render_highlights_target_chunk():
     assert model.target_chunk_id == "a2"
     assert any(c.is_target and "低压低温再热器" in c.text for c in model.chunks)
     assert model.original_content_url == "https://cdn.example.com/manual.pdf"
-    html = render_citation_preview_html(model)
+    assert model.preview_mode == "pdf"
+    # 强制文本模式：验证分片高亮仍可用
+    html = render_citation_preview_html(
+        model,
+        view="text",
+        request_query="chunk_id=a2&namespace=ns&doc_name=%E6%89%8B%E5%86%8C",
+    )
     assert 'id="cite-target"' in html
     assert "本轮引用" in html
     assert "低压低温再热器布置" in html
     assert "打开原文档" in html
+    assert "PDF 原件预览" in html
 
 
 def test_no_silent_fallback_to_preface_when_id_missing():
@@ -222,3 +233,73 @@ def test_prepend_target_row_when_list_window_misses_id():
     )
     assert any(c.is_target and "BMS" in c.text for c in model.chunks)
     assert not any(c.is_target and c.text.strip() == "前言" for c in model.chunks)
+
+
+def test_looks_like_pdf_url_and_search_queries():
+    assert looks_like_pdf_url("https://cdn.example.com/a/boiler.pdf")
+    assert looks_like_pdf_url("https://cdn.example.com/obj?filename=a.pdf")
+    assert not looks_like_pdf_url("https://cdn.example.com/a.docx")
+    qs = build_pdf_search_queries("# 1.2 型式\n超临界参数、变压运行直流炉")
+    assert qs
+    assert any("型式" in q for q in qs)
+
+
+def test_pdf_preview_mode_renders_pdfjs_viewer():
+    rows = [
+        {
+            "text": "1.2 型式\n本锅炉为超临界参数、变压运行直流炉。",
+            "ext_id": "c5ba",
+            "namespace": "Power_plant_knowledge",
+            "doc_name": "锅炉说明书",
+            "metadata": {
+                "chunk_index": 2,
+                "source_uri": "https://files.example.com/boiler-manual.pdf",
+                "content_fetch_content_type": "application/pdf",
+            },
+        }
+    ]
+    store = _FakeStore({"锅炉说明书": rows}, {r["ext_id"]: r for r in rows})
+    model = load_citation_preview(
+        chunk_id="c5ba",
+        namespace="Power_plant_knowledge",
+        doc_name="锅炉说明书",
+        ref_index=1,
+        highlight="1.2 型式 超临界参数",
+        store=store,
+    )
+    assert model.preview_mode == "pdf"
+    assert model.pdf_search_queries
+    html = render_citation_preview_html(
+        model,
+        request_query="chunk_id=c5ba&namespace=Power_plant_knowledge&doc_name=%E9%94%85%E7%82%89%E8%AF%B4%E6%98%8E%E4%B9%A6&api_key=k",
+    )
+    assert "pdf.min.js" in html
+    assert "citation-preview/pdf-proxy" in html
+    assert "解析文本预览" in html
+    assert "view=text" in html
+
+
+def test_docx_stays_on_text_preview():
+    rows = [
+        {
+            "text": "Word 文档片段内容足够长用于预览",
+            "ext_id": "w1",
+            "namespace": "ns",
+            "doc_name": "说明.docx",
+            "metadata": {
+                "chunk_index": 0,
+                "source_uri": "https://files.example.com/说明.docx",
+            },
+        }
+    ]
+    store = _FakeStore({"说明.docx": rows}, {r["ext_id"]: r for r in rows})
+    model = load_citation_preview(
+        chunk_id="w1",
+        namespace="ns",
+        doc_name="说明.docx",
+        store=store,
+    )
+    assert model.preview_mode == "text"
+    html = render_citation_preview_html(model)
+    assert "pdf.min.js" not in html
+    assert "本轮引用" in html

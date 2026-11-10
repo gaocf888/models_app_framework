@@ -1,8 +1,9 @@
 """
 智能客服：知识引用预览页（解析后正文 + 目标分片高亮定位）。
 
-数据来自向量库 chunk（与 RAG 检索一致），不是原 PDF/Word 排版还原。
-``original_content_url`` 仍由前端/预览页提供「打开原文档」入口。
+- 非 PDF / 无原件 URL：展示向量库解析文本并高亮定位；
+- PDF 且有 ``original_content_url``：默认用 PDF.js 渲染原件并用正文线索近似搜索高亮；
+  可通过 ``view=text`` 回退到解析文本预览。
 """
 
 from __future__ import annotations
@@ -11,8 +12,15 @@ import html
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.core.logging import get_logger
+from app.llm.graphs.chatbot_citation_preview_pdf import (
+    build_pdf_search_queries,
+    looks_like_pdf_meta,
+    looks_like_pdf_url,
+    render_pdf_viewer_html,
+)
 from app.llm.graphs.chatbot_rag_citations import _original_content_url_from_chunk_metadata
 from app.rag.vector_store import VectorStoreProvider
 
@@ -20,6 +28,7 @@ logger = get_logger(__name__)
 
 _MAX_DOC_CHUNKS = 10000  # 1000 问类长文档需足够大，避免目标落在截断窗外
 _CONTEXT_RADIUS = 40  # 目标分片前后各保留的 chunk 数（过大时截窗）
+CITATION_PREVIEW_PDF_PROXY_PATH = "/chatbot/citation-preview/pdf-proxy"
 
 
 @dataclass(frozen=True)
@@ -44,6 +53,9 @@ class CitationPreviewModel:
     original_content_url: str | None
     truncated: bool
     message: str | None = None
+    preview_mode: str = "text"  # "pdf" | "text"
+    highlight_query: str | None = None
+    pdf_search_queries: tuple[str, ...] = ()
 
 
 def _meta_chunk_index(meta: Any) -> int | None:
@@ -247,6 +259,20 @@ def load_citation_preview(
         rows = [target_row]
 
     if not rows:
+        empty_url = None
+        if target_row is not None:
+            meta0 = target_row.get("metadata") if isinstance(target_row.get("metadata"), dict) else {}
+            empty_url = _original_content_url_from_chunk_metadata(meta0)
+        mode, queries, hq = _resolve_preview_mode(
+            original_content_url=empty_url,
+            highlight=hl,
+            target_text=str(target_row.get("text") or "") if target_row else None,
+            target_meta=(
+                target_row.get("metadata")
+                if target_row and isinstance(target_row.get("metadata"), dict)
+                else None
+            ),
+        )
         return CitationPreviewModel(
             doc_name=dname or "（未知文档）",
             namespace=ns,
@@ -254,9 +280,12 @@ def load_citation_preview(
             ref_index=ref_index,
             target_chunk_id=cid,
             chunks=[],
-            original_content_url=None,
+            original_content_url=empty_url,
             truncated=False,
             message="未在向量库中找到对应知识分片，请确认 chunk_id / doc_name / namespace。",
+            preview_mode=mode,
+            highlight_query=hq,
+            pdf_search_queries=tuple(queries),
         )
 
     target_idx = _find_target_index(rows, chunk_id=cid, highlight=hl)
@@ -344,6 +373,22 @@ def load_citation_preview(
     if truncated and not message:
         message = "文档分片较多，仅展示目标附近内容；完整原件请点「打开原文档」。"
 
+    target_text = next((c.text for c in chunks if c.is_target), None) or hl
+    target_meta = None
+    if target_idx >= 0 and target_idx < len(rows):
+        meta_raw = rows[target_idx].get("metadata")
+        if isinstance(meta_raw, dict):
+            target_meta = meta_raw
+    elif target_row and isinstance(target_row.get("metadata"), dict):
+        target_meta = target_row.get("metadata")
+
+    mode, queries, hq = _resolve_preview_mode(
+        original_content_url=orig_url,
+        highlight=hl,
+        target_text=target_text,
+        target_meta=target_meta,
+    )
+
     return CitationPreviewModel(
         doc_name=dname or "（未知文档）",
         namespace=ns,
@@ -354,7 +399,39 @@ def load_citation_preview(
         original_content_url=orig_url,
         truncated=truncated,
         message=message,
+        preview_mode=mode,
+        highlight_query=hq,
+        pdf_search_queries=tuple(queries),
     )
+
+
+def _resolve_preview_mode(
+    *,
+    original_content_url: str | None,
+    highlight: str | None,
+    target_text: str | None,
+    target_meta: dict[str, Any] | None,
+) -> tuple[str, list[str], str | None]:
+    """返回 (preview_mode, pdf_search_queries, highlight_query)。"""
+    queries = build_pdf_search_queries(highlight, target_text)
+    hq = queries[0] if queries else ((highlight or target_text or "").strip() or None)
+    if hq and len(hq) > 120:
+        hq = hq[:117] + "..."
+    is_pdf = looks_like_pdf_url(original_content_url) or looks_like_pdf_meta(target_meta)
+    if is_pdf and (original_content_url or "").strip():
+        return "pdf", queries, hq
+    return "text", queries, hq
+
+
+def _with_query_param(url: str, **params: str | None) -> str:
+    parts = urlsplit(url)
+    q = dict(parse_qsl(parts.query, keep_blank_values=True))
+    for k, v in params.items():
+        if v is None:
+            q.pop(k, None)
+        else:
+            q[k] = v
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment))
 
 
 def _format_chunk_body_html(text: str) -> str:
@@ -377,9 +454,7 @@ def _format_chunk_body_html(text: str) -> str:
     return "\n".join(parts)
 
 
-def render_citation_preview_html(model: CitationPreviewModel) -> str:
-    """渲染可读预览页 HTML（片段高亮 + 自动滚到目标）。"""
-    title = html.escape(model.doc_name)
+def _preview_meta_line(model: CitationPreviewModel) -> str:
     meta_bits = []
     if model.namespace:
         meta_bits.append(f"namespace={html.escape(model.namespace)}")
@@ -389,7 +464,57 @@ def render_citation_preview_html(model: CitationPreviewModel) -> str:
         meta_bits.append(f"引用 [{int(model.ref_index)}]")
     if model.target_chunk_id:
         meta_bits.append(f"chunk={html.escape(model.target_chunk_id[:48])}")
-    meta_line = " · ".join(meta_bits)
+    if model.preview_mode == "pdf":
+        meta_bits.append("mode=pdf")
+    return " · ".join(meta_bits)
+
+
+def render_citation_preview_html(
+    model: CitationPreviewModel,
+    *,
+    view: str | None = None,
+    request_query: str | None = None,
+) -> str:
+    """
+    渲染预览页 HTML。
+
+    ``view=text`` 强制解析文本；PDF 原件模式下默认 PDF.js。
+    ``request_query`` 为当前页原始 querystring（保留 api_key 等），用于模式切换链接。
+    """
+    view_norm = (view or "").strip().lower()
+    use_pdf = (
+        model.preview_mode == "pdf"
+        and bool((model.original_content_url or "").strip())
+        and view_norm not in {"text", "markdown", "chunks"}
+    )
+    if use_pdf:
+        # 构造「解析文本」回退链接：同路径加 view=text，保留原 query
+        base_q = request_query or ""
+        text_href = _with_query_param(
+            f"/chatbot/citation-preview?{base_q}" if base_q else "/chatbot/citation-preview",
+            view="text",
+        )
+        return render_pdf_viewer_html(
+            title=model.doc_name,
+            meta_line=_preview_meta_line(model),
+            pdf_url=str(model.original_content_url),
+            proxy_path=CITATION_PREVIEW_PDF_PROXY_PATH,
+            search_queries=list(model.pdf_search_queries or ()),
+            text_fallback_href=text_href,
+            original_open_url=str(model.original_content_url),
+            notice=model.message,
+        )
+    return _render_text_preview_html(model, request_query=request_query)
+
+
+def _render_text_preview_html(
+    model: CitationPreviewModel,
+    *,
+    request_query: str | None = None,
+) -> str:
+    """渲染解析文本预览页（片段高亮 + 自动滚到目标）。"""
+    title = html.escape(model.doc_name)
+    meta_line = _preview_meta_line(model)
 
     orig_btn = ""
     if model.original_content_url:
@@ -397,6 +522,15 @@ def render_citation_preview_html(model: CitationPreviewModel) -> str:
         orig_btn = (
             f'<a class="btn" href="{ou}" target="_blank" rel="noopener noreferrer">打开原文档</a>'
         )
+
+    pdf_btn = ""
+    if model.preview_mode == "pdf" and model.original_content_url:
+        base_q = request_query or ""
+        pdf_href = _with_query_param(
+            f"/chatbot/citation-preview?{base_q}" if base_q else "/chatbot/citation-preview",
+            view="pdf",
+        )
+        pdf_btn = f'<a class="btn ghost" href="{html.escape(pdf_href, quote=True)}">PDF 原件预览</a>'
 
     notice = ""
     if model.message:
@@ -540,6 +674,7 @@ def render_citation_preview_html(model: CitationPreviewModel) -> str:
     </div>
     <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
       {orig_btn}
+      {pdf_btn}
       <a class="btn ghost" href="#cite-target">回到引用位置</a>
     </div>
   </div>
@@ -572,6 +707,9 @@ def preview_model_to_dict(model: CitationPreviewModel) -> dict[str, Any]:
         "original_content_url": model.original_content_url,
         "truncated": model.truncated,
         "message": model.message,
+        "preview_mode": model.preview_mode,
+        "highlight_query": model.highlight_query,
+        "pdf_search_queries": list(model.pdf_search_queries or ()),
         "chunks": [
             {
                 "chunk_id": c.chunk_id,

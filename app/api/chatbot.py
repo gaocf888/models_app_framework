@@ -69,8 +69,14 @@ from app.llm.graphs.chatbot_citation_preview import (
 )
 from app.llm.graphs.chatbot_rag_citations import filter_rag_citation_dicts
 from app.llm.graphs.chatbot_hitl_display import normalize_persisted_hitl
+from app.rag.content_url_fetch import ContentFetchError, validate_fetch_url
 from app.services.chatbot_service import ChatbotService
 from app.services.chatbot_image_utils import split_message_content_and_images
+
+try:
+    import httpx
+except Exception:  # noqa: BLE001
+    httpx = None  # type: ignore[assignment]
 
 router = APIRouter()
 # 预览深链单独挂载（main 中不带全局 Bearer），接口内支持 Bearer 或 query api_key。
@@ -163,10 +169,11 @@ def _delete_messages_by_ids(user_id: str, session_id: str, message_ids: list[str
 
 @preview_router.get(
     "/citation-preview",
-    summary="知识引用预览页（解析正文 + 分片高亮定位）",
+    summary="知识引用预览页（PDF 原件或解析正文 + 高亮定位）",
     response_class=HTMLResponse,
 )
 async def citation_preview_page(
+    request: Request,
     chunk_id: Annotated[str | None, Query(description="目标 chunk_id（向量 ext_id）")] = None,
     namespace: Annotated[str | None, Query(description="命名空间；空表示默认分区")] = None,
     doc_name: Annotated[str | None, Query(description="文档名，用于拉取同文档邻近分片")] = None,
@@ -176,6 +183,10 @@ async def citation_preview_page(
         str | None,
         Query(description="可选正文线索（通常来自 text_preview），chunk_id 对不上时兜底定位"),
     ] = None,
+    view: Annotated[
+        str | None,
+        Query(description="预览模式：pdf（默认，若原件为 PDF）或 text（强制解析文本）"),
+    ] = None,
     api_key: Annotated[
         str | None,
         Query(description="新标签深链鉴权（推荐）；也可用 Authorization Bearer"),
@@ -183,10 +194,11 @@ async def citation_preview_page(
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_preview_bearer)] = None,
 ) -> HTMLResponse:
     """
-    自建预览页：展示知识库**解析后**的文本分片，并滚动高亮目标引用。
+    自建预览页：
 
-    - 保留结束帧 ``rag_citations`` 既有字段；角标链接使用新增的 ``preview_url``。
-    - 原件请用条目中的 ``original_content_url``（页内提供按钮）。
+    - 原件为 PDF 且有 ``original_content_url`` 时，默认 PDF.js 渲染原件并用正文线索近似高亮；
+    - Word 等其它类型，或 ``view=text``，仍展示解析后文本分片高亮；
+    - 角标链接使用 ``preview_url``；原件 URL 仍保留在 ``original_content_url``。
     """
     _require_service_api_key_for_preview(creds, api_key)
     if not (chunk_id or "").strip() and not (doc_name or "").strip():
@@ -199,7 +211,13 @@ async def citation_preview_page(
         ref_index=ref_index,
         highlight=highlight,
     )
-    return HTMLResponse(content=render_citation_preview_html(model))
+    return HTMLResponse(
+        content=render_citation_preview_html(
+            model,
+            view=view,
+            request_query=str(request.url.query or ""),
+        )
+    )
 
 
 @preview_router.get(
@@ -228,6 +246,81 @@ async def citation_preview_data(
         highlight=highlight,
     )
     return JSONResponse(content=preview_model_to_dict(model))
+
+
+@preview_router.get(
+    "/citation-preview/pdf-proxy",
+    summary="PDF 原件同源代理（供 PDF.js 加载，规避浏览器 CORS）",
+)
+async def citation_preview_pdf_proxy(
+    url: Annotated[str, Query(description="原 PDF 的 http(s) URL")],
+    api_key: Annotated[str | None, Query()] = None,
+    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_preview_bearer)] = None,
+) -> StreamingResponse:
+    """
+    将 PDF 原件以同源方式流式返回给预览页。
+
+    复用 RAG content-fetch 的主机/私网校验策略，降低开放代理风险。
+    """
+    _require_service_api_key_for_preview(creds, api_key)
+    target = (url or "").strip()
+    if not target:
+        raise HTTPException(status_code=422, detail="url is required")
+    if httpx is None:
+        raise HTTPException(status_code=503, detail="httpx is not available")
+
+    cfg = get_app_config().rag.content_fetch
+    try:
+        validate_fetch_url(target, cfg)
+    except ContentFetchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    headers: dict[str, str] = {}
+    if cfg.bearer_token:
+        headers["Authorization"] = f"Bearer {cfg.bearer_token}"
+    if cfg.header_name and cfg.header_value is not None:
+        headers[cfg.header_name] = cfg.header_value
+
+    timeout = httpx.Timeout(cfg.timeout_s or 120.0)
+    max_bytes = int(cfg.max_bytes or (50 * 1024 * 1024))
+    client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+    try:
+        req = client.build_request("GET", target, headers=headers)
+        resp = await client.send(req, stream=True)
+    except Exception as exc:  # noqa: BLE001
+        await client.aclose()
+        raise HTTPException(status_code=502, detail=f"upstream PDF fetch failed: {exc}") from exc
+
+    if resp.status_code >= 400:
+        await resp.aclose()
+        await client.aclose()
+        raise HTTPException(
+            status_code=502,
+            detail=f"upstream PDF fetch failed: HTTP {resp.status_code}",
+        )
+
+    async def _stream():
+        sent = 0
+        try:
+            async for chunk in resp.aiter_bytes(chunk_size=65536):
+                if not chunk:
+                    continue
+                sent += len(chunk)
+                if sent > max_bytes:
+                    break
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        _stream(),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": "inline",
+            "Cache-Control": "private, max-age=120",
+        },
+    )
 
 
 @router.post(
@@ -351,7 +444,7 @@ async def chat_stream(req: ChatRequest, request: Request):
        - `doc_name`、`section_path`、`namespace`、`doc_version`、`chunk_id`；
        - `text_preview`：片段摘要；
        - `original_content_url`（可选）：摄入时的原始文档 URL，有则可渲染为外链；
-       - `preview_url`（新增）：本系统知识引用预览页相对路径（`/chatbot/citation-preview?...`），用于打开解析后正文并高亮定位；与 `original_content_url` 并存。
+       - `preview_url`（新增）：本系统知识引用预览页相对路径（`/chatbot/citation-preview?...`）；原件为 PDF 时默认 PDF.js 原件预览+文本搜索高亮，其它类型或 `view=text` 为解析正文高亮；与 `original_content_url` 并存。
 
     2. **流式引用事件 `citation_ref`**：RAG 路径下后端从模型输出中识别完整 `[n]` 后单独下发
        `{"citation_ref": n, "finished": false}`；正文 `delta` 不再包含该 `[n]` 字面量。（正文中渲染链接时，需要通过n与结束帧rag_citations中的ref_index进行匹配，来获取知识文档名称和链接）
