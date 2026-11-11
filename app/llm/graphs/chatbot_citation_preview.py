@@ -56,6 +56,8 @@ class CitationPreviewModel:
     preview_mode: str = "text"  # "pdf" | "text"
     highlight_query: str | None = None
     pdf_search_queries: tuple[str, ...] = ()
+    # 扫描件 / MinerU 解析 PDF：默认走解析文本，避免整本大文件下载；可用 view=pdf 打开原件
+    pdf_prefer_text_default: bool = False
 
 
 def _meta_chunk_index(meta: Any) -> int | None:
@@ -263,15 +265,16 @@ def load_citation_preview(
         if target_row is not None:
             meta0 = target_row.get("metadata") if isinstance(target_row.get("metadata"), dict) else {}
             empty_url = _original_content_url_from_chunk_metadata(meta0)
-        mode, queries, hq = _resolve_preview_mode(
+        empty_meta = (
+            target_row.get("metadata")
+            if target_row and isinstance(target_row.get("metadata"), dict)
+            else None
+        )
+        mode, queries, hq, prefer_text = _resolve_preview_mode(
             original_content_url=empty_url,
             highlight=hl,
             target_text=str(target_row.get("text") or "") if target_row else None,
-            target_meta=(
-                target_row.get("metadata")
-                if target_row and isinstance(target_row.get("metadata"), dict)
-                else None
-            ),
+            target_meta=empty_meta,
         )
         return CitationPreviewModel(
             doc_name=dname or "（未知文档）",
@@ -286,6 +289,7 @@ def load_citation_preview(
             preview_mode=mode,
             highlight_query=hq,
             pdf_search_queries=tuple(queries),
+            pdf_prefer_text_default=prefer_text,
         )
 
     target_idx = _find_target_index(rows, chunk_id=cid, highlight=hl)
@@ -382,12 +386,28 @@ def load_citation_preview(
     elif target_row and isinstance(target_row.get("metadata"), dict):
         target_meta = target_row.get("metadata")
 
-    mode, queries, hq = _resolve_preview_mode(
+    mode, queries, hq, prefer_text = _resolve_preview_mode(
         original_content_url=orig_url,
         highlight=hl,
         target_text=target_text,
         target_meta=target_meta,
     )
+    # 匹配失败：PDF 原件文本层搜不到也白等大文件，默认改走解析文本
+    if mode == "pdf" and locate_failed:
+        prefer_text = True
+    if prefer_text and mode == "pdf":
+        scanned_hint = (
+            "本文件为扫描件 PDF（文本层弱/无），默认展示解析文本以便快速定位；"
+            "需要原件版式时请点「PDF 原件预览」。"
+        )
+        locate_hint = (
+            "未能在知识分片中精确定位，已默认展示解析文本；"
+            "需要原件版式时请点「PDF 原件预览」。"
+        )
+        if not message:
+            message = scanned_hint if _is_likely_scanned_pdf_meta(target_meta) else locate_hint
+        elif locate_failed and "PDF 原件预览" not in message:
+            message = f"{message} 需要原件版式时请点「PDF 原件预览」。"
 
     return CitationPreviewModel(
         doc_name=dname or "（未知文档）",
@@ -402,7 +422,23 @@ def load_citation_preview(
         preview_mode=mode,
         highlight_query=hq,
         pdf_search_queries=tuple(queries),
+        pdf_prefer_text_default=prefer_text,
     )
+
+
+def _is_likely_scanned_pdf_meta(meta: dict[str, Any] | None) -> bool:
+    """根据摄入元数据判断是否扫描件（MinerU 路径 / 显式标记）。"""
+    if not isinstance(meta, dict):
+        return False
+    flag = meta.get("pdf_is_scanned")
+    if flag is True or str(flag or "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    route = str(meta.get("pdf_parse_route") or "").strip().lower()
+    if route == "mineru":
+        return True
+    if meta.get("mineru_job_id") or meta.get("mineru_job_ids"):
+        return True
+    return False
 
 
 def _resolve_preview_mode(
@@ -411,16 +447,18 @@ def _resolve_preview_mode(
     highlight: str | None,
     target_text: str | None,
     target_meta: dict[str, Any] | None,
-) -> tuple[str, list[str], str | None]:
-    """返回 (preview_mode, pdf_search_queries, highlight_query)。"""
+) -> tuple[str, list[str], str | None, bool]:
+    """返回 (preview_mode, pdf_search_queries, highlight_query, pdf_prefer_text_default)。"""
     queries = build_pdf_search_queries(highlight, target_text)
     hq = queries[0] if queries else ((highlight or target_text or "").strip() or None)
     if hq and len(hq) > 120:
         hq = hq[:117] + "..."
     is_pdf = looks_like_pdf_url(original_content_url) or looks_like_pdf_meta(target_meta)
+    prefer_text = False
     if is_pdf and (original_content_url or "").strip():
-        return "pdf", queries, hq
-    return "text", queries, hq
+        prefer_text = _is_likely_scanned_pdf_meta(target_meta)
+        return "pdf", queries, hq, prefer_text
+    return "text", queries, hq, prefer_text
 
 
 def _with_query_param(url: str, **params: str | None) -> str:
@@ -465,7 +503,10 @@ def _preview_meta_line(model: CitationPreviewModel) -> str:
     if model.target_chunk_id:
         meta_bits.append(f"chunk={html.escape(model.target_chunk_id[:48])}")
     if model.preview_mode == "pdf":
-        meta_bits.append("mode=pdf")
+        if model.pdf_prefer_text_default:
+            meta_bits.append("mode=pdf(scanned→text)")
+        else:
+            meta_bits.append("mode=pdf")
     return " · ".join(meta_bits)
 
 
@@ -478,15 +519,25 @@ def render_citation_preview_html(
     """
     渲染预览页 HTML。
 
-    ``view=text`` 强制解析文本；PDF 原件模式下默认 PDF.js。
+    - 文字层 PDF：默认 PDF.js；``view=text`` 可切解析文本。
+    - 扫描件 PDF（``pdf_prefer_text_default``）：默认解析文本；``view=pdf`` 打开原件。
     ``request_query`` 为当前页原始 querystring（保留 api_key 等），用于模式切换链接。
     """
     view_norm = (view or "").strip().lower()
-    use_pdf = (
-        model.preview_mode == "pdf"
-        and bool((model.original_content_url or "").strip())
-        and view_norm not in {"text", "markdown", "chunks"}
-    )
+    explicit_pdf = view_norm in {"pdf", "original"}
+    explicit_text = view_norm in {"text", "markdown", "chunks"}
+    can_pdf = model.preview_mode == "pdf" and bool((model.original_content_url or "").strip())
+    if not can_pdf:
+        use_pdf = False
+    elif explicit_pdf:
+        use_pdf = True
+    elif explicit_text:
+        use_pdf = False
+    elif model.pdf_prefer_text_default:
+        # 扫描件：默认文本，避免整本大文件下载
+        use_pdf = False
+    else:
+        use_pdf = True
     if use_pdf:
         # 构造「解析文本」回退链接：同路径加 view=text，保留原 query
         base_q = request_query or ""
@@ -530,11 +581,20 @@ def _render_text_preview_html(
             f"/chatbot/citation-preview?{base_q}" if base_q else "/chatbot/citation-preview",
             view="pdf",
         )
-        pdf_btn = f'<a class="btn ghost" href="{html.escape(pdf_href, quote=True)}">PDF 原件预览</a>'
+        # 扫描件/匹配失败默认文本时，原件入口用主按钮，避免被忽略
+        pdf_cls = "btn" if model.pdf_prefer_text_default else "btn ghost"
+        pdf_btn = (
+            f'<a class="{pdf_cls}" href="{html.escape(pdf_href, quote=True)}">PDF 原件预览</a>'
+        )
 
     notice = ""
     if model.message:
         notice = f'<p class="notice">{html.escape(model.message)}</p>'
+    elif model.pdf_prefer_text_default and model.preview_mode == "pdf":
+        notice = (
+            '<p class="notice">本文件默认展示解析文本以便快速定位；'
+            "需要原件版式时请点「PDF 原件预览」。</p>"
+        )
     elif model.truncated:
         notice = '<p class="notice">文档分片较多，仅展示目标附近内容；完整原件请点「打开原文档」。</p>'
 
@@ -710,6 +770,7 @@ def preview_model_to_dict(model: CitationPreviewModel) -> dict[str, Any]:
         "preview_mode": model.preview_mode,
         "highlight_query": model.highlight_query,
         "pdf_search_queries": list(model.pdf_search_queries or ()),
+        "pdf_prefer_text_default": bool(model.pdf_prefer_text_default),
         "chunks": [
             {
                 "chunk_id": c.chunk_id,

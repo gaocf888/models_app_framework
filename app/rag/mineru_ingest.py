@@ -86,7 +86,12 @@ def prepare_pdf_document_for_pipeline(doc: DocumentSource) -> tuple[DocumentSour
             )
         md, mineru_meta = client.parse_pdf_to_markdown(path, doc_name=doc.doc_name)
 
-    meta = {**doc.metadata, "pdf_parse_route": "mineru", **mineru_meta}
+    meta = {
+        **doc.metadata,
+        "pdf_parse_route": "mineru",
+        "pdf_is_scanned": True,
+        **mineru_meta,
+    }
     wall_s = float(mineru_meta.get("mineru_parse_wall_s") or 0.0)
     task_id = mineru_meta.get("mineru_job_id")
     if task_id:

@@ -303,3 +303,87 @@ def test_docx_stays_on_text_preview():
     html = render_citation_preview_html(model)
     assert "pdf.min.js" not in html
     assert "本轮引用" in html
+
+
+def test_scanned_pdf_defaults_to_text_preview_keeps_pdf_entry():
+    """扫描件（MinerU）默认解析文本，避免整本大文件；仍保留 PDF 原件入口。"""
+    rows = [
+        {
+            "text": "扫描件解析出的 BMS 功能说明段落足够长用于定位",
+            "ext_id": "scan-1",
+            "namespace": "boiler_knowledge",
+            "doc_name": "锅炉1000问.pdf",
+            "metadata": {
+                "chunk_index": 10,
+                "source_uri": "https://files.example.com/boiler-1000q-scan.pdf",
+                "content_fetch_content_type": "application/pdf",
+                "pdf_parse_route": "mineru",
+                "pdf_is_scanned": True,
+                "mineru_job_id": "task-abc",
+            },
+        }
+    ]
+    store = _FakeStore({"锅炉1000问.pdf": rows}, {r["ext_id"]: r for r in rows})
+    model = load_citation_preview(
+        chunk_id="scan-1",
+        namespace="boiler_knowledge",
+        doc_name="锅炉1000问.pdf",
+        ref_index=1,
+        store=store,
+    )
+    assert model.preview_mode == "pdf"
+    assert model.pdf_prefer_text_default is True
+    assert model.message and "扫描件" in model.message
+
+    default_html = render_citation_preview_html(
+        model,
+        request_query="chunk_id=scan-1&namespace=boiler_knowledge",
+    )
+    assert "pdf.min.js" not in default_html
+    assert "本轮引用" in default_html
+    assert "PDF 原件预览" in default_html
+    assert "view=pdf" in default_html
+    assert "扫描件" in default_html
+
+    pdf_html = render_citation_preview_html(
+        model,
+        view="pdf",
+        request_query="chunk_id=scan-1&namespace=boiler_knowledge",
+    )
+    assert "pdf.min.js" in pdf_html
+    assert "citation-preview/pdf-proxy" in pdf_html
+    assert "view=text" in pdf_html
+
+
+def test_locate_failed_pdf_defaults_to_text_preview():
+    """PDF 原件存在但分片定位失败时，默认文本预览，避免空跑大文件下载。"""
+    rows = [
+        {
+            "text": "前言",
+            "ext_id": "preface",
+            "namespace": "ns",
+            "doc_name": "手册.pdf",
+            "metadata": {
+                "chunk_index": 0,
+                "source_uri": "https://files.example.com/manual.pdf",
+                "content_fetch_content_type": "application/pdf",
+            },
+        }
+    ]
+    store = _FakeStore({"手册.pdf": rows}, {})
+    model = load_citation_preview(
+        chunk_id="missing-id-zzzz",
+        namespace="ns",
+        doc_name="手册.pdf",
+        store=store,
+    )
+    assert model.preview_mode == "pdf"
+    assert model.pdf_prefer_text_default is True
+    assert not any(c.is_target for c in model.chunks)
+    html = render_citation_preview_html(
+        model,
+        request_query="chunk_id=missing-id-zzzz&namespace=ns&doc_name=%E6%89%8B%E5%86%8C.pdf",
+    )
+    assert "pdf.min.js" not in html
+    assert "PDF 原件预览" in html
+    assert "view=pdf" in html
