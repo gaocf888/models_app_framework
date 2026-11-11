@@ -932,7 +932,7 @@ t_data_wash_qxz.project_name=t_station.name
 | D1 | **应该配置化**：`device_type → project_name[]` 官方覆盖名单 |
 | D2 | **统一配置策略**：所有监测方式（含 fcb/jyb）共用同一套「覆盖配置 + 语义注入 `project_names` + 与 `t_station` 匹配」；**不要**两套站点名单写法 |
 | D3 | **P6 层位字典保留为 fcb 附加能力**：不把孔压/光纤等写成 `monitor_layer`/`station_name` 假口径；也不用 `fcb_layer_map` 条目结构硬塞其它监测方式 |
-| D4 | **GNSS 占位留空**：配置保留 `gnss` 键，`project_names: []`；表映射可继续存在 |
+| D4 | **GNSS 覆盖**：`project_names` 按 `站点列表-GNSS--92个.xlsx` 填入（92 站，名称保持表内原文） |
 | D5 | **维属性取自 `t_station`**：`area`/坐标等只认维表；配置只表达「归属某监测方式」；查询 = 维表过滤 ∩ 覆盖名单 |
 | D6 | **配置不抄 `area`**，避免与 `t_station` 双源 |
 | D7 | **一期不改库**：不给 `t_station` 加多值监测方式字段 / 桥表 |

@@ -509,7 +509,8 @@ def test_device_station_map_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(assets.device_projects_by_type.get("fcb") or ()) == 42
     assert len(assets.device_projects_by_type.get("kxsylj") or ()) == 41
     assert len(assets.device_projects_by_type.get("gq") or ()) == 3
-    assert assets.device_projects_by_type.get("gnss") == ()
+    assert len(assets.device_projects_by_type.get("gnss") or ()) == 92
+    assert "F8-GNSS" in (assets.device_projects_by_type.get("gnss") or ())
     assert "F22(尹家河)" in (assets.device_projects_by_type.get("gq") or ())
 
 
@@ -627,8 +628,8 @@ def test_align_gq_coverage_not_citywide(monkeypatch: pytest.MonkeyPatch) -> None
     assert set(name_filters[0]["value"]) == {"F22(尹家河)", "F32(梨花)", "F35(张家务)"}
 
 
-def test_align_gnss_empty_coverage_skips_in_list(monkeypatch: pytest.MonkeyPatch) -> None:
-    """GNSS 占位空名单：告警且不注入 project_names IN。"""
+def test_align_gnss_coverage_injects_project_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GNSS 官方 92 站覆盖：注入 device_station_map，不告警 empty。"""
     monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
     from app.nl2sql.schema_linker import link_schema
 
@@ -647,14 +648,21 @@ def test_align_gnss_empty_coverage_skips_in_list(monkeypatch: pytest.MonkeyPatch
     binding = align_semantics(q, intent, assets=assets)
     assert binding is not None
     assert "gnss" in binding.device_types
-    assert any(w.startswith("device_station_map_empty:gnss") for w in binding.warnings)
-    assert not binding.project_names
+    assert not any(w.startswith("device_station_map_empty:gnss") for w in binding.warnings)
+    assert "device_station_map_coverage" in binding.warnings
+    assert len(binding.device_coverage_project_names) == 92
+    assert "F8-GNSS" in binding.device_coverage_project_names
 
     table_columns = {
         "t_data_wash_gnss": {"displacement_3d", "data_time", "project_name"},
         "t_station": {"name", "area"},
     }
     linked = link_schema(q, intent, binding, table_columns, allowlist=set(table_columns), assets=assets)
-    pn_filters = [f for f in linked.suggested_filters if f.get("column") == "project_name"]
-    assert not pn_filters
+    pn_filters = [
+        f
+        for f in linked.suggested_filters
+        if f.get("column") == "project_name" and f.get("source") == "device_station_map"
+    ]
+    assert pn_filters and pn_filters[0]["op"] == "in"
+    assert len(pn_filters[0]["value"]) == 92
 

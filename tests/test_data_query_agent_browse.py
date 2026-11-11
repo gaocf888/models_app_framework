@@ -356,7 +356,7 @@ async def test_tree_groups_yaml_stations_by_t_station_area() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tree_fcb_f_code_fallback_and_gnss_empty() -> None:
+async def test_tree_fcb_f_code_fallback_and_gnss_coverage() -> None:
     exe = _FakeExecutor()
     fcb = await fetch_perception_tree(library_id="fcb", executor=exe)
     names = load_device_projects_by_type()["fcb"]
@@ -365,9 +365,17 @@ async def test_tree_fcb_f_code_fallback_and_gnss_empty() -> None:
     by_district = {d["district"]: d for d in node["districts"]}
     tongzhou = {s["station_id"]: s for s in by_district["通州区"]["stations"]}
     assert "F42(牌楼站)" in tongzhou
+    gnss_names = load_device_projects_by_type()["gnss"]
     gnss = await fetch_perception_tree(library_id="gnss", executor=exe)
-    assert gnss["libraries"][0]["station_count"] == 0
-    assert gnss["libraries"][0]["districts"] == []
+    assert gnss["libraries"][0]["station_count"] == len(gnss_names) == 92
+    assert gnss["libraries"][0]["districts"]
+    all_ids = {
+        s["station_id"]
+        for d in gnss["libraries"][0]["districts"]
+        for s in d["stations"]
+    }
+    assert "F8-GNSS" in all_ids
+    assert "通州孙各庄" in all_ids
 
 
 @pytest.mark.asyncio
@@ -382,7 +390,7 @@ async def test_tree_all_libraries_one_station_query() -> None:
     coverage = load_device_projects_by_type()
     assert by_id["fcb"]["station_count"] == len(coverage["fcb"])
     assert by_id["jyb"]["station_count"] == len(coverage["jyb"])
-    assert by_id["gnss"]["station_count"] == 0
+    assert by_id["gnss"]["station_count"] == len(coverage["gnss"]) == 92
     assert by_id["gq"]["station_count"] == len(coverage["gq"])
 
 

@@ -360,7 +360,7 @@ analysis_agent_finished         { result }                         # 按钮恢�
 
 #### 进入页面
 
-1. 画左侧树：`GET /data-query-agent/tree`（库→行政区→站点及点数；界面上就是左边那棵可展开的树）。站名单与报告/NL2SQL 同一套官方覆盖（`device_station_map.yaml`），区名来自 `t_station.area`，**不读洗数表、不带每站最新值**（最新值在点树后的右侧表 `GET /browse`）。库节点 `id` 必须用下表 `library_id`（程序用的英文代号），不要用中文当稳定 ID（树上可以写「分层标」，请求里必须传 `fcb`）。站点 `station_id` = 覆盖名单里的场地 `project_name`（如 `F28(金盏)`），与点树过滤、`GET /hud` 的 `entity_id` 同源。GNSS 一期覆盖为空则该枝没有站点。  
+1. 画左侧树：`GET /data-query-agent/tree`（库→行政区→站点及点数；界面上就是左边那棵可展开的树）。站名单与报告/NL2SQL 同一套官方覆盖（`device_station_map.yaml`），区名来自 `t_station.area`，**不读洗数表、不带每站最新值**（最新值在点树后的右侧表 `GET /browse`）。库节点 `id` 必须用下表 `library_id`（程序用的英文代号），不要用中文当稳定 ID（树上可以写「分层标」，请求里必须传 `fcb`）。站点 `station_id` = 覆盖名单里的场地 `project_name`（如 `F28(金盏)`），与点树过滤、`GET /hud` 的 `entity_id` 同源。GNSS 覆盖为 92 站（名单见 `device_station_map.yaml` / `站点列表-GNSS--92个.xlsx`）。  
 2. 右侧默认表：`GET /data-query-agent/browse?page=1&page_size=20`（不传 `library_id` = 全北京最新分层标）。**不**打 `run-stream`（用户还没点「解析 SQL」，不要当成人话查询）。翻页只改 `page` / `page_size`，看 `total` / `has_more`。  
 3. 可选预加载：`GET /data-query-agent/libraries`（拉一份「七种监测类型」名单），供 HITL 选库弹窗与树上中文名校验。  
 4. 输入框为空：「解析 SQL」**禁用**（灰掉，点不了）。

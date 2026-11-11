@@ -1,14 +1,14 @@
 # 监测方式站点覆盖（semantic/dimensions/device_station_map.yaml）
-# 真源：站点列表-除了gnss.xls；区县维属性只认 t_station.area。
+# 真源：站点列表-除了gnss.xls + 站点列表-GNSS--92个.xlsx；区县维属性只认 t_station.area。
 # 与 P6 fcb_layer_map 分工：本文件=站点覆盖；层位字典=标编号/层位。
 # 说明见 configs/nl2sql_business/subsidence/配置项说明.md 与 NL2SQL基座改造.md §7.5
-version: 2026.09.17
-source: docs/地降所需求及数据相关/数据库结构及逻辑/站点列表-除了gnss.xls
+version: 2026.11.11
+source: docs/地降所需求及数据相关/数据库结构及逻辑/站点列表-除了gnss.xls；GNSS 见 站点列表-GNSS--92个.xlsx
 description: 监测方式 → 官方站点场地（project_name ≡ t_station.name）覆盖名单
 notes:
 - 区县以 t_station.area 为准；本文件不存 area
 - 站名按 F 码优先对齐 scope_lexicon；fcb 覆盖码来自 fcb_layer_map∪xls
-- gnss 一期占位为空；有名单后再填
+- gnss 已按「站点列表-GNSS--92个.xlsx」填入 92 站（名称保持表内原文，与 t_station.name / 洗数表 project_name 对齐）
 - scope_lexicon.stations 不做本文件的第二份权威拷贝
 devices:
   fcb:
@@ -209,4 +209,96 @@ devices:
     - F41(王家堡)
   gnss:
     table: t_data_wash_gnss
-    project_names: []
+    project_names:
+    - F1-王四营
+    - F2-望京
+    - F3-天竺
+    - F5-平各庄
+    - F6-张家湾
+    - F7-榆垡
+    - F8-GNSS
+    - F8J-GNSS
+    - F9-GNSS
+    - F10-GNSS
+    - F11-GNSS
+    - F12-GNSS
+    - F12J-GNSS
+    - F13-GNSS
+    - F14-GNSS
+    - F15-GNSS
+    - F16-GNSS
+    - F17-GNSS
+    - F17J-GNSS
+    - F18-GNSS
+    - F18J-GNSS
+    - F19-GNSS
+    - F20-GNSS
+    - F21-GNSS
+    - F21J-GNSS
+    - F22-GNSS
+    - F23-GNSS
+    - F23J-GNSS
+    - F24-GNSS
+    - F25-GNSS
+    - F26-GNSS
+    - F27-GNSS
+    - F27J-GNSS
+    - F28-GNSS
+    - F29-GNSS
+    - F30-GNSS
+    - F30J-GNSS
+    - F31-GNSS
+    - F32-GNSS
+    - F33-GNSS
+    - F34-GNSS
+    - F35-GNSS
+    - F36-GNSS
+    - F36J-GNSS
+    - F37-GNSS
+    - F38-GNSS
+    - F39-GNSS
+    - F39J-GNSS
+    - F40-GNSS
+    - F41-GNSS
+    - CBL01
+    - CDZ01
+    - CMG01
+    - DAD01
+    - DHC01
+    - DLZ01
+    - FDL01
+    - FQT01
+    - HBB01
+    - HSL01
+    - HSL02
+    - HYX01
+    - PMQ01
+    - PWW01
+    - SBE01
+    - SBL01
+    - SBN01
+    - SBY01
+    - SBZ01
+    - SLC01
+    - SLP01
+    - SLZ01
+    - THH01
+    - TSB01
+    - TSF01
+    - TXH01
+    - TXS01
+    - TZG01
+    - TZT01
+    - YXH01
+    - 朝阳皮村
+    - 朝阳区金盏
+    - 朝阳孙河公园
+    - 大厦DS01
+    - 大兴机场北
+    - 大兴机场南
+    - 地质大厦楼顶2-西北
+    - 地质大厦楼顶3-东北
+    - 地质大厦楼顶4-东南
+    - 金盏公交
+    - 通州大庞村
+    - 通州孙各庄

@@ -81,7 +81,7 @@
 
 - 事实表 **`project_name`** 与 **`t_station.name`** 等值关联。
 - 行政区过滤：`t_station.area`（标准名如「朝阳区」「通州区」）；层位字典中的 `district_raw` 可能是简称，**不以之为 SQL 过滤真源**。
-- **监测方式官方站点覆盖**：`semantic/dimensions/device_station_map.yaml`（`device_type → project_name[]`）。查询某监测方式站点时，先取覆盖名单再与 `t_station` 匹配；**不以**事实表「当前有数据」代替官方覆盖。GNSS 一期名单为空占位。
+- **监测方式官方站点覆盖**：`semantic/dimensions/device_station_map.yaml`（`device_type → project_name[]`）。查询某监测方式站点时，先取覆盖名单再与 `t_station` 匹配；**不以**事实表「当前有数据」代替官方覆盖。GNSS 覆盖来自 `站点列表-GNSS--92个.xlsx`（92 站，名称保持表内原文）。
 - **行政区对比 / 「哪些区沉降偏大」**（与「禁止同站多标 AVG」不冲突）：
   1. 每个 `project_name` 先用层位 0 代表标算 `period_settle_mm`（初−末）；
   2. 再 `GROUP BY s.area`，对区内各站 `AVG(period_settle_mm)`（可附 `COUNT(DISTINCT project_name)`）；

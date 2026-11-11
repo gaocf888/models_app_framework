@@ -18,8 +18,12 @@ def test_fcb_allowlist_non_empty() -> None:
     assert "F42(牌楼站)" in names
 
 
-def test_gnss_coverage_empty() -> None:
-    assert project_names("gnss") == ()
+def test_gnss_coverage_from_xlsx() -> None:
+    names = project_names("gnss")
+    assert len(names) == 92
+    assert "F8-GNSS" in names
+    assert "通州孙各庄" in names
+    assert "CBL01" in names
 
 
 def test_f42_alias_maps_to_coverage_canonical() -> None:

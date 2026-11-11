@@ -115,8 +115,11 @@ def test_qxz_out_of_axis_sites_no_rain(monkeypatch) -> None:
     assert all(r.get("aux_kind") != "rain" for r in rows)
 
 
-def test_gnss_empty_coverage_direction_closed() -> None:
-    assert project_names("gnss") == ()
+def test_gnss_coverage_filled_but_not_used_as_typical_axis() -> None:
+    """GNSS 覆盖名单已补齐；典型曲线右轴仍不含 GNSS（设计排除，非空名单占位）。"""
+    assert len(project_names("gnss")) == 92
+    assert "GNSS" not in tc_mod._AXIS_META
+    assert "gnss" not in tc_mod._AXIS_META
 
 
 def test_dual_axis_chart_uses_aux_name_and_device_legend() -> None:

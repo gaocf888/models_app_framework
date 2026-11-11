@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "title": "北京市地面沉降监测月报",
-  "description": "V2 拼装：基本情况(离线告警)/本月监测情况/重点区/典型双轴。无平原分布图章、无设备预警章。GNSS 一期关闭。",
+  "description": "V2 拼装：基本情况(离线告警)/本月监测情况/重点区/典型双轴。无平原分布图章、无设备预警章。典型曲线右轴不含 GNSS（设计排除）。",
   "compose": [
     { "section": "cover", "params": { "cover_kind": "short" } },
     { "section": "monthly_basics" },
@@ -61,7 +61,7 @@
           "q_typical_fcb",
           "q_typical_dxswj"
         ],
-        "purpose": "择优双轴序列；GNSS 方向关闭"
+        "purpose": "择优双轴序列；右轴不含 GNSS"
       }
     ]
   }
