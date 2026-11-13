@@ -12,6 +12,7 @@
     { "section": "layer_intro" },
     { "section": "layer_results" },
     { "section": "key_area", "variant": "with_table" },
+    { "section": "subsidence_forecast" },
     { "section": "conclusion" },
     { "section": "annex_ground" },
     { "section": "annex_layer" }

@@ -211,10 +211,23 @@ def test_quarterly_compose_districts_and_layers() -> None:
     assert "最大" in key_inst and "次之" in key_inst
     assert "分层监测结果" in key_inst
     assert "严禁逐站罗列" in key_inst or "禁止逐站罗列" in key_inst
+    forecast = next(c for c in spec.chapters if c.id == "subsidence_forecast")
+    assert forecast.title == "五、沉降趋势预测"
+    assert "q_forecast" in forecast.source_item_ids
+    plan_ids = {t["item_id"] for t in spec.plan_tasks}
+    assert "q_forecast" in plan_ids
+    assert "q_forecast_fcb" in plan_ids
+    assert "q_forecast_kxsylj" in plan_ids
+    assert any(
+        c.get("id") == "c_forecast_trend" and c.get("chart_type") == "line"
+        for c in spec.charts
+    )
     conclusion = next(c for c in spec.chapters if c.id == "conclusion")
-    assert conclusion.title == "五、结论"
+    assert conclusion.title == "六、结论"
     cons = " ".join(conclusion.constraints or [])
     assert "禁止把各层站点数相加" in cons
+    ids = [c.id for c in spec.chapters]
+    assert ids.index("subsidence_forecast") < ids.index("conclusion")
 
 
 def test_yearly_compose_matches_quarterly_structure() -> None:

@@ -37,6 +37,7 @@ _PLAN_ITEM_LABELS: dict[str, str] = {
     "q_area_rank": "各行政区沉降汇总",
     "q_key_area": "重点监测区地面沉降",
     "q_compress": "压缩层组监测成果",
+    "q_forecast": "沉降趋势预测",
     # 地降季报等（与 report plan.items 对齐；同号多义时用业务语义覆盖展示）
     "q2": "行政区沉降汇总",
     "q3": "分区站点统计",
@@ -568,6 +569,68 @@ def _append_q3b_top_points(lines: list[str], rows: list[dict]) -> None:
     lines.append(f"- 尖峰频次测点: {'、'.join(c for _, c in scored[:5])}")
 
 
+def _append_forecast_facts(lines: list[str], rows: list[dict]) -> None:
+    metas = [
+        r
+        for r in rows
+        if isinstance(r, dict) and str(r.get("row_kind") or "") == "meta"
+    ]
+    if not metas:
+        lines.append("- 沉降趋势预测：暂无有效结果，写待补充")
+        return
+    meta = metas[0]
+    if str(meta.get("status") or "") != "ok":
+        reason = str(meta.get("reason") or "样本不足").strip()
+        lines.append(f"- 沉降趋势预测：依据不足（{reason}），正文写待补充，禁止编造预测数值")
+        disc = str(meta.get("disclaimer") or "").strip()
+        if disc:
+            lines.append(f"- 说明: {disc}")
+        return
+    project = str(meta.get("project_name") or "").strip() or "代表站"
+    settle_st = str(meta.get("settle_station_name") or "").strip()
+    water_st = str(meta.get("water_station_name") or "").strip()
+    hist_n = int(_numeric(meta.get("history_month_count")) or 0)
+    start_m = str(meta.get("history_start_month") or "").strip()
+    end_m = str(meta.get("history_end_month") or "").strip()
+    slope = _numeric(meta.get("slope_mm_per_month"))
+    r2 = _numeric(meta.get("r2"))
+    pred_delta = _numeric(meta.get("pred_delta_next_q_mm"))
+    direction = str(meta.get("pred_direction") or "").strip()
+    corr_w = _numeric(meta.get("corr_water"))
+    rain_note = str(meta.get("rain_note") or "").strip()
+    pressure_note = str(meta.get("pressure_note") or "").strip()
+    forecast_months = str(meta.get("forecast_months") or "").strip()
+    disc = str(meta.get("disclaimer") or "").strip()
+    lines.append(
+        f"- 代表站: {project}"
+        + (f"，分层标{settle_st}" if settle_st else "")
+        + (f"，配对水位井{water_st}" if water_st else "")
+    )
+    if start_m and end_m:
+        lines.append(f"- 历史数据窗: {start_m}至{end_m}，共{hist_n}个自然月月均点（回溯约12个月）")
+    if slope is not None:
+        lines.append(f"- 月均线性趋势斜率: {slope:.4f}毫米/月（负为沉降、正为回弹）")
+    if r2 is not None:
+        lines.append(f"- 拟合决定系数R²: {r2:.4f}")
+    if corr_w is not None:
+        lines.append(f"- 与地下水标高相关绝对值约{corr_w:.2f}")
+    if pressure_note:
+        lines.append(f"- 孔隙水依据: {pressure_note}")
+    if rain_note:
+        lines.append(f"- 降水依据: {rain_note}")
+    if forecast_months:
+        lines.append(f"- 预测月份: {forecast_months}")
+    if pred_delta is not None:
+        abs_mm = format_mm(abs(pred_delta))
+        word = direction or movement_word(pred_delta)
+        if word == "基本持平":
+            lines.append(f"- 下一季度预测变化: 相对窗末累计沉降基本持平（约{format_mm(pred_delta)}）")
+        else:
+            lines.append(f"- 下一季度预测变化: 相对窗末累计沉降预计{word}{abs_mm}")
+    if disc:
+        lines.append(f"- 方法说明: {disc}")
+
+
 def build_audit_facts(
     subset: dict[str, list[dict]],
     query: str,
@@ -586,7 +649,14 @@ def build_audit_facts(
         if not rows:
             lines.append(f"- [{label}] 无数据行 → 不得编造该部分明细")
             continue
-        if iid in ("q_layer0", "q_area_rank", "q_key_area", "q_compress", "q_ops_month_offline_alarm"):
+        if iid in (
+            "q_layer0",
+            "q_area_rank",
+            "q_key_area",
+            "q_compress",
+            "q_ops_month_offline_alarm",
+            "q_forecast",
+        ):
             if iid == "q_compress":
                 layer_from = _LAYER_SLOT_FROM.get(slot_id)
                 if slot_id == "conclusion":
@@ -608,6 +678,8 @@ def build_audit_facts(
                 lines.append(
                     f"- 本月发生设备离线告警{alarm_n}次，涉及地面沉降监测站{station_n}座"
                 )
+            elif iid == "q_forecast":
+                lines.append(f"- [{label}]（下列为已写好的中文事实，禁止抄英文字段或公式）")
             else:
                 lines.append(
                     f"- [{label}] {len(rows)} 座/行（下列为已写好的中文事实，禁止抄英文字段或公式）"
@@ -623,6 +695,8 @@ def build_audit_facts(
                 _append_key_area_facts(lines, rows)
             elif iid == "q_compress":
                 _append_compress_facts(lines, rows, slot_id=slot_id)
+            elif iid == "q_forecast":
+                _append_forecast_facts(lines, rows)
             continue
         preview_n = _audit_preview_row_limit(iid, len(rows), slot_id=slot_id)
         lines.append(f"- [{label}] {len(rows)} 行")

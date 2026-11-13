@@ -6,6 +6,9 @@ from typing import Any, Callable
 
 from app.analysis_agent.deterministics.fcb_compress import layer_compress, rank_by_area, slice_layer0
 from app.analysis_agent.deterministics.key_areas import join_key_areas
+from app.analysis_agent.deterministics.subsidence_forecast import (
+    subsidence_forecast as run_subsidence_forecast,
+)
 from app.analysis_agent.deterministics.typical_curve import typical_curve as run_typical_curve
 
 PythonFn = Callable[..., list[dict[str, Any]]]
@@ -16,6 +19,7 @@ PYTHON_FNS: dict[str, PythonFn] = {
     "join_key_areas": join_key_areas,
     "typical_curve": run_typical_curve,
     "rank_by_area": rank_by_area,
+    "subsidence_forecast": run_subsidence_forecast,
 }
 
 

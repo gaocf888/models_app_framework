@@ -1,0 +1,89 @@
+{
+  "id": "subsidence_forecast",
+  "title": "五、沉降趋势预测",
+  "kind": "llm_section",
+  "source_item_ids": ["q_forecast"],
+  "outline": [
+    "（一）代表站与近12个月数据窗",
+    "（二）历史沉降趋势与线性拟合质量",
+    "（三）地下水、孔隙水、降水等预测依据",
+    "（四）下一季度预判与注意事项"
+  ],
+  "constraints": [
+    "禁止编造站点或预测数值",
+    "禁止内部编号与英文字段名",
+    "禁止出现计算公式",
+    "负值为沉降、正值为回弹；正文用绝对值并写毫米、回弹",
+    "引用图时用中文标题「沉降趋势预测（实测-拟合-预测）」，禁止写 c_forecast_trend 等配置 id",
+    "必须说明基于近12个月监测序列的统计外推、非物理模型",
+    "样本不足或 status 非 ok 时写待补充，不得外推编造",
+    "必须按（一）至（四）四个小节书写"
+  ],
+  "narrative_instruction": "撰写沉降趋势预测。按（一）代表站与数据窗（二）历史趋势与拟合（斜率、R²）（三）地下水/孔隙水/降水依据（四）下一季度预判与不确定性四个小节书写。若有图，正文写「根据图『沉降趋势预测（实测-拟合-预测）』…」。数字只来自事实清单；须点明统计外推局限。无有效预测时明确写待补充。",
+  "allowed_outputs": ["paragraph"],
+  "use_emit_tools": false,
+  "stream_live": true,
+  "plan_items": [
+    {
+      "item_id": "q_forecast_fcb",
+      "executor": "sql_template",
+      "sql_file": "forecast_series_fcb.sql",
+      "mandatory": false,
+      "dependency_ids": [],
+      "purpose": "预测章层位0日序列（t_end回溯12个月）"
+    },
+    {
+      "item_id": "q_forecast_dxswj",
+      "executor": "sql_template",
+      "sql_file": "forecast_series_dxswj.sql",
+      "mandatory": false,
+      "dependency_ids": [],
+      "purpose": "预测章水位井时序（t_end回溯12个月）"
+    },
+    {
+      "item_id": "q_forecast_qxz",
+      "executor": "sql_template",
+      "sql_file": "forecast_series_qxz.sql",
+      "mandatory": false,
+      "dependency_ids": [],
+      "purpose": "预测章气象降水时序（t_end回溯12个月）"
+    },
+    {
+      "item_id": "q_forecast_kxsylj",
+      "executor": "sql_template",
+      "sql_file": "forecast_series_kxsylj.sql",
+      "mandatory": false,
+      "dependency_ids": [],
+      "purpose": "预测章孔隙水压力时序（t_end回溯12个月）"
+    },
+    {
+      "item_id": "q_forecast",
+      "executor": "python",
+      "python_fn": "subsidence_forecast",
+      "mandatory": false,
+      "dependency_ids": [
+        "q_layer0",
+        "q_forecast_fcb",
+        "q_forecast_dxswj",
+        "q_forecast_qxz",
+        "q_forecast_kxsylj"
+      ],
+      "purpose": "典型站月均OLS外推下一季度；出图行+meta"
+    }
+  ],
+  "charts": [
+    {
+      "id": "c_forecast_trend",
+      "title": "沉降趋势预测（实测-拟合-预测）",
+      "chart_type": "line",
+      "source_item_ids": ["q_forecast"],
+      "attach_to_chapter": "@self",
+      "x_field": "x",
+      "y_field": "y",
+      "series_field": "series",
+      "row_filter": { "field": "row_kind", "equals": "chart" },
+      "max_points": 60,
+      "placeholder": true
+    }
+  ]
+}
