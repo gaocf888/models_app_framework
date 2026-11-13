@@ -10,7 +10,11 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
-from app.analysis_agent.deterministics.coverage import canonical_project
+from app.analysis_agent.deterministics.coverage import (
+    canonical_project,
+    coverage_code_index,
+    site_code,
+)
 from app.analysis_agent.deterministics.typical_sites import (
     in_typical_axis_sites,
     in_typical_pick_sites,
@@ -68,22 +72,42 @@ def _pearson(xs: list[float], ys: list[float]) -> float:
 def _series_by_project(
     rows: list[dict[str, Any]],
     value_field: str,
+    *,
+    device_type: str = "fcb",
+    prefer_station_code: bool = False,
 ) -> dict[str, dict[str, list[tuple[str, float]]]]:
-    """project → station_key → [(day, value), ...]。无 station_name 时 station_key=project。"""
+    """权威场地名 → station_key → [(day, value), ...]。
+
+    prefer_station_code：气象等表 project_name 常为工程总名时，优先用 station_name 站码
+    （F21-气象站 → F21 → F21(西集)）对齐覆盖名单；仍可用 project_name 回退。
+    """
     out: dict[str, dict[str, list[tuple[str, float]]]] = defaultdict(lambda: defaultdict(list))
+    code_idx = coverage_code_index(device_type) if prefer_station_code else {}
+    fcb_code_idx = coverage_code_index("fcb") if prefer_station_code else {}
     for row in rows:
         if not isinstance(row, dict):
             continue
+        st = str(row.get("station_name") or "").strip()
         project = str(row.get("project_name") or "").strip()
-        if not project:
+        canon: str | None = None
+        if prefer_station_code:
+            code = site_code(st) or str(row.get("site_code") or "").strip().upper()
+            if code:
+                canon = code_idx.get(code) or fcb_code_idx.get(code)
+        if not canon and project:
+            canon = (
+                canonical_project(project, device_type)
+                or canonical_project(project, "fcb")
+                or project
+            )
+        if not canon:
             continue
-        canon = canonical_project(project, "fcb") or project
         val = _f(row.get(value_field))
         day = _as_day(row.get("data_time") or row.get("x"))
         if val is None or not day:
             continue
-        st = str(row.get("station_name") or "").strip() or canon
-        out[canon][st].append((day, val))
+        st_key = st or canon
+        out[canon][st_key].append((day, val))
     return out
 
 
@@ -169,7 +193,12 @@ def typical_curve(gathered: dict[str, list[dict[str, Any]]], **_: Any) -> list[d
 
     fcb_series = _series_by_project(list(gathered.get("q_typical_fcb") or []), "total_settle")
     dxswj_series = _series_by_project(list(gathered.get("q_typical_dxswj") or []), "elevation")
-    qxz_series = _series_by_project(list(gathered.get("q_typical_qxz") or []), "real_time_rain")
+    qxz_series = _series_by_project(
+        list(gathered.get("q_typical_qxz") or []),
+        "real_time_rain",
+        device_type="qxz",
+        prefer_station_code=True,
+    )
     kxs_series = _series_by_project(list(gathered.get("q_typical_kxsylj") or []), "pressure")
     def _layer_i(row: dict[str, Any], key: str) -> int:
         raw = row.get(key)

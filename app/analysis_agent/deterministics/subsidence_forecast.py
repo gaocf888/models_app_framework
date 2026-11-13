@@ -129,7 +129,12 @@ def subsidence_forecast(
 
     fcb_series = _series_by_project(list(gathered.get("q_forecast_fcb") or []), "total_settle")
     dxswj_series = _series_by_project(list(gathered.get("q_forecast_dxswj") or []), "elevation")
-    qxz_series = _series_by_project(list(gathered.get("q_forecast_qxz") or []), "real_time_rain")
+    qxz_series = _series_by_project(
+        list(gathered.get("q_forecast_qxz") or []),
+        "real_time_rain",
+        device_type="qxz",
+        prefer_station_code=True,
+    )
     kxs_series = _series_by_project(list(gathered.get("q_forecast_kxsylj") or []), "pressure")
 
     picked: dict[str, Any] | None = None

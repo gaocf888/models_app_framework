@@ -74,7 +74,14 @@ def resolved_sql_params(
         elif sql_name.endswith("kxsylj.sql"):
             params["kxsylj_projects"] = list(typical_axis_sites("pressure"))
         else:
-            params["qxz_projects"] = list(typical_axis_sites("rain"))
+            from app.analysis_agent.deterministics.coverage import site_code
+
+            qxz_sites = list(typical_axis_sites("rain"))
+            params["qxz_projects"] = qxz_sites
+            # 气象表常用 station_name=F21-气象站、project_name=工程总名；按站码过滤
+            params["qxz_codes"] = list(
+                dict.fromkeys(c for s in qxz_sites if (c := site_code(s)))
+            )
     params["snapshot_time"] = resolved.get("ops_snapshot_time")
     if extra:
         params.update(extra)

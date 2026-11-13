@@ -337,12 +337,34 @@ def chart_from_config(
                 )
             if not series_map:
                 return None
-            # 截断各系列
-            series_list = [
-                {"name": name, "data": pts[:limit]}
-                for name, pts in series_map.items()
-                if pts
-            ]
+            # 统一横轴类别：前端 line 多系列按数组下标对齐，必须各系列同序同长
+            cat_order: list[str] = []
+            seen_cat: set[str] = set()
+            for pts in series_map.values():
+                for p in pts:
+                    cx = str(p.get("x") or "")
+                    if cx and cx not in seen_cat:
+                        seen_cat.add(cx)
+                        cat_order.append(cx)
+            try:
+                cat_order = sorted(cat_order)
+            except TypeError:
+                pass
+            cat_order = cat_order[:limit]
+            series_list = []
+            for name, pts in series_map.items():
+                if not pts:
+                    continue
+                by_x = {str(p.get("x") or ""): p.get("y") for p in pts}
+                series_list.append(
+                    {
+                        "name": name,
+                        "data": [
+                            {"x": c, "y": by_x[c]} if c in by_x else {"x": c, "y": None}
+                            for c in cat_order
+                        ],
+                    }
+                )
             return {
                 "id": chart_id,
                 "chart_type": "line",
@@ -351,6 +373,7 @@ def chart_from_config(
                     "xField": "x",
                     "yField": "y",
                     "seriesField": "name",
+                    "categories": cat_order,
                     "series": series_list,
                 },
             }

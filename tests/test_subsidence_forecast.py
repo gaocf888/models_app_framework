@@ -72,8 +72,8 @@ def test_subsidence_forecast_emits_three_series_and_meta(monkeypatch) -> None:
             value_fn=lambda i: 20.0 - 0.1 * i,
         ),
         "q_forecast_qxz": _daily_rows(
-            project=project,
-            station="Q21-1",
+            project="北京地面沉降监测",
+            station="F21-气象站",
             field="real_time_rain",
             value_fn=lambda i: float(i % 3),
         ),
@@ -94,6 +94,9 @@ def test_subsidence_forecast_emits_three_series_and_meta(monkeypatch) -> None:
     assert metas[0]["corr_pressure"] > 0
     assert "孔隙水" in metas[0]["pressure_note"]
     assert metas[0]["pressure_station_name"] == "K21-1"
+    assert metas[0]["rain_station_name"] == "F21-气象站"
+    assert "无降水" not in metas[0]["rain_note"]
+    assert "相关" in metas[0]["rain_note"]
 
     series_names = {r["series"] for r in chart_rows}
     assert series_names == {"实测累计沉降", "拟合趋势", "预测沉降"}
@@ -116,6 +119,17 @@ def test_subsidence_forecast_emits_three_series_and_meta(monkeypatch) -> None:
     assert ch["chart_type"] == "line"
     names = [s["name"] for s in ch["spec"]["series"]]
     assert set(names) == {"实测累计沉降", "拟合趋势", "预测沉降"}
+    cats = ch["spec"]["categories"]
+    assert cats[0] == "2025-01"
+    assert cats[-1] == "2026-03"
+    by_name = {s["name"]: s["data"] for s in ch["spec"]["series"]}
+    # 各系列与横轴同长；预测点落在末观测月及之后，不得挤到前几个月
+    for pts in by_name.values():
+        assert [p["x"] for p in pts] == cats
+    pred_pts = by_name["预测沉降"]
+    assert pred_pts[-1]["y"] is not None and pred_pts[-1]["x"] == "2026-03"
+    assert pred_pts[0]["y"] is None
+    assert pred_pts[cats.index("2025-12")]["y"] is not None
 
 
 def test_subsidence_forecast_insufficient_without_water(monkeypatch) -> None:
