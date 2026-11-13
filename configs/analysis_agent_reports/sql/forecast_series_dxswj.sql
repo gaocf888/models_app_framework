@@ -1,4 +1,4 @@
--- 预测章：地下水位时序（t_end 回溯 12 个月）；仅分层标∩地下水公共集，每场地取 station_name 倒序第一口
+-- 预测章：地下水位月均序列（t_end 回溯 12 个月）；仅分层标∩地下水公共集，每场地取 station_name 倒序第一口
 WITH picked AS (
   SELECT project_name, MAX(station_name) AS station_name
   FROM t_data_wash_dxswj
@@ -11,9 +11,9 @@ WITH picked AS (
 SELECT
   w.project_name,
   COALESCE(w.station_name, w.project_name) AS station_name,
-  w.data_time,
-  w.elevation,
-  w.deep
+  date_trunc('month', w.data_time)::timestamp AS data_time,
+  AVG(w.elevation) AS elevation,
+  AVG(w.deep) AS deep
 FROM t_data_wash_dxswj w
 LEFT JOIN picked p ON w.project_name = p.project_name
 WHERE cardinality(CAST(:dxswj_projects AS text[])) > 0
@@ -25,5 +25,6 @@ WHERE cardinality(CAST(:dxswj_projects AS text[])) > 0
     (p.station_name IS NOT NULL AND w.station_name = p.station_name)
     OR p.station_name IS NULL
   )
-ORDER BY w.project_name, w.data_time
+GROUP BY w.project_name, COALESCE(w.station_name, w.project_name), date_trunc('month', w.data_time)
+ORDER BY w.project_name, data_time
 ;

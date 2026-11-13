@@ -64,11 +64,9 @@
       "dependency_ids": [
         "q_layer0",
         "q_forecast_fcb",
-        "q_forecast_dxswj",
-        "q_forecast_qxz",
-        "q_forecast_kxsylj"
+        "q_forecast_dxswj"
       ],
-      "purpose": "典型站月均OLS外推下一季度；出图行+meta"
+      "purpose": "典型站月均OLS外推下一季度；出图行+meta；气象/孔压软依赖不阻断"
     }
   ],
   "charts": [
@@ -82,8 +80,7 @@
       "y_field": "y",
       "series_field": "series",
       "row_filter": { "field": "row_kind", "equals": "chart" },
-      "max_points": 60,
-      "placeholder": true
+      "max_points": 60
     }
   ]
 }

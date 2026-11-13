@@ -982,8 +982,10 @@ class SlotOrchestrator:
                 deps = self._dependency_ids(task)
                 if any(d in unfinished for d in deps):
                     continue
-                if deps and not all(task_status.get(d) == "success" for d in deps):
-                    # 依赖未成功：标记 skipped，不再查询
+                # optional_empty 视为可继续（如气象/孔压无覆盖时仍应跑预测）；仅失败态阻断
+                _dep_block = {"mandatory_failed", "optional_failed", "mandatory_empty"}
+                if deps and any(task_status.get(d) in _dep_block for d in deps):
+                    # 依赖失败：标记 skipped，不再查询
                     gathered[iid] = []
                     mandatory = bool(task.get("mandatory", False))
                     task_status[iid] = (
