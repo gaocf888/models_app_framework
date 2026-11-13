@@ -5,21 +5,97 @@
 `ref_index`（从 1 起）与注入 LLM 的 ``[n]`` 编号一致，供正文内联引用解析。
 若向量 metadata 中带有摄入时的原始 URL，则 citation 中会包含：
 - ``original_content_url``：稳定对象引用（``minio://`` / http(s) 等，可落库）；
-- ``original_preview_url``：短时预签名 HTTPS（仅响应下发；前端预览用，过期可再换签）。
-二者均不写入 LLM prompt。
+- ``original_preview_url``：短时预览代理路径（仅响应下发；前端原件预览用）；
+- ``preview_url``：本系统知识引用预览页（``/chatbot/citation-preview?...``，片段高亮）。
+三者均不写入 LLM prompt。
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, Iterator, List, Tuple
+from urllib.parse import urlencode
 
 from app.rag.models import RetrievedChunk
 from app.rag.original_preview import enrich_citation_with_preview
+
+# 智能客服引用预览页（相对路径；前端拼 API origin，新标签打开）
+CITATION_PREVIEW_PATH = "/chatbot/citation-preview"
 
 # 智能客服 finished.meta.rag_citations：不展示 NL2SQL 库表/业务/QA 知识库片段
 RAG_CITATIONS_EXCLUDED_NAMESPACES = frozenset(
     {"nl2sql_schema", "nl2sql_biz_knowledge", "nl2sql_qa_examples"}
 )
+
+
+def build_citation_preview_url(
+    *,
+    chunk_id: str | None = None,
+    namespace: str | None = None,
+    doc_name: str | None = None,
+    doc_version: str | None = None,
+    ref_index: int | None = None,
+    highlight: str | None = None,
+) -> str | None:
+    """
+    组装本系统「知识引用预览页」相对 URL。
+
+    至少需要 ``chunk_id`` 或 ``doc_name`` 之一；不替代 ``original_content_url`` /
+    ``original_preview_url``。
+    ``highlight`` 为可选正文线索（通常取 text_preview 前缀），用于 chunk_id 对不上时的兜底定位。
+    """
+    cid = (chunk_id or "").strip()
+    dname = (doc_name or "").strip()
+    if not cid and not dname:
+        return None
+    q: Dict[str, str] = {}
+    if cid:
+        q["chunk_id"] = cid
+    ns = (namespace or "").strip()
+    if ns:
+        q["namespace"] = ns
+    if dname:
+        q["doc_name"] = dname
+    dv = (doc_version or "").strip()
+    if dv:
+        q["doc_version"] = dv
+    if ref_index is not None:
+        try:
+            ri = int(ref_index)
+            if ri >= 1:
+                q["ref_index"] = str(ri)
+        except (TypeError, ValueError):
+            pass
+    hl = (highlight or "").strip()
+    if hl:
+        q["highlight"] = hl if len(hl) <= 180 else hl[:177] + "..."
+    return f"{CITATION_PREVIEW_PATH}?{urlencode(q)}"
+
+
+def ensure_citation_preview_urls(
+    citations: List[Dict[str, Any]] | None,
+) -> List[Dict[str, Any]]:
+    """历史/残缺 citation：缺 ``preview_url`` 时按已有字段补齐（不改 original_*）。"""
+    if not citations:
+        return []
+    out: List[Dict[str, Any]] = []
+    for raw in citations:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        if not (item.get("preview_url") or "").strip():
+            preview = (item.get("text_preview") or "").strip() or None
+            url = build_citation_preview_url(
+                chunk_id=str(item.get("chunk_id") or "") or None,
+                namespace=str(item.get("namespace") or "") or None,
+                doc_name=str(item.get("doc_name") or "") or None,
+                doc_version=str(item.get("doc_version") or "") or None,
+                ref_index=item.get("ref_index"),
+                highlight=preview,
+            )
+            if url:
+                item["preview_url"] = url
+        out.append(item)
+    return out
 
 
 def rag_citation_namespace_allowed(
@@ -175,6 +251,16 @@ def chunks_to_rag_context(
         if orig_url:
             item["original_content_url"] = orig_url
             item = enrich_citation_with_preview(item)
+        preview_url = build_citation_preview_url(
+            chunk_id=c.chunk_id,
+            namespace=c.namespace,
+            doc_name=c.doc_name,
+            doc_version=c.doc_version,
+            ref_index=ref_index,
+            highlight=preview,
+        )
+        if preview_url:
+            item["preview_url"] = preview_url
         meta = c.metadata if isinstance(c.metadata, dict) else {}
         if meta.get("content_type") == "figure" and meta.get("image_url"):
             item["content_type"] = "figure"
@@ -212,7 +298,8 @@ def chunks_to_rag_citations(
     - `ref_index` 从 1 起，与 LLM 正文中的 ``[n]`` 及 ``chunks_to_numbered_llm_snippets`` 对齐；
     - `text_preview` 为片段摘要，避免 meta 过大；
     - 若 chunk 的 metadata 中含摄入原始 URL（见 `_original_content_url_from_chunk_metadata`），则增加
-      ``original_content_url``（稳定引用）与 ``original_preview_url``（短时预签名，若可签发）；
+      ``original_content_url``（稳定引用）与 ``original_preview_url``（原件预览代理，若可签发）；
+    - 另增 ``preview_url``：本系统知识引用预览页相对路径（与两个 original_* 字段并存）；
     - 默认排除 ``nl2sql_schema`` / ``nl2sql_biz_knowledge`` / ``nl2sql_qa_examples``（传 ``exclude_namespaces=()`` 可关闭）。
     """
     _, citations = chunks_to_rag_context(

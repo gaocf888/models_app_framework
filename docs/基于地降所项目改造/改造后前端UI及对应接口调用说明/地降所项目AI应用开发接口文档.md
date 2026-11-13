@@ -207,6 +207,10 @@ data: {"finished": true, "meta": {"used_rag": true, "intent_label": "kb_qa", "re
 
 ```
 
+**返回回答中角标引用和知识来源文档预览实现说明**
+链接跳转需要使用 结束帧rag_citations中的preview_url字段，该字段需要按照如下拼接为完整URL：
+http://192.171.179.65:8083 + rag_citations.preview_url + &api_key=kCRA4fZs72cqc9C_oznxn_HWUeT-CDf1MP2uHvr_ihQ
+
 ---
 
 ## 1.2 AI 问答停止接口

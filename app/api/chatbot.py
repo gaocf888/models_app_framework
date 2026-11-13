@@ -8,7 +8,8 @@ from __future__ import annotations
     - 提供多模态图片上传：`POST /upload`（MinIO 预签名 URL，填入 `image_urls`）；
     - 提供会话目录：`GET /sessions`（按 `user_id` 分页列举会话；方案 B：Redis `conv:index:` + `conv:meta:`，内存模式对齐）；
     - 提供会话运维：`GET/DELETE /sessions/messages`、`DELETE /sessions/message`（单条/批量消息）、`PATCH /sessions/title`（修改展示标题）；
-    - 提供知识原文预览代理：`GET /documents/original/preview`（内网读 MinIO，外网不直连 `models-app-minio`）。
+    - 提供知识原文预览代理：`GET /documents/original/preview`（内网读 MinIO，外网不直连 `models-app-minio`）；
+    - 提供知识引用预览页：`GET /citation-preview`（及 data / pdf-proxy；支持 Bearer 或 query api_key）。
 
 部署前置条件（运维/开发）：
     1) LLM 服务可用：正确配置模型名称、服务地址与对 vLLM/OpenAI 兼容端的访问参数。
@@ -16,6 +17,7 @@ from __future__ import annotations
     3) 可选会话上下文：`enable_context=true` 时建议配置 REDIS_URL；否则仅为进程内内存，且多 worker 不共享。
     4) 业务路由鉴权：请求头 `Authorization: Bearer <SERVICE_API_KEY>`（环境变量 SERVICE_API_KEYS 或 SERVICE_API_KEY）。
        密钥由运维使用 `app.auth.keygen.generate_service_api_key` 生成后写入配置，见 `app/app-deploy/README.md`「Service API Key」。
+       预览深链（preview_router）额外支持 query ``api_key``，便于新标签打开。
 
 会话维度：
     - 与业务层一致，使用 `(user_id, session_id)` 唯一确定一条对话线；`session_id` 由调用方生成并维护。
@@ -23,19 +25,27 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
+import hmac
 import io
+import os
 import uuid
 from datetime import timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import json
 
 try:
     from minio import Minio
 except Exception:  # noqa: BLE001
     Minio = None  # type: ignore[assignment,misc]
+
+try:
+    import httpx
+except Exception:  # noqa: BLE001
+    httpx = None  # type: ignore[assignment]
 
 from app.core.config import get_app_config
 
@@ -57,15 +67,62 @@ from app.models.chatbot import (
     SessionTitlePatchRequest,
     SessionTitlePatchResponse,
 )
-from app.llm.graphs.chatbot_rag_citations import filter_rag_citation_dicts
+from app.llm.graphs.chatbot_citation_preview import (
+    load_citation_preview,
+    preview_model_to_dict,
+    render_citation_preview_html,
+)
+from app.llm.graphs.chatbot_rag_citations import (
+    ensure_citation_preview_urls,
+    filter_rag_citation_dicts,
+)
+from app.rag.content_url_fetch import ContentFetchError, validate_fetch_url
 from app.services.chatbot_service import ChatbotService
 from app.services.chatbot_image_utils import split_message_content_and_images
 
 router = APIRouter()
+# 预览深链单独挂载（main 中不带全局 Bearer），接口内支持 Bearer 或 query api_key。
+preview_router = APIRouter()
 # 与 ChatbotService 共用同一 ConversationManager，保证对话写入与 GET /sessions、GET/DELETE .../messages 读写一致。
 _shared_conv = ConversationManager()
 service = ChatbotService(conv_manager=_shared_conv)
 _conv_admin = _shared_conv
+_preview_bearer = HTTPBearer(auto_error=False)
+
+
+def _configured_service_api_keys() -> frozenset[str]:
+    raw = os.getenv("SERVICE_API_KEYS") or os.getenv("SERVICE_API_KEY") or ""
+    return frozenset(k.strip() for k in raw.split(",") if k.strip())
+
+
+def _token_is_valid_service_key(token: str) -> bool:
+    keys = _configured_service_api_keys()
+    if not keys or not token:
+        return False
+    for k in keys:
+        if len(token) == len(k) and hmac.compare_digest(token, k):
+            return True
+    return False
+
+
+def _require_service_api_key_for_preview(
+    creds: HTTPAuthorizationCredentials | None,
+    api_key: str | None,
+) -> None:
+    """预览深链：Bearer 或 query ``api_key``（新标签无法带 Authorization）。"""
+    keys = _configured_service_api_keys()
+    if not keys:
+        raise HTTPException(status_code=503, detail="SERVICE_API_KEYS is not configured")
+    token = ""
+    if creds is not None and (creds.scheme or "").lower() == "bearer":
+        token = creds.credentials or ""
+    if not token:
+        token = (api_key or "").strip()
+    if not _token_is_valid_service_key(token):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid API key (Bearer or api_key query)",
+        )
 
 
 def _session_message_rag_citations(raw: Any) -> list[dict[str, Any]]:
@@ -78,8 +135,11 @@ def _session_message_rag_citations(raw: Any) -> list[dict[str, Any]]:
             out.append(dict(it))
     from app.rag.original_preview import enrich_rag_citations_with_preview
 
-    # 历史读取时按稳定 original_content_url 重新签发 short-lived original_preview_url
-    return enrich_rag_citations_with_preview(filter_rag_citation_dicts(out))
+    # 历史读取时按稳定 original_content_url 重新签发 short-lived original_preview_url，并补齐 preview_url
+    enriched = enrich_rag_citations_with_preview(filter_rag_citation_dicts(out))
+    return ensure_citation_preview_urls(enriched)
+
+
 def _delete_messages_by_ids(user_id: str, session_id: str, message_ids: list[str]) -> SessionMessageDeleteResponse:
     mids = [str(x or "").strip().lower() for x in (message_ids or []) if str(x or "").strip()]
     if not mids:
@@ -109,7 +169,7 @@ def _delete_messages_by_ids(user_id: str, session_id: str, message_ids: list[str
     )
 
 
-@router.get(
+@preview_router.get(
     "/documents/original/preview",
     summary="知识原文预览（经算法服务代理，不直连 MinIO）",
     response_class=Response,
@@ -124,6 +184,11 @@ async def preview_original_document(
             )
         ),
     ],
+    api_key: Annotated[
+        str | None,
+        Query(description="可选；与 Authorization: Bearer 二选一（iframe/新标签深链）"),
+    ] = None,
+    creds: HTTPAuthorizationCredentials | None = Depends(_preview_bearer),
 ) -> Response:
     """
     按稳定对象引用读取原文并流式返回，供浏览器/iframe 预览。
@@ -132,9 +197,10 @@ async def preview_original_document(
     （如 ``http://models-app-minio:9000/...``），外网浏览器无法解析该主机名。
     本接口由算法服务内网访问 MinIO，对外只暴露 ``/chatbot/...``。
 
-    **鉴权**：与其它业务接口相同，``Authorization: Bearer <SERVICE_API_KEY>``
-    （通常由 BFF 转发；浏览器 iframe 需 BFF 同源代理或前端 fetch+blob）。
+    **鉴权**：``Authorization: Bearer <SERVICE_API_KEY>`` 或 query ``api_key``
+    （浏览器 iframe / PDF.js 深链通常用后者）。
     """
+    _require_service_api_key_for_preview(creds, api_key)
     from app.rag.original_preview import load_original_bytes_for_preview, looks_like_stable_original_ref
 
     raw = (ref or "").strip()
@@ -161,6 +227,165 @@ async def preview_original_document(
             "Content-Disposition": disp,
             "Cache-Control": "private, max-age=300",
         },
+    )
+
+
+@preview_router.get(
+    "/citation-preview",
+    summary="知识引用预览页（HTML）",
+    response_class=HTMLResponse,
+)
+async def citation_preview_page(
+    request: Request,
+    chunk_id: Annotated[str | None, Query(description="目标 chunk_id（向量 ext_id）")] = None,
+    namespace: Annotated[str | None, Query(description="命名空间；空表示默认分区")] = None,
+    doc_name: Annotated[str | None, Query(description="文档名，用于拉取同文档邻近分片")] = None,
+    doc_version: Annotated[str | None, Query(description="文档版本（可选）")] = None,
+    ref_index: Annotated[int | None, Query(description="回答中的引用编号 [n]（展示用）", ge=1)] = None,
+    highlight: Annotated[
+        str | None,
+        Query(description="可选正文线索（通常来自 text_preview），chunk_id 对不上时兜底定位"),
+    ] = None,
+    view: Annotated[
+        str | None,
+        Query(description="预览模式：pdf（默认，若原件为 PDF）或 text（强制解析文本）"),
+    ] = None,
+    api_key: Annotated[
+        str | None,
+        Query(description="可选；与 Authorization: Bearer 二选一（新标签打开）"),
+    ] = None,
+    creds: HTTPAuthorizationCredentials | None = Depends(_preview_bearer),
+) -> HTMLResponse:
+    """
+    服务端渲染引用预览页；``preview_url`` 指向本路径。
+
+    定位：``chunk_id`` 和/或 ``doc_name``（可加 ``namespace`` / ``doc_version`` / ``highlight``）。
+    """
+    _require_service_api_key_for_preview(creds, api_key)
+    if not (chunk_id or "").strip() and not (doc_name or "").strip():
+        raise HTTPException(status_code=422, detail="chunk_id or doc_name is required")
+    model = load_citation_preview(
+        chunk_id=chunk_id,
+        namespace=namespace,
+        doc_name=doc_name,
+        doc_version=doc_version,
+        ref_index=ref_index,
+        highlight=highlight,
+    )
+    qs = request.url.query or ""
+    return HTMLResponse(
+        content=render_citation_preview_html(model, view=view, request_query=qs),
+    )
+
+
+@preview_router.get(
+    "/citation-preview/data",
+    summary="知识引用预览数据（JSON）",
+)
+async def citation_preview_data(
+    chunk_id: Annotated[str | None, Query()] = None,
+    namespace: Annotated[str | None, Query()] = None,
+    doc_name: Annotated[str | None, Query()] = None,
+    doc_version: Annotated[str | None, Query()] = None,
+    ref_index: Annotated[int | None, Query(ge=1)] = None,
+    highlight: Annotated[str | None, Query()] = None,
+    api_key: Annotated[
+        str | None,
+        Query(description="可选；与 Authorization: Bearer 二选一"),
+    ] = None,
+    creds: HTTPAuthorizationCredentials | None = Depends(_preview_bearer),
+) -> JSONResponse:
+    """与 HTML 页同源数据，供前端自建预览 UI。"""
+    _require_service_api_key_for_preview(creds, api_key)
+    if not (chunk_id or "").strip() and not (doc_name or "").strip():
+        raise HTTPException(status_code=422, detail="chunk_id or doc_name is required")
+    model = load_citation_preview(
+        chunk_id=chunk_id,
+        namespace=namespace,
+        doc_name=doc_name,
+        doc_version=doc_version,
+        ref_index=ref_index,
+        highlight=highlight,
+    )
+    return JSONResponse(content=preview_model_to_dict(model))
+
+
+@preview_router.get(
+    "/citation-preview/pdf-proxy",
+    summary="引用预览 PDF 同源代理（供 pdf.js 拉取）",
+    response_class=Response,
+)
+async def citation_preview_pdf_proxy(
+    url: Annotated[
+        str | None,
+        Query(description="公网 http(s) 原文档 URL；与 ref 二选一"),
+    ] = None,
+    ref: Annotated[
+        str | None,
+        Query(description="稳定原文引用 minio:// / local: / rag-docs/…；与 url 二选一"),
+    ] = None,
+    api_key: Annotated[
+        str | None,
+        Query(description="可选；与 Authorization: Bearer 二选一"),
+    ] = None,
+    creds: HTTPAuthorizationCredentials | None = Depends(_preview_bearer),
+) -> Response:
+    """
+    同源拉取 PDF 字节，避免 pdf.js 跨域。
+
+    - ``url``：公网 http(s)，经 SSRF 校验后由服务端 GET；
+    - ``ref``：稳定对象引用，走 ``load_original_bytes_for_preview``（MinIO/本地）。
+    """
+    _require_service_api_key_for_preview(creds, api_key)
+    raw_ref = (ref or "").strip()
+    raw_url = (url or "").strip()
+    if raw_ref:
+        from app.rag.original_preview import load_original_bytes_for_preview, looks_like_stable_original_ref
+
+        if not looks_like_stable_original_ref(raw_ref):
+            raise HTTPException(status_code=422, detail="invalid original ref")
+        try:
+            data, media_type, filename = load_original_bytes_for_preview(raw_ref)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"original preview failed: {exc}") from exc
+        from urllib.parse import quote
+
+        safe_ascii = filename.encode("ascii", "ignore").decode("ascii") or "original.bin"
+        disp = f"inline; filename=\"{safe_ascii}\"; filename*=UTF-8''{quote(filename)}"
+        return Response(
+            content=data,
+            media_type=media_type or "application/pdf",
+            headers={
+                "Content-Disposition": disp,
+                "Cache-Control": "private, max-age=300",
+            },
+        )
+
+    if not raw_url:
+        raise HTTPException(status_code=422, detail="url or ref is required")
+    fetch_cfg = get_app_config().rag.content_fetch
+    try:
+        validate_fetch_url(raw_url, fetch_cfg)
+    except ContentFetchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if httpx is None:
+        raise HTTPException(status_code=503, detail="httpx is not available")
+    try:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            resp = await client.get(raw_url)
+            resp.raise_for_status()
+            data = resp.content
+            media_type = resp.headers.get("content-type") or "application/pdf"
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"pdf proxy fetch failed: {exc}") from exc
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=300"},
     )
 
 
@@ -263,7 +488,8 @@ async def chat_stream(req: ChatRequest, request: Request):
        - `doc_name`、`section_path`、`namespace`、`doc_version`、`chunk_id`；
        - `text_preview`：片段摘要；
        - `original_content_url`（可选）：稳定原文引用（常为 `minio://bucket/key`，可落库）；
-       - `original_preview_url`（可选）：经本服务代理的预览路径
+       - `original_preview_url`（可选）：经本服务代理的原件预览路径（`/documents/original/preview`）；
+       - `preview_url`（可选）：知识引用预览页（`/citation-preview?...`，片段高亮；可与 original_* 并存）
          ``/chatbot/documents/original/preview?ref=<urlencoded original_content_url>``
          （勿直连集群内 MinIO 主机；前端/BFF 带鉴权打开或 fetch 后 blob 预览）。
 
@@ -400,7 +626,8 @@ async def get_session_messages(
     Returns:
         SessionMessagesResponse: `title`/`title_source` 与 `GET /sessions` 列表同源；`messages` 按时间顺序；
         助手消息在 RAG 路径下可含 `rag_citations`（含 `ref_index`、`original_content_url`、
-        `original_preview_url` 等，与流式 `finished.meta.rag_citations` 同形；历史读取时会重新签发 preview）。
+        `original_preview_url`、`preview_url` 等，与流式 `finished.meta.rag_citations` 同形；
+        历史读取时会重新签发 original_preview_url 并补齐 preview_url）。
         正文 `content` 中可能出现 `[n]` 内联引用，解析方式同 `/chat/stream` 文档「RAG 内联引用」一节。
 
     Raises:
