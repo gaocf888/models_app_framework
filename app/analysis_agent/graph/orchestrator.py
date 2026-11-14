@@ -6,6 +6,7 @@ from dataclasses import asdict
 from typing import Any
 
 from app.analysis_agent.agents.section_agent import section_result_to_slot_output, synthesize_section
+from app.analysis_agent.chapter_levels import chapter_start_payload
 from app.analysis_agent.graph.state import AnalysisAgentState
 from app.analysis_agent.nl2sql_executor import (
     plan_item_resolved,
@@ -1206,15 +1207,12 @@ class SlotOrchestrator:
                 )
 
             _push_live(
-                {
-                    "event": "analysis_agent_chapter_start",
-                    "slot_id": slot.id,
-                    "chapter_id": slot.id,
-                    "slot_index": slot_index,
-                    "chapter_index": slot_index,
-                    "kind": slot.kind,
-                    "title": slot.title,
-                }
+                chapter_start_payload(
+                    slot_id=slot.id,
+                    title=slot.title,
+                    kind=slot.kind,
+                    slot_index=slot_index,
+                )
             )
             if live and slot.title.strip() and not analysis_type.startswith("subsidence_"):
                 await emit_typewriter(on_delta, f"### {slot.title.strip()}\n\n")
@@ -1312,15 +1310,12 @@ class SlotOrchestrator:
                 )
 
             _push_static(
-                {
-                    "event": "analysis_agent_chapter_start",
-                    "slot_id": slot.id,
-                    "chapter_id": slot.id,
-                    "slot_index": slot_index,
-                    "chapter_index": slot_index,
-                    "kind": slot.kind,
-                    "title": slot.title,
-                }
+                chapter_start_payload(
+                    slot_id=slot.id,
+                    title=slot.title,
+                    kind=slot.kind,
+                    slot_index=slot_index,
+                )
             )
             await emit_typewriter(on_static_delta, out.markdown or "")
             return out, [], True
@@ -1343,15 +1338,12 @@ class SlotOrchestrator:
         # 真流式已在 synthesize 推送 chapter_start
         if not live and not suppress_cover:
             events.append(
-                {
-                    "event": "analysis_agent_chapter_start",
-                    "slot_id": slot.id,
-                    "chapter_id": slot.id,
-                    "slot_index": slot_index,
-                    "chapter_index": slot_index,
-                    "kind": slot.kind,
-                    "title": slot.title,
-                }
+                chapter_start_payload(
+                    slot_id=slot.id,
+                    title=slot.title,
+                    kind=slot.kind,
+                    slot_index=slot_index,
+                )
             )
 
         # 真流式正文已在 synthesize 阶段推送；此处避免整章假切片重复

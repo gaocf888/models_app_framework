@@ -228,6 +228,10 @@ def test_quarterly_compose_districts_and_layers() -> None:
     assert "禁止把各层站点数相加" in cons
     ids = [c.id for c in spec.chapters]
     assert ids.index("subsidence_forecast") < ids.index("conclusion")
+    assert "annex_intro" in ids
+    annex_intro = next(c for c in spec.chapters if c.id == "annex_intro")
+    assert annex_intro.title == "附表"
+    assert ids.index("conclusion") < ids.index("annex_intro") < ids.index("annex_ground")
 
 
 def test_yearly_compose_matches_quarterly_structure() -> None:
