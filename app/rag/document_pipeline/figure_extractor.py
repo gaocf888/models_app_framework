@@ -9,6 +9,7 @@ from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.rag.asset_storage import RagAssetStorage
 from app.rag.document_pipeline.enrichers import chunk_hash, make_chunk_meta
+from app.rag.text_quality import strip_utf16_surrogates
 from app.rag.document_pipeline.figure_text import (
     find_markdown_image_refs,
     format_figure_chunk_text,
@@ -293,11 +294,13 @@ def build_figure_chunks_from_extracted(
 
         metrics["vlm_caption_ms"] = metrics.get("vlm_caption_ms", 0) + int((time.perf_counter() - t0) * 1000)
 
-        text = format_figure_chunk_text(
-            caption=caption,
-            neighbor_before=before,
-            neighbor_after=after,
-            doc_name=doc.doc_name,
+        text = strip_utf16_surrogates(
+            format_figure_chunk_text(
+                caption=caption,
+                neighbor_before=before,
+                neighbor_after=after,
+                doc_name=doc.doc_name,
+            )
         )
         meta = make_chunk_meta(
             doc_name=doc.doc_name,

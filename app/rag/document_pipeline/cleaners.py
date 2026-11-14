@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from app.rag.text_quality import strip_utf16_surrogates
+
 from .parsers import _TextExtractor
 
 # 仅匹配 HTML 标签（字母开头），避免误伤「温度<500℃」等比较表达式
@@ -60,7 +62,7 @@ class TextCleaner:
         self._strip_html_min_tags = max(1, int(strip_html_min_tags))
 
     def clean(self, content: str) -> str:
-        text = (content or "").replace("\r\n", "\n").replace("\r", "\n")
+        text = strip_utf16_surrogates(content).replace("\r\n", "\n").replace("\r", "\n")
         if self._fix_encoding_noise:
             text = self._repair_encoding_noise(text)
         if self._strip_html:

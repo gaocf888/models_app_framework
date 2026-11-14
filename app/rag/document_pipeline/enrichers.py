@@ -4,6 +4,8 @@ import hashlib
 import uuid
 from typing import Any, Dict
 
+from app.rag.text_quality import strip_utf16_surrogates
+
 
 def make_chunk_meta(
     doc_name: str,
@@ -40,4 +42,5 @@ def make_chunk_meta(
 
 
 def chunk_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    payload = strip_utf16_surrogates(text)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

@@ -13,7 +13,7 @@ from typing import List, Tuple
 from app.core.config import get_app_config
 from app.rag.document_pipeline.section_utils import SectionBlock
 from app.rag.models import ChunkRecord, DocumentSource
-from app.rag.text_quality import looks_like_binary_text
+from app.rag.text_quality import looks_like_binary_text, strip_utf16_surrogates
 
 from .cleaners import TextCleaner
 from .enrichers import chunk_hash, make_chunk_meta
@@ -96,7 +96,7 @@ class DocumentPipeline:
         chunk_texts: list[str] = []
         sections_with_path = 0
         for idx, block in enumerate(annotated_chunks):
-            text = (block.text or "").strip()
+            text = strip_utf16_surrogates((block.text or "").strip())
             if not text:
                 continue
             chunk_texts.append(text)

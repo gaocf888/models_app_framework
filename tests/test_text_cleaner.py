@@ -22,6 +22,13 @@ class TestTextCleaner(unittest.TestCase):
         out = cleaner.clean(raw)
         self.assertEqual("重复段落A。\n\n重复段落B。", out)
 
+    def test_strips_utf16_surrogates(self):
+        raw = "监测" + "\ud800\udfff" + "要求"
+        cleaner = TextCleaner(profile="light", fix_encoding_noise=False)
+        out = cleaner.clean(raw)
+        self.assertEqual("监测要求", out)
+        out.encode("utf-8")
+
     def test_fix_encoding_noise(self):
         raw = "This is â€œquotedâ€ text with Â noise and bad char\ufffd."
         cleaner = TextCleaner(profile="light", fix_encoding_noise=True)

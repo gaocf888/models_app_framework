@@ -9,6 +9,7 @@ from app.rag.asset_storage import RagAssetStorage
 from app.rag.document_pipeline.enrichers import chunk_hash, make_chunk_meta
 from app.rag.document_pipeline.figure_text import format_figure_chunk_text
 from app.rag.models import ChunkRecord, DocumentSource
+from app.rag.text_quality import strip_utf16_surrogates
 from app.rag.vision_caption_service import VisionCaptionService
 
 logger = get_logger(__name__)
@@ -47,6 +48,7 @@ def _build_figure_chunk(
     caption_source: str,
     extra_meta: dict[str, Any] | None = None,
 ) -> ChunkRecord:
+    text = strip_utf16_surrogates(text)
     meta = make_chunk_meta(
         doc_name=source.doc_name,
         chunk_index=figure_index,
