@@ -41,7 +41,7 @@ def create_app() -> FastAPI:
                 "会话管理：`GET /chatbot/sessions`、`GET /chatbot/sessions/messages`、`DELETE /chatbot/sessions/messages`（整会话）、"
                 "`DELETE /chatbot/sessions/message`（单条）、`PATCH /chatbot/sessions/title`。"
                 "知识引用预览：`GET /chatbot/citation-preview`（及 `/data`、`/pdf-proxy`）、"
-                "`GET /chatbot/documents/original/preview`（支持 Bearer 或 query `api_key`）。"
+                "`GET /chatbot/documents/original/preview`（免鉴权；可直接 origin + preview_url 打开）。"
                 "业务路由须在 Header 携带 `Authorization: Bearer <SERVICE_API_KEY>`；"
                 "密钥由 `app.auth.keygen.generate_service_api_key` 生成后写入环境变量（见 `app/app-deploy/README.md`）。"
             ),
@@ -178,7 +178,7 @@ def create_app() -> FastAPI:
         tags=["chatbot"],
         dependencies=_auth,
     )
-    # 预览深链：无全局 Bearer；接口内支持 Bearer 或 query api_key（新标签/iframe/PDF.js）
+    # 预览深链：免鉴权（方案 A）；可直接 origin + preview_url 打开
     app.include_router(
         chatbot.preview_router,
         prefix="/chatbot",

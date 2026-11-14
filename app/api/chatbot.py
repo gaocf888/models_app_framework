@@ -8,8 +8,8 @@ from __future__ import annotations
     - 提供多模态图片上传：`POST /upload`（MinIO 预签名 URL，填入 `image_urls`）；
     - 提供会话目录：`GET /sessions`（按 `user_id` 分页列举会话；方案 B：Redis `conv:index:` + `conv:meta:`，内存模式对齐）；
     - 提供会话运维：`GET/DELETE /sessions/messages`、`DELETE /sessions/message`（单条/批量消息）、`PATCH /sessions/title`（修改展示标题）；
-    - 提供知识原文预览代理：`GET /documents/original/preview`（内网读 MinIO，外网不直连 `models-app-minio`）；
-    - 提供知识引用预览页：`GET /citation-preview`（及 data / pdf-proxy；支持 Bearer 或 query api_key）。
+    - 提供知识原文预览代理：`GET /documents/original/preview`（内网读 MinIO，外网不直连 `models-app-minio`；免鉴权）；
+    - 提供知识引用预览页：`GET /citation-preview`（及 data / pdf-proxy；免鉴权，可直接 origin + preview_url 打开）。
 
 部署前置条件（运维/开发）：
     1) LLM 服务可用：正确配置模型名称、服务地址与对 vLLM/OpenAI 兼容端的访问参数。
@@ -17,7 +17,7 @@ from __future__ import annotations
     3) 可选会话上下文：`enable_context=true` 时建议配置 REDIS_URL；否则仅为进程内内存，且多 worker 不共享。
     4) 业务路由鉴权：请求头 `Authorization: Bearer <SERVICE_API_KEY>`（环境变量 SERVICE_API_KEYS 或 SERVICE_API_KEY）。
        密钥由运维使用 `app.auth.keygen.generate_service_api_key` 生成后写入配置，见 `app/app-deploy/README.md`「Service API Key」。
-       预览深链（preview_router）额外支持 query ``api_key``，便于新标签打开。
+       预览深链（preview_router）当前免鉴权；知悉 URL 即可读对应知识原文，仅适合内网或可公开知识场景。
 
 会话维度：
     - 与业务层一致，使用 `(user_id, session_id)` 唯一确定一条对话线；`session_id` 由调用方生成并维护。
@@ -25,16 +25,13 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-import hmac
 import io
-import os
 import uuid
 from datetime import timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import json
 
 try:
@@ -81,48 +78,12 @@ from app.services.chatbot_service import ChatbotService
 from app.services.chatbot_image_utils import split_message_content_and_images
 
 router = APIRouter()
-# 预览深链单独挂载（main 中不带全局 Bearer），接口内支持 Bearer 或 query api_key。
+# 预览深链单独挂载（main 中不带全局 Bearer；当前方案 A：接口内亦免鉴权）。
 preview_router = APIRouter()
 # 与 ChatbotService 共用同一 ConversationManager，保证对话写入与 GET /sessions、GET/DELETE .../messages 读写一致。
 _shared_conv = ConversationManager()
 service = ChatbotService(conv_manager=_shared_conv)
 _conv_admin = _shared_conv
-_preview_bearer = HTTPBearer(auto_error=False)
-
-
-def _configured_service_api_keys() -> frozenset[str]:
-    raw = os.getenv("SERVICE_API_KEYS") or os.getenv("SERVICE_API_KEY") or ""
-    return frozenset(k.strip() for k in raw.split(",") if k.strip())
-
-
-def _token_is_valid_service_key(token: str) -> bool:
-    keys = _configured_service_api_keys()
-    if not keys or not token:
-        return False
-    for k in keys:
-        if len(token) == len(k) and hmac.compare_digest(token, k):
-            return True
-    return False
-
-
-def _require_service_api_key_for_preview(
-    creds: HTTPAuthorizationCredentials | None,
-    api_key: str | None,
-) -> None:
-    """预览深链：Bearer 或 query ``api_key``（新标签无法带 Authorization）。"""
-    keys = _configured_service_api_keys()
-    if not keys:
-        raise HTTPException(status_code=503, detail="SERVICE_API_KEYS is not configured")
-    token = ""
-    if creds is not None and (creds.scheme or "").lower() == "bearer":
-        token = creds.credentials or ""
-    if not token:
-        token = (api_key or "").strip()
-    if not _token_is_valid_service_key(token):
-        raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid API key (Bearer or api_key query)",
-        )
 
 
 def _session_message_rag_citations(raw: Any) -> list[dict[str, Any]]:
@@ -184,11 +145,6 @@ async def preview_original_document(
             )
         ),
     ],
-    api_key: Annotated[
-        str | None,
-        Query(description="可选；与 Authorization: Bearer 二选一（iframe/新标签深链）"),
-    ] = None,
-    creds: HTTPAuthorizationCredentials | None = Depends(_preview_bearer),
 ) -> Response:
     """
     按稳定对象引用读取原文并流式返回，供浏览器/iframe 预览。
@@ -197,10 +153,8 @@ async def preview_original_document(
     （如 ``http://models-app-minio:9000/...``），外网浏览器无法解析该主机名。
     本接口由算法服务内网访问 MinIO，对外只暴露 ``/chatbot/...``。
 
-    **鉴权**：``Authorization: Bearer <SERVICE_API_KEY>`` 或 query ``api_key``
-    （浏览器 iframe / PDF.js 深链通常用后者）。
+    **鉴权**：免鉴权（方案 A）；知悉 ``ref`` 即可拉取对应原文。
     """
-    _require_service_api_key_for_preview(creds, api_key)
     from app.rag.original_preview import load_original_bytes_for_preview, looks_like_stable_original_ref
 
     raw = (ref or "").strip()
@@ -250,18 +204,13 @@ async def citation_preview_page(
         str | None,
         Query(description="预览模式：pdf（默认，若原件为 PDF）或 text（强制解析文本）"),
     ] = None,
-    api_key: Annotated[
-        str | None,
-        Query(description="可选；与 Authorization: Bearer 二选一（新标签打开）"),
-    ] = None,
-    creds: HTTPAuthorizationCredentials | None = Depends(_preview_bearer),
 ) -> HTMLResponse:
     """
     服务端渲染引用预览页；``preview_url`` 指向本路径。
 
     定位：``chunk_id`` 和/或 ``doc_name``（可加 ``namespace`` / ``doc_version`` / ``highlight``）。
+    **鉴权**：免鉴权（方案 A）；前端可直接 ``origin + preview_url`` 打开。
     """
-    _require_service_api_key_for_preview(creds, api_key)
     if not (chunk_id or "").strip() and not (doc_name or "").strip():
         raise HTTPException(status_code=422, detail="chunk_id or doc_name is required")
     model = load_citation_preview(
@@ -289,14 +238,8 @@ async def citation_preview_data(
     doc_version: Annotated[str | None, Query()] = None,
     ref_index: Annotated[int | None, Query(ge=1)] = None,
     highlight: Annotated[str | None, Query()] = None,
-    api_key: Annotated[
-        str | None,
-        Query(description="可选；与 Authorization: Bearer 二选一"),
-    ] = None,
-    creds: HTTPAuthorizationCredentials | None = Depends(_preview_bearer),
 ) -> JSONResponse:
-    """与 HTML 页同源数据，供前端自建预览 UI。"""
-    _require_service_api_key_for_preview(creds, api_key)
+    """与 HTML 页同源数据，供前端自建预览 UI。免鉴权（方案 A）。"""
     if not (chunk_id or "").strip() and not (doc_name or "").strip():
         raise HTTPException(status_code=422, detail="chunk_id or doc_name is required")
     model = load_citation_preview(
@@ -324,19 +267,13 @@ async def citation_preview_pdf_proxy(
         str | None,
         Query(description="稳定原文引用 minio:// / local: / rag-docs/…；与 url 二选一"),
     ] = None,
-    api_key: Annotated[
-        str | None,
-        Query(description="可选；与 Authorization: Bearer 二选一"),
-    ] = None,
-    creds: HTTPAuthorizationCredentials | None = Depends(_preview_bearer),
 ) -> Response:
     """
-    同源拉取 PDF 字节，避免 pdf.js 跨域。
+    同源拉取 PDF 字节，避免 pdf.js 跨域。免鉴权（方案 A）。
 
     - ``url``：公网 http(s)，经 SSRF 校验后由服务端 GET；
     - ``ref``：稳定对象引用，走 ``load_original_bytes_for_preview``（MinIO/本地）。
     """
-    _require_service_api_key_for_preview(creds, api_key)
     raw_ref = (ref or "").strip()
     raw_url = (url or "").strip()
     if raw_ref:
@@ -488,10 +425,9 @@ async def chat_stream(req: ChatRequest, request: Request):
        - `doc_name`、`section_path`、`namespace`、`doc_version`、`chunk_id`；
        - `text_preview`：片段摘要；
        - `original_content_url`（可选）：稳定原文引用（常为 `minio://bucket/key`，可落库）；
-       - `original_preview_url`（可选）：经本服务代理的原件预览路径（`/documents/original/preview`）；
-       - `preview_url`（可选）：知识引用预览页（`/citation-preview?...`，片段高亮；可与 original_* 并存）
-         ``/chatbot/documents/original/preview?ref=<urlencoded original_content_url>``
-         （勿直连集群内 MinIO 主机；前端/BFF 带鉴权打开或 fetch 后 blob 预览）。
+       - `original_preview_url`（可选）：经本服务代理的原件预览路径（`/documents/original/preview?ref=...`；免鉴权）；
+       - `preview_url`（可选）：知识引用预览页（`/citation-preview?...`；免鉴权，前端拼 `origin + preview_url` 即可打开；
+         可与 original_* 并存；勿直连集群内 MinIO 主机）。
 
     2. **流式引用事件 `citation_ref`**：RAG 路径下后端从模型输出中识别完整 `[n]` 后单独下发
        `{"citation_ref": n, "finished": false}`；正文 `delta` 不再包含该 `[n]` 字面量。（正文中渲染链接时，需要通过n与结束帧rag_citations中的ref_index进行匹配，来获取知识文档名称和链接）
