@@ -414,7 +414,7 @@ analysis_agent_finished         { result }                         # 按钮恢�
 |--------|------|
 | 解析 SQL | `data_query_result.columns[].title` 当表头（用户看见的列名）；单元格取 `list[row][columns[i].key]`（这一格的值）；缺 key 显示空，不要自己猜列 |
 | 浏览点库/区（`result_grain=station`） | 用返回的 `columns[].title` 当表头；单元格取 `list[row][columns[i].key]`。`station_id` 是设备编号（如 `F30-1`），`station_name` 是场地（如 `F30(孙家营)`）。分层标/基岩标/光纤只有 `total_settle_mm`（表头「沉降量」），**不要**再渲染年沉降量 |
-| 浏览点站（`result_grain=device_time`） | 第一列监测时间，其后每列一个设备 `station_name`；`list[i][设备名]` 为该时刻沉降值 |
+| 浏览点站（`result_grain=device_time`） | 第一列监测时间。分层标等：其后每列一个设备，`list[i][设备名]` 为该时刻沉降值。**GNSS / 气象**：`columns[j].children` 非空时画两级表头（父=站点名，子=指标名），单元格取 `list[i][children[k].key]`，不要用父级 key 取格 |
 
 站点列表典型度量列（除测位 ID / 站名 / 行政区 / 数据时间外；即表上多出来的「数」）：
 
@@ -423,8 +423,8 @@ analysis_agent_finished         { result }                         # 按钮恢�
 | `fcb` / `jyb` / `gq`（分层标/基岩标/光纤） | 解析路径：`annual_settle_mm`（年沉降量）、`total_settle_mm`（累计沉降）；**浏览点库/区**：仅 `total_settle_mm`（沉降量），无年沉降量 |
 | `dxswj`（地下水） | `deep`（埋深）、`annual_deep`、`elevation`（水位标高） |
 | `kxsylj`（孔压） | `pressure`、`annual_pressure` |
-| `gnss` | `displacement_3d`（三维位移）、`annual_displacement_3d`、`displacement_2d` |
-| `qxz`（气象） | `temp`（气温）、`real_time_rain`（降水） |
+| `gnss` | 浏览点库/区：`gps_total_x/y/z`（X/Y/Z位移）、`displacement_2d`（水平合位移）、`displacement_3d`（合位移）。点站为站点下挂这五列 |
+| `qxz`（气象） | 浏览点库/区：`temp`（气温）、`real_time_rain`（降水）、`humidity`（相对湿度）、`pressure`（气压）、`wind_speed`（风速）、`wind_dirt`（风向）。点站为站点下挂这六列 |
 
 `result_grain=district`（问的是「各区平均」时）：表是一行一个区，列为行政区 / 指标 / 站点数。`city`（问「全市平均」）：只有「全市」一行。周期沉降 **Δ=初−末，Δ<0 表示沉降、Δ>0 表示回弹**，不要改成绝对值或擅自反号（界面不要把符号含义弄反）。
 
@@ -607,7 +607,7 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 | `/browse` | `station_id` 可选 | 点某个站时传树上的 `station_id`（`F9(后芮营)`）；此时右侧改为设备×时间矩阵 |
 | `/browse` | `page` / `page_size` | 页码从 1；默认 20 行，最大 100。点库/区按观测行数；点站按监测时间条数 |
 
-`/browse` 用 `result_grain` 区分布局：`station` 时用返回的 `columns`+`list` 画表（沉降库表头是「沉降量」，没有年沉降量），行上带 `hud_entity_id`，点「详参」再打 `GET /hud`；`device_time` 时列是设备名，不要画详参。树是站点粒度；**列表必须分页**，禁止一次拉全表历史。
+`/browse` 用 `result_grain` 区分布局：`station` 时用返回的 `columns`+`list` 画表（沉降库表头是「沉降量」，没有年沉降量），行上带 `hud_entity_id`，点「详参」再打 `GET /hud`；`device_time` 时分层标列是设备名，GNSS/气象若 `columns[].children` 非空则画两级表头，不要画详参。树是站点粒度；**列表必须分页**，禁止一次拉全表历史。
 
 ---
 

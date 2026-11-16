@@ -315,12 +315,40 @@ def build_device_time_sql(
     return sql, params
 
 
+def _browse_matrix_metrics(library: LibraryDef) -> tuple[tuple[str, str], ...]:
+    """点站矩阵多指标：(key, title)。仅 GNSS / 气象；其它库空则仍用单列核心值。"""
+    if _device_type(library) not in {"gnss", "qxz"}:
+        return ()
+    out: list[tuple[str, str]] = []
+    for col in library.columns:
+        key = str(col.key or "").strip()
+        if not key or key in _VIRTUAL_COL_KEYS:
+            continue
+        if library.annual_key and key == library.annual_key:
+            continue
+        if library.period_key and key == library.period_key:
+            continue
+        if not _IDENT_RE.match(key.lower()):
+            continue
+        out.append((key, col.title))
+    return tuple(out)
+
+
+def _matrix_cell_key(device: str, metric: str) -> str:
+    return f"{device}::{metric}"
+
+
 def build_device_values_sql(library: LibraryDef, station_id: str) -> tuple[str, dict[str, Any]]:
     table = _wash_table(library)
-    col = _core_value_column(library)
     match_sql, params = _project_match_sql(station_id, library)
+    metrics = _browse_matrix_metrics(library)
+    if metrics:
+        value_cols = ", ".join(f"w.{_ident(key, kind='列名')} AS {key}" for key, _title in metrics)
+    else:
+        col = _core_value_column(library)
+        value_cols = f"w.{col} AS v"
     sql = (
-        f"SELECT w.data_time AS data_time, w.station_name AS station_name, w.{col} AS v "
+        f"SELECT w.data_time AS data_time, w.station_name AS station_name, {value_cols} "
         f"FROM {table} w "
         f"WHERE {match_sql} "
         f"AND w.station_name IS NOT NULL AND btrim(w.station_name) <> '' "
@@ -470,6 +498,7 @@ def _pivot_device_rows(
     times: list[Any],
     device_names: list[str],
     value_rows: list[dict[str, Any]],
+    metrics: tuple[tuple[str, str], ...] = (),
 ) -> list[dict[str, Any]]:
     by_time: dict[str, dict[str, Any]] = {}
     order: list[str] = []
@@ -479,7 +508,11 @@ def _pivot_device_rows(
             continue
         row: dict[str, Any] = {"data_time": _cell(t), "hud_available": False}
         for name in device_names:
-            row[name] = None
+            if metrics:
+                for metric_key, _title in metrics:
+                    row[_matrix_cell_key(name, metric_key)] = None
+            else:
+                row[name] = None
         by_time[key] = row
         order.append(key)
     for raw in value_rows:
@@ -487,7 +520,11 @@ def _pivot_device_rows(
         name = str(raw.get("station_name") or "").strip()
         if not key or not name or key not in by_time:
             continue
-        by_time[key][name] = _cell(raw.get("v"))
+        if metrics:
+            for metric_key, _title in metrics:
+                by_time[key][_matrix_cell_key(name, metric_key)] = _cell(raw.get(metric_key))
+        else:
+            by_time[key][name] = _cell(raw.get("v"))
     return [by_time[k] for k in order]
 
 
@@ -658,10 +695,23 @@ async def _fetch_device_matrix(
             )
             raise BrowseRequestError(502, "browse_query_failed", str(exc) or "浏览列表查询失败") from exc
 
-    items = _pivot_device_rows(times, device_names, value_rows)
-    columns = [{"key": "data_time", "title": "监测时间"}] + [
-        {"key": name, "title": name} for name in device_names
-    ]
+    metrics = _browse_matrix_metrics(library)
+    items = _pivot_device_rows(times, device_names, value_rows, metrics=metrics)
+    columns: list[dict[str, Any]] = [{"key": "data_time", "title": "监测时间"}]
+    if metrics:
+        for name in device_names:
+            columns.append(
+                {
+                    "key": name,
+                    "title": name,
+                    "children": [
+                        {"key": _matrix_cell_key(name, metric_key), "title": metric_title}
+                        for metric_key, metric_title in metrics
+                    ],
+                }
+            )
+    else:
+        columns.extend({"key": name, "title": name} for name in device_names)
     return {
         "ok": True,
         "library_id": library.id,

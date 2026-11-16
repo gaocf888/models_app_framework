@@ -31,16 +31,38 @@ def _cell(value: Any) -> str:
     return str(value)
 
 
+def _flatten_export_columns(columns: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """点站两级表头展开为叶子列；CSV 表头用「站点-指标」。"""
+    out: list[dict[str, Any]] = []
+    for col in columns or []:
+        if not isinstance(col, dict):
+            continue
+        children = col.get("children")
+        if isinstance(children, list) and children:
+            parent = str(col.get("title") or col.get("key") or "").strip()
+            for child in children:
+                if not isinstance(child, dict):
+                    continue
+                key = str(child.get("key") or "").strip()
+                if not key or key.startswith(_SKIP_COL_PREFIXES):
+                    continue
+                child_title = str(child.get("title") or key).strip()
+                title = f"{parent}-{child_title}" if parent else child_title
+                out.append({"key": key, "title": title})
+            continue
+        key = str(col.get("key") or "").strip()
+        if not key or key.startswith(_SKIP_COL_PREFIXES):
+            continue
+        out.append({"key": key, "title": str(col.get("title") or key)})
+    return out
+
+
 def table_to_csv_bytes(
     columns: list[dict[str, Any]] | None,
     rows: list[dict[str, Any]] | None,
 ) -> bytes:
     """表头用 columns[].title，格取 list[i][columns[j].key]；UTF-8 BOM 方便 Excel。"""
-    cols = [
-        c
-        for c in (columns or [])
-        if str(c.get("key") or "") and not str(c.get("key") or "").startswith(_SKIP_COL_PREFIXES)
-    ]
+    cols = _flatten_export_columns(columns)
     keys = [str(c.get("key") or "") for c in cols]
     titles = [str(c.get("title") or c.get("key") or "") for c in cols]
     buf = io.StringIO()

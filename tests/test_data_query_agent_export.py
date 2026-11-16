@@ -65,6 +65,29 @@ def test_table_to_csv_uses_title_and_bom() -> None:
     assert "hud_entity_id" not in header
 
 
+def test_table_to_csv_flattens_grouped_station_metrics() -> None:
+    raw = table_to_csv_bytes(
+        [
+            {"key": "data_time", "title": "监测时间"},
+            {
+                "key": "DAD01",
+                "title": "DAD01",
+                "children": [
+                    {"key": "DAD01::gps_total_x", "title": "X位移"},
+                    {"key": "DAD01::displacement_3d", "title": "合位移"},
+                ],
+            },
+        ],
+        [{"data_time": "2026-11-12", "DAD01::gps_total_x": 1.5, "DAD01::displacement_3d": 3.0}],
+    )
+    text = raw.decode("utf-8-sig")
+    header = text.split("\n", 1)[0]
+    assert "监测时间" in header
+    assert "DAD01-X位移" in header
+    assert "DAD01-合位移" in header
+    assert "1.5" in text
+
+
 def test_csv_filename_strips_unsafe() -> None:
     name = csv_filename("browse", "fcb", "朝阳区")
     assert name.startswith("browse-fcb-")

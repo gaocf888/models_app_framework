@@ -221,6 +221,34 @@ def test_device_matrix_gnss_matches_station_name() -> None:
     assert names_params["station_id"] == "F15-GNSS"
 
 
+def test_latest_sql_gnss_selects_xyz_and_resultants() -> None:
+    lib = get_library_catalog().get("gnss")
+    assert lib is not None
+    sql, _ = build_latest_sql(lib, projects=("DAD01",), limit=20, offset=0)
+    low = sql.lower()
+    for col in ("gps_total_x", "gps_total_y", "gps_total_z", "displacement_2d", "displacement_3d"):
+        assert f"w.{col} as {col}" in low
+
+
+def test_latest_sql_qxz_selects_weather_fields() -> None:
+    lib = get_library_catalog().get("qxz")
+    assert lib is not None
+    sql, _ = build_latest_sql(lib, projects=("F21(西集)",), limit=20, offset=0)
+    low = sql.lower()
+    for col in ("temp", "real_time_rain", "humidity", "pressure", "wind_speed", "wind_dirt"):
+        assert f"w.{col} as {col}" in low
+
+
+def test_device_values_sql_gnss_selects_metrics_not_single_v() -> None:
+    lib = get_library_catalog().get("gnss")
+    assert lib is not None
+    sql, _ = build_device_values_sql(lib, "DAD01")
+    low = sql.lower()
+    assert " as v " not in low
+    assert "w.gps_total_x as gps_total_x" in low
+    assert "w.displacement_3d as displacement_3d" in low
+
+
 def test_device_matrix_qxz_matches_yaml_site_code() -> None:
     lib = get_library_catalog().get("qxz")
     assert lib is not None
@@ -412,6 +440,14 @@ async def test_browse_list_gnss_maps_station_name_not_engineering_project() -> N
     assert payload["list"][0]["station_id"] == "F15-GNSS"
     assert payload["list"][0]["station_name"] == "F15-GNSS"
     assert payload["list"][0]["hud_entity_id"] == "F15-GNSS"
+    by_key = {c["key"]: c["title"] for c in payload["columns"]}
+    assert by_key["gps_total_x"] == "X位移"
+    assert by_key["gps_total_y"] == "Y位移"
+    assert by_key["gps_total_z"] == "Z位移"
+    assert by_key["displacement_2d"] == "水平合位移"
+    assert by_key["displacement_3d"] == "合位移"
+    assert "二维位移" not in by_key.values()
+    assert "三维位移" not in by_key.values()
     list_sql = next(sql for sql, _ in exe.calls if "order by w.data_time desc" in sql.lower())
     assert "t_data_wash_gnss" in list_sql.lower()
     assert "w.station_name = any(:projects)" in list_sql.lower()
@@ -441,6 +477,13 @@ async def test_browse_list_qxz_maps_code_to_yaml_site() -> None:
     assert payload["list"][0]["station_id"] == "F21-气象站"
     assert payload["list"][0]["station_name"] == "F21(西集)"
     assert payload["list"][0]["hud_entity_id"] == "F21(西集)"
+    by_key = {c["key"]: c["title"] for c in payload["columns"]}
+    assert by_key["temp"] == "气温"
+    assert by_key["real_time_rain"] == "降水"
+    assert by_key["humidity"] == "相对湿度"
+    assert by_key["pressure"] == "气压"
+    assert by_key["wind_speed"] == "风速"
+    assert by_key["wind_dirt"] == "风向"
     list_sql = next(sql for sql, _ in exe.calls if "order by w.data_time desc" in sql.lower())
     assert "t_data_wash_qxz" in list_sql.lower()
     assert "split_part" in list_sql.lower()
@@ -471,6 +514,88 @@ async def test_browse_list_station_click_is_device_time_matrix() -> None:
     assert payload["list"][1]["data_time"] == "2025-11-30 22:00:00"
     assert any("distinct w.data_time" in sql.lower() for sql, _ in exe.calls)
     assert all("distinct on (w.station_name)" not in sql.lower() for sql, _ in exe.calls)
+    assert all("children" not in c for c in payload["columns"])
+
+
+@pytest.mark.asyncio
+async def test_browse_gnss_station_click_grouped_metric_header() -> None:
+    exe = _FakeExecutor(
+        total=2,
+        device_names=[{"station_name": "DAD01"}],
+        time_rows=[{"data_time": "2026-11-12 08:00:00"}],
+        value_rows=[
+            {
+                "data_time": "2026-11-12 08:00:00",
+                "station_name": "DAD01",
+                "gps_total_x": 1.591,
+                "gps_total_y": 2.47,
+                "gps_total_z": 0.89,
+                "displacement_2d": 2.94,
+                "displacement_3d": 3.07,
+            }
+        ],
+    )
+    payload = await fetch_browse_list(
+        library_id="gnss",
+        station_id="DAD01",
+        page=1,
+        page_size=20,
+        executor=exe,
+    )
+    assert payload["result_grain"] == "device_time"
+    assert payload["columns"][0]["key"] == "data_time"
+    group = payload["columns"][1]
+    assert group["key"] == "DAD01"
+    assert group["title"] == "DAD01"
+    child_titles = [c["title"] for c in group["children"]]
+    assert child_titles == ["X位移", "Y位移", "Z位移", "水平合位移", "合位移"]
+    row = payload["list"][0]
+    assert row["DAD01::gps_total_x"] == pytest.approx(1.591)
+    assert row["DAD01::displacement_2d"] == pytest.approx(2.94)
+    assert row["DAD01::displacement_3d"] == pytest.approx(3.07)
+    assert "DAD01" not in row
+
+
+@pytest.mark.asyncio
+async def test_browse_qxz_station_click_grouped_metric_header() -> None:
+    exe = _FakeExecutor(
+        total=1,
+        device_names=[{"station_name": "F21-气象站"}],
+        time_rows=[{"data_time": "2026-11-12 08:00:00"}],
+        value_rows=[
+            {
+                "data_time": "2026-11-12 08:00:00",
+                "station_name": "F21-气象站",
+                "temp": 12.3,
+                "real_time_rain": 0.4,
+                "humidity": 55.0,
+                "pressure": 1012.0,
+                "wind_speed": 2.1,
+                "wind_dirt": 180.0,
+            }
+        ],
+    )
+    payload = await fetch_browse_list(
+        library_id="qxz",
+        station_id="F21(西集)",
+        page=1,
+        page_size=20,
+        executor=exe,
+    )
+    group = payload["columns"][1]
+    assert group["title"] == "F21-气象站"
+    assert [c["title"] for c in group["children"]] == [
+        "气温",
+        "降水",
+        "相对湿度",
+        "气压",
+        "风速",
+        "风向",
+    ]
+    row = payload["list"][0]
+    assert row["F21-气象站::temp"] == pytest.approx(12.3)
+    assert row["F21-气象站::humidity"] == pytest.approx(55.0)
+    assert row["F21-气象站::wind_dirt"] == pytest.approx(180.0)
 
 
 def test_station_area_sql_is_t_station_only() -> None:

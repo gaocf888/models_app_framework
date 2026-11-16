@@ -896,7 +896,7 @@ GET
 
 | 返回字段 | 表上怎么加载 |
 |----------|--------------|
-| `columns[]` | `title` 当表头，`key` 取格。不要用设备编号当矩阵列；`total_settle_mm` 的 `title` 为「沉降量(mm)」 |
+| `columns[]` | `title` 当表头，`key` 取格。不要用设备编号当矩阵列；`total_settle_mm` 的 `title` 为「沉降量(mm)」。GNSS 另有 X/Y/Z位移、水平合位移、合位移；气象另有相对湿度、气压、风速、风向 |
 | `list[].station_id` | **测位 ID** = 设备编号（洗数表 `station_name`，如 `F30-1`；分层标为代表标如 `F28-10`） |
 | `list[].station_name` | **监测站名称** = 场地 `project_name`（如 `F30(孙家营)`） |
 | `list[].area` | 行政区 |
@@ -908,13 +908,16 @@ GET
 
 **B. 点站点**（`result_grain=device_time`）
 
-该场地全部设备（含辅助标）的时间序列，转成矩阵：行是时间，列是设备名。
+该场地全部设备（含辅助标）的时间序列，转成矩阵：行是时间。分层标等仍是「一设备一列」；**GNSS / 气象站** 是两级表头（站点下挂多指标）。
 
 | 返回字段 | 表上怎么加载 |
 |----------|--------------|
 | `columns[0]` | 固定 `data_time` / 监测时间 |
-| `columns[1…]` | 每个设备一列，`key`=`title`=`station_name`（`F9-1`、`F9-1T`…已按编号排序） |
-| `list[]` | 一行一个 `data_time`（新→旧）。`list[i]["F9-1"]` 即该时刻该设备的 `total_settle`；缺测为空 |
+| `columns[1…]` 无 `children` | 分层标/地下水等：每个设备一列，`key`=`title`=`station_name`（`F9-1`…）；单元格 `list[i][设备名]` |
+| `columns[1…]` 有 `children` | **GNSS / 气象**：父级 `title`=站点（如 `DAD01`），不要用父级 `key` 取格。子级 `children[].title` 为指标名，单元格取 `list[i][children[k].key]`（key 形如 `DAD01::gps_total_x`） |
+| GNSS 子列 | X位移 / Y位移 / Z位移 / 水平合位移 / 合位移（`gps_total_x/y/z`、`displacement_2d`、`displacement_3d`） |
+| 气象子列 | 气温 / 降水 / 相对湿度 / 气压 / 风速 / 风向（`temp`、`real_time_rain`、`humidity`、`pressure`、`wind_speed`、`wind_dirt`） |
+| `list[]` | 一行一个 `data_time`（新→旧）；缺测为空 |
 | `hud_enabled` | 固定 `false`，不要在矩阵行上画「详参」 |
 | `page` / `total` | 按 **监测时间条数** 翻页，不是按站点数 |
 

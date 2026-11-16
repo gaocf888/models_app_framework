@@ -124,13 +124,16 @@ libraries:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
       - {key: station_name, title: 监测站名称, aliases: [station_name]}
       - {key: area, title: 行政区, aliases: [area]}
-      - {key: displacement_3d, title: 三维位移, aliases: [displacement_3d]}
+      - {key: gps_total_x, title: X位移, aliases: [gps_total_x]}
+      - {key: gps_total_y, title: Y位移, aliases: [gps_total_y]}
+      - {key: gps_total_z, title: Z位移, aliases: [gps_total_z]}
+      - {key: displacement_2d, title: 水平合位移, aliases: [displacement_2d]}
+      - {key: displacement_3d, title: 合位移, aliases: [displacement_3d]}
       - {key: period_displacement_3d, title: 周期位移变化, aliases: [period_displacement_3d]}
       - {key: annual_displacement_3d, title: 年度位移变化, aliases: [annual_displacement_3d]}
-      - {key: displacement_2d, title: 二维位移, aliases: [displacement_2d]}
       - {key: data_time, title: 数据时间, aliases: [data_time]}
     core_metrics:
-      - {id: displacement_3d, name: 最新三维位移, unit: mm, source: displacement_3d}
+      - {id: displacement_3d, name: 合位移, unit: mm, source: displacement_3d}
       - {id: period_displacement_3d, name: 周期位移变化, unit: mm, source: period_displacement_3d}
       - {id: annual_displacement_3d, name: 年度位移变化, unit: mm, source: annual_displacement_3d}
   - id: qxz
@@ -148,6 +151,10 @@ libraries:
       - {key: area, title: 行政区, aliases: [area]}
       - {key: temp, title: 气温, aliases: [temp]}
       - {key: real_time_rain, title: 降水, aliases: [real_time_rain]}
+      - {key: humidity, title: 相对湿度, aliases: [humidity]}
+      - {key: pressure, title: 气压, aliases: [pressure]}
+      - {key: wind_speed, title: 风速, aliases: [wind_speed]}
+      - {key: wind_dirt, title: 风向, aliases: [wind_dirt]}
       - {key: data_time, title: 数据时间, aliases: [data_time]}
     core_metrics:
       - {id: temp, name: 气温, unit: ℃, source: temp}
