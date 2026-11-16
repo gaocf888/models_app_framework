@@ -143,13 +143,21 @@ def _snippets_use_numbered_ref_format(context_snippets: List[str]) -> bool:
     return False
 
 
+_RETRIEVAL_META_FORBID = (
+    "禁止输出任何检索过程/缺口说明（含同义改写与「注：」尾巴），例如："
+    "「没有检索到」「本轮未检索到」「知识库本轮暂无/未检索到」「未检索到相关条文」"
+    "「未检索到…特定区分/直接描述」「无知识片段」「请完善知识库」「检索未命中」；"
+    "缺口点直接用通识写入正文，不要交代检索成败。"
+)
+
+
 def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
     """
     与 `ChatbotLangGraphRunner._node_kb_build_messages` / legacy `_build_llm_messages` 对齐的
     「知识片段」system 段全文（含对「确定吗」类短句的硬性说明）。
 
-    各业务域统一：以片段为主并可适度分析；正文不声明检索成败；禁止编造项由 domain 的
-    ``rag_snippet_granularity_forbid`` 约束。
+    对齐 zajt：片段为事实锚点而非答题边界；须按问句全覆盖并用领域通识补齐缺口。
+    禁止编造项由 domain 的 ``rag_snippet_granularity_forbid`` 约束。
     """
     from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
 
@@ -165,10 +173,28 @@ def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
             else "未列出的故障类型、设备条目、未给出的规程条款编号或厂内测点数据"
         )
     ).strip()
-    extend_hint = (
-        "适度机理归纳、防控建议与专业延伸"
+    domain_skill = (
+        "地面沉降监测与防控"
         if is_subsidence
-        else "适度机理归纳、排查/检修建议与专业延伸"
+        else "锅炉/四管"
+    )
+    cover_example = (
+        "例如问「某行政区近期沉降偏大原因」而片段仅有「地面沉降成因」时：以片段写已覆盖部分并标 [n]，"
+        "同时用地面沉降通识补齐「行政区/近期」等限定与必要区分，使整题被答全"
+        if is_subsidence
+        else "例如问「低压低温再热器」而片段仅有「低温再热器」时：以片段写已覆盖部分并标 [n]，"
+        "同时用锅炉/四管通识补齐「低压」含义及必要区分，使整题被答全"
+    )
+    extend_hint = (
+        "简短归纳、机理或防控补充"
+        if is_subsidence
+        else "简短归纳、机理或排查补充"
+    )
+    query_cover_rule = (
+        "【问句全覆盖·通识补齐】必须按用户问句的完整对象与全部限定词作答，不得把回答收窄成片段中的近邻/上位主题"
+        f"（{cover_example}）。"
+        f"通识补充直接写入正文，不得伪装成库内条文；禁止编造或冒充库内依据的：{forbid}。"
+        f"{_RETRIEVAL_META_FORBID}"
     )
     if numbered:
         ctx = "\n\n".join(blocks)
@@ -176,39 +202,42 @@ def format_rag_snippets_system_block(context_snippets: List[str]) -> str:
             "以下为带编号的检索知识片段（方括号内数字 n 与片段标题 ``[n]`` 一一对应；"
             "列表顺序仅为检索结果顺序，与用户所指会话中的小节、主题或「第N点」均无对应关系，"
             "禁止用片段顺序顶替会话内容）。"
+            f"片段是事实锚点而非答题边界：未覆盖的问句要点须结合{domain_skill}通用专业能力补齐。"
         )
         cite_rule = (
             "【片段引用标注】凡直接复述或改写片段中的现象、数据、条文、处置步骤，且与某一 [n] 片段内容一一对应时，"
             "须在相关句子或条目末标注 [n]（不同条目可标不同编号）。"
-            "纯综合归纳、过渡句、通用安全提醒可不标；但不得将未标注 [n] 的表述写成片段原文或规程条文。"
+            "纯综合归纳、过渡句、通用安全提醒、以及未对应某一 [n] 的机理/建议/限定词补充可不标；"
+            "但不得将未标注 [n] 的表述写成片段原文或规程条文。"
             "禁止编造未列出的文档名或 http 链接；链接由系统另行提供，正文中只需标注 [n]。"
         )
         granularity_rule = (
-            f"【宽泛问题作答粒度】以下列编号片段为主组织回答；可在片段事实之上做{extend_hint}，"
-            "勿仅机械复述。每条被使用的片段可单独成节（标题可取该片段主题或《文档名》），"
-            f"节内与片段一一对应的表述句末标 [n]。禁止编造或冒充库内依据的：{forbid}。"
-            "勿在正文声明「是否检索到知识库 / 是否通用分析 / 本轮未检索到」等元叙述。"
-            "若用户问题较窄且只命中单条片段，针对该问作答并标好 [n]，亦可补充简短解读。"
+            "【宽泛问题作答粒度】若用户问题较宽（如「常见…有哪些」「概述」「列举」「分别说明」等），且下列有多条编号片段："
+            "须先按下列片段逐条覆盖已被使用的要点——每条被使用的片段尽量单独成节（标题可取该片段主题或《文档名》），"
+            "节内来自该片段的现象/原因/措施句末标对应 [n]；"
+            f"覆盖片段要点之后，允许基于{domain_skill}通用能力做{extend_hint}，直接写入正文，"
+            "不得把补充内容写成库内条文；"
+            "禁止输出「分析/通用经验」「通用经验」「通用经验，非本厂知识库条文」作为章节标题、小节标题或行内标签；"
+            f"{_RETRIEVAL_META_FORBID}"
+            "若用户问题较窄且只命中单条片段，仍须覆盖问句全称与限定，标好 [n]，并用通识补片段缺口。"
         )
     else:
         ctx = "\n".join(f"- {c}" for c in blocks)
         intro = (
             "以下为检索得到的知识片段（列表顺序仅为检索结果顺序，与用户所指会话中的小节、主题或「第N点」"
             "均无对应关系，禁止用片段顺序顶替会话内容）。"
+            "以片段为事实锚点，须结合通识补齐问句未覆盖点并直接写入正文；"
+            "禁止输出「分析/通用经验」作为章节标题或标签。"
         )
         cite_rule = ""
-        granularity_rule = (
-            "以片段为主作答，可做适度专业延伸；"
-            f"禁止编造或冒充库内依据的：{forbid}。"
-            "勿在正文声明检索成败或知识库有无；禁止把无片段支撑的推断写成「依据某规范/某文档」。"
-        )
+        granularity_rule = ""
     common = (
         "用户泛指上文（如「上述现场排查/检修建议」）时，"
         "请先在对话历史中按语义对齐助手较近一轮的相关段落再展开；仅当用户明确说「第N点/条」时再对齐编号。"
-        "再以片段补充条文或机理。"
+        "再以片段补充条文或机理，并可在片段之上做简短分析与通识补齐。"
         "当用户本轮仅为「确定吗」「真的吗」「靠谱吗」「有依据吗」「你确定吗」「您确定吗」等极短追问时，"
         "须先复述并回应对话历史中**紧邻的上一轮** assistant 的主要结论与依据，再引用下述片段作补充；"
         "不得以「请明确指代」「没有具体上下文」「请说明指什么」等话术敷衍回避。"
     )
-    parts = [intro, cite_rule, granularity_rule, common, ctx]
+    parts = [intro, query_cover_rule, cite_rule, granularity_rule if numbered else "", common, ctx]
     return "\n".join(p for p in parts if p)

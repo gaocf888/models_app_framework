@@ -38,3 +38,5 @@ def test_format_rag_block_contains_short_confirm_rule():
     assert "片段A" in block
     assert "片段引用标注" in block
     assert "宽泛问题" in block
+    assert "事实锚点" in block
+    assert "问句全覆盖" in block or "通识补齐" in block

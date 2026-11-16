@@ -139,7 +139,7 @@ def test_format_rag_block_numbered_citation_rule(monkeypatch):
     )
     assert "片段引用标注" in block
     assert "宽泛问题" in block
-    assert "适度机理" in block or "专业延伸" in block
-    assert "勿在正文声明" in block
+    assert "事实锚点" in block
+    assert "通识补齐" in block or "问句全覆盖" in block
     assert "知识库暂无足够依据" not in block
     assert "《规程》" in block

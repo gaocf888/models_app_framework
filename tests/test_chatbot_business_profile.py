@@ -244,7 +244,7 @@ def test_chatbot_retrieve_excludes_nl2sql_and_generation_texts(monkeypatch):
     assert "知识库暂无足够依据" not in p.insufficient_evidence_hint
     assert "通用专业知识" in p.insufficient_evidence_hint
     assert "燃烧优化" not in p.faq_soft_direct_authority
-    assert "简短解读" in p.faq_soft_direct_authority or "专业延伸" in p.faq_soft_direct_authority
+    assert "通识补齐" in p.faq_soft_direct_authority or "2～3 句" in p.faq_soft_direct_authority
     assert "测点读数" in p.rag_snippet_granularity_forbid
 
 
@@ -291,8 +291,8 @@ def test_rag_snippet_block_insufficient_evidence_wording(monkeypatch):
     clear_chatbot_business_profile_cache()
     text = format_rag_snippets_system_block(["[1] 分层标说明\n正文"])
     assert "知识库暂无足够依据" not in text
-    assert "适度机理" in text or "专业延伸" in text
-    assert "勿在正文声明" in text
+    assert "事实锚点" in text
+    assert "通识补齐" in text or "问句全覆盖" in text
     assert "测点读数" in text or "规范条款" in text
     assert "故障类型" not in text
 
@@ -305,11 +305,11 @@ def test_rag_snippet_block_boiler_loosened_wording(monkeypatch):
     p = get_chatbot_business_profile()
     assert "未注入检索知识片段" in p.insufficient_evidence_hint
     assert "知识库暂无足够依据" not in p.insufficient_evidence_hint
-    assert "简短解读" in p.faq_soft_direct_authority or "专业延伸" in p.faq_soft_direct_authority
+    assert "通识补齐" in p.faq_soft_direct_authority or "2～3 句" in p.faq_soft_direct_authority
     text = format_rag_snippets_system_block(["[1] 过热器\n正文"])
     assert "知识库暂无足够依据" not in text
-    assert "勿在正文声明" in text
-    assert "排查/检修" in text or "专业延伸" in text
+    assert "事实锚点" in text
+    assert "通识补齐" in text or "问句全覆盖" in text
     assert "故障类型" in text
 
 
