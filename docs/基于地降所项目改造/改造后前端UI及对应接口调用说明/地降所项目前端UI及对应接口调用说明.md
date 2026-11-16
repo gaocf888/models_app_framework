@@ -413,7 +413,7 @@ analysis_agent_finished         { result }                         # 按钮恢�
 | 列来源 | 规则 |
 |--------|------|
 | 解析 SQL | `data_query_result.columns[].title` 当表头（用户看见的列名）；单元格取 `list[row][columns[i].key]`（这一格的值）；缺 key 显示空，不要自己猜列 |
-| 浏览点库/区（`result_grain=station`） | 用返回的 `columns[].title` 当表头；单元格取 `list[row][columns[i].key]`。分层标/基岩标/光纤只有 `total_settle_mm`（表头「沉降量」），**不要**再渲染年沉降量 |
+| 浏览点库/区（`result_grain=station`） | 用返回的 `columns[].title` 当表头；单元格取 `list[row][columns[i].key]`。`station_id` 是设备编号（如 `F30-1`），`station_name` 是场地（如 `F30(孙家营)`）。分层标/基岩标/光纤只有 `total_settle_mm`（表头「沉降量」），**不要**再渲染年沉降量 |
 | 浏览点站（`result_grain=device_time`） | 第一列监测时间，其后每列一个设备 `station_name`；`list[i][设备名]` 为该时刻沉降值 |
 
 站点列表典型度量列（除测位 ID / 站名 / 行政区 / 数据时间外；即表上多出来的「数」）：
@@ -434,7 +434,7 @@ analysis_agent_finished         { result }                         # 按钮恢�
 |------|------|
 | `hud_enabled`（整次结果） | `false`：整张表都没有「详参」按钮，也没有详情数据 |
 | `hud_entity_type` | 这一行是站、区还是全市（决定详情里画什么） |
-| `hud_entity_id` | 打开详情时用哪把钥匙：站=`station_id`（测位编号）；区=`area`（如朝阳区）；市固定 `beijing` |
+| `hud_entity_id` | 打开详情时用哪把钥匙：浏览点库/区时站=场地名（与 `station_name` 相同，不要用测位 ID）；解析路径站=`station_id`；区=`area`（如朝阳区）；市固定 `beijing` |
 | `hud_available` | `false` 时这一行不显示按钮（站太多只给前 50 个、区只给前 16 个，或这一行对不上实体） |
 
 **行操作：**
@@ -581,7 +581,7 @@ GET /data-query-agent/hud?library_id=fcb&entity_type=station&entity_id=JZGZ
 |------|------|------|
 | `library_id` | 是 | 这一行是哪类监测（默认表里可能上一行分层标、下一行基岩标，各传各的） |
 | `entity_type` | 是 | 点的是站、区还是全市。层位暂不支持 |
-| `entity_id` | 是 | 站=`GET /browse` 行上的 `station_id`（场地 `project_name`，如 `F28(金盏)`）；区=「朝阳区」；全市传 `beijing`（也可写「全市」） |
+| `entity_id` | 是 | 站=`GET /browse` 行上的 `hud_entity_id`（场地 `project_name`，如 `F28(金盏)`，不是测位 ID）；区=「朝阳区」；全市传 `beijing`（也可写「全市」） |
 | `user_id` / `session_id` | 否 | 浏览表点详情时可以不传 |
 | `expose_sql` | 否 | 联调才打开 |
 

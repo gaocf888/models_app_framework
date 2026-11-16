@@ -440,8 +440,11 @@ def _attach_area_and_filter(
         area = area or _area_for_name(raw_id, by_norm, by_code)
         if district and _district_label(area) != district:
             continue
-        item["station_id"] = canon
+        # 测位 ID = 设备编号（洗数表 station_name，如 F30-1）；监测站名称 = 场地。
+        # 详参仍按场地：hud_entity_id 用 project_name，与树 / GET /hud 同源。
+        item["station_id"] = mark_name or canon
         item["station_name"] = canon
+        item["mark_name"] = mark_name or None
         item["area"] = area or None
         item["hud_entity_id"] = canon
         out.append(item)

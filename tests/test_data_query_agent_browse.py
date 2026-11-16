@@ -216,12 +216,14 @@ async def test_browse_list_default_fcb_is_rep_station() -> None:
     assert payload["has_more"] is False
     assert payload["result_grain"] == "station"
     by_id = {row["station_id"]: row for row in payload["list"]}
-    assert by_id["F28(金盏)"]["hud_entity_id"] == "F28(金盏)"
-    assert by_id["F28(金盏)"]["hud_available"] is True
-    assert by_id["F28(金盏)"]["total_settle_mm"] == pytest.approx(-84.2)
-    assert "annual_settle_mm" not in by_id["F28(金盏)"]
-    assert "annual_settle_mm" not in by_id["F2(望京)"]
-    assert "period_settle_mm" not in by_id["F28(金盏)"]
+    assert by_id["F28-10"]["station_name"] == "F28(金盏)"
+    assert by_id["F28-10"]["hud_entity_id"] == "F28(金盏)"
+    assert by_id["F28-10"]["hud_available"] is True
+    assert by_id["F28-10"]["total_settle_mm"] == pytest.approx(-84.2)
+    assert by_id["F2-8"]["station_name"] == "F2(望京)"
+    assert "annual_settle_mm" not in by_id["F28-10"]
+    assert "annual_settle_mm" not in by_id["F2-8"]
+    assert "period_settle_mm" not in by_id["F28-10"]
     settle_col = next(c for c in payload["columns"] if c["key"] == "total_settle_mm")
     assert settle_col["title"] == "沉降量(mm)"
     assert all(c["key"] != "annual_settle_mm" for c in payload["columns"])
@@ -266,8 +268,10 @@ async def test_browse_list_rep_keeps_all_times_desc() -> None:
     payload = await fetch_browse_list(library_id="fcb", page=1, page_size=20, executor=exe)
     assert payload["total"] == 2
     assert [row["data_time"] for row in payload["list"]] == ["2026-08-01", "2025-08-01"]
-    assert payload["list"][0]["station_id"] == "F28(金盏)"
-    assert payload["list"][1]["station_id"] == "F28(金盏)"
+    assert payload["list"][0]["station_id"] == "F28-10"
+    assert payload["list"][0]["station_name"] == "F28(金盏)"
+    assert payload["list"][1]["station_id"] == "F28-10"
+    assert payload["list"][1]["hud_entity_id"] == "F28(金盏)"
 
 
 @pytest.mark.asyncio
@@ -289,12 +293,63 @@ async def test_browse_list_district_filters_rep_stations() -> None:
     assert any(c["key"] == "total_settle_mm" and c["title"] == "沉降量(mm)" for c in payload["columns"])
     assert all("annual_settle_mm" not in row for row in payload["list"])
     assert all("period_settle_mm" not in row for row in payload["list"])
-    assert all(row["station_id"] != "F28(金盏)" for row in payload["list"])
-    assert payload["list"][0]["station_id"] == "F2(望京)"
+    assert all(row["station_name"] != "F28(金盏)" for row in payload["list"])
+    assert payload["list"][0]["station_name"] == "F2(望京)"
+    assert payload["list"][0]["station_id"] == "F2-8"
+    assert payload["list"][0]["hud_entity_id"] == "F2(望京)"
     list_sql = next(sql for sql, _ in exe.calls if "order by w.data_time desc" in sql.lower())
     assert "any(:rep_marks)" in list_sql.lower()
     assert "t_data_wash_jyb" in list_sql.lower()
     assert "distinct on" not in list_sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_browse_list_groundwater_device_id_not_site() -> None:
+    exe = _FakeExecutor(
+        total=2,
+        station_rows=[
+            {"name": "F30(孙家营)", "area": "大兴区"},
+            {"name": "F2(望京)", "area": "朝阳区"},
+        ],
+        pages=[
+            [
+                {
+                    "station_id": "F30(孙家营)",
+                    "station_name": "F30(孙家营)",
+                    "mark_name": "F30-1",
+                    "area": "大兴区",
+                    "deep": 47.5,
+                    "elevation": -25.3,
+                    "data_time": "2026-11-12 23:00:00",
+                },
+                {
+                    "station_id": "F30(孙家营)",
+                    "station_name": "F30(孙家营)",
+                    "mark_name": "F30-2",
+                    "area": "大兴区",
+                    "deep": 36.3,
+                    "elevation": -14.1,
+                    "data_time": "2026-11-12 23:00:00",
+                },
+            ]
+        ],
+    )
+    payload = await fetch_browse_list(
+        library_id="dxswj",
+        district="大兴区",
+        page=1,
+        page_size=20,
+        executor=exe,
+    )
+    assert payload["library_id"] == "dxswj"
+    assert payload["result_grain"] == "station"
+    assert [row["station_id"] for row in payload["list"]] == ["F30-1", "F30-2"]
+    assert all(row["station_name"] == "F30(孙家营)" for row in payload["list"])
+    assert all(row["hud_entity_id"] == "F30(孙家营)" for row in payload["list"])
+    list_sql = next(sql for sql, _ in exe.calls if "order by w.data_time desc" in sql.lower())
+    assert "t_data_wash_dxswj" in list_sql.lower()
+    assert "any(:projects)" in list_sql.lower()
+    assert "any(:rep_marks)" not in list_sql.lower()
 
 
 @pytest.mark.asyncio

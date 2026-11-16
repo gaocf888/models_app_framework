@@ -833,7 +833,7 @@ Authorization: Bearer <service-api-key>
 
 进页默认表、点树刷新右侧表。**两种视图**（看有没有传 `station_id`）：
 
-1. **点树中监测方式 / 行政区**（不传 `station_id`）：查询范围内 **代表标**（分层标=层位 0）的 **全部观测行**，按 `data_time` **倒序**；表头是测位/站名/行政区/沉降量/时间（**无年沉降量**），**不要**用设备 `station_name` 当列。  
+1. **点树中监测方式 / 行政区**（不传 `station_id`）：查询范围内全部观测行，按 `data_time` **倒序**。分层标/基岩标只取代表标（层位 0 / J 标）；地下水等其它库取该范围内 **全部设备**。表头按返回 `columns`：测位 ID=设备编号（如 `F30-1`），监测站名称=场地（如 `F30(孙家营)`）。**不要**把设备编号当成矩阵列。  
 2. **点树中站点**（传 `station_id`）：该场地 **全部设备** 的监测序列。行= `data_time`（新→旧），列=设备 `station_name`（如 `F9-1`、`F9-1T`），单元格=`total_settle`（其它库用该库核心指标）。
 
 强制分页。不走 `run-stream`。代表标表上点「详参」再调 `GET /hud`；设备矩阵不带详参。
@@ -892,15 +892,17 @@ GET
 
 **A. 点库 / 点行政区**（`result_grain=station`，进页默认也是这种）
 
-范围内代表标的全部观测，按 `data_time` 从新到旧。分层标只取层位 0 代表标，不是该站所有设备。表头按返回的 `columns` 渲染：测位 ID / 监测站名称 / 行政区 / **沉降量** / 数据时间。**不要**再画年沉降量列（当前只有实测沉降量，没有年沉降量）。同一站会有多行。
+范围内观测按 `data_time` 从新到旧。分层标/基岩标只取代表标；地下水等为该区覆盖场地上全部设备，同一场地同一时刻可有多行。表头按返回的 `columns` 渲染。沉降库 **不要**再画年沉降量列。
 
 | 返回字段 | 表上怎么加载 |
 |----------|--------------|
-| `columns[]` | `title` 当表头，`key` 取格。不要用设备编号当列；`total_settle_mm` 的 `title` 为「沉降量(mm)」 |
-| `list[].station_id` / `station_name` / `area` | 测位、站名（场地名如 `F8(周村)`）、行政区 |
-| `list[].total_settle_mm` | 该行代表标的沉降量（即洗数表 `total_settle`）。**无** `annual_settle_mm` |
+| `columns[]` | `title` 当表头，`key` 取格。不要用设备编号当矩阵列；`total_settle_mm` 的 `title` 为「沉降量(mm)」 |
+| `list[].station_id` | **测位 ID** = 设备编号（洗数表 `station_name`，如 `F30-1`；分层标为代表标如 `F28-10`） |
+| `list[].station_name` | **监测站名称** = 场地 `project_name`（如 `F30(孙家营)`） |
+| `list[].area` | 行政区 |
+| `list[].total_settle_mm` | 该行沉降量（洗数表 `total_settle`）。**无** `annual_settle_mm` |
 | `list[].data_time` | 该行观测时间（整表已按此倒序） |
-| `list[].hud_entity_id` | 点「详参」→ `GET /hud` |
+| `list[].hud_entity_id` | 点「详参」→ `GET /hud` 的 `entity_id`（**场地名**，不要传测位 ID） |
 | `hud_enabled` | `false` 时整表不显示「详参」 |
 | `page` / `total` | 按 **观测行数** 翻页（同一站多行） |
 
@@ -1359,7 +1361,7 @@ GET
 |------|------|------|------|
 | library_id | true | string | 该行监测类型（如 `fcb`） |
 | entity_type | true | string | `station` / `district` / `city` |
-| entity_id | true | string | 站=`GET /browse` 行上的 `station_id`（`project_name`，如 `F28(金盏)`）；区=`朝阳区`；市=`beijing` |
+| entity_id | true | string | 站=`GET /browse` 行上的 `hud_entity_id`（场地 `project_name`，如 `F28(金盏)`，**不是**测位 ID / 设备编号）；区=`朝阳区`；市=`beijing` |
 
 ### 返回字段
 
@@ -1383,7 +1385,7 @@ GET
 | `warnings` 含 `hud_series_failed` | 表还在，详情里折线为空，提示「时序暂不可用」 |
 | `sql` | **禁止渲染** |
 
-入参：`library_id` = 当前表所在库；`entity_type` 用该行 `hud_entity_type`（浏览表站点行为 `station`）；`entity_id` = 行上 `hud_entity_id`（站=`station_id`，区=`朝阳区`，市=`beijing`）。
+入参：`library_id` = 当前表所在库；`entity_type` 用该行 `hud_entity_type`（浏览表站点行为 `station`）；`entity_id` = 行上 `hud_entity_id`（站=场地名如 `F28(金盏)`，不要用测位 ID；区=`朝阳区`；市=`beijing`）。
 
 ### 接口示例
 
