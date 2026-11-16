@@ -8,6 +8,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.logging import get_logger
+from app.analysis_agent.deterministics.coverage import (
+    device_type_from_wash_table,
+    sql_split_station_code_expr,
+    sql_yaml_site_code_expr,
+    uses_station_name_site_key,
+    yaml_to_wash_station_names,
+)
 from app.nl2sql.nl2sql_business_profile import get_nl2sql_business_profile
 from app.nl2sql.semantic_layer import (
     SemanticBinding,
@@ -293,7 +300,32 @@ def link_schema(
         _append_all_table_columns(
             linked, _STATION_TABLE, table_columns, reason="station_all_columns"
         )
-        linked.joins.append(LinkedJoin(left=f"{primary}.project_name", right="t_station.name", reason="project_name=name"))
+        device = device_type_from_wash_table(primary)
+        if uses_station_name_site_key(device):
+            if device == "qxz":
+                linked.joins.append(
+                    LinkedJoin(
+                        left=sql_split_station_code_expr(f"{primary}.station_name"),
+                        right=sql_yaml_site_code_expr("t_station.name"),
+                        reason="qxz_station_code",
+                    )
+                )
+            else:
+                linked.joins.append(
+                    LinkedJoin(
+                        left=f"{primary}.station_name",
+                        right="t_station.name",
+                        reason="station_name=name",
+                    )
+                )
+        else:
+            linked.joins.append(
+                LinkedJoin(
+                    left=f"{primary}.project_name",
+                    right="t_station.name",
+                    reason="project_name=name",
+                )
+            )
 
     if semantic.district_codes:
         for d in semantic.district_codes:
@@ -376,9 +408,34 @@ def link_schema(
             # 清单问句：覆盖名单落在 t_station.name
             _append_project_name_filters(_STATION_TABLE, "name")
         else:
-            # 站点范围只用 project_name；禁止把 station_ids 写成事实表 station_id 过滤
-            # （id/data_id/station_id 为清洗遗留联合主键，不作关联/过滤）
-            _append_project_name_filters(primary, "project_name")
+            # GNSS / 气象：project_name 为工程总名，覆盖名单注入 station_name。
+            # 其它库：站点范围只用 project_name；禁止把 station_ids 写成事实表 station_id 过滤。
+            device = device_type_from_wash_table(primary)
+            if uses_station_name_site_key(device):
+                wash_names = list(yaml_to_wash_station_names(device, effective_projects))
+                if wash_names:
+                    if len(wash_names) == 1:
+                        linked.suggested_filters.append(
+                            {
+                                "table": primary,
+                                "column": "station_name",
+                                "op": "=",
+                                "value": wash_names[0],
+                                "source": project_filter_source,
+                            }
+                        )
+                    else:
+                        linked.suggested_filters.append(
+                            {
+                                "table": primary,
+                                "column": "station_name",
+                                "op": "in",
+                                "value": wash_names,
+                                "source": project_filter_source,
+                            }
+                        )
+            else:
+                _append_project_name_filters(primary, "project_name")
 
             if preferred_marks:
                 filter_source = (

@@ -193,6 +193,44 @@ def test_device_matrix_sql_matches_project_and_paginates_time() -> None:
     assert "w.data_time = ANY(:times)" in values_sql
 
 
+def test_latest_sql_gnss_filters_station_name_not_project() -> None:
+    lib = get_library_catalog().get("gnss")
+    assert lib is not None
+    sql, params = build_latest_sql(lib, projects=("F15-GNSS", "SLP01"), limit=20, offset=0)
+    assert "w.station_name = ANY(:projects)" in sql
+    assert "w.project_name = ANY(:projects)" not in sql
+    assert params["projects"] == ["F15-GNSS", "SLP01"]
+
+
+def test_latest_sql_qxz_filters_station_code() -> None:
+    lib = get_library_catalog().get("qxz")
+    assert lib is not None
+    sql, params = build_latest_sql(lib, projects=("F21(西集)", "F33(留士庄)"), limit=20, offset=0)
+    assert "split_part" in sql.lower()
+    assert "w.project_name = ANY(:projects)" not in sql
+    assert params["site_codes"] == ["F21", "F33"]
+
+
+def test_device_matrix_gnss_matches_station_name() -> None:
+    lib = get_library_catalog().get("gnss")
+    assert lib is not None
+    names_sql, names_params = build_device_names_sql(lib, "F15-GNSS")
+    assert "t_data_wash_gnss" in names_sql.lower()
+    assert "w.station_name = :station_id" in names_sql
+    assert "w.project_name = :station_id" not in names_sql
+    assert names_params["station_id"] == "F15-GNSS"
+
+
+def test_device_matrix_qxz_matches_yaml_site_code() -> None:
+    lib = get_library_catalog().get("qxz")
+    assert lib is not None
+    names_sql, names_params = build_device_names_sql(lib, "F21(西集)")
+    assert "t_data_wash_qxz" in names_sql.lower()
+    assert "split_part" in names_sql.lower()
+    assert names_params["site_code"] == "F21"
+    assert "w.project_name = :station_id" not in names_sql
+
+
 def test_annual_sql_uses_any_names() -> None:
     lib = get_library_catalog().get("fcb")
     assert lib is not None
@@ -350,6 +388,63 @@ async def test_browse_list_groundwater_device_id_not_site() -> None:
     assert "t_data_wash_dxswj" in list_sql.lower()
     assert "any(:projects)" in list_sql.lower()
     assert "any(:rep_marks)" not in list_sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_browse_list_gnss_maps_station_name_not_engineering_project() -> None:
+    exe = _FakeExecutor(
+        total=1,
+        station_rows=[{"name": "F15(闫家营)", "area": "通州区"}],
+        pages=[
+            [
+                {
+                    "station_id": "北京地面沉降监测",
+                    "station_name": "北京地面沉降监测",
+                    "mark_name": "F15-GNSS",
+                    "displacement_3d": 1.2,
+                    "data_time": "2026-11-12 08:00:00",
+                }
+            ]
+        ],
+    )
+    payload = await fetch_browse_list(library_id="gnss", page=1, page_size=20, executor=exe)
+    assert payload["library_id"] == "gnss"
+    assert payload["list"][0]["station_id"] == "F15-GNSS"
+    assert payload["list"][0]["station_name"] == "F15-GNSS"
+    assert payload["list"][0]["hud_entity_id"] == "F15-GNSS"
+    list_sql = next(sql for sql, _ in exe.calls if "order by w.data_time desc" in sql.lower())
+    assert "t_data_wash_gnss" in list_sql.lower()
+    assert "w.station_name = any(:projects)" in list_sql.lower()
+    assert "w.project_name = any(:projects)" not in list_sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_browse_list_qxz_maps_code_to_yaml_site() -> None:
+    exe = _FakeExecutor(
+        total=1,
+        station_rows=[{"name": "F21(西集)", "area": "通州区"}],
+        pages=[
+            [
+                {
+                    "station_id": "北京地面沉降监测",
+                    "station_name": "北京地面沉降监测",
+                    "mark_name": "F21-气象站",
+                    "temp": 12.3,
+                    "real_time_rain": 0.0,
+                    "data_time": "2026-11-12 08:00:00",
+                }
+            ]
+        ],
+    )
+    payload = await fetch_browse_list(library_id="qxz", page=1, page_size=20, executor=exe)
+    assert payload["library_id"] == "qxz"
+    assert payload["list"][0]["station_id"] == "F21-气象站"
+    assert payload["list"][0]["station_name"] == "F21(西集)"
+    assert payload["list"][0]["hud_entity_id"] == "F21(西集)"
+    list_sql = next(sql for sql, _ in exe.calls if "order by w.data_time desc" in sql.lower())
+    assert "t_data_wash_qxz" in list_sql.lower()
+    assert "split_part" in list_sql.lower()
+    assert "w.project_name = any(:projects)" not in list_sql.lower()
 
 
 @pytest.mark.asyncio

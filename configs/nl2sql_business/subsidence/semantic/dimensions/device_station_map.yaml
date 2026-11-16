@@ -4,11 +4,12 @@
 # 说明见 configs/nl2sql_business/subsidence/配置项说明.md 与 NL2SQL基座改造.md §7.5
 version: 2026.11.11
 source: docs/地降所需求及数据相关/数据库结构及逻辑/站点列表-除了gnss.xls；GNSS 见 站点列表-GNSS--92个.xlsx
-description: 监测方式 → 官方站点场地（project_name ≡ t_station.name）覆盖名单
+description: 监测方式 → 官方站点场地覆盖名单（分层标等 ≡ t_station.name；GNSS/气象对齐洗数表 station_name）
 notes:
 - 区县以 t_station.area 为准；本文件不存 area
 - 站名按 F 码优先对齐 scope_lexicon；fcb 覆盖码来自 fcb_layer_map∪xls
-- gnss 已按「站点列表-GNSS--92个.xlsx」填入 92 站（名称保持表内原文，与 t_station.name / 洗数表 project_name 对齐）
+- gnss 已按「站点列表-GNSS--92个.xlsx」填入 92 站；与 t_data_wash_gnss.station_name 等值（project_name 为工程总名，不能用来锁站）
+- qxz 名单为 Fxx(场地) 形式；对齐 t_data_wash_qxz.station_name 的 '-' 前站码（F33-气象站 → F33）；project_name 同为工程总名
 - scope_lexicon.stations 不做本文件的第二份权威拷贝
 devices:
   fcb:

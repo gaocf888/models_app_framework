@@ -3,14 +3,16 @@
 version: "2026.09.01"
 q_list:
   station: |
-    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。
+    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {join_on}。
+    {site_filter_hint}
     查询各监测站点最新一条记录（按 station_id 取 data_time 最大的一行），输出 station_id, station_name, t_station.area AS area, {metric_select}, data_time。
     分层标必须用监测层位=0 的代表标 station_name，禁止对该场地全部设备、全部时刻展开成多行。
     {annual_block}
     {scope_block}
     时间未指定则每站最新。ORDER BY ABS({core_column}) DESC, station_id。LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
   station_period: |
-    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。
+    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {join_on}。
+    {site_filter_hint}
     用户问的是时间窗内的周期沉降量，不是「每站最新一行快照」，禁止把该场地全部设备、全部时刻摊成多行。
     分层标必须用监测层位=0 的代表标 station_name（禁止对同站全部标聚合）。
     对每个站点取时间窗内最早一条与最晚一条 {core_column}：周期沉降变化 Δ = 窗初值 − 窗末值（初−末）；Δ<0 沉降，Δ>0 回弹；禁止写成末−初。
@@ -21,32 +23,39 @@ q_list:
     {scope_block}
     LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
   district: |
-    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。
+    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {join_on}。
+    {site_filter_hint}
     按行政区 t_station.area 汇总，输出 area, AVG({core_column}) AS {core_alias}, COUNT(DISTINCT {table}.station_id) AS station_count。
     {scope_block}
     时间未指定则取各站最新后再按区平均。LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
   city: |
-    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。
+    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {join_on}。
+    {site_filter_hint}
     全市汇总，输出 AVG({core_column}) AS {core_alias}, COUNT(DISTINCT {table}.station_id) AS station_count。
     {scope_block}
     禁止查询其它 t_data_wash_* 表。
 q_hud_series:
   station: |
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），输出 station_id, data_time, {series_select}。
+    {site_filter_hint}
     {scope_block}
     若【时间】已指定窗口，只输出该窗内的时序点，禁止 DISTINCT ON 只留最新一行。分层标用层位 0 代表标。
     按 station_id, data_time 排序。禁止查询其它 t_data_wash_* 表。禁止用其它站的序列冒充本站。
   district: |
-    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。
+    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {join_on}。
+    {site_filter_hint}
     按行政区与自然日聚合：输出 t_station.area AS area, date_trunc('day', {table}.data_time) AS data_time, {series_select}。
     {scope_block}
     这是区平均时序，禁止输出单个 station_id 来冒充该区曲线。按 area, data_time 排序。禁止查询其它 t_data_wash_* 表。
   city: |
-    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {table}.project_name = t_station.name。
+    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {join_on}。
+    {site_filter_hint}
     全市按自然日聚合：输出 date_trunc('day', {table}.data_time) AS data_time, {series_select}。
     {scope_block}
     不要按站或按区拆行。按 data_time 排序。禁止查询其它 t_data_wash_* 表。
 hint_template: |
   【库】{display_name} library_id={library_id}，主表必须是 {table}，禁止查询其它监测表。
+  【JOIN】{join_on}
+  【站点过滤】{site_filter_hint}
   【行政区】{district}；【站点】{station}；【时间】{time_note}
   {annual_block}

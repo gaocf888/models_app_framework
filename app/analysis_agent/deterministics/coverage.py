@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 import yaml
@@ -96,6 +97,194 @@ def canonical_project(name: str, device_type: str) -> str | None:
 
 def in_coverage(name: str, device_type: str) -> bool:
     return canonical_project(name, device_type) is not None
+
+
+# GNSS / 气象准实时表 project_name 为工程总名「北京地面沉降监测」，站点键在 station_name。
+STATION_NAME_SITE_KEY_TYPES = frozenset({"gnss", "qxz"})
+QXZ_STATION_NAME_SUFFIX = "气象站"
+
+
+def device_type_from_wash_table(table: str) -> str:
+    """t_data_wash_gnss → gnss。"""
+    raw = (table or "").strip().lower()
+    prefix = "t_data_wash_"
+    if raw.startswith(prefix):
+        return raw[len(prefix) :]
+    return raw
+
+
+def uses_station_name_site_key(device_type: str) -> bool:
+    """GNSS / 气象站：按洗数表 station_name 锁站，禁止用 project_name。"""
+    return (device_type or "").strip().lower() in STATION_NAME_SITE_KEY_TYPES
+
+
+def wash_station_code(station_name: str) -> str:
+    """F33-气象站 → F33；F15-GNSS → F15；无 '-' 则整段；中文名返回空。"""
+    raw = (station_name or "").strip()
+    if not raw:
+        return ""
+    head = raw.split("-", 1)[0].strip()
+    if not head:
+        return ""
+    if site_code(head):
+        return site_code(head)
+    if re.fullmatch(r"[A-Za-z]+\d+[A-Za-z]*", head):
+        return head.upper()
+    return ""
+
+
+def yaml_site_codes(names: Sequence[str]) -> tuple[str, ...]:
+    """yaml 场地名括号前站码：F33(留士庄) → F33。"""
+    out: list[str] = []
+    for name in names:
+        code = site_code(str(name or ""))
+        if code and code not in out:
+            out.append(code)
+    return tuple(out)
+
+
+def yaml_to_wash_station_names(device_type: str, yaml_names: Sequence[str]) -> tuple[str, ...]:
+    """覆盖名单 → 洗数表 station_name 等值列表（供 NL2SQL IN 注入）。"""
+    dt = (device_type or "").strip().lower()
+    cleaned = [str(n).strip() for n in yaml_names if str(n).strip()]
+    if dt == "qxz":
+        out: list[str] = []
+        for name in cleaned:
+            code = site_code(name)
+            if not code:
+                continue
+            val = f"{code}-{QXZ_STATION_NAME_SUFFIX}"
+            if val not in out:
+                out.append(val)
+        return tuple(out)
+    return tuple(cleaned)
+
+
+def canonical_from_wash(
+    device_type: str,
+    *,
+    station_name: str = "",
+    project_name: str = "",
+) -> str | None:
+    """洗数表一行对齐到 device_station_map 权威场地名。"""
+    dt = (device_type or "").strip().lower()
+    st = (station_name or "").strip()
+    proj = (project_name or "").strip()
+    if dt == "gnss":
+        return canonical_project(st, "gnss") or canonical_project(proj, "gnss")
+    if dt == "qxz":
+        code = wash_station_code(st) or site_code(st)
+        if code:
+            hit = coverage_code_index("qxz").get(code)
+            if hit:
+                return hit
+        return canonical_project(st, "qxz") or canonical_project(proj, "qxz")
+    return canonical_project(proj, dt) or canonical_project(st, dt)
+
+
+def sql_split_station_code_expr(col_ref: str) -> str:
+    """PostgreSQL：F33-气象站 → F33。"""
+    return f"upper(split_part(btrim({col_ref}), '-', 1))"
+
+
+def sql_yaml_site_code_expr(col_ref: str) -> str:
+    """PostgreSQL：F33(留士庄) / F15-GNSS → F15。"""
+    return f"upper(substring(btrim({col_ref}) from '^([A-Za-z]+[0-9]+)'))"
+
+
+def wash_coverage_predicate(
+    alias: str,
+    device_type: str,
+    yaml_names: Sequence[str],
+    params: dict[str, Any],
+    *,
+    param_key: str | None = None,
+) -> str:
+    """覆盖名单 → 洗数表 WHERE 片段。GNSS 等值 station_name；气象按 '-' 前站码。"""
+    dt = (device_type or "").strip().lower()
+    names = [str(x).strip() for x in yaml_names if str(x).strip()]
+    col_st = f"{alias}.station_name" if alias else "station_name"
+    col_pj = f"{alias}.project_name" if alias else "project_name"
+    if not names:
+        return "FALSE"
+    if dt == "gnss":
+        key = param_key or "projects"
+        params[key] = names
+        return f"{col_st} = ANY(:{key})"
+    if dt == "qxz":
+        codes = list(yaml_site_codes(names))
+        if not codes:
+            return "FALSE"
+        key = param_key or "site_codes"
+        params[key] = codes
+        return f"{sql_split_station_code_expr(col_st)} = ANY(:{key})"
+    key = param_key or "projects"
+    params[key] = names
+    return f"{col_pj} = ANY(:{key})"
+
+
+def wash_station_id_predicate(
+    alias: str,
+    device_type: str,
+    station_id: str,
+    params: dict[str, Any],
+) -> str:
+    """树上 yaml 站 id → 洗数表一行（点站）。"""
+    dt = (device_type or "").strip().lower()
+    sid = (station_id or "").strip()
+    col_st = f"{alias}.station_name" if alias else "station_name"
+    col_pj = f"{alias}.project_name" if alias else "project_name"
+    if dt == "gnss":
+        params["station_id"] = sid
+        params["norm_key"] = normalize_site_key(sid)
+        return (
+            f"({col_st} = :station_id OR "
+            f"replace(replace(replace(replace(btrim({col_st}), "
+            f"'（', '('), '）', ')'), '，', ','), ' ', '') = :norm_key)"
+        )
+    if dt == "qxz":
+        code = site_code(sid) or wash_station_code(sid)
+        if not code:
+            params["station_id"] = sid
+            return f"{col_st} = :station_id"
+        params["site_code"] = code.upper()
+        return f"{sql_split_station_code_expr(col_st)} = :site_code"
+    params["station_id"] = sid
+    params["norm_key"] = normalize_site_key(sid)
+    clauses = [
+        f"{col_pj} = :station_id",
+        (
+            f"replace(replace(replace(replace(btrim({col_pj}), "
+            f"'（', '('), '）', ')'), '，', ','), ' ', '') = :norm_key"
+        ),
+    ]
+    code = site_code(sid)
+    if code:
+        params["code_like"] = f"{code}(%"
+        params["code_like_fw"] = f"{code}（%"
+        clauses.append(f"{col_pj} LIKE :code_like")
+        clauses.append(f"{col_pj} LIKE :code_like_fw")
+    return "(" + " OR ".join(clauses) + ")"
+
+
+def wash_t_station_join_sql(wash_alias: str, station_alias: str, device_type: str) -> str:
+    """洗数表 JOIN t_station。GNSS / 气象不能用 project_name = name。"""
+    w = wash_alias or "w"
+    s = station_alias or "s"
+    dt = (device_type or "").strip().lower()
+    if dt == "qxz":
+        return (
+            f"{sql_split_station_code_expr(f'{w}.station_name')} = "
+            f"{sql_yaml_site_code_expr(f'{s}.name')}"
+        )
+    if dt == "gnss":
+        w_code = sql_yaml_site_code_expr(f"{w}.station_name")
+        s_code = sql_yaml_site_code_expr(f"{s}.name")
+        return (
+            f"({s}.name = {w}.station_name OR "
+            f"({s_code} = {w_code} AND {w_code} <> ''))"
+        )
+    return f"{w}.project_name = {s}.name"
 
 
 @dataclass(frozen=True)

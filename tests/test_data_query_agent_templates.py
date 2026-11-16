@@ -64,6 +64,25 @@ def test_templates_district_hud_is_area_avg() -> None:
     assert "禁止输出单个 station_id" in q
 
 
+def test_templates_gnss_qxz_forbid_project_name_site_filter() -> None:
+    clear_plan_cache()
+    cat = get_library_catalog()
+    for lid, needle in (("gnss", "F15-GNSS"), ("qxz", "F33-气象站")):
+        lib = cat.get(lid)
+        assert lib is not None
+        scope = resolve_scope_intent("朝阳区最新监测点", lib)
+        q = _render_question(
+            plan_item_id="q_list",
+            grain="station",
+            library=lib,
+            scope=scope,
+            max_rows=50,
+        )
+        assert "禁止用 project_name" in q
+        assert needle.split("-")[0] in q or "station_name" in q
+        assert ".project_name = t_station.name" not in q
+
+
 def test_templates_qxz_dual_series_select() -> None:
     clear_plan_cache()
     cat = get_library_catalog()

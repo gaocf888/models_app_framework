@@ -154,8 +154,9 @@ def format_parsed_intent_prompt_block(
             )
         elif coverage_names:
             lines.append(
-                f"- 监测方式官方站点覆盖：共{len(coverage_names)}个 project_name；"
-                "生成 SQL 时可省略 project_name/station_name 谓词，由系统按 suggested_filters 强制注入完整字面量；"
+                f"- 监测方式官方站点覆盖：共{len(coverage_names)}个；"
+                "生成 SQL 时可省略站点谓词，由系统按 suggested_filters 强制注入完整字面量；"
+                "GNSS/气象注入 station_name（禁止用 project_name 锁站），其它库注入 project_name；"
                 "禁止写 IN (SELECT …) 或截断 IN 名单"
             )
         if compress_pairs:

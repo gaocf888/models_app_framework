@@ -687,7 +687,7 @@ POST
 浏览路径（进页树 / 默认表 / 点树刷新）走 `GET /tree`、`GET /browse`；解析 SQL 走 `POST /run-stream`（一次性 JSON）。开关关闭时本组接口 **503**（不是 404）。
 
 **监测库 `library_id`（请求用英文代号）：** `fcb` / `jyb` / `dxswj` / `kxsylj` / `gnss` / `qxz` / `gq`。  
-站点稳定键 `station_id` = 场地 `project_name`（如 `F28(金盏)`），与 `t_station.name`、`GET /hud` 的 `entity_id` 同源。进页默认表不传 `library_id` 即分层标 `fcb`（一库一表，不做 fcb+jyb UNION）。
+站点稳定键 `station_id` = 覆盖名单场地名（如 `F28(金盏)`），与树上的站、`GET /hud` 的 `entity_id` 同源。分层标/地下水等洗数表按 `project_name` 锁站；**GNSS / 气象站** 的 `project_name` 是工程总名「北京地面沉降监测」，浏览与自然语言查数都按 `station_name` 锁站（GNSS 等值匹配 yaml 站名；气象站用 `F33-气象站` 的 `-` 前站码对齐 yaml 的 `F33(…)`）。进页默认表不传 `library_id` 即分层标 `fcb`（一库一表，不做 fcb+jyb UNION）。
 
 ---
 

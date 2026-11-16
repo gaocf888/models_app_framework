@@ -2961,12 +2961,13 @@ nl2sql:
       【站点覆盖 / 区县 / 层位口径（概念分工；名单勿手写）】
       1) 监测方式官方场地覆盖（device_station_map）：按监测方式给出合法 project_name（≡ t_station.name）；区县不存于该名单，行政区只认 t_station.area。
       2) 「某区监测站点」类清单：主表 t_station；WHERE area='…'；与默认/指定监测方式的官方覆盖求交（name IN 覆盖名单由系统注入）。只输出维表字段，禁止层位0标编号过滤 t_station.name。
-      3) 「某区沉降/监测数据」类读数：主表默认 t_data_wash_fcb（或用户点名的监测表）；JOIN t_station ON project_name = name 做区县过滤；站点范围用 project_name（覆盖/点名）；分层标站点代表值再用监测层位=0 的 station_name（fcb_layer_map，由系统注入）。禁止对同 project_name 下全部标聚合。
-      4) 关联键固定：事实表.project_name = t_station.name；禁止臆造第二套区县/站名字典或用嵌套 IN (SELECT …) 代替系统注入的覆盖/层位名单。
+      3) 「某区沉降/监测数据」类读数：主表默认 t_data_wash_fcb（或用户点名的监测表）；分层标/地下水等 JOIN t_station ON project_name = name 做区县过滤，站点范围用 project_name（覆盖/点名）；分层标站点代表值再用监测层位=0 的 station_name（fcb_layer_map，由系统注入）。禁止对同 project_name 下全部标聚合。
+      4) GNSS（t_data_wash_gnss）与气象站（t_data_wash_qxz）的 project_name 是工程总名「北京地面沉降监测」，禁止用该列锁站。GNSS 用 station_name 等值匹配覆盖名单（F15-GNSS、SLP01）；气象站用 station_name 中 '-' 前站码对齐 yaml 括号前站码（F33-气象站 → F33 ↔ F33(留士庄)）。JOIN t_station 也按 station_name / 站码，不要写 project_name = t_station.name。
+      5) 关联键：分层标等事实表.project_name = t_station.name；GNSS/气象见上条。禁止臆造第二套区县/站名字典或用嵌套 IN (SELECT …) 代替系统注入的覆盖/层位名单。
 
       【关联与范围硬约束】
-      1) 行政区过滤：事实表 project_name 与 t_station.name 关联，用 t_station.area 表示行政区；示例 JOIN：d.project_name = s.name，WHERE s.area = '…'
-      2) 站点过滤：可用 station_id、station_name，或 @station_id / @station_keyword / @district 占位符（由 NL2SQL 改写）
+      1) 行政区过滤：分层标等用事实表 project_name 与 t_station.name 关联，GNSS/气象用 station_name 或站码关联；用 t_station.area 表示行政区
+      2) 站点过滤：可用 station_id、station_name，或 @station_id / @station_keyword / @district 占位符（由 NL2SQL 改写）；GNSS/气象不要过滤 project_name
       3) 问沉降主指标用 total_settle 时间窗差值（**初值−末值**）或末值快照；问 GNSS/位移用 t_data_wash_gnss.displacement_3d/2d，勿与地下水 total_settle 混用
       4) 问地下水/水位用 t_data_wash_dxswj，勿用分层标 total_settle 表示水位
       5) 站点/地面沉降：仅使用该站监测层位=0 的 station_name（见业务知识/层位字典）；禁止对同 project_name 下全部标 AVG/SUM

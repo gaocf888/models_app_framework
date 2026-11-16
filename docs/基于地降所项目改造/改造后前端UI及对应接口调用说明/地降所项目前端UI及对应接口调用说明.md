@@ -589,7 +589,7 @@ GET /data-query-agent/hud?library_id=fcb&entity_type=station&entity_id=JZGZ
 
 #### 3.2.5 `GET /tree` / `GET /browse`（浏览路径；Java 转发本仓）
 
-树与默认表由本仓读库，**不走** `run-stream`。树的站点名单是 `device_station_map.yaml`，区是 `t_station.area`。点库/区的列表是洗数表里 **代表标**（分层标层位 0）的全部观测，按 `data_time` 倒序；点站是该场地全部设备按 `data_time`×`station_name` 展开的矩阵（格内 `total_settle`）。站点稳定键是覆盖名单 `project_name`。一请求只锁一张 `t_data_wash_*`（默认分层标 `fcb`，不做 fcb+jyb UNION）。
+树与默认表由本仓读库，**不走** `run-stream`。树的站点名单是 `device_station_map.yaml`，区是 `t_station.area`。点库/区的列表是洗数表里 **代表标**（分层标层位 0）的全部观测，按 `data_time` 倒序；点站是该场地全部设备按 `data_time`×`station_name` 展开的矩阵（格内 `total_settle`）。树上站点键是覆盖名单场地名。分层标/地下水等按洗数表 `project_name` 过滤；**GNSS / 气象站** 的 `project_name` 是工程总名，改为按 `station_name` 过滤（GNSS 等值匹配 yaml；气象站用 `-` 前站码对齐 yaml 括号前编号）。一请求只锁一张 `t_data_wash_*`（默认分层标 `fcb`，不做 fcb+jyb UNION）。
 
 ```text
 GET /data-query-agent/tree

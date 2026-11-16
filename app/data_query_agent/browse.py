@@ -13,11 +13,15 @@ from decimal import Decimal
 from typing import Any
 
 from app.analysis_agent.deterministics.coverage import (
+    canonical_from_wash,
     canonical_project,
     load_device_projects_by_type,
     load_layered_marks,
     normalize_site_key,
     site_code,
+    uses_station_name_site_key,
+    wash_coverage_predicate,
+    wash_station_id_predicate,
 )
 from app.core.config import get_app_config
 from app.core.logging import get_logger
@@ -210,24 +214,19 @@ def representative_marks(library: LibraryDef) -> tuple[str, ...]:
     return tuple(name for _project, name in representative_mark_pairs(library))
 
 
-def _project_match_sql(station_id: str) -> tuple[str, dict[str, Any]]:
-    """对齐 yaml / 洗数表场地名：精确、全角规范化、F 码前缀。"""
-    sid = (station_id or "").strip()
-    params: dict[str, Any] = {
-        "station_id": sid,
-        "norm_key": normalize_site_key(sid),
-    }
-    clauses = [
-        "w.project_name = :station_id",
-        "replace(replace(replace(replace(btrim(w.project_name), '（', '('), '）', ')'), '，', ','), ' ', '') = :norm_key",
-    ]
-    code = site_code(sid)
-    if code:
-        params["code_like"] = f"{code}(%"
-        params["code_like_fw"] = f"{code}（%"
-        clauses.append("w.project_name LIKE :code_like")
-        clauses.append("w.project_name LIKE :code_like_fw")
-    return "(" + " OR ".join(clauses) + ")", params
+def _device_type(library: LibraryDef) -> str:
+    return (library.device_type or library.id or "").strip().lower()
+
+
+def _project_match_sql(
+    station_id: str,
+    library: LibraryDef | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """树上 yaml 站 id → 洗数表。GNSS / 气象按 station_name，其它库按 project_name。"""
+    params: dict[str, Any] = {}
+    device = _device_type(library) if library is not None else ""
+    pred = wash_station_id_predicate("w", device, station_id, params)
+    return pred, params
 
 
 def build_latest_sql(
@@ -249,10 +248,9 @@ def build_latest_sql(
         where = "w.station_name = ANY(:rep_marks)"
         params["rep_marks"] = mark_list
     elif project_list:
-        where = "w.project_name = ANY(:projects)"
-        params["projects"] = project_list
+        where = wash_coverage_predicate("w", _device_type(library), project_list, params)
     else:
-        where = "w.project_name IS NOT NULL AND btrim(w.project_name) <> ''"
+        where = "w.station_name IS NOT NULL AND btrim(w.station_name) <> ''"
     if count_only:
         sql = f"SELECT COUNT(*) AS total FROM {table} w WHERE {where}"
         return sql, params
@@ -275,7 +273,7 @@ def build_latest_sql(
 
 def build_device_names_sql(library: LibraryDef, station_id: str) -> tuple[str, dict[str, Any]]:
     table = _wash_table(library)
-    match_sql, params = _project_match_sql(station_id)
+    match_sql, params = _project_match_sql(station_id, library)
     sql = (
         f"SELECT DISTINCT w.station_name AS station_name "
         f"FROM {table} w "
@@ -295,7 +293,7 @@ def build_device_time_sql(
     count_only: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     table = _wash_table(library)
-    match_sql, params = _project_match_sql(station_id)
+    match_sql, params = _project_match_sql(station_id, library)
     if count_only:
         sql = (
             f"SELECT COUNT(*) AS total FROM ("
@@ -320,7 +318,7 @@ def build_device_time_sql(
 def build_device_values_sql(library: LibraryDef, station_id: str) -> tuple[str, dict[str, Any]]:
     table = _wash_table(library)
     col = _core_value_column(library)
-    match_sql, params = _project_match_sql(station_id)
+    match_sql, params = _project_match_sql(station_id, library)
     sql = (
         f"SELECT w.data_time AS data_time, w.station_name AS station_name, w.{col} AS v "
         f"FROM {table} w "
@@ -343,12 +341,16 @@ def build_annual_sql(library: LibraryDef, *, by_mark: bool = False) -> str:
             f"AND w.data_time >= :start AND w.data_time <= :end "
             f"ORDER BY w.project_name, w.data_time"
         )
+    if uses_station_name_site_key(_device_type(library)):
+        site_col = "w.station_name"
+    else:
+        site_col = "w.project_name"
     return (
-        f"SELECT w.project_name AS station_id, w.data_time AS t, w.{src} AS v "
+        f"SELECT {site_col} AS station_id, w.data_time AS t, w.{src} AS v "
         f"FROM {table} w "
-        f"WHERE w.project_name = ANY(:names) "
+        f"WHERE {site_col} = ANY(:names) "
         f"AND w.data_time >= :start AND w.data_time <= :end "
-        f"ORDER BY w.project_name, w.data_time"
+        f"ORDER BY {site_col}, w.data_time"
     )
 
 
@@ -409,8 +411,19 @@ def _time_key(value: Any) -> str:
     return str(cell)
 
 
-def _in_yaml_coverage(library: LibraryDef, project_name: str) -> str | None:
-    device = (library.device_type or library.id or "").strip().lower()
+def _in_yaml_coverage(
+    library: LibraryDef,
+    project_name: str,
+    *,
+    station_name: str = "",
+) -> str | None:
+    device = _device_type(library)
+    if uses_station_name_site_key(device):
+        return canonical_from_wash(
+            device,
+            station_name=station_name or project_name,
+            project_name=project_name,
+        )
     return canonical_project(project_name, device)
 
 
@@ -433,7 +446,9 @@ def _attach_area_and_filter(
     for item in items:
         raw_id = str(item.get("station_id") or "").strip()
         mark_name = str(item.get("mark_name") or "").strip()
-        canon = mark_map.get(mark_name) or _in_yaml_coverage(library, raw_id)
+        canon = mark_map.get(mark_name) or _in_yaml_coverage(
+            library, raw_id, station_name=mark_name
+        )
         if not canon:
             continue
         area = str(item.get("area") or "").strip() or _area_for_name(canon, by_norm, by_code)

@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from app.analysis_agent.deterministics.coverage import (
+    canonical_from_wash,
     canonical_project,
     layer0_mark_keys,
     load_device_projects_by_type,
     load_layered_marks,
     project_names,
+    uses_station_name_site_key,
+    wash_coverage_predicate,
+    wash_station_code,
+    yaml_to_wash_station_names,
 )
 
 
@@ -49,3 +54,27 @@ def test_layered_marks_jyb_and_fcb_split() -> None:
     assert any(m.table == "fcb" and m.monitor_layer == 0 for m in marks)
     dsm = load_device_projects_by_type()
     assert "fcb" in dsm
+
+
+def test_gnss_qxz_use_station_name_site_key() -> None:
+    assert uses_station_name_site_key("gnss")
+    assert uses_station_name_site_key("qxz")
+    assert not uses_station_name_site_key("fcb")
+    assert not uses_station_name_site_key("dxswj")
+    assert wash_station_code("F33-气象站") == "F33"
+    assert wash_station_code("F15-GNSS") == "F15"
+    assert yaml_to_wash_station_names("qxz", ["F21(西集)", "F33(留士庄)"]) == (
+        "F21-气象站",
+        "F33-气象站",
+    )
+    assert yaml_to_wash_station_names("gnss", ["F15-GNSS", "SLP01"]) == ("F15-GNSS", "SLP01")
+    assert canonical_from_wash("gnss", station_name="F15-GNSS") == "F15-GNSS"
+    assert canonical_from_wash("qxz", station_name="F21-气象站") == "F21(西集)"
+    assert canonical_from_wash("gnss", project_name="北京地面沉降监测") is None
+    params: dict = {}
+    gnss_pred = wash_coverage_predicate("w", "gnss", ["F15-GNSS"], params)
+    assert "w.station_name = ANY(:projects)" in gnss_pred
+    qxz_params: dict = {}
+    qxz_pred = wash_coverage_predicate("w", "qxz", ["F21(西集)"], qxz_params)
+    assert "split_part" in qxz_pred
+    assert qxz_params["site_codes"] == ["F21"]

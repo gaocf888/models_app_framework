@@ -96,6 +96,35 @@ def is_period_time(scope: ScopeIntentResult) -> bool:
 _is_period_time = is_period_time
 
 
+def _join_on(library: LibraryDef) -> str:
+    from app.analysis_agent.deterministics.coverage import (
+        uses_station_name_site_key,
+        wash_t_station_join_sql,
+    )
+
+    device = (library.device_type or library.id or "").strip().lower()
+    table = library.table
+    if uses_station_name_site_key(device):
+        return wash_t_station_join_sql(table, "t_station", device)
+    return f"{table}.project_name = t_station.name"
+
+
+def _site_filter_hint(library: LibraryDef) -> str:
+    device = (library.device_type or library.id or "").strip().lower()
+    if device == "gnss":
+        return (
+            "GNSS 禁止用 project_name 过滤站点（该列是工程总名「北京地面沉降监测」）；"
+            "须用 station_name 等值匹配官方覆盖名单（与 yaml 站名一致，如 F15-GNSS、SLP01）。"
+        )
+    if device == "qxz":
+        return (
+            "气象站禁止用 project_name 过滤站点（该列是工程总名「北京地面沉降监测」）；"
+            "须按 station_name 中 '-' 前的站码对齐覆盖名单括号前站码"
+            "（F33-气象站 → F33，对应 yaml 的 F33(留士庄)）。"
+        )
+    return "站点范围用 project_name 对齐官方覆盖名单；JOIN 事实表.project_name = t_station.name。"
+
+
 def _scope_block(scope: ScopeIntentResult) -> str:
     """注入 NL2SQL 问句的区/站/时间约束（未指定则由模板约定每站最新）。"""
     cs = scope.confirmed_scope
@@ -188,6 +217,8 @@ def _render_question(
             series_select=_series_select(library, grain),
             scope_block=_scope_block(scope),
             annual_block="" if is_period_time(scope) else _annual_block(library, scope),
+            join_on=_join_on(library),
+            site_filter_hint=_site_filter_hint(library),
             max_rows=max_rows,
         )
     ).strip()
@@ -207,6 +238,8 @@ def _hint(library: LibraryDef, scope: ScopeIntentResult) -> str:
         station=station,
         time_note=tw,
         annual_block="" if is_period_time(scope) else _annual_block(library, scope),
+        join_on=_join_on(library),
+        site_filter_hint=_site_filter_hint(library),
     ).strip()
 
 

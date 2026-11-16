@@ -327,6 +327,58 @@ def _drop_coverage_when_layer0(filters: list[dict[str, Any]]) -> list[dict[str, 
     ]
 
 
+def _engineering_site_device(sql: str) -> str | None:
+    low = (sql or "").lower()
+    if "t_data_wash_gnss" in low:
+        return "gnss"
+    if "t_data_wash_qxz" in low:
+        return "qxz"
+    return None
+
+
+def rewrite_engineering_site_join(sql: str) -> tuple[str, list[str]]:
+    """GNSS / 气象：把 project_name = t_station.name 改成 station_name / 站码 JOIN。"""
+    from app.analysis_agent.deterministics.coverage import wash_t_station_join_sql
+
+    notes: list[str] = []
+    rewritten = sql or ""
+    device = _engineering_site_device(rewritten)
+    if not device or not rewritten:
+        return rewritten, notes
+    table = f"t_data_wash_{device}"
+    wash_alias = _find_table_alias(rewritten, table) or table
+    st_alias = _find_table_alias(rewritten, "t_station") or "t_station"
+    new_on = wash_t_station_join_sql(wash_alias, st_alias, device)
+    patterns = [
+        rf"{re.escape(wash_alias)}\.project_name\s*=\s*{re.escape(st_alias)}\.name",
+        rf"{re.escape(st_alias)}\.name\s*=\s*{re.escape(wash_alias)}\.project_name",
+        rf"{re.escape(table)}\.project_name\s*=\s*t_station\.name",
+        rf"t_station\.name\s*=\s*{re.escape(table)}\.project_name",
+    ]
+    for pat in patterns:
+        new_sql, n = re.subn(rf"(?is){pat}", new_on, rewritten)
+        if n:
+            rewritten = new_sql
+            notes.append(f"rewrite_site_join:{device}")
+            break
+    return rewritten, notes
+
+
+def strip_engineering_project_name_filters(sql: str) -> tuple[str, list[str]]:
+    """GNSS / 气象 project_name 是工程总名，去掉按该列锁站的谓词。"""
+    rewritten = sql or ""
+    if not _engineering_site_device(rewritten):
+        return rewritten, []
+    notes: list[str] = []
+    while True:
+        rewritten2, removed = _remove_column_predicate(rewritten, "project_name")
+        if not removed:
+            break
+        rewritten = rewritten2
+        notes.append("strip_engineering_project_name")
+    return rewritten, notes
+
+
 def rewrite_sql_with_suggested_filters(
     sql: str,
     suggested_filters: list[Any] | None,
@@ -341,10 +393,15 @@ def rewrite_sql_with_suggested_filters(
     - 缺失：在 WHERE 中追加；
     - 空 IN（如 gnss 占位）：跳过，不生成 ``IN ()``；
     - 始终剥掉事实表遗留主键 ``station_id`` / ``data_id`` 过滤谓词。
+    - GNSS / 气象：改写 JOIN，并去掉错误的 project_name 锁站。
     - 区级汇总：有层位0 时跳过全网 coverage project_name（避免冗余大 IN）。
     """
     notes: list[str] = []
     rewritten = sql or ""
+    rewritten, join_notes = rewrite_engineering_site_join(rewritten)
+    notes.extend(join_notes)
+    rewritten, strip_pn = strip_engineering_project_name_filters(rewritten)
+    notes.extend(strip_pn)
 
     if rewritten and suggested_filters:
         picked = _pick_filters(list(suggested_filters))

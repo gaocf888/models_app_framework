@@ -107,9 +107,64 @@ def test_empty_in_skipped() -> None:
         }
     ]
     out, notes = rewrite_sql_with_suggested_filters(sql, filters)
-    assert out == sql
-    assert notes == []
     assert "IN ()" not in out
+    assert "g.project_name=s.name" not in out.replace(" ", "")
+    assert any(n.startswith("rewrite_site_join:gnss") for n in notes)
+
+
+def test_rewrite_gnss_join_strips_project_name_and_injects_station_name() -> None:
+    sql = (
+        "SELECT g.station_name, g.displacement_3d FROM t_data_wash_gnss AS g "
+        "JOIN t_station AS s ON g.project_name = s.name "
+        "WHERE g.project_name IN ('F15-GNSS','F8-GNSS') AND s.area = '通州区'"
+    )
+    filters = [
+        {
+            "table": "t_data_wash_gnss",
+            "column": "station_name",
+            "op": "in",
+            "value": ["F15-GNSS", "SLP01"],
+            "source": "device_station_map",
+        },
+        {
+            "table": "t_station",
+            "column": "area",
+            "op": "=",
+            "value": "通州区",
+            "source": "semantic",
+        },
+    ]
+    out, notes = rewrite_sql_with_suggested_filters(sql, filters)
+    compact = out.replace(" ", "")
+    assert "g.project_name=s.name" not in compact
+    assert "g.station_name=s.name" in compact or "s.name=g.station_name" in compact
+    assert "project_name IN" not in out
+    assert "station_name IN ('F15-GNSS','SLP01')" in compact or (
+        "g.station_name IN ('F15-GNSS','SLP01')" in out
+    )
+    assert any(n.startswith("rewrite_site_join:gnss") for n in notes)
+    assert any(n == "strip_engineering_project_name" for n in notes)
+
+
+def test_rewrite_qxz_join_uses_station_code() -> None:
+    sql = (
+        "SELECT w.temp FROM t_data_wash_qxz AS w "
+        "JOIN t_station AS s ON w.project_name = s.name WHERE s.area = '通州区'"
+    )
+    filters = [
+        {
+            "table": "t_data_wash_qxz",
+            "column": "station_name",
+            "op": "in",
+            "value": ["F21-气象站"],
+            "source": "device_station_map",
+        }
+    ]
+    out, notes = rewrite_sql_with_suggested_filters(sql, filters)
+    assert "split_part" in out.lower()
+    assert "w.project_name = s.name" not in out
+    assert "F21-气象站" in out
+    assert any(n.startswith("rewrite_site_join:qxz") for n in notes)
 
 
 def test_e2e_chaoyang_dxswj_catalog_rewrite(monkeypatch: pytest.MonkeyPatch) -> None:

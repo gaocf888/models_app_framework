@@ -1,11 +1,13 @@
 # 地降 NL2SQL JOIN 白名单（subsidence）
 # 格式：left_table.col=right_table.col（每行一条）
-# 事实表与站点维统一经 project_name = t_station.name 关联行政区等维度。
+# 分层标等：project_name = t_station.name。GNSS/气象 project_name 为工程总名，用 station_name 关联。
 # 说明见同目录「配置项说明.md」
 t_data_wash_fcb.project_name=t_station.name
 t_data_wash_jyb.project_name=t_station.name
+t_data_wash_gnss.station_name=t_station.name
 t_data_wash_gnss.project_name=t_station.name
 t_data_wash_dxswj.project_name=t_station.name
 t_data_wash_kxsylj.project_name=t_station.name
 t_data_wash_gq.project_name=t_station.name
+t_data_wash_qxz.station_name=t_station.name
 t_data_wash_qxz.project_name=t_station.name

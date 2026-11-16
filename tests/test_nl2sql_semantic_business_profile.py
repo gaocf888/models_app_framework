@@ -654,7 +654,7 @@ def test_align_gnss_coverage_injects_project_names(monkeypatch: pytest.MonkeyPat
     assert "F8-GNSS" in binding.device_coverage_project_names
 
     table_columns = {
-        "t_data_wash_gnss": {"displacement_3d", "data_time", "project_name"},
+        "t_data_wash_gnss": {"displacement_3d", "data_time", "project_name", "station_name"},
         "t_station": {"name", "area"},
     }
     linked = link_schema(q, intent, binding, table_columns, allowlist=set(table_columns), assets=assets)
@@ -663,6 +663,49 @@ def test_align_gnss_coverage_injects_project_names(monkeypatch: pytest.MonkeyPat
         for f in linked.suggested_filters
         if f.get("column") == "project_name" and f.get("source") == "device_station_map"
     ]
-    assert pn_filters and pn_filters[0]["op"] == "in"
-    assert len(pn_filters[0]["value"]) == 92
+    assert pn_filters == []
+    sn_filters = [
+        f
+        for f in linked.suggested_filters
+        if f.get("column") == "station_name" and f.get("source") == "device_station_map"
+    ]
+    assert sn_filters and sn_filters[0]["op"] == "in"
+    assert len(sn_filters[0]["value"]) == 92
+    assert "F8-GNSS" in sn_filters[0]["value"]
+    assert any(j.reason == "station_name=name" for j in linked.joins)
+
+
+def test_align_qxz_coverage_injects_station_name_codes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    from app.nl2sql.schema_linker import link_schema
+
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "通州区气象站气温"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(district="通州区", device_type="qxz"),
+    )
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert "qxz" in binding.device_types
+    table_columns = {
+        "t_data_wash_qxz": {"temp", "data_time", "project_name", "station_name"},
+        "t_station": {"name", "area"},
+    }
+    linked = link_schema(q, intent, binding, table_columns, allowlist=set(table_columns), assets=assets)
+    assert all(f.get("column") != "project_name" for f in linked.suggested_filters)
+    sn_filters = [
+        f
+        for f in linked.suggested_filters
+        if f.get("column") == "station_name" and f.get("source") == "device_station_map"
+    ]
+    assert sn_filters and sn_filters[0]["op"] == "in"
+    assert "F21-气象站" in sn_filters[0]["value"]
+    assert any(j.reason == "qxz_station_code" for j in linked.joins)
 

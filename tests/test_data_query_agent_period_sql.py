@@ -45,6 +45,34 @@ def test_period_sql_fcb_month_window_uses_row_number() -> None:
     assert params["limit"] == 50
 
 
+def test_period_sql_gnss_filters_station_name() -> None:
+    lib = get_library_catalog().get("gnss")
+    assert lib is not None
+    scope = resolve_scope_intent("请帮我查询F15-GNSS最近一个月的位移", lib)
+    sql, params = build_period_list_sql(lib, scope, max_rows=50)
+    low = sql.lower()
+    assert "t_data_wash_gnss" in low
+    assert "partition by f.station_name" in low
+    assert "f.station_name = any(:projects)" in low
+    assert "f.project_name = any(:projects)" not in low
+    assert "F15-GNSS" in params.get("projects") or []
+    assert "qualify" not in low
+
+
+def test_period_sql_qxz_filters_station_code() -> None:
+    lib = get_library_catalog().get("qxz")
+    assert lib is not None
+    scope = resolve_scope_intent("请帮我查询F21(西集)最近一个月的气温", lib)
+    sql, params = build_period_list_sql(lib, scope, max_rows=50)
+    low = sql.lower()
+    assert "t_data_wash_qxz" in low
+    assert "partition by f.station_name" in low
+    assert "split_part" in low
+    assert params.get("site_codes") == ["F21"]
+    assert "f.project_name = any(:projects)" not in low
+    assert "s.name = w.project_name" not in low.replace(" ", "")
+
+
 def test_postgres_validator_rejects_qualify() -> None:
     class _Norm:
         def normalize_sql(self, sql: str) -> str:

@@ -9,7 +9,15 @@ import re
 from datetime import datetime
 from typing import Any
 
-from app.analysis_agent.deterministics.coverage import canonical_project, normalize_site_key
+from app.analysis_agent.deterministics.coverage import (
+    canonical_from_wash,
+    canonical_project,
+    load_device_projects_by_type,
+    normalize_site_key,
+    uses_station_name_site_key,
+    wash_coverage_predicate,
+    wash_t_station_join_sql,
+)
 from app.data_query_agent.catalog import LibraryDef
 from app.data_query_agent.scope_intent import ScopeIntentResult
 from app.nl2sql.executor import SQLExecutor
@@ -53,13 +61,21 @@ def _period_bounds(scope: ScopeIntentResult) -> tuple[datetime, datetime]:
     return _parse_bound(win.get("start")), _parse_bound(win.get("end"))
 
 
+def _device_type(library: LibraryDef) -> str:
+    return (library.device_type or library.id or "").strip().lower()
+
+
 def _station_projects(library: LibraryDef, scope: ScopeIntentResult) -> list[str]:
     cs = scope.confirmed_scope or {}
     raw = str(cs.get("station_name") or cs.get("station_id") or "").strip()
+    device = _device_type(library)
     if not raw:
+        if uses_station_name_site_key(device):
+            return list(load_device_projects_by_type().get(device, ()))
         return []
-    device = (library.device_type or library.id or "").strip().lower()
-    canon = canonical_project(raw, device) or raw
+    canon = canonical_from_wash(device, station_name=raw, project_name=raw) or (
+        canonical_project(raw, device) or raw
+    )
     out: list[str] = []
     for name in (canon, raw):
         if name and name not in out:
@@ -110,10 +126,12 @@ def build_period_list_sql(
         kind="列名",
     )
     t_start, t_end = _period_bounds(scope)
+    device = _device_type(library)
     projects = _station_projects(library, scope)
     marks = _rep_marks(library, projects)
     district = str((scope.confirmed_scope or {}).get("district") or "").strip()
     limit = max(1, int(max_rows))
+    grain = "station_name" if uses_station_name_site_key(device) else "project_name"
 
     inner: list[str] = [
         f"f.{col} IS NOT NULL",
@@ -122,8 +140,7 @@ def build_period_list_sql(
     ]
     params: dict[str, Any] = {"t_start": t_start, "t_end": t_end, "limit": limit}
     if projects:
-        inner.append("f.project_name = ANY(:projects)")
-        params["projects"] = projects
+        inner.append(wash_coverage_predicate("f", device, projects, params))
     if marks:
         inner.append("f.station_name = ANY(:rep_marks)")
         params["rep_marks"] = marks
@@ -131,27 +148,28 @@ def build_period_list_sql(
     if district:
         params["area"] = district
         area_pred = " AND s.area = CAST(:area AS text)"
+    join_on = wash_t_station_join_sql("w", "s", device)
 
     sql = (
         # Δ = 窗初(rn_asc) − 窗末(rn_desc)；有符号：负=沉降倾向，正=回弹
-        f"SELECT w.project_name AS station_id, w.project_name AS station_name, s.area AS area, "
+        f"SELECT w.{grain} AS station_id, w.{grain} AS station_name, s.area AS area, "
         f"MAX(CASE WHEN w.rn_desc = 1 THEN w.v END) AS {core_alias}, "
         f"(MAX(CASE WHEN w.rn_asc = 1 THEN w.v END) - MAX(CASE WHEN w.rn_desc = 1 THEN w.v END)) "
         f"AS {delta_alias}, "
         f"MAX(CASE WHEN w.rn_desc = 1 THEN w.data_time END) AS data_time "
         f"FROM ("
-        f"SELECT f.project_name, f.data_time, f.{col} AS v, "
-        f"ROW_NUMBER() OVER (PARTITION BY f.project_name ORDER BY f.data_time ASC) AS rn_asc, "
-        f"ROW_NUMBER() OVER (PARTITION BY f.project_name ORDER BY f.data_time DESC) AS rn_desc "
+        f"SELECT f.project_name, f.station_name, f.data_time, f.{col} AS v, "
+        f"ROW_NUMBER() OVER (PARTITION BY f.{grain} ORDER BY f.data_time ASC) AS rn_asc, "
+        f"ROW_NUMBER() OVER (PARTITION BY f.{grain} ORDER BY f.data_time DESC) AS rn_desc "
         f"FROM {table} f "
         f"WHERE {' AND '.join(inner)}"
         f") w "
-        f"LEFT JOIN t_station s ON s.name = w.project_name "
+        f"LEFT JOIN t_station s ON {join_on} "
         f"WHERE (w.rn_asc = 1 OR w.rn_desc = 1){area_pred} "
-        f"GROUP BY w.project_name, s.area "
+        f"GROUP BY w.{grain}, s.area "
         f"ORDER BY ABS("
         f"MAX(CASE WHEN w.rn_asc = 1 THEN w.v END) - MAX(CASE WHEN w.rn_desc = 1 THEN w.v END)"
-        f") DESC NULLS LAST, w.project_name "
+        f") DESC NULLS LAST, w.{grain} "
         f"LIMIT :limit"
     )
     return sql, params
@@ -167,4 +185,17 @@ async def fetch_period_list(
     sql, params = build_period_list_sql(library, scope, max_rows=max_rows)
     exe = executor or SQLExecutor()
     rows = await exe.execute(sql, params)
-    return sql, [r for r in (rows or []) if isinstance(r, dict)]
+    device = _device_type(library)
+    out: list[dict[str, Any]] = []
+    for raw in rows or []:
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        if uses_station_name_site_key(device):
+            st = str(row.get("station_name") or row.get("station_id") or "").strip()
+            canon = canonical_from_wash(device, station_name=st)
+            if canon:
+                row["station_id"] = canon
+                row["station_name"] = canon
+        out.append(row)
+    return sql, out
