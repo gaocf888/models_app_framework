@@ -6,7 +6,11 @@ import pytest
 
 from app.core.config import get_app_config
 from app.data_query_agent.browse import BrowseRequestError, fetch_browse_export
-from app.data_query_agent.csv_export import csv_filename, table_to_csv_bytes
+from app.data_query_agent.csv_export import (
+    csv_attachment_response,
+    csv_filename,
+    table_to_csv_bytes,
+)
 from app.data_query_agent.export_store import (
     ExportRequestError,
     clear_memory_exports_for_tests,
@@ -48,9 +52,10 @@ def test_table_to_csv_uses_title_and_bom() -> None:
             {"station_id": "a,b", "total_settle_mm": None},
         ],
     )
-    text = raw.decode("utf-8-sig")
-    assert raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("gb18030")
+    assert not raw.startswith(b"\xef\xbb\xbf")
     assert "测位 ID" in text
+    assert "F2(望京)" in text
     assert "hud_entity_id" not in text.split("\n", 1)[0]
     assert '"a,b"' in text or "a,b" in text
     skipped = table_to_csv_bytes(
@@ -60,7 +65,7 @@ def test_table_to_csv_uses_title_and_bom() -> None:
         ],
         [{"station_id": "F2", "hud_entity_id": "F2"}],
     )
-    header = skipped.decode("utf-8-sig").split("\n", 1)[0]
+    header = skipped.decode("gb18030").split("\n", 1)[0]
     assert "HUD" not in header
     assert "hud_entity_id" not in header
 
@@ -80,12 +85,25 @@ def test_table_to_csv_flattens_grouped_station_metrics() -> None:
         ],
         [{"data_time": "2026-11-12", "DAD01::gps_total_x": 1.5, "DAD01::displacement_3d": 3.0}],
     )
-    text = raw.decode("utf-8-sig")
+    text = raw.decode("gb18030")
     header = text.split("\n", 1)[0]
     assert "监测时间" in header
     assert "DAD01-X位移" in header
     assert "DAD01-合位移" in header
     assert "1.5" in text
+
+
+def test_csv_attachment_is_binary_gb18030() -> None:
+    body = table_to_csv_bytes(
+        [{"key": "station_id", "title": "测位 ID"}],
+        [{"station_id": "F2(望京)"}],
+    )
+    resp = csv_attachment_response(body, "parse-fcb.csv")
+    assert resp.media_type == "application/octet-stream"
+    raw = bytes(resp.body)
+    assert raw.decode("gb18030").startswith("测位 ID")
+    # UTF-8 被 Excel 当 GBK 打开时才会变成「娴嬩綅」
+    assert "娴嬩綅" not in raw.decode("gb18030")
 
 
 def test_csv_filename_strips_unsafe() -> None:
@@ -102,7 +120,7 @@ async def test_browse_export_rep_station_csv() -> None:
     assert payload["result_grain"] == "station"
     assert payload["total"] == 2
     body = table_to_csv_bytes(payload["columns"], payload["list"])
-    text = body.decode("utf-8-sig")
+    text = body.decode("gb18030")
     assert "沉降量" in text or "测位" in text or "station" in text.lower()
     assert "F28" in text or "F2" in text
 
@@ -141,7 +159,8 @@ async def test_parse_export_replays_without_second_nl2sql() -> None:
     assert snap["list"]
     assert len(fake.calls) == n_calls
     csv = table_to_csv_bytes(snap["columns"], snap["list"])
-    assert csv.startswith(b"\xef\xbb\xbf")
+    text = csv.decode("gb18030")
+    assert "测位" in text or "沉降" in text or "station" in text.lower() or "F" in text
 
 
 @pytest.mark.asyncio

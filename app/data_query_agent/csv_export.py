@@ -1,4 +1,4 @@
-"""把 columns + list 编成 UTF-8 BOM CSV，供浏览/解析导出下载。"""
+"""把 columns + list 编成 GB18030 CSV，供浏览/解析导出下载（中文 Excel 直接打开）。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from fastapi.responses import Response
 
 _UNSAFE_NAME = re.compile(r'[\\/:*?"<>|\r\n]+')
 _SKIP_COL_PREFIXES = ("hud_",)
+# 中文 Windows Excel 打开 CSV 默认按 ANSI/GBK，不用 UTF-8（即使带 BOM 也可能被网关剥掉）。
+_CSV_ENCODING = "gb18030"
 
 
 def _cell(value: Any) -> str:
@@ -61,7 +63,7 @@ def table_to_csv_bytes(
     columns: list[dict[str, Any]] | None,
     rows: list[dict[str, Any]] | None,
 ) -> bytes:
-    """表头用 columns[].title，格取 list[i][columns[j].key]；UTF-8 BOM 方便 Excel。"""
+    """表头用 columns[].title，格取 list[i][columns[j].key]；GB18030 方便中文 Excel。"""
     cols = _flatten_export_columns(columns)
     keys = [str(c.get("key") or "") for c in cols]
     titles = [str(c.get("title") or c.get("key") or "") for c in cols]
@@ -71,7 +73,7 @@ def table_to_csv_bytes(
     for row in rows or []:
         item = row if isinstance(row, dict) else {}
         writer.writerow([_cell(item.get(k) if k else None) for k in keys])
-    return ("\ufeff" + buf.getvalue()).encode("utf-8")
+    return buf.getvalue().encode(_CSV_ENCODING, errors="replace")
 
 
 def csv_filename(prefix: str, *parts: Any, suffix: str = ".csv") -> str:
@@ -92,6 +94,10 @@ def csv_attachment_response(content: bytes, filename: str) -> Response:
     disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
     return Response(
         content=content,
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": disposition},
+        # 按附件字节下发，避免 text/csv; charset=utf-8 被网关当字符串转码后丢掉编码信息。
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": disposition,
+            "Content-Type": "application/octet-stream",
+        },
     )

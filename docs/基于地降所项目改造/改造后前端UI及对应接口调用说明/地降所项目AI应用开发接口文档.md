@@ -1439,7 +1439,7 @@ GET
 
 ### 返回字段
 
-成功：HTTP 200，`Content-Type: text/csv; charset=utf-8`，`Content-Disposition: attachment`。UTF-8 BOM。表头为 `columns[].title`，行按 `list[i][columns[j].key]`，不含 HUD 字段。
+成功：HTTP 200，`Content-Type: application/octet-stream`，`Content-Disposition: attachment`。CSV 正文为 **GB18030**（中文 Excel 直接打开不乱码）。表头为 `columns[].title`，行按 `list[i][columns[j].key]`，不含 HUD 字段。Java 须按 **二进制/blob** 转发，不要当字符串按 UTF-8 再存盘。
 
 命中行数超过 `DATA_QUERY_AGENT_EXPORT_MAX_ROWS`（默认 10000）时 HTTP **413**：
 
