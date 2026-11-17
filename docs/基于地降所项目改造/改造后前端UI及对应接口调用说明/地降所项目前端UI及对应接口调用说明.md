@@ -597,6 +597,7 @@ GET /data-query-agent/tree?library_id=jyb
 GET /data-query-agent/browse?page=1&page_size=20
 GET /data-query-agent/browse?library_id=jyb&district=朝阳区&page=1&page_size=20
 GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_size=20
+GET /data-query-agent/browse?library_id=fcb&station_id=F1(王四营)&data_source=calibrated&page=1&page_size=20
 ```
 
 | 接口 | 参数 | 说明（界面） |
@@ -605,6 +606,7 @@ GET /data-query-agent/browse?library_id=jyb&station_id=F28(金盏)&page=1&page_s
 | `/browse` | `library_id` 可选 | 空=默认分层标代表标全部观测（时间倒序）。点「基岩标」节点时传 `jyb` |
 | `/browse` | `district` 可选 | 点「朝阳区」时传 `朝阳区`（该区代表标全部观测，时间倒序） |
 | `/browse` | `station_id` 可选 | 点某个站时传树上的 `station_id`（`F9(后芮营)`）；此时右侧改为设备×时间矩阵 |
+| `/browse` | `data_source` 可选 | 点站且 `calibrated_supported=true` 时画「准实时 / 人工清洗」。默认不传=准实时；切清洗传 `calibrated` 且 page 回 1。仅分层标/地下水/孔隙水。导出 `/browse/export` 带同一参数 |
 | `/browse` | `page` / `page_size` | 页码从 1；默认 20 行，最大 100。点库/区按观测行数；点站按监测时间条数 |
 
 `/browse` 用 `result_grain` 区分布局：`station` 时用返回的 `columns`+`list` 画表（沉降库表头是「沉降量」，没有年沉降量），行上带 `hud_entity_id`，点「详参」再打 `GET /hud`；`device_time` 时分层标列是设备名，GNSS/气象若 `columns[].children` 非空则画两级表头，不要画详参。树是站点粒度；**列表必须分页**，禁止一次拉全表历史。

@@ -1,0 +1,150 @@
+# 人工清洗：一站一表。仅 GET /browse 点站点（data_source=calibrated）使用。
+# 真源：docs/地降所需求及数据相关/数据库结构及逻辑/人工清洗数据对应数据库表名.xlsx
+# 表在默认 schema（public），与准实时 t_data_wash_* 同库不同结构。
+# 勿把 sheet_* 加入 NL2SQL 白名单。
+version: "2026.11.17"
+source: docs/地降所需求及数据相关/数据库结构及逻辑/人工清洗数据对应数据库表名.xlsx
+schema: public
+time_column: caijishijian
+skip_columns: [id]
+libraries:
+  fcb:
+    display_name: 分层标
+    metric_title: 累计沉降(mm)
+    column_suffix_strip: []
+    stations:
+      "F1(王四营)": sheet_lcgoee
+      "F2(望京)": sheet_luhvnr
+      "F3(天竺)": sheet_qamzsv
+      "F4(八仙庄)": sheet_xyyint
+      "F5(平各庄)": sheet_rwblre
+      "F6(张家湾)": sheet_arfumj
+      "F7(榆垡)": sheet_kybscl
+      "F8(周村)": sheet_zwnywg
+      "F9(后芮营)": sheet_wccriy
+      "F10(洼里)": sheet_zpttuf
+      "F11(南宅)": sheet_xlkwyr
+      "F12(东府)": sheet_zacgze
+      "F13(张辛)": sheet_fcnxff
+      "F14(前郝家疃)": sheet_ehbgbe
+      "F15(闫家营)": sheet_fymdvu
+      "F16(三村)": sheet_pfhgwo
+      "F17(沟渠庄)": sheet_bzxqqj
+      "F18(草寺)": sheet_xhsmoy
+      "F19(谢楼)": sheet_pgzhwk
+      "F20(八各庄)": sheet_jlshze
+      "F21(西集)": sheet_kbzhtn
+      "F22(尹家河)": sheet_ijffzz
+      "F23(前营)": sheet_gfznqz
+      "F24(小松垡)": sheet_xzxswm
+      "F25(北堤寺)": sheet_untasa
+      "F26(应寺)": sheet_efzyoj
+      "F27(大鲁店)": sheet_jxxzvs
+      "F28(金盏)": sheet_gjplim
+      "F29(东窑)": sheet_rtpjqk
+      "F30(孙家营)": sheet_wrmxcv
+      "F31(后辛房)": sheet_omfbad
+      "F32(梨花)": sheet_szpvvn
+      "F33(留士庄)": sheet_rprwfs
+      "F34(求贤)": sheet_fccnbe
+      "F35(张家务)": sheet_usreva
+      "F36(前沙涧)": sheet_ncnsyr
+      "F37(沙河)": sheet_mqvqsa
+      "F38(南七家庄)": sheet_mcixha
+      "F39(西白庙)": sheet_snurwd
+      "F40(大丰营)": sheet_kwahta
+      "F41(王家堡)": sheet_vnqscv
+      "F42(牌楼站)": sheet_savbyg
+  dxswj:
+    display_name: 地下水
+    metric_title: 水位标高(m)
+    column_suffix_strip:
+      - biaogao
+    stations:
+      "F1(王四营)": sheet_tyxmeg
+      "F2(望京)": sheet_zcxviq
+      "F3(天竺)": sheet_zltrup
+      "F4(八仙庄)": sheet_utibbe
+      "F5(平各庄)": sheet_syvtrt
+      "F6(张家湾)": sheet_hdpunn
+      "F7(榆垡)": sheet_hbazup
+      "F8(周村)": sheet_qsxgqm
+      "F9(后芮营)": sheet_flxtux
+      "F10(洼里)": sheet_naqzvz
+      "F11(南宅)": sheet_ashplk
+      "F12(东府)": sheet_axltsn
+      "F13(张辛)": sheet_vuxule
+      "F14(前郝家疃)": sheet_lgphka
+      "F15(闫家营)": sheet_gtfzkc
+      "F16(三村)": sheet_xgpdxb
+      "F17(沟渠庄)": sheet_ishiem
+      "F18(草寺)": sheet_zljdep
+      "F19(谢楼)": sheet_sqwkvq
+      "F20(八各庄)": sheet_nwgwbt
+      "F21(西集)": sheet_dyvgdj
+      "F22(尹家河)": sheet_nvqxdo
+      "F23(前营)": sheet_yrecen
+      "F24(小松垡)": sheet_dgbopy
+      "F25(北堤寺)": sheet_tfqznl
+      "F26(应寺)": sheet_unkesa
+      "F27(大鲁店)": sheet_lehkaz
+      "F28(金盏)": sheet_fkausj
+      "F29(东窑)": sheet_tdtubm
+      "F30(孙家营)": sheet_ognraf
+      "F31(后辛房)": sheet_shesun
+      "F32(梨花)": sheet_oxmtww
+      "F33(留士庄)": sheet_rtdqgm
+      "F34(求贤)": sheet_kzmxzj
+      "F35(张家务)": sheet_xlqtuj
+      "F36(前沙涧)": sheet_ydvnha
+      "F37(沙河)": sheet_ssrkya
+      "F38(南七家庄)": sheet_jvbfqx
+      "F39(西白庙)": sheet_pdvpkr
+      "F40(大丰营)": sheet_syzskg
+      "F41(王家堡)": sheet_tcwzrn
+  kxsylj:
+    display_name: 孔隙水
+    metric_title: 孔隙水压力(kPa)
+    column_suffix_strip: []
+    stations:
+      "F1(王四营)": sheet_hzggii
+      "F2(望京)": sheet_ogneia
+      "F3(天竺)": sheet_nsanqs
+      "F4(八仙庄)": sheet_bjavjh
+      "F5(平各庄)": sheet_xvnprm
+      "F6(张家湾)": sheet_pslboz
+      "F7(榆垡)": sheet_wneazr
+      "F8(周村)": sheet_sgsgyt
+      "F9(后芮营)": sheet_saojzz
+      "F10(洼里)": sheet_smllpl
+      "F11(南宅)": sheet_hhxdjs
+      "F12(东府)": sheet_nwgvkj
+      "F13(张辛)": sheet_kcwdvv
+      "F14(前郝家疃)": sheet_lupdja
+      "F15(闫家营)": sheet_asggeh
+      "F16(三村)": sheet_ydxrbv
+      "F17(沟渠庄)": sheet_lvgltx
+      "F18(草寺)": sheet_nthmdr
+      "F19(谢楼)": sheet_dhxbwp
+      "F20(八各庄)": sheet_sdhvtd
+      "F21(西集)": sheet_tsqpei
+      "F22(尹家河)": sheet_oqtjqn
+      "F23(前营)": sheet_svzzmf
+      "F24(小松垡)": sheet_qtmtzz
+      "F25(北堤寺)": sheet_tmfjpf
+      "F26(应寺)": sheet_pohdkz
+      "F27(大鲁店)": sheet_gykxvz
+      "F28(金盏)": sheet_wepybp
+      "F29(东窑)": sheet_sxuclb
+      "F30(孙家营)": sheet_kosdav
+      "F31(后辛房)": sheet_mlnvbx
+      "F32(梨花)": sheet_mffogv
+      "F33(留士庄)": sheet_xjiwab
+      "F34(求贤)": sheet_apwuvj
+      "F35(张家务)": sheet_uuyazn
+      "F36(前沙涧)": sheet_qweaxa
+      "F37(沙河)": sheet_yaclaz
+      "F38(南七家庄)": sheet_byxltn
+      "F39(西白庙)": sheet_lsvqcc
+      "F40(大丰营)": sheet_dwimcc
+      "F41(王家堡)": sheet_xffthv

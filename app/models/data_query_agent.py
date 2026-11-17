@@ -241,3 +241,6 @@ class DataQueryAgentBrowseResponse(BaseModel):
     )
     hud_enabled: bool = False
     warnings: list[str] = Field(default_factory=list)
+    data_source: str = "realtime"
+    calibrated_supported: bool = False
+    metric_title: str | None = None

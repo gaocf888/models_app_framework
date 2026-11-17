@@ -2,6 +2,7 @@
 
 树：device_station_map.yaml 出站，t_station.area 出区（与报告/NL2SQL 同一套覆盖），不读洗数表。
 列表分两种：点库/区 → 代表标全部观测（data_time 倒序）；点站 → 该场地全部设备 × 时间矩阵。
+点站可 data_source=calibrated 切人工清洗（仅 fcb/dxswj/kxsylj，一站一表）；默认准实时 t_data_wash_*。
 列表默认 catalog.default_library_id（分层标 fcb）；一请求一库一表，不做 fcb+jyb UNION。
 """
 
@@ -737,11 +738,20 @@ async def fetch_browse_list(
     station_id: str | None = None,
     page: int | None = None,
     page_size: int | None = None,
+    data_source: str | None = None,
     executor: SQLExecutor | None = None,
     ignore_page_cap: bool = False,
 ) -> dict[str, Any]:
     """点库/区：代表标全部观测（data_time 倒序）；点站：该场地全部设备 × 时间矩阵。强制分页。"""
+    from app.data_query_agent.calibrated_browse import (
+        DATA_SOURCE_CALIBRATED,
+        attach_data_source_fields,
+        fetch_calibrated_device_matrix,
+        parse_browse_data_source,
+    )
+
     library = resolve_browse_library(library_id, required=False)
+    source = parse_browse_data_source(data_source)
     if ignore_page_cap:
         size = int(page_size or 0)
         if size < 1:
@@ -752,8 +762,14 @@ async def fetch_browse_list(
     d = (district or "").strip() or None
     sid = (station_id or "").strip() or None
     exe = executor or SQLExecutor()
-    if sid:
-        return await _fetch_device_matrix(
+    if source == DATA_SOURCE_CALIBRATED:
+        if not sid:
+            raise BrowseRequestError(
+                422,
+                "calibrated_requires_station",
+                "人工清洗目前仅支持点站点浏览",
+            )
+        return await fetch_calibrated_device_matrix(
             library=library,
             station_id=sid,
             page_n=page_n,
@@ -761,13 +777,29 @@ async def fetch_browse_list(
             offset=offset,
             executor=exe,
         )
-    return await _fetch_rep_station_list(
-        library=library,
-        district=d,
-        page_n=page_n,
-        size=size,
-        offset=offset,
-        executor=exe,
+    if sid:
+        payload = await _fetch_device_matrix(
+            library=library,
+            station_id=sid,
+            page_n=page_n,
+            size=size,
+            offset=offset,
+            executor=exe,
+        )
+    else:
+        payload = await _fetch_rep_station_list(
+            library=library,
+            district=d,
+            page_n=page_n,
+            size=size,
+            offset=offset,
+            executor=exe,
+        )
+    return attach_data_source_fields(
+        payload,
+        library_id=library.id,
+        station_id=sid,
+        data_source=source,
     )
 
 
@@ -776,6 +808,7 @@ async def fetch_browse_export(
     library_id: str | None = None,
     district: str | None = None,
     station_id: str | None = None,
+    data_source: str | None = None,
     executor: SQLExecutor | None = None,
 ) -> dict[str, Any]:
     """浏览导出：与 browse 同一套过滤和 SQL，不分页；超过 export_max_rows 则 413。"""
@@ -785,6 +818,7 @@ async def fetch_browse_export(
         library_id=library_id,
         district=district,
         station_id=station_id,
+        data_source=data_source,
         page=1,
         page_size=max_rows,
         executor=executor,

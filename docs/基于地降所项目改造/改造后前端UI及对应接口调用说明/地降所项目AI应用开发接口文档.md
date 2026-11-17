@@ -40,6 +40,7 @@
 | 2026-10-26 | 3.4 补充 SQL 生成/查询失败时的 JSON 字段、常见 `error` 码与前端渲染说明 | — | V1.14 |
 | 2026-10-26 | 3.4 明确可用 `ok=false` 统一友好提示；补充推荐文案 | — | V1.15 |
 | 2026-10-29 | 3.4 锁库前拦截闲聊/身份/知识问答：`error=not_data_query`，不调 NL2SQL | — | V1.16 |
+| 2026-11-17 | 点站点浏览支持 `data_source=calibrated` 切人工清洗（一站一表，仅分层标/地下水/孔隙水） | — | V1.17 |
 
 ## 通用约定
 
@@ -867,6 +868,7 @@ GET
 | library_id | false | string | 监测库；空=默认分层标 `fcb`。点库节点时必传该节点 id                   |
 | district | false | string | 点行政区时传标准名，如 `朝阳区`。与 `station_id` 同时传时忽略（以点站为准） |
 | station_id | false | string | 点站点时传树上的 `station_id`（`project_name`，如 `F9(后芮营)`） |
+| data_source | false | string | `realtime`（默认，准实时 `t_data_wash_*`）；`calibrated`（人工清洗一站一表）。**仅点站点**且库为 `fcb` / `dxswj` / `kxsylj` 时可切清洗；点库/区或其它库传 `calibrated` 返回 422。切换后 `page` 从 1 |
 | page | false | int | 页码，从 1；默认 1                                       |
 | page_size | false | int | 每页行数，默认 20，最大 100。点站时按 **监测时间** 条数分页 |
 
@@ -885,6 +887,10 @@ GET
 | list | array | 当前页行；单元格取 `list[i][columns[j].key]` |
 | list[].hud_entity_id | string | 仅 `result_grain=station`：点「详参」作 `GET /hud` 的 `entity_id` |
 | hud_enabled | boolean | 仅代表标列表为 true；设备矩阵固定 false |
+| data_source | string | 实际取数源：`realtime` / `calibrated` |
+| calibrated_supported | boolean | 当前点站是否有人工清洗表；前端用它画「准实时 / 人工清洗」开关（点库/区或 GNSS 等为 false） |
+| metric_title | string | 仅 `calibrated`：单元格含义（分层标累计沉降、地下水水位标高、孔隙水压力） |
+| warnings | array | 清洗路径会提示仅 0:00/12:00、最新时间；地下水会提示是标高不是埋深 |
 
 ### 调用方使用说明
 
@@ -910,6 +916,8 @@ GET
 
 该场地全部设备（含辅助标）的时间序列，转成矩阵：行是时间。分层标等仍是「一设备一列」；**GNSS / 气象站** 是两级表头（站点下挂多指标）。
 
+分层标 / 地下水 / 孔隙水点站时看 `calibrated_supported`：为 true 则在表上提供「准实时 / 人工清洗」切换。切清洗时带 `data_source=calibrated` 且 **page=1**（两套时间轴密度不同）。清洗表是一站一表宽表，响应仍是无 `children` 的设备列；地下水单元格是**水位标高**不是埋深；仅每日 0:00 / 12:00，以 `warnings` 提示最新时间。无清洗表（如地下水 F42）不要画开关。基岩标 / GNSS / 气象 / 光纤、以及点库/区，不要传 `calibrated`。
+
 | 返回字段 | 表上怎么加载 |
 |----------|--------------|
 | `columns[0]` | 固定 `data_time` / 监测时间 |
@@ -934,8 +942,12 @@ Authorization: Bearer <service-api-key>
 GET /data-query-agent/browse?library_id=fcb&district=朝阳区&page=1&page_size=20
 Authorization: Bearer <service-api-key>
 
-# 指定库点击站点
+# 指定库点击站点（准实时，默认）
 GET /data-query-agent/browse?library_id=fcb&station_id=F28(金盏)&page=1&page_size=20
+Authorization: Bearer <service-api-key>
+
+# 同一站点切到人工清洗
+GET /data-query-agent/browse?library_id=fcb&station_id=F28(金盏)&data_source=calibrated&page=1&page_size=20
 Authorization: Bearer <service-api-key>
 ```
 
@@ -1436,6 +1448,7 @@ GET
 | library_id | false | string | 监测库；空=默认分层标 `fcb` |
 | district | false | string | 点行政区时传标准名；与 `station_id` 同时传时忽略 |
 | station_id | false | string | 点站点时传树上 `station_id`，导出设备×时间矩阵 |
+| data_source | false | string | 与 3.3 相同；导清洗数据须带 `calibrated`，否则仍是准实时 |
 
 ### 返回字段
 

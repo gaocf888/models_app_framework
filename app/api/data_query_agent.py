@@ -208,6 +208,12 @@ async def browse_data_query_list(
         str | None,
         Query(description="点站点时传树上 project_name；走设备×时间矩阵，不再出代表标表"),
     ] = None,
+    data_source: Annotated[
+        str | None,
+        Query(
+            description="realtime=准实时（默认）；calibrated=人工清洗（仅点站点，且库为分层标/地下水/孔隙水）"
+        ),
+    ] = None,
     page: Annotated[int, Query(ge=1, description="页码，从 1 起")] = 1,
     page_size: Annotated[int, Query(ge=1, le=100, description="每页行数")] = 20,
 ) -> DataQueryAgentBrowseResponse:
@@ -216,6 +222,7 @@ async def browse_data_query_list(
             library_id=library_id,
             district=district,
             station_id=station_id,
+            data_source=data_source,
             page=page,
             page_size=page_size,
         )
@@ -238,12 +245,17 @@ async def browse_data_query_export(
         str | None,
         Query(description="点站点时传树上 project_name；导出设备×时间矩阵"),
     ] = None,
+    data_source: Annotated[
+        str | None,
+        Query(description="与 /browse 相同：realtime 或 calibrated"),
+    ] = None,
 ) -> Response:
     try:
         return await service.browse_export(
             library_id=library_id,
             district=district,
             station_id=station_id,
+            data_source=data_source,
         )
     except BrowseRequestError as exc:
         raise _browse_http_error(exc) from exc

@@ -167,6 +167,7 @@ class DataQueryAgentService:
         library_id: str | None = None,
         district: str | None = None,
         station_id: str | None = None,
+        data_source: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> DataQueryAgentBrowseResponse:
@@ -176,6 +177,7 @@ class DataQueryAgentService:
             library_id=library_id,
             district=district,
             station_id=station_id,
+            data_source=data_source,
             page=page,
             page_size=page_size,
         )
@@ -187,6 +189,7 @@ class DataQueryAgentService:
         library_id: str | None = None,
         district: str | None = None,
         station_id: str | None = None,
+        data_source: str | None = None,
     ):
         from app.data_query_agent.browse import fetch_browse_export
         from app.data_query_agent.csv_export import csv_attachment_response, csv_filename, table_to_csv_bytes
@@ -195,14 +198,17 @@ class DataQueryAgentService:
             library_id=library_id,
             district=district,
             station_id=station_id,
+            data_source=data_source,
         )
-        body = table_to_csv_bytes(payload.get("columns"), payload.get("list"))
+        source = str(payload.get("data_source") or "")
         filename = csv_filename(
             "browse",
             payload.get("library_id"),
             payload.get("district"),
             payload.get("station_id"),
+            "calibrated" if source == "calibrated" else "",
         )
+        body = table_to_csv_bytes(payload.get("columns"), payload.get("list"))
         return csv_attachment_response(body, filename)
 
     def parse_export(self, *, export_token: str, user_id: str, session_id: str):
