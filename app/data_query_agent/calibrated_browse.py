@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -190,13 +191,24 @@ def display_device_name(physical: str, suffixes: tuple[str, ...]) -> str:
 
 
 def _time_expr(table_alias: str, quoted_time_col: str) -> str:
+    """caijishijian 是北京墙钟（0点/12点）。to_timestamp 返回 timestamptz，须再 ::timestamp 去掉时区，否则会变成 UTC 偏 8 小时。"""
     ref = f"{table_alias}.{quoted_time_col}"
     text = f"({ref})::text"
+    parsed = f"to_timestamp({text}, 'YYYY/MM/DD HH24:MI:SS')"
     return (
         f"(CASE WHEN {text} ~ '^[0-9]{{4}}/' "
-        f"THEN to_timestamp({text}, 'YYYY/MM/DD HH24:MI:SS') "
+        f"THEN CAST({parsed} AS timestamp) "
         f"ELSE CAST({ref} AS timestamp) END)"
     )
+
+
+def _data_time_cell(value: Any) -> Any:
+    """监测时间按墙钟输出，不带 +00:00。"""
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.replace(tzinfo=None)
+        return value.strftime("%Y-%m-%dT%H:%M:%S")
+    return _cell(value)
 
 
 def _empty_matrix(
@@ -321,7 +333,7 @@ def _devices_from_catalog(
 def _calibrated_warnings(library_id: str, latest: Any) -> list[str]:
     notes = ["人工清洗仅每日 0:00 / 12:00"]
     if latest is not None:
-        notes.append(f"最新至 {_cell(latest)}")
+        notes.append(f"最新至 {_data_time_cell(latest)}")
     if library_id == "dxswj":
         notes.append("单元格为水位标高(m)，不是埋深")
     return notes
@@ -430,7 +442,7 @@ async def fetch_calibrated_device_matrix(
     items: list[dict[str, Any]] = []
     for raw in data_rows or []:
         row: dict[str, Any] = {
-            "data_time": _cell(raw.get("data_time")),
+            "data_time": _data_time_cell(raw.get("data_time")),
             "hud_available": False,
         }
         for _physical, display in devices:

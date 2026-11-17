@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from app.data_query_agent.browse import BrowseRequestError, fetch_browse_list
+from datetime import datetime, timedelta, timezone
+
 from app.data_query_agent.calibrated_browse import (
+    _data_time_cell,
     build_calibrated_page_sql,
     display_device_name,
     lookup_calibrated_table,
@@ -79,6 +82,14 @@ def test_lookup_fcb_and_missing_dxswj_f42() -> None:
     assert lookup_calibrated_table("gnss", "F1(王四营)") is None
 
 
+def test_data_time_cell_keeps_beijing_wall_clock() -> None:
+    naive = datetime(2026, 10, 1, 0, 0, 0)
+    assert _data_time_cell(naive) == "2026-10-01T00:00:00"
+    beijing = datetime(2026, 10, 1, 0, 0, 0, tzinfo=timezone(timedelta(hours=8)))
+    assert _data_time_cell(beijing) == "2026-10-01T00:00:00"
+    assert "+00:00" not in str(_data_time_cell(beijing))
+
+
 def test_display_device_name_normalizes_columns() -> None:
     assert display_device_name("f1-1", ()) == "F1-1"
     assert display_device_name("d1-1biaogao", ("biaogao",)) == "D1-1"
@@ -98,6 +109,8 @@ def test_calibrated_page_sql_quotes_hyphen_columns() -> None:
     assert '"f1-1"' in sql
     assert '"F1-1"' in sql
     assert "caijishijian" in sql
+    assert "to_timestamp(" in sql.lower()
+    assert "as timestamp" in sql.lower()
     assert "t_data_wash" not in sql.lower()
     assert params["limit"] == 20
     assert params["offset"] == 0
