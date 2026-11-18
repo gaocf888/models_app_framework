@@ -515,9 +515,22 @@ def test_analysis_prompt_version_and_col_priority_subsidence(monkeypatch: pytest
     assert "t_data_wash_fcb" not in hint
     assert "suggested_filters" not in hint
     assert "DISTINCT ON" not in hint
-    snap_hint = _chatbot_sql_gen_extra_hint("周村最新的孔隙水压力的监测数据", grain="station")
+    snap_hint = _chatbot_sql_gen_extra_hint(
+        "周村最新的孔隙水压力的监测数据", grain="station", library_id="kxsylj"
+    )
     assert "DISTINCT ON (station_name)" in snap_hint
     assert "project_name" in snap_hint
+    gnss_hint = _chatbot_sql_gen_extra_hint(
+        "周村最新的GNSS监测数据", grain="station", library_id="gnss"
+    )
+    assert "禁止 SELECT project_name" in gnss_hint
+    assert "北京地面沉降监测" in gnss_hint
+    assert "F15-GNSS" in gnss_hint
+    qxz_hint = _chatbot_sql_gen_extra_hint(
+        "周村最新的气象站监测数据", grain="station", library_id="qxz"
+    )
+    assert "禁止 SELECT project_name" in qxz_hint
+    assert "F33-气象站" in qxz_hint
     period_hint = _chatbot_sql_gen_extra_hint(
         "望京本周的沉降量", grain="station", library_id="fcb", period_eligible=True
     )

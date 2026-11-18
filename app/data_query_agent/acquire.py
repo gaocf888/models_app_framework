@@ -66,7 +66,12 @@ def clear_plan_cache() -> None:
 
 
 _IDENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-_VIRTUAL_COL_KEYS = frozenset({"station_id", "station_name", "area", "data_time"})
+_VIRTUAL_COL_KEYS = frozenset(
+    {"station_id", "station_name", "device_name", "project_name", "area", "data_time"}
+)
+_ANNUAL_QUERY_RE = re.compile(
+    r"年沉降|年度(?:变化|孔压|埋深|位移)|近一年|近\s*1\s*年|本年|去年"
+)
 _SNAPSHOT_TIME_TAGS = frozenset(
     {
         "",
@@ -93,6 +98,18 @@ def is_period_time(scope: ScopeIntentResult) -> bool:
     if tag in _SNAPSHOT_TIME_TAGS or tag.startswith("day_"):
         return False
     return bool(tag)
+
+
+def wants_annual_column(scope: ScopeIntentResult, query: str = "") -> bool:
+    """仅当问句明确要年变化时才计算/展示年度列；「最新监测数据」不算。"""
+    if is_period_time(scope):
+        return False
+    if _ANNUAL_QUERY_RE.search(query or ""):
+        return True
+    tag = _time_tag(scope)
+    if tag == "latest_per_station" or tag in _SNAPSHOT_TIME_TAGS:
+        return False
+    return False
 
 
 # 兼容旧私有名
@@ -198,20 +215,20 @@ def _physical_list_selects(library: LibraryDef) -> list[str]:
     return out
 
 
-def _metric_select(library: LibraryDef, scope: ScopeIntentResult) -> str:
+def _metric_select(library: LibraryDef, scope: ScopeIntentResult, query: str = "") -> str:
     parts = _physical_list_selects(library)
     latest = ", ".join(parts) if parts else (library.core_metric or "")
     win = scope.annual_window or {}
     start = win.get("start") or ""
     end = win.get("end") or ""
-    # 区间窗：周期差列用 period_key；非区间（或年窗展示）仍用 annual_key
+    # 区间窗：周期差列用 period_key；仅明确「年沉降/年度变化」才要 annual_key
     if is_period_time(scope) and library.period_key and library.period_source:
         return (
             f"{latest}, "
             f"（窗 {start} 至 {end} 内 {library.period_source} 末日值减窗内最早值）"
             f"AS {library.period_key}"
         )
-    if library.annual_key and library.annual_source:
+    if wants_annual_column(scope, query) and library.annual_key and library.annual_source:
         return (
             f"{latest}, "
             f"（窗 {start} 至 {end} 内 {library.annual_source} 末日值减窗内最早值）"
@@ -232,6 +249,38 @@ def _series_select(library: LibraryDef, grain: str) -> str:
     if grain in ("district", "city"):
         return ", ".join(f"AVG({c}) AS {c}" for c in cols)
     return ", ".join(cols)
+
+
+def _uses_project_name_site(library: LibraryDef) -> bool:
+    from app.analysis_agent.deterministics.coverage import uses_station_name_site_key
+
+    device = (library.device_type or library.id or "").strip().lower()
+    return not uses_station_name_site_key(device)
+
+
+def _identity_select(library: LibraryDef) -> str:
+    """列表身份列：场地用 project_name，设备用事实表 station_name。"""
+    table = library.table
+    if _uses_project_name_site(library):
+        return (
+            f"{table}.station_id AS station_id, "
+            f"{table}.project_name AS project_name, "
+            f"{table}.station_name AS device_name"
+        )
+    return (
+        f"{table}.station_id AS station_id, "
+        f"{table}.station_name AS station_name"
+    )
+
+
+def _identity_rule(library: LibraryDef) -> str:
+    if _uses_project_name_site(library):
+        return (
+            "监测站名称必须用事实表 project_name（如 F8(周村)），"
+            "监测设备必须用事实表 station_name AS device_name（如 K8-1 / F8-10）。"
+            "禁止把 t_station.id 或场地名当成监测设备，禁止漏掉 device_name。"
+        )
+    return "监测站名称用事实表 station_name（如 F15-GNSS、F33-气象站）。"
 
 
 def _is_fcb_library(library: LibraryDef) -> bool:
@@ -288,6 +337,7 @@ def _render_question(
     library: LibraryDef,
     scope: ScopeIntentResult,
     max_rows: int,
+    query: str = "",
 ) -> str:
     """按 grain 填 plan.yaml 模板；q_hud_series 站/区/市问句分叉。"""
     plan = load_plan()
@@ -308,17 +358,23 @@ def _render_question(
             table=library.table,
             display_name=library.display_name,
             library_id=library.id,
-            metric_select=_metric_select(library, scope),
+            metric_select=_metric_select(library, scope, query),
             core_column=library.core_metric,
             core_alias=(library.core_metrics[0].id if library.core_metrics else library.core_metric),
             period_alias=(library.period_key or "period_settle_mm"),
             series_column=library.series_column,
             series_select=_series_select(library, grain),
             scope_block=_scope_block(scope),
-            annual_block="" if is_period_time(scope) else _annual_block(library, scope),
+            annual_block=(
+                _annual_block(library, scope)
+                if wants_annual_column(scope, query)
+                else ""
+            ),
             join_on=_join_on(library),
             site_filter_hint=_site_filter_hint(library),
             max_rows=max_rows,
+            identity_select=_identity_select(library),
+            identity_rule=_identity_rule(library),
             device_latest_rule=_device_latest_rule(library),
             rep_or_all_rule=_rep_or_all_rule(library),
             hud_device_rule=_hud_device_rule(library, grain),
@@ -327,7 +383,7 @@ def _render_question(
     ).strip()
 
 
-def _hint(library: LibraryDef, scope: ScopeIntentResult) -> str:
+def _hint(library: LibraryDef, scope: ScopeIntentResult, query: str = "") -> str:
     plan = load_plan()
     tmpl = str(plan.get("hint_template") or "")
     cs = scope.confirmed_scope
@@ -340,7 +396,9 @@ def _hint(library: LibraryDef, scope: ScopeIntentResult) -> str:
         district=cs.get("district") or "未指定",
         station=station,
         time_note=tw,
-        annual_block="" if is_period_time(scope) else _annual_block(library, scope),
+        annual_block=(
+            _annual_block(library, scope) if wants_annual_column(scope, query) else ""
+        ),
         join_on=_join_on(library),
         site_filter_hint=_site_filter_hint(library),
         device_grain_hint=_device_grain_hint(library, scope),
@@ -411,8 +469,9 @@ async def _query_one(
         library=library,
         scope=scope,
         max_rows=max_rows,
+        query=query,
     )
-    hint = _hint(library, scope)
+    hint = _hint(library, scope, query=query)
     req = NL2SQLQueryRequest(
         user_id=user_id,
         session_id=session_id,

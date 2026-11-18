@@ -6,8 +6,10 @@ q_list:
   station: |
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {join_on}。
     {site_filter_hint}
-    查询该范围内每一个监测设备的最新一条记录（按 station_name 取 data_time 最大的一行），输出 station_id, station_name, t_station.area AS area, {metric_select}, data_time。
+    查询该范围内每一个监测设备的最新一条记录（按事实表 station_name 取 data_time 最大的一行），输出 {identity_select}, t_station.area AS area, {metric_select}, data_time。
+    {identity_rule}
     {device_latest_rule}
+    禁止计算或输出年度变化/周期变化列，除非上方 metric 已要求。
     {annual_block}
     {scope_block}
     时间未指定则每台设备最新。ORDER BY ABS({core_column}) DESC, station_name。LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
@@ -17,7 +19,8 @@ q_list:
     用户问的是时间窗内的周期变化量，不是「每设备最新一行快照」。
     {rep_or_all_rule}
     对每个输出实体取时间窗内最早一条与最晚一条 {core_column}：周期变化 Δ = 窗初值 − 窗末值（初−末）；Δ<0 沉降/减小，Δ>0 回弹/增大；禁止写成末−初。
-    同时输出窗末值 AS {core_alias}、周期差值 AS {period_alias}（禁止用 annual_settle_mm / 年沉降 作别名）、窗末 data_time、station_id、station_name、t_station.area AS area。
+    同时输出窗末值 AS {core_alias}、周期差值 AS {period_alias}（禁止用 annual_settle_mm / 年沉降 作别名）、窗末 data_time、{identity_select}、t_station.area AS area。
+    {identity_rule}
     禁止用单日 MAX−MIN 代替周期差，禁止把时间窗收成今天或昨天一天（除非用户问的就是昨天这一天的变化量）。
     必须用 PostgreSQL：ROW_NUMBER() OVER 子查询取 rn_asc/rn_desc，禁止 QUALIFY（Snowflake/BigQuery 语法），禁止 WINDOW … QUALIFY。
     「沉降最大/最严重」按有符号 Δ 升序（越负越严重）；一般列表可用 ABS(差值表达式) DESC。ORDER BY 须重复差值表达式，禁止 ORDER BY ABS(别名)。
@@ -37,10 +40,12 @@ q_list:
     禁止查询其它 t_data_wash_* 表。
 q_hud_series:
   station: |
-    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），输出 station_id, station_name, data_time, {series_select}。
+    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），输出 {table}.station_name AS station_id, {identity_select}, data_time, {series_select}。
     {site_filter_hint}
     {scope_block}
+    {identity_rule}
     {hud_device_rule}
+    HUD 实体键必须是监测设备 station_name，禁止用场地 project_name 或 t_station.id。
     若【时间】已指定窗口，只输出该窗内的时序点，禁止 DISTINCT ON 只留最新一行。
     按 station_name, data_time 排序。禁止查询其它 t_data_wash_* 表。禁止用其它场地的序列冒充本场地。
   district: |

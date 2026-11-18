@@ -19,6 +19,8 @@ from app.llm.graphs.chatbot_nl2sql_display import (
     CHATBOT_NL2SQL_DEVICE_PERIOD_HINT,
     CHATBOT_NL2SQL_DEVICE_SNAPSHOT_HINT,
     CHATBOT_NL2SQL_DISTRICT_PERIOD_AGG_HINT,
+    CHATBOT_NL2SQL_GNSS_QXZ_PERIOD_HINT,
+    CHATBOT_NL2SQL_GNSS_QXZ_SNAPSHOT_HINT,
     CHATBOT_NL2SQL_SELECT_DISPLAY_RULES,
     apply_chatbot_nl2sql_column_titles,
     filter_chatbot_nl2sql_display_rows,
@@ -320,16 +322,30 @@ def _chatbot_sql_gen_extra_hint(
             g = infer_result_grain(question)
         except Exception:  # noqa: BLE001
             g = ""
+    lid = (library_id or "").strip().lower()
+    gnss_qxz = False
+    if lid:
+        try:
+            from app.analysis_agent.deterministics.coverage import uses_station_name_site_key
+
+            gnss_qxz = uses_station_name_site_key(lid)
+        except Exception:  # noqa: BLE001
+            gnss_qxz = lid in {"gnss", "qxz"}
     if g == "district":
         parts.append(CHATBOT_NL2SQL_DISTRICT_PERIOD_AGG_HINT)
     elif g in ("", "station") and (question or "").strip():
-        if period_eligible:
+        if gnss_qxz:
+            if period_eligible:
+                parts.append(CHATBOT_NL2SQL_DEVICE_PERIOD_HINT)
+                parts.append(CHATBOT_NL2SQL_GNSS_QXZ_PERIOD_HINT)
+            else:
+                parts.append(CHATBOT_NL2SQL_GNSS_QXZ_SNAPSHOT_HINT)
+        elif period_eligible:
             parts.append(CHATBOT_NL2SQL_DEVICE_PERIOD_HINT)
+            if lid and lid != "fcb":
+                parts.append("本问已锁定非分层标，禁止注入层位 0 代表标。")
         else:
             parts.append(CHATBOT_NL2SQL_DEVICE_SNAPSHOT_HINT)
-        lid = (library_id or "").strip().lower()
-        if lid and lid != "fcb" and period_eligible:
-            parts.append("本问已锁定非分层标，禁止注入层位 0 代表标。")
     return "\n\n".join(parts)
 
 
@@ -646,6 +662,7 @@ async def run_chatbot_nl2sql_query(
                 rows=list(rows or []),
                 user_id=user_id,
                 defer_analysis_stream=defer_analysis_stream,
+                library_id=getattr(prepare, "library_id", None),
             )
             sql_meta = (sql or None) if _chatbot_expose_nl2sql_sql_in_meta() else None
             return ChatbotNL2SQLOutcome(
@@ -717,6 +734,7 @@ async def run_chatbot_nl2sql_query(
             rows=list(resp.rows or []),
             user_id=user_id,
             defer_analysis_stream=defer_analysis_stream,
+            library_id=getattr(prepare, "library_id", None),
         )
         # 成功路径亦受 CHATBOT_EXPOSE_NL2SQL_SQL_IN_META 门控（与失败路径一致）
         sql_meta = (resp.sql or None) if _chatbot_expose_nl2sql_sql_in_meta() else None
@@ -1125,6 +1143,7 @@ async def summarize_nl2sql_with_llm(
     rows: List[dict],
     user_id: str | None = None,
     defer_analysis_stream: bool = False,
+    library_id: str | None = None,
 ) -> Nl2sqlSummarizeResult:
     """
     智能客服 NL2SQL 结果整理：
@@ -1208,7 +1227,9 @@ async def summarize_nl2sql_with_llm(
     display_rows = apply_chatbot_nl2sql_column_titles(
         filter_chatbot_nl2sql_display_rows(
             [_row_to_mapping(r) for r in slice_rows]
-        )
+        ),
+        library_id=library_id,
+        user_query=user_query or "",
     )
     ui_rows = display_rows[:_UI_TABLE_MAX_ROWS]
     table_fallback = _rows_to_markdown_table(ui_rows, total_row_count=len(rows))

@@ -154,9 +154,19 @@ def build_period_list_sql(
         area_pred = " AND s.area = CAST(:area AS text)"
     join_on = wash_t_station_join_sql("w", "s", device)
 
+    if uses_station_name_site_key(device):
+        ident_select = "w.station_name AS station_id, w.station_name AS station_name"
+        group_by = "w.station_name, s.area"
+    else:
+        ident_select = (
+            "w.project_name AS project_name, "
+            "w.station_name AS device_name, "
+            "w.station_name AS station_id"
+        )
+        group_by = "w.project_name, w.station_name, s.area"
     sql = (
         # Δ = 窗初(rn_asc) − 窗末(rn_desc)；有符号：负=沉降倾向，正=回弹
-        f"SELECT w.{grain} AS station_id, w.{grain} AS station_name, s.area AS area, "
+        f"SELECT {ident_select}, s.area AS area, "
         f"MAX(CASE WHEN w.rn_desc = 1 THEN w.v END) AS {core_alias}, "
         f"(MAX(CASE WHEN w.rn_asc = 1 THEN w.v END) - MAX(CASE WHEN w.rn_desc = 1 THEN w.v END)) "
         f"AS {delta_alias}, "
@@ -170,10 +180,10 @@ def build_period_list_sql(
         f") w "
         f"LEFT JOIN t_station s ON {join_on} "
         f"WHERE (w.rn_asc = 1 OR w.rn_desc = 1){area_pred} "
-        f"GROUP BY w.{grain}, s.area "
+        f"GROUP BY {group_by} "
         f"ORDER BY ABS("
         f"MAX(CASE WHEN w.rn_asc = 1 THEN w.v END) - MAX(CASE WHEN w.rn_desc = 1 THEN w.v END)"
-        f") DESC NULLS LAST, w.{grain} "
+        f") DESC NULLS LAST, w.station_name "
         f"LIMIT :limit"
     )
     return sql, params

@@ -125,7 +125,7 @@ def compute_nl2sql_policy_fp(*, analysis_type: str | None) -> str:
                 schema_link_catalog_mode(),
                 table_allowlist_fingerprint(),
                 semantic_version,
-                "device_latest_grain_v1",
+                "device_identity_v3",
             ]
         )
     except Exception:  # noqa: BLE001

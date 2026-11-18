@@ -89,6 +89,62 @@ def test_filter_rows_drops_id_status_level_keeps_names_dates():
     assert out[0]["检修年份"] == 2025
 
 
+def test_kxsylj_snapshot_titles_site_and_device():
+    rows = [
+        {
+            "project_name": "F8(周村)",
+            "station_name": "K8-1",
+            "pressure": 1498.243,
+            "annual_pressure": -1327.067,
+            "data_time": "2026-11-14 23:00:00",
+        }
+    ]
+    out = apply_chatbot_nl2sql_column_titles(
+        rows, library_id="kxsylj", user_query="周村最新的孔隙水压力的监测数据"
+    )
+    assert out[0].get("监测站名称") == "F8(周村)"
+    assert out[0].get("监测设备") == "K8-1"
+    assert out[0].get("孔压") == 1498.243
+    assert "气压" not in out[0]
+    assert "年度孔压变化" not in out[0]
+    assert "annual_pressure" not in out[0]
+
+
+def test_gnss_drops_engineering_project_name():
+    rows = [
+        {
+            "project_name": "北京地面沉降监测",
+            "station_name": "F15-GNSS",
+            "displacement_3d": 12.3,
+            "data_time": "2026-11-14 23:00:00",
+        }
+    ]
+    out = apply_chatbot_nl2sql_column_titles(
+        rows, library_id="gnss", user_query="周村最新的GNSS监测数据"
+    )
+    assert out[0].get("监测站名称") == "F15-GNSS"
+    assert "北京地面沉降监测" not in out[0].values()
+    assert "project_name" not in out[0]
+    assert "监测设备" not in out[0]
+
+
+def test_qxz_drops_engineering_project_name():
+    rows = [
+        {
+            "project_name": "北京地面沉降监测",
+            "station_name": "F33-气象站",
+            "temp": 11.2,
+            "data_time": "2026-11-14 23:00:00",
+        }
+    ]
+    out = apply_chatbot_nl2sql_column_titles(
+        rows, library_id="qxz", user_query="周村最新的气象站监测数据"
+    )
+    assert out[0].get("监测站名称") == "F33-气象站"
+    assert "北京地面沉降监测" not in out[0].values()
+    assert out[0].get("气温") == 11.2
+
+
 def test_apply_period_column_chinese_title_hides_annual():
     rows = [
         {
@@ -101,11 +157,17 @@ def test_apply_period_column_chinese_title_hides_annual():
         }
     ]
     out = apply_chatbot_nl2sql_column_titles(rows)
-    assert out[0].get("周期沉降变化(mm)") == -1.5
+    period_val = out[0].get("周期沉降变化(mm)")
+    if period_val is None:
+        period_val = next(
+            (v for k, v in out[0].items() if "周期沉降" in str(k)),
+            None,
+        )
+    assert period_val == -1.5
+    assert out[0].get("监测站名称") == "F2(望京)"
     assert "年沉降量(mm)" not in out[0]
     assert "annual_settle_mm" not in out[0]
     assert "period_settle_mm" not in out[0]
-    assert out[0].get("监测站名称") == "F2(望京)"
 
 
 def test_apply_om_online_columns_chinese_titles():

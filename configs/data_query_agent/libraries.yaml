@@ -29,7 +29,8 @@ libraries:
     period_metric: {key: period_settle_mm, source: total_settle}
     columns:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
-      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: station_name, title: 监测站名称, aliases: [project_name, station_name]}
+      - {key: device_name, title: 监测设备, aliases: [device_name, station_name]}
       - {key: area, title: 行政区, aliases: [area]}
       - {key: period_settle_mm, title: 周期沉降变化(mm，负沉正弹), aliases: [period_settle_mm, period_settle]}
       - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}
@@ -52,7 +53,8 @@ libraries:
     period_metric: {key: period_settle_mm, source: total_settle}
     columns:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
-      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: station_name, title: 监测站名称, aliases: [project_name, station_name]}
+      - {key: device_name, title: 监测设备, aliases: [device_name, station_name]}
       - {key: area, title: 行政区, aliases: [area]}
       - {key: period_settle_mm, title: 周期沉降变化(mm，负沉正弹), aliases: [period_settle_mm, period_settle]}
       - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}
@@ -75,7 +77,8 @@ libraries:
     period_metric: {key: period_deep, source: deep}
     columns:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
-      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: station_name, title: 监测站名称, aliases: [project_name, station_name]}
+      - {key: device_name, title: 监测设备, aliases: [device_name, station_name]}
       - {key: area, title: 行政区, aliases: [area]}
       - {key: deep, title: 埋深(m), aliases: [deep]}
       - {key: period_deep, title: 周期埋深变化(m), aliases: [period_deep]}
@@ -99,7 +102,8 @@ libraries:
     period_metric: {key: period_pressure, source: pressure}
     columns:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
-      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: station_name, title: 监测站名称, aliases: [project_name, station_name]}
+      - {key: device_name, title: 监测设备, aliases: [device_name, station_name]}
       - {key: area, title: 行政区, aliases: [area]}
       - {key: pressure, title: 孔压, aliases: [pressure]}
       - {key: period_pressure, title: 周期孔压变化, aliases: [period_pressure]}
@@ -175,7 +179,8 @@ libraries:
     period_metric: {key: period_settle_mm, source: total_settle}
     columns:
       - {key: station_id, title: 测位 ID, aliases: [station_id]}
-      - {key: station_name, title: 监测站名称, aliases: [station_name]}
+      - {key: station_name, title: 监测站名称, aliases: [project_name, station_name]}
+      - {key: device_name, title: 监测设备, aliases: [device_name, station_name]}
       - {key: area, title: 行政区, aliases: [area]}
       - {key: period_settle_mm, title: 周期沉降变化(mm，负沉正弹), aliases: [period_settle_mm, period_settle]}
       - {key: annual_settle_mm, title: 年沉降量(mm), aliases: [annual_settle_mm, annual_settle]}

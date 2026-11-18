@@ -155,6 +155,9 @@ def test_latest_sql_projects_physical_not_display_alias() -> None:
     assert "count(*)" in count_sql.lower()
     assert "distinct on" not in count_sql.lower()
     assert count_params["rep_marks"] == ["F8-10"]
+    assert "w.device_name" not in sql
+    assert "w.project_name AS station_name" in sql
+    assert "w.station_name AS mark_name" in sql
 
 
 def test_latest_sql_without_marks_uses_project_name() -> None:
@@ -286,7 +289,10 @@ async def test_browse_list_default_fcb_is_rep_station() -> None:
     assert by_id["F28-10"]["hud_entity_id"] == "F28(金盏)"
     assert by_id["F28-10"]["hud_available"] is True
     assert by_id["F28-10"]["total_settle_mm"] == pytest.approx(-84.2)
+    assert by_id["F28-10"]["device_name"] == "F28-10"
     assert by_id["F2-8"]["station_name"] == "F2(望京)"
+    assert by_id["F2-8"]["device_name"] == "F2-8"
+    assert all("w.device_name" not in sql for sql, _ in exe.calls)
     assert "annual_settle_mm" not in by_id["F28-10"]
     assert "annual_settle_mm" not in by_id["F2-8"]
     assert "period_settle_mm" not in by_id["F28-10"]

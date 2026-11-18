@@ -46,8 +46,12 @@ def test_templates_fcb_jyb_gnss_no_null_placeholder() -> None:
         if lid == "fcb":
             assert "全部测点" in q_list
             assert "禁止用监测层位=0" in q_list
-        if lid != "qxz":
-            assert "末日值" in q_list or "end_value" in q_list.lower() or "年度变化" in q_list
+            assert "project_name" in q_list
+            assert "device_name" in q_list
+            assert "AS annual_settle_mm" not in q_list
+            assert "末日值减去窗内最早值" not in q_list
+        if lid == "gnss":
+            assert "displacement_3d" in q_list
 
 
 def test_templates_district_hud_is_area_avg() -> None:
@@ -153,6 +157,26 @@ def test_templates_period_station_uses_window_delta_not_latest_row() -> None:
     assert "F2(望京)" in q
     assert "recent_1_months" in q
     assert "2025-10-19" not in q
+
+
+def test_templates_kxsylj_snapshot_identity_and_no_annual() -> None:
+    clear_plan_cache()
+    cat = get_library_catalog()
+    lib = cat.get("kxsylj")
+    assert lib is not None
+    scope = resolve_scope_intent("周村最新的孔隙水压力的监测数据", lib)
+    q = _render_question(
+        plan_item_id="q_list",
+        grain="station",
+        library=lib,
+        scope=scope,
+        max_rows=50,
+        query="周村最新的孔隙水压力的监测数据",
+    )
+    assert "project_name" in q
+    assert "device_name" in q
+    assert "AS annual_pressure" not in q
+    assert "末日值减去窗内最早值" not in q
 
 
 def test_templates_kxsylj_period_expands_all_devices() -> None:

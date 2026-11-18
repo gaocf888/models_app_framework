@@ -12,10 +12,29 @@ logger = get_logger(__name__)
 # 快照：按设备最新一行；与查询台 plan.yaml 口径对齐
 CHATBOT_NL2SQL_DEVICE_SNAPSHOT_HINT = """
 【智能客服·监测快照（本问强制）】
-「最新 / 监测数据」按监测设备 station_name 一行一台取 data_time 最大行。
+「最新 / 监测数据」按监测设备一行一台取 data_time 最大行。
+SELECT 必须同时包含：
+1) project_name（监测站/场地，如 F8(周村)）
+2) 事实表 station_name（监测设备，如 K8-1、F8-10；禁止省略，禁止只输出场地名）
+3) data_time 与物理监测值（孔隙水 pressure=孔压，禁止写成气压；地下水 deep=埋深）
 PostgreSQL：SELECT DISTINCT ON (station_name) … ORDER BY station_name, data_time DESC。
-禁止 DISTINCT ON (project_name) 把同一场地多台设备并成一行。
-分层标快照禁止用层位 0 代表标过滤，必须输出该场地全部测点。
+禁止 DISTINCT ON (project_name) 并场。分层标快照禁止层位 0 代表标过滤。
+禁止 SELECT 年度/周期变化列（annual_* / period_*），用户只问监测数据。
+""".strip()
+
+CHATBOT_NL2SQL_GNSS_QXZ_SNAPSHOT_HINT = """
+【智能客服·GNSS/气象站快照（本问强制）】
+监测站名称必须用事实表 station_name（如 F15-GNSS、F33-气象站、周村对应站码）。
+禁止 SELECT project_name，禁止展示 project_name：该列是工程总名「北京地面沉降监测」，不能当站名、不能当过滤条件。
+禁止 DISTINCT ON (project_name) 或 WHERE project_name = …。
+SELECT：station_name, data_time, 物理监测值（气象含 temp/降水等）。
+PostgreSQL：SELECT DISTINCT ON (station_name) … ORDER BY station_name, data_time DESC。
+禁止年度/周期变化列，除非用户问变化量。
+""".strip()
+
+CHATBOT_NL2SQL_GNSS_QXZ_PERIOD_HINT = """
+【智能客服·GNSS/气象站周期】
+站名与分组只用 station_name。禁止用 project_name（工程总名「北京地面沉降监测」）当站名或并场。
 """.strip()
 
 # 周期：分层标代表标，其它方式全部设备
@@ -349,7 +368,9 @@ _FALLBACK_COLUMN_TITLES: dict[str, str] = {
     "annual_settle": "年沉降量(mm，负沉正弹)",
     "total_settle_mm": "历史累计沉降(mm)",
     "total_settle": "历史累计沉降(mm)",
+    "project_name": "监测站名称",
     "station_name": "监测站名称",
+    "device_name": "监测设备",
     "station_id": "测位 ID",
     "area": "行政区",
     "data_time": "数据时间",
@@ -410,14 +431,22 @@ _FALLBACK_COLUMN_TITLES: dict[str, str] = {
 }
 
 
-def _library_column_title_map() -> dict[str, str]:
-    """从监测库 catalog 汇总 key/alias → 中文 title（再叠运维/沉降兜底）。"""
+def _library_column_title_map(library_id: str | None = None) -> dict[str, str]:
+    """从监测库 catalog 汇总 key/alias → 中文 title（再叠运维/沉降兜底）。
+
+    传入 library_id 时以该库为准，避免气象站 pressure=气压 盖掉孔隙水 pressure=孔压。
+    """
     out = dict(_FALLBACK_COLUMN_TITLES)
     try:
+        from app.analysis_agent.deterministics.coverage import uses_station_name_site_key
         from app.data_query_agent.catalog import get_library_catalog
 
         cat = get_library_catalog()
-        for lib in cat.libraries:
+        pinned = cat.get(library_id) if library_id else None
+        libs = [pinned] if pinned is not None else list(cat.libraries)
+        for lib in libs:
+            if lib is None:
+                continue
             if lib.period_key:
                 out.setdefault(lib.period_key, "周期变化")
             if lib.annual_key:
@@ -429,8 +458,21 @@ def _library_column_title_map() -> dict[str, str]:
                 out[col.key] = title
                 for alias in col.aliases or ():
                     a = str(alias).strip()
-                    if a:
-                        out[a] = title
+                    if not a:
+                        continue
+                    # 未钉库时不要用「监测设备」别名覆盖 station_name 的「监测站名称」
+                    if (
+                        pinned is None
+                        and col.key == "device_name"
+                        and a in {"station_name", "project_name"}
+                    ):
+                        continue
+                    out[a] = title
+            device = (lib.device_type or lib.id or "").strip().lower()
+            if pinned is not None and not uses_station_name_site_key(device):
+                out["project_name"] = "监测站名称"
+                out["station_name"] = "监测设备"
+                out["device_name"] = "监测设备"
     except Exception:  # noqa: BLE001
         logger.debug("chatbot column title map: catalog unavailable", exc_info=True)
     # 英文字段统一小写键，便于 PG 返回列名大小写不一致时命中
@@ -451,14 +493,42 @@ def _column_display_title(title_map: dict[str, str], key: str) -> str:
     return title_map.get(low) or key
 
 
-def apply_chatbot_nl2sql_column_titles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+_ENGINEERING_PROJECT_NAME = "北京地面沉降监测"
+
+
+def _is_gnss_or_qxz_library(library_id: str | None) -> bool:
+    lid = (library_id or "").strip().lower()
+    if not lid:
+        return False
+    try:
+        from app.analysis_agent.deterministics.coverage import uses_station_name_site_key
+
+        return uses_station_name_site_key(lid)
+    except Exception:  # noqa: BLE001
+        return lid in {"gnss", "qxz"}
+
+
+def _is_snapshot_monitoring_query(user_query: str) -> bool:
+    q = user_query or ""
+    if re.search(r"变化量|年沉降|年度变化|周期沉降|周期孔压|周期埋深", q):
+        return False
+    return bool(re.search(r"最新|监测数据", q))
+
+
+def apply_chatbot_nl2sql_column_titles(
+    rows: list[dict[str, Any]],
+    *,
+    library_id: str | None = None,
+    user_query: str = "",
+) -> list[dict[str, Any]]:
     """
     将英文字段名换成中文 title（沉降 libraries + 运维 om 列并集）。
     若同行同时有 period_* 与 annual_*，隐藏 annual_*（区间问句优先周期列）。
+    「最新/监测数据」快照再隐藏年/周期变化列。
     """
     if not rows:
         return rows
-    title_map = _library_column_title_map()
+    title_map = _library_column_title_map(library_id)
     col_order: list[str] = []
     seen: set[str] = set()
     for r in rows:
@@ -486,6 +556,25 @@ def apply_chatbot_nl2sql_column_titles(rows: list[dict[str, Any]]) -> list[dict[
                 # 仅当存在 period 列时藏年列，避免误伤独立「年沉降」问句
                 if any(x.startswith("period_") for x in col_order):
                     drop.add(k)
+    if _is_snapshot_monitoring_query(user_query):
+        for k in col_order:
+            title = _column_display_title(title_map, k)
+            if k.startswith("annual_") or k.startswith("period_"):
+                drop.add(k)
+            if "年沉降" in title or title.startswith("年度") or "周期" in title:
+                drop.add(k)
+    if _is_gnss_or_qxz_library(library_id):
+        for k in col_order:
+            if str(k).strip().lower() == "project_name":
+                drop.add(k)
+                continue
+            samples = [
+                str(r.get(k) or "").strip()
+                for r in rows
+                if isinstance(r, dict) and r.get(k) is not None
+            ]
+            if samples and all(s == _ENGINEERING_PROJECT_NAME for s in samples):
+                drop.add(k)
 
     keep = [c for c in col_order if c not in drop] or list(col_order)
     out: list[dict[str, Any]] = []

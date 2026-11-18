@@ -487,6 +487,7 @@ class DataQueryAgentGraphRunner:
             include_hud=state.include_hud,
             expose_sql=state.expose_sql,
             extra_warnings=list(state.warnings),
+            query=state.query,
         )
         DATA_QUERY_AGENT_RUNS_TOTAL.labels(status="success", hitl=hitl_used).inc()
         logger.info(

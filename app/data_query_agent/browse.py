@@ -34,7 +34,11 @@ logger = get_logger(__name__)
 _IDENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _WASH_TABLE_RE = re.compile(r"^t_data_wash_[a-z0-9_]+$")
 _MARK_SORT_RE = re.compile(r"^([A-Za-z]+)(\d+)-(\d+)([A-Za-z]*)$")
-_VIRTUAL_COL_KEYS = frozenset({"station_id", "station_name", "area", "data_time"})
+# 与 acquire._VIRTUAL_COL_KEYS 对齐：catalog 身份列不是 wash 物理列。
+# device_name 是语义别名（事实表 station_name），t_data_wash_* 没有该列。
+_VIRTUAL_COL_KEYS = frozenset(
+    {"station_id", "station_name", "device_name", "project_name", "area", "data_time"}
+)
 _UNASSIGNED_DISTRICT = "未分区"
 RESULT_GRAIN_STATION = "station"
 RESULT_GRAIN_DEVICE_TIME = "device_time"
@@ -427,6 +431,10 @@ def _row_to_list_item(library: LibraryDef, raw: dict[str, Any]) -> dict[str, Any
         item["station_name"] = item["station_id"]
     if norm.get("mark_name"):
         item["mark_name"] = str(norm["mark_name"])
+    # 浏览 SQL 把 project_name 别名为 station_name（场地）；设备号在 mark_name。
+    # 勿用 station_name 别名去填 device_name，否则会把 F8(周村) 当成设备。
+    if "device_name" in item:
+        item["device_name"] = item.get("mark_name") or item.get("device_name")
     item["hud_entity_type"] = "station"
     item["hud_entity_id"] = str(item.get("station_id") or "")
     item["hud_available"] = bool(library.hud_supported and item.get("station_id"))
@@ -489,6 +497,8 @@ def _attach_area_and_filter(
         item["station_id"] = mark_name or canon
         item["station_name"] = canon
         item["mark_name"] = mark_name or None
+        if "device_name" in item:
+            item["device_name"] = mark_name or item.get("device_name")
         item["area"] = area or None
         item["hud_entity_id"] = canon
         out.append(item)

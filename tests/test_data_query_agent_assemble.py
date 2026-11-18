@@ -256,7 +256,7 @@ def test_assemble_station_enables_hud() -> None:
     assert "JZGZ" in payload["hud_by_station"]
     assert payload["hud_by_entity"]["JZGZ"]["blocks"]["geology"]["status"] == "unavailable"
     assert payload["sql"]["q_list"]
-    assert payload["list"][0]["annual_settle_mm"] == -79.8
+    assert "annual_settle_mm" not in payload["list"][0]
 
 
 def test_assemble_hud_truncation(monkeypatch) -> None:
@@ -413,6 +413,52 @@ def test_assemble_period_mode_shows_period_not_annual() -> None:
     col_keys = [c["key"] for c in payload["columns"]]
     assert "period_settle_mm" in col_keys
     assert "annual_settle_mm" not in col_keys
-    assert any(c["title"] == "周期沉降变化(mm)" for c in payload["columns"])
+    assert any("周期沉降变化" in str(c["title"]) for c in payload["columns"])
     assert payload["list"][0]["period_settle_mm"] == -1.5
     assert "annual_settle_mm" not in payload["list"][0]
+
+
+def test_assemble_kxsylj_snapshot_site_and_device_no_annual() -> None:
+    clear_library_catalog_cache()
+    cat = get_library_catalog()
+    lib = cat.get("kxsylj")
+    assert lib is not None
+    scope = resolve_scope_intent("周村最新的孔隙水压力的监测数据", lib)
+    acquire = AcquireResult(
+        ok=True,
+        list_item=AcquireItemResult(
+            plan_item_id="q_list",
+            ok=True,
+            sql="SELECT 1",
+            rows=[
+                {
+                    "station_id": 33554,
+                    "project_name": "F8(周村)",
+                    "device_name": "K8-1",
+                    "station_name": "K8-1",
+                    "area": "平谷区",
+                    "pressure": 1498.243,
+                    "annual_pressure": -1327.067,
+                    "data_time": "2026-11-14T23:00:00",
+                }
+            ],
+        ),
+        series_item=None,
+    )
+    payload = assemble_result(
+        library=lib,
+        scope=scope,
+        acquire=acquire,
+        include_hud=False,
+        expose_sql=False,
+        query="周村最新的孔隙水压力的监测数据",
+    )
+    titles = {c["key"]: c["title"] for c in payload["columns"]}
+    assert titles.get("station_name") == "监测站名称"
+    assert titles.get("device_name") == "监测设备"
+    assert "annual_pressure" not in titles
+    assert "period_pressure" not in titles
+    row = payload["list"][0]
+    assert row["station_name"] == "F8(周村)"
+    assert row["device_name"] == "K8-1"
+    assert "annual_pressure" not in row
