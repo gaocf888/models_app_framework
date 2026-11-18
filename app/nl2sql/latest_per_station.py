@@ -35,6 +35,7 @@ _CALENDAR_PRED_RE = re.compile(
 )
 
 _DISTINCT_ON_RE = re.compile(r"(?is)\bDISTINCT\s+ON\s*\(")
+_DISTINCT_ON_FULL_RE = re.compile(r"(?is)\bDISTINCT\s+ON\s*\(\s*[^)]+\)")
 _MAX_DATA_TIME_RE = re.compile(r"(?is)\bMAX\s*\(\s*(?:[a-zA-Z_][\w]*\.)?data_time\s*\)")
 _SELECT_RE = re.compile(r"(?is)\bSELECT\b(\s+DISTINCT\b)?(?!\s+ON\b)")
 
@@ -160,8 +161,13 @@ def rewrite_sql_for_latest_per_station(
         notes.append("latest_per_station_strip_calendar")
 
     if _DISTINCT_ON_RE.search(rewritten):
-        rewritten = _ensure_order_by_latest(rewritten, g)
-        notes.append("latest_per_station_distinct_on_present")
+        before = rewritten
+        aligned = _DISTINCT_ON_FULL_RE.sub(f"DISTINCT ON ({g})", rewritten, count=1)
+        rewritten = _ensure_order_by_latest(aligned, g)
+        if aligned != before:
+            notes.append(f"latest_per_station_distinct_on_aligned:{g}")
+        else:
+            notes.append("latest_per_station_distinct_on_present")
         return rewritten, notes
     if _MAX_DATA_TIME_RE.search(rewritten):
         notes.append("latest_per_station_max_present")

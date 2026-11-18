@@ -11,6 +11,14 @@ from app.analysis_agent.deterministics.typical_sites import (
 from app.analysis_agent.renderers.charts_extra import chart_from_config
 
 
+def test_typical_curve_score_weights_favor_corr() -> None:
+    assert tc_mod._W_COMPLETE == 0.3
+    assert tc_mod._W_CORR == 0.5
+    assert tc_mod._W_DELTA == 0.2
+    assert abs(tc_mod._W_COMPLETE + tc_mod._W_CORR + tc_mod._W_DELTA - 1.0) < 1e-9
+    assert tc_mod._AXIS_META["pressure"]["unit"] == "kPa"
+
+
 def test_typical_curve_sites_yaml_matches_map() -> None:
     loaded = load_typical_curve_sites()
     computed = compute_typical_curve_sites()

@@ -83,6 +83,31 @@ def test_templates_gnss_qxz_forbid_project_name_site_filter() -> None:
         assert ".project_name = t_station.name" not in q
 
 
+def test_templates_qxz_list_selects_all_weather_metrics() -> None:
+    clear_plan_cache()
+    cat = get_library_catalog()
+    lib = cat.get("qxz")
+    assert lib is not None
+    scope = resolve_scope_intent("周村最新的气象站监测数据", lib)
+    q_list = _render_question(
+        plan_item_id="q_list",
+        grain="station",
+        library=lib,
+        scope=scope,
+        max_rows=50,
+    )
+    q_hud = _render_question(
+        plan_item_id="q_hud_series",
+        grain="station",
+        library=lib,
+        scope=scope,
+        max_rows=50,
+    )
+    for col in ("temp", "real_time_rain", "humidity", "pressure", "wind_speed", "wind_dirt"):
+        assert col in q_list
+        assert col in q_hud
+
+
 def test_templates_qxz_dual_series_select() -> None:
     clear_plan_cache()
     cat = get_library_catalog()

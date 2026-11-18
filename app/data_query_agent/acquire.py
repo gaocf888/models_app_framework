@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,8 @@ def clear_plan_cache() -> None:
     _plan_cache = None
 
 
+_IDENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_VIRTUAL_COL_KEYS = frozenset({"station_id", "station_name", "area", "data_time"})
 _SNAPSHOT_TIME_TAGS = frozenset(
     {
         "",
@@ -150,10 +153,54 @@ def _annual_block(library: LibraryDef, scope: ScopeIntentResult) -> str:
     )
 
 
+def _physical_list_selects(library: LibraryDef) -> list[str]:
+    """列表要查出的物理指标（含气象湿度/风、GNSS 位移等），避免只出 core_metric。"""
+    skip = {
+        (library.annual_key or "").strip(),
+        (library.period_key or "").strip(),
+        *_VIRTUAL_COL_KEYS,
+    }
+    skip.discard("")
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def add(physical: str, alias: str | None = None) -> None:
+        p = (physical or "").strip()
+        a = (alias or p).strip()
+        if not p or p in skip or a in skip:
+            return
+        if not _IDENT_RE.match(p.lower()) or not _IDENT_RE.match(a.lower()):
+            return
+        if p in seen:
+            return
+        seen.add(p)
+        out.append(f"{p} AS {a}" if a != p else p)
+
+    core = (library.core_metric or "").strip()
+    alias = (
+        library.core_metrics[0].id
+        if library.core_metrics
+        else core
+    )
+    add(core, alias)
+    for m in library.core_metrics:
+        add(m.source or m.id, m.id)
+    for col in library.columns:
+        if col.key in skip:
+            continue
+        phys = ""
+        for name in col.aliases or (col.key,):
+            n = (name or "").strip()
+            if n and n not in skip and _IDENT_RE.match(n.lower()):
+                phys = n
+                break
+        add(phys or col.key, col.key)
+    return out
+
+
 def _metric_select(library: LibraryDef, scope: ScopeIntentResult) -> str:
-    core = library.core_metric
-    alias = library.core_metrics[0].id if library.core_metrics else core
-    latest = f"{core} AS {alias}" if alias != core else core
+    parts = _physical_list_selects(library)
+    latest = ", ".join(parts) if parts else (library.core_metric or "")
     win = scope.annual_window or {}
     start = win.get("start") or ""
     end = win.get("end") or ""
@@ -177,6 +224,11 @@ def _series_select(library: LibraryDef, grain: str) -> str:
     cols = [m.id for m in (library.series_metrics or ()) if m.id]
     if not cols and library.series_column:
         cols = [library.series_column]
+    if grain == "station":
+        for frag in _physical_list_selects(library):
+            name = frag.split(" AS ", 1)[0].strip()
+            if name and name not in cols:
+                cols.append(name)
     if grain in ("district", "city"):
         return ", ".join(f"AVG({c}) AS {c}" for c in cols)
     return ", ".join(cols)

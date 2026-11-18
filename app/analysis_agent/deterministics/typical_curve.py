@@ -23,16 +23,16 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# 择优权重（配置化后置）：完整率 / |相关| / |Δ| 归一化
-_W_COMPLETE = 0.4
-_W_CORR = 0.3
-_W_DELTA = 0.3
+# 择优权重：提高 |相关|，弱相关轴更易让位给降水/水位等
+_W_COMPLETE = 0.3
+_W_CORR = 0.5
+_W_DELTA = 0.2
 _SECOND_COMPLETE_MIN = 0.5
 
 _AXIS_META = {
     "elevation": {"aux_name": "地下水标高", "legend_suffix": "地下水", "unit": "m"},
     "rain": {"aux_name": "降水", "legend_suffix": "气象", "unit": "mm"},
-    "pressure": {"aux_name": "孔隙水压力", "legend_suffix": "孔隙水", "unit": ""},
+    "pressure": {"aux_name": "孔隙水压力", "legend_suffix": "孔隙水", "unit": "kPa"},
 }
 
 

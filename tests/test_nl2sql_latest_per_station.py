@@ -91,6 +91,22 @@ def test_rewrite_injects_distinct_on_and_strips_calendar() -> None:
     assert "latest_per_station_strip_calendar" in notes
 
 
+def test_rewrite_aligns_distinct_on_with_order_by_grain() -> None:
+    sql = (
+        "SELECT DISTINCT ON (t_data_wash_qxz.station_id) "
+        "t_data_wash_qxz.station_id, t_data_wash_qxz.station_name, "
+        "t_data_wash_qxz.temp, t_data_wash_qxz.data_time "
+        "FROM t_data_wash_qxz "
+        "WHERE t_data_wash_qxz.station_name = 'F8-气象站' "
+        "ORDER BY station_name, data_time DESC LIMIT 500"
+    )
+    out, notes = rewrite_sql_for_latest_per_station(sql, grain="station_name")
+    assert re.search(r"(?i)DISTINCT\s+ON\s*\(\s*station_name\s*\)", out)
+    assert "ORDER BY station_name, data_time DESC" in out
+    assert "DISTINCT ON (t_data_wash_qxz.station_id)" not in out
+    assert any(n.startswith("latest_per_station_distinct_on_aligned") for n in notes)
+
+
 def test_rewrite_keeps_existing_max_pattern() -> None:
     sql = (
         "SELECT f.station_name, f.data_time, f.total_settle FROM t_data_wash_fcb f "
