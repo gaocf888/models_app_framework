@@ -417,15 +417,26 @@ def _sql_table_ok(sql: str, table: str) -> bool:
 
 
 def _filters(scope: ScopeIntentResult) -> dict[str, Any] | None:
+    """NL2SQL structured_filters：场地用 site 名；禁止设备号与场地名 AND。"""
     out: dict[str, Any] = {}
-    cs = scope.confirmed_scope
+    cs = scope.confirmed_scope or {}
     if cs.get("district"):
         out["district"] = cs["district"]
         out["area"] = cs["district"]
-    if cs.get("station_id"):
-        out["station_id"] = cs["station_id"]
-    if cs.get("station_name"):
-        out["station_name"] = cs["station_name"]
+    site = str(cs.get("station_name") or "").strip() or None
+    sid = str(cs.get("station_id") or "").strip() or None
+    if sid and site and sid != site:
+        from app.analysis_agent.deterministics.coverage import uses_station_name_site_key
+
+        device = str(cs.get("device_type") or "").strip().lower()
+        if not uses_station_name_site_key(device):
+            sid = site
+    if sid:
+        out["station_id"] = sid
+    if site:
+        out["station_name"] = site
+    elif sid:
+        out["station_name"] = sid
     return out or None
 
 

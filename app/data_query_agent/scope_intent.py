@@ -42,6 +42,27 @@ class ScopeIntentResult:
     warnings: list[str] | None = None
 
 
+def _library_device(library: LibraryDef) -> str:
+    return (library.device_type or library.id or "").strip().lower()
+
+
+def canonical_site_for_library(library: LibraryDef, raw: str | None) -> str | None:
+    """raw 对本库官方覆盖名单是否是场地（project_name / GNSS·气象 station_name）。
+
+    GX-115、K8-1 等监测设备号不是场地，返回 None。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    from app.analysis_agent.deterministics.coverage import canonical_from_wash
+
+    return canonical_from_wash(
+        _library_device(library),
+        station_name=text,
+        project_name=text,
+    )
+
+
 def infer_result_grain(query: str) -> str:
     """计划侧粒度：全市汇总 > 各区 > 默认站点。"""
     q = query or ""
@@ -63,7 +84,9 @@ def resolve_scope_intent(
 ) -> ScopeIntentResult:
     """解析区/站/时间；device_type 只来自已锁定的库。
 
-    P1-3：请求显式 district/station_id 优先于问句解析（覆盖，非 AND）。
+    P1-3：请求显式 district / 本库场地 station_id 优先于问句（覆盖，非 AND）。
+    请求 station_id 若不是本库覆盖场地（上一问残留设备号如 GX-115），丢掉，
+    不得与问句场地 AND 成 ``project_name=F35 且 station_name=GX-115``。
     """
     intent = resolve_question_intent(query)
     payload = question_intent_to_dict(intent)
@@ -79,6 +102,9 @@ def resolve_scope_intent(
     from app.nl2sql.scope_station_promote import promote_station_ids
 
     sid, sname = promote_station_ids(sid, sname)
+    nl_site = canonical_site_for_library(library, sname or sid)
+    if nl_site:
+        sid, sname = nl_site, nl_site
     confirmed = {
         "device_type": library.device_type,
         "district": sub.district or scope.get("district") or None,
@@ -98,10 +124,15 @@ def resolve_scope_intent(
             warnings.append("scope_nl_overridden")
         confirmed["district"] = req_district
     if req_station:
+        req_site = canonical_site_for_library(library, req_station)
         nl_s = confirmed.get("station_id") or confirmed.get("station_name")
-        if nl_s and str(nl_s) != req_station:
-            warnings.append("scope_nl_overridden")
-        confirmed["station_id"] = req_station
+        if req_site:
+            if nl_s and str(nl_s) != req_site:
+                warnings.append("scope_nl_overridden")
+            confirmed["station_id"] = req_site
+            confirmed["station_name"] = req_site
+        else:
+            warnings.append("scope_device_id_dropped")
     time_snapshot = {
         "time_window_tag": payload.get("time_window_tag"),
         "time_window": payload.get("time_window"),

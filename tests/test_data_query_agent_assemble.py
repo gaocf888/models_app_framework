@@ -373,6 +373,48 @@ def test_scope_explicit_district_overrides_nl() -> None:
     assert "scope_nl_overridden" in (scope.warnings or [])
 
 
+def test_scope_drops_foreign_device_id_keeps_nl_site() -> None:
+    """上一问光纤设备号 GX-115 不得与问句场地 AND 进地下水 SQL。"""
+    from app.data_query_agent.acquire import _filters
+
+    cat = get_library_catalog()
+    lib = cat.get("dxswj")
+    assert lib is not None
+    scope = resolve_scope_intent(
+        "张家务最新的地下水的监测数据",
+        lib,
+        station_id="GX-115",
+    )
+    cs = scope.confirmed_scope
+    assert cs.get("station_name") == "F35(张家务)"
+    assert cs.get("station_id") == "F35(张家务)"
+    assert "GX-115" not in (cs.get("station_id") or "")
+    assert "scope_device_id_dropped" in (scope.warnings or [])
+    filters = _filters(scope) or {}
+    assert filters.get("station_id") == "F35(张家务)"
+    assert filters.get("station_name") == "F35(张家务)"
+    assert "GX-115" not in str(filters.values())
+
+
+def test_scope_tree_site_id_still_applies() -> None:
+    cat = get_library_catalog()
+    lib = cat.get("dxswj")
+    assert lib is not None
+    scope = resolve_scope_intent("最新的地下水的监测数据", lib, station_id="F35(张家务)")
+    assert scope.confirmed_scope.get("station_id") == "F35(张家务)"
+    assert scope.confirmed_scope.get("station_name") == "F35(张家务)"
+    assert "scope_device_id_dropped" not in (scope.warnings or [])
+
+
+def test_scope_gnss_station_name_site_kept() -> None:
+    cat = get_library_catalog()
+    lib = cat.get("gnss")
+    assert lib is not None
+    scope = resolve_scope_intent("最新的GNSS监测数据", lib, station_id="F15-GNSS")
+    assert scope.confirmed_scope.get("station_id") == "F15-GNSS"
+    assert "scope_device_id_dropped" not in (scope.warnings or [])
+
+
 def test_assemble_period_mode_shows_period_not_annual() -> None:
     """本月等区间窗：列表展示 period_settle_mm，表头不含年沉降。"""
     clear_library_catalog_cache()
