@@ -33,6 +33,13 @@ _LAYER_PAIR_RE = re.compile(
 _SHALLOW_FIRST_COMPRESS_RE = re.compile(r"浅部.*?(?:第一|第\s*1)\s*压缩|第一压缩层")
 # 「第N层」占位（无「压缩」时易与标序号混淆，不走 C）
 _LAYER_PLACEHOLDER_RE = re.compile(r"第\s*\d+\s*层(?!压缩)")
+# 快照「监测数据/全部设备」不注入层位0；周期变化仍要代表标
+_PERIOD_CHANGE_RE = re.compile(
+    r"变化量|周期|本周|本月|近\s*\d+\s*(?:天|日|周|月)|最近(?:一|1)?(?:个)?(?:月|周)|年沉降"
+)
+_ALL_DEVICES_SNAPSHOT_RE = re.compile(
+    r"监测数据|全部(?:测点|设备|监测设备)|禁止层位\s*0|禁止用层位"
+)
 
 
 
@@ -824,12 +831,37 @@ def _inject_device_station_coverage(
     binding.warnings.append("device_station_map_intersect")
 
 
+def should_skip_fcb_layer0_for_all_devices(
+    question: str,
+    intent: QuestionIntent | None = None,
+    *,
+    original_query: str | None = None,
+) -> bool:
+    """快照/监测数据按全部设备展开时跳过层位0；周期变化仍注入代表标。"""
+    from app.nl2sql.latest_per_station import LATEST_PER_STATION_TAG
+
+    tag = ""
+    if intent is not None and intent.time_window:
+        tag = str(intent.time_window[2] or "")
+    blob = " ".join(
+        x for x in (original_query, question) if str(x or "").strip()
+    )
+    if tag == LATEST_PER_STATION_TAG:
+        return True
+    if _PERIOD_CHANGE_RE.search(blob or ""):
+        return False
+    if _ALL_DEVICES_SNAPSHOT_RE.search(blob or ""):
+        return True
+    return False
+
+
 def align_semantics(
     question: str,
     intent: QuestionIntent,
     *,
     assets: SemanticAssets | None = None,
     forced_tables: list[str] | None = None,
+    original_query: str | None = None,
 ) -> SemanticBinding | None:
     root = _resolve_semantic_root()
     if root is None:
@@ -992,6 +1024,11 @@ def align_semantics(
             _skip_fcb_marks = _ops_q_fcb(q)
         except Exception:  # noqa: BLE001
             _skip_fcb_marks = False
+        if not _skip_fcb_marks and should_skip_fcb_layer0_for_all_devices(
+            q, intent, original_query=original_query
+        ):
+            binding.warnings.append("fcb_layer0_skipped_all_devices")
+            _skip_fcb_marks = True
         if not _skip_fcb_marks:
             _inject_fcb_preferred_station_names(q, binding, assets)
 

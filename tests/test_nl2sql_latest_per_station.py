@@ -141,6 +141,15 @@ def test_resolve_latest_grain_prefers_station_name() -> None:
     assert grain == "station_name"
 
 
+def test_resolve_latest_grain_ignores_project_name_only_filters() -> None:
+    grain = resolve_latest_grain(
+        [
+            {"column": "project_name", "op": "=", "value": "F8(周村)", "source": "device_station_map"},
+        ]
+    )
+    assert grain == "station_name"
+
+
 def test_resolve_question_intent_latest_tag(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
     from app.nl2sql.nl2sql_business_profile import clear_nl2sql_business_profile_cache

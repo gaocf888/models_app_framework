@@ -9,6 +9,23 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# 快照：按设备最新一行；与查询台 plan.yaml 口径对齐
+CHATBOT_NL2SQL_DEVICE_SNAPSHOT_HINT = """
+【智能客服·监测快照（本问强制）】
+「最新 / 监测数据」按监测设备 station_name 一行一台取 data_time 最大行。
+PostgreSQL：SELECT DISTINCT ON (station_name) … ORDER BY station_name, data_time DESC。
+禁止 DISTINCT ON (project_name) 把同一场地多台设备并成一行。
+分层标快照禁止用层位 0 代表标过滤，必须输出该场地全部测点。
+""".strip()
+
+# 周期：分层标代表标，其它方式全部设备
+CHATBOT_NL2SQL_DEVICE_PERIOD_HINT = """
+【智能客服·周期变化（本问强制）】
+分层标（或问句未点名监测方式而默认分层标）：只用监测层位=0 的代表标，一行一代表标。
+其它已点名的监测方式（孔隙水/地下水/基岩标/GNSS/气象/光纤）：该区或该站全部设备各算窗初−窗末，一行一设备。
+禁止按 project_name 并场；Δ = 窗初 − 窗末。
+""".strip()
+
 # 注入 NL2SQL 生成 prompt（仅客服 data_query；不写死业务枚举）
 CHATBOT_NL2SQL_SELECT_DISPLAY_RULES = """
 【智能客服·SELECT 用户可读性（本场景强制）】

@@ -51,8 +51,10 @@ def resolve_library_intent(
     hitl_library_id: str | None = None,
 ) -> LibraryIntentResult:
     """
-    优先级：HITL 选库 > 请求 library_id > 问句唯一命中 > 泛化沉降默认 > HITL。
+    优先级：HITL 选库 > 问句唯一命中（覆盖树）> 请求 library_id > 泛化沉降默认 > HITL。
 
+    问句唯一命中且与树选库冲突时以问句为准（自然语言解析不应被左侧默认分层标盖掉）。
+    问句多库歧义即使带了树 library_id 也 HITL，避免树默默盖掉。
     运维问句（om_result）直接拒绝：方案 A 无 om library，应走智能客服。
     """
     cat = catalog or get_library_catalog()
@@ -88,11 +90,23 @@ def resolve_library_intent(
                 interrupt_reason="library_id_invalid",
                 candidates=hits,
             )
-        warnings: list[str] = []
-        # 树选库优先于问句解析；冲突只告警，不 HITL。
+        if len(hits) >= 2:
+            return LibraryIntentResult(
+                ok=False,
+                interrupt_reason="library_ambiguous",
+                candidates=hits,
+                warnings=["library_conflict_tree_deferred_hitl"],
+            )
         if len(hits) == 1 and hits[0] != requested:
-            warnings.append("library_conflict_nl_ignored")
-        return LibraryIntentResult(ok=True, library=lib, source="request", warnings=warnings)
+            parsed = cat.get(hits[0])
+            if parsed is not None:
+                return LibraryIntentResult(
+                    ok=True,
+                    library=parsed,
+                    source="parsed",
+                    warnings=["library_conflict_tree_overridden"],
+                )
+        return LibraryIntentResult(ok=True, library=lib, source="request")
 
     if len(hits) == 1:
         lib = cat.get(hits[0])

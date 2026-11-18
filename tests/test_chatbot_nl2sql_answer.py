@@ -511,10 +511,17 @@ def test_analysis_prompt_version_and_col_priority_subsidence(monkeypatch: pytest
     assert "运维监测" in ops_hint
     hint = _chatbot_sql_gen_extra_hint()
     assert "SELECT" in hint or "用户可读" in hint or "智能客服" in hint
-    # 域规则（默认 fcb / suggested_filters / 最新）已下沉到 NL2SQL 基座 v2_subsidence，客服 hint 不再重复
+    # 无问句时不附加设备快照规则（避免空 hint 带 DISTINCT ON）
     assert "t_data_wash_fcb" not in hint
     assert "suggested_filters" not in hint
     assert "DISTINCT ON" not in hint
+    snap_hint = _chatbot_sql_gen_extra_hint("周村最新的孔隙水压力的监测数据", grain="station")
+    assert "DISTINCT ON (station_name)" in snap_hint
+    assert "project_name" in snap_hint
+    period_hint = _chatbot_sql_gen_extra_hint(
+        "望京本周的沉降量", grain="station", library_id="fcb", period_eligible=True
+    )
+    assert "代表标" in period_hint
     # 区级问句追加周期区均聚合约束
     district_hint = _chatbot_sql_gen_extra_hint(
         "哪些行政区近期沉降相对偏大？", grain="district"

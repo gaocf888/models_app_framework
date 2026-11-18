@@ -404,7 +404,7 @@ analysis_agent_finished         { result }                         # 按钮恢�
 | 解析成功返回里的 `library_id`（已经锁定哪一类库） | 高亮/选中对应 **库** 节点（即使用户没先点树，解析出「地下水」也要把树点到地下水） | 见 §3.2 |
 | 树选库后再点「解析 SQL」 | 请求带上该 `library_id`（告诉算法：按树上这种类型查） | `run-stream` |
 
-解析时树选的库和问句说的库不一致（例如树点了基岩标，问句却写「查 GNSS」）：**仍以树为准**，`warnings` 含 `library_conflict_nl_ignored`（后台记一笔「问句里的库被忽略了」），**不弹选库窗**（不要打断用户）。
+解析时树选的库和问句说的库不一致（例如树默认分层标，问句写「孔隙水压力」/「查 GNSS」）：**以问句为准**，返回的 `library_id` 是问句命中的库，`warnings` 含 `library_conflict_tree_overridden`，前端应按返回值改高亮，**不弹选库窗**。问句同时命中多种监测类型才弹选库窗（`library_ambiguous`）。问句里没写监测类型时，才沿用树上传的 `library_id`。
 
 #### 右侧结果表
 
@@ -549,7 +549,7 @@ status=success, event=data_query_result
 
 `columns` = 表头；`list` = 每一行；`hud_by_entity` = 点「详参」时用的详情字典（示例里写成 `{}`，真实有数据时 key 是测位号或区名）。
 
-`warnings` 常见值（可做成表下小字，不必弹窗）：`library_defaulted`（已默认分层标）、`library_conflict_nl_ignored`（问句里的库被树覆盖了）、`scope_nl_overridden`（树上的区/站覆盖了问句）、`hud_series_truncated`（站太多，后面的行没有详参按钮）、`hud_series_failed`（表有了但曲线没有）、`lithology_unsupported` / `layer_unsupported`（问了岩性/第几层，库里没有，详情里不画该块）。
+`warnings` 常见值（可做成表下小字，不必弹窗）：`library_defaulted`（已默认分层标）、`library_conflict_tree_overridden`（问句里的库覆盖了树选）、`scope_nl_overridden`（树上的区/站覆盖了问句）、`hud_series_truncated`（站太多，后面的行没有详参按钮）、`hud_series_failed`（表有了但曲线没有）、`lithology_unsupported` / `layer_unsupported`（问了岩性/第几层，库里没有，详情里不画该块）。
 
 HUD 面板与 `GET /hud` 返回的 `hud` 同一套结构。区行：钥匙是「朝阳区」这种区名，折线为该区日平均（`series.agg=avg`）。
 

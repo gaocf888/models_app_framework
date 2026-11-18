@@ -41,6 +41,11 @@ def test_templates_fcb_jyb_gnss_no_null_placeholder() -> None:
                 assert forbidden not in q
         assert "ORDER BY ABS(" in q_list
         assert f"ABS({core})" in q_list
+        assert "DISTINCT ON (station_name)" in q_list
+        assert "禁止 DISTINCT ON (project_name)" in q_list
+        if lid == "fcb":
+            assert "全部测点" in q_list
+            assert "禁止用监测层位=0" in q_list
         if lid != "qxz":
             assert "末日值" in q_list or "end_value" in q_list.lower() or "年度变化" in q_list
 
@@ -139,14 +144,33 @@ def test_templates_period_station_uses_window_delta_not_latest_row() -> None:
         scope=scope,
         max_rows=50,
     )
-    assert "周期沉降量" in q
+    assert "周期变化量" in q or "周期沉降" in q
     assert "最新一条记录" not in q
     assert "QUALIFY" in q
     assert "ROW_NUMBER()" in q
     assert "层位=0" in q or "层位 0" in q
+    assert "全部测点" not in q
     assert "F2(望京)" in q
     assert "recent_1_months" in q
     assert "2025-10-19" not in q
+
+
+def test_templates_kxsylj_period_expands_all_devices() -> None:
+    clear_plan_cache()
+    cat = get_library_catalog()
+    lib = cat.get("kxsylj")
+    assert lib is not None
+    scope = resolve_scope_intent("请帮我查询F8(周村)最近一个月的孔隙水压力变化量", lib)
+    q = _render_question(
+        plan_item_id="q_list",
+        grain="station",
+        library=lib,
+        scope=scope,
+        max_rows=50,
+    )
+    assert "一行一设备" in q
+    assert "层位=0 的代表标" not in q
+    assert "禁止用层位0" in q
 
 
 def test_templates_city_hud_is_daily_avg() -> None:

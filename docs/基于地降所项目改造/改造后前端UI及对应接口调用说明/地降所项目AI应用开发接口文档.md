@@ -1036,7 +1036,9 @@ HITL 人机交互说明：
 
 `hud_enabled` / 行上 `hud_available` 控制「详参」按钮显隐。
 
-`warnings` 常见值做成表下小字即可：`library_defaulted`（已默认分层标）、`library_conflict_nl_ignored`（问句里的库被树覆盖）、`hud_series_truncated`（后面的行没有详参）、`hud_series_failed`（表有了但曲线没有）。
+`warnings` 常见值做成表下小字即可：`library_defaulted`（已默认分层标）、`library_conflict_tree_overridden`（问句唯一命中的库覆盖了树选，前端按返回 `library_id` 改高亮）、`hud_series_truncated`（后面的行没有详参）、`hud_series_failed`（表有了但曲线没有）。
+
+自然语言「最新 / 监测数据」按 **监测设备** 一行一台取最新值（含分层标全部测点，不只代表标）。「本周 / 本月 / 近 N 天」等周期变化：分层标（及未点名默认分层标）只出代表标；其它监测方式出该区/该站全部设备的变化量。浏览点库/区仍是代表标时间序列，与解析 SQL 口径不同。
 
 ### 失败返回（SQL 生成失败 / 查询执行失败）— 前端必读
 

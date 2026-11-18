@@ -135,7 +135,7 @@ def _scope_block(scope: ScopeIntentResult) -> str:
     station = cs.get("station_id") or cs.get("station_name") or "未指定"
     tag = _time_tag(scope)
     tw = tag or "未指定则每站取最新 data_time"
-    return f"【行政区】{district}；【站点】{station}；【时间】{tw}。"
+    return f"【行政区】{district}；【站点】{station}；【时间】{tw}。列表按监测设备 station_name 展开，不要按场地 project_name 并成一行。"
 
 
 def _annual_block(library: LibraryDef, scope: ScopeIntentResult) -> str:
@@ -234,6 +234,53 @@ def _series_select(library: LibraryDef, grain: str) -> str:
     return ", ".join(cols)
 
 
+def _is_fcb_library(library: LibraryDef) -> bool:
+    return (library.device_type or library.id or "").strip().lower() == "fcb"
+
+
+def _device_latest_rule(library: LibraryDef) -> str:
+    """快照：一律按监测设备展开，禁止按场地并成一行。"""
+    extra = ""
+    if _is_fcb_library(library):
+        extra = "分层标快照禁止用监测层位=0 的代表标过滤，必须输出该场地全部测点。"
+    return (
+        "必须按监测设备 station_name 一行一台：PostgreSQL 用 "
+        "SELECT DISTINCT ON (station_name) … ORDER BY station_name, data_time DESC。"
+        "禁止 DISTINCT ON (project_name) 把同一场地多台设备并成一行。"
+        + extra
+    )
+
+
+def _rep_or_all_rule(library: LibraryDef) -> str:
+    """周期变化：分层标仅代表标；其它监测方式全部设备。"""
+    if _is_fcb_library(library):
+        return (
+            "分层标必须用监测层位=0 的代表标 station_name（禁止对同站全部标聚合）。"
+            "一行一代表标。"
+        )
+    return (
+        "这不是分层标：必须按监测设备 station_name 一行一台输出周期差，"
+        "禁止用层位0/代表标过滤，禁止 DISTINCT ON (project_name) 或 PARTITION BY project_name "
+        "把同一场地多台设备并成一行。一行一设备。"
+    )
+
+
+def _hud_device_rule(library: LibraryDef, grain: str) -> str:
+    if grain != "station":
+        return ""
+    if _is_fcb_library(library):
+        return (
+            "快照 HUD 按监测设备 station_name 出各自时序，禁止只用层位 0 代表标一条曲线冒充全场地。"
+        )
+    return "HUD 按监测设备 station_name 出各自时序，禁止按 project_name 并场只留一台。"
+
+
+def _device_grain_hint(library: LibraryDef, scope: ScopeIntentResult) -> str:
+    if is_period_time(scope):
+        return "【粒度】" + _rep_or_all_rule(library)
+    return "【粒度】" + _device_latest_rule(library)
+
+
 def _render_question(
     *,
     plan_item_id: str,
@@ -272,6 +319,10 @@ def _render_question(
             join_on=_join_on(library),
             site_filter_hint=_site_filter_hint(library),
             max_rows=max_rows,
+            device_latest_rule=_device_latest_rule(library),
+            rep_or_all_rule=_rep_or_all_rule(library),
+            hud_device_rule=_hud_device_rule(library, grain),
+            device_grain_hint=_device_grain_hint(library, scope),
         )
     ).strip()
 
@@ -281,7 +332,7 @@ def _hint(library: LibraryDef, scope: ScopeIntentResult) -> str:
     tmpl = str(plan.get("hint_template") or "")
     cs = scope.confirmed_scope
     station = cs.get("station_id") or cs.get("station_name") or "未指定"
-    tw = _time_tag(scope) or "未指定则每站取最新 data_time"
+    tw = _time_tag(scope) or "未指定则每台设备取最新 data_time"
     return tmpl.format(
         display_name=library.display_name,
         library_id=library.id,
@@ -292,6 +343,7 @@ def _hint(library: LibraryDef, scope: ScopeIntentResult) -> str:
         annual_block="" if is_period_time(scope) else _annual_block(library, scope),
         join_on=_join_on(library),
         site_filter_hint=_site_filter_hint(library),
+        device_grain_hint=_device_grain_hint(library, scope),
     ).strip()
 
 

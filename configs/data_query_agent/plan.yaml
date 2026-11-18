@@ -1,23 +1,24 @@
 # 查询台程序问句模板：q_list / q_hud_series 按 grain（station/district/city）分叉。
 # 占位符由 acquire._render_question 填入；禁止跨其它 t_data_wash_* 表。
-version: "2026.09.01"
+# 快照：按监测设备 station_name 一行一台取最新；周期：分层标仅代表标，其它方式全部设备。
+version: "2026.11.18"
 q_list:
   station: |
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {join_on}。
     {site_filter_hint}
-    查询各监测站点最新一条记录（按 station_id 取 data_time 最大的一行），输出 station_id, station_name, t_station.area AS area, {metric_select}, data_time。
-    分层标必须用监测层位=0 的代表标 station_name，禁止对该场地全部设备、全部时刻展开成多行。
+    查询该范围内每一个监测设备的最新一条记录（按 station_name 取 data_time 最大的一行），输出 station_id, station_name, t_station.area AS area, {metric_select}, data_time。
+    {device_latest_rule}
     {annual_block}
     {scope_block}
-    时间未指定则每站最新。ORDER BY ABS({core_column}) DESC, station_id。LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
+    时间未指定则每台设备最新。ORDER BY ABS({core_column}) DESC, station_name。LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
   station_period: |
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {join_on}。
     {site_filter_hint}
-    用户问的是时间窗内的周期沉降量，不是「每站最新一行快照」，禁止把该场地全部设备、全部时刻摊成多行。
-    分层标必须用监测层位=0 的代表标 station_name（禁止对同站全部标聚合）。
-    对每个站点取时间窗内最早一条与最晚一条 {core_column}：周期沉降变化 Δ = 窗初值 − 窗末值（初−末）；Δ<0 沉降，Δ>0 回弹；禁止写成末−初。
+    用户问的是时间窗内的周期变化量，不是「每设备最新一行快照」。
+    {rep_or_all_rule}
+    对每个输出实体取时间窗内最早一条与最晚一条 {core_column}：周期变化 Δ = 窗初值 − 窗末值（初−末）；Δ<0 沉降/减小，Δ>0 回弹/增大；禁止写成末−初。
     同时输出窗末值 AS {core_alias}、周期差值 AS {period_alias}（禁止用 annual_settle_mm / 年沉降 作别名）、窗末 data_time、station_id、station_name、t_station.area AS area。
-    一行一站。禁止用单日 MAX−MIN 代替周期差，禁止把时间窗收成今天或昨天一天。
+    禁止用单日 MAX−MIN 代替周期差，禁止把时间窗收成今天或昨天一天（除非用户问的就是昨天这一天的变化量）。
     必须用 PostgreSQL：ROW_NUMBER() OVER 子查询取 rn_asc/rn_desc，禁止 QUALIFY（Snowflake/BigQuery 语法），禁止 WINDOW … QUALIFY。
     「沉降最大/最严重」按有符号 Δ 升序（越负越严重）；一般列表可用 ABS(差值表达式) DESC。ORDER BY 须重复差值表达式，禁止 ORDER BY ABS(别名)。
     {scope_block}
@@ -27,7 +28,7 @@ q_list:
     {site_filter_hint}
     按行政区 t_station.area 汇总，输出 area, AVG({core_column}) AS {core_alias}, COUNT(DISTINCT {table}.station_id) AS station_count。
     {scope_block}
-    时间未指定则取各站最新后再按区平均。LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
+    时间未指定则取各设备最新后再按区平均。LIMIT {max_rows}。禁止查询其它 t_data_wash_* 表。
   city: |
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {join_on}。
     {site_filter_hint}
@@ -36,11 +37,12 @@ q_list:
     禁止查询其它 t_data_wash_* 表。
 q_hud_series:
   station: |
-    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），输出 station_id, data_time, {series_select}。
+    请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），输出 station_id, station_name, data_time, {series_select}。
     {site_filter_hint}
     {scope_block}
-    若【时间】已指定窗口，只输出该窗内的时序点，禁止 DISTINCT ON 只留最新一行。分层标用层位 0 代表标。
-    按 station_id, data_time 排序。禁止查询其它 t_data_wash_* 表。禁止用其它站的序列冒充本站。
+    {hud_device_rule}
+    若【时间】已指定窗口，只输出该窗内的时序点，禁止 DISTINCT ON 只留最新一行。
+    按 station_name, data_time 排序。禁止查询其它 t_data_wash_* 表。禁止用其它场地的序列冒充本场地。
   district: |
     请只查询表 {table}（监测类型 {display_name}，library_id={library_id}），JOIN t_station ON {join_on}。
     {site_filter_hint}
@@ -59,3 +61,4 @@ hint_template: |
   【站点过滤】{site_filter_hint}
   【行政区】{district}；【站点】{station}；【时间】{time_note}
   {annual_block}
+  {device_grain_hint}

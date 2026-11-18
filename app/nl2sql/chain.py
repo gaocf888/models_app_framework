@@ -261,7 +261,12 @@ class NL2SQLChain:
         if semantic_link_enabled():
             from app.nl2sql.semantic_layer import align_semantics
 
-            binding = align_semantics(question, question_intent, forced_tables=forced_tables)
+            binding = align_semantics(
+                question,
+                question_intent,
+                forced_tables=forced_tables,
+                original_query=original_query or time_src,
+            )
             if binding is not None:
                 semantic_binding_dict = binding.to_dict()
                 parsed_intent_dict = merge_parsed_intent_extensions(

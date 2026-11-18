@@ -50,6 +50,21 @@ async def test_prepare_settle_defaults_fcb(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_prepare_pore_pressure_locks_kxsylj(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHATBOT_DOMAIN", "subsidence")
+    from app.llm.graphs.chatbot_business_profile import clear_chatbot_business_profile_cache
+    from app.nl2sql.chatbot_settle_prepare import prepare_chatbot_settle_query
+
+    clear_chatbot_business_profile_cache()
+    prep = prepare_chatbot_settle_query("周村最新的孔隙水压力的监测数据")
+    assert prep.ops_routed is False
+    assert prep.forced_tables == ["t_data_wash_kxsylj"]
+    assert prep.library_source == "parsed"
+    assert prep.library_id == "kxsylj"
+    assert prep.period_eligible is False
+
+
+@pytest.mark.asyncio
 async def test_run_chatbot_period_hit_skips_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHATBOT_DOMAIN", "subsidence")
     monkeypatch.setenv("CHATBOT_EXPOSE_NL2SQL_SQL_IN_META", "true")

@@ -11,7 +11,13 @@ from app.core.config import get_app_config
 from app.nl2sql.nl2sql_business_profile import clear_nl2sql_business_profile_cache, get_nl2sql_business_profile
 from app.nl2sql.question_scope_models import QuestionIntent, QuestionScopeIntent
 from app.nl2sql.scope_parser_subsidence import parse_scope_subsidence
-from app.nl2sql.semantic_layer import align_semantics, clear_semantic_assets_cache, load_semantic_assets
+from app.nl2sql.latest_per_station import LATEST_PER_STATION_TAG
+from app.nl2sql.semantic_layer import (
+    align_semantics,
+    clear_semantic_assets_cache,
+    load_semantic_assets,
+    should_skip_fcb_layer0_for_all_devices,
+)
 from app.nl2sql.sql_cache import compute_nl2sql_policy_fp
 from app.nl2sql.sql_dialect import adapt_mysql_time_expr_to_postgres, is_postgres_dialect
 
@@ -339,6 +345,48 @@ def test_align_injects_layer0_preferred_station_for_site(monkeypatch: pytest.Mon
     assert "F8(周村)" in binding.project_names
     assert "F8-10" in binding.preferred_station_names
     assert "fcb_layer0_preferred_station" in binding.warnings
+
+
+def test_align_skips_layer0_for_latest_monitoring_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "周村最新的分层标监测数据"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=("", "", LATEST_PER_STATION_TAG),
+        scope=QuestionScopeIntent(station_name="F8(周村)", station_id="F8", device_type="fcb"),
+    )
+    assert should_skip_fcb_layer0_for_all_devices(q, intent) is True
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert "fcb_layer0_skipped_all_devices" in binding.warnings
+    assert "F8-10" not in (binding.preferred_station_names or [])
+    assert "fcb_layer0_preferred_station" not in binding.warnings
+
+
+def test_align_keeps_layer0_for_period_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NL2SQL_BUSINESS_DOMAIN", "subsidence")
+    profile = get_nl2sql_business_profile()
+    assert profile is not None
+    root = str((__import__("pathlib").Path(__file__).resolve().parents[1] / profile.semantic_dict_path).resolve())
+    assets = load_semantic_assets(root)
+    assert assets is not None
+    q = "望京本周的沉降量"
+    intent = QuestionIntent(
+        raw_question=q,
+        scope_question=q,
+        time_window=None,
+        scope=QuestionScopeIntent(station_name="F2(望京)", device_type="fcb"),
+    )
+    assert should_skip_fcb_layer0_for_all_devices(q, intent) is False
+    binding = align_semantics(q, intent, assets=assets)
+    assert binding is not None
+    assert "F2-7" in binding.preferred_station_names or "fcb_layer0_preferred_station" in binding.warnings
 
 
 def test_align_injects_layer0_for_district_and_prompt(monkeypatch: pytest.MonkeyPatch) -> None:

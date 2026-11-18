@@ -61,13 +61,38 @@ def test_invalid_library_id() -> None:
     assert r.interrupt_reason == "library_id_invalid"
 
 
-def test_tree_wins_conflict_warning() -> None:
+def test_nl_wins_conflict_over_tree() -> None:
     r = resolve_library_intent("查 GNSS", "fcb")
     assert r.ok
     assert r.library is not None
-    assert r.library.id == "fcb"
+    assert r.library.id == "gnss"
+    assert r.source == "parsed"
+    assert "library_conflict_tree_overridden" in r.warnings
+
+
+def test_pore_pressure_overrides_tree_fcb() -> None:
+    r = resolve_library_intent("周村最新的孔隙水压力的监测数据", "fcb")
+    assert r.ok
+    assert r.library is not None
+    assert r.library.id == "kxsylj"
+    assert r.source == "parsed"
+    assert "library_conflict_tree_overridden" in r.warnings
+
+
+def test_ambiguous_with_tree_still_hitl() -> None:
+    r = resolve_library_intent("对比分层标和 GNSS 的数据", "fcb")
+    assert not r.ok
+    assert r.interrupt_reason == "library_ambiguous"
+    assert "fcb" in r.candidates
+    assert "gnss" in r.candidates
+
+
+def test_tree_kept_when_query_has_no_library() -> None:
+    r = resolve_library_intent("周村最新的监测数据", "kxsylj")
+    assert r.ok
+    assert r.library is not None
+    assert r.library.id == "kxsylj"
     assert r.source == "request"
-    assert "library_conflict_nl_ignored" in r.warnings
 
 
 def test_generic_settle_defaults_fcb() -> None:

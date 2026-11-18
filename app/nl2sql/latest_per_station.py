@@ -65,19 +65,8 @@ def format_latest_per_station_prompt_rule(*, grain: str = "station_name") -> str
 
 
 def resolve_latest_grain(suggested_filters: list[Any] | None = None) -> str:
-    cols: list[str] = []
-    for raw in suggested_filters or []:
-        if not isinstance(raw, dict):
-            continue
-        col = str(raw.get("column") or "").strip().lower()
-        if col:
-            cols.append(col)
-    if "station_name" in cols:
-        return "station_name"
-    if "project_name" in cols:
-        return "project_name"
-    if "name" in cols:
-        return "name"
+    """「最新」一律按监测设备 station_name，禁止用 project_name 把同场地多台并成一行。"""
+    del suggested_filters
     return "station_name"
 
 

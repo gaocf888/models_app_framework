@@ -16,6 +16,8 @@ from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.llm.graphs.chatbot_business_profile import get_chatbot_business_profile
 from app.llm.graphs.chatbot_nl2sql_display import (
+    CHATBOT_NL2SQL_DEVICE_PERIOD_HINT,
+    CHATBOT_NL2SQL_DEVICE_SNAPSHOT_HINT,
     CHATBOT_NL2SQL_DISTRICT_PERIOD_AGG_HINT,
     CHATBOT_NL2SQL_SELECT_DISPLAY_RULES,
     apply_chatbot_nl2sql_column_titles,
@@ -305,8 +307,10 @@ def _chatbot_sql_gen_extra_hint(
     question: str = "",
     *,
     grain: str | None = None,
+    library_id: str | None = None,
+    period_eligible: bool = False,
 ) -> str:
-    """客服 NL2SQL 生成附加提示：SELECT 可读性 + 区级周期聚合（按 grain/问句）。"""
+    """客服 NL2SQL 生成附加提示：SELECT 可读性 + 设备粒度/区级周期聚合。"""
     parts = [CHATBOT_NL2SQL_SELECT_DISPLAY_RULES]
     g = (grain or "").strip().lower()
     if not g and (question or "").strip():
@@ -318,6 +322,14 @@ def _chatbot_sql_gen_extra_hint(
             g = ""
     if g == "district":
         parts.append(CHATBOT_NL2SQL_DISTRICT_PERIOD_AGG_HINT)
+    elif g in ("", "station") and (question or "").strip():
+        if period_eligible:
+            parts.append(CHATBOT_NL2SQL_DEVICE_PERIOD_HINT)
+        else:
+            parts.append(CHATBOT_NL2SQL_DEVICE_SNAPSHOT_HINT)
+        lid = (library_id or "").strip().lower()
+        if lid and lid != "fcb" and period_eligible:
+            parts.append("本问已锁定非分层标，禁止注入层位 0 代表标。")
     return "\n\n".join(parts)
 
 
@@ -653,7 +665,10 @@ async def run_chatbot_nl2sql_query(
         "session_id": session_id,
         "question": question,
         "sql_gen_extra_hint": _chatbot_sql_gen_extra_hint(
-            question, grain=settle_grain
+            question,
+            grain=settle_grain,
+            library_id=getattr(prepare, "library_id", None),
+            period_eligible=bool(getattr(prepare, "period_eligible", False)),
         ),
     }
     if prepare.ops_routed:

@@ -22,6 +22,8 @@ def test_period_sql_fcb_month_window_uses_row_number() -> None:
     assert "t_data_wash_fcb" in low
     assert "any(:rep_marks)" in low
     assert "any(:projects)" in low
+    assert "partition by f.station_name" in low
+    assert "partition by f.project_name" not in low
     assert "f2-7" in [str(x).lower() for x in params["rep_marks"]]
     assert any("F2(望京)" in str(p) for p in params["projects"])
     assert "f.data_time >= :t_start" in sql
@@ -43,6 +45,19 @@ def test_period_sql_fcb_month_window_uses_row_number() -> None:
     )
     assert lib.period_key == "period_settle_mm"
     assert params["limit"] == 50
+
+
+def test_period_sql_kxsylj_all_devices_no_rep_marks() -> None:
+    lib = get_library_catalog().get("kxsylj")
+    assert lib is not None
+    scope = resolve_scope_intent("请帮我查询F8(周村)最近一个月的孔隙水压力变化量", lib)
+    sql, params = build_period_list_sql(lib, scope, max_rows=50)
+    low = sql.lower()
+    assert "t_data_wash_kxsylj" in low
+    assert "partition by f.station_name" in low
+    assert "any(:rep_marks)" not in low
+    assert "rep_marks" not in params
+    assert "qualify" not in low
 
 
 def test_period_sql_gnss_filters_station_name() -> None:

@@ -84,6 +84,9 @@ def _station_projects(library: LibraryDef, scope: ScopeIntentResult) -> list[str
 
 
 def _rep_marks(library: LibraryDef, projects: list[str]) -> list[str]:
+    """仅分层标周期变化用层位 0 代表标；其它监测方式返回空（按全部设备）。"""
+    if _device_type(library) != "fcb":
+        return []
     from app.data_query_agent.browse import representative_mark_pairs
 
     pairs = representative_mark_pairs(library)
@@ -131,7 +134,8 @@ def build_period_list_sql(
     marks = _rep_marks(library, projects)
     district = str((scope.confirmed_scope or {}).get("district") or "").strip()
     limit = max(1, int(max_rows))
-    grain = "station_name" if uses_station_name_site_key(device) else "project_name"
+    # 周期列表一律按监测设备 station_name；分层标靠 :rep_marks 收成代表标。
+    grain = "station_name"
 
     inner: list[str] = [
         f"f.{col} IS NOT NULL",
