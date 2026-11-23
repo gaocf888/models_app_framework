@@ -723,6 +723,39 @@ presets:
         - "./videos"
     description: "Qwen3.5 35B-A3B AWQ 多模态，N260 双卡 64G 高上下文/高并发预设"
 
+  # ==================== Wan2.2 文生视频（vLLM-Omni）====================
+
+  # Wan2.2-T2V-A14B（Diffusers）— 针对 2×NVIDIA A100 40GB
+  # 硬件：两张 NVIDIA A100 40G（合计 80GB）；单卡 40G 无法 BF16 全载（官方估约 ~60GiB 量级）
+  # 依赖：须使用带 vLLM-Omni 的镜像/环境（`vllm serve ... --omni`）；普通纯 LLM vLLM 不支持本扩散模型
+  # A100 并行策略说明：
+  #   - 本预设用 HSDP 在 2 张 A100 上切分 DiT 权重（--use-hsdp --hsdp-shard-size 2）
+  #   - HSDP 与 Tensor Parallel 互斥 → tensor_parallel_size 必须为 1（勿被 .env 的 TENSOR_PARALLEL_SIZE 盖成 2）
+  #   - dtype=bfloat16：A100 原生 BF16；勿改 float16 除非现场驱动/栈有兼容问题
+  #   - VAE tiling + slicing：控解码峰值显存；40G 上建议保持开启
+  #   - cfg_parallel_size=1：官方开源权重仍走 CFG，但 2×40G 上并行 CFG 易顶显存；显存充足时可改为 2
+  #   - 生成侧建议先用 480P / 较少帧数联调，再升 720P（OOM 时降高宽、帧数或步数）
+  # 权重：本机路径 /aidata/models/llm/Wan2.2-T2V-A14B（对应 HF Wan-AI/Wan2.2-T2V-A14B 或 *-Diffusers 布局，以目录内实际文件为准）
+  # 启动：MODEL_PRESET=wan2.2-t2v-a14b-a100 且 CUDA_VISIBLE_DEVICES 指向两张 A100
+  wan2.2-t2v-a14b-a100:
+    path: "./models/Wan2.2-T2V-A14B"
+    served_model_name: "wan2.2-t2v-a14b"
+    dtype: "bfloat16"
+    trust_remote_code: true
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.90
+    enable_prefix_caching: false
+    multimodal: false
+    # vLLM-Omni 扩散服务开关与并行（由 start.py 映射为 CLI）
+    omni: true
+    use_hsdp: true
+    hsdp_shard_size: 2
+    cfg_parallel_size: 1
+    vae_use_tiling: true
+    vae_use_slicing: true
+    vae_patch_parallel_size: 2
+    description: "Wan2.2-T2V-A14B 文生视频，2×NVIDIA A100 40G（vLLM-Omni + HSDP）"
+
   # ==================== 额外常用模型 ====================
 
   # Llama 3 8B

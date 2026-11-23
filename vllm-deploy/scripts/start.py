@@ -49,6 +49,15 @@ class VLLMService:
         "additional-config": ("model", "additional_config"),
         "load_format": ("model", "load_format"),
         "load-format": ("model", "load_format"),
+        # vLLM-Omni 扩散（Wan2.2 等）：扁平字段写入 hardware / 顶层由 _apply_model_preset 透传
+        "omni": ("diffusion", "omni"),
+        "use_hsdp": ("diffusion", "use_hsdp"),
+        "hsdp_shard_size": ("diffusion", "hsdp_shard_size"),
+        "cfg_parallel_size": ("diffusion", "cfg_parallel_size"),
+        "vae_use_tiling": ("diffusion", "vae_use_tiling"),
+        "vae_use_slicing": ("diffusion", "vae_use_slicing"),
+        "vae_patch_parallel_size": ("diffusion", "vae_patch_parallel_size"),
+        "extra_args": ("diffusion", "extra_args"),
     }
 
     # attention backend 兼容别名映射（统一为 vLLM 可识别值）
@@ -304,6 +313,11 @@ class VLLMService:
 
         cmd.append(model_path)
 
+        diffusion = self.vllm_config.get("diffusion", {})
+        if not isinstance(diffusion, dict):
+            diffusion = {}
+        is_omni = bool(diffusion.get("omni"))
+
         # 服务配置
         server = self.vllm_config.get("server", {})
         cmd.extend(["--host", server.get("host", "0.0.0.0")])
@@ -319,7 +333,8 @@ class VLLMService:
             cmd.append("--trust-remote-code")
         if model.get("quantization"):
             cmd.extend(["--quantization", str(model["quantization"])])
-        if model.get("max_model_len"):
+        # 扩散 Omni 路径不传 LLM 专用的 max_model_len / block_size / prefix-cache 等
+        if not is_omni and model.get("max_model_len"):
             cmd.extend(["--max-model-len", str(model["max_model_len"])])
         if model.get("load_format"):
             cmd.extend(["--load-format", str(model["load_format"])])
@@ -330,11 +345,13 @@ class VLLMService:
 
         # 硬件配置
         hardware = self.vllm_config.get("hardware", {})
-        tp_size = hardware.get("tensor_parallel_size", 1)
+        tp_size = int(hardware.get("tensor_parallel_size", 1) or 1)
         if tp_size > 1:
             cmd.extend(["--tensor-parallel-size", str(tp_size)])
-        cmd.extend(["--gpu-memory-utilization", str(hardware.get("gpu_memory_utilization", 0.85))])
-        cmd.extend(["--block-size", str(hardware.get("block_size", 32))])
+        if hardware.get("gpu_memory_utilization") is not None:
+            cmd.extend(["--gpu-memory-utilization", str(hardware.get("gpu_memory_utilization", 0.85))])
+        if not is_omni:
+            cmd.extend(["--block-size", str(hardware.get("block_size", 32))])
         if hardware.get("enforce_eager"):
             cmd.append("--enforce-eager")
         if hardware.get("enable_expert_parallel"):
@@ -349,18 +366,47 @@ class VLLMService:
                 self._to_cli_json(default_kwargs),
             ])
 
-        # 性能配置
+        # 性能配置（LLM）；Omni 扩散跳过
         perf = self.vllm_config.get("performance", {})
-        if perf.get("max_num_seqs"):
-            cmd.extend(["--max-num-seqs", str(perf["max_num_seqs"])])
-        if perf.get("max_num_batched_tokens"):
-            cmd.extend(["--max-num-batched-tokens", str(perf["max_num_batched_tokens"])])
-        if "enable_prefix_caching" in perf:
-            if perf.get("enable_prefix_caching"):
-                cmd.append("--enable-prefix-caching")
-            else:
-                # vLLM 0.23 默认开 prefix cache；310P TP>1 须显式关掉，避免 Event 配额被额外占满
-                cmd.append("--no-enable-prefix-caching")
+        if not is_omni:
+            if perf.get("max_num_seqs"):
+                cmd.extend(["--max-num-seqs", str(perf["max_num_seqs"])])
+            if perf.get("max_num_batched_tokens"):
+                cmd.extend(["--max-num-batched-tokens", str(perf["max_num_batched_tokens"])])
+            if "enable_prefix_caching" in perf:
+                if perf.get("enable_prefix_caching"):
+                    cmd.append("--enable-prefix-caching")
+                else:
+                    # vLLM 0.23 默认开 prefix cache；310P TP>1 须显式关掉，避免 Event 配额被额外占满
+                    cmd.append("--no-enable-prefix-caching")
+
+        # vLLM-Omni 扩散（Wan2.2-T2V 等）
+        if is_omni:
+            if diffusion.get("use_hsdp") and tp_size > 1:
+                raise ValueError(
+                    "diffusion.use_hsdp=true 时 hardware.tensor_parallel_size 必须为 1"
+                    f"（当前={tp_size}）；HSDP 与 TP 互斥"
+                )
+            cmd.append("--omni")
+            if diffusion.get("use_hsdp"):
+                cmd.append("--use-hsdp")
+                hsdp_shard = diffusion.get("hsdp_shard_size")
+                if hsdp_shard is not None and int(hsdp_shard) > 0:
+                    cmd.extend(["--hsdp-shard-size", str(int(hsdp_shard))])
+            cfg_size = diffusion.get("cfg_parallel_size")
+            if cfg_size is not None and int(cfg_size) > 1:
+                cmd.extend(["--cfg-parallel-size", str(int(cfg_size))])
+            if diffusion.get("vae_use_tiling"):
+                cmd.append("--vae-use-tiling")
+            if diffusion.get("vae_use_slicing"):
+                cmd.append("--vae-use-slicing")
+            vae_pp = diffusion.get("vae_patch_parallel_size")
+            if vae_pp is not None and int(vae_pp) > 1:
+                cmd.extend(["--vae-patch-parallel-size", str(int(vae_pp))])
+
+        extra_args = diffusion.get("extra_args") or self.vllm_config.get("extra_args")
+        if isinstance(extra_args, (list, tuple)):
+            cmd.extend(str(a) for a in extra_args if str(a).strip())
 
         # 多模态配置
         mm = self.vllm_config.get("multimodal", {})
