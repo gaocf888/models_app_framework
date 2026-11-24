@@ -1,0 +1,49 @@
+# 英伟达 + vLLM-Omni（Wan2.2 文生视频等扩散服务）
+# 与 Dockerfile-nvidia（普通 LLM/VL，vllm==0.17）分离，勿混用同一镜像。
+#
+# 构建上下文：vllm-deploy/（compose 中 context: ..）
+# 示例：
+#   docker compose --env-file ../.env \
+#     -f docker-compose.yml -f docker-compose.nvidia-omni.yml up -d --build
+# 或：./deploy.sh --platform nvidia-omni
+#
+# 默认底座：CUDA 12.6 + Ubuntu 24.04（系统 Python 3.12，满足 Omni >=3.11）
+# 若宿主机驱动较旧，可改 BASE_IMAGE_OMNI；仍须能跑所选 vllm/torch CUDA wheel。
+
+ARG BASE_IMAGE=nvidia/cuda:12.6.0-runtime-ubuntu24.04
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV WORKSPACE=/workspace
+
+# Ubuntu 24.04：python3 ≈ 3.12；git 便于个别源码依赖回退
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    curl \
+    ca-certificates \
+    git \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python \
+    && python3 -c "import sys; assert sys.version_info >= (3, 11), sys.version"
+
+WORKDIR ${WORKSPACE}
+
+RUN mkdir -p ${WORKSPACE}/{config,scripts,logs,models,media}
+
+COPY requirements-omni.txt ${WORKSPACE}/
+
+# 仅装 Omni 栈；不读 requirements.txt（0.17）
+RUN pip3 install --no-cache-dir --break-system-packages -r "${WORKSPACE}/requirements-omni.txt" \
+      -i https://mirrors.aliyun.com/pypi/simple/ \
+      --trusted-host mirrors.aliyun.com \
+      --default-timeout=600 --retries=20 \
+    && python3 -c "import vllm, vllm_omni; print('vllm', getattr(vllm,'__version__', '?')); print('vllm_omni ok')" \
+    && (vllm serve --help 2>&1 | grep -q -- '--omni') \
+    || (echo "ERROR: installed vllm does not expose --omni; check vllm-omni install" >&2; exit 1)
+
+EXPOSE 8000
+
+# 启动命令与健康检查在 docker-compose.yml / nvidia-omni overlay 中配置；config/scripts 卷挂载

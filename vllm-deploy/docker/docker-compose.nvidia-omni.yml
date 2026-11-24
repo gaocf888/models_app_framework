@@ -1,0 +1,63 @@
+# 英伟达 vLLM-Omni（Wan2.2 等扩散）— 独立服务，不与 LLM 用的 docker-compose.yml「vllm」合并
+# （避免端口 8000、容器名 vllm-service、镜像 vllm-service 被覆盖或双绑）
+#
+#   ./deploy.sh --platform nvidia-omni
+#   或：docker compose --env-file ../.env -f docker-compose.nvidia-omni.yml up -d --build
+#
+# 默认：镜像 vllm-service-nvidia-omni、容器 vllm-service-omni、宿主机端口 8001
+# 双卡 A100：CUDA_VISIBLE_DEVICES=0,1；MODEL_PRESET=wan2.2-t2v-a14b-a100
+# 权重：宿主机 ${MODEL_PATH:-/aidata/models/llm}/Wan2.2-T2V-A14B → 容器 ./models/Wan2.2-T2V-A14B
+
+version: '3.8'
+
+services:
+  vllm-omni:
+    image: ${VLLM_OMNI_IMAGE:-vllm-service-nvidia-omni:latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile-nvidia-omni
+      args:
+        BASE_IMAGE: ${BASE_IMAGE_OMNI:-nvidia/cuda:12.6.0-runtime-ubuntu24.04}
+    container_name: ${VLLM_OMNI_CONTAINER_NAME:-vllm-service-omni}
+    restart: unless-stopped
+    command: ["python3", "/workspace/scripts/start.py", "start"]
+    ports:
+      - "${VLLM_OMNI_PORT:-8001}:8000"
+    volumes:
+      - ${MODEL_PATH:-/aidata/models/llm}:/workspace/models:ro
+      - ../config:/workspace/config:ro
+      - ../scripts:/workspace/scripts:ro
+      - ../logs:/workspace/logs
+      - ${MEDIA_PATH:-./media}:/workspace/media:ro
+    environment:
+      - MODEL_PRESET=${MODEL_PRESET:-wan2.2-t2v-a14b-a100}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+      - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - STARTUP_WAIT_TIMEOUT=${STARTUP_WAIT_TIMEOUT:-1800}
+      - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      - WORKSPACE=/workspace
+    healthcheck:
+      test: ["CMD", "python3", "/workspace/scripts/health.py"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_DEVICE_COUNT:-all}
+              capabilities: [gpu]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+    networks:
+      - vllm-omni-network
+
+networks:
+  vllm-omni-network:
+    driver: bridge

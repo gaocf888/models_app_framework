@@ -108,6 +108,9 @@ class VLLMService:
         # 初始化日志
         self._setup_logging()
 
+        # HSDP 等扩散并行与 .env TENSOR_PARALLEL_SIZE 冲突时纠偏（须在日志就绪后）
+        self._reconcile_diffusion_parallelism()
+
         if self._applied_model_preset:
             self.logger.info(f"应用模型预设: {self._applied_model_preset}")
 
@@ -229,6 +232,51 @@ class VLLMService:
                 except ValueError:
                     self.vllm_config[section][key] = value
 
+    def _reconcile_diffusion_parallelism(self) -> None:
+        """Omni+HSDP 与 TP 互斥：.env 的 TENSOR_PARALLEL_SIZE 常把预设 TP=1 盖成 2/4，此处压回并告警。"""
+        diffusion = self.vllm_config.get("diffusion")
+        if not isinstance(diffusion, dict):
+            return
+        if not (diffusion.get("omni") and diffusion.get("use_hsdp")):
+            return
+        hardware = self.vllm_config.setdefault("hardware", {})
+        tp = int(hardware.get("tensor_parallel_size", 1) or 1)
+        if tp <= 1:
+            return
+        self.logger.warning(
+            "diffusion.use_hsdp=true 与 tensor_parallel 互斥；"
+            "已忽略 TENSOR_PARALLEL_SIZE/预设中的 TP=%s，强制 tensor_parallel_size=1"
+            "（多卡请用 CUDA_VISIBLE_DEVICES + hsdp_shard_size）",
+            tp,
+        )
+        hardware["tensor_parallel_size"] = 1
+
+    def _ensure_vllm_omni_available(self) -> None:
+        """Wan/扩散预设依赖 vLLM-Omni；普通 vllm wheel 不认识 --omni 等参数。"""
+        try:
+            help_out = subprocess.run(
+                ["vllm", "serve", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            text = f"{help_out.stdout or ''}{help_out.stderr or ''}"
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError(
+                "无法执行 `vllm serve --help` 以检测 Omni 支持："
+                f"{exc}"
+            ) from exc
+        if "--omni" not in text:
+            raise ValueError(
+                "当前镜像/环境是普通 vLLM，不支持 --omni（文生视频 Wan2.2 需要 vLLM-Omni）。\n"
+                "本仓库默认 requirements.txt 为 vllm==0.17.0（仅 LLM/VL），与 Omni 不兼容。\n"
+                "请改用单独的 Omni 环境后再启 wan2.2-t2v-a14b-a100，例如：\n"
+                "  pip install 'vllm==0.34.0' 'vllm-omni==0.34.0'\n"
+                "或构建/切换到已安装 vllm-omni 的镜像；勿在现有 LLM 服务镜像上强行混装以免冲掉 0.17 栈。\n"
+                "验证：`vllm serve --help | grep -E -- '--omni'` 应有输出。"
+            )
+
     def _setup_logging(self):
         """设置日志"""
         try:
@@ -346,6 +394,9 @@ class VLLMService:
         # 硬件配置
         hardware = self.vllm_config.get("hardware", {})
         tp_size = int(hardware.get("tensor_parallel_size", 1) or 1)
+        # HSDP 与 TP 互斥：先校正再写 CLI，避免 .env TENSOR_PARALLEL_SIZE=2 仍被带上
+        if is_omni and diffusion.get("use_hsdp") and tp_size > 1:
+            tp_size = 1
         if tp_size > 1:
             cmd.extend(["--tensor-parallel-size", str(tp_size)])
         if hardware.get("gpu_memory_utilization") is not None:
@@ -382,11 +433,7 @@ class VLLMService:
 
         # vLLM-Omni 扩散（Wan2.2-T2V 等）
         if is_omni:
-            if diffusion.get("use_hsdp") and tp_size > 1:
-                raise ValueError(
-                    "diffusion.use_hsdp=true 时 hardware.tensor_parallel_size 必须为 1"
-                    f"（当前={tp_size}）；HSDP 与 TP 互斥"
-                )
+            self._ensure_vllm_omni_available()
             cmd.append("--omni")
             if diffusion.get("use_hsdp"):
                 cmd.append("--use-hsdp")

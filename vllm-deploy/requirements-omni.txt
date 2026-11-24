@@ -1,0 +1,11 @@
+# 英伟达 vLLM-Omni（文生视频 Wan2.2 等扩散模型）独立依赖。
+# 与 requirements.txt（vllm==0.17.0，LLM/VL）分离，勿装进同一镜像以免冲掉现网栈。
+# 版本须成对匹配；升级时同步改 Dockerfile-nvidia-omni 注释与本文件。
+# 官方安装参考：https://pypi.org/project/vllm-omni/ 、vLLM-Omni recipes（Wan-AI/Wan2.2-T2V）
+#
+# Python: >=3.11,<3.14（Omni 0.34 要求）
+vllm==0.34.0
+vllm-omni==0.34.0
+pyyaml>=6.0
+requests>=2.31.0
+psutil>=5.9.0

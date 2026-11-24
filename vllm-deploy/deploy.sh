@@ -15,7 +15,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "错误: 未知参数 $1"
-      echo "用法: ./deploy.sh [--platform nvidia|cambricon|mthreads|ascend]"
+      echo "用法: ./deploy.sh [--platform nvidia|nvidia-omni|cambricon|mthreads|ascend]"
       exit 1
       ;;
   esac
@@ -30,23 +30,27 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
   ENV_FILE_ARGS=(--env-file "$SCRIPT_DIR/.env")
 fi
 
-COMPOSE_FILES=(-f docker-compose.yml)
+COMPOSE_FILES=()
 case "$PLATFORM" in
   nvidia)
-    COMPOSE_FILES+=(-f docker-compose.nvidia.yml)
+    COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.nvidia.yml)
+    ;;
+  nvidia-omni)
+    # 独立文件（含 Dockerfile-nvidia-omni）；不与 LLM 的 docker-compose.yml 合并
+    COMPOSE_FILES=(-f docker-compose.nvidia-omni.yml)
     ;;
   cambricon)
-    COMPOSE_FILES+=(-f docker-compose.cambricon.yml)
+    COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.cambricon.yml)
     ;;
   mthreads)
-    COMPOSE_FILES+=(-f docker-compose.mthreads.yml)
+    COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.mthreads.yml)
     ;;
   ascend)
-    COMPOSE_FILES+=(-f docker-compose.ascend.yml)
+    COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.ascend.yml)
     ;;
   *)
     echo "错误: 不支持的平台 '$PLATFORM'"
-    echo "当前支持: nvidia, cambricon, mthreads, ascend"
+    echo "当前支持: nvidia, nvidia-omni, cambricon, mthreads, ascend"
     exit 1
     ;;
 esac

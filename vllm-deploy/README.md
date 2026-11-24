@@ -4,7 +4,8 @@
 
 ## 适用场景
 
-- **英伟达 GPU 服务器**：默认 `BASE_IMAGE` 为 `nvidia/cuda:12.3.0-runtime-ubuntu22.04`，`VLLM_REQUIREMENTS_PROFILE=full`，在镜像构建阶段通过 pip 安装 `vllm` 及配套依赖。
+- **英伟达 GPU 服务器（LLM/VL）**：默认 `BASE_IMAGE` 为 `nvidia/cuda:12.3.0-runtime-ubuntu22.04`，`VLLM_REQUIREMENTS_PROFILE=full`，在镜像构建阶段通过 pip 安装 `vllm` 及配套依赖。
+- **英伟达 GPU 服务器（Wan2.2 文生视频）**：使用独立平台 `nvidia-omni`（`Dockerfile-nvidia-omni` + vLLM-Omni），与上方 LLM 镜像分离；详见下文「Wan2.2 文生视频部署」。
 - **国产算力 / 厂商软件栈**：将 `BASE_IMAGE` 指向厂商提供的已适配镜像（已含 vLLM、PyTorch 等），并设置 `VLLM_REQUIREMENTS_PROFILE=extras`，仅安装 `pyyaml` / `requests` / `psutil`，**避免**用 PyPI 覆盖厂商预装推理栈。
 
 ## 前置条件
@@ -37,15 +38,16 @@ cp .env.example .env
 为避免不同厂商显卡配置互相污染，仓库采用“基座 + 平台 overlay”：
 
 - `docker/docker-compose.yml`：通用配置（`build.context`、端口、挂载、命令、健康检查）；**不含 `dockerfile`**，须与平台 overlay 合并使用。
-- `docker/docker-compose.nvidia.yml`：英伟达（`Dockerfile-nvidia`、`CUDA_VISIBLE_DEVICES`、GPU reservation）。
+- `docker/docker-compose.nvidia.yml`：英伟达 LLM/VL（`Dockerfile-nvidia`、`CUDA_VISIBLE_DEVICES`、GPU reservation）。
+- `docker/docker-compose.nvidia-omni.yml`：英伟达 **vLLM-Omni** 文生视频（`Dockerfile-nvidia-omni`；独立镜像/容器；默认端口 **8001**、预设 `wan2.2-t2v-a14b-a100`）。与 LLM `vllm==0.17` 栈分离。
 - `docker/docker-compose.cambricon.yml`：寒武纪（`Dockerfile-mx`、`privileged`、`MLU_VISIBLE_DEVICES`、`/dev` 透传）。
 - `docker/docker-compose.mthreads.yml`：沐曦（`Dockerfile-mx`、Metax 默认 `BASE_IMAGE`、`privileged`、`MX_VISIBLE_DEVICES`、`/dev` 透传）。
 - `docker/docker-compose.ascend.yml`：昇腾（`Dockerfile-ascend`、默认 `quay.io/ascend/vllm-ascend:v0.23.0-310p`、`runtime: ascend`、`ASCEND_RT_VISIBLE_DEVICES`、驱动卷）。
 
 平台选择方式：
 
-- 脚本方式：`./deploy.sh --platform nvidia|cambricon|mthreads|ascend`
-- 环境变量方式：在 `.env` 设置 `VLLM_PLATFORM=nvidia|cambricon|mthreads|ascend` 后直接 `./deploy.sh`
+- 脚本方式：`./deploy.sh --platform nvidia|nvidia-omni|cambricon|mthreads|ascend`
+- 环境变量方式：在 `.env` 设置 `VLLM_PLATFORM=nvidia|nvidia-omni|cambricon|mthreads|ascend` 后直接 `./deploy.sh`
 
 若你有其他国产平台（例如燧原等），建议继续新增对应 `docker-compose.<platform>.yml`，不要把所有平台逻辑塞在一个文件里。
 
@@ -127,8 +129,9 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwe
      ```
 
 3. **选择平台（自动匹配 Dockerfile）**
-   - `docker/` 下 Dockerfile：`Dockerfile-nvidia`（英伟达 / apt）、`Dockerfile-mx`（沐曦·寒武纪 / yum）、`Dockerfile-ascend`（昇腾 / apt）。
+   - `docker/` 下 Dockerfile：`Dockerfile-nvidia`（英伟达 LLM）、`Dockerfile-nvidia-omni`（英伟达 Wan/Omni）、`Dockerfile-mx`（沐曦·寒武纪 / yum）、`Dockerfile-ascend`（昇腾 / apt）。
    - **无需**再改 `docker-compose.yml`；通过 `deploy.sh --platform` 或手动 `-f docker-compose.<platform>.yml` 即可选中对应 `dockerfile` 与默认 `build.args`。
+   - Wan2.2：`./deploy.sh --platform nvidia-omni`（依赖 `requirements-omni.txt`：`vllm==0.34.0` + `vllm-omni==0.34.0`；宿主机端口默认 **8001**）。
    - 国产场景在 `.env` 中设置 `BASE_IMAGE` 为厂商镜像，并保持 `VLLM_REQUIREMENTS_PROFILE=extras`（overlay 已默认为 `extras`，可被 `.env` 覆盖）。
 
 4. **准备模型权重**
@@ -148,6 +151,8 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwe
      ```bash
      cd vllm-deploy/docker
      docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
+     # Wan/Omni（独立文件，勿与上面 LLM compose 混用同一容器）：
+     # docker compose --env-file ../.env -f docker-compose.nvidia-omni.yml up -d --build
      # 沐曦：docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.mthreads.yml up -d --build
      # 寒武纪：docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.cambricon.yml up -d --build
      # 昇腾：docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.ascend.yml up -d --build
@@ -178,6 +183,88 @@ docker compose logs -f
 ```bash
 docker compose down
 ```
+
+## Wan2.2 文生视频部署（英伟达 vLLM-Omni，与 LLM 栈分离）
+
+Wan2.2-T2V 属于**扩散文生视频**模型，必须使用 **vLLM-Omni**（`vllm serve` 支持 `--omni`）。  
+本仓库默认 LLM/VL 镜像（`Dockerfile-nvidia` + `requirements.txt` 中 `vllm==0.17.0`）**不能**启动 Wan；强行在 LLM 容器里传 `--omni` 会报 `unrecognized arguments`。
+
+因此提供独立链路：
+
+| 项 | LLM/VL（`nvidia`） | Wan 文生视频（`nvidia-omni`） |
+|----|--------------------|------------------------------|
+| Compose | `docker-compose.yml` + `docker-compose.nvidia.yml` | **仅** `docker-compose.nvidia-omni.yml` |
+| Dockerfile | `Dockerfile-nvidia` | `Dockerfile-nvidia-omni` |
+| 依赖 | `requirements.txt`（vllm 0.17） | `requirements-omni.txt`（vllm 0.34 + vllm-omni 0.34） |
+| 容器名 | `vllm-service` | `vllm-service-omni` |
+| 默认端口 | `8000` | **`8001`**（避免与现网 LLM 冲突） |
+| 默认预设 | 如 `qwen2.5-vl-7b` | `wan2.2-t2v-a14b-a100`（2×A100 40G） |
+
+两套可并存：LLM 继续占 8000，Wan 占 8001；**不要**把 Omni 依赖打进现网 LLM 镜像。
+
+### 部署前准备
+
+1. **权重**：放到宿主机 `MODEL_PATH`（默认 `/aidata/models/llm`）下，目录名与预设一致，例如：  
+   `/aidata/models/llm/Wan2.2-T2V-A14B`  
+   Compose 会挂载为容器内 `/workspace/models/...`，对应预设 `path: ./models/Wan2.2-T2V-A14B`。  
+   官方 Omni 示例多为 **Diffusers** 布局；若加载失败，请确认目录是否为 Diffusers 格式（或换用 `*-Diffusers` 权重）。
+2. **`.env` 建议**（`vllm-deploy/.env`）：
+
+   ```bash
+   VLLM_PLATFORM=nvidia-omni
+   MODEL_PRESET=wan2.2-t2v-a14b-a100
+   MODEL_PATH=/aidata/models/llm
+   CUDA_VISIBLE_DEVICES=0,1          # 两张 A100
+   TENSOR_PARALLEL_SIZE=1            # 本预设用 HSDP，勿设成 2（即便设了 start.py 也会压回 1）
+   # VLLM_OMNI_PORT=8001             # 可选
+   # BASE_IMAGE_OMNI=nvidia/cuda:12.6.0-runtime-ubuntu24.04
+   ```
+
+3. **硬件说明**：预设 `wan2.2-t2v-a14b-a100` 按 **2×NVIDIA A100 40GB** 编写（HSDP 切权重 + VAE tiling/slicing）。单卡 40G 通常不够 BF16 全载。
+
+### 构建并启动（推荐手动命令）
+
+在仓库的 `vllm-deploy/docker` 目录执行（会读取上一级 `.env`）：
+
+```bash
+cd docker
+docker compose --env-file ../.env -f docker-compose.nvidia-omni.yml up -d --build
+docker logs -f vllm-service-omni
+```
+
+说明：
+
+- `--build`：首次或依赖变更时构建 `Dockerfile-nvidia-omni`（耗时较长，需能访问 PyPI/镜像源）。
+- `-d`：后台运行；日志用上面的 `docker logs -f vllm-service-omni` 跟踪。
+- 等价一键脚本：`cd vllm-deploy && ./deploy.sh --platform nvidia-omni`。
+
+启动成功后，在日志中应能看到类似：
+
+- `应用模型预设: wan2.2-t2v-a14b-a100`
+- 启动命令含 `--omni --use-hsdp --hsdp-shard-size 2 ...`
+- 服务就绪（健康检查通过）
+
+若仍出现 `unrecognized arguments: --omni`，说明跑到了旧 LLM 镜像/容器，请确认用的是 **`docker-compose.nvidia-omni.yml`** 且容器名为 **`vllm-service-omni`**。
+
+### 验证与停止
+
+```bash
+# 健康检查（宿主机端口默认 8001）
+curl -s http://127.0.0.1:8001/health
+curl -s http://127.0.0.1:8001/v1/models
+
+# 停止 Omni 服务（在 docker/ 下）
+docker compose -f docker-compose.nvidia-omni.yml down
+```
+
+文生视频 HTTP 协议与普通 `/v1/chat/completions` 不同，请按 vLLM-Omni / Wan 官方在线 serving 示例调用（如 `/v1/videos` 等）；此处健康检查仅确认进程与路由可用。
+
+### 相关文件
+
+- 预设：`config/models.yaml` → `wan2.2-t2v-a14b-a100`
+- 依赖：`requirements-omni.txt`
+- 镜像：`docker/Dockerfile-nvidia-omni`
+- Compose：`docker/docker-compose.nvidia-omni.yml`
 
 ## 监控（已废弃内嵌 profile）
 
