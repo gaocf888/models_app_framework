@@ -252,29 +252,35 @@ class VLLMService:
         hardware["tensor_parallel_size"] = 1
 
     def _ensure_vllm_omni_available(self) -> None:
-        """Wan/扩散预设依赖 vLLM-Omni；普通 vllm wheel 不认识 --omni 等参数。"""
+        """Wan/扩散预设依赖 vLLM-Omni；须使用 ``vllm-omni`` 入口（非 plain ``vllm``）。"""
+        import shutil
+
+        if not shutil.which("vllm-omni"):
+            raise ValueError(
+                "未找到命令 `vllm-omni`（文生视频 Wan2.2 需要 vLLM-Omni）。\n"
+                "请使用 `./deploy.sh --platform nvidia-omni` 构建 Dockerfile-nvidia-omni，"
+                "或 pip install 'vllm==0.34.0' 'vllm-omni==0.34.0'。\n"
+                "勿在 LLM 用的 vllm==0.17 镜像里混装。"
+            )
         try:
             help_out = subprocess.run(
-                ["vllm", "serve", "--help"],
+                # 必须带 --omni，否则入口会回退 plain vLLM，help 里看不到 Omni 参数
+                ["vllm-omni", "serve", "--omni", "--help"],
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=90,
                 check=False,
             )
             text = f"{help_out.stdout or ''}{help_out.stderr or ''}"
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValueError(
-                "无法执行 `vllm serve --help` 以检测 Omni 支持："
+                "无法执行 `vllm-omni serve --omni --help` 以检测 Omni 支持："
                 f"{exc}"
             ) from exc
-        if "--omni" not in text:
+        if "OmniConfig" not in text and "Enable vLLM-Omni" not in text and "diffusion" not in text.lower():
             raise ValueError(
-                "当前镜像/环境是普通 vLLM，不支持 --omni（文生视频 Wan2.2 需要 vLLM-Omni）。\n"
-                "本仓库默认 requirements.txt 为 vllm==0.17.0（仅 LLM/VL），与 Omni 不兼容。\n"
-                "请改用单独的 Omni 环境后再启 wan2.2-t2v-a14b-a100，例如：\n"
-                "  pip install 'vllm==0.34.0' 'vllm-omni==0.34.0'\n"
-                "或构建/切换到已安装 vllm-omni 的镜像；勿在现有 LLM 服务镜像上强行混装以免冲掉 0.17 栈。\n"
-                "验证：`vllm serve --help | grep -E -- '--omni'` 应有输出。"
+                "`vllm-omni serve --omni --help` 未体现 Omni 能力，安装可能不完整。\n"
+                "请重建 nvidia-omni 镜像，并确认 requirements-omni.txt 中 vllm/vllm-omni 版本成对。"
             )
 
     def _setup_logging(self):
@@ -348,8 +354,13 @@ class VLLMService:
         return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
     def build_command(self) -> list:
-        """构建 vLLM 启动命令"""
-        cmd = ["vllm", "serve"]
+        """构建 vLLM / vLLM-Omni 启动命令"""
+        diffusion = self.vllm_config.get("diffusion", {})
+        if not isinstance(diffusion, dict):
+            diffusion = {}
+        is_omni = bool(diffusion.get("omni"))
+        # Omni 须走 vllm-omni 入口；plain「vllm serve」不会解析 --omni
+        cmd = ["vllm-omni" if is_omni else "vllm", "serve"]
 
         # 模型路径
         model_path = self.vllm_config.get("model", {}).get("path", "")
@@ -360,11 +371,6 @@ class VLLMService:
             raise ValueError(f"模型路径不存在: {model_path}")
 
         cmd.append(model_path)
-
-        diffusion = self.vllm_config.get("diffusion", {})
-        if not isinstance(diffusion, dict):
-            diffusion = {}
-        is_omni = bool(diffusion.get("omni"))
 
         # 服务配置
         server = self.vllm_config.get("server", {})

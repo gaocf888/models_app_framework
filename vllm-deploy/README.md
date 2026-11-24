@@ -186,7 +186,7 @@ docker compose down
 
 ## Wan2.2 文生视频部署（英伟达 vLLM-Omni，与 LLM 栈分离）
 
-Wan2.2-T2V 属于**扩散文生视频**模型，必须使用 **vLLM-Omni**（`vllm serve` 支持 `--omni`）。  
+Wan2.2-T2V 属于**扩散文生视频**模型，必须使用 **vLLM-Omni**（入口 **`vllm-omni serve ... --omni`**，不是 plain `vllm`）。  
 本仓库默认 LLM/VL 镜像（`Dockerfile-nvidia` + `requirements.txt` 中 `vllm==0.17.0`）**不能**启动 Wan；强行在 LLM 容器里传 `--omni` 会报 `unrecognized arguments`。
 
 因此提供独立链路：
@@ -241,10 +241,12 @@ docker logs -f vllm-service-omni
 启动成功后，在日志中应能看到类似：
 
 - `应用模型预设: wan2.2-t2v-a14b-a100`
-- 启动命令含 `--omni --use-hsdp --hsdp-shard-size 2 ...`
+- 启动命令形如：`vllm-omni serve ... --omni --use-hsdp --hsdp-shard-size 2 ...`（注意入口是 **`vllm-omni`**，不是 plain `vllm`）
 - 服务就绪（健康检查通过）
 
-若仍出现 `unrecognized arguments: --omni`，说明跑到了旧 LLM 镜像/容器，请确认用的是 **`docker-compose.nvidia-omni.yml`** 且容器名为 **`vllm-service-omni`**。
+若出现 `unrecognized arguments: --omni`，多半是：① 跑到了旧 LLM 镜像/容器；或 ② 用了 `vllm serve` 而非 `vllm-omni serve`。请确认 **`docker-compose.nvidia-omni.yml`**、容器名 **`vllm-service-omni`**，并同步最新 `scripts/start.py`。
+
+构建阶段日志里若出现 `No module named 'vllm._C'` / `No CUDA runtime`，在 **无 GPU 的 build 机上属常见提示**；只要 `vllm-omni` 安装成功即可，真正加载 CUDA 扩展在容器运行时（`--gpus` / NVIDIA runtime）完成。
 
 ### 验证与停止
 

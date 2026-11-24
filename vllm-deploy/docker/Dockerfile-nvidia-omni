@@ -36,13 +36,21 @@ RUN mkdir -p ${WORKSPACE}/{config,scripts,logs,models,media}
 COPY requirements-omni.txt ${WORKSPACE}/
 
 # 仅装 Omni 栈；不读 requirements.txt（0.17）
-RUN pip3 install --no-cache-dir --break-system-packages -r "${WORKSPACE}/requirements-omni.txt" \
+# 说明：
+# - 构建阶段无 GPU，`import vllm._C` / FlashInfer 提示属预期；CUDA 扩展在运行时加载
+# - 官方入口是 console script「vllm-omni」；plain「vllm serve」在 argv 无 --omni 时走原版 vLLM
+# - 验收用 entry_points + 可执行文件，勿对 plain「vllm serve --help」grep --omni
+RUN set -eux; \
+    pip3 install --no-cache-dir --break-system-packages -r "${WORKSPACE}/requirements-omni.txt" \
       -i https://mirrors.aliyun.com/pypi/simple/ \
       --trusted-host mirrors.aliyun.com \
-      --default-timeout=600 --retries=20 \
-    && python3 -c "import vllm, vllm_omni; print('vllm', getattr(vllm,'__version__', '?')); print('vllm_omni ok')" \
-    && (vllm serve --help 2>&1 | grep -q -- '--omni') \
-    || (echo "ERROR: installed vllm does not expose --omni; check vllm-omni install" >&2; exit 1)
+      --default-timeout=600 --retries=20; \
+    python3 -c "from importlib.metadata import entry_points, version; import vllm_omni; \
+eps=entry_points(); names={e.name for e in (eps.select(group='console_scripts') if hasattr(eps,'select') else eps.get('console_scripts', []))}; \
+assert 'vllm-omni' in names, sorted(names); \
+print('vllm', version('vllm')); print('vllm-omni', version('vllm-omni')); print('console_scripts: vllm-omni ok')"; \
+    command -v vllm-omni; \
+    echo "vllm-omni install ok"
 
 EXPOSE 8000
 
