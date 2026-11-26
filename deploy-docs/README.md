@@ -51,4 +51,4 @@
 | 缺陷识别 | 看图诊断 | `POST /analysis/img-diag/upload` + `/run-img-diag-stream`（`img_diag_subtype=defect_ident`） |
 | 泄爆分析 | 看图诊断 | 同上，`img_diag_subtype=leakage_burst` |
 
-五条业务的验收命令、依赖组件、常见故障见《整体部署运维手册》第 7 节；代码入口见《源码移交说明》第 3 节。
+五条业务的验收命令、依赖组件、常见故障见《整体部署运维手册》第 7 节；知识库 / NL2SQL 初始灌库见第 8 节；代码入口见《源码移交说明》第 3 节。
