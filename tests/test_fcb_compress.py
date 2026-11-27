@@ -7,9 +7,9 @@ from app.analysis_agent.deterministics.formulas import consecutive_layer_pairs, 
 import pytest
 
 
-def test_delta_start_minus_end() -> None:
-    assert period_delta(10, 7) == 3
-    assert period_delta(7, 10) == -3
+def test_delta_end_minus_start() -> None:
+    assert period_delta(10, 7) == -3
+    assert period_delta(7, 10) == 3
 
 
 def test_consecutive_pairs_skip_gap() -> None:
@@ -132,5 +132,5 @@ def test_slice_layer0_drops_out_of_coverage(monkeypatch: pytest.MonkeyPatch) -> 
     }
     rows = slice_layer0(gathered)
     assert len(rows) == 1
-    assert rows[0]["delta_mm"] == 3
+    assert rows[0]["delta_mm"] == -3
     assert rows[0]["project_name"] == "F8(周村)"

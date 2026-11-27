@@ -1,11 +1,11 @@
 # NL2SQL基座改造补充-分层标数据汇总逻辑(三维口径与层位字典)实现方案
 
-> **版本**：2026-09-11  
-> **状态**：配置已落地（2026-09-11）；**待运维**：RAG re-ingest + 抽测（见 §5.3）  
+> **版本**：2026-11-26（口径修订：统一为末−初）  
+> **状态**：配置+代码已统一 **Δ=窗末−窗初 / 负沉正弹**；**待运维**：RAG re-ingest + 抽测（见 `configs/nl2sql_business/subsidence/rag/README.md`）  
 > **所属**：地降所 NL2SQL 基座 · 业务口径补强（在 P0–P5 主能力已落地之后）  
 > **主方案索引**：[`NL2SQL基座改造.md`](./NL2SQL基座改造.md)（本文为其专项子方案，不替代主方案）  
-> **口径真源（计算逻辑）**：`docs/地降所需求及数据相关/数据库结构及逻辑/沉降数据获取计算逻辑/季度报告分层标处理.py`  
-> **层位映射真源**：同目录 `分层标层位分析.xls`（将转为项目内配置文件）
+> **口径真源（现网）**：`app/analysis_agent/deterministics/formulas.py` + `period_sql` / `annual`（末−初）；参考脚本已同步  
+> **层位映射真源**：同目录 `分层标层位分析.xls` → `semantic/dimensions/fcb_layer_map.yaml`
 > **文档简称**：分层标三维口径与层位字典改造实现方案（文内可简称 P6 专项）
 
 ---
@@ -25,7 +25,7 @@
 
 | # | 目标 | 策略 |
 |---|------|------|
-| G1 | 全链路统一周期沉降与正负口径 | 对齐 `季度报告分层标处理.py` |
+| G1 | 全链路统一周期沉降与正负口径 | 统一末−初 + 负沉正弹（代码/RAG/年沉降同向） |
 | G2 | 知识库写清三维 grain + 禁则 | 更新 `nl2sql_biz_knowledge.md` 等 |
 | G3 | 层位映射进配置包 | **知识库 + 配置文件**（主方案推荐短期策略①） |
 | G4 | Prompt / QA / 语义指标 / 综合分析计划同步 | 避免 RAG 与 Prompt 双口径 |
@@ -38,19 +38,18 @@
 - 重写半自动 `季度报告分层标处理.py`（保留为口径参考）  
 - 锅炉域相关文档与 Prompt  
 
-### 0.4 已确认的统一口径（业务拍板）
-
-对齐季报脚本：
+### 0.4 已确认的统一口径（现网）
 
 | 项 | 约定 |
 |----|------|
-| 单标周期变化量 | `Δ = total_settle(窗初) − total_settle(窗末)`（**初 − 末**） |
-| 下沉 / 回弹 | **Δ 为负 → 沉降**；**Δ 为正 → 回弹/抬升**（与脚本一致） |
+| 单标周期变化量 | `Δ = total_settle(窗末) − total_settle(窗初)`（**末 − 初**） |
+| 下沉 / 回弹 | **Δ 为负 → 沉降**；**Δ 为正 → 回弹/抬升**（负沉正弹） |
 | 站点沉降 | 该站 **监测层位 = 0** 的标（≡ 该站深度最小分层标）上的 `Δ`；**禁止**对同站全部 `station_name` 做 AVG/SUM |
 | 压缩层 `i→i+1` | `compress = Δ(层位 i) − Δ(层位 i+1)`；仅连续层位对；**不是**单标 `total_settle` 直接当「层沉降」 |
+| 年沉降 | 与周期同向：窗内终值 − 初值 |
 | 字段 | `project_name` = 站点名（如 `F8(周村)`）；`station_name` = 标编号（如 `F8-10`） |
 
-> **注意**：对外表图固定 **负值=沉降、正值=回弹**（与季报 Word 模版一致）。曾误写「初−末且正下沉」或「末−初」的文档/SQL 须纠正；正文可用绝对值 +「沉降/回弹」措辞，**不要**为迁就 UI 再改 SQL 公式。
+> **注意**：对外表图固定 **负值=沉降、正值=回弹**。「沉降最大」=`ORDER BY Δ ASC`。曾误写「初−末」或「正下沉」的文档/SQL 须纠正；改 RAG 源后须 re-ingest。
 
 ---
 
@@ -121,10 +120,10 @@ compress(i → i+1) = Δ(layer=i) − Δ(layer=i+1)
 |------|------|--------|
 | 知识库 | `configs/nl2sql_business/subsidence/rag/nl2sql_biz_knowledge.md` | 公式、正负、三维 grain、指向配置文件 |
 | Schema RAG | `.../rag/nl2sql_schema.md` | 周期口径句 |
-| QA 种子 | `.../rag/qa_examples_seed.md` | SQL 改为 `初−末`；站点样例约束层位 0；排序按「Δ 越大越下沉」 |
+| QA 种子 | `.../rag/qa_examples_seed.md` | SQL 改为 `末−初`；站点样例约束层位 0；排序按「Δ 越负越下沉」 |
 | 语义指标 | `.../semantic/metrics.yaml` | `formula_note` 与 rebound 说明 |
 | NL2SQL 主 Prompt | `configs/prompts.yaml` · `nl2sql` · `v2_subsidence` | 短硬口径 3～6 行 |
-| 综合分析计划 | `analysis_plan_subsidence_*` | 问句中写明初−末；「下沉最深」= `Δ` 降序 |
+| 综合分析计划 | `analysis_plan_subsidence_*` | 问句中写明末−初；「下沉最深」= `Δ` 升序（越负越前） |
 | 综合分析合成 | `analysis_synthesis_subsidence_*` | 去掉「终−初 / 负值下沉」 |
 | 客服地降模板 | `chatbot` 相关 `subsidence_v1` | 「负值通常表示下沉」→ 新符号约定 |
 | 评测 | `tests/fixtures/nl2sql_subsidence_golden_set.json` | notes / 问句覆盖站点层位 0、压缩层、符号 |
@@ -134,7 +133,7 @@ compress(i → i+1) = Δ(layer=i) − Δ(layer=i+1)
 | 文档 | 动作 |
 |------|------|
 | [`NL2SQL基座改造.md`](./NL2SQL基座改造.md) | 增加本期 P6、关联本文、更正验收中「周期沉降」表述 |
-| [`数据查询智能体实现方案.md`](./数据查询智能体实现方案.md) | 「年沉降 = 终−初」改为引用本文口径（初−末），避免查询台与基座相反 |
+| [`数据查询智能体实现方案.md`](./数据查询智能体实现方案.md) | 「年沉降 = 终−初」改为引用本文口径（末−初），避免查询台与基座相反 |
 | 企业级 `nl2sql_biz_knowledge` 相关说明（若有抄录旧公式） | 择机一句更正 |
 
 ### 2.4 运维动作
@@ -183,7 +182,7 @@ entries:
 | 通道 | 做法 | 作用 |
 |------|------|------|
 | RAG | biz_knowledge 描述规则 + 说明映射在配置路径；可选把「每站 layer0 标编号」摘要片段摄入 | 召回口径 |
-| Prompt | `v2_subsidence` / plan 写死：站点沉降必须对应层位 0；周期=初−末；负沉正弹 | 保底 |
+| Prompt | `v2_subsidence` / plan 写死：站点沉降必须对应层位 0；周期=末−初；负沉正弹 | 保底 |
 | QA | 2～3 条标准 SQL/问法（站点层位 0、压缩层差） | 强示范 |
 | 配置文件 | Git 可审、可再导出；**一期可不被 chain 解析** | 权威字典 |
 
@@ -200,7 +199,7 @@ entries:
 ### 4.1 `nl2sql_biz_knowledge.md` 应具备的章节
 
 1. 监测类型主辅（保留）  
-2. **沉降口径（更正）**：初−末；负沉正弹  
+2. **沉降口径（更正）**：末−初；负沉正弹  
 3. 行政区与站点（保留）+ **字段语义**（`project_name` / `station_name`）  
 4. **分层标三维计算汇总逻辑**（A/B/C + 公式 + 禁则）  
 5. **外挂/配置字典**：指向 `fcb_layer_map`；xls 为历史来源  
@@ -209,13 +208,13 @@ entries:
 ### 4.2 `v2_subsidence` 建议硬规则（示例文案）
 
 ```text
-【周期沉降】Δ = 窗内 total_settle 初值 − 末值（mm）；Δ<0 沉降，Δ>0 回弹倾向。
+【周期沉降】Δ = 窗内 total_settle 末值 − 初值（mm）；Δ<0 沉降，Δ>0 回弹倾向。
 【站点沉降】仅使用该站监测层位=0（浅部代表标）对应的 station_name；禁止对同 project_name 下所有标聚合。
 【压缩层】相邻监测层位 i 与 i+1 的 Δ 之差；无连续层位则不算。
 【关联】行政区：JOIN t_station ON project_name=name；标编号字段为 station_name。
 ```
 
-综合分析 `analysis_plan_subsidence_*` 的 `question` 字段须显式写「初值减末值」，避免模型沿用旧 QA。
+综合分析 `analysis_plan_subsidence_*` 的 `question` 字段须显式写「末值减初值」，避免模型沿用旧 QA。
 
 ---
 
@@ -249,13 +248,13 @@ entries:
 
 ### 5.3 验收标准（P6）
 
-- [x] `biz_knowledge` / `schema` / `metrics` **无**「末−初」「正下沉」误述；统一为初−末 + 负沉正弹  
-- [x] QA 种子中周期 SQL 为 **初 − 末**；至少 1 条站点层位 0、1 条层间差说明或样例  
+- [x] `biz_knowledge` / `schema` / `metrics` **无**「初−末」「正下沉」误述；统一为末−初 + 负沉正弹  
+- [x] QA 种子中周期 SQL 为 **末 − 初**；至少 1 条站点层位 0、1 条层间差说明或样例  
 - [x] `fcb_layer_map` 已入库配置包（entry_count=380，layer0_station_count=42）  
 - [x] `v2_subsidence` 与 `analysis_synthesis_subsidence_*` / plan 口径一致  
 - [x] 客服地降模板符号句已改（chatbot + clarify_texts）  
 - [ ] RAG re-ingest 完成；抽测问句生成 SQL 差值方向正确  
-- [x] [`NL2SQL基座改造.md`](./NL2SQL基座改造.md) 已索引本文并将周期沉降验收改为「初−末 / 负沉正弹」  
+- [x] [`NL2SQL基座改造.md`](./NL2SQL基座改造.md) 已索引本文并将周期沉降验收改为「末−初 / 负沉正弹」  
 
 ---
 

@@ -12,7 +12,7 @@
       "area"
     ],
     "expect_metric": "period_subsidence_mm",
-    "notes": "行政区 JOIN + 周期沉降 Δ=初−末（负沉正弹）；站点用层位0标；按 Δ ASC 取 Top5（最负=沉降最大）"
+    "notes": "行政区 JOIN + 周期沉降 Δ=末−初（负沉正弹）；站点用层位0标；按 Δ ASC 取 Top5（最负=沉降最大）"
   },
   {
     "id": "g02",
@@ -36,7 +36,7 @@
       "total_settle"
     ],
     "expect_metric": "period_subsidence_mm",
-    "notes": "泛化沉降默认分层标；周期用初−末"
+    "notes": "泛化沉降默认分层标；周期用末−初"
   },
   {
     "id": "g04",
@@ -88,7 +88,7 @@
     "expect_columns": [
       "total_settle"
     ],
-    "notes": "基岩标表；周期 Δ=初−末"
+    "notes": "基岩标表；周期 Δ=末−初"
   },
   {
     "id": "g08",
@@ -206,7 +206,7 @@
       "total_settle"
     ],
     "expect_metric": "period_rebound_mm",
-    "notes": "回弹语义：Δ=初−末 且 Δ<0"
+    "notes": "回弹语义：Δ=末−初 且 Δ>0"
   },
   {
     "id": "g18",
@@ -251,7 +251,7 @@
       "t_station"
     ],
     "expect_metric": "period_subsidence_mm",
-    "notes": "长周期时间窗；Δ=初−末"
+    "notes": "长周期时间窗；Δ=末−初"
   },
   {
     "id": "g22",
@@ -330,7 +330,7 @@
       "t_station"
     ],
     "expect_metric": "period_rebound_mm",
-    "notes": "回弹量：Δ=初−末 且关注 Δ<0"
+    "notes": "回弹量：Δ=末−初 且关注 Δ>0"
   },
   {
     "id": "g30",

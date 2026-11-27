@@ -166,7 +166,7 @@ for site_name, df in sheets.items():
         print(f"  警告: 没有找到层位数据")
         continue
 
-    # ===== 步骤1: 计算每个标编号的时间变化量（最先值 - 最后值）=====
+    # ===== 步骤1: 计算每个标编号的时间变化量（最后值 - 最先值）=====
     time_changes = []
 
     for col in layer_cols:
@@ -176,7 +176,7 @@ for site_name, df in sheets.items():
         if len(series) >= 2:
             first_val = series.iloc[0]
             last_val = series.iloc[-1]
-            time_change = first_val - last_val
+            time_change = last_val - first_val
             time_changes.append({
                 "标编号": label_id,
                 "原始列名": col,
@@ -184,7 +184,7 @@ for site_name, df in sheets.items():
                 "最后一个非空值": last_val,
                 "时间变化量": time_change
             })
-            print(f"  {label_id}({col}): 时间变化 = {first_val:.4f} - {last_val:.4f} = {time_change:.4f}")
+            print(f"  {label_id}({col}): 时间变化 = {last_val:.4f} - {first_val:.4f} = {time_change:.4f}")
         else:
             print(f"  {label_id}({col}): 数据不足（{len(series)}个非空值），跳过")
             time_changes.append({
@@ -323,6 +323,6 @@ else:
     print(df_layer_differences[['站点名称', '差值区间', '层位差值']].to_string(index=False))
 
 print("\n差值计算说明:")
-print("  - 时间变化量 = 第一个非空值 - 最后一个非空值")
+print("  - 时间变化量 = 最后一个非空值 - 第一个非空值")
 print("  - 层位差值 = 起始层位时间变化量 - 结束层位时间变化量")
 print("  - 例如: 0-1差值 = 层位0时间变化量 - 层位1时间变化量")

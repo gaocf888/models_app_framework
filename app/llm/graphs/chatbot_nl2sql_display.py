@@ -41,8 +41,8 @@ CHATBOT_NL2SQL_GNSS_QXZ_PERIOD_HINT = """
 CHATBOT_NL2SQL_DEVICE_PERIOD_HINT = """
 【智能客服·周期变化（本问强制）】
 分层标（或问句未点名监测方式而默认分层标）：只用监测层位=0 的代表标，一行一代表标。
-其它已点名的监测方式（孔隙水/地下水/基岩标/GNSS/气象/光纤）：该区或该站全部设备各算窗初−窗末，一行一设备。
-禁止按 project_name 并场；Δ = 窗初 − 窗末。
+其它已点名的监测方式（孔隙水/地下水/基岩标/GNSS/气象/光纤）：该区或该站全部设备各算窗末−窗初，一行一设备。
+禁止按 project_name 并场；Δ = 窗末 − 窗初。
 """.strip()
 
 # 注入 NL2SQL 生成 prompt（仅客服 data_query；不写死业务枚举）

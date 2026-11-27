@@ -302,7 +302,7 @@ flowchart TB
 ```text
 q_fcb_endpoints  ──sql_template──►  fcb_period_endpoints.sql
         │
-        └──► q_layer0  ──python slice_layer0──►  层位0 Δ=初−末
+        └──► q_layer0  ──python slice_layer0──►  层位0 Δ=末−初
 q_ops_placeholder / q_alert_placeholder  ──placeholder──►  空
 ```
 

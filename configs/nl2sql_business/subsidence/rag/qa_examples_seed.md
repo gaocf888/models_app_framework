@@ -1,10 +1,10 @@
 # 地降 NL2SQL QA 种子样例（nl2sql_qa_examples）
 # RAG 摄入命名空间：nl2sql_qa_examples；供少样本示范，非单元测试黄金集。
-# 周期口径：Δ=初−末；站点用层位0。业务包说明见上级「配置项说明.md」。
+# 周期口径：Δ=末−初；站点用层位0。业务包说明见上级「配置项说明.md」。
 
 > 摄入命名空间：`nl2sql_qa_examples`  
 > 方言：PostgreSQL · 表白名单 8 表  
-> **周期口径**：`Δ = total_settle(窗初) − total_settle(窗末)`；**Δ<0 沉降、Δ>0 回弹**；站点沉降用监测层位=0 的 `station_name`  
+> **周期口径**：`Δ = total_settle(窗末) − total_settle(窗初)`；**Δ<0 沉降、Δ>0 回弹**；站点沉降用监测层位=0 的 `station_name`  
 > 灌库时 metadata 须带 `analysis_type`、`plan_item_id`、`plan_template_version=v1`
 
 ---
@@ -45,12 +45,12 @@ ORDER BY s.area
 
 ---
 
-## subsidence_weekly · q1 · 本周站点周期沉降（层位0 + 初−末）
+## subsidence_weekly · q1 · 本周站点周期沉降（层位0 + 末−初）
 
-**问句**：本周各站点 total_settle 周期沉降量（初值减末值，mm）。
+**问句**：本周各站点 total_settle 周期沉降量（末值减初值，mm）。
 
 > 站点维度：每个 `project_name` 仅用监测层位=0 的标（示例：`F8(周村)`→`F8-10`）。  
-> `period_settle_mm = settle_start − settle_end`；**数值越负表示沉降越多**，排序用 `ORDER BY period_settle_mm ASC`。
+> `period_settle_mm = settle_end − settle_start`；**数值越负表示沉降越多**，排序用 `ORDER BY period_settle_mm ASC`。
 
 ```sql
 WITH ranked AS (
@@ -67,8 +67,7 @@ WITH ranked AS (
 SELECT project_name, station_name,
        MAX(CASE WHEN rn_asc = 1 THEN total_settle END) AS settle_start,
        MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS settle_end,
-       MAX(CASE WHEN rn_asc = 1 THEN total_settle END)
-         - MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS period_settle_mm
+       MAX(CASE WHEN rn_desc = 1 THEN total_settle END) - MAX(CASE WHEN rn_asc = 1 THEN total_settle END) AS period_settle_mm
 FROM ranked
 GROUP BY project_name, station_name
 ORDER BY period_settle_mm ASC
@@ -91,8 +90,7 @@ WITH ranked AS (
     AND f.station_name IN ('F1-7','F2-7','F27-8','F28-10','F29-10')
 )
 SELECT project_name, station_name, area,
-       MAX(CASE WHEN rn_asc = 1 THEN total_settle END)
-         - MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS period_settle_mm
+       MAX(CASE WHEN rn_desc = 1 THEN total_settle END) - MAX(CASE WHEN rn_asc = 1 THEN total_settle END) AS period_settle_mm
 FROM ranked
 GROUP BY project_name, station_name, area
 ORDER BY period_settle_mm ASC
@@ -102,7 +100,7 @@ ORDER BY period_settle_mm ASC
 
 ## subsidence_quarterly · q1 · 本季度主表沉降
 
-**问句**：本季度通州区各站点季初季末 total_settle 差值（初减末）。
+**问句**：本季度通州区各站点季初季末 total_settle 差值（末减初）。
 
 （SQL 结构同 weekly q1；行政区过滤 `s.area = '通州区'`；站点用层位 0 标。）
 
@@ -122,8 +120,7 @@ WITH ranked AS (
     AND f.data_time >= @t_start AND f.data_time < @t_end
 )
 SELECT
-  MAX(CASE WHEN rn_asc = 1 THEN total_settle END)
-    - MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS period_settle_mm
+  MAX(CASE WHEN rn_desc = 1 THEN total_settle END) - MAX(CASE WHEN rn_asc = 1 THEN total_settle END) AS period_settle_mm
 FROM ranked
 ```
 
@@ -136,7 +133,7 @@ FROM ranked
 > `compress(0→1) = Δ(F8-10) − Δ(F8-7)`；边界标来自 `fcb_layer_map`。
 
 ```sql
--- 分别计算层位0(F8-10)与层位1(F8-7)的 Δ=初−末，再相减；可用两次子查询或条件聚合实现
+-- 分别计算层位0(F8-10)与层位1(F8-7)的 Δ=末−初，再相减；可用两次子查询或条件聚合实现
 ```
 
 ---
@@ -193,7 +190,7 @@ ORDER BY g.data_time DESC
 
 **问句**：朝阳区最近一周分层标沉降最大的 5 个站点。
 
-> 「沉降最大」= 周期 `Δ=初−末` **最负**（沉降最多）；按 `project_name` 取层位 0 标后再排序 LIMIT 5。  
+> 「沉降最大」= 周期 `Δ=末−初` **最负**（沉降最多）；按 `project_name` 取层位 0 标后再排序 LIMIT 5。  
 > 「最近一周」= **滚动**近 7 天（可用 `NOW() - INTERVAL '7 days'`），**不是**自然「本周」。
 
 ---
@@ -204,7 +201,7 @@ ORDER BY g.data_time DESC
 
 > - **本周** = 自然周：`date_trunc('week', CURRENT_DATE)::date` ～ `+ INTERVAL '7 days'`（**禁止**写成 `CURRENT_DATE - INTERVAL '7 days'`）。  
 > - 站点沉降用朝阳区层位 0 代表标：`F1-7,F2-7,F27-8,F28-10,F29-10`（见 `nl2sql_biz_knowledge_fcb_layer0_stations.md`）。  
-> - `period_settle_mm = settle_start − settle_end`（初−末）；最大沉降 = `ORDER BY period_settle_mm ASC LIMIT 1`。  
+> - `period_settle_mm = settle_end − settle_start`（末−初）；最大沉降 = `ORDER BY period_settle_mm ASC LIMIT 1`。  
 > - 同一 `project_name + station_name` 取窗内最早/最晚各一条；缺初或缺末的站不参与。
 
 ```sql
@@ -243,8 +240,7 @@ period AS (
     area,
     MAX(CASE WHEN rn_asc = 1 THEN total_settle END) AS settle_start,
     MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS settle_end,
-    MAX(CASE WHEN rn_asc = 1 THEN total_settle END)
-      - MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS period_settle_mm
+    MAX(CASE WHEN rn_desc = 1 THEN total_settle END) - MAX(CASE WHEN rn_asc = 1 THEN total_settle END) AS period_settle_mm
   FROM ranked
   GROUP BY project_name, station_name, area
   HAVING MAX(CASE WHEN rn_asc = 1 THEN total_settle END) IS NOT NULL
@@ -267,7 +263,7 @@ LIMIT 1;
 **问句**：哪些行政区近期沉降相对偏大？ / 哪些区近期沉降偏大？ / 各行政区近期沉降对比
 
 > - **近期** = 滚动近 7 天（`NOW() - INTERVAL '7 days'` ～ `NOW()`；≠ 昨日快照，≠ 自然周「本周」）。  
-> - 先对每个 `project_name` 用层位 0 代表标算 `period_settle_mm = 初 − 末`；再按 `s.area` 对站求 `AVG`。  
+> - 先对每个 `project_name` 用层位 0 代表标算 `period_settle_mm = 末 − 初`；再按 `s.area` 对站求 `AVG`。  
 > - 「偏大」= 沉降更多 = `ORDER BY avg_period_settle_mm ASC`（越负越前）。  
 > - **禁止** 站级去重列表冒充区汇总；**禁止**在含 `ROW_NUMBER` 的同一 SELECT 再 `GROUP BY`；**禁止**虚构 `settle_start_time`；**禁止** `project_name IN ('F1','F2')` 短码；**禁止**相关子查询逐站算初末；**禁止**对同站全部 `station_name` 做 AVG。
 
@@ -311,8 +307,7 @@ period AS (
     project_name,
     station_name,
     area,
-    MAX(CASE WHEN rn_asc = 1 THEN total_settle END)
-      - MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS period_settle_mm
+    MAX(CASE WHEN rn_desc = 1 THEN total_settle END) - MAX(CASE WHEN rn_asc = 1 THEN total_settle END) AS period_settle_mm
   FROM ranked
   GROUP BY project_name, station_name, area
   HAVING MAX(CASE WHEN rn_asc = 1 THEN total_settle END) IS NOT NULL

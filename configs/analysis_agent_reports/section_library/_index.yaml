@@ -32,7 +32,7 @@ shared_plan_items:
     python_fn: slice_layer0
     mandatory: true
     dependency_ids: [q_fcb_endpoints]
-    purpose: 层位0地面沉降 Δ=初−末
+    purpose: 层位0地面沉降 Δ=末−初
   - item_id: q_area_rank
     executor: python
     python_fn: rank_by_area

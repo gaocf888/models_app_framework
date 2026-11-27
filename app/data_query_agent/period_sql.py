@@ -1,6 +1,6 @@
-"""周期窗列表：确定性 PostgreSQL SQL（窗初 − 窗末），不走 LLM / QUALIFY。
+"""周期窗列表：确定性 PostgreSQL SQL（窗末 − 窗初），不走 LLM / QUALIFY。
 
-与报告/NL2SQL 口径一致：Δ = 初 − 末；Δ<0 沉降，Δ>0 回弹。
+与报告/NL2SQL 口径一致：Δ = 末 − 初；Δ<0 沉降，Δ>0 回弹。
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ def build_period_list_sql(
     *,
     max_rows: int,
 ) -> tuple[str, dict[str, Any]]:
-    """窗内最早/最晚各一行，周期差 = 窗初 − 窗末。PostgreSQL ROW_NUMBER，不用 QUALIFY。
+    """窗内最早/最晚各一行，周期差 = 窗末 − 窗初。PostgreSQL ROW_NUMBER，不用 QUALIFY。
 
     差值列使用 ``period_key``（如 period_settle_mm），不再复用 annual_key，
     避免「本月」结果展示成「年沉降」。对外：Δ<0 沉降，Δ>0 回弹。
@@ -165,10 +165,10 @@ def build_period_list_sql(
         )
         group_by = "w.project_name, w.station_name, s.area"
     sql = (
-        # Δ = 窗初(rn_asc) − 窗末(rn_desc)；有符号：负=沉降倾向，正=回弹
+        # Δ = 窗末(rn_desc) − 窗初(rn_asc)；有符号：负=沉降倾向，正=回弹
         f"SELECT {ident_select}, s.area AS area, "
         f"MAX(CASE WHEN w.rn_desc = 1 THEN w.v END) AS {core_alias}, "
-        f"(MAX(CASE WHEN w.rn_asc = 1 THEN w.v END) - MAX(CASE WHEN w.rn_desc = 1 THEN w.v END)) "
+        f"(MAX(CASE WHEN w.rn_desc = 1 THEN w.v END) - MAX(CASE WHEN w.rn_asc = 1 THEN w.v END)) "
         f"AS {delta_alias}, "
         f"MAX(CASE WHEN w.rn_desc = 1 THEN w.data_time END) AS data_time "
         f"FROM ("
@@ -182,7 +182,7 @@ def build_period_list_sql(
         f"WHERE (w.rn_asc = 1 OR w.rn_desc = 1){area_pred} "
         f"GROUP BY {group_by} "
         f"ORDER BY ABS("
-        f"MAX(CASE WHEN w.rn_asc = 1 THEN w.v END) - MAX(CASE WHEN w.rn_desc = 1 THEN w.v END)"
+        f"MAX(CASE WHEN w.rn_desc = 1 THEN w.v END) - MAX(CASE WHEN w.rn_asc = 1 THEN w.v END)"
         f") DESC NULLS LAST, w.station_name "
         f"LIMIT :limit"
     )

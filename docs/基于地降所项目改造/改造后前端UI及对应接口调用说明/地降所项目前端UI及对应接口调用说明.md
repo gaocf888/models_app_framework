@@ -268,7 +268,7 @@ analysis_agent_finished         { result }                         # 按钮恢�
 
 #### 2.2.3 表 / 图 payload（报告区）
 
-表：`table.columns` 为列名，`table.rows` 为对象数组；缺 cell 显示空，不要猜列。沉降 **Δ=初−末，Δ<0 表示沉降、Δ>0 表示回弹**，不要擅自取绝对值或反号。
+表：`table.columns` 为列名，`table.rows` 为对象数组；缺 cell 显示空，不要猜列。沉降 **Δ=末−初，Δ<0 表示沉降、Δ>0 表示回弹**，不要擅自取绝对值或反号。
 
 图 `chart.chart_type`：
 
@@ -426,7 +426,7 @@ analysis_agent_finished         { result }                         # 按钮恢�
 | `gnss` | 浏览点库/区：`gps_total_x/y/z`（X/Y/Z位移）、`displacement_2d`（水平合位移）、`displacement_3d`（合位移）。点站为站点下挂这五列 |
 | `qxz`（气象） | 浏览点库/区：`temp`（气温）、`real_time_rain`（降水）、`humidity`（相对湿度）、`pressure`（气压）、`wind_speed`（风速）、`wind_dirt`（风向）。点站为站点下挂这六列 |
 
-`result_grain=district`（问的是「各区平均」时）：表是一行一个区，列为行政区 / 指标 / 站点数。`city`（问「全市平均」）：只有「全市」一行。周期沉降 **Δ=初−末，Δ<0 表示沉降、Δ>0 表示回弹**，不要改成绝对值或擅自反号（界面不要把符号含义弄反）。
+`result_grain=district`（问的是「各区平均」时）：表是一行一个区，列为行政区 / 指标 / 站点数。`city`（问「全市平均」）：只有「全市」一行。周期沉降 **Δ=末−初，Δ<0 表示沉降、Δ>0 表示回弹**，不要改成绝对值或擅自反号（界面不要把符号含义弄反）。
 
 **行上 HUD（解析路径；表格最右「详参」列）：**
 

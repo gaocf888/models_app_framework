@@ -27,8 +27,8 @@ A) WITH ranked：从 t_data_wash_fcb 取窗内行，JOIN t_station ON project_na
    仅 station_name IN (层位0名单)；ROW_NUMBER PARTITION BY project_name,station_name 升/降序得 rn_asc/rn_desc。
    ★ 含窗口函数的 SELECT 禁止再写 GROUP BY。
 B) WITH period：对 ranked 按 project_name,station_name,area 聚合：
-   period_settle_mm = MAX(CASE WHEN rn_asc=1 THEN total_settle END)
-                    - MAX(CASE WHEN rn_desc=1 THEN total_settle END)；
+   period_settle_mm = MAX(CASE WHEN rn_desc=1 THEN total_settle END)
+                    - MAX(CASE WHEN rn_asc=1 THEN total_settle END)；  -- 末−初
    HAVING 初末均非空。禁止虚构 settle_start_time/settle_end_time 列。
 C) 最终：SELECT area, COUNT(DISTINCT project_name), AVG(period_settle_mm) FROM period
    GROUP BY area ORDER BY AVG(period_settle_mm) ASC（越负=沉降越多）。
@@ -51,8 +51,8 @@ WITH ranked AS (
 ),
 period AS (
   SELECT project_name, station_name, area,
-         MAX(CASE WHEN rn_asc = 1 THEN total_settle END)
-           - MAX(CASE WHEN rn_desc = 1 THEN total_settle END) AS period_settle_mm
+         MAX(CASE WHEN rn_desc = 1 THEN total_settle END)
+           - MAX(CASE WHEN rn_asc = 1 THEN total_settle END) AS period_settle_mm
   FROM ranked
   GROUP BY project_name, station_name, area
   HAVING MAX(CASE WHEN rn_asc = 1 THEN total_settle END) IS NOT NULL

@@ -22,7 +22,7 @@ def test_sign_matches_word_template() -> None:
 
 
 def test_strip_formula_from_narrative() -> None:
-    raw = "本期 Δ = total_settle(窗初) − total_settle(窗末)，delta_mm=-1.2。"
+    raw = "本期 Δ = total_settle(窗末) − total_settle(窗初)，delta_mm=-1.2。"
     out = strip_formula_text(raw)
     assert "Δ" not in out
     assert "total_settle" not in out

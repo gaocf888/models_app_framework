@@ -124,7 +124,7 @@ def test_layer0_audit_facts_include_districts_and_extremes() -> None:
     assert "分行政区" in text
     assert "Δ" not in text
     assert "平均" not in text
-    assert "初−末" not in text
+    assert "末−初" not in text
 
 
 def test_plain_monitoring_narrative_no_delta_no_mean() -> None:
@@ -147,7 +147,7 @@ def test_plain_monitoring_narrative_no_delta_no_mean() -> None:
     assert "Δ" not in md
     assert "本期" not in md
     assert "2026年11月5日" in md
-    assert "初−末" not in md and "初-末" not in md
+    assert "末−初" not in md and "末-初" not in md
     assert "平均沉降" not in md
     assert "朝阳区" in md and "以沉降为主" in md
     assert "海淀区" in md and "以回弹为主" in md

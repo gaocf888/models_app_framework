@@ -244,7 +244,7 @@ nl2sql       → run_nl2sql_for_plan_item → NL2SQLService.query
 
 | `python_fn` | 函数 | 依赖 gathered |
 |-------------|------|----------------|
-| `slice_layer0` | 层位 0 Δ=初−末 | `q_fcb_endpoints` |
+| `slice_layer0` | 层位 0 Δ=末−初 | `q_fcb_endpoints` |
 | `layer_compress` | 连续层间差 | `q_fcb_endpoints` |
 | `join_key_areas` | 表 4-1，13 站 | `q_layer0` + `q_compress` |
 | `rank_by_area` | 全市按区汇总 | `q_layer0` |

@@ -46,6 +46,23 @@ def test_window_delta_last_minus_first() -> None:
     assert delta == -84.2
 
 
+def test_annual_matches_period_delta_sign() -> None:
+    """年沉降与周期 period_delta 同为末−初，同号（负沉正弹）。"""
+    from app.analysis_agent.deterministics.formulas import period_delta
+
+    start_v, end_v = -122.716, -123.119
+    annual = window_delta(
+        [
+            {"t": "2026-04-01 00:00:00", "v": start_v},
+            {"t": "2026-06-30 00:00:00", "v": end_v},
+        ],
+        start="2026-04-01 00:00:00",
+        end="2026-06-30 23:59:59",
+    )
+    assert annual == period_delta(start_v, end_v)
+    assert annual is not None and annual < 0  # 沉降
+
+
 def test_compute_annual_fallback_when_window_has_one_point() -> None:
     points = [
         {"t": "2025-09-01 00:00:00", "v": 0.0},

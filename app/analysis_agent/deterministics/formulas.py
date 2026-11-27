@@ -1,11 +1,12 @@
 """分层标周期沉降 / 压缩层公式内核（无 IO）。
 
-与 P6 及 `季度报告分层标处理.py` 对齐：
-- Δ(标) = settle_start − settle_end（窗内非空最早/最晚；须对应两个不同 data_time）
+统一口径（窗末 − 窗初）：
+- Δ(标) = settle_end − settle_start（窗内非空最晚 − 最早；须对应两个不同 data_time）
 - 仅 monitor_layer ∈ {0,1,2,3,4}
 - 仅相邻层 next − curr == 1
 - compress(i→i+1) = Δ(i) − Δ(i+1)
 - 缺层不成对（不要补 0）
+- 对外：Δ<0 沉降，Δ>0 回弹（负沉正弹）
 """
 
 from __future__ import annotations
@@ -16,8 +17,8 @@ VALID_LAYERS = frozenset({0, 1, 2, 3, 4})
 
 
 def period_delta(settle_start: Any, settle_end: Any) -> float:
-    """窗内周期变化（初−末）。对外：<0 沉降，>0 回弹（与季报模版表图一致）。"""
-    return float(settle_start) - float(settle_end)
+    """窗内周期变化（末−初）。对外：<0 沉降，>0 回弹。"""
+    return float(settle_end) - float(settle_start)
 
 
 def compress_mm(delta_from: float, delta_to: float) -> float:

@@ -1,6 +1,6 @@
 """地降自动报告：离线矢量/栅格底图 + 层位 0 站点柱，输出 PNG。
 
-Δ=初−末：Δ<0 沉降（红、柱向下），Δ>0 回弹（绿、柱向上），与 formulas.period_delta / settle_text 一致。
+Δ=末−初：Δ<0 沉降（红、柱向下），Δ>0 回弹（绿、柱向上），与 formulas.period_delta / settle_text 一致。
 有 geopandas/rasterio 且市界 shp 齐全时走 DEM+区县+水系；否则退化为经纬度散点图。
 """
 

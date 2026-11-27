@@ -24,14 +24,15 @@
 - **月完整/有效列表**：只含低于阈值设备（&lt;92% / &lt;90%），回答须说明「不达标名单」。
 - **时长**：告警持续 = 查询时刻 − `off_time`；离线时长 = 查询时刻 − `data_collect_time`。
 
-## 沉降口径（对齐季报脚本，2026-09 起）
+## 沉降口径（现网统一：末−初，2026-11 起）
 
-- **周期变化量**：`Δ = total_settle(窗初) − total_settle(窗末)`（mm），即时间窗内**最早有效点减去最晚有效点**（**初 − 末**）。
+- **周期变化量**：`Δ = total_settle(窗末) − total_settle(窗初)`（mm），即时间窗内**最晚有效点减去最早有效点**（**末 − 初**）。
 - **符号**：`Δ < 0` → **沉降**；`Δ > 0` → **回弹/抬升**（与季报表图及 settle_text 一致）。
 - **单点累计**：某时刻 `total_settle` 快照（不是周期差）。
 - 问「沉降了多少」未指明监测类型时 → 分层标 `t_data_wash_fcb`。
 - 问 GNSS/位移 → `t_data_wash_gnss`，禁止用 fcb.total_settle 代替。
-- **口径变更说明**：公式固定为初−末；对外表图 **负值=沉降、正值=回弹**。曾误写「初−末且正下沉」或「末−初」须纠正；「沉降最大」按有符号 Δ **升序**（越负越严重）。
+- **与年沉降**：`annual_*` 同为末−初，同窗下与 `period_*` 同号；勿再写初−末。
+- **口径变更说明**：公式固定为末−初；对外表图 **负值=沉降、正值=回弹**。曾误写「初−末」或「正下沉」须纠正；「沉降最大」按有符号 Δ **升序**（越负越严重）。改 md 后须 RAG re-ingest。
 
 ## 公共表字段说明
 
@@ -49,7 +50,7 @@
 
 - 对象：某个 `station_name`（标编号）。
 - 数据：`t_data_wash_fcb`（`J*` 优先 `t_data_wash_jyb`）该标的 `total_settle` 时间序列。
-- 周期沉降：对该标计算 `Δ`（初 − 末）。
+- 周期沉降：对该标计算 `Δ`（末 − 初）。
 
 ### B. 监测站点维度（地面 / 站代表沉降）
 
@@ -83,7 +84,7 @@
 - 行政区过滤：`t_station.area`（标准名如「朝阳区」「通州区」）；层位字典中的 `district_raw` 可能是简称，**不以之为 SQL 过滤真源**。
 - **监测方式官方站点覆盖**：`semantic/dimensions/device_station_map.yaml`（`device_type → project_name[]`）。查询某监测方式站点时，先取覆盖名单再与 `t_station` 匹配；**不以**事实表「当前有数据」代替官方覆盖。GNSS 覆盖来自 `站点列表-GNSS--92个.xlsx`（92 站，名称保持表内原文）。
 - **行政区对比 / 「哪些区沉降偏大」**（与「禁止同站多标 AVG」不冲突）：
-  1. 每个 `project_name` 先用层位 0 代表标算 `period_settle_mm`（初−末）；
+  1. 每个 `project_name` 先用层位 0 代表标算 `period_settle_mm`（末−初）；
   2. 再 `GROUP BY s.area`，对区内各站 `AVG(period_settle_mm)`（可附 `COUNT(DISTINCT project_name)`）；
   3. 「偏大/较大」→ `ORDER BY avg_period_settle_mm ASC`（越负沉降越多）；
   4. SQL 形态：`WITH ranked`（仅窗口、**无 GROUP BY**）→ `period`（`MAX(CASE WHEN rn_*=1)`）→ 按 `area` 聚合；
@@ -136,14 +137,14 @@
 1. 主表：`t_data_wash_fcb`；行政区经 `t_station`：`f.project_name = s.name`，`s.area = '朝阳区'`（标准全名优先，`LIKE` 仅兜底）。
 2. 站点粒度：仅层位 0 代表标（`station_name IN (...)`，清单见 `nl2sql_biz_knowledge_fcb_layer0_stations.md`，按区裁剪）。
 3. 同一 `project_name + station_name` 在时间窗内取**最早一条**为窗初、**最晚一条**为窗末（可用 `ROW_NUMBER` 双排序，或等价 `MIN/MAX(data_time)` 再回表）。
-4. `period_settle_mm = settle_start − settle_end`（**初 − 末**）；「沉降最大」= `ORDER BY period_settle_mm ASC`（越负沉降越多）。
+4. `period_settle_mm = settle_end − settle_start`（**末 − 初**）；「沉降最大」= `ORDER BY period_settle_mm ASC`（越负沉降越多）。
 5. 窗内缺初或缺末观测的站点：**不参与**最大/排行（或结果中显式排除），禁止用单点 `total_settle` 冒充周期差。
 
 ### 明确禁止
 
 | 禁止写法 | 原因 |
 |----------|------|
-| `settle_end − settle_start`（末−初） | 符号与现网口径相反（负沉正弹会整体翻转） |
+| `settle_start − settle_end`（初−末） | 符号与现网口径相反（负沉正弹会整体翻转） |
 | `ORDER BY period_settle_mm DESC` 当作「沉降最大」 | 会误选回弹最大；应 `ASC`（最负在前） |
 | 只取 `MIN(data_time)` 作初值、**不**取窗内 `MAX(data_time)` 作末值 | 末值未钉死，结果不可复现 |
 | 自连接/子查询仅按 `project_name` 对齐、**不对齐** `station_name` | 同站多标会错配初末 |
