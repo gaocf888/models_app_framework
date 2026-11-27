@@ -512,6 +512,8 @@ class Nl2sqlAnalysisStreamPlan:
     analysis_prompt_row_count: int = 0
     sql: str = ""
     user_query: str = ""
+    # 通俗「数据来源」硬事实（定稿后程序追加，不喂分析模型）
+    data_source_facts: dict[str, Any] | None = None
 
     def to_state_dict(self) -> dict[str, Any]:
         return {
@@ -523,6 +525,7 @@ class Nl2sqlAnalysisStreamPlan:
             "analysis_prompt_row_count": int(self.analysis_prompt_row_count),
             "sql": self.sql or "",
             "user_query": self.user_query or "",
+            "data_source_facts": self.data_source_facts,
         }
 
     @classmethod
@@ -536,6 +539,7 @@ class Nl2sqlAnalysisStreamPlan:
             return None
         rows_raw = raw.get("display_rows")
         display_rows = [r for r in rows_raw if isinstance(r, dict)] if isinstance(rows_raw, list) else []
+        ds_raw = raw.get("data_source_facts")
         return cls(
             system=system,
             user_content=user_content,
@@ -545,6 +549,7 @@ class Nl2sqlAnalysisStreamPlan:
             analysis_prompt_row_count=int(raw.get("analysis_prompt_row_count") or 0),
             sql=str(raw.get("sql") or ""),
             user_query=str(raw.get("user_query") or ""),
+            data_source_facts=ds_raw if isinstance(ds_raw, dict) else None,
         )
 
 
@@ -655,6 +660,14 @@ async def run_chatbot_nl2sql_query(
         if period_hit is not None:
             sql, rows = period_hit
             period_tag = "hit"
+            from app.llm.graphs.chatbot_nl2sql_data_source import data_source_facts_from_prepare
+
+            ds = data_source_facts_from_prepare(
+                prepare,
+                sql=sql,
+                period_deterministic=period_tag,
+                user_query=question,
+            )
             summarized = await summarize_nl2sql_with_llm(
                 llm_client,
                 user_query=question,
@@ -663,6 +676,7 @@ async def run_chatbot_nl2sql_query(
                 user_id=user_id,
                 defer_analysis_stream=defer_analysis_stream,
                 library_id=getattr(prepare, "library_id", None),
+                data_source_facts=ds.to_dict(),
             )
             sql_meta = (sql or None) if _chatbot_expose_nl2sql_sql_in_meta() else None
             return ChatbotNL2SQLOutcome(
@@ -727,6 +741,14 @@ async def run_chatbot_nl2sql_query(
                 terminate_reason="nl2sql_gen_failed",
                 **_obs_fields(prepare, period_deterministic=period_tag),
             )
+        from app.llm.graphs.chatbot_nl2sql_data_source import data_source_facts_from_prepare
+
+        ds = data_source_facts_from_prepare(
+            prepare,
+            sql=resp.sql or "",
+            period_deterministic=period_tag,
+            user_query=question,
+        )
         summarized = await summarize_nl2sql_with_llm(
             llm_client,
             user_query=question,
@@ -735,6 +757,7 @@ async def run_chatbot_nl2sql_query(
             user_id=user_id,
             defer_analysis_stream=defer_analysis_stream,
             library_id=getattr(prepare, "library_id", None),
+            data_source_facts=ds.to_dict(),
         )
         # 成功路径亦受 CHATBOT_EXPOSE_NL2SQL_SQL_IN_META 门控（与失败路径一致）
         sql_meta = (resp.sql or None) if _chatbot_expose_nl2sql_sql_in_meta() else None
@@ -1020,6 +1043,11 @@ def finalize_streamed_nl2sql_analysis(
     streamed_text: str,
 ) -> Nl2sqlSummarizeResult:
     """流式结束后组装正文与 meta；无有效输出则回退 Markdown 表。"""
+    from app.llm.graphs.chatbot_nl2sql_data_source import (
+        Nl2sqlDataSourceFacts,
+        append_data_source_section,
+    )
+
     answer = strip_sql_fences_from_analysis(
         strip_nl2sql_analysis_section_headings((streamed_text or "").strip())
     )
@@ -1042,6 +1070,10 @@ def finalize_streamed_nl2sql_analysis(
             total_row_count=int(plan.total_row_count),
             shown_row_count=shown_n,
         )
+    answer = append_data_source_section(
+        answer,
+        Nl2sqlDataSourceFacts.from_dict(plan.data_source_facts),
+    )
     logger.info(
         "智能客服 NL2SQL：已向用户返回整理结果（总行数=%s，展示行数=%s，llm_analysis=%s）。用户问题摘要=%s",
         plan.total_row_count,
@@ -1144,6 +1176,7 @@ async def summarize_nl2sql_with_llm(
     user_id: str | None = None,
     defer_analysis_stream: bool = False,
     library_id: str | None = None,
+    data_source_facts: dict[str, Any] | None = None,
 ) -> Nl2sqlSummarizeResult:
     """
     智能客服 NL2SQL 结果整理：
@@ -1152,8 +1185,14 @@ async def summarize_nl2sql_with_llm(
     - 有数据 + 分析开关：主模型 Markdown 收紧分析（失败则回退纯表）；
     - 有数据 + 关分析：仅 Markdown 表（旧行为）；
     - 空行：可选 LLM 引导，否则固定文案；
-    - SQL 仅日志 / meta，不写入用户可见正文。
+    - SQL 仅日志 / meta，不写入用户可见正文；
+    - 定稿后追加通俗「数据来源」（``data_source_facts``）。
     """
+    from app.llm.graphs.chatbot_nl2sql_data_source import (
+        Nl2sqlDataSourceFacts,
+        append_data_source_section,
+    )
+
     sql = (sql or "").strip()
     if not sql:
         logger.info(
@@ -1164,6 +1203,9 @@ async def summarize_nl2sql_with_llm(
             answer_text=_active_gen_failed_message()
         )
 
+    ds_facts = Nl2sqlDataSourceFacts.from_dict(data_source_facts)
+    if ds_facts is not None and not (ds_facts.sql or "").strip():
+        ds_facts.sql = sql
     cfg = get_app_config().chatbot
     max_rows = _analysis_max_rows()
     slice_rows = list(rows[:max_rows])
@@ -1216,6 +1258,7 @@ async def summarize_nl2sql_with_llm(
             if guided:
                 answer = guided
                 llm_used = True
+        answer = append_data_source_section(answer, ds_facts)
         meta = _build_analysis_meta(
             display_rows=[],
             total_row_count=0,
@@ -1233,8 +1276,10 @@ async def summarize_nl2sql_with_llm(
     )
     ui_rows = display_rows[:_UI_TABLE_MAX_ROWS]
     table_fallback = _rows_to_markdown_table(ui_rows, total_row_count=len(rows))
+    ds_dict = ds_facts.to_dict() if ds_facts is not None else None
 
     if not bool(cfg.nl2sql_llm_analysis_enabled):
+        answer = append_data_source_section(table_fallback, ds_facts)
         logger.info(
             "智能客服 NL2SQL：已向用户返回整理结果（总行数=%s，展示行数=%s，llm_analysis=%s）。用户问题摘要=%s",
             len(rows),
@@ -1252,7 +1297,7 @@ async def summarize_nl2sql_with_llm(
             llm_analysis_used=False,
             empty=False,
         )
-        return Nl2sqlSummarizeResult(answer_text=table_fallback, analysis_meta=meta)
+        return Nl2sqlSummarizeResult(answer_text=answer, analysis_meta=meta)
 
     system = _load_scene_system(
         "chatbot_nl2sql_analysis",
@@ -1288,6 +1333,7 @@ async def summarize_nl2sql_with_llm(
         analysis_prompt_row_count=len(prompt_rows),
         sql=sql,
         user_query=user_query or "",
+        data_source_facts=ds_dict,
     )
     if defer_analysis_stream:
         return Nl2sqlSummarizeResult(answer_text="", stream_plan=plan)
